@@ -1,66 +1,183 @@
-# Decision Module: This module generates an attractiveness score
-# and makes a decision of like or dislike based on that.
+; Decision Module: This module generates an attractiveness score
+; and makes a decision of like or dislike based on that.
+
+
+
+#include helper_functions.ahk
+
+#SingleInstance
+#WinActivateForce
+
+CoordMode "Mouse", "Window"
 
 
 upload_profile_pics()
 {
 	winactivate "Photo Ranker"
+	send "{home}"
+	sleep 500
+	mouseClick "left", 1715, 1440 
+	sleep 500
+	send "^l"
+	send "^a"
+	send "C:\Users\Shadow\Pictures\Screenshots" 
 	
-	# Get a list of all files in the directory
-    files = os.listdir(file_dir)
+	loop 4
+	{
+		sleep 500
+		send "{tab}"
+	}
+	
+	send "^a"
+	sleep 500
+	send "{enter}"
+	sleep 500
+	mouseClick "left", 1730, 2000
+	
+	loop 20
+	{
+		send "{down}"
+	}
+	
+	
+	progress := ""
+	
+	while not InStr(progress, "00")
+	{
+		progress := ocr(1683, 322, 1762, 349)
+	}
+	
+	; Click show score
+	mouseClick "left", 1720, 460
+	
+	scores := []
+	
+	ocr(838, 637, 965, 689)
+	
+	if IsNumber(A_Clipboard)
+	{
+		scores.push(A_Clipboard)
+	}
+	
+	ocr(1546, 639, 1675, 691)
+	
+	if IsNumber(A_Clipboard)
+	{
+		scores.push(A_Clipboard)
+	}
+	
+	ocr(2255, 641, 2378, 686)
+	
+	if IsNumber(A_Clipboard)
+	{
+		scores.push(A_Clipboard)
+	}
+	
+	ocr(2971, 636, 3098, 686)
+	
+	if IsNumber(A_Clipboard)
+	{
+		scores.push(A_Clipboard)
+	}
+	
+	ocr(1548, 1665, 1679, 1718)
+	
+	if IsNumber(A_Clipboard)
+	{
+		scores.push(A_Clipboard)
+	}
+	
+	ocr(2257, 1667, 2387, 1719)
+	
+	if IsNumber(A_Clipboard)
+	{
+		scores.push(A_Clipboard)
+	}
+	
+	; Initialize variables for sum, sum of squares and other stats
+	sum := 0
+	sum_of_squares := 0
 
-    # Generate the file input selector
-    file_input_selector = "//input[@type='file']"
+	; Iterate over each score in the array
+	Loop scores.Length 
+	{
+		; Get the current score
+		score := scores[A_Index]
 
-    # Initialize an empty list to store all file paths
-    all_file_paths = []
+		; Compute sum and sum of squares for standard deviation calculation
+		sum := sum + score
+		sum_of_squares := sum_of_squares + (score * score)
+	}
 
-    # Loop through all files
-    for file in files:
-        # Get the full path of the file
-        file_path = os.path.join(file_dir, file)
+	; Calculate the average
+	if scores.Length > 0
+	{
+		average := sum / scores.Length
+	}
+	else
+	{
+		average := 0
+	}
+	
 
-        # Add the file path to the list
-        all_file_paths.append(file_path)
+	; Calculate standard deviation
+	n := scores.Length
+	if (n > 1)
+	{
+		variance := (sum_of_squares - ((sum * sum) / n)) / (n - 1)
+		std_deviation := sqrt(variance)
+	}
+	else
+	{
+		std_deviation := 0
+	}
 
-    # Join all file paths into a single string, separated by '\n'
-    all_files_string = "\n".join(all_file_paths)
+	; Define k (how heavily the standard deviation will penalize the average score)
+	k := 0.5
 
-    # Find the file input element and send all file paths to it at once
-    file_input = driver.find_element(By.XPATH, file_input_selector)
-    file_input.send_keys(all_files_string)
-    return len(all_file_paths)
+	; Calculate combined metric
+	combined_metric := average - (k * std_deviation)
+
+	; String representation of array
+	scores_string := ""
+
+	if scores.Length > 0
+	{
+		Loop scores.Length
+		{
+			scores_string .= scores[A_Index] . ", "
+		}
+
+		; Remove trailing comma and space
+		scores_string := SubStr(scores_string, 1, -2)
+	}
+
+	FileAppend "scores: " . scores_string . "`naverage: " . average . "`nstd_deviation: " . std_deviation . "`ncombined_metric: " . combined_metric . "`n", ".\log.txt"
+
+	return combined_metric
+
 }
 
-   
 
 
-
-def make_decision():
-    # Call the function to upload all images in a directory
-    number_of_profile_pics = upload_profile_pics(driver, "./profile_pics")
-
-    span = driver.find_element(By.XPATH, "//span[text()='Analyse Images']")
-    span.click()
-
-    span = driver.find_element(By.XPATH, "//span[text()='Show Score']")
-    span.click()
-
-    # gather the numbers in all tag similar to <h3 class="mantine-Text-root mantine-Title-root mantine-10djyvg">8.36</h3>
-    # find the average of all those numbers, skip ones that are not numbers
-    numbers = driver.find_elements(By.XPATH, "//h3[contains(@class, 'mantine-Text-root')]")
-    total = 0
-    count = 0
-    for number in numbers:
-        try:
-            number = float(number.text)
-            total += number
-            count += 1
-        except:
-            pass
-
-	; delete pictures
-	winactivate "Screenshots"
-
-    return total / count
-
+make_decision()
+{
+	combined_metric := upload_profile_pics()
+	
+	if combined_metric >= 8.5
+	{
+		decision := "super_like"
+	}
+	else if combined_metric >= 7
+	{
+		decision := "like"
+	}
+	else
+	{
+		decision := "dislike"
+	}
+	
+	FileAppend "decision: " . decision . "`n", ".\log.txt"
+	
+	return decision	
+}

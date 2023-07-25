@@ -44,9 +44,13 @@ remaining_super_likes(dating_app)
    
 like(dating_app)
 {
+	winactivate "Tinder"
+	
 	if dating_app == "tinder"
 	{
-		MouseClick "left", 2328, 1714
+		send "{up}"
+		sleep 1000
+		send "{right}"
 	}
 }
 
@@ -54,17 +58,25 @@ like(dating_app)
    
 super_like(dating_app)
 {
+	winactivate "Tinder"
+	
 	if dating_app == "tinder"
 	{
-		MouseClick "left", 2165, 1709
+		send "{up}"
+		sleep 1000
+		send "{enter}"
 	}
 }
 
    
 dislike(dating_app)
 {
+	winactivate "Tinder"
+	
 	if dating_app == "tinder"
 	{
-		MouseClick "left", 1992, 1707
+		send "{up}"
+		sleep 1000
+		send "{left}"
 	}
 }

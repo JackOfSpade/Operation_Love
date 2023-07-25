@@ -1,0 +1,39 @@
+
+
+super_likes: 0
+scores: 7.89, 7.52
+average: 7.7050000000000001
+std_deviation: 0.26162950903899268
+combined_metric: 7.5741852454805034
+decision: like
+actual decision: like
+
+
+super_likes: 0
+scores: 8.23
+average: 8.2300000000000004
+std_deviation: 0
+combined_metric: 8.2300000000000004
+decision: like
+actual decision: like
+
+
+super_likes: 0
+scores: 8.32, 8.21, 8.18, 8.17, 8.16, 8.07
+average: 8.1850000000000005
+std_deviation: 0.081178814970304075
+combined_metric: 8.1444105925148484
+decision: like
+actual decision: like
+
+
+super_likes: 0
+scores: 8.1
+average: 8.0999999999999996
+std_deviation: 0
+combined_metric: 8.0999999999999996
+decision: like
+actual decision: like
+
+
+super_likes: 0

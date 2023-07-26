@@ -33,16 +33,16 @@ remaining_super_likes(dating_app)
 		MouseClick "left", 156, 362
 		sleep 1000
 			
-		remainingSuperLikes := ocr(510, 851, 557, 898)
+		remainingSuperLikes := ocr(510, 851, 557, 898, 100)
 		
 		; Go back to discover
 		MouseClick "left", 96, 360
 		
 		return remainingSuperLikes
 	}
-	else if dating_app == "Bumble"
-	{					
-		remainingSuperLikes := ocr(2152, 1915, 2216, 1978)
+	else if dating_app == "bumble"
+	{		
+		remainingSuperLikes := ocr(2122, 1888, 2230, 2005, 750)
 				
 		return remainingSuperLikes
 	}
@@ -63,7 +63,7 @@ super_like(dating_app)
 		sleep 1000
 		send "{enter}"
 	}
-	else if dating_app == "tinder"
+	else if dating_app == "bumble"
 	{
 		winactivate "Bumble"
 		mouseClick "left", 2138, 1957

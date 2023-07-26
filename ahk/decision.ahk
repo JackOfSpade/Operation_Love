@@ -11,11 +11,10 @@
 CoordMode "Mouse", "Window"
 
 
-upload_profile_pics(screenshot_directory, upload_time_in_ms)
+upload_profile_pics(screenshot_directory)
 {
 	; https://hotchat3000.com/
 	winactivate "Hot Chat"
-	send "{home}"
 	sleep 500
 	
 	scores := []
@@ -37,9 +36,7 @@ upload_profile_pics(screenshot_directory, upload_time_in_ms)
 			send "{Tab}"
 		}
 		
-		sleep 500
 		send "{right}"
-		sleep 500
 		send "{left}"
 		
 		loop A_Index - 1
@@ -51,8 +48,25 @@ upload_profile_pics(screenshot_directory, upload_time_in_ms)
 		
 		send "{enter}"
 		
-		; This sleep depends on the upload time of the internet.
-		sleep upload_time_in_ms
+		winactivate "Hot Chat"
+	
+		
+		while not InStr(A_Clipboard, "RERANK")
+		{
+			; Check for error text
+			mouseMove 1105, 1656
+			send "{LButton down}"
+			sleep 100
+			mouseMove 2376, 1653
+			send "{LButton up}"
+			sleep 100
+			send "^c"
+			clipwait(0.5, 0)
+		}
+		
+		sleep 100
+		A_Clipboard := ""
+		sleep 100
 		
 		; Check for error text
 		mouseMove 1591, 748
@@ -63,15 +77,14 @@ upload_profile_pics(screenshot_directory, upload_time_in_ms)
 		sleep 100
 		send "^c"
 		
-		clipwait(1)
+		clipwait(0.5, 0)
 		
 		
 		if not InStr(A_Clipboard, "ERROR")
 		{
+			sleep 100
 			A_Clipboard := ""
-			
-			; Wait for score to load
-			sleep 3500 
+			sleep 100
 			
 			mouseMove 1841, 1139
 			send "{LButton down}"
@@ -81,7 +94,9 @@ upload_profile_pics(screenshot_directory, upload_time_in_ms)
 			sleep 100
 			send "^c"
 			
-			clipwait(1)
+			clipwait(10, 0)
+			
+			A_Clipboard := StrReplace(A_Clipboard, A_Space, "")
 			
 			if IsNumber(A_Clipboard)
 			{
@@ -97,8 +112,9 @@ upload_profile_pics(screenshot_directory, upload_time_in_ms)
 		}		
 		
 		
+		sleep 100
 		A_Clipboard := ""
-		sleep 500
+		sleep 100
 	}
 	
 	
@@ -230,11 +246,11 @@ upload_profile_pics(screenshot_directory, upload_time_in_ms)
 
 
 
-make_decision(screenshot_directory, upload_time_in_ms)
+make_decision(screenshot_directory)
 {
-	combined_metric := upload_profile_pics(screenshot_directory, upload_time_in_ms)
+	combined_metric := upload_profile_pics(screenshot_directory)
 	
-	if combined_metric >= 8.5
+	if combined_metric >= 8
 	{
 		decision := "super_like"
 	}

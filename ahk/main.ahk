@@ -9,7 +9,7 @@
 ; Open 2 separate chrome maximized window (3456x2160), one with the dating site and one with the attractiveness eval site
 ; If using windows <= 11, configure greenshot.
 ; Open capture2text but unmap Win+R hotkey on it because we need it to open Run command.
-
+; log.txt will not log if you have it open in notepad++
 
 #include automation.ahk
 #include screenshot.ahk
@@ -21,7 +21,7 @@
 CoordMode "Mouse", "Window"
 
 
-main(dating_app, windows_version, screenshot_directory, upload_time_in_ms)
+main(dating_app, windows_version, screenshot_directory)
 {
 	; Clear the log
 	file := FileOpen(".\log.txt", "w")
@@ -42,7 +42,7 @@ main(dating_app, windows_version, screenshot_directory, upload_time_in_ms)
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"
 	
 		take_screenshot(dating_app, windows_version, screenshot_directory)   
-		decision := make_decision(screenshot_directory, upload_time_in_ms)
+		decision := make_decision(screenshot_directory)
 		
 		if decision == "super_like" && super_likes > 0
 		{
@@ -63,7 +63,7 @@ main(dating_app, windows_version, screenshot_directory, upload_time_in_ms)
 			FileAppend "actual decision: dislike" . "`n", ".\log.txt"
 		}
 		
-		clear_screenshot_directory("C:\Users\Shadow\Pictures\Screenshots")
+		clear_screenshot_directory(screenshot_directory)
 	}
 	
 	
@@ -73,8 +73,8 @@ main(dating_app, windows_version, screenshot_directory, upload_time_in_ms)
 ; "tinder", "bumble", "okcupid", "match", "eharmony"
 
 
-; main("tinder", 10, "C:\Users\Shadow\Pictures\Screenshots", 500)
-main("bumble", 11, "C:\Users\super\OneDrive\Pictures\Screenshots", 4000)
+; main("tinder", 10, "C:\Users\Shadow\Pictures\Screenshots")
+main("bumble", 11, "C:\Users\super\OneDrive\Pictures\Screenshots")
 
 
 	

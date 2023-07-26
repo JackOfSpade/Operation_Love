@@ -3,10 +3,13 @@
 
 CoordMode "Mouse", "Window"
 
-ocr(x1, y1, x2, y2)
+; Unreliable, only use if copy-paste is not allowed
+ocr(x1, y1, x2, y2, delay)
 {
-	A_Clipboard	:= ""
-	sleep 50
+	sleep 100
+	A_Clipboard := ""
+	sleep 100
+	
 	MouseMove x1, y1
 	Send "{LWin down}"
 	Send "{q down}"
@@ -14,7 +17,7 @@ ocr(x1, y1, x2, y2)
 	Send "{LWin up}"
 	sleep 100
 	MouseMove x2, y2
-	sleep 100
+	sleep delay
 	send "{LButton}"	
 	clipwait(1)
 	return A_Clipboard	
@@ -22,7 +25,9 @@ ocr(x1, y1, x2, y2)
 
 print_screen(x1, y1, x2, y2, windows_version, screenshot_directory)
 {	
-	A_Clipboard	 := ""
+	sleep 100
+	A_Clipboard := ""
+	sleep 100
 	
 	send "<#+s"
 	sleep 1500
@@ -60,8 +65,10 @@ print_screen(x1, y1, x2, y2, windows_version, screenshot_directory)
 		sleep 500
 		send "{enter}"
 		sleep 500
-		WinClose "Paint"		
+		WinClose "Paint"			
 	}
 	
-	A_Clipboard	 := ""
+	sleep 100
+	A_Clipboard := ""
+	sleep 100
 }

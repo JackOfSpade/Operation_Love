@@ -45,9 +45,11 @@ print_screen(x1, y1, x2, y2, windows_version, screenshot_directory)
 	Send "{LButton down}"	
 	sleep 500	
 	MouseMove x2, y2
-	sleep 500
 	Send "{LButton up}"
 	clipwait(1, 1)
+	
+	; wait for snipping tool to dissapear
+	sleep 1000
 	
 	if windows_version <= 10
 	{

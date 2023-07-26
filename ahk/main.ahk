@@ -6,7 +6,7 @@
 
 ; Set-up:
 ; Download windows snipping tool and set its setting to auto-save, link prtsc to that.
-; Open 2 separate chrome maximized window (3456x2160), one with the dating site and one with https://photo-ranker.com/'
+; Open 2 separate chrome maximized window (3456x2160), one with the dating site and one with the attractiveness eval site
 ; If using windows <= 11, configure greenshot.
 ; Open capture2text but unmap Win+R hotkey on it because we need it to open Run command.
 
@@ -21,7 +21,7 @@
 CoordMode "Mouse", "Window"
 
 
-main(dating_app, windows_version)
+main(dating_app, windows_version, screenshot_directory, upload_time_in_ms)
 {
 	; Clear the log
 	file := FileOpen(".\log.txt", "w")
@@ -41,8 +41,8 @@ main(dating_app, windows_version)
 	{
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"
 	
-		take_screenshot(dating_app, windows_version)   
-		decision := make_decision()
+		take_screenshot(dating_app, windows_version, screenshot_directory)   
+		decision := make_decision(screenshot_directory, upload_time_in_ms)
 		
 		if decision == "super_like" && super_likes > 0
 		{
@@ -70,10 +70,11 @@ main(dating_app, windows_version)
 	
 }
 
-dating_app_list := ["tinder", "bumble", "okcupid", "match", "eharmony"]
+; "tinder", "bumble", "okcupid", "match", "eharmony"
 
 
-main(dating_app_list[1], 10)
+; main("tinder", 10, "C:\Users\Shadow\Pictures\Screenshots", 500)
+main("bumble", 11, "C:\Users\super\OneDrive\Pictures\Screenshots", 4000)
 
 
 	

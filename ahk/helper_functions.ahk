@@ -20,7 +20,7 @@ ocr(x1, y1, x2, y2)
 	return A_Clipboard	
 }
 
-print_screen(x1, y1, x2, y2, windows_version)
+print_screen(x1, y1, x2, y2, windows_version, screenshot_directory)
 {	
 	A_Clipboard	 := ""
 	
@@ -48,7 +48,7 @@ print_screen(x1, y1, x2, y2, windows_version)
 		sleep 1000
 		send "^l"
 		send "^a"
-		send "C:\Users\Shadow\Pictures\Screenshots" 
+		send screenshot_directory
 		loop 5
 		{
 			sleep 500

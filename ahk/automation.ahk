@@ -17,6 +17,10 @@ navigate_to_discover(dating_app)
     {
 		winactivate "Tinder"
     }
+	else if dating_app == "bumble"
+    {
+		winactivate "Bumble"
+    }
 }
 
 
@@ -36,6 +40,12 @@ remaining_super_likes(dating_app)
 		
 		return remainingSuperLikes
 	}
+	else if dating_app == "Bumble"
+	{					
+		remainingSuperLikes := ocr(2152, 1915, 2216, 1978)
+				
+		return remainingSuperLikes
+	}
 
 	
 }
@@ -44,24 +54,29 @@ remaining_super_likes(dating_app)
 	   
 super_like(dating_app)
 {
-	winactivate "Tinder"
-	
 	if dating_app == "tinder"
 	{
+		winactivate "Tinder"
 		send "{up}"
 		sleep 1000
 		send "{down}"
 		sleep 1000
 		send "{enter}"
 	}
+	else if dating_app == "tinder"
+	{
+		winactivate "Bumble"
+		mouseClick "left", 2138, 1957
+	}
 }
    
 like(dating_app)
 {
-	winactivate "Tinder"
+	
 	
 	if dating_app == "tinder"
 	{
+		winactivate "Tinder"
 		send "{up}"
 		sleep 1000
 		send "{down}"
@@ -72,6 +87,11 @@ like(dating_app)
 		; Click away super_like upgrade notice for popular profiles
 		mouseClick "left", 1728, 1557
 	}
+	else if dating_app == "bumble"
+	{
+		winactivate "Bumble"
+		send "{right}"
+	}
 }
 
 
@@ -79,14 +99,18 @@ like(dating_app)
    
 dislike(dating_app)
 {
-	winactivate "Tinder"
-	
 	if dating_app == "tinder"
 	{
+		winactivate "Tinder"
 		send "{up}"
 		sleep 1000
 		send "{down}"
 		sleep 1000
+		send "{left}"
+	}
+	else if dating_app == "bumble"
+	{
+		winactivate "Bumble"
 		send "{left}"
 	}
 }

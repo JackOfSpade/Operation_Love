@@ -11,7 +11,7 @@
 CoordMode "Mouse", "Window"
 
 
-upload_profile_pics()
+upload_profile_pics(screenshot_directory, upload_time_in_ms)
 {
 	; https://hotchat3000.com/
 	winactivate "Hot Chat"
@@ -26,7 +26,8 @@ upload_profile_pics()
 		sleep 1500
 		send "^l"
 		send "^a"
-		send "C:\Users\Shadow\Pictures\Screenshots" 
+		send screenshot_directory
+		send "{enter}"
 		
 		n := 3 + A_Index
 		
@@ -49,7 +50,9 @@ upload_profile_pics()
 		sleep 500
 		
 		send "{enter}"
-		sleep 500
+		
+		; This sleep depends on the upload time of the internet.
+		sleep upload_time_in_ms
 		
 		; Check for error text
 		mouseMove 1591, 748
@@ -61,6 +64,7 @@ upload_profile_pics()
 		send "^c"
 		
 		clipwait(1)
+		
 		
 		if not InStr(A_Clipboard, "ERROR")
 		{
@@ -78,7 +82,7 @@ upload_profile_pics()
 			send "^c"
 			
 			clipwait(1)
-		
+			
 			if IsNumber(A_Clipboard)
 			{
 				scores.push(A_Clipboard)
@@ -117,7 +121,7 @@ upload_profile_pics()
 	;sleep 500
 	;send "^l"
 	;send "^a"
-	;send "C:\Users\Shadow\Pictures\Screenshots" 
+	;send screenshot_directory 
 	;
 	;loop 4
 	;{
@@ -226,15 +230,15 @@ upload_profile_pics()
 
 
 
-make_decision()
+make_decision(screenshot_directory, upload_time_in_ms)
 {
-	combined_metric := upload_profile_pics()
+	combined_metric := upload_profile_pics(screenshot_directory, upload_time_in_ms)
 	
 	if combined_metric >= 8.5
 	{
 		decision := "super_like"
 	}
-	else if combined_metric >= 7
+	else if combined_metric >= 6.5
 	{
 		decision := "like"
 	}

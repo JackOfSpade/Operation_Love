@@ -19,26 +19,35 @@ ocr(x1, y1, x2, y2, delay)
 	MouseMove x2, y2
 	sleep delay
 	send "{LButton}"	
-	clipwait(1)
+	; Bumble super_likes button text can be numeric or symbol
+	clipwait(1, 1)
 	return A_Clipboard	
 }
 
+get_text(x1, y1, x2, y2, clipwait_time)
+{
+	mouseMove x1, y1
+	send "{LButton down}"
+	sleep 100
+	mouseMove x2, y2
+	send "{LButton up}"
+	sleep 100
+	send "^c"
+	clipwait(clipwait_time, 0)
+}
+
 print_screen(x1, y1, x2, y2, windows_version, screenshot_directory)
-{	
-	sleep 100
-	A_Clipboard := ""
-	sleep 100
-	
+{		
 	send "<#+s"
-	sleep 1500
+	sleep 2000
 
 	MouseMove x1, y1
 	Send "{LButton down}"	
-	sleep 100	
+	sleep 500	
 	MouseMove x2, y2
-	sleep 100
+	sleep 500
 	Send "{LButton up}"
-	sleep 1000
+	clipwait(1, 1)
 	
 	if windows_version <= 10
 	{

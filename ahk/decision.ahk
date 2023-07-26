@@ -15,7 +15,12 @@ upload_profile_pics(screenshot_directory)
 {
 	; https://hotchat3000.com/
 	winactivate "Hot Chat"
-	sleep 500
+	
+	while not InStr(A_Clipboard, "UPlOAD")
+	{
+		get_text(1369, 740, 2139, 743, 0.5)
+	}
+	
 	
 	scores := []
 	
@@ -54,14 +59,7 @@ upload_profile_pics(screenshot_directory)
 		while not InStr(A_Clipboard, "RERANK")
 		{
 			; Check for error text
-			mouseMove 1105, 1656
-			send "{LButton down}"
-			sleep 100
-			mouseMove 2376, 1653
-			send "{LButton up}"
-			sleep 100
-			send "^c"
-			clipwait(0.5, 0)
+			get_text(1105, 1656, 2376, 1653, 0.5)
 		}
 		
 		sleep 100
@@ -69,15 +67,7 @@ upload_profile_pics(screenshot_directory)
 		sleep 100
 		
 		; Check for error text
-		mouseMove 1591, 748
-		send "{LButton down}"
-		sleep 100
-		mouseMove 1852, 745
-		send "{LButton up}"
-		sleep 100
-		send "^c"
-		
-		clipwait(0.5, 0)
+		get_text(1591, 748, 1852, 745, 0.5)
 		
 		
 		if not InStr(A_Clipboard, "ERROR")
@@ -86,15 +76,7 @@ upload_profile_pics(screenshot_directory)
 			A_Clipboard := ""
 			sleep 100
 			
-			mouseMove 1841, 1139
-			send "{LButton down}"
-			sleep 100
-			mouseMove 1915, 1143
-			send "{LButton up}"
-			sleep 100
-			send "^c"
-			
-			clipwait(10, 0)
+			get_text(1841, 1139, 1915, 1143, 60*60*24)
 			
 			A_Clipboard := StrReplace(A_Clipboard, A_Space, "")
 			
@@ -103,7 +85,7 @@ upload_profile_pics(screenshot_directory)
 				scores.push(A_Clipboard)
 			}
 			
-			mouseClick "left", 1708, 1682
+			mouseClick "left", 1741, 1668
 			
 		}
 		else
@@ -250,7 +232,7 @@ make_decision(screenshot_directory)
 {
 	combined_metric := upload_profile_pics(screenshot_directory)
 	
-	if combined_metric >= 8
+	if combined_metric >= 8.5
 	{
 		decision := "super_like"
 	}

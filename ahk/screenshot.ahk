@@ -28,7 +28,7 @@ take_screenshot(dating_app, windows_version, screenshot_directory)
 		winactivate "Bumble"
 		
 		print_screen(1035, 425, 2157, 1826, windows_version, screenshot_directory)
-		sleep 500
+		sleep 750
 		send "{down}"
 		send "{down}"
 		sleep 500
@@ -51,7 +51,7 @@ clear_screenshot_directory(path)
 	send "^a"
 	send path
 	send "{enter}"
-	sleep 500
+	sleep 1000
 	send "^a"
 	send "{delete}"
 	sleep 500

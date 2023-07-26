@@ -9,7 +9,10 @@
 ; Open 2 separate chrome maximized window (3456x2160), one with the dating site and one with the attractiveness eval site
 ; If using windows <= 11, configure greenshot.
 ; Open capture2text but unmap Win+R hotkey on it because we need it to open Run command.
-; log.txt will not log if you have it open in notepad++
+
+; Warnings:
+; log.txt will not log if you have it open in notepad++.
+; Running this while having another one running inside Shadow PC will cause the one outside to crash due to clipboard conflicts.
 
 #include automation.ahk
 #include screenshot.ahk
@@ -41,7 +44,8 @@ main(dating_app, windows_version, screenshot_directory)
 	{
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"
 	
-		take_screenshot(dating_app, windows_version, screenshot_directory)   
+		take_screenshot(dating_app, windows_version, screenshot_directory)  
+		
 		decision := make_decision(screenshot_directory)
 		
 		if decision == "super_like" && super_likes > 0

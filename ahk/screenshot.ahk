@@ -16,6 +16,8 @@ take_screenshot(dating_app, windows_version)
 		loop 6
 		{
 			print_screen(1732, 364, 2572, 1578, windows_version)
+			winactivate "Tinder"
+			sleep 500
 			send "{space}"
 			sleep 500
 		}		

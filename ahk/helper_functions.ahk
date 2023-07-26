@@ -16,14 +16,13 @@ ocr(x1, y1, x2, y2)
 	MouseMove x2, y2
 	sleep 100
 	send "{LButton}"	
-	sleep 500
+	clipwait(1)
 	return A_Clipboard	
 }
 
 print_screen(x1, y1, x2, y2, windows_version)
-{
+{	
 	A_Clipboard	 := ""
-	sleep 50
 	
 	send "<#+s"
 	sleep 1500
@@ -46,6 +45,7 @@ print_screen(x1, y1, x2, y2, windows_version)
 		sleep 500
 		send "^v"
 		send "^s"
+		sleep 1000
 		send "^l"
 		send "^a"
 		send "C:\Users\Shadow\Pictures\Screenshots" 
@@ -57,8 +57,11 @@ print_screen(x1, y1, x2, y2, windows_version)
 		
 		sleep 500
 		send Random(0, 9223372036854775807)
+		sleep 500
 		send "{enter}"
 		sleep 500
-		WinClose "Paint"
+		WinClose "Paint"		
 	}
+	
+	A_Clipboard	 := ""
 }

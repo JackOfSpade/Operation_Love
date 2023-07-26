@@ -41,6 +41,20 @@ remaining_super_likes(dating_app)
 }
 	
 	
+	   
+super_like(dating_app)
+{
+	winactivate "Tinder"
+	
+	if dating_app == "tinder"
+	{
+		send "{up}"
+		sleep 1000
+		send "{down}"
+		sleep 1000
+		send "{enter}"
+	}
+}
    
 like(dating_app)
 {
@@ -50,23 +64,17 @@ like(dating_app)
 	{
 		send "{up}"
 		sleep 1000
-		send "{right}"
-	}
-}
-
-
-   
-super_like(dating_app)
-{
-	winactivate "Tinder"
-	
-	if dating_app == "tinder"
-	{
-		send "{up}"
+		send "{down}"
 		sleep 1000
-		send "{enter}"
+		send "{right}"
+		
+		sleep 1000
+		; Click away super_like upgrade notice for popular profiles
+		mouseClick "left", 1728, 1557
 	}
 }
+
+
 
    
 dislike(dating_app)
@@ -76,6 +84,8 @@ dislike(dating_app)
 	if dating_app == "tinder"
 	{
 		send "{up}"
+		sleep 1000
+		send "{down}"
 		sleep 1000
 		send "{left}"
 	}

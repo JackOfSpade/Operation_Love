@@ -5,7 +5,7 @@
 ; the Decision Module to generate a score and make a decision from that.
 
 ; Set-up:
-; Resolution: 1920x1080
+; Resolution: 1920x1080, 100% zoom
 ; Download windows snipping tool and set its setting to auto-save, link prtsc to that.
 ; Open 2 separate chrome maximized window, one with the dating site and one with the attractiveness eval site
 ; If using windows <= 11, configure greenshot.
@@ -77,7 +77,7 @@ main(dating_app, windows_version, screenshot_directory)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony"
 
-main("tinder", 10, "C:\Users\Shadow\Desktop\Github\Operation_Love\ahk\screenshots")
+main("tinder", 10, "C:\Users\Shadow\Desktop\Github\Operation_Love\ahk\Screenshots")
 
 ; main("bumble", 10, "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love\ahk\Screenshots")
 

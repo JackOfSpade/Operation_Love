@@ -33,14 +33,16 @@ upload_profile_pics(screenshot_directory)
 				send "{enter}"				
 			}
 			
-			get_text(577, 861, 942, 861, 100)
+			; "Choose Photo" Button scan
+			get_text(700, 841, 951, 840, 100)
 		}
 		
 		sleep 100
 		A_Clipboard := ""
 		sleep 100
 		
-        mouseClick "left", 761, 853
+		; Click "Choose Photo" Button
+        mouseClick "left", 805, 851
         sleep 1500
         send "^l"
         send "^a"
@@ -72,27 +74,27 @@ upload_profile_pics(screenshot_directory)
 		sleep 100
         A_Clipboard := ""
         sleep 100
-	
-        while not InStr(A_Clipboard, "RERANK") and not InStr(A_Clipboard, "CHATTING")
+		
+        while not InStr(A_Clipboard, "ERROR") and not InStr(A_Clipboard, "CHATTING")
         {	
-			get_text(548, 871, 1378, 871, 100)            
-        }  
-        
-		if InStr(A_Clipboard, "RERANK")
-		{
-			; Go to upload page
-			send "{tab}"
-			send "{enter}"
+			send "^a"
+			sleep 500
+			send "^c"
+			clipwait(1, 1)
 			
-		}
-		else if InStr(A_Clipboard, "CHATTING")
+        }  
+		
+        ; click away highlights
+		mouseClick "left", 1212, 537
+		
+		if InStr(A_Clipboard, "CHATTING")
 		{
 			
 			sleep 100
 			A_Clipboard := ""
 			sleep 100
 			
-			get_text(1035, 583, 1085, 583, 60*60*24)
+			get_text(1014, 569, 1040, 568, 60*60*24)
 			
 			A_Clipboard := StrReplace(A_Clipboard, A_Space, "")
 			
@@ -106,6 +108,13 @@ upload_profile_pics(screenshot_directory)
 			send "{tab}"
 			send "{tab}"
 			send "{enter}"
+		}
+		else if InStr(A_Clipboard, "ERROR")
+		{
+			; Go to upload page
+			send "{tab}"
+			send "{enter}"
+			
 		}
         
         sleep 100

@@ -13,7 +13,7 @@ take_screenshot(dating_app, windows_version, screenshot_directory)
         
         loop 6
         {
-            print_screen(962, 220, 1335, 753, windows_version, screenshot_directory)
+            print_screen(962, 220, 1330, 753, windows_version, screenshot_directory)
             sleep 500
             send "{space}"
             sleep 500
@@ -23,7 +23,7 @@ take_screenshot(dating_app, windows_version, screenshot_directory)
      {
         winactivate "Bumble"
         
-        print_screen(707, 295, 1199, 869, windows_version, screenshot_directory)
+        print_screen(580, 200, 1155, 927, windows_version, screenshot_directory)
         sleep 750
         send "{down}"
         send "{down}"
@@ -31,7 +31,7 @@ take_screenshot(dating_app, windows_version, screenshot_directory)
         
         loop 5
         {
-            print_screen(707, 295, 1199, 869, windows_version, screenshot_directory)
+            print_screen(580, 200, 1155, 927, windows_version, screenshot_directory)
             sleep 750
             send "{down}"
             sleep 500

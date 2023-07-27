@@ -43,9 +43,9 @@ remaining_super_likes(dating_app)
 	}
 	else if dating_app == "bumble"
 	{		
-		mouseMove 1164, 911
+		mouseMove 1139, 955
 		sleep 1000
-		remainingSuperLikes := ocr(1164, 911, 1256, 993, 100)
+		remainingSuperLikes := ocr(1139, 955, 1198, 1011, 100)
 		
 		if !IsNumber(remainingSuperLikes)
 		{

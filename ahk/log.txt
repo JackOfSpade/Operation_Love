@@ -1,16 +1,37 @@
 
 
 super_likes: 0
-scores: 3, 5.8, 3.8, 4.4, 5.4, 3.7
-combined_metric: 5.7999999999999998
+scores: 3.6, 4, 4.3, 4.3
+combined_metric: 4.2999999999999998
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
-scores: 8.4, 8.4, 7.3, 5, 8.4, 8.6
-combined_metric: 8.5999999999999996
+scores: 5.1, 7.3, 9, 7.7
+combined_metric: 9
 decision: super_like
+actual decision: like
+
+
+super_likes: 0
+scores: 3.1, 6.9, 4.6, 2.8, 3.3
+combined_metric: 6.9000000000000004
+decision: like
+actual decision: like
+
+
+super_likes: 0
+scores: 4.7, 3.5, 6.3, 4.2
+combined_metric: 6.2999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 4.6, 6.5, 4.2, 4.6, 5
+combined_metric: 6.5
+decision: like
 actual decision: like
 
 

@@ -29,7 +29,7 @@ take_screenshot(dating_app, windows_version, screenshot_directory)
         send "{down}"
         sleep 500
         
-        loop 0
+        loop 5
         {
             print_screen(707, 295, 1199, 869, windows_version, screenshot_directory)
             sleep 750

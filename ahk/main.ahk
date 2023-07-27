@@ -76,8 +76,9 @@ main(dating_app, windows_version, screenshot_directory)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony"
 
-main("tinder", 10, "C:\Users\Shadow\Pictures\Screenshots")
-; main("bumble", 11, "C:\Users\super\OneDrive\Pictures\Screenshots")
+;main("tinder", 10, "C:\Users\Shadow\Pictures\Screenshots")
+
+main("bumble", 10, "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love\ahk\Screenshots")
 
 
 	

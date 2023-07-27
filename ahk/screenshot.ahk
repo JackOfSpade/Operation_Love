@@ -1,5 +1,3 @@
-
-
 #include helper_functions.ahk
 
 #SingleInstance
@@ -7,55 +5,52 @@
 
 CoordMode "Mouse", "Window"
 
-
 take_screenshot(dating_app, windows_version, screenshot_directory)    
 {
-	
      if dating_app == "tinder"
-	 {
-		winactivate "Tinder"
-		
-		loop 6
-		{
-			print_screen(1732, 364, 2572, 1578, windows_version, screenshot_directory)
-			sleep 500
-			send "{space}"
-			sleep 500
-		}		
-	 }
-	 else if dating_app == "bumble"
-	 {
-		winactivate "Bumble"
-		
-		print_screen(1035, 425, 2157, 1826, windows_version, screenshot_directory)
-		sleep 750
-		send "{down}"
-		send "{down}"
-		sleep 500
-		
-		loop 5
-		{
-			print_screen(1035, 425, 2157, 1826, windows_version, screenshot_directory)
-			sleep 750
-			send "{down}"
-			sleep 500
-		}
-	}
-         
+     {
+        winactivate "Tinder"
+        
+        loop 6
+        {
+            print_screen(962, 182, 1428, 789, windows_version, screenshot_directory)
+            sleep 500
+            send "{space}"
+            sleep 500
+        }        
+     }
+     else if dating_app == "bumble"
+     {
+        winactivate "Bumble"
+        
+        print_screen(707, 295, 1199, 869, windows_version, screenshot_directory)
+        sleep 750
+        send "{down}"
+        send "{down}"
+        sleep 500
+        
+        loop 0
+        {
+            print_screen(707, 295, 1199, 869, windows_version, screenshot_directory)
+            sleep 750
+            send "{down}"
+            sleep 500
+        }
+     }         
 }
 
 clear_screenshot_directory(path)
 {
-	send "<#r"
-	sleep 500
-	send "^a"
-	send path
-	send "{enter}"
-	sleep 1000
-	send "^a"
-	send "{delete}"
-	sleep 500
-	WinClose "Screenshots"	
-	
-	; This deactivates the dating website, make sure you re-activate them in other functions.
+    send "<#r"
+    sleep 500
+    send "^a"
+    send path
+    send "{enter}"
+    sleep 1000
+    send "^a"
+    send "{delete}"
+    sleep 500
+    WinClose "Screenshots"    
+        
+    ; This deactivates the dating website, make sure you re-activate them in other functions.
 }

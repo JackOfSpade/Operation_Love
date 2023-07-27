@@ -66,13 +66,14 @@ print_screen(x1, y1, x2, y2, windows_version, screenshot_directory)
 		send "^a"
 		send screenshot_directory
 		send "{enter}"
-		sleep 1000
 		
-		loop 5
+		loop 4
 		{
+			send "{tab}"	
 			sleep 500
-			send "{tab}"
 		}
+		
+		send "!n"
 		
 		sleep 500
 		send Random(0, 9223372036854775807)

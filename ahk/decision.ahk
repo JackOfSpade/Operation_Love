@@ -48,14 +48,16 @@ upload_profile_pics(screenshot_directory)
         send "^a"
         send screenshot_directory
         send "{enter}"
-        sleep 1000
         n := 3 + A_Index
         
         loop 4
-        {
-            sleep 500
+        {      
             send "{Tab}"
+			sleep 500
         }
+		
+		send "!n"
+		send "+{Tab}"
         
         send "{right}"
         send "{left}"

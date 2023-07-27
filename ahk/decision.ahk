@@ -90,8 +90,7 @@ upload_profile_pics(screenshot_directory)
 				scores.push(A_Clipboard)
 			}
 			
-			mouseClick "left", 974, 941
-			mouseClick "left", 974, 941
+			mouseClick "left", 976, 940
 		}
         
         sleep 100

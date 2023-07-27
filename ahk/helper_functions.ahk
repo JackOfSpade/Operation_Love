@@ -65,6 +65,7 @@ print_screen(x1, y1, x2, y2, windows_version, screenshot_directory)
 		send "^l"
 		send "^a"
 		send screenshot_directory
+		send "{enter}"
 		loop 5
 		{
 			sleep 500

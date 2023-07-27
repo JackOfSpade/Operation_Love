@@ -13,7 +13,7 @@ take_screenshot(dating_app, windows_version, screenshot_directory)
         
         loop 6
         {
-            print_screen(1732, 364, 2572, 1578, windows_version, screenshot_directory)
+            print_screen(962, 220, 1335, 753, windows_version, screenshot_directory)
             sleep 500
             send "{space}"
             sleep 500

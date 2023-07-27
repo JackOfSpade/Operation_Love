@@ -30,14 +30,14 @@ remaining_super_likes(dating_app)
 	if dating_app == "tinder"
     {
 		; Click profile
-		MouseClick "left", 156, 362
+		MouseClick "left", 50, 162
 		sleep 1000
 			
-		remainingSuperLikes := ocr(510, 851, 557, 898, 100)
+		remainingSuperLikes := ocr(227, 381, 250, 399, 100)
 
 		
 		; Go back to discover
-		MouseClick "left", 96, 360
+		MouseClick "left", 50, 162
 		
 		return remainingSuperLikes
 	}
@@ -93,7 +93,8 @@ like(dating_app)
 		
 		sleep 1000
 		; Click away super_like upgrade notice for popular profiles
-		mouseClick "left", 1728, 1557
+		; Check location in profile ---> super like dialog
+		mouseClick "left", 964, 841
 	}
 	else if dating_app == "bumble"
 	{

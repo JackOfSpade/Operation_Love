@@ -24,6 +24,15 @@ upload_profile_pics(screenshot_directory)
 		
 		while not InStr(A_Clipboard, "PHOTO")
 		{
+			; weird pop-up glitch on company PC win 10
+			if InStr(A_Clipboard, "STAR")
+			{
+				send "{tab}"
+				send "{tab}"
+				send "{tab}"
+				send "{enter}"				
+			}
+			
 			get_text(577, 861, 942, 861, 100)
 		}
 		
@@ -71,7 +80,9 @@ upload_profile_pics(screenshot_directory)
         
 		if InStr(A_Clipboard, "RERANK")
 		{
-			mouseClick "left", 976, 818
+			; Go to upload page
+			send "{tab}"
+			send "{enter}"
 			
 		}
 		else if InStr(A_Clipboard, "CHATTING")
@@ -90,15 +101,16 @@ upload_profile_pics(screenshot_directory)
 				scores.push(A_Clipboard)
 			}
 			
-			mouseClick "left", 976, 940
+			; Go to upload page
+			send "{tab}"
+			send "{tab}"
+			send "{tab}"
+			send "{enter}"
 		}
         
         sleep 100
         A_Clipboard := ""
         sleep 100
-		
-		; Click a random spot to clear highlights if any.
-		mouseClick "left", 629, 646
     }
 
     score := 0

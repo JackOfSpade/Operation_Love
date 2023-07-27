@@ -78,7 +78,6 @@ upload_profile_pics(screenshot_directory)
         while not InStr(A_Clipboard, "ERROR") and not InStr(A_Clipboard, "CHATTING")
         {	
 			send "^a"
-			sleep 500
 			send "^c"
 			clipwait(1, 1)
 			

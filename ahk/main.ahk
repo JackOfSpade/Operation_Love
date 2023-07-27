@@ -5,8 +5,9 @@
 ; the Decision Module to generate a score and make a decision from that.
 
 ; Set-up:
+; Resolution: 1920x1080
 ; Download windows snipping tool and set its setting to auto-save, link prtsc to that.
-; Open 2 separate chrome maximized window (3456x2160), one with the dating site and one with the attractiveness eval site
+; Open 2 separate chrome maximized window, one with the dating site and one with the attractiveness eval site
 ; If using windows <= 11, configure greenshot.
 ; Open capture2text but unmap Win+R hotkey on it because we need it to open Run command.
 

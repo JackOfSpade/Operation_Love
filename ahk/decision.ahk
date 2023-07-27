@@ -78,6 +78,7 @@ upload_profile_pics(screenshot_directory)
         while not InStr(A_Clipboard, "ERROR") and not InStr(A_Clipboard, "CHATTING")
         {	
 			send "^a"
+			sleep 500
 			send "^c"
 			clipwait(1, 1)
 			
@@ -85,6 +86,7 @@ upload_profile_pics(screenshot_directory)
 		
         ; click away highlights
 		mouseClick "left", 1212, 537
+		sleep 500
 		
 		if InStr(A_Clipboard, "CHATTING")
 		{

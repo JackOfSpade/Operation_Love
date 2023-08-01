@@ -10,6 +10,7 @@
 ; Open 2 separate chrome maximized window, one with the dating site and one with the attractiveness eval site
 ; If using windows <= 11, configure greenshot.
 ; Open capture2text but unmap Win+R hotkey on it because we need it to open Run command.
+; Laptop must be plugged in or else the save/file dialog will lag.
 
 ; Warnings:
 ; log.txt will not log if you have it open in notepad++.
@@ -77,9 +78,9 @@ main(dating_app, windows_version, screenshot_directory)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony"
 
-main("tinder", 10, "C:\Users\Shadow\Desktop\Github\Operation_Love\ahk\Screenshots")
+; main("tinder", 10, "C:\Users\Shadow\Desktop\Github\Operation_Love\ahk\Screenshots")
 
-; main("bumble", 10, "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love\ahk\Screenshots")
+main("bumble", 10, "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love\ahk\Screenshots")
 
 
 	

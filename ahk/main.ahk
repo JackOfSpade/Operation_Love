@@ -10,11 +10,9 @@
 ; Open 2 separate chrome maximized window, one with the dating site and one with the attractiveness eval site
 ; If using windows <= 11, configure greenshot.
 ; Open capture2text but unmap Win+R hotkey on it because we need it to open Run command.
-<<<<<<< Updated upstream
 ; Laptop must be plugged in or else the save/file dialog will lag.
-=======
 ; Greenshot: set output location
->>>>>>> Stashed changes
+; 				set capture region to f11
 
 ; Warnings:
 ; log.txt will not log if you have it open in notepad++.
@@ -30,7 +28,7 @@
 CoordMode "Mouse", "Window"
 
 
-main(dating_app, windows_version, screenshot_directory)
+main(dating_app, screenshot_directory)
 {
 	; Clear the log
 	file := FileOpen(".\log.txt", "w")
@@ -50,7 +48,7 @@ main(dating_app, windows_version, screenshot_directory)
 	{
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"
 	
-		take_screenshot(dating_app, windows_version, screenshot_directory)  
+		take_screenshot(dating_app, screenshot_directory)  
 		
 		decision := make_decision(screenshot_directory)
 		
@@ -82,9 +80,9 @@ main(dating_app, windows_version, screenshot_directory)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony"
 
-; main("tinder", 10, "C:\Users\Shadow\Desktop\Github\Operation_Love\ahk\Screenshots")
+main("tinder", "C:\Users\Shadow\Desktop\Github\Operation_Love\ahk\Screenshots")
 
-main("bumble", 10, "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love\ahk\Screenshots")
+; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love\ahk\Screenshots")
 
 
 	

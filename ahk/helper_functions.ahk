@@ -36,52 +36,24 @@ get_text(x1, y1, x2, y2, clipwait_time)
 	clipwait(clipwait_time, 0)
 }
 
-print_screen(x1, y1, x2, y2, windows_version, screenshot_directory)
+print_screen(x1, y1, x2, y2, screenshot_directory)
 {		
-	send "<#+s"
-	sleep 2000
+	send "{f11}"
+	sleep 1000
 
 	MouseMove x1, y1
 	Send "{LButton down}"	
 	sleep 500	
 	MouseMove x2, y2
+	sleep 500
 	Send "{LButton up}"
 	clipwait(1, 1)
 	
-	; wait for snipping tool to dissapear
-	sleep 1000
-	
-	if windows_version <= 10
-	{
-		send "<#r"
-		sleep 500
-		send "^a"
-		send "MSPaint"
-		send "{enter}"
-		sleep 500
-		send "^v"
-		send "^s"
-		sleep 1000
-		send "^l"
-		send "^a"
-		send screenshot_directory
-		send "{enter}"
-		
-		loop 4
-		{
-			send "{tab}"	
-			sleep 500
-		}
-		
-		send "!n"
-		
-		sleep 500
-		send Random(0, 9223372036854775807)
-		sleep 500
-		send "{enter}"
-		sleep 500
-		WinClose "Paint"			
-	}
+
+	send "{down}"
+	send "{down}"
+	sleep 500
+	send "{enter}"
 	
 	sleep 100
 	A_Clipboard := ""

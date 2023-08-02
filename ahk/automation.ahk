@@ -72,7 +72,7 @@ super_like(dating_app)
 		send "{enter}"
 		sleep 1000
 		; click away comment recommendation
-		mouseClick "left", 1154, 853
+		send "{esc}"
 	}
 	else if dating_app == "bumble"
 	{
@@ -96,8 +96,7 @@ like(dating_app)
 		
 		sleep 1000
 		; Click away super_like upgrade notice for popular profiles
-		; Check location in profile ---> super like dialog
-		mouseClick "left", 964, 841
+		send "{esc}"
 	}
 	else if dating_app == "bumble"
 	{

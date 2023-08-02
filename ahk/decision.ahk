@@ -49,6 +49,8 @@ upload_profile_pics(screenshot_directory)
         send screenshot_directory
         send "{enter}"
         n := 3 + A_Index
+		
+		sleep 500
         
         loop 4
         {      

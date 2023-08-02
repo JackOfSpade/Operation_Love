@@ -21,6 +21,10 @@ navigate_to_discover(dating_app)
     {
 		winactivate "Bumble"
     }
+	else if dating_app == "hinge"
+    {
+		winactivate "AirDroid"
+    }
 }
 
 
@@ -54,7 +58,10 @@ remaining_super_likes(dating_app)
 				
 		return remainingSuperLikes
 	}
-
+	else if dating_app == "hinge"
+    {
+		
+    }
 	
 }
 	
@@ -76,6 +83,10 @@ super_like(dating_app)
 		winactivate "Bumble"
 		mouseClick "left", 1208, 947
 	}
+	else if dating_app == "hinge"
+    {
+		
+    }
 }
    
 like(dating_app)
@@ -101,6 +112,11 @@ like(dating_app)
 		winactivate "Bumble"
 		send "{right}"
 	}
+	else if dating_app == "hinge"
+    {
+		winactivate "AirDroid"
+		mouseClick "left", 1151, 646
+    }
 }
 
 
@@ -122,4 +138,9 @@ dislike(dating_app)
 		winactivate "Bumble"
 		send "{left}"
 	}
+	else if dating_app == "hinge"
+    {
+		winactivate "AirDroid"
+		mouseClick "left", 767, 906
+    }
 }

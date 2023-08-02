@@ -8,7 +8,6 @@
 ; Resolution: 1920x1080, 100% zoom
 ; Download windows snipping tool and set its setting to auto-save, link prtsc to that.
 ; Open 2 separate chrome maximized window, one with the dating site and one with the attractiveness eval site
-; If using windows <= 11, configure greenshot.
 ; Open capture2text but unmap Win+R hotkey on it because we need it to open Run command.
 ; Laptop must be plugged in or else the save/file dialog will lag.
 ; Greenshot: set output location
@@ -17,6 +16,7 @@
 ; Warnings:
 ; log.txt will not log if you have it open in notepad++.
 ; Running this while having another one running inside Shadow PC will cause the one outside to crash due to clipboard conflicts.
+; If AirDroid, tap become long presses where the context menu pops up, click "Hoykeys" in its menu and click "Switch input method"
 
 #include automation.ahk
 #include screenshot.ahk

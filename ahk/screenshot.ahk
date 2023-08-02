@@ -43,7 +43,7 @@ take_screenshot(dating_app, screenshot_directory)
        
        loop 6
        {
-           print_screen(962, 220, 1330, 753, windows_version, screenshot_directory)
+           print_screen(962, 220, 1330, 753, screenshot_directory)
            sleep 500
            send "{space}"
            sleep 500
@@ -53,7 +53,7 @@ take_screenshot(dating_app, screenshot_directory)
     {
        winactivate "Bumble"
        
-       print_screen(580, 200, 1155, 927, windows_version, screenshot_directory)
+       print_screen(580, 200, 1155, 927, screenshot_directory)
        sleep 750
        send "{down}"
        send "{down}"
@@ -61,7 +61,7 @@ take_screenshot(dating_app, screenshot_directory)
        
        loop 5
        {
-           print_screen(580, 200, 1155, 927, windows_version, screenshot_directory)
+           print_screen(580, 200, 1155, 927, screenshot_directory)
            sleep 750
            send "{down}"
            sleep 500
@@ -69,30 +69,30 @@ take_screenshot(dating_app, screenshot_directory)
     }      
 	else if dating_app == "hinge"
     {
-		 print_screen(729, 231, 1189, 689, windows_version, screenshot_directory)
+		 print_screen(729, 231, 1189, 689, screenshot_directory)
 		 sleep 750
 		 send "{down}"
 		 sleep 500
 		 ; text
-		 print_screen(736, 485, 1189, 796, windows_version, screenshot_directory)
+		 print_screen(736, 485, 1189, 796, screenshot_directory)
 		 send "{down}"
 		 send "{down}"
 		 send "{up}"
 		 send "{up}"
-		 print_screen(730, 428, 1187, 885, windows_version, screenshot_directory)
+		 print_screen(730, 428, 1187, 885, screenshot_directory)
 		 send "{down}"
 		 send "{down}"
 		 ; text
-		 print_screen(732, 377, 1188, 740, windows_version, screenshot_directory)
+		 print_screen(732, 377, 1188, 740, screenshot_directory)
 		 send "{down}"
-		 print_screen(729, 350, 1187, 807, windows_version, screenshot_directory)
+		 print_screen(729, 350, 1187, 807, screenshot_directory)
 		 send "{down}"
 		 ; text
-		 print_screen(678, 337, 1186, 792, windows_version, screenshot_directory)
+		 print_screen(678, 337, 1186, 792, screenshot_directory)
 		 send "{down}"
-		 print_screen(731, 349, 1188, 805, windows_version, screenshot_directory)
+		 print_screen(731, 349, 1188, 805, screenshot_directory)
 		 send "{down}"
-		 print_screen(731, 337, 1189, 794, windows_version, screenshot_directory)
+		 print_screen(731, 337, 1189, 794, screenshot_directory)
 		 
 		 
 	}

@@ -49,6 +49,7 @@ print_screen(x1, y1, x2, y2, screenshot_directory)
 	Send "{LButton up}"
 	clipwait(1, 1)
 	
+	sleep 500
 
 	send "{down}"
 	send "{down}"

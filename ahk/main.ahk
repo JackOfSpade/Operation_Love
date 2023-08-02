@@ -44,6 +44,8 @@ main(dating_app, screenshot_directory)
 		super_likes := 0
 	}
 	
+	sleep 500
+	
 	while true
 	{
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"

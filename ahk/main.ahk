@@ -10,7 +10,11 @@
 ; Open 2 separate chrome maximized window, one with the dating site and one with the attractiveness eval site
 ; If using windows <= 11, configure greenshot.
 ; Open capture2text but unmap Win+R hotkey on it because we need it to open Run command.
+<<<<<<< Updated upstream
 ; Laptop must be plugged in or else the save/file dialog will lag.
+=======
+; Greenshot: set output location
+>>>>>>> Stashed changes
 
 ; Warnings:
 ; log.txt will not log if you have it open in notepad++.

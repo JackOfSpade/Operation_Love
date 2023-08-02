@@ -70,6 +70,9 @@ super_like(dating_app)
 		send "{down}"
 		sleep 1000
 		send "{enter}"
+		sleep 1000
+		; click away comment recommendation
+		mouseClick "left", 1154, 853
 	}
 	else if dating_app == "bumble"
 	{

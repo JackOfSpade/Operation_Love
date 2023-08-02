@@ -6,37 +6,7 @@
 CoordMode "Mouse", "Window"
 
 take_screenshot(dating_app, screenshot_directory)    
-{
-     if dating_app == "tinder"
-     {
-        winactivate "Tinder"
-        
-        loop 6
-        {
-            print_screen(962, 220, 1330, 753, screenshot_directory)
-            sleep 500
-            send "{space}"
-            sleep 500
-        }        
-     }
-     else if dating_app == "bumble"
-     {
-        winactivate "Bumble"
-        
-        print_screen(580, 200, 1155, 927, screenshot_directory)
-        sleep 750
-        send "{down}"
-        send "{down}"
-        sleep 500
-        
-        loop 5
-        {
-            print_screen(580, 200, 1155, 927, screenshot_directory)
-            sleep 750
-            send "{down}"
-            sleep 500
-        }
-     }       
+{   
     if dating_app == "tinder"
     {
        winactivate "Tinder"

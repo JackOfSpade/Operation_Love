@@ -50,7 +50,8 @@ upload_profile_pics(screenshot_directory)
         send "{enter}"
         n := 3 + A_Index
 		
-		sleep 500
+		; new
+		sleep 2000
         
         loop 4
         {      

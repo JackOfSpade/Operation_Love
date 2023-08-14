@@ -5,13 +5,11 @@
 ; the Decision Module to generate a score and make a decision from that.
 
 ; Set-up:
-; Resolution: 1920x1080, 100% zoom
-; Download windows snipping tool and set its setting to auto-save, link prtsc to that.
+; 100% zoom on resolution
 ; Open 2 separate chrome maximized window, one with the dating site and one with the attractiveness eval site
-; Open capture2text but unmap Win+R hotkey on it because we need it to open Run command.
 ; Laptop must be plugged in or else the save/file dialog will lag.
-; Greenshot: set output location
-; 				set capture region to f11
+; Greenshot: set output location to screenshot folder
+; 			 set capture region to f11
 
 ; Warnings:
 ; log.txt will not log if you have it open in notepad++.
@@ -28,7 +26,7 @@
 CoordMode "Mouse", "Window"
 
 
-main(dating_app, screenshot_directory)
+main(dating_app, screenshot_directory, resolution)
 {
 	; Clear the log
 	file := FileOpen(".\log.txt", "w")
@@ -52,7 +50,7 @@ main(dating_app, screenshot_directory)
 	
 		take_screenshot(dating_app, screenshot_directory)  
 		
-		decision := make_decision(screenshot_directory)
+		decision := make_decision(screenshot_directory, resolution)
 		
 		if decision == "super_like" && super_likes > 0
 		{
@@ -82,12 +80,14 @@ main(dating_app, screenshot_directory)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony"
 
-; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love\ahk\Screenshots")
+main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love\ahk\Screenshots", "1366x768")
 
-main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love\ahk\Screenshots")
+; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love\ahk\Screenshots", "1920x1080")
+
+; main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love\ahk\Screenshots, "1920x1080")
 
 
-	
+
 f12::
 {
 	exitApp

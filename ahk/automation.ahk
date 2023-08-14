@@ -34,14 +34,14 @@ remaining_super_likes(dating_app)
 	if dating_app == "tinder"
     {
 		; Click profile
-		MouseClick "left", 50, 162
+		MouseClick "left", 41, 159
 		sleep 1000
 			
-		remainingSuperLikes := ocr(227, 381, 250, 399, 100)
+		remainingSuperLikes := ocr(209, 381, 223, 397, 100)
 
 		
 		; Go back to discover
-		MouseClick "left", 50, 162
+		MouseClick "left", 41, 159
 		
 		return remainingSuperLikes
 	}

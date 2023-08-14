@@ -8,8 +8,19 @@
 
 CoordMode "Mouse", "Window"
 
-upload_profile_pics(screenshot_directory)
+upload_profile_pics(screenshot_directory, resolution)
 {
+	; Display locations
+	if resolution == "1920x1080"
+	{
+		pixel_location := [[700, 841, 951, 840], [805, 851], [1212, 537], [1014, 569, 1040, 568]]
+	}
+	else if resolution == "1366x768"
+	{
+		pixel_location := [[470, 586, 629, 606], [543, 598], [548, 413], [732, 414, 768, 413]]
+	}
+
+
     ; https://hotchat3000.com/
     winactivate "Hot Chat"
     
@@ -34,7 +45,7 @@ upload_profile_pics(screenshot_directory)
 			}
 			
 			; "Choose Photo" Button scan
-			get_text(700, 841, 951, 840, 100)
+			get_text(pixel_location[1][1], pixel_location[1][2], pixel_location[1][3], pixel_location[1][4], 100)
 		}
 		
 		sleep 100
@@ -42,16 +53,16 @@ upload_profile_pics(screenshot_directory)
 		sleep 100
 		
 		; Click "Choose Photo" Button
-        mouseClick "left", 805, 851
-        sleep 1500
+        mouseClick "left", pixel_location[2][1], pixel_location[2][2]
+		
+		; Test 1500 ---> 3000
+        sleep 3000
+		
         send "^l"
         send "^a"
         send screenshot_directory
         send "{enter}"
         n := 3 + A_Index
-		
-		; new
-		sleep 2000
         
         loop 4
         {      
@@ -90,7 +101,7 @@ upload_profile_pics(screenshot_directory)
         }  
 		
         ; click away highlights
-		mouseClick "left", 1212, 537
+		mouseClick "left", pixel_location[3][1], pixel_location[3][2]
 		sleep 500
 		
 		if InStr(A_Clipboard, "CHATTING")
@@ -100,7 +111,8 @@ upload_profile_pics(screenshot_directory)
 			A_Clipboard := ""
 			sleep 100
 			
-			get_text(1014, 569, 1040, 568, 60*60*24)
+			; Get score
+			get_text(pixel_location[4][1], pixel_location[4][2], pixel_location[4][3], pixel_location[4][4], 60*60*24)
 			
 			A_Clipboard := StrReplace(A_Clipboard, A_Space, "")
 			
@@ -162,9 +174,9 @@ upload_profile_pics(screenshot_directory)
 
 
 
-make_decision(screenshot_directory)
+make_decision(screenshot_directory, resolution)
 {
-    combined_metric := upload_profile_pics(screenshot_directory)
+    combined_metric := upload_profile_pics(screenshot_directory, resolution)
     
     if combined_metric >= 8.5
     {

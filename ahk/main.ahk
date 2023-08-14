@@ -82,9 +82,9 @@ main(dating_app, screenshot_directory)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony"
 
-main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love\ahk\Screenshots")
+; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love\ahk\Screenshots")
 
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love\ahk\Screenshots")
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love\ahk\Screenshots")
 
 
 	

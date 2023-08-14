@@ -13,7 +13,7 @@ take_screenshot(dating_app, screenshot_directory)
        
        loop 6
        {
-           print_screen(682, 125, 1040, 549, screenshot_directory)
+           print_screen(675, 126, 1032, 555, screenshot_directory)
            sleep 500
            send "{space}"
            sleep 500

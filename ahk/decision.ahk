@@ -13,11 +13,11 @@ upload_profile_pics(screenshot_directory, resolution)
 	; Display locations
 	if resolution == "1920x1080"
 	{
-		pixel_location = [[700, 841, 951, 840], [805, 851], [1212, 537], [1014, 569, 1040, 568]]
+		pixel_location := [[700, 841, 951, 840], [805, 851], [1212, 537], [1014, 569, 1040, 568]]
 	}
 	else if resolution == "1366x768"
 	{
-		pixel_location = [[470, 586, 629, 606], [543, 598], [548, 413], [732, 414, 768, 413]]
+		pixel_location := [[470, 586, 629, 606], [543, 598], [548, 413], [732, 414, 768, 413]]
 	}
 
 
@@ -176,7 +176,7 @@ upload_profile_pics(screenshot_directory, resolution)
 
 make_decision(screenshot_directory, resolution)
 {
-    combined_metric := upload_profile_pics(screenshot_directory)
+    combined_metric := upload_profile_pics(screenshot_directory, resolution)
     
     if combined_metric >= 8.5
     {

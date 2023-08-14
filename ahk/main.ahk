@@ -5,13 +5,11 @@
 ; the Decision Module to generate a score and make a decision from that.
 
 ; Set-up:
-; 100% zoom
-; Download windows snipping tool and set its setting to auto-save, link prtsc to that.
+; 100% zoom on resolution
 ; Open 2 separate chrome maximized window, one with the dating site and one with the attractiveness eval site
-; Open capture2text but unmap Win+R hotkey on it because we need it to open Run command.
 ; Laptop must be plugged in or else the save/file dialog will lag.
-; Greenshot: set output location
-; 				set capture region to f11
+; Greenshot: set output location to screenshot folder
+; 			 set capture region to f11
 
 ; Warnings:
 ; log.txt will not log if you have it open in notepad++.
@@ -82,7 +80,7 @@ main(dating_app, screenshot_directory, resolution)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony"
 
-; main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love\ahk\Screenshots"", "1366x768")
+main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love\ahk\Screenshots"", "1366x768")
 
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love\ahk\Screenshots", "1920x1080")
 

@@ -54,15 +54,15 @@ upload_profile_pics(screenshot_directory, resolution)
 		
 		; Click "Choose Photo" Button
         mouseClick "left", pixel_location[2][1], pixel_location[2][2]
-        sleep 1500
+		
+		; Test 1500 ---> 3000
+        sleep 3000
+		
         send "^l"
         send "^a"
         send screenshot_directory
         send "{enter}"
         n := 3 + A_Index
-		
-		; new
-		sleep 2000
         
         loop 4
         {      

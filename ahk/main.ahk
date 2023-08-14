@@ -82,14 +82,13 @@ main(dating_app, screenshot_directory, resolution)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony"
 
-; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love\ahk\Screenshots", "1920x1080")
+; main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love\ahk\Screenshots"", "1366x768")
 
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love\ahk\Screenshots", "1920x1080")
 
-; main("hinge", "C:\Users\Dell\Desktop\GitHub\Operation_Love\ahk\Screenshots", "1366x768")
+; main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love\ahk\Screenshots, "1920x1080")
 
 
-	
 f12::
 {
 	exitApp

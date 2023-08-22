@@ -60,7 +60,7 @@ remaining_super_likes(dating_app)
 	}
 	else if dating_app == "hinge"
     {
-		
+		; Do it manually in standouts since it doesn't replenish (only 1 free rose/week
     }
 	
 }
@@ -88,14 +88,12 @@ super_like(dating_app)
 	}
 	else if dating_app == "hinge"
     {
-		
+		like(dating_app)
     }
 }
    
-like(dating_app)
+like(dating_app, root_directory)
 {
-	
-	
 	if dating_app == "tinder"
 	{
 		winactivate "Tinder"
@@ -117,8 +115,60 @@ like(dating_app)
 	else if dating_app == "hinge"
     {
 		winactivate "AirDroid"
-		mouseClick "left", 1151, 646
-    }
+		
+		loop 14
+		{
+			send "{up}"
+		}
+		
+		mouseClick "left", 1149, 350
+		
+		winactivate "hinge"
+		mouseClick "left", 805, 966
+		
+		; Cannot remove coding work from response
+		A_Clipboard := "Do not answer with meta responses, only display the direct result. Use OCR to extract the text from all the attached image files. These text are from a dating profile for a woman. Give a link to download a text message that contains a short, witty text message (without emojis) to send that focuses on one topic in her profile. The message should not include an invitation to do anything."
+		
+		Send "^v"
+		
+		mouseClick "left", 739, 964
+		sleep 1500
+		
+		; The folder should already be the correct one after decision.ahk runs
+		send "+{Tab}"
+		send "{LShift down}"
+		
+		Loop 10
+		{
+			send "{right}"
+		}
+		
+		send "{LShift up}"		
+		send "{Enter}"
+		sleep 5000
+		send "{Tab}"
+		send "{Enter}"
+		
+		while not InStr(A_Clipboard, "Download")
+		{			
+			get_text(757, 805, 1038, 808, 100)
+		} 
+		
+		mouseClick "left", 850, 807
+		send "^l"
+        send "^a"
+		A_Clipboard := root_directory
+        send "^v"
+		sleep 1000
+		
+		send "!n"
+		A_Clipboard := "hinge_opener"
+		send "^v"
+		
+		hinge_opener := FileRead("hinge_opener.txt")
+		
+		MsgBox(hinge_opener)
+    }	
 }
 
 

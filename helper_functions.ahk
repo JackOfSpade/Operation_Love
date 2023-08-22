@@ -36,7 +36,7 @@ get_text(x1, y1, x2, y2, clipwait_time)
 	clipwait(clipwait_time, 0)
 }
 
-print_screen(x1, y1, x2, y2, screenshot_directory)
+print_screen(x1, y1, x2, y2)
 {		
 	send "{f11}"
 	sleep 1000

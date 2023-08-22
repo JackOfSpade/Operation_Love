@@ -8,7 +8,7 @@
 
 CoordMode "Mouse", "Window"
 
-upload_profile_pics(screenshot_directory, resolution)
+upload_profile_pics(root_directory, resolution, dating_app)
 {
 	; Display locations
 	if resolution == "1920x1080"
@@ -27,7 +27,16 @@ upload_profile_pics(screenshot_directory, resolution)
     
     scores := []
     
-    Loop 6  
+	if dating_app != "hinge"
+	{
+		loop_count := 6
+	}
+	else
+	{
+		loop_count := 10
+	}
+	
+    Loop loop_count  
     {
 		sleep 100
         A_Clipboard := ""
@@ -59,7 +68,8 @@ upload_profile_pics(screenshot_directory, resolution)
 		
         send "^l"
         send "^a"
-        send screenshot_directory
+		A_Clipboard := root_directory + "/Screenshots"
+        send "^v"
         send "{enter}"
 		
 		sleep 1000
@@ -168,9 +178,9 @@ upload_profile_pics(screenshot_directory, resolution)
 
 
 
-make_decision(screenshot_directory, resolution)
+make_decision(root_directory, resolution, dating_app)
 {
-    combined_metric := upload_profile_pics(screenshot_directory, resolution)
+    combined_metric := upload_profile_pics(root_directory, resolution, dating_app)
     
     if combined_metric >= 8.5
     {

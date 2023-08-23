@@ -39,18 +39,20 @@ take_screenshot(dating_app)
     }      
 	else if dating_app == "hinge"
     {
+		winactivate "AirDroid"
+		 
 		send "{up}"
 		send "{up}"
 		send "{up}"
 		send "{down}"
 		send "{down}"
-		sleep 1500	
+		sleep 2000	
 		 
 		Loop 10
 		{
 			print_screen(710, 0, 1208, 969)
 			send "{down}"
-			sleep 1500
+			sleep 2000
 		}
 	}
 }

@@ -42,8 +42,10 @@ upload_profile_pics(root_directory, resolution, dating_app)
         A_Clipboard := ""
         sleep 100
 		
+		get_text(pixel_location[1][1], pixel_location[1][2], pixel_location[1][3], pixel_location[1][4], 100)
+		
 		while not InStr(A_Clipboard, "PHOTO")
-		{
+		{			
 			; weird pop-up glitch on company PC win 10
 			if InStr(A_Clipboard, "STAR")
 			{
@@ -72,6 +74,10 @@ upload_profile_pics(root_directory, resolution, dating_app)
         send "^v"
         send "{enter}"
 		
+		sleep 100
+        A_Clipboard := ""
+        sleep 100
+		
 		sleep 1000
 		
 		send "!n"		
@@ -90,10 +96,6 @@ upload_profile_pics(root_directory, resolution, dating_app)
         send "{enter}"
         
         winactivate "Hot Chat"
-		
-		sleep 100
-        A_Clipboard := ""
-        sleep 100
 		
         while not InStr(A_Clipboard, "ERROR") and not InStr(A_Clipboard, "CHATTING")
         {	

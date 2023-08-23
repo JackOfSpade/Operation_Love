@@ -34,7 +34,7 @@ main(dating_app, root_directory, resolution)
 	file.close()
 	
 	;test
-	like(dating_app, root_directory)
+	hinge_opener := like(dating_app, root_directory)
 	
 	;super_likes := 0
 	;
@@ -58,13 +58,13 @@ main(dating_app, root_directory, resolution)
 	;	
 	;	if decision == "super_like" && super_likes > 0
 	;	{
-	;		super_like(dating_app)
+	;		super_like(dating_app, root_directory)
 	;		super_likes -= 1
 	;		FileAppend "actual decision: super_like" . "`n", ".\log.txt"
 	;	}
 	;	else if decision == "super_like" || decision == "like"
 	;	{
-	;		like(dating_app, root_directory)
+	;		hinge_opener := like(dating_app, root_directory)
 	;		
 	;		FileAppend "actual decision: like" . "`n", ".\log.txt"
 	;	}
@@ -74,6 +74,8 @@ main(dating_app, root_directory, resolution)
 	;		
 	;		FileAppend "actual decision: dislike" . "`n", ".\log.txt"
 	;	}
+	;
+	;   FileAppend "hinge_opener: '" . hinge_opener . "'`n", ".\log.txt"
 	;	
 	;	clear_screenshot_directory(root_directory)
 	;}

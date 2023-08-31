@@ -17,7 +17,7 @@ upload_profile_pics(root_directory, resolution, dating_app)
 	}
 	else if resolution == "1366x768"
 	{
-		pixel_location := [[470, 586, 629, 606], [543, 598], [548, 413], [732, 414, 768, 413]]
+		pixel_location := [[470, 586, 629, 606], [543, 598], [548, 413], [732, 414, 768, 413], [821, 558]]
 	}
 
 

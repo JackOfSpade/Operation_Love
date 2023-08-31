@@ -13,7 +13,7 @@ upload_profile_pics(root_directory, resolution, dating_app)
 	; Display locations
 	if resolution == "1920x1080"
 	{
-		pixel_location := [[700, 841, 951, 840], [805, 851], [1212, 537], [1014, 569, 1040, 568]]
+		pixel_location := [[700, 841, 951, 840], [805, 851], [1212, 537], [1014, 569, 1040, 568], [1125, 740]]
 	}
 	else if resolution == "1366x768"
 	{
@@ -24,7 +24,6 @@ upload_profile_pics(root_directory, resolution, dating_app)
     ; https://hotchat3000.com/
     winactivate "Hot Chat"
     
-    
     scores := []
     
 	if dating_app != "hinge"
@@ -33,11 +32,12 @@ upload_profile_pics(root_directory, resolution, dating_app)
 	}
 	else
 	{
-		loop_count := 10
+		loop_count := 8
 	}
 	
     Loop loop_count  
     {
+		start_of_loop:
 		sleep 100
         A_Clipboard := ""
         sleep 100
@@ -70,7 +70,7 @@ upload_profile_pics(root_directory, resolution, dating_app)
 		
         send "^l"
         send "^a"
-		A_Clipboard := root_directory + "/Screenshots"
+		A_Clipboard := root_directory . "/Screenshots"
         send "^v"
         send "{enter}"
 		
@@ -97,12 +97,27 @@ upload_profile_pics(root_directory, resolution, dating_app)
         
         winactivate "Hot Chat"
 		
+		count := 0
+		
         while not InStr(A_Clipboard, "ERROR") and not InStr(A_Clipboard, "CHATTING")
         {	
 			send "^a"
 			sleep 500
 			send "^c"
 			clipwait(1, 1)
+			
+			
+			if count > 120
+			{
+				send "{F5}"
+				sleep 12000
+				mouseClick "left", pixel_location[5][1], pixel_location[5][2]
+				sleep 2000
+				goto start_of_loop
+			}
+			
+			
+			count++
 			
         }  
 		

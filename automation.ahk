@@ -31,6 +31,7 @@ navigate_to_discover(dating_app)
 
 remaining_super_likes(dating_app)
 {
+	remainingSuperLikes := 0
 	if dating_app == "tinder"
     {
 		; Click profile
@@ -42,8 +43,6 @@ remaining_super_likes(dating_app)
 		
 		; Go back to discover
 		MouseClick "left", 41, 159
-		
-		return remainingSuperLikes
 	}
 	else if dating_app == "bumble"
 	{		
@@ -55,13 +54,13 @@ remaining_super_likes(dating_app)
 		{
 			remainingSuperLikes := 0
 		}
-				
-		return remainingSuperLikes
 	}
 	else if dating_app == "hinge"
     {
 		; Do it manually in standouts since it doesn't replenish (only 1 free rose/week
     }
+	
+	return remainingSuperLikes
 	
 }
 	
@@ -119,20 +118,19 @@ like(dating_app, root_directory)
 	}
 	else if dating_app == "hinge"
     {
-		winactivate "AirDroid"
-		
-		loop 14
-		{
-			send "{up}"
-		}
-		
-		mouseClick "left", 1149, 350
+		RunWait("bulk_image_ocr.exe")		
+		bulk_images_ocr_text := FileRead("bulk_images_ocr_text.txt")
+		; Remove all symbols that cannot be typed on a keyboard
+		bulk_images_ocr_text := RegExReplace(bulk_images_ocr_text, "[^ -~\r\n]", "")		
 		
 		winactivate "hinge"
-		mouseClick "left", 805, 966
+		sleep 1000
+		mouseClick "left", 860, 968
+		
+		sleep 500
 		
 		; Cannot remove coding work from response
-		A_Clipboard := "Do not answer with meta responses, only display the direct result. Use OCR to extract the text from all the attached image files. These text are from a dating profile for a woman. Give a clickable download link to download a text message that contains a short, witty text message (without emojis) to send that focuses on one topic in her profile. The message should not include an invitation to do anything."
+		A_Clipboard := "The following text is from a dating profile for a woman: " . bulk_images_ocr_text . " ====== End of dating profile ======= Give a download link for a message that is a funny commentary on one specific detail from her profile. The message should not be more than 33 characters long. Do not include an invitation to do anything; If the generated message has an ending period, remove it. Avoid word play. Avoid messages that uses exclamation marks. It shows too much enthusiasm for an initial message. Do not answer prompt questions that the girl has written on her profile without at least subtly referring back to it because she won't know what prompt we're referring to." 
 		
 		Send "^v"
 		
@@ -140,34 +138,76 @@ like(dating_app, root_directory)
         A_Clipboard := ""
         sleep 100
 		
-		mouseClick "left", 739, 964
-		sleep 1500
+		sleep 500
 		
-		; The folder should already be the correct one after decision.ahk runs
-		send "+{Tab}"
-		send "{LShift down}"
+		; Submit it
+		mouseClick "left", 1458, 967
 		
-		; Select all profile pics
-		Loop 10
-		{
-			send "{right}"
-		}
+		sleep 4000				
+			
+		mouseClick "left", 826, 968
 		
-		send "{LShift up}"		
-		send "{Enter}"
-		sleep 5000
-		send "{Tab}"
-		send "{Enter}"
+		sleep 500
+				
+		; For some reason ChatGPT refuses to give the download link the first time sometimes
+		A_Clipboard := "Make sure you're processing the most recent profile given. The message should not be more than 33 characters long. Reassess whether the message is just an reiteration of what she has already said in her profile. If so, rewrite. Give me the download link only without any other explanations, meta responses or any other text"		
+		Send "^v"
 		
-		sleep 5000
+		sleep 1000
 		
-		get_text(759, 807, 1488, 807, 100)
+		while not InStr(ocr(756, 955, 797, 974, 100), "Send")
+        {				
+		
+			; Check if limit is reached
+			get_text(779, 801, 827, 801, 1000)
+			
+			if InStr(A_Clipboard, "default")
+			{
+				send "{F5}"		
+				sleep 5000
+				goto start_of_like_function_label
+			}	
+
+			; Click regenerate
+			mouseClick "left", 1086, 956
+			
+			; click textbox
+			mouseClick "left", 826, 968
+		
+			sleep 500
+			send "^a"
+					
+			; For some reason ChatGPT refuses to give the download link the first time sometimes
+			A_Clipboard := "Make sure you're processing the most recent profile given. Reassess whether the message is just an reiteration of what she has already said in her profile. If so, rewrite. Give me the download link only without any other explanations, meta responses or any other text"		
+			Send "^v"
+			
+			sleep 1000
+		
+			; Click submit
+			mouseClick "left", 1458, 967	
+        }  
+		
+		sleep 100
+        A_Clipboard := ""
+        sleep 100
+		
+		sleep 6000
 		
 		; Wait for download
 		while not InStr(A_Clipboard, "Download") and not InStr(A_Clipboard, "text") and not InStr(A_Clipboard, "txt")
-		{			
+		{	
 			mouseClick "left", 716, 808
-			get_text(759, 807, 1488, 807, 100)
+			
+			loop 10
+			{
+				send "{WheelDown}"
+				sleep 100
+			}
+			
+			sleep 1000
+			
+			; Check if limit is reached
+			get_text(779, 801, 827, 801, 1000)
 			
 			if InStr(A_Clipboard, "default")
 			{
@@ -183,8 +223,11 @@ like(dating_app, root_directory)
 		
 		sleep 2000
 		
-		; Click download
-		mouseClick "left", 850, 807
+		; Click download link
+		mouseClick "left", 770, 805
+		; Alternative spot
+		mouseClick "left", 1164, 807
+		
 		sleep 5000
 		
 		send "^l"
@@ -194,7 +237,7 @@ like(dating_app, root_directory)
 		send "{Enter}"
 		sleep 1000
 		
-		loop 3
+		loop 4
 		{
 			send "{Tab}"
 			sleep 500
@@ -205,68 +248,56 @@ like(dating_app, root_directory)
 		send "^v"
 		
 		send "{Enter}"
-		
+		sleep 500
 		; Replace existing
 		send "{left}"
+		sleep 500
 		send "{Enter}"
 		
 		sleep 100
         A_Clipboard := ""
         sleep 100
 		
-		sleep 2000
+		sleep 3000
 		
 		hinge_opener := FileRead("hinge_opener.txt")
 		; Remove all symbols that cannot be typed on a keyboard
 		hinge_opener := RegExReplace(hinge_opener, "[^ -~]", "")
 		
-		MsgBox(hinge_opener)
+		; msgBox(hinge_opener)
 		
-		loop 12
+		winactivate "AirDroid"
+		
+		loop 10
 		{
-			send "{up}"
+			click_and_drag(668, 480, 667, 833, 500)
 		}
 		
+		sleep 3000
+		
+		; Click like with footer
+		mouseClick "left", 1191, 841
+		sleep 1000
+		; Click like without footer
+		mouseClick "left", 1192, 780
 		sleep 2000
 		
-		; Click like
-		mouseClick "left", 1149, 442
-		sleep 4000
-		
 		; Click "Add a comment"
-		mouseClick "left", 843, 778
-		sleep 5000
+		mouseClick "left", 813, 778
 		
-		send hinge_opener
+		sleep 1000
 		
-		sleep 5000
+		SendInput hinge_opener
 		
-		mouseClick "left", 755, 1004	
-		mouseClick "left", 755, 1004
-
-		sleep 3000
-		
-		mouseClick "left", 1050, 942
-		
-		sleep 3000
-		
-		mouseClick "left", 1050, 942
-		
-		sleep 3000
-		
-		mouseClick "left", 1172, 535
-		
-		sleep 3000
-		
-		; Click Done
-		mouseClick "left", 1172, 535
-		
-		sleep 3000
+		sleep 6000
 		
 		; Send like		
-		mouseClick "left", 1037, 860
+		mouseClick "left", 1013, 875
+		sleep 2000
 		
-		sleep 3000
+		; Click away send a rose instead
+		mouseClick "left", 938, 972
+		sleep 4000
     }	
 	
 	return hinge_opener
@@ -294,6 +325,13 @@ dislike(dating_app)
 	else if dating_app == "hinge"
     {
 		winactivate "AirDroid"
-		mouseClick "left", 767, 906
+		
+		; Dislike button with footer
+		mouseClick "left", 727, 920
+		sleep 1000
+		; Click dislike without footer
+		mouseClick "left", 729, 982
+		sleep 2000
+		
     }
 }

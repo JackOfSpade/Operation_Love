@@ -5,8 +5,12 @@
 
 CoordMode "Mouse", "Window"
 
+
+
 take_screenshot(dating_app)    
 {   
+	profile_text := ""
+	
     if dating_app == "tinder"
     {
        winactivate "Tinder"
@@ -40,35 +44,40 @@ take_screenshot(dating_app)
 	else if dating_app == "hinge"
     {
 		winactivate "AirDroid"
-		 
-		send "{up}"
-		send "{up}"
-		send "{up}"
 		send "{down}"
-		send "{down}"
-		sleep 2000	
-		 
-		Loop 10
+		Loop 8
 		{
-			print_screen(710, 0, 1208, 969)
-			send "{down}"
-			sleep 2000
+			print_screen(657, 106, 1260, 889)
+			; MouseClickDrag "left", 956, 516, 956, 420, 100
+			
+			loop 4
+			{
+				click_and_drag(669, 576, 665, 119, 1000)
+			}
+			
+			
+			sleep 4000
 		}
 	}
 }
 
-clear_root_directory(path)
+clear_screenshot_directory(root_directory)
 {
     send "<#r"
     sleep 500
-    send "^a"
-    send path
+    send "^a"	
+	A_Clipboard := root_directory . "/Screenshots"
+    send "^v"
     send "{enter}"
-    sleep 1000
+    sleep 2000
     send "^a"
     send "{delete}"
     sleep 500
-    WinClose "Screenshots"    
+    WinClose "Screenshots"   
+
+	sleep 100
+    A_Clipboard := ""
+    sleep 100	
         
     ; This deactivates the dating website, make sure you re-activate them in other functions.
 }

@@ -33,56 +33,66 @@ main(dating_app, root_directory, resolution)
 	file := FileOpen(".\log.txt", "w")
 	file.close()
 	
-	;test
+	; test
 	hinge_opener := like(dating_app, root_directory)
 	
-	;super_likes := 0
-	;
-	;navigate_to_discover(dating_app)
-	;super_likes := remaining_super_likes(dating_app)
-	;
-	;if super_likes == "O"
-	;{
-	;	super_likes := 0
-	;}
-	;
-	;sleep 500
-	;
-	;while true
-	;{
-	;	FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"
-	;
-	;	take_screenshot(dating_app, root_directory)  
-	;	
-	;	decision := make_decision(root_directory, resolution, dating_app)
-	;	
-	;	if decision == "super_like" && super_likes > 0
-	;	{
-	;		super_like(dating_app, root_directory)
-	;		super_likes -= 1
-	;		FileAppend "actual decision: super_like" . "`n", ".\log.txt"
-	;	}
-	;	else if decision == "super_like" || decision == "like"
-	;	{
-	;		hinge_opener := like(dating_app, root_directory)
-	;		
-	;		FileAppend "actual decision: like" . "`n", ".\log.txt"
-	;	}
-	;	else
-	;	{
-	;		dislike(dating_app)
-	;		
-	;		FileAppend "actual decision: dislike" . "`n", ".\log.txt"
-	;	}
-	;
-	;   FileAppend "hinge_opener: '" . hinge_opener . "'`n", ".\log.txt"
-	;	
-	;	clear_screenshot_directory(root_directory)
-	;}
+	super_likes := 0
+	
+	navigate_to_discover(dating_app)
+	super_likes := remaining_super_likes(dating_app)
+	
+	if super_likes == "O"
+	{
+		super_likes := 0
+	}
+	
+	sleep 500
+	
+	while true
+	{
+		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"
+	
+		take_screenshot(dating_app)  
+		
+		decision := make_decision(root_directory, resolution, dating_app)
+		
+		if decision == "super_like" && super_likes > 0
+		{
+			super_like(dating_app, root_directory)
+			super_likes -= 1
+			FileAppend "actual decision: super_like" . "`n", ".\log.txt"
+		}
+		else if decision == "super_like" || decision == "like"
+		{
+			hinge_opener := like(dating_app, root_directory)
+			
+			FileAppend "actual decision: like" . "`n", ".\log.txt"
+			FileAppend "hinge_opener: '" . hinge_opener . "'`n", ".\log.txt"
+		}
+		else
+		{
+			dislike(dating_app)
+			
+			FileAppend "actual decision: dislike" . "`n", ".\log.txt"
+		}
+	
+		
+		clear_screenshot_directory(root_directory)
+		
+		if dating_app == "hinge"
+		{
+			sleep 3000
+			; Click off add a prompt poll popup
+			mouseClick "left", 723, 161
+			sleep 3000
+			mouseClick "left", 828, 567
+			sleep 3000
+		}
+	}
 	
 }
 
-; "tinder", "bumble", "okcupid", "match", "eharmony"
+; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
 ; main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
 

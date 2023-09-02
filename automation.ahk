@@ -162,7 +162,7 @@ like(dating_app, root_directory)
         {				
 			loop 10
 			{
-				mouseMove, 577, 671
+				mouseMove 577, 671
 				mouseClick "left", 577, 671
 				
 				send "{WheelDown}"
@@ -212,7 +212,7 @@ like(dating_app, root_directory)
 		{
 			loop 10
 			{
-				mouseMove, 577, 671
+				mouseMove 577, 671
 				mouseClick "left", 577, 671
 				
 				send "{WheelDown}"

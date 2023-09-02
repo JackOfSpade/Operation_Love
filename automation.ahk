@@ -192,7 +192,10 @@ like(dating_app, root_directory)
         A_Clipboard := ""
         sleep 100
 		
-		sleep 6000
+		sleep 3000
+		; Click submit again, random glitch that doesn't submit the first time and the entered text pops up again
+		mouseClick "left", 1458, 967
+		sleep 3000
 		
 		; Wait for download
 		while not InStr(A_Clipboard, "Download") and not InStr(A_Clipboard, "text") and not InStr(A_Clipboard, "txt")
@@ -226,6 +229,7 @@ like(dating_app, root_directory)
 		
 		; Click download link
 		mouseClick "left", 770, 805
+		sleep 500
 		; Alternative spot
 		mouseClick "left", 1164, 807
 		

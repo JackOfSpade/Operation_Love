@@ -162,9 +162,6 @@ like(dating_app, root_directory)
         {				
 			loop 10
 			{
-				mouseMove 577, 671
-				mouseClick "left", 577, 671
-				
 				send "{WheelDown}"
 				sleep 100
 			}
@@ -211,10 +208,7 @@ like(dating_app, root_directory)
 		while not InStr(A_Clipboard, "Download") and not InStr(A_Clipboard, "text") and not InStr(A_Clipboard, "txt")
 		{
 			loop 10
-			{
-				mouseMove 577, 671
-				mouseClick "left", 577, 671
-				
+			{				
 				send "{WheelDown}"
 				sleep 100
 			}

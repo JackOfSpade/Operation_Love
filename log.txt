@@ -1,26 +1,541 @@
 
-
-super_likes: 0
-scores: 4.7, 3.8, 3.8, 4.8, 9, 4.8
-combined_metric: 9
-decision: super_like
-actual decision: like
-hinge_opener: ''
-
-
-super_likes: 0
-scores: 5.5, 4.9, 5.6, 6.4, 4.3, 4.2
-combined_metric: 6.4000000000000004
+super_likes: 5
+scores: 5.5
+combined_metric: 5.5
 decision: dislike
 actual decision: dislike
 
 
-super_likes: 0
-scores: 4.5, 6.9, 3.8, 6.6, 5, 4.2
-combined_metric: 6.9000000000000004
+super_likes: 5
+scores: 5.7
+combined_metric: 5.7000000000000002
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 6.4
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 6.6, 6.6, 6.6, 6.6, 6.6, 6.6
+combined_metric: 6.5999999999999996
 decision: like
 actual decision: like
 hinge_opener: ''
 
 
-super_likes: 0
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 5.1
+combined_metric: 5.0999999999999996
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 6.9, 6.9, 6.9, 6.9, 6.9, 6.9
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 6.4
+combined_metric: 6.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 5.4
+combined_metric: 5.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 6.7
+combined_metric: 6.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 5.9
+combined_metric: 5.9000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 6.4
+combined_metric: 6.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 5.9
+combined_metric: 5.9000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+scores: 5.1
+combined_metric: 5.0999999999999996
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5

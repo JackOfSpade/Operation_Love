@@ -36,14 +36,14 @@ remaining_super_likes(dating_app)
     {
 		; Click profile
 		MouseClick "left", 41, 159
-		sleep 5000
+		sleep 500
 			
 		remainingSuperLikes := ocr(209, 381, 223, 397, 100)
 
 		
 		; Go back to discover
 		MouseClick "left", 41, 159
-		sleep 5000
+		sleep 500
 	}
 	else if dating_app == "bumble"
 	{		

@@ -160,7 +160,15 @@ like(dating_app, root_directory)
 		
 		while not InStr(ocr(756, 955, 797, 974, 100), "Send")
         {				
-		
+			loop 10
+			{
+				mouseMove, 577, 671
+				mouseClick "left", 577, 671
+				
+				send "{WheelDown}"
+				sleep 100
+			}
+			
 			; Check if limit is reached
 			get_text(779, 801, 827, 801, 1000)
 			
@@ -201,15 +209,17 @@ like(dating_app, root_directory)
 		
 		; Wait for download
 		while not InStr(A_Clipboard, "Download") and not InStr(A_Clipboard, "text") and not InStr(A_Clipboard, "txt")
-		{	
-			mouseClick "left", 716, 808
-			
+		{
 			loop 10
 			{
+				mouseMove, 577, 671
+				mouseClick "left", 577, 671
+				
 				send "{WheelDown}"
 				sleep 100
 			}
-			
+		
+			mouseClick "left", 716, 808
 			sleep 1000
 			
 			; Check if limit is reached

@@ -79,7 +79,12 @@ main(dating_app, root_directory, resolution)
 		
 		clear_screenshot_directory(root_directory)
 		
-		if dating_app == "hinge"
+		
+		if dating_app == "tinder"
+		{
+			sleep 5000
+		}
+		else if dating_app == "hinge"
 		{
 			sleep 3000
 			; Click off add a prompt poll popup
@@ -88,6 +93,7 @@ main(dating_app, root_directory, resolution)
 			mouseClick "left", 828, 567
 			sleep 3000
 		}
+		
 	}
 	
 }

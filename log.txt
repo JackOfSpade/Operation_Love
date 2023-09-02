@@ -1,3 +1,26 @@
 
 
-super_likes: 
+super_likes: 0
+scores: 4.7, 3.8, 3.8, 4.8, 9, 4.8
+combined_metric: 9
+decision: super_like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 0
+scores: 5.5, 4.9, 5.6, 6.4, 4.3, 4.2
+combined_metric: 6.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 4.5, 6.9, 3.8, 6.6, 5, 4.2
+combined_metric: 6.9000000000000004
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 0

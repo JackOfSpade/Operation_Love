@@ -63,6 +63,8 @@ upload_profile_pics(root_directory, resolution, dating_app)
 		A_Clipboard := ""
 		sleep 100
 		
+		sleep 500
+		
 		; Click "Choose Photo" Button
         mouseClick "left", pixel_location[2][1], pixel_location[2][2]
 		

@@ -103,14 +103,16 @@ like(dating_app, root_directory)
 	{
 		winactivate "Tinder"
 		send "{up}"
-		sleep 1000
+		sleep 2000
 		send "{down}"
-		sleep 1000
+		sleep 2000
 		send "{right}"
 		
-		sleep 1000
+		sleep 3000
 		; Click away super_like upgrade notice for popular profiles
 		send "{esc}"
+		
+		sleep 3000
 	}
 	else if dating_app == "bumble"
 	{

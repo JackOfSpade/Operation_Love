@@ -75,6 +75,8 @@ super_like(dating_app, root_directory)
 		sleep 1000
 		send "{up}"
 		sleep 3000
+		send "{down}"
+		sleep 3000
 		send "{enter}"
 		sleep 1000
 		; click away comment recommendation
@@ -103,6 +105,8 @@ like(dating_app, root_directory)
 		winactivate "Tinder"
 		sleep 1000
 		send "{up}"
+		sleep 3000
+		send "{down}"
 		sleep 3000
 		send "{right}"
 		
@@ -329,6 +333,8 @@ dislike(dating_app)
 		winactivate "Tinder"
 		sleep 1000
 		send "{up}"
+		sleep 3000
+		send "{down}"
 		sleep 3000
 		send "{left}"
 	}

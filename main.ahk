@@ -74,11 +74,7 @@ main(dating_app, root_directory, resolution)
 			dislike(dating_app)
 			
 			FileAppend "actual decision: dislike" . "`n", ".\log.txt"
-		}
-	
-		
-		clear_screenshot_directory(root_directory)
-		
+		}		
 		
 		if dating_app == "tinder"
 		{
@@ -93,6 +89,8 @@ main(dating_app, root_directory, resolution)
 			mouseClick "left", 828, 567
 			sleep 3000
 		}
+		
+		clear_screenshot_directory(root_directory)
 		
 	}
 	

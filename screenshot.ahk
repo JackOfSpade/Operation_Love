@@ -71,6 +71,7 @@ clear_screenshot_directory(root_directory)
     send "{enter}"
     sleep 2000
 	winActivate "Screenshots"
+	sleep 500
     send "^a"
     send "{delete}"
     sleep 500

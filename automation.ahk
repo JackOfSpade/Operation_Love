@@ -230,6 +230,8 @@ like(dating_app, root_directory)
 				sleep 5000
 				goto start_of_like_function_label
 			}
+			
+			get_text(755, 807, 1472, 807, 1000)
 		} 
 		
 		sleep 100

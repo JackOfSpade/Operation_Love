@@ -72,6 +72,7 @@ super_like(dating_app, root_directory)
 	if dating_app == "tinder"
 	{
 		winactivate "Tinder"
+		sleep 1000
 		send "{up}"
 		sleep 1000
 		send "{down}"
@@ -102,6 +103,7 @@ like(dating_app, root_directory)
 	if dating_app == "tinder"
 	{
 		winactivate "Tinder"
+		sleep 1000
 		send "{up}"
 		sleep 2000
 		send "{down}"
@@ -322,6 +324,7 @@ dislike(dating_app)
 	if dating_app == "tinder"
 	{
 		winactivate "Tinder"
+		sleep 1000
 		send "{up}"
 		sleep 1000
 		send "{down}"

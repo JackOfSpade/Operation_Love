@@ -19,8 +19,10 @@ take_screenshot(dating_app)
        {
            print_screen(675, 126, 1032, 555)
            sleep 500
-           send "{space}"
-           sleep 500
+		   ; Space stops working for some reason sometimes
+           
+		   mouseClick "left", 1015, 360
+           sleep 1000
        }        
     }
     else if dating_app == "bumble"

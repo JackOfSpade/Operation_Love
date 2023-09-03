@@ -15,14 +15,3 @@ actual decision: dislike
 
 
 super_likes: 5
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 5
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike

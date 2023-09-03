@@ -96,6 +96,8 @@ upload_profile_pics(root_directory, resolution, dating_app)
         sleep 500
         
         send "{enter}"
+		
+		sleep 500
         
         winactivate "Hot Chat"
 		

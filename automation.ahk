@@ -153,9 +153,14 @@ like(dating_app, root_directory)
 		mouseClick "left", 826, 968
 		
 		sleep 500
-				
+		
+		sleep 500
+		
+		send "^a"
+		
 		; For some reason ChatGPT refuses to give the download link the first time sometimes
-		A_Clipboard := "Make sure you're processing the most recent profile given. The message should not be more than 33 characters long. Reassess whether the message is just an reiteration of what she has already said in her profile. If so, rewrite. Give me the download link only without any other explanations, meta responses or any other text"		
+		A_Clipboard := "Make sure you're processing the most recent profile given. The message should not be more than 33 characters long. Reassess whether the message is just an reiteration of what she has already said in her profile. If so, rewrite. Give me the download link only without any other explanations, meta responses or any other text"
+		
 		Send "^v"
 		
 		sleep 1000
@@ -188,7 +193,8 @@ like(dating_app, root_directory)
 			send "^a"
 					
 			; For some reason ChatGPT refuses to give the download link the first time sometimes
-			A_Clipboard := "Make sure you're processing the most recent profile given. Reassess whether the message is just an reiteration of what she has already said in her profile. If so, rewrite. Give me the download link only without any other explanations, meta responses or any other text"		
+			A_Clipboard := "Make sure you're processing the most recent profile given. Reassess whether the message is just an reiteration of what she has already said in her profile. If so, rewrite. Give me the download link only without any other explanations, meta responses or any other text"
+			
 			Send "^v"
 			
 			sleep 1000

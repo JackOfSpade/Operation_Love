@@ -180,6 +180,10 @@ like(dating_app, root_directory)
 				sleep 5000
 				goto start_of_like_function_label
 			}	
+			
+			sleep 100
+			A_Clipboard := ""
+			sleep 100
 
 			; Click regenerate
 			mouseClick "left", 1086, 956

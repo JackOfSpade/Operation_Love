@@ -70,10 +70,11 @@ clear_screenshot_directory(root_directory)
     send "^v"
     send "{enter}"
     sleep 2000
+	winActivate "Screenshots"
     send "^a"
     send "{delete}"
     sleep 500
-    WinClose "Screenshots"   
+    winClose "Screenshots"   
 
 	sleep 100
     A_Clipboard := ""

@@ -169,7 +169,7 @@ like(dating_app, root_directory)
 			}
 			
 			; Check if limit is reached
-			get_text(779, 801, 827, 801, 1000)
+			get_text(754, 806, 827, 801, 1000)
 			
 			if InStr(A_Clipboard, "default")
 			{
@@ -214,12 +214,9 @@ like(dating_app, root_directory)
 				send "{WheelDown}"
 				sleep 100
 			}
-		
-			mouseClick "left", 716, 808
-			sleep 1000
 			
 			; Check if limit is reached
-			get_text(779, 801, 827, 801, 1000)
+			get_text(754, 806, 827, 801, 1000)
 			
 			if InStr(A_Clipboard, "default")
 			{

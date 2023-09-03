@@ -1,38 +1,8 @@
 
 
-super_likes: 5
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 5
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 5
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 5
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 5
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 5
+super_likes: 0
+scores: 7.5, 7.4
+combined_metric: 7.5
+decision: like
+actual decision: like
+hinge_opener: 'Not Bieber or Efron, but try me?'

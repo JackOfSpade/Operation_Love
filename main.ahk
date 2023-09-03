@@ -82,7 +82,7 @@ main(dating_app, root_directory, resolution)
 		
 		if dating_app == "tinder"
 		{
-			
+			sleep 3000
 		}
 		else if dating_app == "hinge"
 		{

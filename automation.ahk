@@ -166,7 +166,9 @@ like(dating_app, root_directory)
 		sleep 1000
 		
 		while not InStr(ocr(756, 955, 797, 974, 100), "Send")
-        {				
+        {		
+
+			mouseMove 558, 753
 			loop 10
 			{
 				send "{WheelDown}"
@@ -201,6 +203,8 @@ like(dating_app, root_directory)
 		
 			; Click submit
 			mouseClick "left", 1458, 967	
+			
+			sleep 1000
         }  
 		
 		sleep 100
@@ -215,6 +219,7 @@ like(dating_app, root_directory)
 		; Wait for download
 		while not InStr(A_Clipboard, "Download") and not InStr(A_Clipboard, "text") and not InStr(A_Clipboard, "txt")
 		{
+			mouseMove 558, 753
 			loop 10
 			{				
 				send "{WheelDown}"
@@ -252,25 +257,20 @@ like(dating_app, root_directory)
 		
 		sleep 5000
 		
+		send "!n"
+		A_Clipboard := "hinge_opener"
+		send "^v"
+		
+		sleep 500
+		
 		send "^l"
         send "^a"
 		A_Clipboard := root_directory
         send "^v"
 		send "{Enter}"
-		sleep 1000
-		
-		loop 4
-		{
-			send "{Tab}"
-			sleep 500
-		}
-		
-		send "!n"
-		A_Clipboard := "hinge_opener"
-		send "^v"
-		
-		send "{Enter}"
 		sleep 500
+		send "{Enter}"
+		sleep 1000
 		; Replace existing
 		send "{left}"
 		sleep 500

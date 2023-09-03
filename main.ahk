@@ -34,7 +34,7 @@ main(dating_app, root_directory, resolution)
 	file.close()
 	
 	; test
-	; hinge_opener := like(dating_app, root_directory)
+	hinge_opener := like(dating_app, root_directory)
 	
 	super_likes := 0
 	

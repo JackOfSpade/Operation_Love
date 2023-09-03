@@ -1,6 +1,6 @@
 
 
 super_likes: 0
-scores: 4.4, 8.5, 8, 8.2
-combined_metric: 8.5
+scores: 4.5, 7, 8.6, 8.4, 8.5
+combined_metric: 8.5999999999999996
 decision: super_like

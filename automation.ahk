@@ -146,11 +146,9 @@ like(dating_app, root_directory)
 		; Submit it
 		mouseClick "left", 1458, 967
 		
-		sleep 4000				
+		sleep 10000				
 			
 		mouseClick "left", 826, 968
-		
-		sleep 500
 		
 		sleep 500
 		
@@ -300,12 +298,12 @@ like(dating_app, root_directory)
 		sleep 1000
 		; Click like without footer
 		mouseClick "left", 1192, 780
-		sleep 2000
+		sleep 4000
 		
 		; Click "Add a comment"
 		mouseClick "left", 813, 778
 		
-		sleep 1000
+		sleep 3000
 		
 		SendInput hinge_opener
 		

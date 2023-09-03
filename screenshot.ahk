@@ -64,7 +64,7 @@ take_screenshot(dating_app)
 clear_screenshot_directory(root_directory)
 {
     send "<#r"
-    sleep 500
+    sleep 1000
     send "^a"	
 	A_Clipboard := root_directory . "/Screenshots"
     send "^v"

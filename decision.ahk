@@ -161,6 +161,9 @@ upload_profile_pics(root_directory, resolution, dating_app)
         sleep 100
         A_Clipboard := ""
         sleep 100
+		
+		; TEST
+		sleep 3000
     }
 
     score := 0

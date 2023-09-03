@@ -231,6 +231,10 @@ like(dating_app, root_directory)
 				goto start_of_like_function_label
 			}
 			
+			; Reset highlights
+			mouseClick "left", 479, 807
+			
+			; Check for download link
 			get_text(755, 807, 1472, 807, 1000)
 		} 
 		

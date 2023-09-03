@@ -24,6 +24,7 @@ navigate_to_discover(dating_app)
 	else if dating_app == "hinge"
     {
 		winactivate "AirDroid"
+		sleep 500
     }
 }
 
@@ -195,7 +196,7 @@ like(dating_app, root_directory)
 			send "^a"
 					
 			; For some reason ChatGPT refuses to give the download link the first time sometimes
-			A_Clipboard := "Make sure you're processing the most recent profile given. Reassess whether the message is just an reiteration of what she has already said in her profile. If so, rewrite. Give me the download link only without any other explanations, meta responses or any other text"
+			A_Clipboard := "Make sure you're processing the most recent profile given. Reassess whether the message is just an reiteration of what she has already said in her profile. If so, rewrite. Reassess whether the message is less than or equal to 33 characters long. If it's not, rewrite. Give me the download link only without any other explanations, meta responses or any other text"
 			
 			Send "^v"
 			
@@ -283,12 +284,12 @@ like(dating_app, root_directory)
 		sleep 3000
 		
 		hinge_opener := FileRead("hinge_opener.txt")
-		; Remove all symbols that cannot be typed on a keyboard
-		hinge_opener := RegExReplace(hinge_opener, "[^ -~]", "")
 		
 		; msgBox(hinge_opener)
 		
 		winactivate "AirDroid"
+		
+		sleep 500
 		
 		loop 10
 		{
@@ -349,12 +350,14 @@ dislike(dating_app)
     {
 		winactivate "AirDroid"
 		
+		sleep 500
+		
 		; Dislike button with footer
-		mouseClick "left", 727, 920
+		mouseClick "left", 731, 915
 		sleep 1000
 		; Click dislike without footer
 		mouseClick "left", 729, 982
-		sleep 2000
+		sleep 4000
 		
     }
 }

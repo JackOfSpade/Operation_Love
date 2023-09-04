@@ -74,6 +74,15 @@ super_like(dating_app, root_directory)
 	{
 		winactivate "Tinder"
 		sleep 1000
+		
+		; Fix random profile popups
+		loop 4
+		{
+			; Tinder arrow keys sometimes don't work on first try
+			send "{down}"
+			sleep 500
+		}
+		
 		mouseClick "left", 860, 624
 		sleep 1000
 		; click away comment recommendation
@@ -101,6 +110,15 @@ like(dating_app, root_directory)
 	{
 		winactivate "Tinder"
 		sleep 1000
+		
+		; Fix random profile popups
+		loop 4
+		{
+			; Tinder arrow keys sometimes don't work on first try
+			send "{down}"
+			sleep 500
+		}
+		
 		mouseClick "left", 932, 619
 		
 		sleep 3000
@@ -363,6 +381,15 @@ dislike(dating_app)
 	{
 		winactivate "Tinder"
 		sleep 1000
+		
+		; Fix random profile popups
+		loop 4
+		{
+			; Tinder arrow keys sometimes don't work on first try
+			send "{down}"
+			sleep 500
+		}
+		
 		mouseClick "left", 786, 618
 	}
 	else if dating_app == "bumble"

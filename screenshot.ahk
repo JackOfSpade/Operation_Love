@@ -21,7 +21,7 @@ take_screenshot(dating_app)
            sleep 500
 		   ; Space stops working for some reason sometimes
            
-		   mouseClick "left", 1015, 360
+		   mouseClick "left", 1036, 356
            sleep 1000
        }        
     }

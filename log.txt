@@ -1,14 +1,21 @@
 
 
 super_likes: 0
-scores: 7.2, 3.8, 4.9, 2.7, 6.1, 6.5, 4.7
-combined_metric: 7.2000000000000002
+scores: 5.9, 8.1, 4.6, 5
+combined_metric: 8.0999999999999996
 decision: like
 actual decision: like
-hinge_opener: 'Shakespeare or Marvel?'
+hinge_opener: 'Pickles, the ultimate foe?'
 
 
 super_likes: 0
-scores: 7.3, 5.9, 4.5, 6.9
-combined_metric: 7.2999999999999998
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 6.6, 6.3, 3.4, 6.1, 4.5, 4
+combined_metric: 6.5999999999999996
 decision: like

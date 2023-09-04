@@ -195,20 +195,6 @@ like(dating_app, root_directory)
 			
 			; click textbox
 			mouseClick "left", 826, 968
-		
-			sleep 500
-			send "^a"
-					
-			; For some reason ChatGPT refuses to give the download link the first time sometimes
-			A_Clipboard := "Give me the download link only without any other explanations, meta responses or any other text. Make sure you're processing the most recent profile given. Reassess whether the message is just an reiteration of what she has already said in her profile. If so, rewrite. Reassess whether the message is less than or equal to 33 characters long. If it's not, rewrite."
-			
-			Send "^v"
-		
-			sleep 100
-			A_Clipboard := ""
-			sleep 100
-			
-			sleep 500
 			
 			; Submit it
 			mouseClick "left", 1458, 967

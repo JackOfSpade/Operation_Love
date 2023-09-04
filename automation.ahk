@@ -74,11 +74,7 @@ super_like(dating_app, root_directory)
 	{
 		winactivate "Tinder"
 		sleep 1000
-		send "{up}"
-		sleep 3000
-		send "{down}"
-		sleep 3000
-		send "{enter}"
+		mouseClick "left", 860, 624
 		sleep 1000
 		; click away comment recommendation
 		send "{esc}"
@@ -105,11 +101,7 @@ like(dating_app, root_directory)
 	{
 		winactivate "Tinder"
 		sleep 1000
-		send "{up}"
-		sleep 3000
-		send "{down}"
-		sleep 3000
-		send "{right}"
+		mouseClick "left", 932, 619
 		
 		sleep 3000
 		; Click away super_like upgrade notice for popular profiles
@@ -357,11 +349,7 @@ dislike(dating_app)
 	{
 		winactivate "Tinder"
 		sleep 1000
-		send "{up}"
-		sleep 3000
-		send "{down}"
-		sleep 3000
-		send "{left}"
+		mouseClick "left", 786, 618
 	}
 	else if dating_app == "bumble"
 	{

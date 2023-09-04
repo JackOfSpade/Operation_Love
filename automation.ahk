@@ -156,11 +156,15 @@ like(dating_app, root_directory)
 		send "^a"
 		
 		; For some reason ChatGPT refuses to give the download link the first time sometimes
-		A_Clipboard := "Make sure you're processing the most recent profile given. The message should not be more than 33 characters long. Reassess whether the message is just an reiteration of what she has already said in her profile. If so, rewrite. Give me the download link only without any other explanations, meta responses or any other text"
+		A_Clipboard := "Give me the download link only without any other explanations, meta responses or any other text. Make sure you're processing the most recent profile given. Reassess whether the message is just an reiteration of what she has already said in her profile. If so, rewrite. Reassess whether the message is less than or equal to 33 characters long. If it's not, rewrite."
 		
 		Send "^v"
 		
-		sleep 1000
+		sleep 100
+        A_Clipboard := ""
+        sleep 100
+		
+		sleep 500
 		
 		while not InStr(ocr(756, 955, 797, 974, 100), "Send")
         {		
@@ -196,14 +200,18 @@ like(dating_app, root_directory)
 			send "^a"
 					
 			; For some reason ChatGPT refuses to give the download link the first time sometimes
-			A_Clipboard := "Make sure you're processing the most recent profile given. Reassess whether the message is just an reiteration of what she has already said in her profile. If so, rewrite. Reassess whether the message is less than or equal to 33 characters long. If it's not, rewrite. Give me the download link only without any other explanations, meta responses or any other text"
+			A_Clipboard := "Give me the download link only without any other explanations, meta responses or any other text. Make sure you're processing the most recent profile given. Reassess whether the message is just an reiteration of what she has already said in her profile. If so, rewrite. Reassess whether the message is less than or equal to 33 characters long. If it's not, rewrite."
 			
 			Send "^v"
-			
-			sleep 1000
 		
-			; Click submit
-			mouseClick "left", 1458, 967	
+			sleep 100
+			A_Clipboard := ""
+			sleep 100
+			
+			sleep 500
+			
+			; Submit it
+			mouseClick "left", 1458, 967
 			
 			sleep 1000
         }  
@@ -218,7 +226,7 @@ like(dating_app, root_directory)
 		sleep 3000
 		
 		; Wait for download
-		while not InStr(A_Clipboard, "Download") and not InStr(A_Clipboard, "text") and not InStr(A_Clipboard, "txt")
+		while not InStr(A_Clipboard, "Download")
 		{
 			mouseMove 558, 753
 			loop 10
@@ -242,6 +250,31 @@ like(dating_app, root_directory)
 			
 			; Check for download link
 			get_text(755, 807, 1472, 807, 1000)
+			
+			if InStr(A_Clipboard, "sandbox")
+			{
+				; click textbox
+				mouseClick "left", 826, 968
+			
+				sleep 500
+				send "^a"
+						
+				; When ChatGPT doesn't give a proper download link
+				A_Clipboard := "That's not a download link"
+				
+				Send "^v"
+		
+				sleep 100
+				A_Clipboard := ""
+				sleep 100
+				
+				sleep 500
+				
+				; Submit it
+				mouseClick "left", 1458, 967
+		
+				sleep 1000
+			}
 		} 
 		
 		sleep 100
@@ -255,6 +288,9 @@ like(dating_app, root_directory)
 		sleep 500
 		; Alternative spot
 		mouseClick "left", 1164, 807
+		sleep 500
+		; Alternative spot
+		mouseClick "left", 957, 807
 		
 		sleep 5000
 		

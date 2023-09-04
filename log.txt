@@ -1,65 +1,14 @@
 
 
 super_likes: 0
-scores: 7.5, 7.4, 7, 7, 5.5, 3.9
-combined_metric: 7.5
+scores: 7.2, 3.8, 4.9, 2.7, 6.1, 6.5, 4.7
+combined_metric: 7.2000000000000002
 decision: like
 actual decision: like
-hinge_opener: 'F1 fan? Ever tried go-karting?'
+hinge_opener: 'Shakespeare or Marvel?'
 
 
 super_likes: 0
-scores: 7.3, 6.7, 4.3, 5.9, 4.1
+scores: 7.3, 5.9, 4.5, 6.9
 combined_metric: 7.2999999999999998
 decision: like
-actual decision: like
-hinge_opener: 'Team pineapple on pizza?'
-
-
-super_likes: 0
-scores: 4.8, 7.3, 4.3, 5.2
-combined_metric: 7.2999999999999998
-decision: like
-actual decision: like
-hinge_opener: 'A pro at snow but not sheets?'
-
-
-super_likes: 0
-scores: 5.2, 7.4, 6.2, 4.8
-combined_metric: 7.4000000000000004
-decision: like
-actual decision: like
-hinge_opener: 'ER cartwheels, new Olympic sport?'
-
-
-super_likes: 0
-scores: 7, 3.7, 5.9, 4.7
-combined_metric: 7
-decision: like
-actual decision: like
-hinge_opener: 'Dad's advice for this message?'
-
-
-super_likes: 0
-scores: 4.7, 6.5, 5.4, 3.5, 5.2, 5.8
-combined_metric: 6.5
-decision: like
-actual decision: like
-hinge_opener: 'Solo sailing? That's brave.'
-
-
-super_likes: 0
-scores: 5, 6.3, 2.4, 3.5
-combined_metric: 6.2999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 6.3, 3.9, 3.7, 4.7, 3.7
-combined_metric: 6.2999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0

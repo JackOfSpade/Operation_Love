@@ -201,11 +201,11 @@ like(dating_app, root_directory)
 		sleep 3000
 		; Click submit again, random glitch that doesn't submit the first time and the entered text pops up again
 		mouseClick "left", 1458, 967
-		sleep 3000
+		sleep 5000
 		
 		; Wait for download
-		while not InStr(A_Clipboard, "Download")
-		{
+		while not InStr(A_Clipboard, "Download") or InStr(A_Clipboard, "sandbox")
+		{		
 			mouseMove 558, 753
 			loop 10
 			{				
@@ -223,13 +223,17 @@ like(dating_app, root_directory)
 				goto start_of_like_function_label
 			}
 			
+			sleep 100
+			A_Clipboard := ""
+			sleep 100
+			
 			; Reset highlights
 			mouseClick "left", 479, 807
 			
 			; Check for download link
-			get_text(755, 807, 1472, 807, 1000)
+			get_text(759, 807, 1472, 807, 1000)
 			
-			if InStr(A_Clipboard, "sandbox")
+			if InStr(A_Clipboard, "sandbox") and not InStr(A_Clipboard, "Download")
 			{
 				; click textbox
 				mouseClick "left", 826, 968
@@ -324,7 +328,7 @@ like(dating_app, root_directory)
 		
 		sleep 3000
 		
-		SendInput hinge_opener
+		send hinge_opener
 		
 		sleep 6000
 		

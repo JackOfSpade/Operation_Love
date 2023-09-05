@@ -1,0 +1,1761 @@
+
+
+super_likes: 0
+scores: 8.6, 6.2, 6.2, 6.6, 5.3, 6.1
+combined_metric: 8.5999999999999996
+decision: super_like
+actual decision: like
+hinge_opener: 'Do temporary tats count?'
+
+
+super_likes: 0
+scores: 5.1, 8.1, 3.4, 5.5, 8
+combined_metric: 8.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Harry Potter or Football?'
+
+
+super_likes: 0
+scores: 6.2, 6.9, 3.9, 6.6, 3.9, 4.8
+combined_metric: 6.9000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Van life as a microbiologist?'
+
+
+super_likes: 0
+scores: 7, 6.3, 7.7, 5.9
+combined_metric: 7.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Fear snakes or broken bones?'
+
+
+super_likes: 0
+scores: 4.9, 4.8, 5.7, 7.1, 6
+combined_metric: 7.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Naps > gym > travel. Agree?'
+
+
+super_likes: 0
+scores: 5.6, 5.9, 4.1, 4.2, 4.3
+combined_metric: 5.9000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 8, 6.5, 8.1, 7.3, 8, 3.5
+combined_metric: 8.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Sushi talks > TED talks'
+
+
+super_likes: 0
+scores: 5.1, 6.4, 3.4, 4.5, 6.2
+combined_metric: 6.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 7.7, 6, 4.6
+combined_metric: 7.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Sunday: caffeine or reel life?'
+
+
+super_likes: 0
+scores: 6.1, 4.3, 6.9
+combined_metric: 6.9000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Rome tip noted. No cute vans.'
+
+
+super_likes: 0
+scores: 5.6, 5.9, 7, 5.9, 5.7
+combined_metric: 7
+decision: like
+actual decision: like
+hinge_opener: 'Selfie #503 or #504 next?'
+
+
+super_likes: 0
+scores: 7.2, 5.8, 4.6, 8.3, 6, 4.2
+combined_metric: 8.3000000000000007
+decision: like
+actual decision: like
+hinge_opener: 'Sushi haters club, you in?'
+
+
+super_likes: 0
+scores: 5.3, 6.7
+combined_metric: 6.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: '24hr drive? Hope there's AC.'
+
+
+super_likes: 0
+scores: 6.2, 5.4, 4.6
+combined_metric: 6.2000000000000002
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 4.6, 5.9, 4.8
+combined_metric: 5.9000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.6, 6.3, 6.6, 6, 6.5, 6.2, 5.5
+combined_metric: 6.5999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Voicemail, really? 😄'
+
+
+super_likes: 0
+scores: 6.3
+combined_metric: 6.2999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 4.5, 6
+combined_metric: 6
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 4.5, 4.5, 6.8, 3.8, 7.5
+combined_metric: 7.5
+decision: like
+actual decision: like
+hinge_opener: 'Tears in car or just UP?'
+
+
+super_likes: 0
+scores: 3.1, 6.2, 6.8, 3.9, 4.5
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'General Kenobi, I presume?'
+
+
+super_likes: 0
+scores: 5.4, 6.8, 3.7
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Cool knives? You're sharp.'
+
+
+super_likes: 0
+scores: 4.4, 5, 4.6, 4.6, 3.7, 7.7
+combined_metric: 7.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Even or odd today?'
+
+
+super_likes: 0
+scores: 3.9, 4.2, 4.6, 5.9, 4.5, 6.7
+combined_metric: 6.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Reddit: The modern Oracle?'
+
+
+super_likes: 0
+scores: 4.4, 5, 4.4, 5.4, 2.8
+combined_metric: 5.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 3.2, 2, 5.2, 4.2
+combined_metric: 5.2000000000000002
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 8.4, 4.5, 6.2, 9, 5
+combined_metric: 9
+decision: super_like
+actual decision: like
+hinge_opener: 'Gosling > Reynolds? Bold.'
+
+
+super_likes: 0
+scores: 6.2, 4.1, 5.5, 5.1
+combined_metric: 6.2000000000000002
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.7, 5.7
+combined_metric: 5.7000000000000002
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 7.7, 5.1
+combined_metric: 7.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'P without opening mouth? Magic'
+
+
+super_likes: 0
+scores: 9.5, 9.4, 6.9, 5.1, 5
+combined_metric: 9.5
+decision: super_like
+actual decision: like
+hinge_opener: 'Color or B&W old movies?'
+
+
+super_likes: 0
+scores: 3.6, 5.2, 5.8, 6.1
+combined_metric: 6.0999999999999996
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 6.7, 5.7, 5.7, 7
+combined_metric: 7
+decision: like
+actual decision: like
+hinge_opener: 'Beekeeping? Sounds buzzworthy'
+
+
+super_likes: 0
+scores: 7.2, 6.5, 6.4, 6, 6.3, 5.8, 3.1, 2.6
+combined_metric: 7.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Life ruiner or country fan?'
+
+
+super_likes: 0
+scores: 4.8, 4.9, 3.8, 5.9, 5.1
+combined_metric: 5.9000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.1, 3.8, 3.5, 4.3, 5, 5.1
+combined_metric: 5.0999999999999996
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 4.9, 5.1, 3.4
+combined_metric: 5.0999999999999996
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.7, 6.2, 5, 4.7
+combined_metric: 6.2000000000000002
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 4.9, 4.4, 6.8
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Whistling champ or rusty?'
+
+
+super_likes: 0
+scores: 8, 4.4, 7, 3.8, 7.1
+combined_metric: 8
+decision: like
+actual decision: like
+hinge_opener: 'Espresso martinis: breakfast?'
+
+
+super_likes: 0
+scores: 5.5, 6.8, 7.5, 6.4
+combined_metric: 7.5
+decision: like
+actual decision: like
+hinge_opener: 'Rings binge for the win?'
+
+
+super_likes: 0
+scores: 4.2, 8.9, 8.1, 4.9, 3.7
+combined_metric: 8.9000000000000004
+decision: super_like
+actual decision: like
+hinge_opener: 'Boombox ready. Missing Crocs.'
+
+
+super_likes: 0
+scores: 5.2, 4.7, 7.1, 9.8, 5.6, 6.6, 8.8, 6.2
+combined_metric: 9.8000000000000007
+decision: super_like
+actual decision: like
+hinge_opener: 'Dog's a critic, huh?'
+
+
+super_likes: 0
+scores: 5.9, 6.9, 7, 6.9
+combined_metric: 7
+decision: like
+actual decision: like
+hinge_opener: 'Dog's a critic, huh?'
+
+
+super_likes: 0
+scores: 6.7, 3, 5, 5.9, 5.9
+combined_metric: 6.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Scooter incident story time?'
+
+
+super_likes: 0
+scores: 3.8, 3.9, 3.1, 7.5
+combined_metric: 7.5
+decision: like
+actual decision: like
+hinge_opener: 'Ever tried a taco run?'
+
+
+super_likes: 0
+scores: 7.4, 4.2, 5.9, 6.1, 6.3, 6.4
+combined_metric: 7.4000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Lap pools: scarier than sharks?'
+
+
+super_likes: 0
+scores: 6.1, 5.3, 9.5, 4.6
+combined_metric: 9.5
+decision: super_like
+actual decision: like
+hinge_opener: 'Dolphins? Flipper is hurt.'
+
+
+super_likes: 0
+scores: 6.2, 7.3, 4.8, 3.3
+combined_metric: 7.2999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'You pick food, I pick story?'
+
+
+super_likes: 0
+scores: 4.7, 7.1, 6.4, 4.5, 4.5
+combined_metric: 7.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Space? Overrated. Hot dogs? 👍'
+
+
+super_likes: 0
+scores: 6.8, 7.2, 5.1, 4.1
+combined_metric: 7.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Outdoorsy? I prefer Chilis.'
+
+
+super_likes: 0
+scores: 7.8, 3.3, 5.7, 5.6, 5.4
+combined_metric: 7.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Always 30 mins early, then?'
+
+
+super_likes: 0
+scores: 6.7, 5.9
+combined_metric: 6.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Groupon skydiving, huh?'
+
+
+super_likes: 0
+scores: 5.8, 3.8, 6.2
+combined_metric: 6.2000000000000002
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 6.5, 6.2
+combined_metric: 6.5
+decision: like
+actual decision: like
+hinge_opener: 'Is coffee your hiking fuel?'
+
+
+super_likes: 0
+scores: 7.2, 4.9, 3.8, 6.3
+combined_metric: 7.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Home Depot date, huh?'
+
+
+super_likes: 0
+scores: 5.2, 5.9, 6.4, 4.7, 5.7, 5.9
+combined_metric: 6.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.8, 4.4, 6.9, 6.9, 3.5
+combined_metric: 6.9000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Your dog or your students?'
+
+
+super_likes: 0
+scores: 8.3, 4.6, 4.7, 6.2, 8.2, 5.3
+combined_metric: 8.3000000000000007
+decision: like
+actual decision: like
+hinge_opener: 'Is the MC1R gene a dealbreaker?'
+
+
+super_likes: 0
+scores: 3.1, 7.2, 6.3, 3.1, 4
+combined_metric: 7.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Shrek 2 is the real MVP'
+
+
+super_likes: 0
+scores: 4.6, 3.5, 6.5, 5.8, 4.1
+combined_metric: 6.5
+decision: like
+actual decision: like
+hinge_opener: 'Coffee or lightsabers?'
+
+
+super_likes: 0
+scores: 7, 4.7, 5.6, 4.7, 7.3, 4.7, 8.1
+combined_metric: 8.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Business bro or study buddy?'
+
+
+super_likes: 0
+scores: 6.1, 5.7, 3.5, 6.3
+combined_metric: 6.2999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 6.2, 6.6, 4.9, 6.8, 5.6, 5.7
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'A breezy Grand Canyon trip?'
+
+
+super_likes: 0
+scores: 6.4, 7.3, 5.6, 6.1
+combined_metric: 7.2999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Every band's groupie yet?'
+
+
+super_likes: 0
+scores: 4.6, 5.4, 6.8, 3.7
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Astrology signs for cats?'
+
+
+super_likes: 0
+scores: 6.5, 7.1, 6.5
+combined_metric: 7.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Cotton candy > game score?'
+
+
+super_likes: 0
+scores: 3, 6.9, 6.8, 5, 6.8
+combined_metric: 6.9000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Unused paddle board, huh?'
+
+
+super_likes: 0
+scores: 5, 6.2, 4.5, 3.7, 5.4, 4.3
+combined_metric: 6.2000000000000002
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 6.8, 5.9, 7, 8.2
+combined_metric: 8.1999999999999993
+decision: like
+actual decision: like
+hinge_opener: 'Blind fish? They see the future.'
+
+
+super_likes: 0
+scores: 5.8, 5.6, 4.4, 6.4
+combined_metric: 6.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 3.8, 4.6, 3.3, 4.6
+combined_metric: 4.5999999999999996
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 7.1, 4.9, 4.6, 6.4, 4.2, 5
+combined_metric: 7.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Katniss or Legolas?'
+
+
+super_likes: 0
+scores: 6.2, 6.3, 6.7, 7
+combined_metric: 7
+decision: like
+actual decision: like
+hinge_opener: 'Sour belts on deck?'
+
+
+super_likes: 0
+scores: 5.5, 5.1, 5.3, 4.4, 3.4, 8.4
+combined_metric: 8.4000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Giving each other shit yet?'
+
+
+super_likes: 0
+scores: 5.2, 4.8, 7.4, 6.2, 6.4
+combined_metric: 7.4000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Got any Taylor Swift song recs?'
+
+
+super_likes: 0
+scores: 5.2, 6.1, 5.9, 5.3, 3.6, 6, 5.8
+combined_metric: 6.0999999999999996
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.6, 3.3, 5.1
+combined_metric: 5.5999999999999996
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 7.4, 3.5, 6.2, 3.9, 4.2
+combined_metric: 7.4000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'River toesies, huh?'
+
+
+super_likes: 0
+scores: 6.3, 6
+combined_metric: 6.2999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.1, 6.6, 5.2, 3.9, 6, 5.4, 4.5
+combined_metric: 6.5999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Bookstore weightlifter?'
+
+
+super_likes: 0
+scores: 5.5, 4.7, 6.3, 5.9, 4.5, 6.2, 5.9
+combined_metric: 6.2999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.1, 4.3, 4.1, 3.2
+combined_metric: 5.0999999999999996
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 7, 5.3, 6.1, 5.1, 6.5, 3.2
+combined_metric: 7
+decision: like
+actual decision: like
+hinge_opener: 'Bad at belaying, huh?'
+
+
+super_likes: 0
+scores: 5, 5.2, 5.3, 5.4, 5.8, 5
+combined_metric: 5.7999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.3, 6.8
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Foosball champ or hustler?'
+
+
+super_likes: 0
+scores: 3.3, 5.4, 5.9, 6.2, 6.3
+combined_metric: 6.2999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 7, 3.8
+combined_metric: 7
+decision: like
+actual decision: like
+hinge_opener: 'Monopoly or Scrabble?'
+
+
+super_likes: 0
+scores: 3.2, 5.1, 5.6, 3.5, 4.5, 4.7
+combined_metric: 5.5999999999999996
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 4.5, 4.5, 7.3, 4.3, 3.6
+combined_metric: 7.2999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Gym rat or gym mouse?'
+
+
+super_likes: 0
+scores: 6.3, 3.4, 5.4, 4.8
+combined_metric: 6.2999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.8, 5.9, 4.2, 4.9, 6.4
+combined_metric: 6.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.6, 5.8, 6.4
+combined_metric: 6.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 4.2, 5.9, 6.6, 4.7
+combined_metric: 6.5999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Gym rat or gym mouse?'
+
+
+super_likes: 0
+scores: 4.8, 4.8, 2.7, 5.5, 6.8, 4.8, 4.6
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Ever tried snickers for mood?'
+
+
+super_likes: 0
+scores: 5.7, 3.6, 4.5, 6.1, 3.3
+combined_metric: 6.0999999999999996
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 7.3, 2.7, 6.2, 5.5, 6.5, 4.5
+combined_metric: 7.2999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Mitch Hedberg fan, huh?'
+
+
+super_likes: 0
+scores: 5.8, 5.6, 4.9, 7.2, 4.4, 5.1, 5
+combined_metric: 7.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Pickleball champ or rookie?'
+
+
+super_likes: 0
+scores: 4.5, 5.7, 3.1, 4.7, 6.1, 5
+combined_metric: 6.0999999999999996
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.1, 6.7, 3.5, 3, 2.5
+combined_metric: 6.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Masterchef, but just for meat?'
+
+
+super_likes: 0
+scores: 6.6, 6.4, 6.4, 4.1, 4.8
+combined_metric: 6.5999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'You crochet, I knot. Deal?'
+
+
+super_likes: 0
+scores: 6.9, 6.7, 5.9, 4.2, 6.2, 7.4
+combined_metric: 7.4000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Watermelon: fruit or foe?'
+
+
+super_likes: 0
+scores: 6.4, 5.8, 4.8, 5.2, 7.3
+combined_metric: 7.2999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'S'mores or campfire stories?'
+
+
+super_likes: 0
+scores: 7.2, 7.1, 4.4, 6.1
+combined_metric: 7.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Fries over everything?'
+
+
+super_likes: 0
+scores: 6.4, 5.3, 5.6, 4.3
+combined_metric: 6.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 7.1, 6.5, 4.7, 4.6, 4.2, 4.5, 5.2
+combined_metric: 7.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Met a dog named Bob lately?'
+
+
+super_likes: 0
+scores: 5.2, 6.2, 3.2
+combined_metric: 6.2000000000000002
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.8, 4.5, 4.9, 6.3
+combined_metric: 6.2999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 3.8, 4.5, 3.3, 5.9, 7.7, 4.8, 4.5
+combined_metric: 7.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Speaking fluent food too?'
+
+
+super_likes: 0
+scores: 7.4, 5.2, 4, 6.2, 2.9, 4.9, 4.4
+combined_metric: 7.4000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'So you're a sober economist?'
+
+
+super_likes: 0
+scores: 5.4, 7.1, 7.5, 3.8
+combined_metric: 7.5
+decision: like
+actual decision: like
+hinge_opener: 'All shrines, too?'
+
+
+super_likes: 0
+scores: 4.8, 5.7, 7.6, 6.4, 7.1, 8.1
+combined_metric: 8.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Got any golden retriever tips?'
+
+
+super_likes: 0
+scores: 5.3, 4.2, 4.7, 5.6, 6.7
+combined_metric: 6.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'East coast? We'll talk.'
+
+
+super_likes: 0
+scores: 6.8, 2.9, 3.8, 6.2, 5.9
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Espresso martini connoisseur?'
+
+
+super_likes: 0
+scores: 7.3, 4.5, 5.1, 5.5, 7.3
+combined_metric: 7.2999999999999998
+decision: like
+actual decision: like
+hinge_opener: '30 parks? Saving any for us?'
+
+
+super_likes: 0
+scores: 4.3, 6, 3.1, 5.1, 4, 5.7
+combined_metric: 6
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 7.2, 6.4, 5.7, 8, 6.3
+combined_metric: 8
+decision: like
+actual decision: like
+hinge_opener: 'Always on time to stress?'
+
+
+super_likes: 0
+scores: 6, 4.6, 4.8, 6.8
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: '18-wheelers? Try clowns.'
+
+
+super_likes: 0
+scores: 3, 3.5, 4.8, 2.5, 2.5
+combined_metric: 4.7999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 4.5, 6.5, 5.2, 6.7
+combined_metric: 6.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'So, Red Sox or Patriots first?'
+
+
+super_likes: 0
+scores: 6.1, 5.6, 6.5, 4
+combined_metric: 6.5
+decision: like
+actual decision: like
+hinge_opener: 'Circus date is a no-go?'
+
+
+super_likes: 0
+scores: 5.9, 5.6, 4.9
+combined_metric: 5.9000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 6.2, 5.6, 6.3, 4.4
+combined_metric: 6.2999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 4.1, 5.6, 4.5, 6, 5.6, 6.5, 5.6
+combined_metric: 6.5
+decision: like
+actual decision: like
+hinge_opener: 'Car trouble = bonus nature day?'
+
+
+super_likes: 0
+scores: 3.9, 6.5, 6.6, 3.7
+combined_metric: 6.5999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Call me en, not Chat.'
+
+
+super_likes: 0
+scores: 4.6, 5.7, 7.3, 5.2, 7, 8.2
+combined_metric: 8.1999999999999993
+decision: like
+actual decision: like
+hinge_opener: 'Daft Punk critic turned fan?'
+
+
+super_likes: 0
+scores: 4.7, 6.1, 5.4
+combined_metric: 6.0999999999999996
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 4, 5.9, 6.7, 6.7, 6.8
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Breaking 90 in golf? Challenge accepted'
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0

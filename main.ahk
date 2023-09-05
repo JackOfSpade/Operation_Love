@@ -49,7 +49,18 @@ main(dating_app, root_directory, resolution)
 	sleep 500
 	
 	while true
-	{
+	{	
+		if dating_app == "tinder"
+		{
+			send "{f5}"
+			sleep 12000
+		}
+		else if dating_app == "hinge"
+		{
+			send "{f5}"
+			sleep 6000
+		}
+	
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"
 	
 		take_screenshot(dating_app)  

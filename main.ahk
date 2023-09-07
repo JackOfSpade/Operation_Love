@@ -58,10 +58,8 @@ main(dating_app, root_directory, resolution)
 			; sleep 12000
 		}
 		else if dating_app == "bumble"
-		{
-			get_text(1026, 489, 1096, 490, 1000)
-			
-			if InStr(A_Clipboard, "Want")
+		{			
+			if InStr(ocr(1025, 476, 1096, 503, 500), "Want")
 			{
 				send "{f5}"
 			}

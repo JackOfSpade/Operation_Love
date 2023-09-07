@@ -34,6 +34,7 @@ get_text(x1, y1, x2, y2, clipwait_time)
 	sleep 100
 	send "^c"
 	clipwait(clipwait_time, 0)
+	return A_Clipboard	
 }
 
 print_screen(x1, y1, x2, y2)

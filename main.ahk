@@ -52,13 +52,13 @@ main(dating_app, root_directory, resolution)
 	{	
 		if dating_app == "tinder"
 		{
-			send "{f5}"
-			sleep 12000
+			; send "{f5}"
+			; sleep 12000
 		}
-		else if dating_app == "hinge"
+		else if dating_app == "bumble"
 		{
-			send "{f5}"
-			sleep 6000
+			; send "{f5}"
+			; sleep 6000
 		}
 	
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"

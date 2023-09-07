@@ -46,7 +46,6 @@ take_screenshot(dating_app)
 	else if dating_app == "hinge"
     {
 		winactivate "AirDroid"
-		send "{down}"
 		Loop 8
 		{
 			print_screen(657, 106, 1260, 889)

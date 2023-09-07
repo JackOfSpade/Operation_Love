@@ -50,6 +50,8 @@ main(dating_app, root_directory, resolution)
 	
 	while true
 	{	
+		start:
+		
 		if dating_app == "tinder"
 		{
 			; send "{f5}"
@@ -57,8 +59,20 @@ main(dating_app, root_directory, resolution)
 		}
 		else if dating_app == "bumble"
 		{
-			; send "{f5}"
-			; sleep 6000
+			get_text(1026, 489, 1096, 490, 1000)
+			
+			if InStr(A_Clipboard, "Want")
+			{
+				send "{f5}"
+			}
+			
+			sleep 100
+			A_Clipboard := ""
+			sleep 100
+			 
+			sleep 6000
+			
+			goto("start")
 		}
 	
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"
@@ -111,9 +125,9 @@ main(dating_app, root_directory, resolution)
 
 ; main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
 
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
 
-main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
+; main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
 
 
 

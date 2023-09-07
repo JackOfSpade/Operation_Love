@@ -292,7 +292,7 @@ like(dating_app, root_directory)
 		; Alternative spot
 		mouseClick "left", 957, 807
 		
-		sleep 5000
+		sleep 7000
 		
 		send "!n"
 		A_Clipboard := "hinge_opener"

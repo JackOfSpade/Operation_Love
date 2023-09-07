@@ -62,15 +62,15 @@ main(dating_app, root_directory, resolution)
 			if InStr(ocr(1025, 476, 1096, 503, 500), "Want")
 			{
 				send "{f5}"
-			}
-			
-			sleep 100
-			A_Clipboard := ""
-			sleep 100
-			 
-			sleep 6000
-			
-			goto("start")
+				
+				sleep 100
+				A_Clipboard := ""
+				sleep 100
+				 
+				sleep 6000
+				
+				goto("start")
+			}	
 		}
 	
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"

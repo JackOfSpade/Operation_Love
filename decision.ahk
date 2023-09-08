@@ -114,7 +114,7 @@ upload_profile_pics(root_directory, resolution, dating_app)
 			if count > 120
 			{
 				send "{F5}"
-				sleep 12000
+				sleep 62000
 				mouseClick "left", pixel_location[5][1], pixel_location[5][2]
 				sleep 2000
 				goto start_of_loop

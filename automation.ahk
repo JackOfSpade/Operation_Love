@@ -159,7 +159,7 @@ like(dating_app, root_directory)
 		
 		sleep 10000				
 			
-		mouseClick "left", 826, 968
+		mouseClick "left", 824, 967
 		
 		sleep 500
 		

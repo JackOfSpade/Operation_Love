@@ -136,6 +136,8 @@ upload_profile_pics(root_directory, resolution, dating_app)
 			A_Clipboard := ""
 			sleep 100
 			
+			sleep 1000
+			
 			; Get score
 			get_text(pixel_location[4][1], pixel_location[4][2], pixel_location[4][3], pixel_location[4][4], 60*60*24)
 			

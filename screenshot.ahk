@@ -72,7 +72,7 @@ clear_screenshot_directory(root_directory)
 	A_Clipboard := root_directory . "/Screenshots"
     send "^v"
     send "{enter}"
-    sleep 2000
+    sleep 3000
 	winActivate "Screenshots"
 	sleep 500
     send "^a"

@@ -17,7 +17,7 @@ take_screenshot(dating_app)
        
        loop 6
        {
-           print_screen(675, 126, 1032, 555)
+           print_screen(675, 126, 1032, 504)
            sleep 500
 		   ; Space stops working for some reason sometimes
            

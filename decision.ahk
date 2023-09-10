@@ -45,7 +45,11 @@ upload_profile_pics(root_directory, resolution, dating_app)
 		get_text(pixel_location[1][1], pixel_location[1][2], pixel_location[1][3], pixel_location[1][4], 100)
 		
 		while not InStr(A_Clipboard, "PHOTO")
-		{			
+		{		
+			; clear highlights
+			mouseClick "left", pixel_location[3][1], pixel_location[3][2]
+			sleep 500
+			
 			; weird pop-up glitch on company PC win 10
 			if InStr(A_Clipboard, "STAR")
 			{
@@ -125,7 +129,7 @@ upload_profile_pics(root_directory, resolution, dating_app)
 			
         }  
 		
-        ; click away highlights
+        ; clear highlights
 		mouseClick "left", pixel_location[3][1], pixel_location[3][2]
 		sleep 500
 		

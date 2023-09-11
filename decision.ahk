@@ -72,7 +72,7 @@ upload_profile_pics(root_directory, resolution, dating_app)
 		; Click "Choose Photo" Button
         mouseClick "left", pixel_location[2][1], pixel_location[2][2]
 		
-        sleep 3000
+        sleep 4000
 		
         send "^l"
         send "^a"
@@ -216,7 +216,7 @@ make_decision(root_directory, resolution, dating_app)
     {
         decision := "super_like"
     }
-    else if combined_metric >= 6.5
+    else if combined_metric >= 6
     {
         decision := "like"
     }

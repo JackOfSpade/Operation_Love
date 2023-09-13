@@ -141,7 +141,7 @@ like(dating_app, root_directory)
 		sleep 1000
 		mouseClick "left", 860, 968
 		
-		sleep 500
+		sleep 1000
 		
 		; Cannot remove coding work from response
 		A_Clipboard := "The following text is from a dating profile for a woman: " . bulk_images_ocr_text . " ====== End of dating profile ======= Give a download link for a message that is a funny commentary on one specific detail from her profile. The message should not be more than 33 characters long. Do not include an invitation to do anything; If the generated message has an ending period, remove it. Avoid word play. Avoid messages that uses exclamation marks. It shows too much enthusiasm for an initial message. Do not answer prompt questions that the girl has written on her profile without at least subtly referring back to it because she won't know what prompt we're referring to." 

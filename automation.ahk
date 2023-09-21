@@ -144,7 +144,7 @@ like(dating_app, root_directory)
 		sleep 1000
 		
 		; Cannot remove coding work from response
-		A_Clipboard := "The following text is from a dating profile for a woman: " . bulk_images_ocr_text . " ====== End of dating profile ======= Give a download link for a message that is a funny commentary on one specific detail from her profile. The message should not be more than 33 characters long. Do not include an invitation to do anything; If the generated message has an ending period, remove it. Avoid word play. Avoid messages that uses exclamation marks. It shows too much enthusiasm for an initial message. Do not answer prompt questions that the girl has written on her profile without at least subtly referring back to it because she won't know what prompt we're referring to." 
+		A_Clipboard := "The following text is from a dating profile for a woman: " . bulk_images_ocr_text . " ====== End of dating profile ======= Generate a message that is a funny commentary on one specific detail from her profile. The message should not be more than 33 characters long. Do not include an invitation to do anything; If the generated message has an ending period, remove it. Avoid word play. Avoid messages that uses exclamation marks. It shows too much enthusiasm for an initial message. Do not answer prompt questions that the girl has written on her profile without at least subtly referring back to it because she won't know what prompt we're referring to." 
 		
 		Send "^v"
 		
@@ -164,7 +164,7 @@ like(dating_app, root_directory)
 		sleep 1000
 		
 		; For some reason ChatGPT refuses to give the download link the first time sometimes
-		A_Clipboard := "Give me the download link again without any other text. Make sure the message is based on the most recent profile given. If the message is more than 33 characters long, rewrite so that it's less than or equal to 33 characters long."
+		A_Clipboard := "Put the message in a download link without any other text. Make sure the message is based on the most recent profile given. If the message is more than 33 characters long, rewrite so that it's less than or equal to 33 characters long."
 		
 		Send "^v"
 		

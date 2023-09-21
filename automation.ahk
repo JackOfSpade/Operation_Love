@@ -163,8 +163,6 @@ like(dating_app, root_directory)
 		
 		sleep 1000
 		
-		send "^a"
-		
 		; For some reason ChatGPT refuses to give the download link the first time sometimes
 		A_Clipboard := "Give me the download link again without any other text. Make sure the message is based on the most recent profile given. If the message is more than 33 characters long, rewrite so that it's less than or equal to 33 characters long."
 		

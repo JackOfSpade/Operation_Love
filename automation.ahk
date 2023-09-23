@@ -290,10 +290,10 @@ like(dating_app, root_directory)
 		mouseClick "left", 957, 807
 		sleep 500
 		; Click download link (alternative spot)
-		mouseClick "left", 892, 
+		mouseClick "left", 892, 807
 		sleep 500
 		; Click download link
-		mouseClick "left", 770, 805
+		mouseClick "left", 770, 807
 		
 		
 		sleep 7000

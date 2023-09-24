@@ -159,9 +159,13 @@ like(dating_app, root_directory)
 		
 		sleep 10000				
 			
-		mouseClick "left", 824, 967
-		
-		sleep 1000
+		; Some reason you gotta click multiple times if ChatGPT is still processing
+		mouseClick "left", 824, 967		
+		sleep 500		
+		mouseClick "left", 824, 967		
+		sleep 500
+		mouseClick "left", 824, 967		
+		sleep 500
 		
 		; For some reason ChatGPT refuses to give the download link the first time sometimes
 		A_Clipboard := "Put the message in a download link without explanations. Make sure the message is based on the most recent profile given. If the message is more than 33 characters long, rewrite so that it's less than or equal to 33 characters long."

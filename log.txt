@@ -1,27 +1,217 @@
 
 
 super_likes: 0
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.6, 6.3, 4.4, 7.6, 7.6
+scores: 5.8, 6, 7.5, 7.6, 7.6
 combined_metric: 7.5999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Ever traveled outside the US?'
+
+
+super_likes: 0
+scores: 7.4, 5.2, 5.7, 5.9
+combined_metric: 7.4000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Favorite type of chocolate cake?'
+
+
+super_likes: 0
+scores: 2.8, 6.8, 6.9, 6.1, 6.5, 6.5, 6.5
+combined_metric: 6.9000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Which team won the cup in 2001?'
+
+
+super_likes: 0
+scores: 5.8, 5.4, 5, 4.5, 4.6
+combined_metric: 5.7999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.2, 3, 4.9, 5.3, 4.9
+combined_metric: 5.2999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 6.8, 5.7, 4.9, 4.7, 4.8
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Football or hockey preference?'
+
+
+super_likes: 0
+scores: 6.4, 5.5, 9.2, 6.7, 3.1, 3.1
+combined_metric: 9.1999999999999993
+decision: super_like
+actual decision: like
+hinge_opener: 'Favorite tequila brand?'
+
+
+super_likes: 0
+scores: 6.5
+combined_metric: 6.5
+decision: like
+actual decision: like
+hinge_opener: 'Ever played euchre in a fort?'
+
+
+super_likes: 0
+scores: 8.1, 4.6, 4.9, 4.2
+combined_metric: 8.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Ever make waffles from scratch?'
+
+
+super_likes: 0
+scores: 9.2, 6.5
+combined_metric: 9.1999999999999993
+decision: super_like
+actual decision: like
+hinge_opener: 'Ever caught a big fish?'
+
+
+super_likes: 0
+scores: 9.5, 9.5
+combined_metric: 9.5
+decision: super_like
+actual decision: like
+hinge_opener: 'Favorite gym workout?'
+
+
+super_likes: 0
+scores: 4.9, 6.8, 4.2, 3, 3.7, 6.8
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Favorite movie genre?'
+
+
+super_likes: 0
+scores: 6.7, 6.3, 6.7, 5.3, 5.6, 5.6
+combined_metric: 6.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'How do you make a hole?'
+
+
+super_likes: 0
+scores: 6.6, 9.1, 4.8, 5.9, 6.9
+combined_metric: 9.0999999999999996
+decision: super_like
+actual decision: like
+hinge_opener: 'Favorite soccer team?'
+
+
+super_likes: 0
+scores: 6.3, 4.4, 5.4, 5.7, 6.8
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Favorite Mexican dish?'
+
+
+super_likes: 0
+scores: 6.9, 6
+combined_metric: 6.9000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Dream location for a lake house?'
+
+
+super_likes: 0
+scores: 5.6, 6.5
+combined_metric: 6.5
+decision: like
+actual decision: like
+hinge_opener: 'Fan of Peter Pan tales?'
+
+
+super_likes: 0
+scores: 6.5, 5.7, 6, 5.6
+combined_metric: 6.5
+decision: like
+actual decision: like
+hinge_opener: 'Favorite genre of movies?'
+
+
+super_likes: 0
+scores: 6.6
+combined_metric: 6.5999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Can you teach me the dougie?'
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.9, 6.5, 6.2, 5.6, 6.1
+combined_metric: 6.5
+decision: like
+actual decision: like
+hinge_opener: 'What's on your mom's fridge?'
+
+
+super_likes: 0
+scores: 7.2, 3.7, 3, 4.5, 4.6
+combined_metric: 7.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'What language do you speak?'
+
+
+super_likes: 0
+scores: 8.1, 4.6
+combined_metric: 8.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Favorite pumpkin patch?'
+
+
+super_likes: 0
+scores: 6.9, 6.6, 7.2, 6.3, 4.9, 4.9
+combined_metric: 7.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Cheesecake secret ingredient?'
+
+
+super_likes: 0
+scores: 5.7, 5.7, 7.1, 4.5, 5.7, 5.6, 5.9
+combined_metric: 7.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Latest song on repeat?'
+
+
+super_likes: 0
+scores: 5.9, 4.3, 5.8
+combined_metric: 5.9000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.1, 5.3
+combined_metric: 5.2999999999999998
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 4.9, 4.4, 5.3, 6.7, 7, 6.6
+combined_metric: 7
 decision: like

@@ -174,6 +174,11 @@ like(dating_app, root_directory)
 		
 		sleep 500
 		
+		; Submit it
+		mouseClick "left", 1458, 967
+		
+		sleep 10000
+		
 		while not InStr(ocr(756, 955, 797, 974, 100), "Send")
         {		
 

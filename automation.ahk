@@ -184,14 +184,9 @@ like(dating_app, root_directory)
 		sleep 10000
 		
 		while not InStr(ocr(755, 971, 798, 997, 100), "Send")
-        {		
-
-			mouseMove 558, 753
-			loop 10
-			{
-				send "{WheelDown}"
-				sleep 100
-			}
+        {	
+			; Click ChatGPT's built-in down arrow
+			mouseClick "left", 1891, 915
 			
 			; Check if limit is reached
 			get_text(754, 806, 827, 801, 1000)
@@ -231,12 +226,8 @@ like(dating_app, root_directory)
 		; Wait for download
 		while not InStr(A_Clipboard, "Download") or InStr(A_Clipboard, "sandbox")
 		{		
-			mouseMove 558, 753
-			loop 10
-			{				
-				send "{WheelDown}"
-				sleep 100
-			}
+			; Click ChatGPT's built-in down arrow
+			mouseClick "left", 1891, 915
 			
 			; Check if limit is reached
 			get_text(754, 806, 827, 801, 1000)

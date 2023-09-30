@@ -8,13 +8,53 @@ actual decision: dislike
 
 
 super_likes: 0
-scores: 
-combined_metric: 0
+scores: 5.3, 6.7, 5, 5
+combined_metric: 6.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Ever been to the Masters?'
+
+
+super_likes: 0
+scores: 7.2, 5.5
+combined_metric: 7.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Favorite puzzle or audiobook?'
+
+
+super_likes: 0
+scores: 6, 7.7, 4.1, 6.3, 6.5, 6.8
+combined_metric: 7.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Ever solved a problem via podcast?'
+
+
+super_likes: 0
+scores: 5.3, 5.6, 5
+combined_metric: 5.5999999999999996
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
-scores: 6.1, 7.1, 6.5, 6.6
-combined_metric: 7.0999999999999996
+scores: 6.5, 5, 5.3, 3.7
+combined_metric: 6.5
+decision: like
+actual decision: like
+hinge_opener: 'Can you also count backwards?'
+
+
+super_likes: 0
+scores: 4.4, 4.2, 7.2, 4.6, 6.3, 6.5
+combined_metric: 7.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Ever paired Halloween with cheese?'
+
+
+super_likes: 0
+scores: 5, 5.5, 8.3
+combined_metric: 8.3000000000000007
 decision: like

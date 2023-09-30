@@ -183,7 +183,7 @@ like(dating_app, root_directory)
 		
 		sleep 10000
 		
-		while not InStr(ocr(756, 955, 797, 974, 100), "Send")
+		while not InStr(ocr(755, 971, 798, 997, 100), "Send")
         {		
 
 			mouseMove 558, 753
@@ -225,7 +225,7 @@ like(dating_app, root_directory)
 		
 		sleep 3000
 		; Click submit again, random glitch that doesn't submit the first time and the entered text pops up again
-		mouseClick "left", 1458, 967
+		mouseClick "left", 1450, 989
 		sleep 5000
 		
 		; Wait for download
@@ -256,7 +256,7 @@ like(dating_app, root_directory)
 			mouseClick "left", 479, 807
 			
 			; Check for download link
-			get_text(759, 807, 1472, 807, 1000)
+			get_text(761, 807, 1500, 807, 1000)
 			
 			if InStr(A_Clipboard, "sandbox") and not InStr(A_Clipboard, "Download")
 			{
@@ -278,7 +278,7 @@ like(dating_app, root_directory)
 				sleep 500
 				
 				; Submit it
-				mouseClick "left", 1458, 967
+				mouseClick "left", 1450, 989
 		
 				sleep 1000
 			}
@@ -289,7 +289,6 @@ like(dating_app, root_directory)
         sleep 100
 		
 		sleep 2000
-		
 		
 		
 		; Click download link (alternative spot)

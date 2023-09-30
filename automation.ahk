@@ -155,7 +155,7 @@ like(dating_app, root_directory)
 		sleep 500
 		
 		; Submit it
-		mouseClick "left", 1458, 967
+		mouseClick "left", 1450, 989
 		
 		sleep 10000				
 			
@@ -179,7 +179,7 @@ like(dating_app, root_directory)
 		sleep 500
 		
 		; Submit it
-		mouseClick "left", 1458, 967
+		mouseClick "left", 1450, 989
 		
 		sleep 10000
 		
@@ -214,7 +214,7 @@ like(dating_app, root_directory)
 			mouseClick "left", 826, 968
 			
 			; Submit it
-			mouseClick "left", 1458, 967
+			mouseClick "left", 1450, 989
 			
 			sleep 1000
         }  

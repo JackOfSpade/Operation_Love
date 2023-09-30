@@ -72,7 +72,7 @@ upload_profile_pics(root_directory, resolution, dating_app)
 		; Click "Choose Photo" Button
         mouseClick "left", pixel_location[2][1], pixel_location[2][2]
 		
-        sleep 4000
+        sleep 8000
 		
         send "^l"
         send "^a"

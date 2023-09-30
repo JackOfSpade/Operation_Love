@@ -1,60 +1,38 @@
 
 
 super_likes: 0
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.3, 6.7, 5, 5
-combined_metric: 6.7000000000000002
+scores: 6.4, 3.4, 5, 5.6
+combined_metric: 6.4000000000000004
 decision: like
 actual decision: like
-hinge_opener: 'Ever been to the Masters?'
+hinge_opener: 'Ever tried Pad Thai on a scooter?'
 
 
 super_likes: 0
-scores: 7.2, 5.5
-combined_metric: 7.2000000000000002
+scores: 5.6, 6.3, 3.9, 5.9, 5.9
+combined_metric: 6.2999999999999998
 decision: like
 actual decision: like
-hinge_opener: 'Favorite puzzle or audiobook?'
+hinge_opener: 'Is your cat a fan of fake tan too?'
 
 
 super_likes: 0
-scores: 6, 7.7, 4.1, 6.3, 6.5, 6.8
-combined_metric: 7.7000000000000002
+scores: 6.7, 6.1, 4.1, 5.4, 6.8, 5.1
+combined_metric: 6.7999999999999998
 decision: like
 actual decision: like
-hinge_opener: 'Ever solved a problem via podcast?'
+hinge_opener: 'Favorite destination you'd recommend?'
 
 
 super_likes: 0
-scores: 5.3, 5.6, 5
-combined_metric: 5.5999999999999996
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 6.5, 5, 5.3, 3.7
-combined_metric: 6.5
+scores: 6.4, 6.9, 6.9, 6.8, 6.8, 6.7, 6.8, 6.7
+combined_metric: 6.9000000000000004
 decision: like
 actual decision: like
-hinge_opener: 'Can you also count backwards?'
+hinge_opener: 'Is Jessica your favorite name?'
 
 
 super_likes: 0
-scores: 4.4, 4.2, 7.2, 4.6, 6.3, 6.5
-combined_metric: 7.2000000000000002
-decision: like
-actual decision: like
-hinge_opener: 'Ever paired Halloween with cheese?'
-
-
-super_likes: 0
-scores: 5, 5.5, 8.3
-combined_metric: 8.3000000000000007
+scores: 6.4, 6.7, 6.8, 6.8, 6.7, 6.8, 6.8, 6.8
+combined_metric: 6.7999999999999998
 decision: like

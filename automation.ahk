@@ -157,14 +157,14 @@ like(dating_app, root_directory)
 		; Submit it
 		mouseClick "left", 1450, 989
 		
-		sleep 10000				
+		sleep 13000				
 			
 		; Some reason you gotta click multiple times if ChatGPT is still processing
-		mouseClick "left", 824, 967		
+		mouseClick "left", 795, 985	
 		sleep 500		
-		mouseClick "left", 824, 967		
+		mouseClick "left", 795, 985		
 		sleep 500
-		mouseClick "left", 824, 967		
+		mouseClick "left", 795, 985		
 		sleep 500
 		
 		; For some reason ChatGPT refuses to give the download link the first time sometimes

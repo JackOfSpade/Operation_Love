@@ -157,15 +157,12 @@ like(dating_app, root_directory)
 		; Submit it
 		mouseClick "left", 1450, 989
 		
-		sleep 13000				
+		; Some reason pasting occasionally doesn't work while ChatGPT is still processing
+		sleep 16000				
 			
-		; Some reason you gotta click multiple times if ChatGPT is still processing
+		
 		mouseClick "left", 795, 985	
-		sleep 500		
-		mouseClick "left", 795, 985		
-		sleep 500
-		mouseClick "left", 795, 985		
-		sleep 500
+		sleep 500	
 		
 		; For some reason ChatGPT refuses to give the download link the first time sometimes
 		A_Clipboard := "Put the message into a new download link without explanations. Make sure the message is based on the most recent profile given, and less than or equal to 33 characters."
@@ -181,7 +178,7 @@ like(dating_app, root_directory)
 		; Submit it
 		mouseClick "left", 1450, 989
 		
-		sleep 10000
+		sleep 16000
 		
 		while not InStr(ocr(755, 971, 798, 997, 100), "Send")
         {	
@@ -221,7 +218,7 @@ like(dating_app, root_directory)
 		sleep 3000
 		; Click submit again, random glitch that doesn't submit the first time and the entered text pops up again
 		mouseClick "left", 1450, 989
-		sleep 5000
+		sleep 13000
 		
 		; Wait for download
 		while not InStr(A_Clipboard, "Download") or InStr(A_Clipboard, "sandbox")

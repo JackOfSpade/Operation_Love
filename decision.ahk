@@ -87,9 +87,14 @@ upload_profile_pics(root_directory, resolution, dating_app)
 		
 		sleep 100
         A_Clipboard := ""
-        sleep 100
+        sleep 100		
 		
 		sleep 1000
+		
+		if dating_app == "tinder"
+		{
+			sleep 3000
+		}		
 		
 		send "!n"		
 		send "+{Tab}"

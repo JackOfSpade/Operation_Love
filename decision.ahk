@@ -74,6 +74,11 @@ upload_profile_pics(root_directory, resolution, dating_app)
 		
         sleep 8000
 		
+		if dating_app == "tinder"
+		{
+			sleep 6000
+		}
+		
         send "^l"
         send "^a"
 		A_Clipboard := root_directory . "/Screenshots"

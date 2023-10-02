@@ -144,7 +144,7 @@ like(dating_app, root_directory)
 		sleep 1000
 		
 		; Cannot remove coding work from response
-		A_Clipboard := "The following text is from a dating profile for a woman: " . bulk_images_ocr_text . " ====== End of dating profile ======= Generate an opening message (less than or equal to 33 characters) based on one specific detail from her profile.
+		A_Clipboard := "The following text is from a dating profile for a woman: " . bulk_images_ocr_text . " ====== End of dating profile ======= Generate an opening message (less than or equal to 33 characters) based on one specific detail from her profile."
 		
 		Send "^v"
 		

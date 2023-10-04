@@ -165,8 +165,6 @@ like(dating_app, root_directory)
 			sleep 1000
         }  
 		
-		sleep 3000
-		
 		; Click textbox
 		mouseClick "left", 795, 985	
 		sleep 500	
@@ -193,11 +191,11 @@ like(dating_app, root_directory)
 			sleep 1000
         }  
 		
-		sleep 5000
+		sleep 3000
 		
-		get_text(758, 806,1411, 806, 1000)
+		hinge_opener := get_text(758, 806, 1411, 806, 1000)
 		
-		hinge_opener := A_Clipboard
+		sleep 500
 		
 		; test
 		; msgBox(hinge_opener)
@@ -207,7 +205,7 @@ like(dating_app, root_directory)
 		sleep 500
 		
 		; Scrool up
-		loop 12
+		loop 14
 		{
 			click_and_drag(660, 521, 669, 828, 500)
 		}

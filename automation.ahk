@@ -154,7 +154,7 @@ like(dating_app, root_directory)
 		
 		sleep 500
 		
-		while not InStr(ocr(755, 971, 798, 997, 100), "Send")
+		while not InStr(ocr(725, 975, 766, 997, 100), "Send")
         {	
 			; Click ChatGPT's built-in down arrow
 			mouseClick "left", 1891, 915
@@ -182,7 +182,7 @@ like(dating_app, root_directory)
 		
 		sleep 500
 		
-		while not InStr(ocr(755, 971, 798, 997, 100), "Send")
+		while not InStr(ocr(725, 975, 766, 997, 100), "Send")
         {	
 			; Click ChatGPT's built-in down arrow
 			mouseClick "left", 1891, 915

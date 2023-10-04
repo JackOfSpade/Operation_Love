@@ -162,6 +162,10 @@ like(dating_app, root_directory)
 			; Submit it
 			mouseClick "left", 1450, 989
 			
+			sleep 100
+			A_Clipboard := ""
+			sleep 100
+			
 			sleep 1000
         }  
 		
@@ -172,7 +176,7 @@ like(dating_app, root_directory)
 		sleep 500	
 		
 		; Specification after generation
-		A_Clipboard := "Give me only the message in your response without quotation marks."
+		A_Clipboard := "Give me only the message in your response."
 		
 		Send "^v"
 		
@@ -190,17 +194,31 @@ like(dating_app, root_directory)
 			; Submit it
 			mouseClick "left", 1450, 989
 			
+			sleep 100
+			A_Clipboard := ""
+			sleep 100
+			
 			sleep 1000
         }  
 		
-		sleep 3000
+		sleep 5000
 		
-		hinge_opener := get_text(758, 806, 1411, 806, 1000)
+		get_text(758, 806, 1411, 806, 2000)
 		
-		sleep 500
+		hinge_opener := A_Clipboard
+		
+		; Remove leading and trailing quotation marks
+		hinge_opener := StrReplace(hinge_opener, "`"")
+
+		; Check if the string ends with a period
+		if InStr(hinge_opener, ".", , -1) ; Search for the period from the end of the string
+		{
+			; Remove the ending period using SubStr
+			hinge_opener := SubStr(hinge_opener, 1, StrLen(hinge_opener) - 1)
+		}
 		
 		; test
-		; msgBox(hinge_opener)
+		msgBox(hinge_opener)
 		
 		winactivate "AirDroid"
 		

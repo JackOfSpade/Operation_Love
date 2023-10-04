@@ -154,13 +154,20 @@ like(dating_app, root_directory)
 		
 		sleep 500
 		
-		; Submit it
-		mouseClick "left", 1450, 989
+		while not InStr(ocr(755, 971, 798, 997, 100), "Send")
+        {	
+			; Click ChatGPT's built-in down arrow
+			mouseClick "left", 1891, 915
+			
+			; Submit it
+			mouseClick "left", 1450, 989
+			
+			sleep 1000
+        }  
 		
-		sleep 3000				
-		; Click ChatGPT's built-in down arrow
-		mouseClick "left", 1891, 915
+		sleep 3000
 		
+		; Click textbox
 		mouseClick "left", 795, 985	
 		sleep 500	
 		
@@ -175,12 +182,18 @@ like(dating_app, root_directory)
 		
 		sleep 500
 		
-		; Submit it
-		mouseClick "left", 1450, 989
+		while not InStr(ocr(755, 971, 798, 997, 100), "Send")
+        {	
+			; Click ChatGPT's built-in down arrow
+			mouseClick "left", 1891, 915
+			
+			; Submit it
+			mouseClick "left", 1450, 989
+			
+			sleep 1000
+        }  
 		
 		sleep 3000
-		; Click ChatGPT's built-in down arrow
-		mouseClick "left", 1891, 915
 		
 		get_text(758, 806,1411, 806, 1000)
 		

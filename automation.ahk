@@ -169,6 +169,10 @@ like(dating_app, root_directory)
 			sleep 1000
         }  
 		
+		sleep 100
+		A_Clipboard := ""
+		sleep 100
+		
 		sleep 5000
 		
 		; Click textbox
@@ -199,9 +203,13 @@ like(dating_app, root_directory)
 			sleep 100
 			
 			sleep 1000
-        }  
+        } 
+
+		sleep 100
+		A_Clipboard := ""
+		sleep 100
 		
-		sleep 5000
+		sleep 7000
 		
 		; mouseClick "right", 791, 807
 		; send "{down}"

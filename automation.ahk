@@ -193,7 +193,7 @@ like(dating_app, root_directory)
 			sleep 1000
         }  
 		
-		sleep 3000
+		sleep 5000
 		
 		get_text(758, 806,1411, 806, 1000)
 		

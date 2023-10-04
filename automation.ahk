@@ -144,7 +144,7 @@ like(dating_app, root_directory)
 		sleep 1000
 		
 		; Cannot remove coding work from response
-		A_Clipboard := "The following text is from a dating profile for a woman: " . bulk_images_ocr_text . " ====== End of dating profile ======= Generate an opening question (less than or equal to 33 characters) based on one specific detail from her profile that requires more than a yes/no answer. The message should not be an invitation to do anything."
+		A_Clipboard := "The following text is from a dating profile for a woman: " . bulk_images_ocr_text . " ====== End of dating profile ======= Generate an open question (less than or equal to 33 characters) based on what you think is the most interesting detail from her profile. The message should not be an invitation to do anything."
 		
 		Send "^v"
 		
@@ -169,7 +169,7 @@ like(dating_app, root_directory)
 			sleep 1000
         }  
 		
-		sleep 3000
+		sleep 5000
 		
 		; Click textbox
 		mouseClick "left", 795, 985	
@@ -203,7 +203,13 @@ like(dating_app, root_directory)
 		
 		sleep 5000
 		
+		; mouseClick "right", 791, 807
+		; send "{down}"
+		; send "{enter}"
+		
 		get_text(758, 806, 1411, 806, 2000)
+		
+		sleep 500
 		
 		hinge_opener := A_Clipboard
 		
@@ -218,7 +224,7 @@ like(dating_app, root_directory)
 		}
 		
 		; test
-		msgBox(hinge_opener)
+		; msgBox(hinge_opener)
 		
 		winactivate "AirDroid"
 		

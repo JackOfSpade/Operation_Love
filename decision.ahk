@@ -76,7 +76,7 @@ upload_profile_pics(root_directory, resolution, dating_app)
 		
 		if dating_app == "tinder"
 		{
-			sleep 11000
+			sleep 12000
 		}
 		
         send "^l"

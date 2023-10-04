@@ -59,7 +59,7 @@ remaining_super_likes(dating_app)
 	}
 	else if dating_app == "hinge"
     {
-		; Do it manually in standouts since it doesn't replenish (only 1 free rose/week
+		; Do it manually in standouts since it doesn't replenish (only 1 free rose/week)
     }
 	
 	return remainingSuperLikes

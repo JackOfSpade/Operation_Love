@@ -222,7 +222,7 @@ make_decision(root_directory, resolution, dating_app)
 {
     combined_metric := upload_profile_pics(root_directory, resolution, dating_app)
     
-    if combined_metric >= 8.5
+    if (dating_app == "tinder" and combined_metric >= 8.5) or (dating_app == "bumble" and combined_metric >= 8)
     {
         decision := "super_like"
     }

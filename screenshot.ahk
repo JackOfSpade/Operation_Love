@@ -67,7 +67,7 @@ clear_screenshot_directory(root_directory, dating_app)
     send "<#r"
     sleep 500
 	
-	if dating_app == "Tinder"
+	if dating_app == "tinder"
 	{
 		sleep 3000
 	}

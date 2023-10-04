@@ -53,7 +53,7 @@ take_screenshot(dating_app)
 			
 			loop 4
 			{
-				click_and_drag(669, 576, 665, 119, 1000)
+				click_and_drag(669, 576, 665, 119, 1500)
 			}
 			
 			

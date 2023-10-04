@@ -165,6 +165,8 @@ like(dating_app, root_directory)
 			sleep 1000
         }  
 		
+		sleep 3000
+		
 		; Click textbox
 		mouseClick "left", 795, 985	
 		sleep 500	

@@ -193,7 +193,8 @@ like(dating_app, root_directory)
 		
 		sleep 500
 		
-		loop 10
+		; Scrool up
+		loop 12
 		{
 			click_and_drag(660, 521, 669, 828, 500)
 		}

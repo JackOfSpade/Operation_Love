@@ -1,6 +1,16 @@
 
 
 super_likes: 0
-scores: 7.1, 6.5, 7.4, 6.4, 6.9, 6.9
-combined_metric: 7.4000000000000004
+scores: 8.9, 4.7, 6.7, 5.3, 4.7
+combined_metric: 8.9000000000000004
 decision: like
+actual decision: like
+hinge_opener: 'Skiing or trampolining?'
+
+
+super_likes: 0
+scores: 4.7, 6.8, 6.3, 5.3, 6.8, 7.5
+combined_metric: 7.5
+decision: like
+actual decision: like
+hinge_opener: 'Favorite book?'

@@ -144,7 +144,7 @@ like(dating_app, root_directory)
 		sleep 1000
 		
 		; Cannot remove coding work from response
-		A_Clipboard := "The following text is from a dating profile for a woman: " . bulk_images_ocr_text . " ====== End of dating profile ======= Generate an open question (less than or equal to 33 characters) based on what you think is the most interesting detail from her profile. The message should not be an invitation to do anything."
+		A_Clipboard := "The following text is from a dating profile for a woman: " . bulk_images_ocr_text . " ====== End of dating profile ======= Generate an open question (less than or equal to 33 characters) based on what you think is the most interesting detail from her profile. The question should not be an invitation to do anything or already answered on her profile."
 		
 		Send "^v"
 		
@@ -180,7 +180,7 @@ like(dating_app, root_directory)
 		sleep 500	
 		
 		; Specification after generation
-		A_Clipboard := "Give me only the message in your response."
+		A_Clipboard := "Give me only the question in your response."
 		
 		Send "^v"
 		

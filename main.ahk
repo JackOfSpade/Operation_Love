@@ -113,7 +113,7 @@ main(dating_app, root_directory, resolution)
 			sleep 3000
 		}
 		
-		clear_screenshot_directory(root_directory)
+		clear_screenshot_directory(root_directory, dating_app)
 		
 	}
 	

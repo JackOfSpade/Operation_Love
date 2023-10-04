@@ -62,10 +62,16 @@ take_screenshot(dating_app)
 	}
 }
 
-clear_screenshot_directory(root_directory)
+clear_screenshot_directory(root_directory, dating_app)
 {
     send "<#r"
-    sleep 1000
+    sleep 500
+	
+	if dating_app == "Tinder"
+	{
+		sleep 3000
+	}
+	
 	winActivate "Run"
 	sleep 500
     send "^a"	

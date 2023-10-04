@@ -173,7 +173,7 @@ like(dating_app, root_directory)
 		A_Clipboard := ""
 		sleep 100
 		
-		sleep 5000
+		sleep 3000
 		
 		; Click textbox
 		mouseClick "left", 795, 985	
@@ -209,7 +209,7 @@ like(dating_app, root_directory)
 		A_Clipboard := ""
 		sleep 100
 		
-		sleep 7000
+		sleep 10000
 		
 		; mouseClick "right", 791, 807
 		; send "{down}"

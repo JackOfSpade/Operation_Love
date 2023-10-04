@@ -144,7 +144,7 @@ like(dating_app, root_directory)
 		sleep 1000
 		
 		; Cannot remove coding work from response
-		A_Clipboard := "The following text is from a dating profile for a woman: " . bulk_images_ocr_text . " ====== End of dating profile ======= Generate an opening message (less than or equal to 33 characters) based on one specific detail from her profile."
+		A_Clipboard := "The following text is from a dating profile for a woman: " . bulk_images_ocr_text . " ====== End of dating profile ======= Generate an opening question (less than or equal to 33 characters) based on one specific detail from her profile that requires more than a yes/no answer. The message should not be an invitation to do anything."
 		
 		Send "^v"
 		
@@ -157,15 +157,15 @@ like(dating_app, root_directory)
 		; Submit it
 		mouseClick "left", 1450, 989
 		
-		; Some reason pasting occasionally doesn't work while ChatGPT is still processing
-		sleep 16000				
-			
+		sleep 3000				
+		; Click ChatGPT's built-in down arrow
+		mouseClick "left", 1891, 915
 		
 		mouseClick "left", 795, 985	
 		sleep 500	
 		
-		; For some reason ChatGPT refuses to give the download link the first time sometimes
-		A_Clipboard := "Put the message into a new download link without explanations. Make sure the message is less than or equal to 33 characters."
+		; Specification after generation
+		A_Clipboard := "Give me only the message in your response without quotation marks."
 		
 		Send "^v"
 		
@@ -178,151 +178,15 @@ like(dating_app, root_directory)
 		; Submit it
 		mouseClick "left", 1450, 989
 		
-		sleep 16000
-		
-		while not InStr(ocr(755, 971, 798, 997, 100), "Send")
-        {	
-			; Click ChatGPT's built-in down arrow
-			mouseClick "left", 1891, 915
-			
-			; Check if limit is reached
-			get_text(754, 806, 827, 801, 1000)
-			
-			if InStr(A_Clipboard, "default")
-			{
-				send "{F5}"		
-				sleep 5000
-				goto start_of_like_function_label
-			}	
-			
-			sleep 100
-			A_Clipboard := ""
-			sleep 100
-
-			; Click regenerate
-			mouseClick "left", 1086, 956
-			
-			; click textbox
-			mouseClick "left", 826, 968
-			
-			; Submit it
-			mouseClick "left", 1450, 989
-			
-			sleep 1000
-        }  
-		
-		sleep 100
-        A_Clipboard := ""
-        sleep 100
-		
 		sleep 3000
-		; Click submit again, random glitch that doesn't submit the first time and the entered text pops up again
-		mouseClick "left", 1450, 989
-		sleep 13000
+		; Click ChatGPT's built-in down arrow
+		mouseClick "left", 1891, 915
 		
-		; Wait for download
-		while not InStr(A_Clipboard, "Download") or InStr(A_Clipboard, "sandbox")
-		{		
-			; Click ChatGPT's built-in down arrow
-			mouseClick "left", 1891, 915
-			
-			; Check if limit is reached
-			get_text(754, 806, 827, 801, 1000)
-			
-			if InStr(A_Clipboard, "default")
-			{
-				send "{F5}"		
-				sleep 5000
-				goto start_of_like_function_label
-			}
-			
-			sleep 100
-			A_Clipboard := ""
-			sleep 100
-			
-			; Reset highlights
-			mouseClick "left", 479, 807
-			
-			; Check for download link
-			get_text(761, 807, 1500, 807, 1000)
-			
-			if InStr(A_Clipboard, "sandbox") and not InStr(A_Clipboard, "Download")
-			{
-				; click textbox
-				mouseClick "left", 826, 968
-			
-				sleep 500
-				send "^a"
-						
-				; When ChatGPT doesn't give a proper download link
-				A_Clipboard := "That's not a download link"
-				
-				Send "^v"
+		get_text(758, 806,1411, 806, 1000)
 		
-				sleep 100
-				A_Clipboard := ""
-				sleep 100
-				
-				sleep 500
-				
-				; Submit it
-				mouseClick "left", 1450, 989
+		hinge_opener := A_Clipboard
 		
-				sleep 1000
-			}
-		} 
-		
-		sleep 100
-        A_Clipboard := ""
-        sleep 100
-		
-		sleep 2000
-		
-		; Click download link (alternative spot)
-		mouseClick "left", 1201, 807
-		sleep 500
-		; Click download link (alternative spot)
-		mouseClick "left", 1164, 807
-		sleep 500
-		; Click download link (alternative spot)
-		mouseClick "left", 957, 807
-		sleep 500
-		; Click download link (alternative spot)
-		mouseClick "left", 892, 807
-		sleep 500
-		; Click download link
-		mouseClick "left", 770, 807
-		
-		
-		sleep 13000
-		
-		send "!n"
-		A_Clipboard := "hinge_opener"
-		send "^v"
-		
-		sleep 500
-		
-		send "^l"
-        send "^a"
-		A_Clipboard := root_directory
-        send "^v"
-		send "{Enter}"
-		sleep 500
-		send "{Enter}"
-		sleep 1000
-		; Replace existing
-		send "{left}"
-		sleep 500
-		send "{Enter}"
-		
-		sleep 100
-        A_Clipboard := ""
-        sleep 100
-		
-		sleep 3000
-		
-		hinge_opener := FileRead("hinge_opener.txt")
-		
+		; test
 		; msgBox(hinge_opener)
 		
 		winactivate "AirDroid"

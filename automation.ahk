@@ -180,7 +180,7 @@ like(dating_app, root_directory)
 		sleep 500	
 		
 		; Specification after generation
-		A_Clipboard := "Give me only the resulting question in your response."
+		A_Clipboard := "Give me only the resulting question in your response. Confirm it is less than or equal to 33 characters"
 		
 		Send "^v"
 		

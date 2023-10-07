@@ -231,6 +231,11 @@ like(dating_app, root_directory)
 			hinge_opener := SubStr(hinge_opener, 1, StrLen(hinge_opener) - 1)
 		}
 		
+		if StrLen(hinge_opener) > 33
+		{
+			hinge_opener := "Hi, how's your week going?"
+		}
+		
 		; test
 		; msgBox(hinge_opener)
 		

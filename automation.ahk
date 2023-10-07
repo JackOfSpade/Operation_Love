@@ -173,10 +173,11 @@ like(dating_app, root_directory)
 		A_Clipboard := ""
 		sleep 100
 		
-		sleep 3000
+		; Need to have enough delay to enable textbox after processing
+		sleep 5000
 		
 		; Click textbox
-		mouseClick "left", 795, 985	
+		mouseClick "left", 860, 968	
 		sleep 500	
 		
 		; Specification after generation

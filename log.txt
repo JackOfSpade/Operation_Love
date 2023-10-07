@@ -1,151 +1,171 @@
 
 
 super_likes: 0
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 7.2, 7.1, 6.1, 6.2
-combined_metric: 7.2000000000000002
+scores: 5.5, 6.2, 6.3, 6.7
+combined_metric: 6.7000000000000002
 decision: like
 actual decision: like
-hinge_opener: 'What's your ideal weekend? (30 characters)'
+hinge_opener: 'What's your favorite book?'
 
 
 super_likes: 0
-scores: 7.3, 7.4, 7.3, 7.3, 7.4, 7.3, 7.4, 7.3
+scores: 7.4
 combined_metric: 7.4000000000000004
 decision: like
 actual decision: like
-hinge_opener: 'question'
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 7.4, 7.4, 7.3, 7.4, 7.4, 7.2, 7.4, 7.4
-combined_metric: 7.4000000000000004
-decision: like
-actual decision: like
-hinge_opener: 'generate a question'
-
-
-super_likes: 0
-scores: 7.2, 7.2, 7.2, 7.3, 7.3, 7.2, 7.3, 7.3
+scores: 6.9, 7.3, 7, 7, 5.9
 combined_metric: 7.2999999999999998
 decision: like
 actual decision: like
-hinge_opener: 'I'm sorry, but there is no information in the provided profile text to generate a question'
+hinge_opener: 'What's your life goal like hers?'
 
 
 super_likes: 0
-scores: 7.5, 7.3, 7.3, 7.4, 7.3, 7.3, 7.2, 7
+scores: 4.3, 5.4, 4.6
+combined_metric: 5.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 6.2, 5.9, 6.6, 6.6, 6.9
+combined_metric: 6.9000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
+
+
+super_likes: 0
+scores: 3.3, 4.4, 2.9, 5.4
+combined_metric: 5.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.9, 4, 7, 4.9
+combined_metric: 7
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
+
+
+super_likes: 0
+scores: 3.3, 7.5, 6.3, 3, 6.6, 7.1, 5.8, 4.3
 combined_metric: 7.5
 decision: like
 actual decision: like
-hinge_opener: 'question'
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 7.5, 7.2, 7.3, 7.4, 7.2, 7.4, 7.3, 7.2
-combined_metric: 7.5
+scores: 2.8, 5.5, 2.9, 3.4, 3.4
+combined_metric: 5.5
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5.2, 4.4, 5.4, 3.9
+combined_metric: 5.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 6, 2.8
+combined_metric: 6
 decision: like
 actual decision: like
-hinge_opener: 'question'
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 7.5, 7.1, 7.3, 7.3, 7.2, 7.2, 7.3, 7.3
-combined_metric: 7.5
+scores: 7.8, 4.8, 2.5, 6.2, 5.1, 5
+combined_metric: 7.7999999999999998
 decision: like
 actual decision: like
-hinge_opener: 'question'
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 7.5, 7.4, 7.2, 7.2, 7.4, 7.2, 7.2, 7.1
-combined_metric: 7.5
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 5, 8, 5.1
+combined_metric: 8
 decision: like
 actual decision: like
-hinge_opener: 'generate a meaningful question'
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 7.3, 7.3, 7.1, 7.3, 7.1, 7.2, 7.1
-combined_metric: 7.2999999999999998
+scores: 7.1, 6.9, 5.4, 6.8
+combined_metric: 7.0999999999999996
 decision: like
 actual decision: like
-hinge_opener: 'meaningful question'
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 7.4, 7.2, 7.1, 7.1, 7.2, 7.1, 7, 7.1
-combined_metric: 7.4000000000000004
+scores: 4.2, 3.7, 6.7, 6.6, 6.2
+combined_metric: 6.7000000000000002
 decision: like
 actual decision: like
-hinge_opener: 'lacks specific information'
+hinge_opener: 'What's your favorite passion?'
 
 
 super_likes: 0
-scores: 7.5, 7.2, 7.2, 7.3, 7.1, 7.3, 7, 7
-combined_metric: 7.5
+scores: 6.5, 5.9, 7.1, 5.5, 5.1, 6.6
+combined_metric: 7.0999999999999996
 decision: like
 actual decision: like
-hinge_opener: 'meaningful question. Please provide more details or a different profile text for a better result.
-
-
-
-
-User
-Give me only the resulting question in your response. Confirm it is less than or equal to 33 characters
-ChatGPT
-What's your perfect weekend'
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 7.4, 7.2, 7.2, 7.3, 7.2, 7.1, 7.1, 7.3
-combined_metric: 7.4000000000000004
+scores: 7.1, 5.4, 5.4, 5.3, 5.4, 5.5, 5.4
+combined_metric: 7.0999999999999996
 decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
+
+
+super_likes: 0
+scores: 6, 4.3, 7.9, 4.2
+combined_metric: 7.9000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
+
+
+super_likes: 0

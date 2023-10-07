@@ -59,7 +59,7 @@ main(dating_app, root_directory, resolution)
 		}
 		else if dating_app == "bumble"
 		{			
-			if InStr(ocr(1025, 476, 1096, 503, 500), "Want")
+			if InStr(ocr(1025, 476, 1096, 503, 500), "Want") or InStr(ocr(1049, 514, 1094, 542, 500), "You")
 			{
 				send "{f5}"
 				

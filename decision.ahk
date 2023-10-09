@@ -111,8 +111,9 @@ upload_profile_pics(root_directory, resolution, dating_app)
         
         send "{enter}"
 		
-		sleep 500
+		sleep 1000
         
+		; For some reason, hotchat3000 minimizes sometimes after this
         winactivate "Hot Chat"
 		
 		count := 0

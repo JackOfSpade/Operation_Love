@@ -115,6 +115,10 @@ main(dating_app, root_directory, resolution)
 		
 		clear_screenshot_directory(root_directory, dating_app)
 		
+		if dating_app == "tinder"
+		{
+			sleep 3000
+		}
 	}
 	
 }

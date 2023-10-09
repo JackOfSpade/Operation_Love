@@ -72,11 +72,11 @@ upload_profile_pics(root_directory, resolution, dating_app)
 		; Click "Choose Photo" Button
         mouseClick "left", pixel_location[2][1], pixel_location[2][2]
 		
-        sleep 5000
+        sleep 10000
 		
 		if dating_app == "tinder"
 		{
-			sleep 10000
+			sleep 5000
 		}
 		
         send "^l"

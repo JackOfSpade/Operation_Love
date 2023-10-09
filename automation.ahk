@@ -173,14 +173,15 @@ like(dating_app, root_directory)
 		A_Clipboard := ""
 		sleep 100
 		
-		sleep 3000
+		; Need to have enough delay to enable textbox after processing
+		sleep 5000
 		
 		; Click textbox
-		mouseClick "left", 795, 985	
+		mouseClick "left", 860, 968	
 		sleep 500	
 		
 		; Specification after generation
-		A_Clipboard := "Give me only the resulting question in your response. Confirm it is less than or equal to 33 characters"
+		A_Clipboard := "Give me only the generated question in your response."
 		
 		Send "^v"
 		
@@ -229,6 +230,11 @@ like(dating_app, root_directory)
 		{
 			; Remove the ending period using SubStr
 			hinge_opener := SubStr(hinge_opener, 1, StrLen(hinge_opener) - 1)
+		}
+		
+		if StrLen(hinge_opener) > 33
+		{
+			hinge_opener := "Hi, how's your week going?"
 		}
 		
 		; test

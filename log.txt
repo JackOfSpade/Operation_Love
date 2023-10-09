@@ -1,780 +1,546 @@
 
 
 super_likes: 0
-scores: 5.1, 2.8
-combined_metric: 5.0999999999999996
+scores: 
+combined_metric: 0
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
-scores: 5.1, 6.9
-combined_metric: 6.9000000000000004
-decision: like
-actual decision: like
-hinge_opener: 'What's your travel dream?'
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
 
 
 super_likes: 0
-scores: 4.7, 9.3, 5.5, 8.2
-combined_metric: 9.3000000000000007
-decision: like
-actual decision: like
-hinge_opener: 'What's your go-to drink?'
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
 
 
 super_likes: 0
-scores: 6.2, 4.7, 4.4, 4.8, 6, 6.6
-combined_metric: 6.5999999999999996
-decision: like
-actual decision: like
-hinge_opener: 'How do you unwind?'
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
 
 
 super_likes: 0
-scores: 7.2, 4.6, 5.3, 7.4, 3.7, 5.1
-combined_metric: 7.4000000000000004
-decision: like
-actual decision: like
-hinge_opener: 'Any favorite hobbies?'
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
 
 
 super_likes: 0
-scores: 6.7, 5.7, 4.8
-combined_metric: 6.7000000000000002
-decision: like
-actual decision: like
-hinge_opener: 'What's your go-to sandwich?'
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
 
 
 super_likes: 0
-scores: 5.7, 7.7, 4, 4.4
-combined_metric: 7.7000000000000002
-decision: like
-actual decision: like
-hinge_opener: 'What's your ideal Sunday?'
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
 
 
 super_likes: 0
-scores: 5.2, 4.9, 4, 8.6
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 
+combined_metric: 0
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 7.1, 6.2, 5, 3, 6.4, 6.4
+combined_metric: 7.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Chased by butterflies?'
+
+
+super_likes: 0
+scores: 5.4, 8.1, 8.6, 7.5, 7.2, 7.1
 combined_metric: 8.5999999999999996
 decision: like
 actual decision: like
-hinge_opener: 'What's your irrational fear?'
+hinge_opener: 'Attracted to tattoos?'
 
 
 super_likes: 0
-scores: 6.4, 6.1, 5.8, 6.9, 5.2, 3.7
-combined_metric: 6.9000000000000004
+scores: 5, 5.3, 3.6, 5.2, 6.2, 7.1
+combined_metric: 7.0999999999999996
 decision: like
 actual decision: like
-hinge_opener: 'What's your self-care routine?'
+hinge_opener: 'Music festival after surgery?'
 
 
 super_likes: 0
-scores: 4.2, 6.5, 2.7, 5.3, 5.5
-combined_metric: 6.5
-decision: like
-actual decision: like
-hinge_opener: 'What's your self-care secret?'
-
-
-super_likes: 0
-scores: 7.5, 7.2, 7.4, 8, 6.8, 6.7, 6.3
-combined_metric: 8
-decision: like
-actual decision: like
-hinge_opener: 'What's your love language?'
-
-
-super_likes: 0
-scores: 5.9, 5.7, 6.6, 4.6, 6.9, 7.8
-combined_metric: 7.7999999999999998
-decision: like
-actual decision: like
-hinge_opener: 'What's your proudest moment?'
-
-
-super_likes: 0
-scores: 4.2, 6.5, 7
-combined_metric: 7
-decision: like
-actual decision: like
-hinge_opener: 'What's your relationship type?'
-
-
-super_likes: 0
-scores: 3.4, 6.4, 3, 6, 6.4, 5.1, 3.6, 3.9
-combined_metric: 6.4000000000000004
-decision: like
-actual decision: like
-hinge_opener: 'What's your go-to cuisine?'
-
-
-super_likes: 0
-scores: 4.7, 5.3, 5.1, 5.4, 7.3, 4.4
-combined_metric: 7.2999999999999998
-decision: like
-actual decision: like
-hinge_opener: 'What's your ideal date spot?'
-
-
-super_likes: 0
-scores: 6.5, 5.9, 6.2, 7.4, 7.9
-combined_metric: 7.9000000000000004
-decision: like
-actual decision: like
-hinge_opener: 'What's your go-to drink?'
-
-
-super_likes: 0
-scores: 3.6, 7, 6.8, 5.1, 6.1, 6.4
-combined_metric: 7
-decision: like
-actual decision: like
-hinge_opener: 'What's your weirdest role?'
-
-
-super_likes: 0
-scores: 4.5, 5.5, 5.5, 5.5, 6.4
-combined_metric: 6.4000000000000004
-decision: like
-actual decision: like
-hinge_opener: 'What's your early morning routine?'
-
-
-super_likes: 0
-scores: 6.5, 6.6, 7.7, 6.1
+scores: 7.7, 4.3, 6.4, 6.3, 3.8, 5.1, 6.3, 5.8
 combined_metric: 7.7000000000000002
 decision: like
 actual decision: like
-hinge_opener: 'What's your favorite hobby?'
+hinge_opener: 'Weirdest secret Santa gift?'
 
 
 super_likes: 0
-scores: 4.8, 4.8, 4.3, 4.1
-combined_metric: 4.7999999999999998
+scores: 6.9, 5.9, 8.8, 6.6, 7
+combined_metric: 8.8000000000000007
+decision: like
+actual decision: like
+hinge_opener: 'Skydiving on acid?'
+
+
+super_likes: 0
+scores: 3.5, 4.7, 4.3, 6.6
+combined_metric: 6.5999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Attracted to neck tattoos?'
+
+
+super_likes: 0
+scores: 6.2, 5.1, 4.5, 5.7, 3.1
+combined_metric: 6.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Fans of rats?'
+
+
+super_likes: 0
+scores: 6.6, 3.2, 5.6, 7.6, 6.7, 7.8
+combined_metric: 7.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Love a good pickle?'
+
+
+super_likes: 0
+scores: 3.1, 5.9
+combined_metric: 5.9000000000000004
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
-scores: 6.2, 6.5, 8.3, 6, 6.2, 6.3
-combined_metric: 8.3000000000000007
-decision: like
-actual decision: like
-hinge_opener: 'What's your favorite cuisine?
-
-
-
-
-User
-If the question is not less than or equal to 33 characters, rewrite so that it is less than or equ'
+scores: 5.5
+combined_metric: 5.5
+decision: dislike
+actual decision: dislike
 
 
 super_likes: 0
-scores: 6.8, 7.1, 9.2, 6.4, 5.2
-combined_metric: 9.1999999999999993
-decision: like
-actual decision: like
-hinge_opener: 'What's your morning routine?'
-
-
-super_likes: 0
-scores: 6.4, 5.1, 6, 2.5, 5.2
+scores: 4.9, 6.4, 3.9, 3.1
 combined_metric: 6.4000000000000004
 decision: like
 actual decision: like
-hinge_opener: 'What's your favorite meme?
-
-
-
-
-User
-If the question is not less than or equal to 33 characters, rewrite so that it is less than or equal to 33 characters. It can be based on a different detail from her profile. And give me only the resulting question in your response'
+hinge_opener: 'Love horror movies?'
 
 
 super_likes: 0
-scores: 5.7, 5.6, 5.7, 5.7, 5.5, 5.5, 5.5, 5.6
-combined_metric: 5.7000000000000002
+scores: 5.1, 3.7, 7.5, 6.8, 3.5
+combined_metric: 7.5
+decision: like
+actual decision: like
+hinge_opener: 'Can you drive a standard?'
+
+
+super_likes: 0
+scores: 5.4, 6.8, 7, 4.1, 5.9
+combined_metric: 7
+decision: like
+actual decision: like
+hinge_opener: 'Pet raccoon or burping?'
+
+
+super_likes: 0
+scores: 7, 6.3, 4.3, 9, 4.7
+combined_metric: 9
+decision: like
+actual decision: like
+hinge_opener: 'Dream home must-haves?'
+
+
+super_likes: 0
+scores: 5.8, 5.4, 5, 3.2, 3.7, 3.8
+combined_metric: 5.7999999999999998
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
-scores: 5.8, 5.7, 6.1
+scores: 5.7, 5.8, 7.2
+combined_metric: 7.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Move to Spain?'
+
+
+super_likes: 0
+scores: 6.4, 6.4, 4.5, 7.1
+combined_metric: 7.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Into sci-fi/fantasy?'
+
+
+super_likes: 0
+scores: 6.4, 6, 4.1, 8.3, 5.3
+combined_metric: 8.3000000000000007
+decision: like
+actual decision: like
+hinge_opener: 'Love patio dates?'
+
+
+super_likes: 0
+scores: 6.6, 5.2, 6.7, 5.2, 7.5, 6.9, 6.9
+combined_metric: 7.5
+decision: like
+actual decision: like
+hinge_opener: 'Travel plans this year?'
+
+
+super_likes: 0
+scores: 6.6, 6.9, 6.5, 6.9, 6.9
+combined_metric: 6.9000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Favorite concert memories?'
+
+
+super_likes: 0
+scores: 5.4, 5.4, 5.2
+combined_metric: 5.4000000000000004
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+scores: 6.5, 7.1, 3.8, 4.3, 6.2
+combined_metric: 7.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'True Crime fan?'
+
+
+super_likes: 0
+scores: 5.5, 6.6, 5.8, 5.2
+combined_metric: 6.5999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Sports team loyalty?'
+
+
+super_likes: 0
+scores: 4.7, 5.5, 6.7, 6.2, 6.6, 4.5
+combined_metric: 6.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Attraction to dog dads?'
+
+
+super_likes: 0
+scores: 3.6, 6.1, 3.7
 combined_metric: 6.0999999999999996
 decision: like
 actual decision: like
-hinge_opener: 'What's your favorite road trip memory?'
+hinge_opener: 'Favorite Taylor Swift song?'
 
 
 super_likes: 0
-scores: 5.8, 5.7, 5.8, 5.9, 5.8, 5.6, 5.6
-combined_metric: 5.9000000000000004
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.2, 5.7, 5.7, 5.7, 5.9, 5.7, 5.7, 5.8
-combined_metric: 5.9000000000000004
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.8, 5.6, 5.6, 5.7, 5.8, 5.6, 5.8
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.2, 5.7, 5.8, 5.8, 5.7, 5.7, 5.6, 5.8
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.2, 5.8, 5.6, 5.8, 5.7, 5.7, 5.8, 5.7
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.7, 5.7, 5.7, 5.7, 5.8, 5.9
-combined_metric: 5.9000000000000004
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.3, 5.7, 5.6, 5.7, 5.8, 5.9, 5.6
-combined_metric: 5.9000000000000004
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.2, 5.7, 5.9, 5.7, 5.9, 5.7, 5.9, 5.8
-combined_metric: 5.9000000000000004
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.2, 5.9, 5.8, 5.7, 5.8, 5.7, 5.9, 5.9
-combined_metric: 5.9000000000000004
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.3, 5.6, 5.7, 5.8, 5.6, 5.8, 5.8, 5.9
-combined_metric: 5.9000000000000004
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.1, 5.7, 5.8, 5.7, 5.7, 5.8, 5.7, 5.6
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.7, 5.8, 5.6, 5.8, 5.8, 5.9, 5.9
-combined_metric: 5.9000000000000004
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.2, 5.8, 5.6, 5.8, 5.7, 5.8, 5.8, 5.8
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.4, 5.6, 5.8, 5.7, 5.8, 5.8, 5.7, 5.7
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.1, 5.8, 5.7, 5.7, 5.6, 5.6, 5.8
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.2, 5.8, 5.6, 5.7, 5.8, 5.8, 5.9, 5.9
-combined_metric: 5.9000000000000004
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.2, 5.7, 5.8, 5.9, 5.8, 5.8, 5.8, 5.7
-combined_metric: 5.9000000000000004
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.3, 5.8, 5.8, 5.9, 5.9, 5.6, 5.8
-combined_metric: 5.9000000000000004
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.4, 5.4, 5.7, 5.7, 5.7, 5.8, 5.7
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.4, 5.7, 5.5, 5.9, 6, 5.6, 5.8, 5.7
-combined_metric: 6
+scores: 6.6, 4.9, 4.8, 6.2
+combined_metric: 6.5999999999999996
 decision: like
 actual decision: like
-hinge_opener: 'them, and I'll be happy to assist'
+hinge_opener: 'ACOTAR series fan?'
 
 
 super_likes: 0
-scores: 5.3, 5.2, 5.3, 5.4, 5.5, 5.3, 5.2, 5.2
+scores: 4.5, 4.5, 5.5, 6.5, 3.3
+combined_metric: 6.5
+decision: like
+actual decision: like
+hinge_opener: 'Skateboarding or cowboy?'
+
+
+super_likes: 0
+scores: 7.7, 8.3, 7.4
+combined_metric: 8.3000000000000007
+decision: like
+actual decision: like
+hinge_opener: 'Chick-fil-A opinion?'
+
+
+super_likes: 0
+scores: 6.3, 3.3, 4.6, 5, 6.1
+combined_metric: 6.2999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Love well-organized spreadsheets?'
+
+
+super_likes: 0
+scores: 7.8, 6.4, 7.1, 7.7
+combined_metric: 7.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Coffee or football?'
+
+
+super_likes: 0
+scores: 5, 6.6, 4.8, 6.4, 6.6, 6.8
+combined_metric: 6.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Type 2 fun?'
+
+
+super_likes: 0
+scores: 4.2, 4.5, 3.8, 7.7, 4.7, 6.2
+combined_metric: 7.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Zipair to Japan?'
+
+
+super_likes: 0
+scores: 5.6, 5.2, 8.7, 2.6
+combined_metric: 8.6999999999999993
+decision: like
+actual decision: like
+hinge_opener: 'What's the best song ever made?'
+
+
+super_likes: 0
+scores: 5.7, 5.2, 6.2
+combined_metric: 6.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
+
+
+super_likes: 0
+scores: 7.1, 5.2, 7.7
+combined_metric: 7.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
+
+
+super_likes: 0
+scores: 4.4, 6.9, 4.7, 5.1
+combined_metric: 6.9000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'What's your most irrational fear?'
+
+
+super_likes: 0
+scores: 4.9, 6.9, 5.5, 3.3
+combined_metric: 6.9000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
+
+
+super_likes: 0
+scores: 6.7, 4.1, 5.4, 6.1
+combined_metric: 6.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'What's your favorite video game?'
+
+
+super_likes: 0
+scores: 5.5, 3.9, 3.9, 5.4, 5, 4.5, 4.1
 combined_metric: 5.5
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
-scores: 4.9, 5.2, 5.4, 5.4, 5.5, 5.2, 5.4, 5.2
-combined_metric: 5.5
-decision: dislike
-actual decision: dislike
+scores: 5.1, 5.4, 4.1, 6, 6.3
+combined_metric: 6.2999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 4.8, 5.4, 5.2, 5.2, 5.5, 5.1, 5.3
-combined_metric: 5.5
-decision: dislike
-actual decision: dislike
+scores: 6.4, 4.3, 6.8, 7.8
+combined_metric: 7.7999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 4.8, 5.4, 5.4, 5.2, 5.2, 5.2, 5.5, 5.5
-combined_metric: 5.5
-decision: dislike
-actual decision: dislike
+scores: 7.5, 6.4, 7.1, 5.3, 7.3
+combined_metric: 7.5
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 5, 5.3, 5.7, 5.6, 5.6, 5.5, 5.6, 5.5
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
+scores: 4.3, 5.1, 5.8, 6.2
+combined_metric: 6.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 4.9, 5.7, 5.8, 5.7, 5.6, 5.7, 5.6, 5.6
+scores: 6.2, 6.6, 5.6, 7.7, 5.5, 7.3, 6.7
+combined_metric: 7.7000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'Can you quote movies?'
+
+
+super_likes: 0
+scores: 3.6, 5.8, 3.5
 combined_metric: 5.7999999999999998
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
-scores: 4.9, 5.6, 5.8, 5.7, 5.6, 5.6, 5.5
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
+scores: 4.2, 4.3, 6.1, 4.7
+combined_metric: 6.0999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'What's your sense of humor like?'
 
 
 super_likes: 0
-scores: 5.3, 5.6, 5.7, 5.7, 5.4, 5.5, 5.6, 5.5
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 
-combined_metric: 0
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.7, 5.8, 5.6, 5.7, 5.6, 5.7, 5.7
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.4, 5.5, 5.6, 5.7, 5.6, 5.4
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.6, 5.6, 5.7, 5.6, 5.5, 5.5, 5.5
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.6, 5.5, 5.5, 5.6, 5.8, 5.6
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.7, 5.7, 5.7, 5.5, 5.6, 5.7
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.8, 5.8, 5.7, 5.5, 5.6, 5.7, 5.8, 5.7
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.1, 5.6, 5.7, 5.7, 5.4, 5.6, 5.7, 5.5
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.8, 5.6, 5.8, 5.5, 5.7, 5.6, 5.7, 5.6
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.1, 5.7, 5.6, 5.6, 5.6, 5.6, 5.7, 5.7
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.1, 5.6, 5.7, 5.7, 5.7, 5.6, 5.6, 5.6
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.7, 5.7, 5.6, 5.6, 5.7, 5.4, 5.6
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.5, 5.6, 5.8, 5.7, 5.8, 5.7, 5.7
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.5, 5.6, 5.5, 5.6, 5.6, 5.6, 5.7
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.8, 5.7
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.6, 5.6, 5.5, 5.7, 5.7, 5.5, 5.6
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.7, 5.7, 5.7, 5.6, 5.5, 5.7, 5.6
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.5, 5.7, 5.6, 5.7, 5.6, 5.6, 5.3
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.6, 5.5, 5.8, 5.7, 5.6, 5.5
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.7, 5.6, 5.6, 5.6, 5.7, 5.7, 5.6
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.6, 5.5, 5.5, 5.7, 5.6, 5.7, 5.7
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.7, 5.7, 5.7, 5.7, 5.6, 5.6, 5.6
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.1, 5.5, 5.6, 5.6, 5.6, 5.8, 5.7, 5.7
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.7, 5.8, 5.7, 5.4, 5.6, 5.7
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.7, 5.5, 5.5, 5.6, 5.8, 5.7, 5.5
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.5, 5.7, 5.6, 5.6
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.5, 5.6, 5.6, 5.7, 5.6, 5.5, 5.7
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.7, 5.7, 5.6, 5.5, 5.6, 5.6, 5.5
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.7, 5.6, 5.7, 5.5, 5.6, 5.7, 5.7
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.7, 5.5, 5.6, 5.6, 5.6, 5.6, 5.9
+scores: 3.9, 4.1, 4.7, 4.5, 5.9
 combined_metric: 5.9000000000000004
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
-scores: 5, 5.7, 5.6, 5.6, 5.8, 5.6, 5.6, 5.6
-combined_metric: 5.7999999999999998
+scores: 4.1, 4.9, 7.3, 5.6, 7.2, 6.4, 6, 6.3
+combined_metric: 7.2999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Pirate or cowboy?'
+
+
+super_likes: 0
+scores: 5.9, 6.5, 5.7, 4.9, 6.6, 5.8
+combined_metric: 6.5999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'What's your favorite hiking spot?'
+
+
+super_likes: 0
+scores: 5.6, 6, 6.5, 5, 5
+combined_metric: 6.5
+decision: like
+actual decision: like
+hinge_opener: 'What's your no-skip album?'
+
+
+super_likes: 0
+scores: 5.7, 6.9, 5.7, 3.4
+combined_metric: 6.9000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'What's your favorite animal?'
+
+
+super_likes: 0
+scores: 4.7, 6.6, 5.4, 5.5, 6
+combined_metric: 6.5999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
+
+
+super_likes: 0
+scores: 6.5, 6.5
+combined_metric: 6.5
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
+
+
+super_likes: 0
+scores: 4.8, 5, 3.5
+combined_metric: 5
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
-scores: 5.1, 5.5, 5.8, 5.7, 5.5, 5.7, 5.5, 5.4
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
+scores: 6.4, 4.3, 6.1, 3.8
+combined_metric: 6.4000000000000004
+decision: like
+actual decision: like
+hinge_opener: 'Are you a Chiefs fan too?'
 
 
 super_likes: 0
-scores: 5, 5.8, 5.5, 5.7, 5.6, 5.6, 5.4, 5.6
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
+scores: 7.1, 4.8, 4.3, 4.5, 7.3
+combined_metric: 7.2999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 4.8, 5.7, 5.6, 5.7, 5.7, 5.8, 5.6, 5.5
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
+scores: 6.6, 6.6, 3.9, 4, 2.8
+combined_metric: 6.5999999999999996
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 4.9, 5.7, 5.7, 5.7, 5.8, 5.5, 5.5, 5.8
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
+scores: 7, 6.5, 2.9, 6.2, 3.3, 5.9
+combined_metric: 7
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 5.1, 5.7, 5.7, 5.5, 5.6, 5.6, 5.5, 5.8
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
+scores: 5.3, 7
+combined_metric: 7
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 5.8, 5.6, 5.5, 5.6, 5.6, 5.5, 5.5
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
+scores: 2.7, 6.3, 4.3, 3.3, 5.1
+combined_metric: 6.2999999999999998
+decision: like
+actual decision: like
+hinge_opener: 'Hi, how's your week going?'
 
 
 super_likes: 0
-scores: 5.2, 5.4, 5.7, 5.6, 5.4, 5.8, 5.7, 5.7
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.6, 5.5, 5.6, 5.5, 5.6, 5.7, 5.7
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.6, 5.5, 5.6, 5.4, 5.6, 5.6, 5.6
-combined_metric: 5.5999999999999996
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.7, 5.6, 5.7, 5.5, 5.5, 5.6, 5.5
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.1, 5.6, 5.6, 5.6, 5.5, 5.5, 5.5, 5.6
-combined_metric: 5.5999999999999996
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.6, 5.8, 5.6, 5.7, 5.7, 5.5, 5.6
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5.1, 5.6, 5.6, 5.7, 5.7, 5.6, 5.5
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.7, 5.5, 5.5, 5.7, 5.7, 5.4, 5.6
-combined_metric: 5.7000000000000002
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.6, 5.6, 5.5, 5.5, 5.7, 5.8, 5.5
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.8, 5.6, 5.7, 5.7, 5.6, 5.8, 5.5, 5.6
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.8, 5.6, 5.6, 5.7, 5.8, 5.7, 5.7
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.6, 5.7, 5.7, 5.8, 5.5, 5.7, 5.8
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.8, 5.7, 5.6, 5.7, 5.7, 5.7, 5.7
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 4.9, 5.6, 5.6, 5.8, 5.7, 5.8, 5.6, 5.6
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-scores: 5, 5.6, 5.8, 5.7, 5.7, 5.6, 5.7
-combined_metric: 5.7999999999999998
-decision: dislike
-actual decision: dislike
+scores: 7.2, 4.9, 3, 3.6
+combined_metric: 7.2000000000000002
+decision: like
+actual decision: like
+hinge_opener: 'What's your best dad joke?'
 
 
 super_likes: 0

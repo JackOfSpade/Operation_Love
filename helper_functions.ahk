@@ -24,18 +24,6 @@ ocr(x1, y1, x2, y2, delay)
 	return A_Clipboard	
 }
 
-get_text(x1, y1, x2, y2, clipwait_time)
-{
-	mouseMove x1, y1
-	send "{LButton down}"
-	sleep 100
-	mouseMove x2, y2
-	send "{LButton up}"
-	sleep 100
-	send "^c"
-	clipwait(clipwait_time, 0)
-}
-
 print_screen(x1, y1, x2, y2)
 {		
 	send "{f11}"

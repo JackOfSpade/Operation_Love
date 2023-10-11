@@ -77,7 +77,7 @@ main(dating_app, root_directory, resolution)
 	
 		take_screenshot(dating_app)  
 		
-		decision := make_decision(root_directory, resolution, dating_app)
+		decision := make_decision()
 		
 		if decision == "super_like" && super_likes > 0
 		{

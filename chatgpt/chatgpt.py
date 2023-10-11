@@ -46,7 +46,9 @@ def main():
     messages.append({"role": "user", "content": follow_up_question})
     response = get_gpt_response(messages).strip('"').strip("'").rstrip('.')
 
-    print(response)
+    # Max characters for one line on Hinge. Hinge UI goes wonky when you use 2 lines or more with remote touch.
+    if len(response) > 33:
+        response = "Hi, how's your week going?"
 
     # Write the final response to a file
     with open("chatgpt_response.txt", "w") as output_file:

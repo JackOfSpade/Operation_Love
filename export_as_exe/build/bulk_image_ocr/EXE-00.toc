@@ -118,7 +118,7 @@
  [],
  False,
  False,
- 1697056970,
+ 1697065906,
  [('run.exe',
    'C:\\Users\\super\\Desktop\\GitHub\\Operation_Love\\bulk_image_ocr\\venv\\Lib\\site-packages\\PyInstaller\\bootloader\\Windows-64bit-intel\\run.exe',
    'EXECUTABLE')],

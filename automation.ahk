@@ -16,10 +16,12 @@ navigate_to_discover(dating_app)
     if dating_app == "tinder"
     {
 		winactivate "Tinder"
+		sleep 500
     }
 	else if dating_app == "bumble"
     {
 		winactivate "Bumble"
+		sleep 500
     }
 	else if dating_app == "hinge"
     {
@@ -71,10 +73,7 @@ remaining_super_likes(dating_app)
 super_like(dating_app, root_directory)
 {
 	if dating_app == "tinder"
-	{
-		winactivate "Tinder"
-		sleep 1000
-		
+	{		
 		; Fix random profile popups
 		loop 4
 		{
@@ -90,7 +89,6 @@ super_like(dating_app, root_directory)
 	}
 	else if dating_app == "bumble"
 	{
-		winactivate "Bumble"
 		mouseClick "left", 1208, 947
 	}
 	else if dating_app == "hinge"
@@ -107,10 +105,7 @@ like(dating_app, root_directory)
 	hinge_opener := ""
 	
 	if dating_app == "tinder"
-	{
-		winactivate "Tinder"
-		sleep 1000
-		
+	{		
 		; Fix random profile popups
 		loop 4
 		{
@@ -126,123 +121,16 @@ like(dating_app, root_directory)
 		send "{esc}"
 	}
 	else if dating_app == "bumble"
-	{
-		winactivate "Bumble"
+	{"
 		send "{right}"
 	}
 	else if dating_app == "hinge"
-    {
-		RunWait("bulk_image_ocr.exe")		
-		bulk_images_ocr_text := FileRead("bulk_images_ocr_text.txt")
-		; Remove all symbols that cannot be typed on a keyboard
-		bulk_images_ocr_text := RegExReplace(bulk_images_ocr_text, "[^ -~\r\n]", "")		
+    {		
+		RunWait("bulk_image_ocr.exe")				
 		
-		winactivate "hinge"
-		sleep 1000
-		mouseClick "left", 860, 968
+		RunWait("chatgpt.exe")	
 		
-		sleep 1000
-		
-		; Cannot remove coding work from response
-		A_Clipboard := "The following text is from a dating profile for a woman: " . bulk_images_ocr_text . " ====== End of dating profile ======= Generate an open question that's less than or equal to 33 characters based on what you think is the most interesting detail from her profile. The question should not be an invitation to do anything or already answered on her profile."
-		
-		Send "^v"
-		
-		sleep 100
-        A_Clipboard := ""
-        sleep 100
-		
-		sleep 500
-		
-		while not InStr(ocr(725, 975, 856, 1007, 100), "Send")
-        {	
-			; Click ChatGPT's built-in down arrow
-			mouseClick "left", 1891, 915
-			
-			; Submit it
-			mouseClick "left", 1450, 989
-			
-			sleep 100
-			A_Clipboard := ""
-			sleep 100
-			
-			sleep 1000
-        }  
-		
-		sleep 100
-		A_Clipboard := ""
-		sleep 100
-		
-		; Need to have enough delay to enable textbox after processing
-		sleep 5000
-		
-		; Click textbox
-		mouseClick "left", 860, 968	
-		sleep 500	
-		
-		; Specification after generation
-		A_Clipboard := "Give me only the generated question in your response."
-		
-		Send "^v"
-		
-		sleep 100
-        A_Clipboard := ""
-        sleep 100
-		
-		sleep 500
-		
-		while not InStr(ocr(725, 975, 856, 1007, 100), "Send")
-        {	
-			; Click ChatGPT's built-in down arrow
-			mouseClick "left", 1891, 915
-			
-			; Submit it
-			mouseClick "left", 1450, 989
-			
-			sleep 100
-			A_Clipboard := ""
-			sleep 100
-			
-			sleep 1000
-        } 
-
-		sleep 100
-		A_Clipboard := ""
-		sleep 100
-		
-		sleep 10000
-		
-		; mouseClick "right", 791, 807
-		; send "{down}"
-		; send "{enter}"
-		
-		get_text(758, 806, 1411, 806, 2000)
-		
-		sleep 500
-		
-		hinge_opener := A_Clipboard
-		
-		; Remove leading and trailing quotation marks
-		hinge_opener := StrReplace(hinge_opener, "`"")
-
-		; Check if the string ends with a period
-		if InStr(hinge_opener, ".", , -1) ; Search for the period from the end of the string
-		{
-			; Remove the ending period using SubStr
-			hinge_opener := SubStr(hinge_opener, 1, StrLen(hinge_opener) - 1)
-		}
-		
-		if StrLen(hinge_opener) > 33
-		{
-			hinge_opener := "Hi, how's your week going?"
-		}
-		
-		; test
-		; msgBox(hinge_opener)
-		
-		winactivate "AirDroid"
-		
-		sleep 500
+		hinge_opener := FileRead("chatgpt_response.txt")
 		
 		; Scrool up
 		loop 14
@@ -286,10 +174,7 @@ like(dating_app, root_directory)
 dislike(dating_app)
 {
 	if dating_app == "tinder"
-	{
-		winactivate "Tinder"
-		sleep 1000
-		
+	{		
 		; Fix random profile popups
 		loop 4
 		{
@@ -302,15 +187,10 @@ dislike(dating_app)
 	}
 	else if dating_app == "bumble"
 	{
-		winactivate "Bumble"
 		send "{left}"
 	}
 	else if dating_app == "hinge"
     {
-		winactivate "AirDroid"
-		
-		sleep 500
-		
 		; Dislike button with footer
 		mouseClick "left", 731, 915
 		sleep 1000

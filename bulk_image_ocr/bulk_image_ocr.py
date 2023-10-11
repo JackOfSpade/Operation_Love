@@ -2,11 +2,19 @@ import os
 from PIL import Image
 import pytesseract
 
-
 def main():
-    # Define the name of the directory to be scanned using a relative path
-    directory = 'C:\\Users\\Bull\\Desktop\\Github\\Operation_Love\\Screenshots'
+    # Get the current working directory (where the executable was run)
+    script_directory = os.getcwd()
+
+    # Check the directory from which the script is being run
+    if script_directory.endswith("bulk_image_ocr"):
+        directory = os.path.join(script_directory, '..', 'Screenshots')
+    else:
+        directory = os.path.join(script_directory, 'Screenshots')
+
+    # Set the pytesseract path
     pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
 
     # Create or open a text file for storing OCR data
     with open("bulk_images_ocr_text.txt", "w") as output_file:
@@ -22,7 +30,6 @@ def main():
                 # Write OCR text to the output file
                 output_file.write(text)
                 output_file.write("\n" + "="*50 + "\n")
-
 
 if __name__ == "__main__":
     main()

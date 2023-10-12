@@ -42,7 +42,7 @@ make_decision()
 		msgbox('Error: adjective is not "beautiful" or "ugly".')
 	}
     
-    FileAppend "Analysis: " . bulk_images_ocr_text . "decision: " . decision . "`n", ".\log.txt"
+    FileAppend "Analysis: " . bulk_images_ocr_text . "`ndecision: " . decision . "`n", ".\log.txt"
     
     return decision    
 }

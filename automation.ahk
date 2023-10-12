@@ -10,7 +10,6 @@
 
 CoordMode "Mouse", "Window"
 
-
 navigate_to_discover(dating_app)
 {
     if dating_app == "tinder"
@@ -86,7 +85,7 @@ super_like(dating_app, root_directory)
 		sleep 1000
 		
 		; click away comment recommendation
-		if InStr(ocr(724, 445, 763, 505, 1000), "Send")
+		if InStr(ocr(724, 445, 765, 465, 1000), "Send")
 		{
 			; Make comment notice dissapear 
 			send "{esc}"

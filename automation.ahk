@@ -84,8 +84,18 @@ super_like(dating_app, root_directory)
 		
 		mouseClick "left", 860, 624
 		sleep 1000
+		
 		; click away comment recommendation
-		send "{esc}"
+		if InStr(ocr(724, 445, 763, 463, 1000), "Send")
+		{
+			; Make comment notice dissapear 
+			send "{esc}"
+			
+			sleep 1000
+			
+			; Click super like
+			mouseClick "left", 860, 624
+		}
 	}
 	else if dating_app == "bumble"
 	{

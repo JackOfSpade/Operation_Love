@@ -121,7 +121,7 @@ like(dating_app, root_directory)
 		send "{esc}"
 	}
 	else if dating_app == "bumble"
-	{"
+	{
 		send "{right}"
 	}
 	else if dating_app == "hinge"

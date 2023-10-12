@@ -111,6 +111,9 @@ main(dating_app, root_directory, resolution)
 			sleep 3000
 			mouseClick "left", 828, 567
 			sleep 3000
+			
+			; If no prompt poll, need to remove photo description as a consequence of clicking on it
+			mouseClick "left", 957, 634
 		}
 		
 		clear_screenshot_directory(root_directory, dating_app)

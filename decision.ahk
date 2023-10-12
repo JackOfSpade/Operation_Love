@@ -29,7 +29,7 @@ make_decision()
     {
         decision := "super_like"
     }
-    else if adjective == "beautiful"
+    else if adjective == "beautiful" or adjective == "neutral"
     {
         decision := "like"
     }
@@ -39,7 +39,7 @@ make_decision()
     }
 	else
 	{
-		msgbox('Error: adjective is not "beautiful" or "ugly".')
+		msgbox('Error: adjective is not "beautiful", "ugly" or "neutral".')
 	}
     
     FileAppend "Analysis: " . bulk_images_ocr_text . "`ndecision: " . decision . "`n", ".\log.txt"

@@ -18,7 +18,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, preprocess = clip.load("ViT-B/32", device=device)
 
-    text = clip.tokenize(["beautiful girl", "ugly girl"]).to(device)
+    text = clip.tokenize(["beautiful girl", "ugly girl", "indeterminate"]).to(device)
 
     # List all files in the script directory
     all_files = os.listdir(directory)
@@ -38,6 +38,11 @@ def main():
             logits_per_image, _ = model(image, text)
             probs = logits_per_image.softmax(dim=-1).cpu().numpy()
 
+        # Skip the image if the model thinks it's not a face with high probability
+        if probs[0][2] > 0.5:  # Assuming that the third category is "non-face"
+            num_images -= 1
+            continue
+
         total_beautiful_prob += probs[0][0]
         total_ugly_prob += probs[0][1]
 
@@ -54,11 +59,17 @@ def main():
         final_label = "neutral"
 
     result_path = os.path.join(script_directory, 'open_ai_clip_result.txt')
-    with open(result_path, 'w') as f:
-        f.write(final_label + "\n")
-        f.write(f"Average probability of beautiful girl: {avg_beautiful_prob:.3f}\n")
-        f.write(f"Average probability of ugly girl: {avg_ugly_prob:.3f}")
 
+    with open(result_path, 'w') as f:
+        output_text = final_label + "\n"
+        output_text += f"Average probability of beautiful girl: {avg_beautiful_prob:.3f}\n"
+        output_text += f"Average probability of ugly girl: {avg_ugly_prob:.3f}"
+
+        # Write to file
+        f.write(output_text)
+
+        # Print to console
+        print(output_text)
 
 if __name__ == "__main__":
     main()

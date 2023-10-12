@@ -49,11 +49,10 @@ take_screenshot(dating_app)
 		Loop 8
 		{
 			print_screen(657, 106, 1260, 889)
-			; MouseClickDrag "left", 956, 516, 956, 420, 100
 			
 			loop 4
 			{
-				click_and_drag(669, 576, 665, 119, 1500)
+				click_and_drag(661, 780, 665, 330, 1500)
 			}
 			
 			

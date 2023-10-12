@@ -143,7 +143,7 @@ like(dating_app, root_directory)
 		hinge_opener := FileRead("chatgpt_response.txt")
 		
 		; Scrool up
-		loop 14
+		loop 16
 		{
 			click_and_drag(660, 521, 669, 828, 500)
 		}

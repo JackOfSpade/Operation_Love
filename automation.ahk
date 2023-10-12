@@ -85,7 +85,7 @@ super_like(dating_app, root_directory)
 		sleep 1000
 		
 		; click away comment recommendation
-		if InStr(ocr(724, 445, 765, 465, 1000), "Send")
+		if InStr(ocr(834, 628, 889, 652, 1000), "SK", "Off")
 		{
 			; Make comment notice dissapear 
 			mouseClick "left", 865, 639

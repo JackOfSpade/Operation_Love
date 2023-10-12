@@ -153,7 +153,11 @@ like(dating_app, root_directory)
 		sleep 1000
 		; Click like without footer
 		mouseClick "left", 1192, 780
+		sleep 1000
+		; Click like with compatibility
+		mouseClick "left", 1189, 895
 		sleep 4000
+		
 		
 		; Click "Add a comment"
 		mouseClick "left", 813, 778

@@ -88,12 +88,7 @@ super_like(dating_app, root_directory)
 		if InStr(ocr(724, 445, 765, 465, 1000), "Send")
 		{
 			; Make comment notice dissapear 
-			send "{esc}"
-			
-			sleep 1000
-			
-			; Click super like
-			mouseClick "left", 860, 624
+			mouseClick "left", 865, 639
 		}
 	}
 	else if dating_app == "bumble"

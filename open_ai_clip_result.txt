@@ -1,3 +1,3 @@
-ugly
-Average probability of beautiful girl: 0.425
-Average probability of ugly girl: 0.534
+beautiful
+Average probability of beautiful girl: 0.810
+Average probability of ugly girl: 0.166

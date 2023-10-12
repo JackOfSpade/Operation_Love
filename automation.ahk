@@ -86,7 +86,7 @@ super_like(dating_app, root_directory)
 		sleep 1000
 		
 		; click away comment recommendation
-		if InStr(ocr(724, 445, 763, 463, 1000), "Send")
+		if InStr(ocr(724, 445, 763, 505, 1000), "Send")
 		{
 			; Make comment notice dissapear 
 			send "{esc}"

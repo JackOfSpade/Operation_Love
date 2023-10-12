@@ -117,16 +117,18 @@ like(dating_app, root_directory)
 		; Click like
 		mouseClick "left", 932, 619
 		
-		sleep 3000
-		; Make super_like upgrade notice for popular profiles dissapear 
-		send "{esc}"
+		sleep 1000
 		
-		; This would prevent the like and we will reiterate the same profiles
-		loop 7
+		if InStr(ocr(598, 380, 686, 403, 1000), "Upgrade")
 		{
-			mouseClick "left", 714, 366
-			sleep 500
-		}
+			; Make super_like upgrade notice for popular profiles dissapear 
+			send "{esc}"
+			
+			sleep 1000
+			
+			; Click like
+			mouseClick "left", 932, 619
+		}		
 	}
 	else if dating_app == "bumble"
 	{

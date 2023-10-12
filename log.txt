@@ -6,6 +6,3 @@ Average probability of beautiful girl: 0.700
 Average probability of ugly girl: 0.300decision: like
 actual decision: like
 hinge_opener: ''
-
-
-super_likes: 5

@@ -46,9 +46,13 @@ def main():
         total_beautiful_prob += probs[0][0]
         total_ugly_prob += probs[0][1]
 
-    # Calculate average probabilities
-    avg_beautiful_prob = total_beautiful_prob / num_images
-    avg_ugly_prob = total_ugly_prob / num_images
+    if num_images == 0:
+        avg_beautiful_prob = 0
+        avg_ugly_prob = 0
+    else:
+        # Calculate average probabilities
+        avg_beautiful_prob = total_beautiful_prob / num_images
+        avg_ugly_prob = total_ugly_prob / num_images
 
     # Making a decision based on the average probabilities
     if avg_beautiful_prob > 0.5 and avg_ugly_prob < 0.5:

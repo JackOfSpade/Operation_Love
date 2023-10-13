@@ -85,7 +85,7 @@ super_like(dating_app, root_directory)
 		sleep 1000
 		
 		; click away comment recommendation
-		if InStr(ocr(724, 445, 765, 465, 1000), "Send")
+		if InStr(ocr(724, 445, 765, 465, 1000), "Send", 0)
 		{
 			; Make comment notice dissapear 
 			send "{esc}"
@@ -128,7 +128,7 @@ like(dating_app, root_directory)
 		
 		sleep 1000
 		
-		if InStr(ocr(598, 380, 686, 403, 1000), "Upgrade")
+		if InStr(ocr(598, 380, 686, 403, 1000), "Upgrade", 0)
 		{
 			; Make super_like upgrade notice for popular profiles dissapear 
 			send "{esc}"
@@ -159,16 +159,20 @@ like(dating_app, root_directory)
 		
 		sleep 3000
 		
-		
-		; Click like with compatibility
-		mouseClick "left", 1189, 895
-		sleep 1000
 		; Click like with footer
 		mouseClick "left", 1191, 841
 		sleep 1000
 		; Click like without footer
 		mouseClick "left", 1192, 780
 		sleep 4000
+		
+		
+		if !InStr(ocr(910, 963, 1006, 996, 500), "Cancel", 0)
+		{
+			; Click like with compatibility
+			mouseClick "left", 1189, 895
+			sleep 4000
+		}	
 		
 		
 		; Click "Add a comment"

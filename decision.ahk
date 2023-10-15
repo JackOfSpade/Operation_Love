@@ -12,7 +12,7 @@ CoordMode "Mouse", "Window"
 
 make_decision()
 {	
-	RunWait('powershell.exe -Command "Set-ExecutionPolicy Bypass -Scope Process; .\run_open_ai_clip.ps1"')
+	RunWait('*RunAs "powershell.exe" -ExecutionPolicy Bypass -File ".\run_open_ai_clip.ps1"')
 	
 	bulk_images_ocr_text := FileRead("open_ai_clip_result.txt")
 

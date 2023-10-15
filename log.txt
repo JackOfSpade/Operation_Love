@@ -1,8 +1,21 @@
 
 
-super_likes: 3
+super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.869
-Average probability of ugly girl: 0.085
-decision: super_like
-actual decision: super_like
+Average probability of beautiful girl: 0.554
+Average probability of ugly girl: 0.404
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.529
+Average probability of ugly girl: 0.396
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 0

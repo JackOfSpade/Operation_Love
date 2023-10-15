@@ -101,6 +101,7 @@ super_like(dating_app, root_directory)
 		like(dating_app, root_directory)
     }
 }
+
    
 like(dating_app, root_directory)
 {
@@ -124,7 +125,7 @@ like(dating_app, root_directory)
 		
 		sleep 1000
 		
-		if InStr(ocr(598, 380, 686, 403, 1000), "Upgrade", 0)
+		if InStr(ocr(390, 138, 1094, 570, 1000), "Upgrade", 0)
 		{
 			; Make super_like upgrade notice for popular profiles dissapear 
 			send "{esc}"

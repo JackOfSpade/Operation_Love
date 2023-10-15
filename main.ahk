@@ -5,17 +5,19 @@
 ; the Decision Module to generate a score and make a decision from that.
 
 ; Set-up:
-; 100% zoom on resolution
-; Open 2 separate chrome maximized window, one with the dating site and one with the attractiveness eval site
+; 100% zoom in resolution settings
 ; Laptop must be plugged in or else the save/file dialog will lag.
 ; Greenshot: set output location to screenshot folder
 ; 			 set capture region to f11
-; ChatGPT tab name should be "hinge" with upload file capability.
+; Set-ExecutionPolicy Unrestricted -Scope LocalMachine
+; Unblock-File -Path "C:\Users\Dell\Desktop\GitHub\Operation_Love\open_ai_clip\venv\Scripts\activate.ps1"
+
 
 ; Warnings:
 ; log.txt will not log if you have it open in notepad++.
 ; Running this while having another one running inside Shadow PC will cause the one outside to crash due to clipboard conflicts.
 ; If AirDroid, tap become long presses where the context menu pops up, click "Hoykeys" in its menu and click "Switch input method"
+
 
 #include automation.ahk
 #include screenshot.ahk

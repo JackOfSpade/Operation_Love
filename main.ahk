@@ -78,7 +78,7 @@ main(dating_app, root_directory, resolution)
 				sleep 100
 				A_Clipboard := ""
 				sleep 100
-				mouseClick left, 1160, 770
+				mouseClick "left", 1160, 770
 			}
 		}
 	

@@ -61,7 +61,7 @@ main(dating_app, root_directory, resolution)
 		}
 		else if dating_app == "bumble"
 		{			
-			if InStr(ocr(1025, 476, 1096, 503, 500), "Want", 0) or InStr(ocr(1049, 514, 1100, 542, 500), "You", 0) or InStr(ocr(1087, 378, 1262, 433, 500), "You", 0) or !WinActive("Bumble")
+			if InStr(ocr(1025, 476, 1096, 503, 500), "Want", 0) or InStr(ocr(1049, 514, 1100, 542, 500), "You", 0) or !WinActive("Bumble")
 			{
 				send "{f5}"
 				
@@ -73,6 +73,13 @@ main(dating_app, root_directory, resolution)
 				
 				goto("start")
 			}	
+			else if InStr(ocr(1087, 378, 1262, 433, 500), "Boom", 0)
+			{
+				sleep 100
+				A_Clipboard := ""
+				sleep 100
+				mouseClick left, 1160, 770
+			}
 		}
 	
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"

@@ -73,7 +73,7 @@ main(dating_app, root_directory, resolution)
 				
 				goto("start")
 			}	
-			else if InStr(ocr(1087, 378, 1262, 433, 500), "Boom", 0)
+			else if InStr(ocr(1124, 706, 1173, 728, 500), "Open", 0)
 			{
 				sleep 100
 				A_Clipboard := ""

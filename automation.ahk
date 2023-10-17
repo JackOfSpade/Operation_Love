@@ -123,7 +123,7 @@ like(dating_app, root_directory)
 		; Click like
 		mouseClick "left", 932, 619
 		
-		sleep 1000
+		sleep 3000
 		
 		if InStr(ocr(390, 138, 1094, 570, 1000), "Upgrade", 0)
 		{

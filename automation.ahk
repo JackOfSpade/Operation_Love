@@ -66,9 +66,7 @@ remaining_super_likes(dating_app)
 	return remainingSuperLikes
 	
 }
-	
-	
-	   
+		   
 super_like(dating_app, root_directory)
 {
 	if dating_app == "tinder"
@@ -85,12 +83,7 @@ super_like(dating_app, root_directory)
 		sleep 1000
 		
 		; click away comment recommendation
-
-		if InStr(ocr(834, 628, 889, 652, 1000), "SK", 0)
-		{
-			; Make comment notice dissapear 
-			mouseClick "left", 865, 639
-		}
+		mouseClick "left", 865, 639
 	}
 	else if dating_app == "bumble"
 	{

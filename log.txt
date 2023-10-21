@@ -1,20 +1,4660 @@
 
 
-super_likes: 0
+super_likes: 5
 Analysis: ugly
-Average probability of beautiful girl: 0.190
-Average probability of ugly girl: 0.782
+Average probability of beautiful girl: 0.294
+Average probability of ugly girl: 0.674
 decision: dislike
 actual decision: dislike
 
 
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.749
-Average probability of ugly girl: 0.190
+super_likes: 5
+Analysis: neutral
+Average probability of beautiful girl: 0.444
+Average probability of ugly girl: 0.499
 decision: like
 actual decision: like
 hinge_opener: ''
 
 
-super_likes: 0
+super_likes: 5
+Analysis: beautiful
+Average probability of beautiful girl: 0.500
+Average probability of ugly girl: 0.331
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 5
+Analysis: neutral
+Average probability of beautiful girl: 0.468
+Average probability of ugly girl: 0.414
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 5
+Analysis: beautiful
+Average probability of beautiful girl: 0.759
+Average probability of ugly girl: 0.213
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 5
+Analysis: ugly
+Average probability of beautiful girl: 0.429
+Average probability of ugly girl: 0.536
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 5
+Analysis: beautiful
+Average probability of beautiful girl: 0.595
+Average probability of ugly girl: 0.217
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 5
+Analysis: beautiful
+Average probability of beautiful girl: 0.532
+Average probability of ugly girl: 0.401
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 5
+Analysis: beautiful
+Average probability of beautiful girl: 0.835
+Average probability of ugly girl: 0.159
+decision: super_like
+actual decision: super_like
+
+
+super_likes: 4
+Analysis: beautiful
+Average probability of beautiful girl: 0.518
+Average probability of ugly girl: 0.450
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 4
+Analysis: beautiful
+Average probability of beautiful girl: 0.668
+Average probability of ugly girl: 0.323
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 4
+Analysis: beautiful
+Average probability of beautiful girl: 0.669
+Average probability of ugly girl: 0.319
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 4
+Analysis: neutral
+Average probability of beautiful girl: 0.486
+Average probability of ugly girl: 0.437
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 4
+Analysis: ugly
+Average probability of beautiful girl: 0.353
+Average probability of ugly girl: 0.644
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 4
+Analysis: beautiful
+Average probability of beautiful girl: 0.781
+Average probability of ugly girl: 0.208
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 4
+Analysis: beautiful
+Average probability of beautiful girl: 0.654
+Average probability of ugly girl: 0.272
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 4
+Analysis: beautiful
+Average probability of beautiful girl: 0.888
+Average probability of ugly girl: 0.107
+decision: super_like
+actual decision: super_like
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.098
+Average probability of ugly girl: 0.443
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.098
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3
+Analysis: neutral
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.448
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 3

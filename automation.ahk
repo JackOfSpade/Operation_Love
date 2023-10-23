@@ -135,13 +135,17 @@ like(dating_app, root_directory)
 	}
 	else if dating_app == "hinge"
     {		
-		RunWait("bulk_image_ocr.exe")				
+		; The 33 character limit for auto-type on hinge is crippling and makes nonsensical responses.
+		; Saving this for future platforms that allows more characters for auto-type.
+		; RunWait("bulk_image_ocr.exe")				
+		; 
+		; RunWait("chatgpt.exe")	
+		; 
+		; hinge_opener := FileRead("chatgpt_response.txt")
 		
-		RunWait("chatgpt.exe")	
+		hinge_opener := "Hi, what are you up to right now?"
 		
-		hinge_opener := FileRead("chatgpt_response.txt")
-		
-		; Scrool up
+		; Scroll up
 		loop 16
 		{
 			click_and_drag(660, 521, 669, 828, 500)

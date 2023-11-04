@@ -170,7 +170,7 @@ like(dating_app, root_directory)
 		
 		
 		; Click "Add a comment"
-		mouseClick "left", 813, 735
+		mouseClick "left", 812, 737
 		
 		sleep 3000
 		
@@ -179,7 +179,7 @@ like(dating_app, root_directory)
 		sleep 6000
 		
 		; Send like		
-		mouseClick "left", 1013, 875
+		mouseClick "left", 1018, 848
 		sleep 2000
 		
 		; Click away send a rose instead

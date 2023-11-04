@@ -170,7 +170,7 @@ like(dating_app, root_directory)
 		
 		
 		; Click "Add a comment"
-		mouseClick "left", 813, 778
+		mouseClick "left", 813, 735
 		
 		sleep 3000
 		

@@ -14,14 +14,14 @@ make_decision()
 {	
 	RunWait('powershell.exe -Command ".\run_open_ai_clip.ps1"')
 	
-	bulk_images_ocr_text := FileRead("open_ai_clip_result.txt")
+	open_ai_clip_result := FileRead("open_ai_clip_result.txt")
 
 	; Extract first line string
-	RegExMatch(bulk_images_ocr_text, "^([^\r\n]+)", &firstLine)
+	RegExMatch(open_ai_clip_result, "^([^\r\n]+)", &firstLine)
 	adjective := firstLine[1]
 
 	; Extract number from the second line
-	RegExMatch(bulk_images_ocr_text, "Average probability of .*?:\s*(\d+\.\d+)", &probabilityMatch)
+	RegExMatch(open_ai_clip_result, "Average probability of .*?:\s*(\d+\.\d+)", &probabilityMatch)
 	probability := probabilityMatch[1]
 		
     
@@ -42,7 +42,7 @@ make_decision()
 		msgbox('Error: adjective is not "beautiful", "ugly" or "neutral".')
 	}
     
-    FileAppend "Analysis: " . bulk_images_ocr_text . "`ndecision: " . decision . "`n", ".\log.txt"
+    FileAppend "Analysis: " . open_ai_clip_result . "`ndecision: " . decision . "`n", ".\log.txt"
     
     return decision    
 }

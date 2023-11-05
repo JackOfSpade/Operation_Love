@@ -118,16 +118,8 @@ like(dating_app, root_directory)
 		
 		sleep 3000
 		
-		if InStr(ocr(390, 138, 1094, 570, 1000), "Upgrade", 0)
-		{
-			; Make super_like upgrade notice for popular profiles dissapear 
-			send "{esc}"
-			
-			sleep 1000
-			
-			; Click like
-			mouseClick "left", 932, 619
-		}		
+		; Click away super like upgrade popup
+		mouseClick "left", 638, 597
 	}
 	else if dating_app == "bumble"
 	{

@@ -1,3 +1,28 @@
 
 
 super_likes: 5
+Analysis: beautiful
+Average probability of beautiful girl: 1.00
+Average probability of ugly girl: 0.00
+decision: super_like
+actual decision: super_like
+
+
+super_likes: 4
+Analysis: neutral
+Average probability of beautiful girl: 1.00
+Average probability of ugly girl: 0.00
+decision: like
+actual decision: like
+hinge_opener: ''
+
+
+super_likes: 4
+Analysis: ugly
+Average probability of beautiful girl: 1.00
+Average probability of ugly girl: 0.00
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 4

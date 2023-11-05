@@ -115,11 +115,12 @@ main(dating_app, root_directory, resolution)
 		else if dating_app == "hinge"
 		{
 			sleep 3000
+			; Below cause errors when notification of someone matching with you occurs at the same time as we are clicking off prompt poll popup, it will click the match popup and go to messages page.
 			; Click off add a prompt poll popup
-			mouseClick "left", 723, 161
-			sleep 3000
-			mouseClick "left", 828, 567
-			sleep 3000
+			; mouseClick "left", 723, 161
+			; sleep 3000
+			; mouseClick "left", 828, 567
+			; sleep 3000
 			
 			; If no prompt poll, need to remove photo description as a consequence of clicking on it
 			mouseClick "left", 957, 634
@@ -137,11 +138,11 @@ main(dating_app, root_directory, resolution)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
-main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
+; main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
 
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
 
-; main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
+main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
 
 
 

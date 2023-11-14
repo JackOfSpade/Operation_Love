@@ -40,7 +40,7 @@ remaining_super_likes(dating_app)
 		MouseClick "left", 41, 159
 		sleep 5000
 			
-		remainingSuperLikes := ocr(209, 381, 223, 397, 100)
+		remainingSuperLikes := ocr(204, 389, 224, 412, 100)
 
 		
 		; Go back to discover

@@ -81,6 +81,16 @@ main(dating_app, root_directory, resolution)
 				mouseClick "left", 1160, 770
 			}
 		}
+		else if dating_app == "hinge"
+		{
+			if InStr(ocr(910, 775, 1000, 808, 500), "skipped", 0)
+			{
+				mouseClick "left", 837, 1027
+				sleep 3000
+				mouseClick "left", 714, 1028
+				sleep 3000
+			}
+		}
 	
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"
 	

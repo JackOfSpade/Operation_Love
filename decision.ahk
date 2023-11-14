@@ -20,10 +20,14 @@ make_decision()
 	RegExMatch(open_ai_clip_result, "^([^\r\n]+)", &firstLine)
 	adjective := firstLine[1]
 
-	; Extract number from the second line
-	RegExMatch(open_ai_clip_result, "Average probability of .*?:\s*(\d+\.\d+)", &probabilityMatch)
-	beauty_probability := probabilityMatch[1]
-	ugly_probability := probabilityMatch[2]
+	; Extract number from the line about the beautiful girl
+	RegExMatch(open_ai_clip_result, "Average probability of beautiful girl:\s*(\d+\.\d+)", &beautyMatch)
+	beauty_probability := beautyMatch[1]
+
+	; Extract number from the line about the ugly girl
+	RegExMatch(open_ai_clip_result, "Average probability of ugly girl:\s*(\d+\.\d+)", &uglyMatch)
+	ugly_probability := uglyMatch[1]
+
 		
     
     if adjective == "beautiful" and beauty_probability >= 0.8

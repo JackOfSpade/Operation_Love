@@ -59,6 +59,7 @@ def main():
         final_label = "beautiful"
     elif avg_beautiful_prob < 0.5 and avg_ugly_prob > 0.5:
         final_label = "ugly"
+    # 50/50 or no probability
     else:
         final_label = "neutral"
 
@@ -71,8 +72,8 @@ def main():
             output_text += f"Average probability of beautiful girl: {avg_beautiful_prob:.3f}\n"
             output_text += f"Average probability of ugly girl: {avg_ugly_prob:.3f}"
         else:
-            output_text += f"Average probability of beautiful girl: 1.00\n"
-            output_text += f"Average probability of ugly girl: 0.00"
+            output_text += f"Average probability of beautiful girl: 0.51\n"
+            output_text += f"Average probability of ugly girl: 0.49"
 
         # Write to file
         f.write(output_text)

@@ -22,10 +22,11 @@ make_decision()
 
 	; Extract number from the second line
 	RegExMatch(open_ai_clip_result, "Average probability of .*?:\s*(\d+\.\d+)", &probabilityMatch)
-	probability := probabilityMatch[1]
+	beauty_probability := probabilityMatch[1]
+	ugly_probability := probabilityMatch[2]
 		
     
-    if adjective == "beautiful" and probability >= 0.8
+    if adjective == "beautiful" and beauty_probability >= 0.8
     {
         decision := "super_like"
     }

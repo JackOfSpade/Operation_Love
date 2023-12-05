@@ -1,34 +1,15 @@
 
 
 super_likes: 0
-Analysis: neutral
+Analysis: ugly
 Average probability of beautiful girl: 0.51
 Average probability of ugly girl: 0.49
-decision: like
-actual decision: like
-hinge_opener: 'Hi, what are you up to right now?'
+decision: dislike
+actual decision: dislike
 
 
 super_likes: 0
-Analysis: neutral
-Average probability of beautiful girl: 0.51
-Average probability of ugly girl: 0.49
-decision: like
-actual decision: like
-hinge_opener: 'Hi, what are you up to right now?'
-
-
-super_likes: 0
-Analysis: neutral
-Average probability of beautiful girl: 0.51
-Average probability of ugly girl: 0.49
-decision: like
-actual decision: like
-hinge_opener: 'Hi, what are you up to right now?'
-
-
-super_likes: 0
-Analysis: neutral
+Analysis: beautiful
 Average probability of beautiful girl: 0.51
 Average probability of ugly girl: 0.49
 decision: like

@@ -51,7 +51,7 @@ remaining_super_likes(dating_app)
 	{		
 		mouseMove 1139, 955
 		sleep 1000
-		remainingSuperLikes := ocr(1139, 955, 1198, 1011, 100)
+		remainingSuperLikes := ocr(1139, 955, 1205, 1015, 100)
 		
 		if !IsNumber(remainingSuperLikes)
 		{

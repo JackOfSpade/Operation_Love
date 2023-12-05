@@ -88,9 +88,9 @@ main(dating_app, root_directory, resolution)
 		{
 			if InStr(ocr(910, 775, 1000, 808, 500), "skipped", 0)
 			{
-				mouseClick "left", 837, 1027
+				mouseClick "left", 943, 688
 				sleep 3000
-				mouseClick "left", 714, 1028
+				mouseClick "left", 1229, 69
 				sleep 3000
 				goto("start")
 			}

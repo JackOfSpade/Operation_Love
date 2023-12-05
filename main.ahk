@@ -56,8 +56,18 @@ main(dating_app, root_directory, resolution)
 		
 		if dating_app == "tinder"
 		{
-			; send "{f5}"
-			; sleep 12000
+			if InStr(ocr(811, 534, 845, 555, 100), "Go", 0)
+			{
+				send "{f5}"
+				
+				sleep 100
+				A_Clipboard := ""
+				sleep 100
+				 
+				sleep 15000
+				
+				goto("start")
+			}	
 		}
 		else if dating_app == "bumble"
 		{			
@@ -152,11 +162,11 @@ main(dating_app, root_directory, resolution)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
-; main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
+main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
 
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
 
-main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
+; main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
 
 
 

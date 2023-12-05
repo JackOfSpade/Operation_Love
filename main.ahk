@@ -91,7 +91,7 @@ main(dating_app, root_directory, resolution)
 				mouseClick "left", 943, 688
 				sleep 3000
 				mouseClick "left", 1229, 69
-				sleep 5000
+				sleep 7000
 				goto("start")
 			}
 		}

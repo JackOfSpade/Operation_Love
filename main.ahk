@@ -89,7 +89,7 @@ main(dating_app, root_directory, resolution)
 			if InStr(ocr(910, 775, 1000, 808, 500), "skipped", 0)
 			{
 				mouseClick "left", 943, 688
-				sleep 5000
+				sleep 3000
 				mouseClick "left", 1229, 69
 				sleep 5000
 				goto("start")

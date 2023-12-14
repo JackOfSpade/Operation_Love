@@ -56,7 +56,7 @@ main(dating_app, root_directory, resolution)
 		
 		if dating_app == "tinder"
 		{
-			if InStr(ocr(811, 534, 845, 555, 100), "Go", 0)
+			if InStr(ocr(811, 534, 845, 555, 100), "Go", 0) or InStr(ocr(964, 534, 1015, 555, 100), "SEND", 0)
 			{
 				send "{f5}"
 				

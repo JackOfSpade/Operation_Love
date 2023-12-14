@@ -92,8 +92,8 @@ main(dating_app, root_directory, resolution)
 				mouseClick "left", 1160, 770
 			}
 			
-			; Click away matched notification
-			mouseClick "left", 1167, 786
+			; Click away matched notification (need to redo, this makes it skip first pic and scroll down)
+			; mouseClick "left", 1167, 786
 		}
 		else if dating_app == "hinge"
 		{
@@ -163,9 +163,9 @@ main(dating_app, root_directory, resolution)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
-main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
+; main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
 
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
 
 ; main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
 

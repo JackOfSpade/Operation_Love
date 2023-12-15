@@ -135,7 +135,7 @@ like(dating_app, root_directory)
 		; 
 		; hinge_opener := FileRead("chatgpt_response.txt")
 		
-		hinge_opener := "Hi, what do you like to do in your free time?"
+		hinge_opener := "Hi"
 		
 		; Scroll up
 		loop 16

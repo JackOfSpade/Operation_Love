@@ -72,11 +72,11 @@ clear_screenshot_directory(root_directory, dating_app)
 	}
 	
 	winActivate "Run"
-	sleep 500
+	sleep 1000
     send "^a"	
 	A_Clipboard := root_directory . "/Screenshots"
     send "^v"
-	sleep 5000
+	sleep 1000
     send "{enter}"
     sleep 3000
 	winActivate "Screenshots"

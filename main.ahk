@@ -97,7 +97,8 @@ main(dating_app, root_directory, resolution)
 		}
 		else if dating_app == "hinge"
 		{
-			if InStr(ocr(910, 775, 1000, 808, 500), "skipped", 0)
+			; search for "skipped" text
+			if InStr(ocr(910, 775, 1000, 808, 500), "sk", 0)
 			{
 				mouseClick "left", 943, 688
 				sleep 5000

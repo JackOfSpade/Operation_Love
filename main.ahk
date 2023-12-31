@@ -72,7 +72,7 @@ main(dating_app, root_directory, resolution)
 		}
 		else if dating_app == "bumble"
 		{			
-			if InStr(ocr(1025, 476, 1096, 510, 515), "Want", 0) or InStr(ocr(1049, 514, 1100, 542, 500), "You", 0) or !WinActive("Bumble")
+			if InStr(ocr(1025, 476, 1096, 510, 500), "Want", 0) or InStr(ocr(1049, 514, 1100, 542, 500), "You", 0) or InStr(ocr(659, 441, 701, 467, 500), "Aw", 0) or !WinActive("Bumble")
 			{
 				send "{f5}"
 				
@@ -166,9 +166,9 @@ main(dating_app, root_directory, resolution)
 
 ; main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
 
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
 
-main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
+; main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
 
 
 

@@ -57,7 +57,7 @@ main(dating_app, root_directory, resolution)
 		if dating_app == "tinder"
 		{
 			; Second condition is for when tinder pops up the card "It's a match!"
-			if InStr(ocr(811, 534, 845, 555, 100), "Go", 0) or InStr(ocr(964, 534, 1015, 555, 100), "SEND", 0)
+			if InStr(ocr(811, 534, 845, 555, 100), "Go", 0) or InStr(ocr(964, 534, 1015, 555, 100), "SEND", 0) or InStr(ocr(386, 336, 425, 364, 100), "Aw", 0)
 			{
 				send "{f5}"
 				
@@ -72,7 +72,7 @@ main(dating_app, root_directory, resolution)
 		}
 		else if dating_app == "bumble"
 		{			
-			if InStr(ocr(1025, 476, 1096, 510, 500), "Want", 0) or InStr(ocr(1049, 514, 1100, 542, 500), "You", 0) or InStr(ocr(659, 441, 701, 467, 500), "Aw", 0) or !WinActive("Bumble")
+			if InStr(ocr(1025, 476, 1096, 510, 100), "Want", 0) or InStr(ocr(1049, 514, 1100, 542, 100), "You", 0) or InStr(ocr(659, 441, 701, 467, 500), "Aw", 0) or !WinActive("Bumble")
 			{
 				send "{f5}"
 				

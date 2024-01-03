@@ -9,8 +9,11 @@
 ; Laptop must be plugged in or else the save/file dialog will lag.
 ; Greenshot: set output location to screenshot folder
 ; 			 set capture region to f11
-; Set-ExecutionPolicy Unrestricted -Scope LocalMachine
-; Unblock-File -Path "C:\Users\Dell\Desktop\GitHub\Operation_Love\open_ai_clip\venv\Scripts\activate.ps1"
+;            Capture --> turn "Show notifications" off
+; Capture2Text: unbind Win + R so we can open run dialog
+; In powershell:
+; 	Set-ExecutionPolicy Unrestricted -Scope LocalMachine
+; 	Unblock-File -Path "...\Desktop\GitHub\Operation_Love\open_ai_clip\venv\Scripts\activate.ps1"
 
 
 ; Warnings:
@@ -43,9 +46,14 @@ main(dating_app, root_directory, resolution)
 	navigate_to_discover(dating_app)
 	super_likes := remaining_super_likes(dating_app)
 	
-	if super_likes == "O"
+	if super_likes == "o" or super_likes == "O"
 	{
 		super_likes := 0
+	}
+	
+	if dating_app == "photofeeler"
+	{
+		super_likes := 2000000000
 	}
 	
 	sleep 500
@@ -54,6 +62,7 @@ main(dating_app, root_directory, resolution)
 	{	
 		start:
 		
+		; Refresh Logics
 		if dating_app == "tinder"
 		{
 			; Second condition is for when tinder pops up the card "It's a match!"
@@ -107,6 +116,9 @@ main(dating_app, root_directory, resolution)
 				goto("start")
 			}
 		}
+		else if dating_app == "photofeeler"
+		{
+		}
 	
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"
 	
@@ -114,6 +126,8 @@ main(dating_app, root_directory, resolution)
 		
 		decision := make_decision()
 		
+		
+		; Liking Logic
 		if decision == "super_like" && super_likes > 0
 		{
 			super_like(dating_app, root_directory)
@@ -138,6 +152,9 @@ main(dating_app, root_directory, resolution)
 		{
 			sleep 6000
 		}
+		else if dating_app == "bumble"
+		{
+		}
 		else if dating_app == "hinge"
 		{
 			sleep 3000
@@ -150,6 +167,9 @@ main(dating_app, root_directory, resolution)
 			
 			; If no prompt poll, need to remove photo description as a consequence of clicking on it
 			mouseClick "left", 957, 634
+		}
+		else if dating_app == "photofeeler"
+		{
 		}
 		
 		clear_screenshot_directory(root_directory, dating_app)
@@ -164,9 +184,11 @@ main(dating_app, root_directory, resolution)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
+main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love", "1366x768")
+
 ; main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
 
-main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
+; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
 
 ; main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
 

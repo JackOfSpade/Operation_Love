@@ -30,7 +30,7 @@ make_decision()
 
 		
     
-    if adjective == "beautiful" and beauty_probability >= 0.8
+    if adjective == "beautiful" and beauty_probability >= 0.75
     {
         decision := "super_like"
     }

@@ -27,6 +27,11 @@ navigate_to_discover(dating_app)
 		winactivate "AirDroid"
 		sleep 500
     }
+	else if dating_app == "photofeeler"
+    {
+		winactivate "Vote"
+		sleep 500
+    }
 }
 
 
@@ -93,6 +98,18 @@ super_like(dating_app, root_directory)
     {
 		like(dating_app, root_directory)
     }
+	else if dating_app == "photofeeler"
+	{
+		mouseClick "left", 746, 347
+		sleep 250
+		mouseClick "left", 946, 343
+		sleep 250
+		mouseClick "left", 1079, 344
+		sleep 250
+		
+		; Click submit
+		mouseClick "left", 1177, 730
+	}
 }
 
    
@@ -178,6 +195,53 @@ like(dating_app, root_directory)
 		mouseClick "left", 938, 972
 		sleep 4000
     }	
+	else if dating_app == "photofeeler"
+	{
+		
+		random_number := Random(1, 2)
+		
+		if random_number == 1
+		{
+			mouseClick "left", 746, 387
+		}
+		else if random_number == 2
+		{
+			mouseClick "left", 723, 431
+		}
+		
+		sleep 250
+		
+		
+		random_number := Random(1, 2)
+		
+		if random_number == 1
+		{
+			mouseClick "left", 938, 382
+		}
+		else if random_number == 2
+		{
+			mouseClick "left", 929, 433
+		}
+		
+		sleep 250
+		
+		
+		random_number := Random(1, 2)
+		
+		if random_number == 1
+		{
+			mouseClick "left", 1194, 391
+		}
+		else if random_number == 2
+		{
+			mouseClick "left", 1206, 441
+		}
+		
+		sleep 250
+		
+		; Click submit
+		mouseClick "left", 1177, 730
+	}
 	
 	return hinge_opener
 }
@@ -211,6 +275,17 @@ dislike(dating_app)
 		; Click dislike without footer
 		mouseClick "left", 729, 982
 		sleep 4000
-		
     }
+	else if dating_app == "photofeeler"
+	{
+		mouseClick "left", 745, 481
+		sleep 250
+		mouseClick "left", 960, 471
+		sleep 250
+		mouseClick "left", 1145, 488
+		sleep 250
+		
+		; Click submit
+		mouseClick "left", 1177, 730
+	}
 }

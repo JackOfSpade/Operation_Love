@@ -59,6 +59,12 @@ take_screenshot(dating_app)
 			sleep 4000
 		}
 	}
+	else if dating_app == "photofeeler"
+    {
+		winactivate "Vote"
+       
+		print_screen(105, 320, 555, 725)		
+	}
 }
 
 clear_screenshot_directory(root_directory, dating_app)

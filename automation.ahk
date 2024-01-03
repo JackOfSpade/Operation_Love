@@ -100,12 +100,46 @@ super_like(dating_app, root_directory)
     }
 	else if dating_app == "photofeeler"
 	{
-		mouseClick "left", 746, 347
-		sleep 250
-		mouseClick "left", 946, 343
-		sleep 250
-		mouseClick "left", 1079, 344
-		sleep 250
+		random_number := Random(1, 2)
+		
+		if random_number == 1
+		{
+			mouseClick "left", 746, 347
+		}
+		else if random_number == 2
+		{
+			mouseClick "left", 746, 387
+		}
+		
+		sleep 499
+		
+		
+		random_number := Random(1, 2)
+		
+		if random_number == 1
+		{
+			mouseClick "left", 946, 343
+		}
+		else if random_number == 2
+		{
+			mouseClick "left", 938, 382
+		}
+		
+		sleep 500
+		
+		
+		random_number := Random(1, 2)
+		
+		if random_number == 1
+		{
+			mouseClick "left", 1079, 344
+		}
+		else if random_number == 2
+		{
+			mouseClick "left", 1194, 391
+		}
+		
+		sleep 501
 		
 		; Click submit
 		mouseClick "left", 1177, 730
@@ -209,7 +243,7 @@ like(dating_app, root_directory)
 			mouseClick "left", 723, 431
 		}
 		
-		sleep 250
+		sleep 499
 		
 		
 		random_number := Random(1, 2)
@@ -223,7 +257,7 @@ like(dating_app, root_directory)
 			mouseClick "left", 929, 433
 		}
 		
-		sleep 250
+		sleep 500
 		
 		
 		random_number := Random(1, 2)
@@ -237,7 +271,7 @@ like(dating_app, root_directory)
 			mouseClick "left", 1206, 441
 		}
 		
-		sleep 250
+		sleep 501
 		
 		; Click submit
 		mouseClick "left", 1177, 730
@@ -278,12 +312,46 @@ dislike(dating_app)
     }
 	else if dating_app == "photofeeler"
 	{
-		mouseClick "left", 745, 481
-		sleep 250
-		mouseClick "left", 960, 471
-		sleep 250
-		mouseClick "left", 1145, 488
-		sleep 250
+		random_number := Random(1, 2)
+		
+		if random_number == 1
+		{
+			mouseClick "left", 723, 431
+		}
+		else if random_number == 2
+		{
+			mouseClick "left", 745, 481
+		}
+		
+		sleep 499
+		
+		
+		random_number := Random(1, 2)
+		
+		if random_number == 1
+		{
+			mouseClick "left", 929, 433
+		}
+		else if random_number == 2
+		{
+			mouseClick "left", 960, 471
+		}
+		
+		sleep 500
+		
+		
+		random_number := Random(1, 2)
+		
+		if random_number == 1
+		{
+			mouseClick "left", 1206, 441
+		}
+		else if random_number == 2
+		{
+			mouseClick "left", 1145, 488
+		}
+		
+		sleep 501
 		
 		; Click submit
 		mouseClick "left", 1177, 730

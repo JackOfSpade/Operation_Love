@@ -33,7 +33,7 @@ navigate_to_discover(dating_app)
 		{
 			winactivate "Vote"
 		}
-		catch e 
+		catch as e 
 		{
 			winactivate "Photofeeler"
 		}

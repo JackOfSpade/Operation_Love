@@ -29,7 +29,15 @@ navigate_to_discover(dating_app)
     }
 	else if dating_app == "photofeeler"
     {
-		winactivate "Vote"
+		try 
+		{
+			winactivate "Vote"
+		}
+		catch e 
+		{
+			winactivate "Photofeeler"
+		}
+		
 		sleep 500
     }
 }

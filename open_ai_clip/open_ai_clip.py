@@ -68,7 +68,7 @@ def main():
     with open(result_path, 'w') as f:
         output_text = final_label + "\n"
         
-        if any(output_text.isalpha() for char in output_text.strip()):       
+        if final_label != "neutral":       
             output_text += f"Average probability of beautiful girl: {avg_beautiful_prob:.3f}\n"
             output_text += f"Average probability of ugly girl: {avg_ugly_prob:.3f}"
         else:

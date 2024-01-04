@@ -118,8 +118,10 @@ main(dating_app, root_directory, resolution)
 			}
 		}
 		else if dating_app == "photofeeler" 
-		{
-			if InStr(ocr(856, 203, 895, 228, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
+		{			
+			; Test open_ai_clip
+			if InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
+			; if InStr(ocr(856, 203, 895, 228, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
 			{
 				send "{f5}"
 				

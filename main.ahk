@@ -11,6 +11,7 @@
 ; 			 set capture region to f11
 ;            Capture --> turn "Show notifications" off
 ; Capture2Text: unbind Win + R so we can open run dialog
+;				turn off show popup window
 ; In powershell:
 ; 	Set-ExecutionPolicy Unrestricted -Scope LocalMachine
 ; 	Unblock-File -Path "...\Desktop\GitHub\Operation_Love\open_ai_clip\venv\Scripts\activate.ps1"
@@ -62,7 +63,7 @@ main(dating_app, root_directory, resolution)
 	{	
 		start:
 		
-		; Refresh Logics
+		; Refresh Page Logics
 		if dating_app == "tinder"
 		{
 			; Second condition is for when tinder pops up the card "It's a match!"
@@ -116,8 +117,20 @@ main(dating_app, root_directory, resolution)
 				goto("start")
 			}
 		}
-		else if dating_app == "photofeeler"
+		else if dating_app == "photofeeler" 
 		{
+			if InStr(ocr(856, 203, 895, 228, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
+			{
+				send "{f5}"
+				
+				sleep 100
+				A_Clipboard := ""
+				sleep 100
+				 
+				sleep 3000
+				
+				goto("start")
+			}	
 		}
 	
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"

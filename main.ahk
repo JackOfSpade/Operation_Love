@@ -121,7 +121,7 @@ main(dating_app, root_directory, resolution)
 		{			
 			; Test open_ai_clip
 			; if InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
-			if InStr(ocr(856, 203, 895, 228, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
+			if InStr(ocr(857, 193, 898, 234, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
 			{
 				send "{f5}"
 				
@@ -199,9 +199,9 @@ main(dating_app, root_directory, resolution)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
-; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love", "1366x768")
+main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love", "1366x768")
 
-main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
+; main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
 
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
 

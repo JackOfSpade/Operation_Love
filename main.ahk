@@ -129,7 +129,7 @@ main(dating_app, root_directory, resolution)
 				A_Clipboard := ""
 				sleep 100
 				 
-				sleep 4000
+				sleep 5000
 				
 				goto("start")
 			}	

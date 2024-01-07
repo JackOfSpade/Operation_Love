@@ -1,0 +1,7 @@
+
+Mouuse inaccuracy issue fix:
+Keep restarting the iPhone.
+First remote click needs to be on the black dot that appear.
+
+Bluetooth not detected fix:
+Turn bluetooth off and on for both phone AND PC.

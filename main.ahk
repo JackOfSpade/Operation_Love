@@ -121,7 +121,7 @@ main(dating_app, root_directory, resolution)
 		{			
 			; Test open_ai_clip
 			; if InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
-			if InStr(ocr(856, 203, 895, 228, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
+			if InStr(ocr(755, 183, 938, 249, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
 			{
 				send "{f5}"
 				
@@ -129,7 +129,7 @@ main(dating_app, root_directory, resolution)
 				A_Clipboard := ""
 				sleep 100
 				 
-				sleep 3000
+				sleep 5000
 				
 				goto("start")
 			}	

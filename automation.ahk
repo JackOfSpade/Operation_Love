@@ -193,7 +193,7 @@ like(dating_app, root_directory)
 		; 
 		; hinge_opener := FileRead("chatgpt_response.txt")
 		
-		hinge_opener := "Hi"
+		hinge_opener := "Hey there, are you a fan of winter?"
 		
 		; Scroll up (deprecated since we're only processing one picture)
 		;loop 24

@@ -195,13 +195,13 @@ like(dating_app, root_directory)
 		
 		hinge_opener := "Hi"
 		
-		; Scroll up
-		loop 16
-		{
-			click_and_drag(660, 211, 664, 861, 3000)
-		}
-		
-		sleep 3000
+		; Scroll up (deprecated since we're only processing one picture)
+		;loop 24
+		;{
+		;	click_and_drag(665, 211, 673, 644, 1500)
+		;}
+		;
+		;sleep 3000
 		
 		; Click like with footer
 		mouseClick "left", 1191, 841

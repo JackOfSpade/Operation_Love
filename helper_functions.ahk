@@ -53,9 +53,9 @@ print_screen(x1, y1, x2, y2)
 
 click_and_drag(x1, y1, x2, y2, delay)
 {
-	MouseMove x1, y1, 100
-	sleep delay
-	Send "{LButton down}"		
+	MouseMove x1, y1, 100	
+	Send "{LButton down}"
+	sleep delay	
 	MouseMove x2, y2, 100	
 	sleep delay
 	Send "{LButton up}"

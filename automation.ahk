@@ -198,7 +198,7 @@ like(dating_app, root_directory)
 		; Scroll up
 		loop 16
 		{
-			click_and_drag(660, 211, 669, 828, 1500)
+			click_and_drag(660, 211, 664, 861, 2000)
 		}
 		
 		sleep 3000

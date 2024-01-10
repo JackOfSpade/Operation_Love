@@ -1,18 +1,55 @@
 
 
 super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.284
-Average probability of ugly girl: 0.622
-decision: dislike
-actual decision: dislike
+Analysis: beautiful
+Average probability of beautiful girl: 0.741
+Average probability of ugly girl: 0.241
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
 
 
 super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.568
-Average probability of ugly girl: 0.360
+Average probability of beautiful girl: 0.691
+Average probability of ugly girl: 0.264
 decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.747
+Average probability of ugly girl: 0.221
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.748
+Average probability of ugly girl: 0.200
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.668
+Average probability of ugly girl: 0.283
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.903
+Average probability of ugly girl: 0.038
+decision: super_like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
 
@@ -28,17 +65,8 @@ hinge_opener: 'Hey there, are you a fan of winter?'
 
 super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.632
-Average probability of ugly girl: 0.263
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.738
-Average probability of ugly girl: 0.212
+Average probability of beautiful girl: 0.623
+Average probability of ugly girl: 0.327
 decision: like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'

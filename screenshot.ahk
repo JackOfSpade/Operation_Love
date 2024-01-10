@@ -62,8 +62,7 @@ take_screenshot(dating_app)
 		;	sleep 4000
 		;}
 		
-		print_screen(676, 237, 1242, 869)
-		
+		print_screen(676, 237, 1242, 914)		
 	}
 	else if dating_app == "photofeeler"
     {

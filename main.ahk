@@ -123,7 +123,8 @@ main(dating_app, root_directory, resolution)
 			; if InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
 			if InStr(ocr(755, 183, 938, 249, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
 			{
-				send "{f5}"
+				; F5 for refresh stops working after repeated uses
+				mouseClick "left", 103, 69
 				
 				sleep 100
 				A_Clipboard := ""
@@ -199,13 +200,13 @@ main(dating_app, root_directory, resolution)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
-; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love", "1366x768")
+main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love", "1366x768")
 
 ; main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
 
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
 
-main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
+; main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
 
 
 

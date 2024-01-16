@@ -26,10 +26,7 @@ make_decision()
 
 	; Extract number from the line about the ugly girl
 	RegExMatch(open_ai_clip_result, "Average probability of ugly girl:\s*(\d+\.\d+)", &uglyMatch)
-	ugly_probability := uglyMatch[1]
-
-	open_ai_clip_result.close()
-		
+	ugly_probability := uglyMatch[1]		
     
     if adjective == "beautiful" and beauty_probability >= 0.8
     {
@@ -47,6 +44,8 @@ make_decision()
 	{
 		msgbox('Error: adjective is not "beautiful", "ugly" or "neutral".')
 	}
+	
+	sleep 500
     
     FileAppend "Analysis: " . open_ai_clip_result . "`ndecision: " . decision . "`n", ".\log.txt"
     

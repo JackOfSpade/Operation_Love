@@ -138,7 +138,6 @@ main(dating_app, root_directory, resolution)
 		}
 	
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"
-		file.close()
 	
 		take_screenshot(dating_app)  
 		
@@ -151,23 +150,19 @@ main(dating_app, root_directory, resolution)
 			super_like(dating_app, root_directory)
 			super_likes -= 1
 			FileAppend "actual decision: super_like" . "`n", ".\log.txt"
-			file.close()
 		}
 		else if decision == "super_like" || decision == "like"
 		{
 			hinge_opener := like(dating_app, root_directory)
 			
 			FileAppend "actual decision: like" . "`n", ".\log.txt"
-			file.close()
 			FileAppend "hinge_opener: '" . hinge_opener . "'`n", ".\log.txt"
-			file.close()
 		}
 		else
 		{
 			dislike(dating_app)
 			
 			FileAppend "actual decision: dislike" . "`n", ".\log.txt"
-			file.close()
 		}		
 		
 		if dating_app == "tinder"

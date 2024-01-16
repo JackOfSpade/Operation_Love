@@ -28,6 +28,7 @@ make_decision()
 	RegExMatch(open_ai_clip_result, "Average probability of ugly girl:\s*(\d+\.\d+)", &uglyMatch)
 	ugly_probability := uglyMatch[1]
 
+	open_ai_clip_result.close()
 		
     
     if adjective == "beautiful" and beauty_probability >= 0.8
@@ -48,7 +49,6 @@ make_decision()
 	}
     
     FileAppend "Analysis: " . open_ai_clip_result . "`ndecision: " . decision . "`n", ".\log.txt"
-	file.close()
     
     return decision    
 }

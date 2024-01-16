@@ -48,6 +48,7 @@ make_decision()
 	}
     
     FileAppend "Analysis: " . open_ai_clip_result . "`ndecision: " . decision . "`n", ".\log.txt"
+	file.close()
     
     return decision    
 }

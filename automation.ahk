@@ -230,11 +230,12 @@ like(dating_app, root_directory)
 		
 		; Send like		
 		mouseClick "left", 1018, 848
-		sleep 2000
+		; sleep 1000
+		sleep 6000
 		
 		; Click away send a rose instead
-		mouseClick "left", 938, 972
-		sleep 4000
+		; mouseClick "left", 938, 972
+		; sleep 5000
     }	
 	else if dating_app == "photofeeler"
 	{

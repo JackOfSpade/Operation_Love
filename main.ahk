@@ -107,7 +107,7 @@ main(dating_app, root_directory, resolution)
 		}
 		else if dating_app == "hinge"
 		{
-			; search for "skipped" text
+			; search for "skipped" text, then refresh matches
 			if InStr(ocr(910, 775, 1000, 808, 500), "sk", 0)
 			{
 				mouseClick "left", 943, 688
@@ -121,6 +121,7 @@ main(dating_app, root_directory, resolution)
 		{			
 			; Test open_ai_clip
 			; if InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
+			
 			if InStr(ocr(755, 183, 938, 249, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
 			{
 				; F5 for refresh stops working after repeated uses
@@ -137,6 +138,7 @@ main(dating_app, root_directory, resolution)
 		}
 	
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"
+		file.close()
 	
 		take_screenshot(dating_app)  
 		
@@ -149,19 +151,23 @@ main(dating_app, root_directory, resolution)
 			super_like(dating_app, root_directory)
 			super_likes -= 1
 			FileAppend "actual decision: super_like" . "`n", ".\log.txt"
+			file.close()
 		}
 		else if decision == "super_like" || decision == "like"
 		{
 			hinge_opener := like(dating_app, root_directory)
 			
 			FileAppend "actual decision: like" . "`n", ".\log.txt"
+			file.close()
 			FileAppend "hinge_opener: '" . hinge_opener . "'`n", ".\log.txt"
+			file.close()
 		}
 		else
 		{
 			dislike(dating_app)
 			
 			FileAppend "actual decision: dislike" . "`n", ".\log.txt"
+			file.close()
 		}		
 		
 		if dating_app == "tinder"

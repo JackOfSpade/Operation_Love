@@ -139,12 +139,14 @@ main(dating_app, root_directory, resolution)
 	
 		FileAppend "`n`nsuper_likes: " . super_likes . "`n", ".\log.txt"
 	
+		; delay to remove "file already in use" error
+		sleep 500
+		
 		take_screenshot(dating_app)  
 		
 		decision := make_decision()
 		
-		; delay to remove "file already in use" error
-		sleep 500		
+			
 		
 		; Liking Logic
 		if decision == "super_like" && super_likes > 0
@@ -152,6 +154,8 @@ main(dating_app, root_directory, resolution)
 			super_like(dating_app, root_directory)
 			super_likes -= 1
 			FileAppend "actual decision: super_like" . "`n", ".\log.txt"
+			; delay to remove "file already in use" error
+			sleep 500
 		}
 		else if decision == "super_like" || decision == "like"
 		{
@@ -161,12 +165,16 @@ main(dating_app, root_directory, resolution)
 			; delay to remove "file already in use" error
 			sleep 500
 			FileAppend "hinge_opener: '" . hinge_opener . "'`n", ".\log.txt"
+			; delay to remove "file already in use" error
+			sleep 500
 		}
 		else
 		{
 			dislike(dating_app)
 			
 			FileAppend "actual decision: dislike" . "`n", ".\log.txt"
+			; delay to remove "file already in use" error
+			sleep 500
 		}		
 		
 		if dating_app == "tinder"

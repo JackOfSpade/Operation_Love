@@ -44,12 +44,12 @@ make_decision()
 	{
 		msgbox('Error: adjective is not "beautiful", "ugly" or "neutral".')
 	}
-	
-	; delay to remove "file already in use" error
-	sleep 500
     
     FileAppend "Analysis: " . open_ai_clip_result . "`ndecision: " . decision . "`n", ".\log.txt"
     
+	; delay to remove "file already in use" error
+	sleep 500
+	
     return decision    
 }
 

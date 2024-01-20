@@ -124,6 +124,8 @@ main(dating_app, root_directory, resolution)
 			{
 				; Click "Try Again"
 				mouseClick "left", 957, 670
+				sleep 500
+				mouseClick "left", 957, 670
 				sleep 7000
 				goto("start")
 			}

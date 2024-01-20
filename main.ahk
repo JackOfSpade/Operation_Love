@@ -107,12 +107,23 @@ main(dating_app, root_directory, resolution)
 		}
 		else if dating_app == "hinge"
 		{
-			; search for "skipped" text, then refresh matches
+			; search for "skipped", then refreshes
 			if InStr(ocr(910, 775, 1000, 808, 500), "sk", 0)
 			{
+				; Go into match preferences
 				mouseClick "left", 943, 688
 				sleep 5000
+				; Go back
 				mouseClick "left", 1229, 69
+				sleep 7000
+				goto("start")
+			}
+			
+			; search for "skipped" text or "Try" in "Try Again", then refresh matches
+			if InStr(ocr(900, 656, 946, 690, 500), "Try", 0)
+			{
+				; Click "Try Again"
+				mouseClick "left", 957, 670
 				sleep 7000
 				goto("start")
 			}

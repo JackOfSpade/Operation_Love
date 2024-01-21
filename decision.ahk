@@ -48,7 +48,7 @@ make_decision()
     FileAppend "Analysis: " . open_ai_clip_result . "`ndecision: " . decision . "`n", ".\log.txt"
     
 	; delay to remove "file already in use" error
-	sleep 500
+	sleep 1000
 	
     return decision    
 }

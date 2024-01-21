@@ -1,26 +1,16 @@
 
 
 super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.737
-Average probability of ugly girl: 0.193
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
+Analysis: ugly
+Average probability of beautiful girl: 0.318
+Average probability of ugly girl: 0.643
+decision: dislike
+actual decision: dislike
 
 
 super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.596
-Average probability of ugly girl: 0.243
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.702
+Average probability of beautiful girl: 0.698
 Average probability of ugly girl: 0.283
 decision: like
 actual decision: like
@@ -28,10 +18,37 @@ hinge_opener: 'Hey there, are you a fan of winter?'
 
 
 super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.828
-Average probability of ugly girl: 0.159
-decision: super_like
+Average probability of beautiful girl: 0.778
+Average probability of ugly girl: 0.175
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.722
+Average probability of ugly girl: 0.249
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.537
+Average probability of ugly girl: 0.425
+decision: like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
 
@@ -40,6 +57,15 @@ super_likes: 0
 Analysis: neutral
 Average probability of beautiful girl: 0.51
 Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.667
+Average probability of ugly girl: 0.290
 decision: like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
@@ -56,8 +82,732 @@ hinge_opener: 'Hey there, are you a fan of winter?'
 
 super_likes: 0
 Analysis: ugly
-Average probability of beautiful girl: 0.328
-Average probability of ugly girl: 0.639
+Average probability of beautiful girl: 0.244
+Average probability of ugly girl: 0.741
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.380
+Average probability of ugly girl: 0.586
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.341
+Average probability of ugly girl: 0.640
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.395
+Average probability of ugly girl: 0.513
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.400
+Average probability of ugly girl: 0.510
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.512
+Average probability of ugly girl: 0.372
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.272
+Average probability of ugly girl: 0.657
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.686
+Average probability of ugly girl: 0.266
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.744
+Average probability of ugly girl: 0.232
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.248
+Average probability of ugly girl: 0.728
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.553
+Average probability of ugly girl: 0.162
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.357
+Average probability of ugly girl: 0.610
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.826
+Average probability of ugly girl: 0.137
+decision: super_like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.468
+Average probability of ugly girl: 0.510
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.591
+Average probability of ugly girl: 0.401
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.799
+Average probability of ugly girl: 0.179
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.762
+Average probability of ugly girl: 0.209
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.728
+Average probability of ugly girl: 0.210
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.887
+Average probability of ugly girl: 0.094
+decision: super_like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.389
+Average probability of ugly girl: 0.501
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.548
+Average probability of ugly girl: 0.442
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.589
+Average probability of ugly girl: 0.345
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.788
+Average probability of ugly girl: 0.204
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.663
+Average probability of ugly girl: 0.224
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.358
+Average probability of ugly girl: 0.622
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.306
+Average probability of ugly girl: 0.666
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.186
+Average probability of ugly girl: 0.780
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.367
+Average probability of ugly girl: 0.613
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.234
+Average probability of ugly girl: 0.722
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.266
+Average probability of ugly girl: 0.707
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.700
+Average probability of ugly girl: 0.215
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.766
+Average probability of ugly girl: 0.222
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.125
+Average probability of ugly girl: 0.861
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.673
+Average probability of ugly girl: 0.300
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.353
+Average probability of ugly girl: 0.608
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.411
+Average probability of ugly girl: 0.577
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.419
+Average probability of ugly girl: 0.557
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.298
+Average probability of ugly girl: 0.666
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.089
+Average probability of ugly girl: 0.685
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.405
+Average probability of ugly girl: 0.553
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.254
+Average probability of ugly girl: 0.710
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.278
+Average probability of ugly girl: 0.680
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.533
+Average probability of ugly girl: 0.368
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.091
+Average probability of ugly girl: 0.888
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.272
+Average probability of ugly girl: 0.724
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.339
+Average probability of ugly girl: 0.619
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.205
+Average probability of ugly girl: 0.757
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.308
+Average probability of ugly girl: 0.562
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.463
+Average probability of ugly girl: 0.517
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.366
+Average probability of ugly girl: 0.583
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.405
+Average probability of ugly girl: 0.573
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.117
+Average probability of ugly girl: 0.672
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.327
+Average probability of ugly girl: 0.662
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.576
+Average probability of ugly girl: 0.179
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.403
+Average probability of ugly girl: 0.583
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.319
+Average probability of ugly girl: 0.661
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.381
+Average probability of ugly girl: 0.596
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.399
+Average probability of ugly girl: 0.591
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.398
+Average probability of ugly girl: 0.587
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.398
+Average probability of ugly girl: 0.574
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.518
+Average probability of ugly girl: 0.464
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.357
+Average probability of ugly girl: 0.613
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.465
+Average probability of ugly girl: 0.513
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.503
+Average probability of ugly girl: 0.487
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.249
+Average probability of ugly girl: 0.726
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.332
+Average probability of ugly girl: 0.636
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.390
+Average probability of ugly girl: 0.593
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.414
+Average probability of ugly girl: 0.562
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.138
+Average probability of ugly girl: 0.538
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.821
+Average probability of ugly girl: 0.149
+decision: super_like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.370
+Average probability of ugly girl: 0.552
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.406
+Average probability of ugly girl: 0.582
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.390
+Average probability of ugly girl: 0.592
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.324
+Average probability of ugly girl: 0.660
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.149
+Average probability of ugly girl: 0.787
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.435
+Average probability of ugly girl: 0.550
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.281
+Average probability of ugly girl: 0.610
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.342
+Average probability of ugly girl: 0.648
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.332
+Average probability of ugly girl: 0.648
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.388
+Average probability of ugly girl: 0.570
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.455
+Average probability of ugly girl: 0.536
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.450
+Average probability of ugly girl: 0.533
 decision: dislike
 actual decision: dislike
 
@@ -65,168 +815,55 @@ actual decision: dislike
 super_likes: 0
 Analysis: ugly
 Average probability of beautiful girl: 0.208
-Average probability of ugly girl: 0.679
+Average probability of ugly girl: 0.668
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
-Analysis: neutral
-Average probability of beautiful girl: 0.51
-Average probability of ugly girl: 0.49
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
+Analysis: ugly
+Average probability of beautiful girl: 0.219
+Average probability of ugly girl: 0.766
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.102
+Average probability of ugly girl: 0.862
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.225
+Average probability of ugly girl: 0.717
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.407
+Average probability of ugly girl: 0.574
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.220
+Average probability of ugly girl: 0.675
+decision: dislike
+actual decision: dislike
 
 
 super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.590
-Average probability of ugly girl: 0.389
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.622
-Average probability of ugly girl: 0.352
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: neutral
-Average probability of beautiful girl: 0.51
-Average probability of ugly girl: 0.49
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.699
-Average probability of ugly girl: 0.231
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.855
-Average probability of ugly girl: 0.127
-decision: super_like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.802
-Average probability of ugly girl: 0.184
-decision: super_like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.545
-Average probability of ugly girl: 0.438
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: neutral
-Average probability of beautiful girl: 0.51
-Average probability of ugly girl: 0.49
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.598
-Average probability of ugly girl: 0.381
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.534
-Average probability of ugly girl: 0.412
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.687
-Average probability of ugly girl: 0.263
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: neutral
-Average probability of beautiful girl: 0.51
-Average probability of ugly girl: 0.49
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.837
-Average probability of ugly girl: 0.159
-decision: super_like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.800
-Average probability of ugly girl: 0.165
-decision: super_like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.664
-Average probability of ugly girl: 0.240
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.523
-Average probability of ugly girl: 0.383
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.503
-Average probability of ugly girl: 0.301
+Average probability of beautiful girl: 0.522
+Average probability of ugly girl: 0.454
 decision: like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
@@ -234,88 +871,104 @@ hinge_opener: 'Hey there, are you a fan of winter?'
 
 super_likes: 0
 Analysis: ugly
-Average probability of beautiful girl: 0.079
-Average probability of ugly girl: 0.707
+Average probability of beautiful girl: 0.240
+Average probability of ugly girl: 0.737
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.153
+Average probability of ugly girl: 0.840
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.139
+Average probability of ugly girl: 0.525
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.154
+Average probability of ugly girl: 0.821
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.412
+Average probability of ugly girl: 0.576
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.233
+Average probability of ugly girl: 0.758
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.219
+Average probability of ugly girl: 0.773
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.251
+Average probability of ugly girl: 0.682
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.292
+Average probability of ugly girl: 0.678
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.260
+Average probability of ugly girl: 0.710
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.291
+Average probability of ugly girl: 0.672
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.199
+Average probability of ugly girl: 0.773
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.689
-Average probability of ugly girl: 0.282
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.639
-Average probability of ugly girl: 0.351
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.789
-Average probability of ugly girl: 0.116
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.582
-Average probability of ugly girl: 0.393
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.653
-Average probability of ugly girl: 0.301
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.630
-Average probability of ugly girl: 0.326
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.771
-Average probability of ugly girl: 0.185
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.679
-Average probability of ugly girl: 0.288
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.915
-Average probability of ugly girl: 0.072
+Average probability of beautiful girl: 0.899
+Average probability of ugly girl: 0.090
 decision: super_like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
@@ -323,8 +976,196 @@ hinge_opener: 'Hey there, are you a fan of winter?'
 
 super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.598
-Average probability of ugly girl: 0.380
+Average probability of beautiful girl: 0.707
+Average probability of ugly girl: 0.278
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.846
+Average probability of ugly girl: 0.134
+decision: super_like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.754
+Average probability of ugly girl: 0.219
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.471
+Average probability of ugly girl: 0.512
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.343
+Average probability of ugly girl: 0.629
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.298
+Average probability of ugly girl: 0.664
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.150
+Average probability of ugly girl: 0.685
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.697
+Average probability of ugly girl: 0.220
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.359
+Average probability of ugly girl: 0.615
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.277
+Average probability of ugly girl: 0.687
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.240
+Average probability of ugly girl: 0.689
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.142
+Average probability of ugly girl: 0.850
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.425
+Average probability of ugly girl: 0.570
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.338
+Average probability of ugly girl: 0.642
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.332
+Average probability of ugly girl: 0.618
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.225
+Average probability of ugly girl: 0.735
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.307
+Average probability of ugly girl: 0.549
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.210
+Average probability of ugly girl: 0.638
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.321
+Average probability of ugly girl: 0.658
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.156
+Average probability of ugly girl: 0.765
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.176
+Average probability of ugly girl: 0.807
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.383
+Average probability of ugly girl: 0.553
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.352
+Average probability of ugly girl: 0.607
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.740
+Average probability of ugly girl: 0.238
 decision: like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
@@ -340,9 +1181,165 @@ hinge_opener: 'Hey there, are you a fan of winter?'
 
 
 super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.375
+Average probability of ugly girl: 0.548
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.580
-Average probability of ugly girl: 0.332
+Average probability of beautiful girl: 0.862
+Average probability of ugly girl: 0.126
+decision: super_like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.770
+Average probability of ugly girl: 0.182
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.071
+Average probability of ugly girl: 0.567
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.419
+Average probability of ugly girl: 0.549
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.385
+Average probability of ugly girl: 0.536
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.753
+Average probability of ugly girl: 0.236
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.104
+Average probability of ugly girl: 0.792
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.457
+Average probability of ugly girl: 0.534
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.308
+Average probability of ugly girl: 0.538
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.384
+Average probability of ugly girl: 0.571
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.132
+Average probability of ugly girl: 0.802
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.304
+Average probability of ugly girl: 0.582
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.137
+Average probability of ugly girl: 0.853
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.483
+Average probability of ugly girl: 0.506
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.363
+Average probability of ugly girl: 0.540
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.314
+Average probability of ugly girl: 0.607
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.483
+Average probability of ugly girl: 0.504
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.697
+Average probability of ugly girl: 0.254
 decision: like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
@@ -351,7 +1348,7 @@ hinge_opener: 'Hey there, are you a fan of winter?'
 super_likes: 0
 Analysis: beautiful
 Average probability of beautiful girl: 0.536
-Average probability of ugly girl: 0.455
+Average probability of ugly girl: 0.290
 decision: like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
@@ -359,62 +1356,8 @@ hinge_opener: 'Hey there, are you a fan of winter?'
 
 super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.678
-Average probability of ugly girl: 0.305
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.500
-Average probability of ugly girl: 0.444
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.764
-Average probability of ugly girl: 0.186
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.595
-Average probability of ugly girl: 0.393
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.587
-Average probability of ugly girl: 0.358
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.692
-Average probability of ugly girl: 0.292
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.952
-Average probability of ugly girl: 0.030
+Average probability of beautiful girl: 0.872
+Average probability of ugly girl: 0.096
 decision: super_like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
@@ -422,17 +1365,8 @@ hinge_opener: 'Hey there, are you a fan of winter?'
 
 super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.804
-Average probability of ugly girl: 0.178
-decision: super_like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.607
-Average probability of ugly girl: 0.353
+Average probability of beautiful girl: 0.766
+Average probability of ugly girl: 0.219
 decision: like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
@@ -440,162 +1374,40 @@ hinge_opener: 'Hey there, are you a fan of winter?'
 
 super_likes: 0
 Analysis: ugly
-Average probability of beautiful girl: 0.117
+Average probability of beautiful girl: 0.410
+Average probability of ugly girl: 0.527
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.386
+Average probability of ugly girl: 0.596
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.314
+Average probability of ugly girl: 0.661
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.313
 Average probability of ugly girl: 0.640
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.387
-Average probability of ugly girl: 0.599
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.399
-Average probability of ugly girl: 0.555
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.410
-Average probability of ugly girl: 0.581
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.410
-Average probability of ugly girl: 0.547
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.377
-Average probability of ugly girl: 0.594
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.276
-Average probability of ugly girl: 0.712
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.282
-Average probability of ugly girl: 0.660
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.441
-Average probability of ugly girl: 0.545
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.425
-Average probability of ugly girl: 0.553
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.196
-Average probability of ugly girl: 0.708
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.522
-Average probability of ugly girl: 0.398
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.808
-Average probability of ugly girl: 0.181
-decision: super_like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.328
-Average probability of ugly girl: 0.658
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.203
-Average probability of ugly girl: 0.764
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.368
-Average probability of ugly girl: 0.601
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.215
-Average probability of ugly girl: 0.672
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.315
-Average probability of ugly girl: 0.654
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.311
-Average probability of ugly girl: 0.579
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: neutral
-Average probability of beautiful girl: 0.51
-Average probability of ugly girl: 0.49
+Average probability of beautiful girl: 0.558
+Average probability of ugly girl: 0.419
 decision: like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
@@ -603,163 +1415,124 @@ hinge_opener: 'Hey there, are you a fan of winter?'
 
 super_likes: 0
 Analysis: ugly
-Average probability of beautiful girl: 0.229
-Average probability of ugly girl: 0.531
+Average probability of beautiful girl: 0.162
+Average probability of ugly girl: 0.752
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
 Analysis: ugly
-Average probability of beautiful girl: 0.249
-Average probability of ugly girl: 0.634
+Average probability of beautiful girl: 0.364
+Average probability of ugly girl: 0.608
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
 Analysis: ugly
-Average probability of beautiful girl: 0.194
+Average probability of beautiful girl: 0.119
+Average probability of ugly girl: 0.858
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.349
+Average probability of ugly girl: 0.622
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.184
+Average probability of ugly girl: 0.753
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.291
+Average probability of ugly girl: 0.690
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.420
+Average probability of ugly girl: 0.564
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.403
+Average probability of ugly girl: 0.558
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.320
+Average probability of ugly girl: 0.673
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.250
+Average probability of ugly girl: 0.727
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.429
 Average probability of ugly girl: 0.555
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.334
-Average probability of ugly girl: 0.633
-decision: dislike
-actual decision: dislike
+Analysis: beautiful
+Average probability of beautiful girl: 0.644
+Average probability of ugly girl: 0.300
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
 
 
 super_likes: 0
 Analysis: ugly
-Average probability of beautiful girl: 0.473
-Average probability of ugly girl: 0.516
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.294
-Average probability of ugly girl: 0.601
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.453
-Average probability of ugly girl: 0.516
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.412
-Average probability of ugly girl: 0.538
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.390
-Average probability of ugly girl: 0.585
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.210
-Average probability of ugly girl: 0.771
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.275
-Average probability of ugly girl: 0.708
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.127
-Average probability of ugly girl: 0.869
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.404
-Average probability of ugly girl: 0.585
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.293
-Average probability of ugly girl: 0.674
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.150
-Average probability of ugly girl: 0.792
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.084
-Average probability of ugly girl: 0.900
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.394
-Average probability of ugly girl: 0.597
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.430
-Average probability of ugly girl: 0.566
-decision: dislike
-actual decision: dislike
-
-
-super_likes: 0
-Analysis: ugly
-Average probability of beautiful girl: 0.156
-Average probability of ugly girl: 0.801
+Average probability of beautiful girl: 0.420
+Average probability of ugly girl: 0.558
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.840
-Average probability of ugly girl: 0.152
+Average probability of beautiful girl: 0.911
+Average probability of ugly girl: 0.073
 decision: super_like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.209
+Average probability of ugly girl: 0.715
+decision: dislike
+actual decision: dislike
 
 
 super_likes: 0
@@ -772,60 +1545,31 @@ actual decision: dislike
 
 super_likes: 0
 Analysis: ugly
-Average probability of beautiful girl: 0.312
-Average probability of ugly girl: 0.643
+Average probability of beautiful girl: 0.103
+Average probability of ugly girl: 0.875
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.636
-Average probability of ugly girl: 0.175
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.607
-Average probability of ugly girl: 0.345
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.791
-Average probability of ugly girl: 0.150
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.641
-Average probability of ugly girl: 0.338
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
-
-
-super_likes: 0
-Analysis: beautiful
-Average probability of beautiful girl: 0.740
-Average probability of ugly girl: 0.255
-decision: like
-actual decision: like
-hinge_opener: 'Hey there, are you a fan of winter?'
+Analysis: ugly
+Average probability of beautiful girl: 0.191
+Average probability of ugly girl: 0.772
+decision: dislike
+actual decision: dislike
 
 
 super_likes: 0
 Analysis: ugly
-Average probability of beautiful girl: 0.356
+Average probability of beautiful girl: 0.314
+Average probability of ugly girl: 0.672
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.357
 Average probability of ugly girl: 0.624
 decision: dislike
 actual decision: dislike
@@ -833,16 +1577,16 @@ actual decision: dislike
 
 super_likes: 0
 Analysis: ugly
-Average probability of beautiful girl: 0.437
-Average probability of ugly girl: 0.555
+Average probability of beautiful girl: 0.252
+Average probability of ugly girl: 0.624
 decision: dislike
 actual decision: dislike
 
 
 super_likes: 0
 Analysis: beautiful
-Average probability of beautiful girl: 0.891
-Average probability of ugly girl: 0.087
+Average probability of beautiful girl: 0.807
+Average probability of ugly girl: 0.187
 decision: super_like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
@@ -850,8 +1594,75 @@ hinge_opener: 'Hey there, are you a fan of winter?'
 
 super_likes: 0
 Analysis: ugly
-Average probability of beautiful girl: 0.342
-Average probability of ugly girl: 0.638
+Average probability of beautiful girl: 0.283
+Average probability of ugly girl: 0.649
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.659
+Average probability of ugly girl: 0.250
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.916
+Average probability of ugly girl: 0.052
+decision: super_like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.305
+Average probability of ugly girl: 0.674
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.304
+Average probability of ugly girl: 0.646
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.755
+Average probability of ugly girl: 0.215
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.397
+Average probability of ugly girl: 0.582
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.331
+Average probability of ugly girl: 0.654
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.464
+Average probability of ugly girl: 0.511
 decision: dislike
 actual decision: dislike
 
@@ -863,3 +1674,2612 @@ Average probability of ugly girl: 0.49
 decision: like
 actual decision: like
 hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.801
+Average probability of ugly girl: 0.168
+decision: super_like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.647
+Average probability of ugly girl: 0.339
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.697
+Average probability of ugly girl: 0.282
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.522
+Average probability of ugly girl: 0.194
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.542
+Average probability of ugly girl: 0.401
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.577
+Average probability of ugly girl: 0.408
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.458
+Average probability of ugly girl: 0.522
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.404
+Average probability of ugly girl: 0.561
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.473
+Average probability of ugly girl: 0.513
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.299
+Average probability of ugly girl: 0.683
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.152
+Average probability of ugly girl: 0.817
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.354
+Average probability of ugly girl: 0.639
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.224
+Average probability of ugly girl: 0.676
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.814
+Average probability of ugly girl: 0.153
+decision: super_like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.396
+Average probability of ugly girl: 0.537
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.304
+Average probability of ugly girl: 0.510
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.336
+Average probability of ugly girl: 0.546
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.280
+Average probability of ugly girl: 0.710
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.600
+Average probability of ugly girl: 0.371
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.370
+Average probability of ugly girl: 0.609
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.418
+Average probability of ugly girl: 0.507
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.328
+Average probability of ugly girl: 0.587
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.196
+Average probability of ugly girl: 0.791
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.450
+Average probability of ugly girl: 0.533
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.267
+Average probability of ugly girl: 0.679
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.293
+Average probability of ugly girl: 0.687
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.224
+Average probability of ugly girl: 0.663
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.265
+Average probability of ugly girl: 0.732
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.441
+Average probability of ugly girl: 0.551
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.303
+Average probability of ugly girl: 0.676
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.400
+Average probability of ugly girl: 0.546
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.297
+Average probability of ugly girl: 0.689
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.255
+Average probability of ugly girl: 0.718
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.159
+Average probability of ugly girl: 0.834
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.513
+Average probability of ugly girl: 0.478
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.186
+Average probability of ugly girl: 0.785
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.321
+Average probability of ugly girl: 0.597
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.893
+Average probability of ugly girl: 0.049
+decision: super_like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.749
+Average probability of ugly girl: 0.189
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.814
+Average probability of ugly girl: 0.157
+decision: super_like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.216
+Average probability of ugly girl: 0.725
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.592
+Average probability of ugly girl: 0.356
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.305
+Average probability of ugly girl: 0.570
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.234
+Average probability of ugly girl: 0.754
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.091
+Average probability of ugly girl: 0.882
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.224
+Average probability of ugly girl: 0.734
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.467
+Average probability of ugly girl: 0.524
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.423
+Average probability of ugly girl: 0.562
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.404
+Average probability of ugly girl: 0.580
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.250
+Average probability of ugly girl: 0.736
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.456
+Average probability of ugly girl: 0.520
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.244
+Average probability of ugly girl: 0.615
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.357
+Average probability of ugly girl: 0.613
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.377
+Average probability of ugly girl: 0.586
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.456
+Average probability of ugly girl: 0.527
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.484
+Average probability of ugly girl: 0.504
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.340
+Average probability of ugly girl: 0.587
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.335
+Average probability of ugly girl: 0.640
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.327
+Average probability of ugly girl: 0.635
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.219
+Average probability of ugly girl: 0.733
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.164
+Average probability of ugly girl: 0.749
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.389
+Average probability of ugly girl: 0.572
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.302
+Average probability of ugly girl: 0.571
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.288
+Average probability of ugly girl: 0.559
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.221
+Average probability of ugly girl: 0.596
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.289
+Average probability of ugly girl: 0.696
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.353
+Average probability of ugly girl: 0.600
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.447
+Average probability of ugly girl: 0.532
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.416
+Average probability of ugly girl: 0.558
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.266
+Average probability of ugly girl: 0.656
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.168
+Average probability of ugly girl: 0.818
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.355
+Average probability of ugly girl: 0.614
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.260
+Average probability of ugly girl: 0.553
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.372
+Average probability of ugly girl: 0.563
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.383
+Average probability of ugly girl: 0.591
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.411
+Average probability of ugly girl: 0.580
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.195
+Average probability of ugly girl: 0.727
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.213
+Average probability of ugly girl: 0.691
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.364
+Average probability of ugly girl: 0.580
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.112
+Average probability of ugly girl: 0.865
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.318
+Average probability of ugly girl: 0.642
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.421
+Average probability of ugly girl: 0.537
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.209
+Average probability of ugly girl: 0.768
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.113
+Average probability of ugly girl: 0.803
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.484
+Average probability of ugly girl: 0.504
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.453
+Average probability of ugly girl: 0.536
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.174
+Average probability of ugly girl: 0.554
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.279
+Average probability of ugly girl: 0.621
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.391
+Average probability of ugly girl: 0.541
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.477
+Average probability of ugly girl: 0.515
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.586
+Average probability of ugly girl: 0.400
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.382
+Average probability of ugly girl: 0.540
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.404
+Average probability of ugly girl: 0.590
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.316
+Average probability of ugly girl: 0.676
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.286
+Average probability of ugly girl: 0.702
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.302
+Average probability of ugly girl: 0.581
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.339
+Average probability of ugly girl: 0.593
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.366
+Average probability of ugly girl: 0.557
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.198
+Average probability of ugly girl: 0.663
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.198
+Average probability of ugly girl: 0.678
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.183
+Average probability of ugly girl: 0.749
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.434
+Average probability of ugly girl: 0.553
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.467
+Average probability of ugly girl: 0.509
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.360
+Average probability of ugly girl: 0.579
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.352
+Average probability of ugly girl: 0.622
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.346
+Average probability of ugly girl: 0.615
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.221
+Average probability of ugly girl: 0.746
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.196
+Average probability of ugly girl: 0.703
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.186
+Average probability of ugly girl: 0.752
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.365
+Average probability of ugly girl: 0.618
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.100
+Average probability of ugly girl: 0.830
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.065
+Average probability of ugly girl: 0.571
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.046
+Average probability of ugly girl: 0.708
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.371
+Average probability of ugly girl: 0.625
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.139
+Average probability of ugly girl: 0.634
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.408
+Average probability of ugly girl: 0.568
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.337
+Average probability of ugly girl: 0.629
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.424
+Average probability of ugly girl: 0.550
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.412
+Average probability of ugly girl: 0.574
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.272
+Average probability of ugly girl: 0.710
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.293
+Average probability of ugly girl: 0.668
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.218
+Average probability of ugly girl: 0.669
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.338
+Average probability of ugly girl: 0.552
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.336
+Average probability of ugly girl: 0.654
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.361
+Average probability of ugly girl: 0.562
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.256
+Average probability of ugly girl: 0.714
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.078
+Average probability of ugly girl: 0.666
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.201
+Average probability of ugly girl: 0.749
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.245
+Average probability of ugly girl: 0.671
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.351
+Average probability of ugly girl: 0.609
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.218
+Average probability of ugly girl: 0.738
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.119
+Average probability of ugly girl: 0.827
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.363
+Average probability of ugly girl: 0.537
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.357
+Average probability of ugly girl: 0.636
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.457
+Average probability of ugly girl: 0.534
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.347
+Average probability of ugly girl: 0.558
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.171
+Average probability of ugly girl: 0.530
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.085
+Average probability of ugly girl: 0.859
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.230
+Average probability of ugly girl: 0.721
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.392
+Average probability of ugly girl: 0.584
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.448
+Average probability of ugly girl: 0.527
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.323
+Average probability of ugly girl: 0.670
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.326
+Average probability of ugly girl: 0.663
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.326
+Average probability of ugly girl: 0.666
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.372
+Average probability of ugly girl: 0.611
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.349
+Average probability of ugly girl: 0.609
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.421
+Average probability of ugly girl: 0.532
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.714
+Average probability of ugly girl: 0.219
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.433
+Average probability of ugly girl: 0.543
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.334
+Average probability of ugly girl: 0.637
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.417
+Average probability of ugly girl: 0.570
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.272
+Average probability of ugly girl: 0.613
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.400
+Average probability of ugly girl: 0.528
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.399
+Average probability of ugly girl: 0.504
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.481
+Average probability of ugly girl: 0.512
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.281
+Average probability of ugly girl: 0.682
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.410
+Average probability of ugly girl: 0.522
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.444
+Average probability of ugly girl: 0.528
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.368
+Average probability of ugly girl: 0.619
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.139
+Average probability of ugly girl: 0.817
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.330
+Average probability of ugly girl: 0.624
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.443
+Average probability of ugly girl: 0.507
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.220
+Average probability of ugly girl: 0.622
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.288
+Average probability of ugly girl: 0.638
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.175
+Average probability of ugly girl: 0.803
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.428
+Average probability of ugly girl: 0.545
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.041
+Average probability of ugly girl: 0.603
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.396
+Average probability of ugly girl: 0.594
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.304
+Average probability of ugly girl: 0.619
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.264
+Average probability of ugly girl: 0.654
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.097
+Average probability of ugly girl: 0.690
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.125
+Average probability of ugly girl: 0.847
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.282
+Average probability of ugly girl: 0.645
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.084
+Average probability of ugly girl: 0.723
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.338
+Average probability of ugly girl: 0.643
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.353
+Average probability of ugly girl: 0.642
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.522
+Average probability of ugly girl: 0.461
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.394
+Average probability of ugly girl: 0.574
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.445
+Average probability of ugly girl: 0.525
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.310
+Average probability of ugly girl: 0.675
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.460
+Average probability of ugly girl: 0.526
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.295
+Average probability of ugly girl: 0.693
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.188
+Average probability of ugly girl: 0.758
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.242
+Average probability of ugly girl: 0.733
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.247
+Average probability of ugly girl: 0.698
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.514
+Average probability of ugly girl: 0.465
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.323
+Average probability of ugly girl: 0.654
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.406
+Average probability of ugly girl: 0.571
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.206
+Average probability of ugly girl: 0.729
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.269
+Average probability of ugly girl: 0.706
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.432
+Average probability of ugly girl: 0.535
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.380
+Average probability of ugly girl: 0.519
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.352
+Average probability of ugly girl: 0.596
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.329
+Average probability of ugly girl: 0.646
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.255
+Average probability of ugly girl: 0.625
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.230
+Average probability of ugly girl: 0.712
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.342
+Average probability of ugly girl: 0.629
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.185
+Average probability of ugly girl: 0.687
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.414
+Average probability of ugly girl: 0.542
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.351
+Average probability of ugly girl: 0.631
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.308
+Average probability of ugly girl: 0.678
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.338
+Average probability of ugly girl: 0.606
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.361
+Average probability of ugly girl: 0.592
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.391
+Average probability of ugly girl: 0.580
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.405
+Average probability of ugly girl: 0.552
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.463
+Average probability of ugly girl: 0.521
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.278
+Average probability of ugly girl: 0.710
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.348
+Average probability of ugly girl: 0.622
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.703
+Average probability of ugly girl: 0.269
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.346
+Average probability of ugly girl: 0.647
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.242
+Average probability of ugly girl: 0.742
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.388
+Average probability of ugly girl: 0.577
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.171
+Average probability of ugly girl: 0.797
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.140
+Average probability of ugly girl: 0.795
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.354
+Average probability of ugly girl: 0.610
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.099
+Average probability of ugly girl: 0.888
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.334
+Average probability of ugly girl: 0.629
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.286
+Average probability of ugly girl: 0.640
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.308
+Average probability of ugly girl: 0.639
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.361
+Average probability of ugly girl: 0.555
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.113
+Average probability of ugly girl: 0.802
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.456
+Average probability of ugly girl: 0.534
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.378
+Average probability of ugly girl: 0.510
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.853
+Average probability of ugly girl: 0.128
+decision: super_like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.530
+Average probability of ugly girl: 0.399
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.561
+Average probability of ugly girl: 0.064
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.398
+Average probability of ugly girl: 0.545
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.252
+Average probability of ugly girl: 0.743
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.216
+Average probability of ugly girl: 0.692
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.326
+Average probability of ugly girl: 0.642
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.306
+Average probability of ugly girl: 0.615
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.760
+Average probability of ugly girl: 0.108
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.325
+Average probability of ugly girl: 0.573
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.372
+Average probability of ugly girl: 0.550
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.582
+Average probability of ugly girl: 0.363
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.198
+Average probability of ugly girl: 0.783
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.323
+Average probability of ugly girl: 0.637
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.205
+Average probability of ugly girl: 0.791
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.423
+Average probability of ugly girl: 0.525
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.253
+Average probability of ugly girl: 0.720
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.337
+Average probability of ugly girl: 0.652
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.392
+Average probability of ugly girl: 0.604
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.325
+Average probability of ugly girl: 0.659
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.414
+Average probability of ugly girl: 0.562
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.271
+Average probability of ugly girl: 0.683
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.279
+Average probability of ugly girl: 0.715
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.423
+Average probability of ugly girl: 0.535
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.873
+Average probability of ugly girl: 0.099
+decision: super_like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.460
+Average probability of ugly girl: 0.529
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.213
+Average probability of ugly girl: 0.521
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.118
+Average probability of ugly girl: 0.603
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.137
+Average probability of ugly girl: 0.804
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.475
+Average probability of ugly girl: 0.510
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.360
+Average probability of ugly girl: 0.629
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.345
+Average probability of ugly girl: 0.626
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.231
+Average probability of ugly girl: 0.741
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.196
+Average probability of ugly girl: 0.716
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.410
+Average probability of ugly girl: 0.527
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.310
+Average probability of ugly girl: 0.643
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.207
+Average probability of ugly girl: 0.718
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.412
+Average probability of ugly girl: 0.570
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.335
+Average probability of ugly girl: 0.586
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.274
+Average probability of ugly girl: 0.704
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.137
+Average probability of ugly girl: 0.844
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.304
+Average probability of ugly girl: 0.684
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.363
+Average probability of ugly girl: 0.623
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.243
+Average probability of ugly girl: 0.700
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.669
+Average probability of ugly girl: 0.292
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.430
+Average probability of ugly girl: 0.537
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.215
+Average probability of ugly girl: 0.545
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.254
+Average probability of ugly girl: 0.737
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.406
+Average probability of ugly girl: 0.579
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.643
+Average probability of ugly girl: 0.347
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.706
+Average probability of ugly girl: 0.282
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.672
+Average probability of ugly girl: 0.303
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.358
+Average probability of ugly girl: 0.622
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.368
+Average probability of ugly girl: 0.624
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.238
+Average probability of ugly girl: 0.730
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.236
+Average probability of ugly girl: 0.750
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.381
+Average probability of ugly girl: 0.589
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.556
+Average probability of ugly girl: 0.440
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.439
+Average probability of ugly girl: 0.546
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.425
+Average probability of ugly girl: 0.552
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.329
+Average probability of ugly girl: 0.658
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.384
+Average probability of ugly girl: 0.587
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.217
+Average probability of ugly girl: 0.670
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.312
+Average probability of ugly girl: 0.573
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.730
+Average probability of ugly girl: 0.253
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.256
+Average probability of ugly girl: 0.714
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.374
+Average probability of ugly girl: 0.612
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.449
+Average probability of ugly girl: 0.539
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.365
+Average probability of ugly girl: 0.621
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.457
+Average probability of ugly girl: 0.528
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.716
+Average probability of ugly girl: 0.246
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.284
+Average probability of ugly girl: 0.692
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.313
+Average probability of ugly girl: 0.642
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.229
+Average probability of ugly girl: 0.528
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.267
+Average probability of ugly girl: 0.617
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: neutral
+Average probability of beautiful girl: 0.51
+Average probability of ugly girl: 0.49
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.331
+Average probability of ugly girl: 0.635
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.288
+Average probability of ugly girl: 0.609
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.451
+Average probability of ugly girl: 0.517
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.410
+Average probability of ugly girl: 0.536
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.387
+Average probability of ugly girl: 0.588
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.398
+Average probability of ugly girl: 0.583
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.319
+Average probability of ugly girl: 0.660
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.859
+Average probability of ugly girl: 0.113
+decision: super_like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.639
+Average probability of ugly girl: 0.334
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: beautiful
+Average probability of beautiful girl: 0.797
+Average probability of ugly girl: 0.150
+decision: like
+actual decision: like
+hinge_opener: 'Hey there, are you a fan of winter?'
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.449
+Average probability of ugly girl: 0.503
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.119
+Average probability of ugly girl: 0.638
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.253
+Average probability of ugly girl: 0.705
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.415
+Average probability of ugly girl: 0.576
+decision: dislike
+actual decision: dislike
+
+
+super_likes: 0
+Analysis: ugly
+Average probability of beautiful girl: 0.142
+Average probability of ugly girl: 0.552
+decision: dislike

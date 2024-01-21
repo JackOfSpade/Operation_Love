@@ -15,31 +15,30 @@ navigate_to_discover(dating_app)
     if dating_app == "tinder"
     {
 		winactivate "Tinder"
-		sleep 500
     }
 	else if dating_app == "bumble"
     {
 		winactivate "Bumble"
-		sleep 500
     }
 	else if dating_app == "hinge"
     {
 		winactivate "AirDroid"
-		sleep 500
     }
 	else if dating_app == "photofeeler"
     {
-		try 
-		{
+		#HotIf WinActive("ahk_class Chrome_WidgetWin_1") and WinTitleContains("Vote")
 			winactivate "Vote"
-		}
-		catch as e 
-		{
-			winactivate "Photofeeler"
-		}
+			
+		#HotIf WinActive("ahk_class Chrome_WidgetWin_1") and WinTitleContains("photofeeler")
+			winactivate "photofeeler"
 		
-		sleep 500
+		; This resets the context sensitivity
+		#HotIf
+
+	
     }
+	
+	sleep 500
 }
 
 

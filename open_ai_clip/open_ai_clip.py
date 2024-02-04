@@ -1,29 +1,56 @@
 import os
-import sys
-import torch
 import clip
+import torch
 from PIL import Image
+from torchvision import transforms
+from torchvision.models.detection import fasterrcnn_resnet50_fpn, FasterRCNN_ResNet50_FPN_Weights
 
 
-def main():
-    # Get the directory of the current script
+def detect_and_crop_face(image, device):
+    # Load the pre-trained face detection model with new API
+    weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
+    model = fasterrcnn_resnet50_fpn(weights=weights).to(device).eval()
+
+    # Convert PIL image to tensor
+    transform = transforms.Compose([transforms.ToTensor()])
+    image_tensor = transform(image).to(device)
+
+    # Perform face detection
+    with torch.no_grad():
+        prediction = model([image_tensor])
+
+    # Process detection results
+    boxes = prediction[0]['boxes']
+    if boxes.shape[0] > 0:
+        # Assuming the first detected box is the most prominent face
+        box = boxes[0].cpu().numpy()
+        cropped_image = image.crop((box[0], box[1], box[2], box[3]))
+        return cropped_image
+    else:
+        return None
+
+
+def main(test):
     script_directory = os.getcwd()
 
-    # Check the directory from which the script is being run
-    if script_directory.endswith("open_ai_clip"):
-        directory = os.path.join(script_directory, '..', 'Screenshots')
+    # Test
+    if test:
+        directory = os.path.join(script_directory, 'test photos')
+        directory_cropped = os.path.join(script_directory, 'test photos/cropped photos')
     else:
-        directory = os.path.join(script_directory, 'Screenshots')
+        if script_directory.endswith("open_ai_clip"):
+            directory = os.path.join(script_directory, '..', 'Screenshots')
+        else:
+            directory = os.path.join(script_directory, 'Screenshots')
+
+        directory_cropped = None
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, preprocess = clip.load("ViT-B/32", device=device)
 
     text = clip.tokenize(["beautiful girl", "ugly girl", "indeterminate"]).to(device)
 
-    # List all files in the script directory
     all_files = os.listdir(directory)
-
-    # Filter out the image files
     image_files = [f for f in all_files if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
 
     total_beautiful_prob = 0
@@ -32,14 +59,31 @@ def main():
 
     for image_file in image_files:
         image_path = os.path.join(directory, image_file)
-        image = preprocess(Image.open(image_path)).unsqueeze(0).to(device)
+        image = Image.open(image_path)
+
+        # Convert the image to RGB (if not already in this format)
+        image = image.convert('RGB')
+
+        # Detect and crop face
+        cropped_image = detect_and_crop_face(image, device)
+        if cropped_image is None:
+            num_images -= 1
+            continue
+
+        if test:
+            # Define the output file path with the appropriate extension
+            output_file_path = os.path.join(directory_cropped, f"cropped_{image_file}")
+            # Save the cropped image directly
+            cropped_image.save(output_file_path)
+
+        # Preprocess the cropped image for CLIP model input
+        image_processed = preprocess(cropped_image).unsqueeze(0).to(device)
 
         with torch.no_grad():
-            logits_per_image, _ = model(image, text)
+            logits_per_image, _ = model(image_processed, text)
             probs = logits_per_image.softmax(dim=-1).cpu().numpy()
 
-        # Skip the image if the model thinks it's not a face with high probability
-        if probs[0][2] > 0.5:  # Assuming that the third category is "non-face"
+        if probs[0][2] > 0.5:  # Assuming the third category is "non-face"
             num_images -= 1
             continue
 
@@ -47,19 +91,16 @@ def main():
         total_ugly_prob += probs[0][1]
 
     if num_images == 0:
-        avg_beautiful_prob = 0
-        avg_ugly_prob = 0
+        avg_beautiful_prob = avg_ugly_prob = 0
     else:
-        # Calculate average probabilities
         avg_beautiful_prob = total_beautiful_prob / num_images
         avg_ugly_prob = total_ugly_prob / num_images
 
-    # Making a decision based on the average probabilities
-    if avg_beautiful_prob > 0.5 and avg_ugly_prob < 0.5:
+    # Decision based on average probabilities
+    if avg_beautiful_prob > avg_ugly_prob:
         final_label = "beautiful"
-    elif avg_beautiful_prob < 0.5 and avg_ugly_prob > 0.5:
+    elif avg_ugly_prob > avg_beautiful_prob:
         final_label = "ugly"
-    # 50/50 or no probability
     else:
         final_label = "neutral"
 
@@ -67,19 +108,10 @@ def main():
 
     with open(result_path, 'w') as f:
         output_text = final_label + "\n"
-        
-        if final_label != "neutral":       
-            output_text += f"Average probability of beautiful girl: {avg_beautiful_prob:.3f}\n"
-            output_text += f"Average probability of ugly girl: {avg_ugly_prob:.3f}"
-        else:
-            output_text += f"Average probability of beautiful girl: 0.51\n"
-            output_text += f"Average probability of ugly girl: 0.49"
-
-        # Write to file
+        output_text += f"Average probability of being considered beautiful: {avg_beautiful_prob:.3f}\n"
+        output_text += f"Average probability of being considered ugly: {avg_ugly_prob:.3f}"
         f.write(output_text)
-
-        # Print to console
         print(output_text)
 
 if __name__ == "__main__":
-    main()
+    main(test=False)

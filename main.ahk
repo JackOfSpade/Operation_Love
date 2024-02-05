@@ -7,12 +7,12 @@
 ; Set-up:
 ; 100% zoom in resolution settings
 ; Laptop must be plugged in or else the save/file dialog will lag.
-; Greenshot: set output location to screenshot folder
+; Greenshot: set output location to Screenshots folder
 ; 			 set capture region to f11
 ;            Capture --> turn "Show notifications" off
 ; Capture2Text: unbind Win + R so we can open run dialog
 ;				turn off show popup window
-; In powershell:
+; In powershell (run as admin):
 ; 	Set-ExecutionPolicy Unrestricted -Scope LocalMachine
 ; 	Unblock-File -Path "...\Desktop\GitHub\Operation_Love\open_ai_clip\venv\Scripts\activate.ps1"
 
@@ -213,7 +213,11 @@ main(dating_app, root_directory, resolution)
 
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
 
-main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
+; main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
+
+
+; TESTING
+main("bumble", "C:\Users\super\Desktop\GitHub\Operation_Love", "1920x1080")
 
 
 

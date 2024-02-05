@@ -16,19 +16,22 @@ make_decision()
 	
 	open_ai_clip_result := FileRead("open_ai_clip_result.txt")
 
+	firstLine := ""
 	; Extract first line string
-	RegExMatch(open_ai_clip_result, "^([^\r\n]+)", &firstLine)
+	matchResult := RegExMatch(open_ai_clip_result, "^(.+)", &firstLine)
 	adjective := firstLine[1]
 
-	; Extract number from the line about the beautiful girl
-	RegExMatch(open_ai_clip_result, "Average probability of beautiful girl:\s*(\d+\.\d+)", &beautyMatch)
+	beautyMatch := ""
+	; Extract beauty probability
+	matchResult := RegExMatch(open_ai_clip_result, "Average probability of being considered beautiful: (\d+\.\d+)", &beautyMatch)
 	beauty_probability := beautyMatch[1]
 
-	; Extract number from the line about the ugly girl
-	RegExMatch(open_ai_clip_result, "Average probability of ugly girl:\s*(\d+\.\d+)", &uglyMatch)
-	ugly_probability := uglyMatch[1]		
+	uglyMatch := ""
+	; Extract ugly probability
+	RegExMatch(open_ai_clip_result, "Average probability of being considered ugly: (\d+\.\d+)", &uglyMatch)
+	ugly_probability := uglyMatch[1]	
     
-    if adjective == "beautiful" and beauty_probability >= 0.8
+    if adjective == "beautiful" and beauty_probability >= 0.75
     {
         decision := "super_like"
     }

@@ -47,22 +47,21 @@ take_screenshot(dating_app)
     {
 		winactivate "AirDroid"
 		
-		; Scrolling through hinge profile way too slow, and sometimes you won't even screen shot a proper picture, wasting time. Just process one picture.	
+		Loop 7
+		{
+			print_screen(657, 106, 1260, 889)
+			
+			loop 4
+			{
+				click_and_drag(669, 776, 665, 319, 1500)
+			}
+			
+			
+			sleep 4000
+		}
 		
-		;Loop 8
-		;{
-		;	print_screen(657, 106, 1260, 889)
-		;	
-		;	loop 4
-		;	{
-		;		click_and_drag(669, 776, 665, 319, 1500)
-		;	}
-		;	
-		;	
-		;	sleep 4000
-		;}
-		
-		print_screen(676, 237, 1242, 914)		
+		; For doing one-photo iterations
+		; print_screen(676, 237, 1242, 914)		
 	}
 	else if dating_app == "photofeeler"
     {

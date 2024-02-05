@@ -186,10 +186,9 @@ main(dating_app, root_directory, resolution)
 			; mouseClick "left", 723, 161
 			; sleep 3000
 			; mouseClick "left", 828, 567
-			; sleep 3000
-			
+			; sleep 3000			
 			; If no prompt poll, need to remove photo description as a consequence of clicking on it
-			mouseClick "left", 957, 634
+			; mouseClick "left", 957, 634
 		}
 		else if dating_app == "photofeeler"
 		{

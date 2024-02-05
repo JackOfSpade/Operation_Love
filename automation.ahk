@@ -195,13 +195,13 @@ like(dating_app, root_directory)
 		
 		hinge_opener := "Hey there, are you a fan of winter?"
 		
-		; Scroll up (deprecated since we're only processing one picture)
-		;loop 24
-		;{
-		;	click_and_drag(665, 211, 673, 644, 1500)
-		;}
-		;
-		;sleep 3000
+		; Scroll up 
+		loop 21
+		{
+			click_and_drag(665, 211, 673, 644, 1500)
+		}
+		
+		sleep 3000
 		
 		; Click like with footer
 		mouseClick "left", 1191, 841
@@ -230,12 +230,11 @@ like(dating_app, root_directory)
 		
 		; Send like		
 		mouseClick "left", 1018, 848
-		; sleep 1000
-		sleep 6000
+		sleep 1000
 		
 		; Click away send a rose instead
-		; mouseClick "left", 938, 972
-		; sleep 5000
+		mouseClick "left", 937, 971
+		sleep 5000
     }	
 	else if dating_app == "photofeeler"
 	{

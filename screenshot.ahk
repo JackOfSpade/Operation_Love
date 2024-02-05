@@ -55,9 +55,6 @@ take_screenshot(dating_app)
 			{
 				click_and_drag(669, 776, 665, 319, 1500)
 			}
-			
-			
-			sleep 4000
 		}
 		
 		; For doing one-photo iterations

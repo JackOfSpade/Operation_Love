@@ -213,11 +213,11 @@ main(dating_app, root_directory, resolution)
 
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
 
-; main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
+main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
 
 
 ; TESTING
-main("bumble", "C:\Users\super\Desktop\GitHub\Operation_Love", "1920x1080")
+; main("bumble", "C:\Users\super\Desktop\GitHub\Operation_Love", "1920x1080")
 
 
 

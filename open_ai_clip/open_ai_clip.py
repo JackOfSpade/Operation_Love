@@ -21,7 +21,7 @@ def detect_and_crop_face(image, device):
 
     # Process detection results
     boxes = prediction[0]['boxes']
-    if boxes.shape[0] > 0:
+    if boxes.shape[0] == 1:
         # Assuming the first detected box is the most prominent face
         box = boxes[0].cpu().numpy()
         cropped_image = image.crop((box[0], box[1], box[2], box[3]))

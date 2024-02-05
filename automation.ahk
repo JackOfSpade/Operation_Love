@@ -312,7 +312,7 @@ dislike(dating_app)
 	else if dating_app == "hinge"
     {
 		; Dislike button with footer
-		mouseClick "left", 731, 915
+		mouseClick "left", 727, 922
 		sleep 1000
 		; Click dislike without footer
 		mouseClick "left", 729, 982

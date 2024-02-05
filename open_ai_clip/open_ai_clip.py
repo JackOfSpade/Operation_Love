@@ -46,7 +46,8 @@ def main(test):
         directory_cropped = None
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model, preprocess = clip.load("ViT-B/32", device=device)
+    # Most computationally demanding CLIP model
+    model, preprocess = clip.load("ViT-L/14", device=device)
 
     text = clip.tokenize(["beautiful girl", "ugly girl", "indeterminate"]).to(device)
 
@@ -113,5 +114,6 @@ def main(test):
         f.write(output_text)
         print(output_text)
 
+
 if __name__ == "__main__":
-    main(test=False)
+    main(test=True)

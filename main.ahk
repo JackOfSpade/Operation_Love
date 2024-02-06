@@ -94,12 +94,13 @@ main(dating_app, root_directory, resolution)
 				
 				goto("start")
 			}	
-			else if InStr(ocr(1124, 706, 1173, 728, 500), "Open", 0)
+			; Click away BOOM match popup
+			else if InStr(ocr(966, 257, 1110, 317, 500), "Boom", 0)
 			{
 				sleep 100
 				A_Clipboard := ""
 				sleep 100
-				mouseClick "left", 1160, 770
+				mouseClick "left", 1083, 681
 			}
 			
 			; Click away matched notification (need to redo, this makes it skip first pic and scroll down)
@@ -210,9 +211,9 @@ main(dating_app, root_directory, resolution)
 
 ; main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
 
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
 
-main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
+; main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
 
 
 ; TESTING

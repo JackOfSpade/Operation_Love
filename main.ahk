@@ -95,12 +95,13 @@ main(dating_app, root_directory, resolution)
 				goto("start")
 			}	
 			; Click away BOOM match popup
-			else if InStr(ocr(966, 257, 1110, 317, 500), "Boom", 0)
+			else if InStr(ocr(1119, 721, 1173, 751, 500), "Open", 0)
 			{
 				sleep 100
 				A_Clipboard := ""
 				sleep 100
-				mouseClick "left", 1083, 681
+				mouseClick "left", 1183, 781
+				sleep 10000
 			}
 			
 			; Click away matched notification (need to redo, this makes it skip first pic and scroll down)

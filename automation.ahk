@@ -292,9 +292,9 @@ like(dating_app, root_directory)
 		; Click submit
 		mouseClick "left", 1193, 712
 		mouseClick "left", 1175, 727
-		
-		send "{^ down}l"
-		send "{^ up}"
+				
+		send "{LControl down}l"
+		send "{LControl up}"
 		send "https://www.photofeeler.com/vote/dating"
 		send "{Enter}"
 		

@@ -291,6 +291,7 @@ like(dating_app, root_directory)
 		
 		; Click submit
 		mouseClick "left", 1193, 712
+		mouseClick "left", 1175, 727
 	}
 	
 	return hinge_opener

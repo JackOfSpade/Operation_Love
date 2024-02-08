@@ -150,6 +150,14 @@ main(dating_app, root_directory, resolution)
 				
 				goto("start")
 			}	
+			
+			if InStr(ocr(660, 205, 772, 251, 100), "Credits", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
+			{
+				send "{LControl down}l"
+				send "{LControl up}"
+				send "https://www.photofeeler.com/vote/dating"
+				send "{Enter}"
+			}
 		}
 		
 		take_screenshot(dating_app)  

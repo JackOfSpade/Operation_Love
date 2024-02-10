@@ -195,22 +195,17 @@ like(dating_app, root_directory)
 		
 		hinge_opener := "Hey there, are you a fan of winter?"
 		
-		; Scroll up 
-		; loop 21
-		; {
-		; 	click_and_drag(665, 211, 673, 644, 500)
-		; }
-		
+	
 		; Scroll down instead of scroll up (faster)
-		Loop 2
-		{
-			loop 4
-			{
-				click_and_drag(669, 776, 665, 319, 1500)
-			}
-		}
-		
-		sleep 3000
+		;Loop 2
+		;{
+		;	loop 4
+		;	{
+		;		click_and_drag(669, 776, 665, 319, 1500)
+		;	}
+		;}
+		;
+		;sleep 3000
 		
 		; Click like with footer
 		mouseClick "left", 1193, 848

@@ -39,12 +39,13 @@ main(dating_app, root_directory, resolution)
 	file := FileOpen(".\log.txt", "w")
 	file.close()
 	
-	; test
-	; hinge_opener := like(dating_app, root_directory)
-	
 	super_likes := 0
 	
 	navigate_to_discover(dating_app)
+	
+	; like test
+	; like(dating_app, root_directory)
+	
 	super_likes := remaining_super_likes(dating_app)
 	
 	if super_likes == "o" or super_likes == "O"
@@ -218,13 +219,13 @@ main(dating_app, root_directory, resolution)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
-main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love", "1366x768")
+; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love", "1366x768")
 
 ; main("tinder", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
 
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
 
-; main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
+main("hinge", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
 
 
 ; TESTING

@@ -196,15 +196,12 @@ like(dating_app, root_directory)
 		hinge_opener := "Hey there, are you a fan of winter?"
 		
 	
-		; Scroll down instead of scroll up (faster)
-		;Loop 2
-		;{
-		;	loop 4
-		;	{
-		;		click_and_drag(669, 776, 665, 319, 1500)
-		;	}
-		;}
-		;
+		; Scroll up (scroll down doesn't work because of possible instagram
+		loop 8
+		{
+			click_and_drag(665, 319, 669, 776, 500)
+		}
+		
 		;sleep 3000
 		
 		; Click like with footer

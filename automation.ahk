@@ -211,7 +211,7 @@ like(dating_app, root_directory)
 		mouseClick "left", 1193, 848
 		sleep 1000
 		; Click like without footer
-		; mouseClick "left", 1192, 780
+		mouseClick "left", 1195, 783
 		
 		sleep 4000
 		

@@ -209,8 +209,12 @@ like(dating_app, root_directory)
 		sleep 1000
 		; Click like without footer
 		mouseClick "left", 1195, 783
+		sleep 1000
+		; Click like with footer and caption
+		mouseClick "left", 1191, 832
+		sleep 10000
 		
-		sleep 4000
+		sleep 3000
 		
 		if !InStr(ocr(910, 963, 1006, 996, 500), "Cancel", 0)
 		{

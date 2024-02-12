@@ -5,3 +5,7 @@ First remote click needs to be on the black dot that appear.
 
 Bluetooth not detected fix:
 Turn bluetooth off and on for both phone AND PC.
+OR
+Start bluetooth support service
+Restart both devices
+Connect through bluetooth

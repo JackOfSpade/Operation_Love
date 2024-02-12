@@ -44,7 +44,7 @@ main(dating_app, root_directory, resolution)
 	navigate_to_discover(dating_app)
 	
 	; like test
-	; like(dating_app, root_directory)
+	like(dating_app, root_directory)
 	
 	super_likes := remaining_super_likes(dating_app)
 	

@@ -101,7 +101,7 @@ super_like(dating_app, root_directory)
 		send "Hi"
 		sleep 500
 		; Click send
-		mouseClick "left", 1279, 797
+		mouseClick "left", 1284, 802
 	}
 	else if dating_app == "bumble"
 	{

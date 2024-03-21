@@ -33,7 +33,7 @@
 CoordMode "Mouse", "Window"
 
 
-main(dating_app, root_directory, resolution)
+main(dating_app, root_directory)
 {
 	; Clear the log
 	file := FileOpen(".\log.txt", "w")
@@ -44,7 +44,7 @@ main(dating_app, root_directory, resolution)
 	navigate_to_discover(dating_app)
 	
 	; like test
-	like(dating_app, root_directory)
+	; like(dating_app, root_directory)
 	
 	super_likes := remaining_super_likes(dating_app)
 	
@@ -219,17 +219,17 @@ main(dating_app, root_directory, resolution)
 
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
-; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love", "1366x768")
+; "1366x768"
+; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
-; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love", "1920x1080")
+; "1920x1080"
+; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love"
 
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love", "1920x1080")
+; "1920x1080"
+; main("bumble", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
-main("hinge", "C:\Users\Dell\Desktop\GitHub\Operation_Love", "1366x768")
-
-
-; TESTING
-; main("bumble", "C:\Users\super\Desktop\GitHub\Operation_Love", "1920x1080")
+; "1920x1080"
+main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 
 

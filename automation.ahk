@@ -61,9 +61,9 @@ remaining_super_likes(dating_app)
 	}
 	else if dating_app == "bumble"
 	{		
-		mouseMove 1139, 955
+		mouseMove 849, 671
 		sleep 1000
-		remainingSuperLikes := ocr(1139, 955, 1205, 1015, 100)
+		remainingSuperLikes := ocr(849, 671, 882, 704, 100)
 		
 		if !IsNumber(remainingSuperLikes)
 		{
@@ -105,7 +105,7 @@ super_like(dating_app, root_directory)
 	}
 	else if dating_app == "bumble"
 	{
-		mouseClick "left", 1208, 947
+		mouseClick "left", 861, 674
 	}
 	else if dating_app == "hinge"
     {

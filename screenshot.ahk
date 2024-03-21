@@ -30,17 +30,20 @@ take_screenshot(dating_app)
     {
        winactivate "Bumble"
        
-       print_screen(580, 200, 1155, 927)
-       sleep 750
-       send "{down}"
-       send "{down}"
-       sleep 500
+       count := 0
        
        loop 5
        {
-           print_screen(580, 200, 1155, 927)
+           print_screen(492, 193, 853, 628)
            sleep 750
            send "{down}"
+		   
+		   if count == 0
+		   {
+				send "{down}"
+				count++
+		   }
+		   
            sleep 500
        }
     }      

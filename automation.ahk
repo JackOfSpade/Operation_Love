@@ -50,13 +50,13 @@ remaining_super_likes(dating_app)
 	if dating_app == "tinder"
     {
 		; Click profile
-		MouseClick "left", 41, 159
+		MouseClick "left", 46, 168
 		sleep 5000
 			
-		remainingSuperLikes := ocr(208, 394, 223, 411, 500)
+		remainingSuperLikes := ocr(234, 394, 249, 410, 500)
 		
 		; Go back to discover
-		MouseClick "left", 41, 159
+		MouseClick "left", 46, 168
 		sleep 5000
 	}
 	else if dating_app == "bumble"
@@ -91,11 +91,17 @@ super_like(dating_app, root_directory)
 			sleep 500
 		}
 		
-		mouseClick "left", 860, 624
+		; Click super like
+		mouseClick "left", 1145, 820
 		sleep 1000
 		
-		; click away comment recommendation
-		mouseClick "left", 865, 639
+		; Add comment
+		mouseClick "left", 988, 792
+		sleep 500
+		send "Hi"
+		sleep 500
+		; Click send
+		mouseClick "left", 1279, 797
 	}
 	else if dating_app == "bumble"
 	{
@@ -172,12 +178,12 @@ like(dating_app, root_directory)
 		}
 		
 		; Click like
-		mouseClick "left", 932, 619
+		mouseClick "left", 1216, 817
 		
 		sleep 3000
 		
 		; Click away super like upgrade popup
-		mouseClick "left", 638, 597
+		mouseClick "left", 908, 749
 	}
 	else if dating_app == "bumble"
 	{
@@ -308,7 +314,7 @@ dislike(dating_app)
 			sleep 500
 		}
 		
-		mouseClick "left", 786, 618
+		mouseClick "left", 1071, 819
 	}
 	else if dating_app == "bumble"
 	{

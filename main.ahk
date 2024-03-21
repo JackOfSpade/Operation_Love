@@ -68,6 +68,7 @@ main(dating_app, root_directory)
 		if dating_app == "tinder"
 		{
 			; Second condition is for when tinder pops up the card "It's a match!"
+			; Third condition is for website crash
 			if InStr(ocr(811, 534, 845, 555, 100), "Go", 0) or InStr(ocr(964, 534, 1015, 555, 100), "SEND", 0) or InStr(ocr(386, 336, 425, 364, 100), "Aw", 0)
 			{
 				send "{f5}"
@@ -223,13 +224,13 @@ main(dating_app, root_directory)
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
-; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love"
+main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1920x1080"
 ; main("bumble", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
-main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 
 

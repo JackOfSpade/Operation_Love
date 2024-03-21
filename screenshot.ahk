@@ -17,11 +17,12 @@ take_screenshot(dating_app)
        
        loop 6
        {
-           print_screen(675, 126, 1032, 504)
+           print_screen(962, 215, 1339, 718)
            sleep 500
 		   ; Space stops working for some reason sometimes
            
-		   mouseClick "left", 1036, 356
+		   ; Go to next picture
+		   mouseClick "left", 1318, 509
            sleep 1000
        }        
     }

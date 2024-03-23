@@ -111,7 +111,7 @@ main(dating_app, root_directory)
 				sleep 100
 				A_Clipboard := ""
 				sleep 100
-				mouseClick "left", 1183, 781
+				mouseClick "left", 827, 619
 				sleep 10000
 			}
 			

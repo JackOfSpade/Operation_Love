@@ -85,7 +85,7 @@ main(dating_app, root_directory)
 			; Reset image to first due to measures that move to next image
 			loop 6
 			{
-				mouseClick "left, 1045, 512
+				mouseClick "left", 1045, 512
 			}
 		}
 		else if dating_app == "bumble"

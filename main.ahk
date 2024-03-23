@@ -82,6 +82,9 @@ main(dating_app, root_directory)
 				goto("start")
 			}	
 			
+			; Click away "____ likes you"
+			mouseClick "left", 1300, 242
+			
 			; Reset image to first due to measures that move to next image
 			loop 6
 			{

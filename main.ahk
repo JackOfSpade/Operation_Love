@@ -86,12 +86,6 @@ main(dating_app, root_directory)
 			
 			; Click away "____ likes you"
 			mouseClick "left", 1300, 242
-			
-			; Reset image to first due to measures that move to next image
-			loop 6
-			{
-				mouseClick "left", 1045, 512
-			}
 		}
 		else if dating_app == "bumble"
 		{			

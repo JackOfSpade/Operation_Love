@@ -45,9 +45,8 @@ main(dating_app, root_directory)
 	
 	; like test
 	; like(dating_app, root_directory)
-	super_like(dating_app, root_directory)
-	
-	exitApp
+	; super_like(dating_app, root_directory)
+	; exitApp
 	
 	super_likes := remaining_super_likes(dating_app)
 	

@@ -45,6 +45,9 @@ main(dating_app, root_directory)
 	
 	; like test
 	; like(dating_app, root_directory)
+	super_like(dating_app, root_directory)
+	
+	exitApp
 	
 	super_likes := remaining_super_likes(dating_app)
 	
@@ -233,10 +236,10 @@ main(dating_app, root_directory)
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
-; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1366x768"
-main("bumble", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
+; main("bumble", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")

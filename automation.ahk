@@ -99,11 +99,9 @@ super_like(dating_app, root_directory)
 		mouseClick "left", 988, 792
 		sleep 500
 		send "Hi"
-		sleep 500
+		; Need to sleep >500ms or else Tinder won't register the send; probably due to on-hover scripts running on the send button.
+		sleep 1000
 		; Click send
-		mouseClick "left", 1284, 802
-		sleep 500
-		; Click send (one time don't work for some reason)
 		mouseClick "left", 1284, 802
 		
 	}

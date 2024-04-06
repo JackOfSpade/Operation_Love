@@ -104,7 +104,7 @@ main(dating_app, root_directory)
 				goto("start")
 			}	
 			; Click away BOOM match popup
-			else if InStr(ocr(811, 565, 866, 591, 500), "Open", 0)
+			else if InStr(ocr(509, 210, 1215, 681, 100), "Open", 0)
 			{
 				sleep 100
 				A_Clipboard := ""

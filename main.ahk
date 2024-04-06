@@ -122,8 +122,6 @@ main(dating_app, root_directory)
 			sleep 100
 			 
 			sleep 7000
-			
-			goto("start")
 		}
 		else if dating_app == "hinge"
 		{

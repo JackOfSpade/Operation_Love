@@ -89,8 +89,9 @@ main(dating_app, root_directory)
 		}
 		else if dating_app == "bumble"
 		{			
+			; Make all ocr the same box
 			; "Want to keep matching? Expand filters"
-			if InStr(ocr(719, 324, 792, 356, 100), "Want", 0) or InStr(ocr(1049, 514, 1100, 542, 100), "You", 0) or InStr(ocr(659, 441, 701, 467, 500), "Aw", 0) or !WinActive("Bumble")
+			if InStr(ocr(509, 210, 1215, 681, 100), "Want", 0) or InStr(ocr(509, 210, 1215, 681, 100), "You", 0) or InStr(ocr(509, 210, 1215, 681, 100), "Aw", 0) or !WinActive("Bumble")
 			{
 				send "{f5}"
 				
@@ -230,10 +231,10 @@ main(dating_app, root_directory)
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
-main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1366x768"
-; main("bumble", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
+main("bumble", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")

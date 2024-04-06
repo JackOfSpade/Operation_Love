@@ -90,30 +90,40 @@ main(dating_app, root_directory)
 		else if dating_app == "bumble"
 		{			
 			; "Want to keep matching? Expand filters"
-			if InStr(ocr(509, 210, 1215, 681, 100), "Want", 0) or InStr(ocr(1049, 514, 1100, 542, 100), "You", 0) or InStr(ocr(659, 441, 701, 467, 500), "Aw", 0) or !WinActive("Bumble")
-			{
-				send "{f5}"
-				
-				sleep 100
-				A_Clipboard := ""
-				sleep 100
-				 
-				sleep 7000
-				
-				goto("start")
-			}	
-			; Click away BOOM match popup
-			else if InStr(ocr(811, 565, 866, 591, 500), "Open", 0)
-			{
-				sleep 100
-				A_Clipboard := ""
-				sleep 100
-				mouseClick "left", 827, 619
-				sleep 10000
-			}
-			
+			;if InStr(ocr(509, 210, 1215, 681, 100), "Want", 0) or InStr(ocr(1049, 514, 1100, 542, 100), "You", 0) or InStr(ocr(659, 441, 701, 467, 500), "Aw", 0) or !WinActive("Bumble")
+			;{
+			;	send "{f5}"
+			;	
+			;	sleep 100
+			;	A_Clipboard := ""
+			;	sleep 100
+			;	 
+			;	sleep 7000
+			;	
+			;	goto("start")
+			;}	
+			;; Click away BOOM match popup
+			;else if InStr(ocr(811, 565, 866, 591, 500), "Open", 0)
+			;{
+			;	sleep 100
+			;	A_Clipboard := ""
+			;	sleep 100
+			;	mouseClick "left", 827, 619
+			;	sleep 10000
+			;}			
 			; Click away matched notification (need to redo, this makes it skip first pic and scroll down)
 			; mouseClick "left", 1167, 786
+			
+			; Too many checks, refresh is faster
+			send "{f5}"
+			
+			sleep 100
+			A_Clipboard := ""
+			sleep 100
+			 
+			sleep 7000
+			
+			goto("start")
 		}
 		else if dating_app == "hinge"
 		{

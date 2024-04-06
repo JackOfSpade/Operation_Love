@@ -89,9 +89,8 @@ main(dating_app, root_directory)
 		}
 		else if dating_app == "bumble"
 		{			
-			; Make all ocr the same box
 			; "Want to keep matching? Expand filters"
-			if InStr(ocr(509, 210, 1215, 681, 100), "Want", 0) or InStr(ocr(509, 210, 1215, 681, 100), "You", 0) or InStr(ocr(509, 210, 1215, 681, 100), "Aw", 0) or !WinActive("Bumble")
+			if InStr(ocr(509, 210, 1215, 681, 100), "Want", 0) or InStr(ocr(1049, 514, 1100, 542, 100), "You", 0) or InStr(ocr(659, 441, 701, 467, 500), "Aw", 0) or !WinActive("Bumble")
 			{
 				send "{f5}"
 				
@@ -104,7 +103,7 @@ main(dating_app, root_directory)
 				goto("start")
 			}	
 			; Click away BOOM match popup
-			else if InStr(ocr(509, 210, 1215, 681, 100), "Open", 0)
+			else if InStr(ocr(811, 565, 866, 591, 500), "Open", 0)
 			{
 				sleep 100
 				A_Clipboard := ""

@@ -93,7 +93,7 @@ super_like(dating_app, root_directory)
 		
 		; Click super like
 		mouseClick "left", 1145, 820
-		sleep 1000
+		sleep 2000
 		
 		; Add comment
 		mouseClick "left", 988, 792

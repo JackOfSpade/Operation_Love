@@ -115,7 +115,7 @@ main(dating_app, root_directory)
 			; mouseClick "left", 1167, 786
 			
 			; Too many checks, refresh is faster
-			send "{f5}"
+			mouseClick "left", 103, 72
 			
 			sleep 100
 			A_Clipboard := ""

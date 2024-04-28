@@ -51,7 +51,7 @@ remaining_super_likes(dating_app)
     {
 		; Click profile
 		MouseClick "left", 46, 168
-		sleep 5000
+		sleep 7000
 			
 		remainingSuperLikes := ocr(234, 394, 249, 410, 500)
 		

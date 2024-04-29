@@ -4,7 +4,7 @@ Cities (nearest to denver first:
 
 Tinder                          Bumble                           Hinge
 Encampment, Wyoming             Encampment, Wyoming              Encampment, Wyoming
-Peetz, CO                       Peetz, CO      <---              Peetz, CO   <---
-Powderhorn, CO                  Powderhorn, CO                   Powderhorn, CO
+Peetz, CO                       Peetz, CO      <---              Peetz, CO   
+Powderhorn, CO                  Powderhorn, CO                   Powderhorn, CO <---
 Fort Lyon, CO                   Fort Lyon, CO                    Fort Lyon, CO
 Global <---

@@ -15,16 +15,24 @@ take_screenshot(dating_app)
     {
        winactivate "Tinder"
        
-       loop 6
+	   ; For doing multi-photo iterations
+       ; loop 6
+       ; {
+       ;     print_screen(962, 215, 1339, 718)
+       ;     sleep 500
+		 ;   ; Space stops working for some reason sometimes
+       ;     
+		 ;   ; Go to next picture
+		 ;   mouseClick "left", 1318, 509
+       ;     sleep 1000
+       ; }        
+	   
+	   ; For doing one-photo iterations
+	   loop 1
        {
            print_screen(962, 215, 1339, 718)
            sleep 500
-		   ; Space stops working for some reason sometimes
-           
-		   ; Go to next picture
-		   mouseClick "left", 1318, 509
-           sleep 1000
-       }        
+       }    
     }
     else if dating_app == "bumble"
     {
@@ -32,18 +40,26 @@ take_screenshot(dating_app)
        
        count := 0
        
-       loop 5
+	   ; For doing multi-photo iterations
+       ; loop 5
+       ; {
+       ;     print_screen(492, 193, 853, 628)
+       ;     sleep 500
+       ;     send "{down}"
+		 ;   
+		 ;   if count == 0
+		 ;   {
+		 ;		send "{down}"
+		 ;		count++
+		 ;   }
+		 ;   
+       ;     sleep 500
+       ; }
+	   
+	   ; For doing one-photo iterations
+	   loop 1
        {
            print_screen(492, 193, 853, 628)
-           sleep 750
-           send "{down}"
-		   
-		   if count == 0
-		   {
-				send "{down}"
-				count++
-		   }
-		   
            sleep 500
        }
     }      
@@ -51,18 +67,22 @@ take_screenshot(dating_app)
     {
 		winactivate "AirDroid"
 		
-		Loop 7
-		{
-			print_screen(657, 106, 1260, 889)
-			
-			loop 4
-			{
-				click_and_drag(669, 776, 665, 319, 1500)
-			}
-		}
+		; For doing multi-photo iterations
+		; loop 7
+		; {
+		; 	print_screen(657, 106, 1260, 889)
+		; 	
+		; 	loop 4
+		; 	{
+		; 		click_and_drag(669, 776, 665, 319, 1500)
+		; 	}
+		; }
 		
 		; For doing one-photo iterations
-		; print_screen(676, 237, 1242, 914)		
+		loop 1
+		{
+			print_screen(657, 106, 1260, 889)
+		}
 	}
 	else if dating_app == "photofeeler"
     {

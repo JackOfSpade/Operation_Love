@@ -86,6 +86,11 @@ main(dating_app, root_directory)
 			
 			; Click away "____ likes you"
 			mouseClick "left", 1300, 242
+			sleep 500
+			
+			; Reset image to position 1
+			mouseClick "left", 989, 519
+			sleep 500
 		}
 		else if dating_app == "bumble"
 		{			
@@ -245,10 +250,10 @@ main(dating_app, root_directory)
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
-; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1366x768"
-main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")

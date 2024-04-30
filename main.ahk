@@ -122,6 +122,9 @@ main(dating_app, root_directory)
 			; sleep 100
 			;  
 			; sleep 7000
+			
+			; Click away "Second time's a charm" compliment suggestion
+			mouseClick "left", 699, 67
 		}
 		else if dating_app == "hinge"
 		{

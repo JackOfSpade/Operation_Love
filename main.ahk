@@ -111,7 +111,10 @@ main(dating_app, root_directory)
 			
 			; Click away "Second time's a charm" compliment suggestion
 			mouseClick "left", 701, 71
-			sleep 1500
+			sleep 1000
+			; Click twice to close side bar if the above popup doesn't happen
+			mouseClick "left", 701, 71
+			sleep 1000
 		}
 		else if dating_app == "hinge"
 		{

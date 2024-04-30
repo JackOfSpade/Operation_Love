@@ -31,7 +31,7 @@ make_decision()
 	RegExMatch(open_ai_clip_result, "Average probability of being considered ugly: (\d+\.\d+)", &uglyMatch)
 	ugly_probability := uglyMatch[1]	
     
-    if adjective == "beautiful" and beauty_probability >= 0.75
+    if adjective == "beautiful" and beauty_probability >= 0.95
     {
         decision := "super_like"
     }

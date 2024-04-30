@@ -48,6 +48,20 @@ main(dating_app, root_directory)
 	; super_like(dating_app, root_directory)
 	; exitApp
 	
+	super_likes := remaining_super_likes(dating_app)
+	
+	if super_likes == "o" or super_likes == "O"
+	{
+		super_likes := 0
+	}
+	
+	if dating_app == "photofeeler"
+	{
+		super_likes := 2000000000
+	}
+	
+	sleep 500
+	
 	while true
 	{	
 		start:
@@ -109,9 +123,12 @@ main(dating_app, root_directory)
 			;  
 			; sleep 7000
 			
-			; Click away "Second time's a charm" compliment suggestion
+			; Click away any popups including "Second time's a charm" compliment suggestion and "It's a match!"
 			mouseClick "left", 701, 71
-			sleep 1000			
+			sleep 1000	
+			; Click discover to close side bar if above popup didn't happen
+			MouseClick "left", 962, 1042	
+			sleep 1500
 		}
 		else if dating_app == "hinge"
 		{
@@ -167,20 +184,6 @@ main(dating_app, root_directory)
 				sleep 3000
 			}
 		}
-		
-		super_likes := remaining_super_likes(dating_app)
-	
-		if super_likes == "o" or super_likes == "O"
-		{
-			super_likes := 0
-		}
-		
-		if dating_app == "photofeeler"
-		{
-			super_likes := 2000000000
-		}
-		
-		sleep 500
 		
 		take_screenshot(dating_app)  
 		

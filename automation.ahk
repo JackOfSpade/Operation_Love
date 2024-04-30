@@ -64,9 +64,6 @@ remaining_super_likes(dating_app)
 		; Click profile
 		MouseClick "left", 718, 1041
 		sleep 1000
-		; This will make us click profile twice to close side bar if the above popup doesn't happen
-		MouseClick "left", 718, 1041
-		sleep 1000
 		
 		remainingSuperLikes := ocr(1064, 523, 1091, 552, 100)
 		
@@ -116,7 +113,10 @@ super_like(dating_app, root_directory)
 	}
 	else if dating_app == "bumble"
 	{
-		mouseClick "left", 1166, 898
+		mouseClick "left", 1162, 751
+		sleep 500
+		; diff spot
+		mouseClick "left", 1166, 898		
 	}
 	else if dating_app == "hinge"
     {

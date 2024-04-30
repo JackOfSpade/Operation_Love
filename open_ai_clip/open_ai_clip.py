@@ -21,17 +21,21 @@ def detect_and_crop_face(image, device):
 
     # Process detection results
     boxes = prediction[0]['boxes']
-    if boxes.shape[0] == 1:
-        # Assuming the first detected box is the most prominent face
-        box = boxes[0].cpu().numpy()
+    scores = prediction[0]['scores']  # Assuming scores are available
+
+    # Check if any boxes are detected
+    if boxes.shape[0] > 0:
+        # Select the box with the highest score (you could also choose based on size)
+        max_score_index = scores.argmax()
+        box = boxes[max_score_index].cpu().numpy()
         cropped_image = image.crop((box[0], box[1], box[2], box[3]))
         return cropped_image
-    else:
-        return None
+    return None
 
 
 def main(test):
     script_directory = os.getcwd()
+    output_text = ""
 
     # Test
     if test:
@@ -52,7 +56,7 @@ def main(test):
     text = clip.tokenize(["beautiful face", "ugly face", "indeterminate"]).to(device)
 
     all_files = os.listdir(directory)
-    image_files = [f for f in all_files if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+    image_files = [f for f in all_files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
 
     total_beautiful_prob = 0
     total_ugly_prob = 0
@@ -68,6 +72,8 @@ def main(test):
         # Detect and crop face
         cropped_image = detect_and_crop_face(image, device)
         if cropped_image is None:
+            # For debugging only
+            print(f"num_images -= 1: cropped_image is None\n") 
             num_images -= 1
             continue
 
@@ -85,6 +91,8 @@ def main(test):
             probs = logits_per_image.softmax(dim=-1).cpu().numpy()
 
         if probs[0][2] > 0.5:  # Assuming the third category is "non-face"
+            # For debugging only
+            print(f"num_images -= 1: indeterminate probability: {probs[0][2]:.3f}\n")
             num_images -= 1
             continue
 
@@ -100,15 +108,18 @@ def main(test):
     # Decision based on average probabilities
     if avg_beautiful_prob > avg_ugly_prob:
         final_label = "beautiful"
-    elif avg_ugly_prob > avg_beautiful_prob:
+    elif avg_beautiful_prob < avg_ugly_prob:
         final_label = "ugly"
-    else:
+    elif avg_beautiful_prob == avg_ugly_prob:
         final_label = "neutral"
 
     result_path = os.path.join(script_directory, 'open_ai_clip_result.txt')
 
     with open(result_path, 'w') as f:
-        output_text = final_label + "\n"
+        # For debugging only
+        print(f"Number of valid images: {num_images:.3f}\n")
+    
+        output_text += final_label + "\n"              
         output_text += f"Average probability of being considered beautiful: {avg_beautiful_prob:.3f}\n"
         output_text += f"Average probability of being considered ugly: {avg_ugly_prob:.3f}"
         f.write(output_text)

@@ -7,5 +7,8 @@ python .\open_ai_clip\open_ai_clip.py
 # Deactivate the virtual environment (optional)
 deactivate
 
+
+# Read-Host -Prompt "Press Enter to exit"
+
 # Exit the PowerShell script
 exit

@@ -213,7 +213,7 @@ main(dating_app, root_directory)
 		
 		if dating_app == "tinder"
 		{
-			sleep 6000
+			; sleep 6000
 		}
 		else if dating_app == "bumble"
 		{

@@ -2,7 +2,7 @@ Visualization: https://www.mapdevelopers.com/draw-circle-tool.php?circles=%5B%5B
 
 Cities (nearest to denver first in a circle (300-mile radius):
 
-Colorado Springs, CO    <--- Bumble
+Colorado Springs, CO    <--- Bumble   <--- Hinge
 Fort Collins, CO      
 Boulder, CO                  
 Pueblo, CO

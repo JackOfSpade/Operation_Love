@@ -36,7 +36,7 @@ take_screenshot(dating_app)
     }
     else if dating_app == "bumble"
     {
-       winactivate "Bumble"
+       winactivate "AirDroid"
        
        count := 0
        

@@ -205,10 +205,10 @@ like(dating_app, root_directory)
 		
 	
 		; Scroll up (scroll down doesn't work because of possible instagram
-		loop 8
-		{
-			click_and_drag(665, 319, 669, 776, 500)
-		}
+		; loop 8
+		; {
+		; 	click_and_drag(665, 319, 669, 776, 500)
+		; }
 		
 		;sleep 3000
 		

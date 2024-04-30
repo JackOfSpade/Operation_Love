@@ -112,8 +112,8 @@ main(dating_app, root_directory)
 			; Click away "Second time's a charm" compliment suggestion
 			mouseClick "left", 701, 71
 			sleep 1000
-			; Click twice to close side bar if the above popup doesn't happen
-			mouseClick "left", 701, 71
+			; This will make us click profile twice to close side bar if the above popup doesn't happen
+			MouseClick "left", 718, 1041
 			sleep 1000
 		}
 		else if dating_app == "hinge"

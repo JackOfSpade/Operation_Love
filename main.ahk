@@ -115,13 +115,13 @@ main(dating_app, root_directory)
 			; mouseClick "left", 1167, 786
 			
 			; Too many checks, refresh is faster
-			mouseClick "left", 103, 72
-			
-			sleep 100
-			A_Clipboard := ""
-			sleep 100
-			 
-			sleep 7000
+			; mouseClick "left", 103, 72
+			; 
+			; sleep 100
+			; A_Clipboard := ""
+			; sleep 100
+			;  
+			; sleep 7000
 		}
 		else if dating_app == "hinge"
 		{

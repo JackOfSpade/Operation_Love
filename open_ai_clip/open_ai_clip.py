@@ -49,7 +49,7 @@ def main(test):
     # Most computationally demanding CLIP model
     model, preprocess = clip.load("ViT-L/14", device=device)
 
-    text = clip.tokenize(["beautiful girl", "ugly girl", "indeterminate"]).to(device)
+    text = clip.tokenize(["beautiful face", "ugly face", "indeterminate"]).to(device)
 
     all_files = os.listdir(directory)
     image_files = [f for f in all_files if f.lower().endswith(('.jpg', '.jpeg', '.png'))]

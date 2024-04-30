@@ -63,7 +63,11 @@ remaining_super_likes(dating_app)
 	{		
 		; Click profile
 		MouseClick "left", 718, 1041
-		sleep 2000
+		sleep 1000
+		; This will make us click profile twice to close side bar if the above popup doesn't happen
+		MouseClick "left", 718, 1041
+		sleep 1000
+		
 		remainingSuperLikes := ocr(1064, 523, 1091, 552, 100)
 		
 		if !IsNumber(remainingSuperLikes)

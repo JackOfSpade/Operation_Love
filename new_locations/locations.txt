@@ -2,9 +2,12 @@ Visualization: https://www.mapdevelopers.com/draw-circle-tool.php?circles=%5B%5B
 
 Cities (nearest to denver first:
 
-Tinder                          Bumble                           Hinge
-Encampment, Wyoming             Encampment, Wyoming              Encampment, Wyoming
-Peetz, CO                       Peetz, CO      <---              Peetz, CO   <---
-Powderhorn, CO                  Powderhorn, CO                   Powderhorn, CO
-Fort Lyon, CO                   Fort Lyon, CO                    Fort Lyon, CO
-Global <---
+Colorado Springs, CO    <--- Bumble
+Fort Collins, CO      
+Boulder, CO                  
+Pueblo, CO
+Cheyenne, WY
+Laramie, WY
+Casper, WY
+Santa Fe, NM                   
+Global <--- Tinder

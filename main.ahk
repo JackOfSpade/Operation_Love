@@ -102,8 +102,8 @@ main(dating_app, root_directory)
 				send "{f2}"
 				sleep 1000
 				; Airddroid swipe up button
-				MouseClick "left", 463, 20
-				sleep 1000
+				MouseClick "left", 1770, 40
+				sleep 1000000
 				; Click Bumble
 				MouseClick "left", 961, 370
 				

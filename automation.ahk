@@ -65,7 +65,7 @@ remaining_super_likes(dating_app)
 		MouseClick "left", 718, 1041
 		sleep 1000
 		
-		remainingSuperLikes := ocr(1064, 523, 1091, 552, 100)
+		remainingSuperLikes := ocr(1060, 502, 1090, 539, 100)
 		
 		if !IsNumber(remainingSuperLikes)
 		{

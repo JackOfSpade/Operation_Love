@@ -71,7 +71,7 @@ main(dating_app, root_directory)
 		
 		; Refresh Page Logics
 		if dating_app == "tinder"
-		{
+		{			
 			; Click refresh
 			mouseClick "left", 100, 67			 
 			sleep 9000
@@ -85,7 +85,7 @@ main(dating_app, root_directory)
 			sleep 500
 		}
 		else if dating_app == "bumble"
-		{						
+		{			
 			; Click away any popups including "Second time's a charm" compliment suggestion and "It's a match!"
 			mouseClick "left", 701, 71
 			sleep 1000	
@@ -103,10 +103,14 @@ main(dating_app, root_directory)
 				sleep 1000
 				; Airddroid swipe up button
 				MouseClick "left", 1770, 40
-				sleep 1000000
+				sleep 1000								
 				; Click Bumble
-				MouseClick "left", 961, 370
-				
+				MouseClick "left", -350, 380
+				; Airddroid switch input button
+				send "^a"
+				; Click Bumble
+				MouseClick "left", -350, 370
+				sleep 9000
 			
 				; Click profile
 				MouseClick "left", 718, 1041

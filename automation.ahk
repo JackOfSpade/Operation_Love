@@ -198,7 +198,7 @@ like(dating_app, root_directory)
 	}
 	else if dating_app == "bumble"
 	{
-		click_and_drag(724, 539, 1182, 536, 1500)
+		click_and_drag(724, 539, 1182, 536, 2000)
 	}
 	else if dating_app == "hinge"
     {		
@@ -329,7 +329,7 @@ dislike(dating_app)
 	}
 	else if dating_app == "bumble"
 	{
-		click_and_drag(1182, 536, 724, 539, 1500)
+		click_and_drag(1182, 536, 724, 539, 2000)
 	}
 	else if dating_app == "hinge"
     {

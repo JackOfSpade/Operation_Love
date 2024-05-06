@@ -94,20 +94,20 @@ main(dating_app, root_directory)
 				
 				; Click travel mode
 				MouseClick "left", 893, 295
-				sleep 1500
+				sleep 2000
 				
 				targeted_cities_index += 1
 				send targeted_cities[targeted_cities_index]
 				
-				sleep 2000				
+				sleep 3000				
 				MouseClick "left", 957, 357				
 				sleep 2000				
 				; Click confirmation popup
 				MouseClick "left", 951, 1006				
 				sleep 2000
+				
+				goto("start")
 			}
-			
-			goto("start")
 		}
 		else if dating_app == "hinge"
 		{

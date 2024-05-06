@@ -98,10 +98,12 @@ main(dating_app, root_directory)
 				
 				targeted_cities_index += 1
 				send targeted_cities[targeted_cities_index]
+				sleep 3000	
 				
-				sleep 3000				
-				MouseClick "left", 957, 357				
-				sleep 2000				
+				; Click the first city in the list
+				MouseClick "left", 957, 379		
+				sleep 2000		
+				
 				; Click confirmation popup
 				MouseClick "left", 951, 1006				
 				sleep 2000

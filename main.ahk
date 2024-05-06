@@ -97,6 +97,17 @@ main(dating_app, root_directory)
 			; if true  ; test
 			if targeted_cities_index == 0 or InStr(ocr(831, 783, 932, 828, 100), "Adjust", 0)
 			{
+				; Close app
+				; Airdroid recent tasks button
+				send "{f2}"
+				sleep 1000
+				; Airddroid swipe up button
+				MouseClick "left", 463, 20
+				sleep 1000
+				; Click Bumble
+				MouseClick "left", 961, 370
+				
+			
 				; Click profile
 				MouseClick "left", 718, 1041
 				sleep 1000

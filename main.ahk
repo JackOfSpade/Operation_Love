@@ -72,28 +72,8 @@ main(dating_app, root_directory)
 		; Refresh Page Logics
 		if dating_app == "tinder"
 		{
-			; Second condition is for when tinder pops up the card "It's a match!"
-			; Third condition is for website crash
-			if InStr(ocr(811, 534, 845, 555, 100), "Go", 0) or InStr(ocr(964, 534, 1015, 555, 100), "SEND", 0) or InStr(ocr(386, 336, 425, 364, 100), "Aw", 0)
-			{
-				send "{f5}"
-				
-				sleep 100
-				A_Clipboard := ""
-				sleep 100
-				 
-				sleep 15000
-				
-				goto("start")
-			}	
-			
-			; Click away "____ likes you"
-			mouseClick "left", 1300, 242
-			sleep 500
-			
-			; Reset image to position 1
-			mouseClick "left", 989, 519
-			sleep 500
+			send "{f5}"
+			sleep 15000
 		}
 		else if dating_app == "bumble"
 		{						

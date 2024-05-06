@@ -85,8 +85,8 @@ main(dating_app, root_directory)
 			sleep 1500
 			
 			; To detect when you run out of people ("Adjust your filters")
-			if true  ; test
-			; if InStr(ocr(831, 783, 932, 828, 100), "Adjust", 0)
+			; if true  ; test
+			if InStr(ocr(831, 783, 932, 828, 100), "Adjust", 0)
 			{
 				; Click profile
 				MouseClick "left", 718, 1041

@@ -102,9 +102,8 @@ main(dating_app, root_directory)
 				MouseClick "left", 957, 357				
 				sleep 2000				
 				; Click confirmation popup
-				MouseClick "left", 951, 1006
-				
-				sleep 100000
+				MouseClick "left", 951, 1006				
+				sleep 2000
 			}
 			
 			

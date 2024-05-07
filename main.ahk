@@ -97,26 +97,7 @@ main(dating_app, root_directory)
 			; if true  ; test
 			if first_loop or InStr(ocr(831, 783, 932, 828, 100), "Adjust", 0)
 			{
-				first_loop := false
-			
-				; Close app
-				; Airdroid recent tasks button
-				send "{f2}"
-				sleep 1000
-				
-				; Airddroid swipe up button
-				MouseClick "left", 1770, 40
-				sleep 1000	
-				
-				; Click Bumble
-				MouseClick "left", -350, 380
-				
-				; Airddroid switch input button
-				send "^a"
-				
-				; Click Bumble
-				MouseClick "left", -350, 370
-				sleep 9000
+				first_loop := false			
 			
 				; Click profile
 				MouseClick "left", 718, 1041
@@ -138,11 +119,31 @@ main(dating_app, root_directory)
 				MouseClick "left", 951, 1006				
 				sleep 2000
 				
-				; Reset and redo search if it stalls
+				; Reset, restart Bumble and redo search if it stalls
 				if InStr(ocr(1145, 85, 1253, 127, 500), "Cancel", 0)
 				{
 					targeted_cities_index -= 1
 					first_loop := true
+					
+					; Restart Bumble -----------------------------------
+					; Airdroid recent tasks button
+					send "{f2}"
+					sleep 1000
+					
+					; Airddroid swipe up button
+					MouseClick "left", 1770, 40
+					sleep 1000	
+					
+					; Click Bumble
+					MouseClick "left", -350, 380
+					
+					; Airddroid switch input button
+					send "^a"
+					
+					; Click Bumble
+					MouseClick "left", -350, 370
+					sleep 9000
+					; ----------------------------------------------------
 				}
 					
 				

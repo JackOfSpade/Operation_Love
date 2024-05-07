@@ -48,6 +48,6 @@ make_decision()
 		msgbox('Error: adjective is not "beautiful", "ugly" or "neutral".')
 	}
 	
-    return decision    
+    return [decision, adjective]    
 }
 

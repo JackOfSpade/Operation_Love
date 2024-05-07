@@ -138,6 +138,14 @@ main(dating_app, root_directory)
 				MouseClick "left", 951, 1006				
 				sleep 2000
 				
+				; Reset and redo search if it stalls
+				if InStr(ocr(1145, 85, 1253, 127, 500), "Cancel", 0)
+				{
+					targeted_cities_index -= 1
+					first_loop := true
+				}
+					
+				
 				goto("start")
 			}
 		}

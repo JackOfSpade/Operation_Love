@@ -285,6 +285,9 @@ f12::
 {
 	global targeted_cities_index
 	
+	; May over-subtract, but prevents missing a city
+	targeted_cities_index -= 1
+	
 	FileDelete "targeted_cities_index.txt"
 	FileAppend targeted_cities_index, "targeted_cities_index.txt"
 	

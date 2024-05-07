@@ -103,14 +103,17 @@ main(dating_app, root_directory)
 				; Airdroid recent tasks button
 				send "{f2}"
 				sleep 1000
+				
 				; Airddroid swipe up button
 				MouseClick "left", 1770, 40
 				sleep 1000	
 				
 				; Click Bumble
 				MouseClick "left", -350, 380
+				
 				; Airddroid switch input button
 				send "^a"
+				
 				; Click Bumble
 				MouseClick "left", -350, 370
 				sleep 9000

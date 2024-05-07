@@ -105,10 +105,7 @@ main(dating_app, root_directory)
 				sleep 1000
 				; Airddroid swipe up button
 				MouseClick "left", 1770, 40
-				sleep 1000		
-
-				; Cooldown to click Bumble
-				sleep 10000
+				sleep 1000	
 				
 				; Click Bumble
 				MouseClick "left", -350, 380

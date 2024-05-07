@@ -113,7 +113,7 @@ main(dating_app, root_directory)
 				
 				; Click the first city in the list
 				MouseClick "left", 957, 379		
-				sleep 2000		
+				sleep 3000		
 				
 				; Click confirmation popup
 				MouseClick "left", 951, 1006				

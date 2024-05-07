@@ -113,7 +113,7 @@ main(dating_app, root_directory)
 				
 				; Click the first city in the list
 				MouseClick "left", 957, 379		
-				sleep 3000		
+				sleep 4000		
 				
 				; Click confirmation popup
 				MouseClick "left", 951, 1006				
@@ -122,7 +122,13 @@ main(dating_app, root_directory)
 				; Reset, restart Bumble and redo search if it stalls
 				if InStr(ocr(1145, 85, 1253, 127, 500), "Cancel", 0)
 				{
-					targeted_cities_index -= 1
+					; Location not in database
+					if !InStr(ocr(938, 941, 1068, 973, 500), "database", 0)
+					{
+						targeted_cities_index -= 1
+						
+					}
+					
 					first_loop := true
 					
 					; Restart Bumble -----------------------------------

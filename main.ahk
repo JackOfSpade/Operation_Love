@@ -107,6 +107,13 @@ main(dating_app, root_directory)
 		}
 		else if dating_app == "bumble"
 		{			
+			if neutral_profile
+			{					
+				restart_bumble()
+				neutral_profile := false
+				goto("start")
+			}
+		
 			; Click away any popups including "Second time's a charm" compliment suggestion and "It's a match!"
 			mouseClick "left", 701, 71
 			sleep 1000	
@@ -116,7 +123,7 @@ main(dating_app, root_directory)
 			
 			; To detect when you run out of people ("Adjust your filters")
 			; if true  ; test
-			if first_loop or InStr(ocr(831, 783, 932, 828, 100), "Adjust", 0) or neutral_profile
+			if first_loop or InStr(ocr(831, 783, 932, 828, 100), "Adjust", 0)
 			{
 				first_loop := false			
 			
@@ -134,18 +141,11 @@ main(dating_app, root_directory)
 				
 				; Click the first city in the list
 				MouseClick "left", 957, 379		
-				sleep 4000		
+				sleep 3000		
 				
 				; Click confirmation popup
-				MouseClick "left", 951, 1006				
+				MouseClick "left", 960, 967			
 				sleep 2000
-				
-				if neutral_profile
-				{					
-					restart_bumble()
-					neutral_profile := false
-					goto("start")
-				}
 				
 				; Reset, restart Bumble and redo search if it stalls
 				if InStr(ocr(1145, 85, 1253, 127, 500), "Cancel", 0)

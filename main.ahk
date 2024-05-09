@@ -33,19 +33,20 @@ CoordMode "Mouse", "Window"
 
 targeted_cities_index := FileRead("targeted_cities_index.txt") - 1  ; index start at 1. Making it "- 1" just makes loop easier to start at the index indicated in the file.
 
-
 restart_bumble()
 {					
 	; Airdroid recent tasks button
-	send "{f2}"
+	; F-keys like F2 shortcut for this stops working after awhile, use clicks
+	MouseClick "left", 1235, -280
 	sleep 1000
 	
 	; Airddroid swipe up button
-	MouseClick "left", 1770, 40
-	sleep 1000	
+	MouseClick "left", 460, 25
+	sleep 1000
 	
 	; Click Bumble
 	MouseClick "left", -350, 380
+	sleep 1000
 	
 	; Airddroid switch input button
 	send "^a"
@@ -57,6 +58,8 @@ restart_bumble()
 
 main(dating_app, root_directory)
 {
+
+	restart_bumble()
 	
 	global targeted_cities_index
 

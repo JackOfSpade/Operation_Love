@@ -58,8 +58,6 @@ restart_bumble()
 
 main(dating_app, root_directory)
 {
-
-	restart_bumble()
 	
 	global targeted_cities_index
 

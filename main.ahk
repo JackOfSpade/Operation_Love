@@ -143,9 +143,11 @@ main(dating_app, root_directory)
 				sleep 2000
 				
 				targeted_cities_index += 1
-				send targeted_cities[targeted_cities_index]
+				send targeted_cities[targeted_cities_index]				
+				sleep 5000	
+				; Fix for unable to click
 				send "{enter}"
-				sleep 6000	
+				sleep 500
 				
 				; Click the first city in the list
 				MouseClick "left", 957, 380		

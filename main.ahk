@@ -37,16 +37,15 @@ restart_bumble()
 {					
 	; Airdroid recent tasks button
 	; F-keys like F2 shortcut for this stops working after awhile, use clicks
-	MouseClick "left", 1235, -280
-	sleep 1000
+	MouseClick "left", 1600, 40
+	sleep 1000000
 	
 	; Airddroid swipe up button
-	MouseClick "left", 460, 25
-	sleep 1000
+	MouseClick "left", 1770, 40
+	sleep 1000	
 	
 	; Click Bumble
 	MouseClick "left", -350, 380
-	sleep 1000
 	
 	; Airddroid switch input button
 	send "^a"
@@ -58,6 +57,7 @@ restart_bumble()
 
 main(dating_app, root_directory)
 {
+	restart_bumble()
 	
 	global targeted_cities_index
 
@@ -288,7 +288,9 @@ main(dating_app, root_directory)
 	
 }
 
-; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
+`::
+{
+	; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
 ; "1366x768"
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
@@ -301,6 +303,9 @@ main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+
+}
+
 
 
 

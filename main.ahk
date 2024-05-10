@@ -148,10 +148,10 @@ main(dating_app, root_directory)
 				
 				; Click the first city in the list
 				MouseClick "left", 957, 380		
-				sleep 3000		
+				sleep 4000		
 				
 				; Click confirmation popup
-				MouseClick "left", 960, 975			
+				MouseClick "left", 960, 980		
 				sleep 2000
 				
 				; Reset, restart Bumble and redo search if it stalls

@@ -144,14 +144,14 @@ main(dating_app, root_directory)
 				
 				targeted_cities_index += 1
 				send targeted_cities[targeted_cities_index]
-				sleep 5000	
+				sleep 6000	
 				
 				; Click the first city in the list
-				MouseClick "left", 957, 379		
+				MouseClick "left", 957, 380		
 				sleep 3000		
 				
 				; Click confirmation popup
-				MouseClick "left", 960, 967			
+				MouseClick "left", 960, 975			
 				sleep 2000
 				
 				; Reset, restart Bumble and redo search if it stalls
@@ -292,24 +292,19 @@ main(dating_app, root_directory)
 	
 }
 
-`::
-{
-	; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
+; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
-	; "1366x768"
-	; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
+; "1366x768"
+; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
-	; "1920x1080"
-	; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+; "1920x1080"
+; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
-	; "1366x768"
-	main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+; "1366x768"
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
-	; "1920x1080"
-	; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
-}
-
-
+; "1920x1080"
+; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 f12::
 {

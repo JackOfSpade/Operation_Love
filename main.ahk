@@ -144,6 +144,7 @@ main(dating_app, root_directory)
 				
 				targeted_cities_index += 1
 				send targeted_cities[targeted_cities_index]
+				send "{enter}"
 				sleep 6000	
 				
 				; Click the first city in the list

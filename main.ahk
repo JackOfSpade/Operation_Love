@@ -60,7 +60,8 @@ restart_bumble()
 
 main(dating_app, root_directory)
 {	
-	restart_bumble()
+	; Test
+	; restart_bumble()
 	
 	global targeted_cities_index
 
@@ -295,17 +296,17 @@ main(dating_app, root_directory)
 {
 	; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
-; "1366x768"
-; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
+	; "1366x768"
+	; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
-; "1920x1080"
-; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+	; "1920x1080"
+	; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
-; "1366x768"
-main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+	; "1366x768"
+	main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
-; "1920x1080"
-; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+	; "1920x1080"
+	; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 }
 
 

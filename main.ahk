@@ -103,6 +103,12 @@ main(dating_app, root_directory)
 			mouseClick "left", 100, 67			 
 			sleep 15000
 			
+			; Bad Gateway
+			if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0)
+			{
+				goto("start")
+			}
+			
 			; Click away "____ likes you"
 			mouseClick "left", 1300, 242
 			sleep 500

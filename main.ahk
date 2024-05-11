@@ -102,7 +102,13 @@ main(dating_app, root_directory)
 		{			
 			; Click refresh
 			mouseClick "left", 100, 67			 
-			sleep 9000
+			sleep 15000
+			
+			; Bad Gateway
+			if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0)
+			{
+				goto("start")
+			}
 			
 			; Click away "____ likes you"
 			mouseClick "left", 1300, 242
@@ -295,10 +301,10 @@ main(dating_app, root_directory)
 		
 		clear_screenshot_directory(root_directory, dating_app)
 		
-		if dating_app == "tinder"
-		{
-			sleep 5000
-		}
+		;if dating_app == "tinder"
+		;{
+		;	sleep 5000
+		;}
 	}
 	
 }
@@ -309,10 +315,10 @@ main(dating_app, root_directory)
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
-; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1366x768"
-main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")

@@ -120,19 +120,11 @@ main(dating_app, root_directory)
 		else if dating_app == "bumble"
 		{
 			if neutral_profile
-			{		
-				targeted_cities_index += 1
+			{					
 				restart_bumble()
 				neutral_profile := false
 				goto("start")
 			}
-			
-			; Restart from beginning if at the end
-			if targeted_cities_index > 1448
-			{
-				targeted_cities_index := 0
-			}
-		
 		
 			; Click away any popups including "Second time's a charm" compliment suggestion and "It's a match!"
 			mouseClick "left", 701, 71
@@ -156,6 +148,13 @@ main(dating_app, root_directory)
 				sleep 2000
 				
 				targeted_cities_index += 1
+				
+				; Restart from beginning if at the end
+				if targeted_cities_index > 1448
+				{
+					targeted_cities_index := 1
+				}
+				
 				send targeted_cities[targeted_cities_index]				
 				sleep 5000	
 				; Fix for unable to click

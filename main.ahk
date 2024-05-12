@@ -98,14 +98,13 @@ main(dating_app, root_directory)
 		
 		; Refresh Page Logics
 		if dating_app == "tinder"
-		{			
-			; Click refresh
-			mouseClick "left", 100, 67			 
-			sleep 15000
-			
+		{		
 			; Bad Gateway
 			if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0)
 			{
+				; Click refresh
+				mouseClick "left", 100, 67			 
+				sleep 15000
 				goto("start")
 			}
 			

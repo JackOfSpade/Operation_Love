@@ -40,7 +40,7 @@ restart_bumble()
 	MouseClick "left", 1600, 40
 	sleep 1000
 	
-	; Airddroid swipe up button
+	; Airdroid swipe up button
 	; 2 possible locations for some reason
 	MouseClick "left", 1770, 40
 	sleep 500
@@ -50,7 +50,7 @@ restart_bumble()
 	; Click Bumble
 	MouseClick "left", -350, 380
 	
-	; Airddroid switch input button
+	; Airdroid switch input button
 	send "^a"
 	
 	; Click Bumble
@@ -164,6 +164,14 @@ main(dating_app, root_directory)
 				; Click the first city in the list
 				MouseClick "left", 957, 380		
 				sleep 4000		
+				
+				; Every 12 hours, there is a glitch that pulls down the notifications screen. Pull it back up
+				; Airdroid swipe up button
+				; 2 possible locations for some reason
+				MouseClick "left", 1770, 40
+				sleep 500
+				MouseClick "left", 470	, 30
+				sleep 2000
 				
 				; Click confirmation popup
 				MouseClick "left", 960, 980		
@@ -313,10 +321,10 @@ main(dating_app, root_directory)
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
-main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1366x768"
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")

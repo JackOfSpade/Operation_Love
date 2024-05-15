@@ -147,6 +147,13 @@ main(dating_app, root_directory)
 				MouseClick "left", 893, 295
 				sleep 2000
 				
+				; If glitch happens where travel mode cannot be clicked
+				if InStr(ocr(780, 473, 899, 511, 100), "Spotlight", 0)
+				{
+					restart_bumble()
+					goto("start")
+				}
+				
 				targeted_cities_index += 1
 				
 				; Restart from beginning if at the end

@@ -173,9 +173,12 @@ main(dating_app, root_directory)
 				MouseClick "left", 470	, 30
 				sleep 2000
 				
+				; revert back to normal coord system
+				winactivate "AirDroid"
+				
 				; Click confirmation popup
 				MouseClick "left", 960, 980		
-				sleep 2000
+				sleep 20009999
 				
 				; Reset, restart Bumble and redo search if it stalls
 				if InStr(ocr(1145, 85, 1253, 127, 500), "Cancel", 0)

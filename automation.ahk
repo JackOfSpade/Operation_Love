@@ -149,6 +149,13 @@ super_like(dating_app, root_directory)
 		
 		; Wait for superlike animation to finish
 		sleep 4000
+		
+		; Close out it's a match popup
+		mouseClick "left", 1320, 180
+		
+		; Click out of boost popup if no match
+		MouseClick "left", 168, 514
+		sleep 500
 	}
 	else if dating_app == "photofeeler"
 	{
@@ -290,6 +297,13 @@ like(dating_app, root_directory)
 	{
 		; Click like
 		mouseClick "left", 849, 423
+		
+		; Close out it's a match popup
+		mouseClick "left", 1320, 180
+		
+		; Click out of boost popup if no match
+		MouseClick "left", 168, 514
+		sleep 500
 	}
 	else if dating_app == "photofeeler"
 	{

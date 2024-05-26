@@ -133,7 +133,7 @@ main(dating_app, root_directory)
 			MouseClick "left", 962, 1042	
 			sleep 1500
 			
-			; To detect when you run out of people ("Adjust your filters")
+			; To detect when you run out of people ("Adjust your filters") --> change location
 			; if true  ; test
 			if first_loop or InStr(ocr(831, 783, 932, 828, 100), "Adjust", 0)
 			{
@@ -232,6 +232,91 @@ main(dating_app, root_directory)
 				goto("start")
 			}
 		}
+		else if dating_app == "okcupid"
+		{
+			; Bad Gateway or out of profiles
+			;if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0) or InStr(ocr(1054, 725, 1106, 742, 100), "unable", 0)
+			;{
+			;	; Click refresh
+			;	mouseClick "left", 100, 67			 
+			;	sleep 15000
+			;	goto("start")
+			;}
+			
+			; To detect when you run out of people --> change location
+			; if true  ; test
+			;if first_loop or InStr(ocr(831, 783, 932, 828, 100), "Adjust", 0)
+			;{
+			;	first_loop := false			
+			;
+			;	; Click profile
+			;	MouseClick "left", 718, 1041
+			;	sleep 1000
+			;	
+			;	; Click travel mode
+			;	MouseClick "left", 893, 295
+			;	sleep 2000
+			;	
+			;	; If glitch happens where travel mode cannot be clicked
+			;	if InStr(ocr(780, 473, 899, 511, 100), "Spotlight", 0)
+			;	{
+			;		restart_bumble()
+			;		goto("start")
+			;	}
+			;	
+			;	targeted_cities_index += 1
+			;	
+			;	; Restart from beginning if at the end
+			;	if targeted_cities_index > 1448
+			;	{
+			;		targeted_cities_index := 1
+			;	}
+			;	
+			;	send targeted_cities[targeted_cities_index]				
+			;	sleep 5000	
+			;	; Fix for unable to click
+			;	send "{enter}"
+			;	sleep 500
+			;	
+			;	; Click the first city in the list
+			;	MouseClick "left", 957, 380		
+			;	sleep 4000		
+			;	
+			;	; Every 12 hours, there is a glitch that pulls down the notifications screen. Pull it back up
+			;	; Airdroid swipe up button
+			;	; 2 possible locations for some reason
+			;	MouseClick "left", 1770, 40
+			;	sleep 500
+			;	MouseClick "left", 470	, 30
+			;	sleep 2000
+			;	
+			;	; revert back to normal coord system
+			;	winactivate "AirDroid"
+			;	
+			;	; Click confirmation popup
+			;	MouseClick "left", 960, 980		
+			;	sleep 2000
+			;	
+			;	; Reset, restart Bumble and redo search if it stalls
+			;	if InStr(ocr(1145, 85, 1253, 127, 500), "Cancel", 0)
+			;	{
+			;		; Location is in database
+			;		if !InStr(ocr(938, 941, 1068, 973, 500), "database", 0)
+			;		{
+			;			; Go back one so when it runs again, it will add one and redo the search
+			;			targeted_cities_index -= 1
+			;			
+			;		}
+			;		
+			;		first_loop := true
+			;		
+			;		restart_bumble()
+			;	}
+			;		
+			;	
+			;	goto("start")
+			;}
+		}
 		else if dating_app == "photofeeler" 
 		{			
 			; Test open_ai_clip
@@ -292,6 +377,7 @@ main(dating_app, root_directory)
 			dislike(dating_app)
 		}		
 		
+		; End of loop procedures
 		if dating_app == "tinder"
 		{
 			; sleep 6000
@@ -316,11 +402,6 @@ main(dating_app, root_directory)
 		}
 		
 		clear_screenshot_directory(root_directory, dating_app)
-		
-		;if dating_app == "tinder"
-		;{
-		;	sleep 5000
-		;}
 	}
 	
 }
@@ -333,8 +414,11 @@ main(dating_app, root_directory)
 ; "1920x1080"
 ; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
+; "1920x1080"
+; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+
 ; "1366x768"
-main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+main("okcupid", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")

@@ -84,6 +84,23 @@ take_screenshot(dating_app)
 			print_screen(657, 106, 1260, 889)
 		}
 	}
+	else if dating_app == "okcupid"
+	{
+		winactivate "OkCupid"
+		
+		; For doing multi-photo iterations
+		; loop 6
+		; {
+	
+		; }
+		
+		; For doing one-photo iterations
+		loop 1
+		{
+			print_screen(232, 364, 1088, 640)
+		}
+		
+	}
 	else if dating_app == "photofeeler"
     {
 		winactivate "Vote"
@@ -91,6 +108,7 @@ take_screenshot(dating_app)
 		print_screen(105, 320, 555, 725)		
 	}
 }
+
 
 clear_screenshot_directory(root_directory, dating_app)
 {

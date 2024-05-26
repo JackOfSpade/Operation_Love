@@ -27,6 +27,11 @@ navigate_to_discover(dating_app)
 		winactivate "AirDroid"
 		sleep 500
     }
+	else if dating_app == "okcupid"
+	{
+		winactivate "OkCupid"
+		sleep 500
+	}
 	else if dating_app == "photofeeler"
     {
 		try 
@@ -67,19 +72,26 @@ remaining_super_likes(dating_app)
 		
 		remainingSuperLikes := ocr(1060, 502, 1090, 539, 100)
 		
-		if !IsNumber(remainingSuperLikes)
-		{
-			remainingSuperLikes := 0
-		}
-		
 		; Go back to discover
 		MouseClick "left", 962, 1042
 		sleep 2000		
-	}
+	}	
 	else if dating_app == "hinge"
     {
 		; Do it manually in standouts since it doesn't replenish (only 1 free rose/week)
     }
+	else if dating_app == "okcupid"
+	{
+		; Click superlike
+		MouseClick "left", 1011, 317
+		
+		remainingSuperLikes := ocr(1112, 702, 1133, 721, 100)
+	}
+	
+	if !IsNumber(remainingSuperLikes)
+	{
+		remainingSuperLikes := 0
+	}
 	
 	return remainingSuperLikes
 	
@@ -122,6 +134,14 @@ super_like(dating_app, root_directory)
     {
 		like(dating_app, root_directory)
     }
+	else if dating_app == "okcupid"
+	{
+		; Click superlike
+		mouseClick "left", 974, 361
+		
+		; Click send without message
+		mouseClick "left", 1149, 659
+	}
 	else if dating_app == "photofeeler"
 	{
 		random_number := Random(1, 2)
@@ -258,6 +278,11 @@ like(dating_app, root_directory)
 		mouseClick "left", 937, 971
 		sleep 5000
     }	
+	else if dating_app == "okcupid"
+	{
+		; Click like
+		mouseClick "left", 833, 334
+	}
 	else if dating_app == "photofeeler"
 	{
 		
@@ -340,6 +365,11 @@ dislike(dating_app)
 		mouseClick "left", 729, 982
 		sleep 4000
     }
+	else if dating_app == "okcupid"
+	{
+		; Click dislike
+		mouseClick "left", 672, 331
+	}
 	else if dating_app == "photofeeler"
 	{
 		random_number := Random(1, 2)

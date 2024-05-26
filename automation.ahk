@@ -84,8 +84,13 @@ remaining_super_likes(dating_app)
 	{
 		; Click superlike
 		MouseClick "left", 1011, 317
+		sleep 500
 		
-		remainingSuperLikes := ocr(1112, 702, 1133, 721, 100)
+		remainingSuperLikes := ocr(1111, 702, 1134, 720, 100)
+		
+		; Click out of superlike popup
+		MouseClick "left", 168, 514
+		sleep 500
 	}
 	
 	if !IsNumber(remainingSuperLikes)
@@ -137,10 +142,13 @@ super_like(dating_app, root_directory)
 	else if dating_app == "okcupid"
 	{
 		; Click superlike
-		mouseClick "left", 974, 361
+		mouseClick "left", 1004, 425
 		
 		; Click send without message
-		mouseClick "left", 1149, 659
+		mouseClick "left", 1154, 662
+		
+		; Wait for superlike animation to finish
+		sleep 4000
 	}
 	else if dating_app == "photofeeler"
 	{
@@ -281,7 +289,7 @@ like(dating_app, root_directory)
 	else if dating_app == "okcupid"
 	{
 		; Click like
-		mouseClick "left", 833, 334
+		mouseClick "left", 849, 423
 	}
 	else if dating_app == "photofeeler"
 	{
@@ -368,7 +376,7 @@ dislike(dating_app)
 	else if dating_app == "okcupid"
 	{
 		; Click dislike
-		mouseClick "left", 672, 331
+		mouseClick "left", 660, 450
 	}
 	else if dating_app == "photofeeler"
 	{

@@ -83,7 +83,7 @@ remaining_super_likes(dating_app)
 	else if dating_app == "okcupid"
 	{
 		; Click superlike
-		MouseClick "left", 1011, 317
+		MouseClick "left", 986, 437
 		sleep 500
 		
 		remainingSuperLikes := ocr(1111, 702, 1134, 720, 100)

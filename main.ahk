@@ -418,7 +418,7 @@ main(dating_app, root_directory)
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1366x768"
-main("okcupid", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")

@@ -97,7 +97,7 @@ take_screenshot(dating_app)
 		; For doing one-photo iterations
 		loop 1
 		{
-			print_screen(225, 458, 1115, 728)
+			print_screen(225, 457, 521, 728)
 		}
 		
 	}

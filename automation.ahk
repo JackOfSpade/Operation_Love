@@ -84,7 +84,7 @@ remaining_super_likes(dating_app)
 	{
 		; Click superlike
 		MouseClick "left", 986, 437
-		sleep 500
+		sleep 1000
 		
 		remainingSuperLikes := ocr(1111, 702, 1134, 720, 100)
 		
@@ -143,12 +143,15 @@ super_like(dating_app, root_directory)
 	{
 		; Click superlike
 		mouseClick "left", 1004, 425
+		sleep 1000
 		
 		; Click send without message
 		mouseClick "left", 1154, 662
 		
 		; Wait for superlike animation to finish
 		sleep 4000
+		
+		sleep 1000
 		
 		; Close out it's a match popup
 		mouseClick "left", 1320, 180
@@ -296,7 +299,9 @@ like(dating_app, root_directory)
 	else if dating_app == "okcupid"
 	{
 		; Click like
-		mouseClick "left", 849, 423
+		mouseClick "left", 849, 423		
+		
+		sleep 1000
 		
 		; Close out it's a match popup
 		mouseClick "left", 1320, 180

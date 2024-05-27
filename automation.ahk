@@ -153,10 +153,7 @@ super_like(dating_app, root_directory)
 		
 		sleep 1000
 		
-		; Close out it's a match popup
-		mouseClick "left", 1320, 180
-		
-		; Click out of boost popup if no match
+		; Click out of it's a match popup
 		MouseClick "left", 168, 514
 		sleep 500
 	}
@@ -303,10 +300,7 @@ like(dating_app, root_directory)
 		
 		sleep 1000
 		
-		; Close out it's a match popup
-		mouseClick "left", 1320, 180
-		
-		; Click out of boost popup if no match
+		; Click out of it's a match popup
 		MouseClick "left", 168, 514
 		sleep 500
 	}
@@ -395,7 +389,7 @@ dislike(dating_app)
 	else if dating_app == "okcupid"
 	{
 		; Click dislike
-		mouseClick "left", 660, 450
+		mouseClick "left", 660, 410	
 	}
 	else if dating_app == "photofeeler"
 	{

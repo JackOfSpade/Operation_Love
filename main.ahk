@@ -77,7 +77,8 @@ main(dating_app, root_directory)
 	; like test
 	; like(dating_app, root_directory)
 	; super_like(dating_app, root_directory)
-	; exitApp
+	dislike(dating_app)
+	exitApp
 	
 	super_likes := remaining_super_likes(dating_app)
 	
@@ -396,6 +397,9 @@ main(dating_app, root_directory)
 			; sleep 3000			
 			; If no prompt poll, need to remove photo description as a consequence of clicking on it
 			; mouseClick "left", 957, 634
+		}
+		else if dating_app == "okcupid"
+		{
 		}
 		else if dating_app == "photofeeler"
 		{

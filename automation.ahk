@@ -83,7 +83,7 @@ remaining_super_likes(dating_app)
 	else if dating_app == "okcupid"
 	{
 		; Click superlike
-		MouseClick "left", 986, 437
+		MouseClick "left", 986, 410
 		sleep 1000
 		
 		remainingSuperLikes := ocr(1111, 702, 1134, 720, 100)
@@ -142,7 +142,7 @@ super_like(dating_app, root_directory)
 	else if dating_app == "okcupid"
 	{
 		; Click superlike
-		mouseClick "left", 1004, 425
+		MouseClick "left", 986, 410
 		sleep 1000
 		
 		; Click send without message
@@ -299,7 +299,7 @@ like(dating_app, root_directory)
 	else if dating_app == "okcupid"
 	{
 		; Click like
-		mouseClick "left", 849, 423		
+		mouseClick "left", 849, 410		
 		
 		sleep 1000
 		

@@ -74,11 +74,11 @@ main(dating_app, root_directory)
 	
 	navigate_to_discover(dating_app)
 	
-	; like test
+	; like/superlike/dislike test
 	; like(dating_app, root_directory)
 	; super_like(dating_app, root_directory)
-	dislike(dating_app)
-	exitApp
+	; dislike(dating_app)
+	; exitApp
 	
 	super_likes := remaining_super_likes(dating_app)
 	

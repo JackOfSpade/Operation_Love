@@ -1,3 +1,3 @@
 ugly
-Average probability of being considered beautiful: 0.096
-Average probability of being considered ugly: 0.592
+Average probability of being considered beautiful: 0.301
+Average probability of being considered ugly: 0.448

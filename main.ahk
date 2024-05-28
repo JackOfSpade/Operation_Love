@@ -243,10 +243,14 @@ main(dating_app, root_directory)
 		}
 		else if dating_app == "okcupid"
 		{
-			; Click refresh
-			mouseClick "left", 102, 71		 
-			sleep 7000
-		
+			if neutral_profile
+			{					
+				; Click refresh
+				mouseClick "left", 102, 71		 
+				sleep 7000		
+				goto("start")
+			}
+			
 		
 			; Click out of popups
 			MouseClick "left", 168, 514

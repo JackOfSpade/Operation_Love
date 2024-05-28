@@ -312,7 +312,7 @@ main(dating_app, root_directory)
 				send targeted_zip_code	
 				send "{tab}"
 				send "{enter}"
-				sleep 500
+				sleep 2000
 				
 				; Go back to discover
 				MouseClick "left", 85, 159	

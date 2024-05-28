@@ -269,7 +269,7 @@ main(dating_app, root_directory)
 			
 				; Click profile
 				MouseClick "left", 938, 161
-				sleep 1000
+				sleep 2000
 				
 				; Click settings
 				MouseClick "left", 911, 486

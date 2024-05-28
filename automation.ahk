@@ -304,7 +304,7 @@ like(dating_app, root_directory)
 		MouseClick "left", 692, 589
 		sleep 500
 		
-		; Click out of it's a match popup
+		; Click out of it's a match popup. Consequentially, clicks out of zoomed picture popup if no superlike popup.
 		MouseClick "left", 168, 514
 		sleep 500
 	}

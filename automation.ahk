@@ -141,21 +141,23 @@ super_like(dating_app, root_directory)
     }
 	else if dating_app == "okcupid"
 	{
-		; Click superlike
-		MouseClick "left", 986, 410
-		sleep 1000
+		;; Click superlike
+		;MouseClick "left", 986, 410
+		;sleep 1000
+		;
+		;; Click send without message
+		;mouseClick "left", 1154, 662
+		;
+		;; Wait for superlike animation to finish
+		;sleep 4000
+		;
+		;sleep 1000
+		;
+		;; Click out of it's a match popup
+		;MouseClick "left", 168, 514
+		;sleep 500
 		
-		; Click send without message
-		mouseClick "left", 1154, 662
-		
-		; Wait for superlike animation to finish
-		sleep 4000
-		
-		sleep 1000
-		
-		; Click out of it's a match popup
-		MouseClick "left", 168, 514
-		sleep 500
+		like(dating_app, root_directory)
 	}
 	else if dating_app == "photofeeler"
 	{

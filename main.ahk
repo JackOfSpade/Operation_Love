@@ -248,6 +248,7 @@ main(dating_app, root_directory)
 				; Click refresh
 				mouseClick "left", 102, 71		 
 				sleep 7000		
+				neutral_profile := false
 				goto("start")
 			}
 			

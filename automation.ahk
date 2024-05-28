@@ -89,7 +89,7 @@ remaining_super_likes(dating_app)
 		remainingSuperLikes := ocr(1111, 702, 1134, 720, 100)
 		
 		; Click out of superlike popup
-		MouseClick "left", 168, 514
+		MouseClick "left", 676, 583
 		sleep 500
 	}
 	
@@ -299,6 +299,10 @@ like(dating_app, root_directory)
 		mouseClick "left", 849, 410		
 		
 		sleep 1000
+		
+		; Click out of superlike popup (click "like them anyway")
+		MouseClick "left", 692, 589
+		sleep 500
 		
 		; Click out of it's a match popup
 		MouseClick "left", 168, 514

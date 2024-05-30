@@ -258,13 +258,13 @@ main(dating_app, root_directory)
 			sleep 500
 				
 			; Bad Gateway
-			;if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0)
-			;{
-			;	; Click refresh
-			;	mouseClick "left", 100, 67			 
-			;	sleep 15000
-			;	goto("start")
-			;}
+			if InStr(ocr(621, 137, 683, 197, 100), "Bad", 0)
+			{
+				; Click refresh
+				mouseClick "left", 100, 67			 
+				sleep 15000
+				goto("start")
+			}
 			
 			; To detect when you run out of people --> change location
 			; if true  ; test
@@ -429,13 +429,13 @@ main(dating_app, root_directory)
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
-main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1920x1080"
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1366x768"
-; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
+main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")

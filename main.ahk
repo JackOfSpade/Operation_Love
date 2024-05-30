@@ -243,12 +243,17 @@ main(dating_app, root_directory)
 		}
 		else if dating_app == "okcupid"
 		{
-			if neutral_profile
+			if neutral_profile or InStr(ocr(621, 137, 683, 197, 100), "Bad", 0)
 			{					
 				; Click refresh
 				mouseClick "left", 102, 71		 
-				sleep 7000		
-				neutral_profile := false
+				sleep 7000
+				
+				if neutral_profile
+				{
+					neutral_profile := false
+				}
+				
 				goto("start")
 			}
 			
@@ -256,15 +261,6 @@ main(dating_app, root_directory)
 			; Click out of popups
 			MouseClick "left", 168, 514
 			sleep 500
-				
-			; Bad Gateway
-			if InStr(ocr(621, 137, 683, 197, 100), "Bad", 0)
-			{
-				; Click refresh
-				mouseClick "left", 100, 67			 
-				sleep 15000
-				goto("start")
-			}
 			
 			; To detect when you run out of people --> change location
 			; if true  ; test

@@ -326,6 +326,10 @@ main(dating_app, root_directory)
 				
 				goto("start")
 			}
+			
+			; Click out of profile zoom-ins from empty text detection
+			MouseClick "left", 168, 514
+			sleep 500
 		}
 		else if dating_app == "photofeeler" 
 		{			

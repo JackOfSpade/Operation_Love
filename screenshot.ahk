@@ -117,7 +117,10 @@ clear_screenshot_directory(root_directory, dating_app)
 	
 	if dating_app == "tinder"
 	{
-		sleep 3000
+	}
+	else if dating_app == "okcupid"
+	{
+		sleep 1000
 	}
 	
 	winActivate "Run"

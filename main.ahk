@@ -179,7 +179,7 @@ main(dating_app, root_directory)
 				
 				; Click the first city in the list
 				MouseClick "left", 957, 380		
-				sleep 7000		
+				sleep 12000		
 				
 				; Every 12 hours, there is a glitch that pulls down the notifications screen. Pull it back up
 				; Airdroid swipe up button

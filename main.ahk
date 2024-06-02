@@ -179,11 +179,11 @@ main(dating_app, root_directory)
 				
 				; Click the first city in the list
 				MouseClick "left", 957, 380		
-				sleep 4000		
+				sleep 7000		
 				
 				; Every 12 hours, there is a glitch that pulls down the notifications screen. Pull it back up
 				; Airdroid swipe up button
-				; 2 possible locations for some reason
+				; 2 possible locations for the airdroid swipe up button for some reason
 				MouseClick "left", 1770, 40
 				sleep 500
 				MouseClick "left", 470	, 30
@@ -428,10 +428,10 @@ main(dating_app, root_directory)
 ; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1920x1080"
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1366x768"
-main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
+; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")

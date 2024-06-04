@@ -336,6 +336,13 @@ main(dating_app, root_directory)
 			; Test open_ai_clip
 			; if InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
 			
+			if first_loop
+			{
+				; since photofeeler don't use winactivate, this delay gives you time to navigate to the browser.
+				sleep 5000
+				first_loop := false
+			}
+			
 			if InStr(ocr(769, 145, 925, 245, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
 			{
 				; F5 for refresh stops working after repeated uses

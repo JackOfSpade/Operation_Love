@@ -103,7 +103,7 @@ take_screenshot(dating_app)
 	}
 	else if dating_app == "photofeeler"
     {
-		winactivate "Vote"
+		; don't winactivate "Vote" because continous refresh make loading time inconsistent
        
 		print_screen(105, 320, 555, 725)		
 	}

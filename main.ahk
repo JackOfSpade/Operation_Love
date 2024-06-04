@@ -345,7 +345,7 @@ main(dating_app, root_directory)
 				A_Clipboard := ""
 				sleep 100
 				 
-				sleep 20000
+				sleep 4000
 				
 				goto("start")
 			}	

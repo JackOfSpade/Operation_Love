@@ -34,16 +34,7 @@ navigate_to_discover(dating_app)
 	}
 	else if dating_app == "photofeeler"
     {
-		try 
-		{
-			winactivate "Vote"
-		}
-		catch as e 
-		{
-			winactivate "www.photofeeler.com"
-		}
-		
-		sleep 500
+		; don't winactivate "Vote" because continous refresh make loading time inconsistent
     }
 }
 

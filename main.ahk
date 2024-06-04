@@ -150,7 +150,7 @@ main(dating_app, root_directory)
 			
 				; Click profile
 				MouseClick "left", 718, 1041
-				sleep 1000
+				sleep 7000
 				
 				; Click travel mode
 				MouseClick "left", 893, 295
@@ -436,7 +436,7 @@ main(dating_app, root_directory)
 ; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1920x1080"
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1366x768"
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
@@ -445,7 +445,7 @@ main(dating_app, root_directory)
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1366x768"
-main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
+; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 f12::
 {

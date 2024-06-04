@@ -116,7 +116,10 @@ super_like(dating_app, root_directory)
 		; Need to sleep >500ms or else Tinder won't register the send; probably due to on-hover scripts running on the send button.
 		sleep 1000
 		; Click send
-		mouseClick "left", 1284, 802
+		mouseClick "left", 1299, 794
+		sleep 500
+		; Click send (need to click twice for some reason)
+		mouseClick "left", 1299, 794
 		
 	}
 	else if dating_app == "bumble"

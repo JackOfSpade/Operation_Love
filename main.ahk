@@ -243,22 +243,13 @@ main(dating_app, root_directory)
 		}
 		else if dating_app == "okcupid"
 		{
-			if neutral_profile or InStr(ocr(621, 137, 683, 197, 100), "Bad", 0)
-			{					
-				; Click refresh
-				mouseClick "left", 102, 71		 
-				sleep 7000
-				
-				if neutral_profile
-				{
-					neutral_profile := false
-				}
-				
-				goto("start")
-			}
-			
 		
-			; Click out of popups
+			; need to refresh everytime because okcupid has unskippable popups like (you recevied a like) that requires scrolling down and clicking
+			; Click refresh
+			mouseClick "left", 102, 71		 
+			sleep 7000
+		
+			; Click out of skippable popups
 			MouseClick "left", 168, 514
 			sleep 500
 			
@@ -433,13 +424,13 @@ main(dating_app, root_directory)
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
 ; "1920x1080"
-main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1920x1080"
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1366x768"
-; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
+main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")

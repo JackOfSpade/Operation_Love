@@ -84,9 +84,9 @@ main(dating_app, root_directory)
 	
 	; like/superlike/dislike test
 	; like(dating_app, root_directory)
-	; super_like(dating_app, root_directory)
+	super_like(dating_app, root_directory)
 	; dislike(dating_app)
-	; exitApp
+	exitApp
 	
 	super_likes := remaining_super_likes(dating_app)
 	
@@ -433,10 +433,10 @@ main(dating_app, root_directory)
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
 ; "1920x1080"
-; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1920x1080"
-main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1366x768"
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")

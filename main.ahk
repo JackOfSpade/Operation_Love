@@ -335,7 +335,7 @@ main(dating_app, root_directory)
 			}
 			
 			; Max karma, website crash, votes no longer needed
-			if InStr(ocr(769, 145, 925, 245, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0) or InStr(ocr(377, 381, 525, 422, 100), "no longer", 0)
+			if InStr(ocr(769, 145, 925, 245, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0) or InStr(ocr(419, 383, 525, 422, 100), "longer", 0)
 			{
 				; F5 for refresh stops working after repeated uses
 				mouseClick "left", 103, 69

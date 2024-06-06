@@ -334,7 +334,8 @@ main(dating_app, root_directory)
 				first_loop := false
 			}
 			
-			if InStr(ocr(769, 145, 925, 245, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
+			; Max karma, website crash, votes no longer needed
+			if InStr(ocr(769, 145, 925, 245, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0) or InStr(ocr(377, 381, 525, 422, 100), "no longer", 0)
 			{
 				; F5 for refresh stops working after repeated uses
 				mouseClick "left", 103, 69
@@ -430,13 +431,13 @@ main(dating_app, root_directory)
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1366x768"
-main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
+; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1366x768"
-; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
+main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 f12::
 {

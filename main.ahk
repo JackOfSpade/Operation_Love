@@ -265,7 +265,7 @@ main(dating_app, root_directory)
 				
 				; Click settings
 				MouseClick "left", 911, 486
-				sleep 2000
+				sleep 5000
 				
 				; Click settings
 				loop 11

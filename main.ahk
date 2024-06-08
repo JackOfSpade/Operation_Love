@@ -122,7 +122,15 @@ main(dating_app, root_directory)
 			mouseClick "left", 1300, 242
 			sleep 500
 			
+			; Click away pride stickers if no "____ likes you"
+			mouseClick "left", 1157, 245
+			sleep 500
+			
+			
 			; Reset image to position 1
+			mouseClick "left", 989, 519
+			sleep 500
+			
 			mouseClick "left", 989, 519
 			sleep 500
 		}
@@ -334,8 +342,7 @@ main(dating_app, root_directory)
 				first_loop := false
 			}
 			
-			; Max karma, website crash, votes no longer needed
-			if InStr(ocr(769, 145, 925, 245, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0) or InStr(ocr(419, 383, 525, 422, 100), "longer", 0)
+			if InStr(ocr(769, 145, 925, 245, 100), "Max", 0) or InStr(ocr(387, 338, 424, 361, 100), "Aw", 0)
 			{
 				; F5 for refresh stops working after repeated uses
 				mouseClick "left", 103, 69
@@ -425,7 +432,7 @@ main(dating_app, root_directory)
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
 ; "1920x1080"
-; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1920x1080"
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
@@ -437,7 +444,7 @@ main(dating_app, root_directory)
 ; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1366x768"
-main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
+; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 f12::
 {

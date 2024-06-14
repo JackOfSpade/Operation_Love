@@ -109,8 +109,8 @@ main(dating_app, root_directory)
 		; Refresh Page Logics
 		if dating_app == "tinder"
 		{		
-			; Bad Gateway or out of profiles
-			if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0) or InStr(ocr(1058, 711, 1108, 728, 100), "unable", 0)
+			; Bad Gateway or out of profiles or "Aw, snap! Something went wrong..."
+			if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0) or InStr(ocr(1058, 711, 1108, 728, 100), "unable", 0) or InStr(ocr(662, 440, 701, 466, 100), "Aw", 0)
 			{
 				; Click refresh
 				mouseClick "left", 100, 67			 

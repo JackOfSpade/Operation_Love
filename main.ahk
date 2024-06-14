@@ -136,7 +136,8 @@ main(dating_app, root_directory)
 		}
 		else if dating_app == "bumble"
 		{
-			if neutral_profile
+			; neutral_profile or "Aw, snap! Something went wrong..." 
+			if neutral_profile or InStr(ocr(434, 527, 424, 362, 100), "Aw", 0)
 			{					
 				restart_bumble()
 				neutral_profile := false
@@ -432,10 +433,10 @@ main(dating_app, root_directory)
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
 ; "1920x1080"
-main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1920x1080"
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1366x768"
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")

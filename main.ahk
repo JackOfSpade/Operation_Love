@@ -276,10 +276,10 @@ main(dating_app, root_directory)
 				MouseClick "left", 911, 486
 				sleep 5000
 				
-				loop 10
+				loop 11
 				{
 					send "{tab}"	
-					sleep 100
+					sleep 500
 				}
 				
 				send "{enter}"				

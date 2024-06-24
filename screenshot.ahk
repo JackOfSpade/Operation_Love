@@ -131,6 +131,12 @@ clear_screenshot_directory(root_directory, dating_app)
 	sleep 1000
     send "{enter}"
     sleep 3000
+	
+	if dating_app == "okcupid"
+	{
+		sleep 500
+	}
+	
 	winActivate "Screenshots"
 	sleep 500
     send "^a"

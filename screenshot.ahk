@@ -66,23 +66,7 @@ take_screenshot(dating_app)
 	else if dating_app == "hinge"
     {
 		winactivate "AirDroid"
-		
-		; For doing multi-photo iterations
-		; loop 7
-		; {
-		; 	print_screen(657, 106, 1260, 889)
-		; 	
-		; 	loop 4
-		; 	{
-		; 		click_and_drag(669, 776, 665, 319, 1500)
-		; 	}
-		; }
-		
-		; For doing one-photo iterations
-		loop 1
-		{
-			print_screen(657, 106, 1260, 889)
-		}
+		print_screen(711, 143, 1208, 975)
 	}
 	else if dating_app == "okcupid"
 	{

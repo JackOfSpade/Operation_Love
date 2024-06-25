@@ -69,7 +69,7 @@ remaining_super_likes(dating_app)
 	}	
 	else if dating_app == "hinge"
     {
-		; Do it manually in standouts since it doesn't replenish (only 1 free rose/week)
+		; Superlike manually in standouts since it doesn't replenish (only 1 free rose/week)
     }
 	else if dating_app == "okcupid"
 	{
@@ -240,50 +240,37 @@ like(dating_app, root_directory)
 		
 		hinge_opener := "Hi"
 		
-	
-		; Scroll up (scroll down doesn't work because of possible instagram
-		; loop 8
-		; {
-		; 	click_and_drag(665, 319, 669, 776, 500)
-		; }
-		
-		;sleep 3000
-		
 		; Click like with footer
-		mouseClick "left", 1193, 848
+		mouseClick "left", 1152, 687
 		sleep 1000
+		
 		; Click like without footer
-		mouseClick "left", 1195, 783
+		; mouseClick "left", 1157, 688
 		sleep 1000
-		; Click like with footer and caption
-		mouseClick "left", 1191, 832
+		
+		; Click like with footer and compatibility caption
+		mouseClick "left", 1156, 756
 		sleep 10000
 		
 		sleep 3000
 		
-		if !InStr(ocr(910, 963, 1006, 996, 500), "Cancel", 0)
-		{
-			; Click like with compatibility
-			mouseClick "left", 1189, 895
-			sleep 4000
-		}	
-		
-		
+		; Depending on resolution of the laptop, some resolution make the "Send Like" button disappear if try to add comments -----------------------
 		; Click "Add a comment"
-		mouseClick "left", 812, 737
-		
-		sleep 3000
-		
-		send hinge_opener
-		
-		sleep 6000
+		; mouseClick "left", 812, 737
+		; 
+		; sleep 3000
+		; 
+		; send hinge_opener
+		; 
+		; sleep 6000
+		; ----------------------------------------------------------------
 		
 		; Send like		
-		mouseClick "left", 1018, 848
+		mouseClick "left", 1017, 854
 		sleep 1000
 		
 		; Click away send a rose instead
-		mouseClick "left", 937, 971
+		mouseClick "left", 953, 1000
 		sleep 5000
     }	
 	else if dating_app == "okcupid"
@@ -377,10 +364,16 @@ dislike(dating_app)
 	else if dating_app == "hinge"
     {
 		; Dislike button with footer
-		mouseClick "left", 727, 922
+		mouseClick "left", 769, 916
 		sleep 1000
+		
 		; Click dislike without footer
-		mouseClick "left", 729, 982
+		mouseClick "left", 768, 1003
+		sleep 1000
+		
+		; Click dislike with footer and compatibility caption
+		; mouseClick "left", 768, 1003
+		
 		sleep 4000
     }
 	else if dating_app == "okcupid"

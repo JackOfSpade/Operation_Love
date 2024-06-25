@@ -238,7 +238,7 @@ like(dating_app, root_directory)
 		; 
 		; hinge_opener := FileRead("chatgpt_response.txt")
 		
-		hinge_opener := "Hi"
+		; hinge_opener := "Hi"
 		
 		; Click like with footer
 		mouseClick "left", 1152, 687

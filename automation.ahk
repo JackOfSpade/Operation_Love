@@ -244,13 +244,19 @@ like(dating_app, root_directory)
 		mouseClick "left", 1156, 756
 		sleep 1000
 		
-		; Click like without footer
-		mouseClick "left", 1153, 683
+		; Click like with footer
+		mouseClick "left", 1152, 657
 		sleep 1000
 		
-		; Click like with footer
-		mouseClick "left", 1151, 654
-		sleep 3000
+		; Click like without footer 
+		mouseClick "left", 1153, 635
+		sleep 1000
+		
+		; Click like without footer 
+		mouseClick "left", 1152, 699
+		sleep 1000
+		
+		
 		
 		; Depending on resolution of the laptop, some resolution make the "Send Like" button disappear if try to add comments -----------------------
 		; Click "Add a comment"
@@ -265,11 +271,10 @@ like(dating_app, root_directory)
 		
 		; Send like		
 		mouseClick "left", 1017, 854
-		sleep 1000
+		sleep 3000
 		
 		; Click away popups
 		mouseClick "left", 1185, 720
-		sleep 3000
     }	
 	else if dating_app == "okcupid"
 	{

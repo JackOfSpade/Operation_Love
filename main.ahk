@@ -102,6 +102,8 @@ main(dating_app, root_directory)
 	
 	sleep 500
 	
+	count := 0
+	
 	while true
 	{	
 		start:
@@ -109,9 +111,11 @@ main(dating_app, root_directory)
 		; Refresh Page Logics
 		if dating_app == "tinder"
 		{		
-			; Bad Gateway or out of profiles or "Aw, snap! Something went wrong..."
-			if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0) or InStr(ocr(1058, 711, 1108, 728, 100), "unable", 0) or InStr(ocr(662, 440, 701, 466, 100), "Aw", 0)
+			; Bad Gateway or out of profiles or "Aw, snap! Something went wrong..." or every 10 profiles
+			if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0) or InStr(ocr(1058, 711, 1108, 728, 100), "unable", 0) or InStr(ocr(662, 440, 701, 466, 100), "Aw", 0) or Mod(count, 10) == 0
 			{
+				count += 1
+			
 				; Click refresh
 				mouseClick "left", 100, 67			 
 				sleep 15000
@@ -133,6 +137,8 @@ main(dating_app, root_directory)
 			
 			mouseClick "left", 989, 519
 			sleep 500
+			
+			count += 1
 		}
 		else if dating_app == "bumble"
 		{
@@ -432,7 +438,7 @@ main(dating_app, root_directory)
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
 ; "1920x1080"
-; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1366x768"
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")

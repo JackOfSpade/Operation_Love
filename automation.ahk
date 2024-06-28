@@ -269,7 +269,7 @@ like(dating_app, root_directory)
 		
 		; Click away popups
 		mouseClick "left", 1185, 720
-		sleep 5000
+		sleep 3000
     }	
 	else if dating_app == "okcupid"
 	{
@@ -361,18 +361,18 @@ dislike(dating_app)
 	}
 	else if dating_app == "hinge"
     {
-		; Dislike button with footer
-		mouseClick "left", 769, 916
-		sleep 1000
-		
 		; Click dislike without footer
 		mouseClick "left", 768, 1003
+		sleep 1000
+		
+		; Dislike button with footer
+		mouseClick "left", 769, 916
 		sleep 1000
 		
 		; Click dislike with footer and compatibility caption
 		; mouseClick "left", 768, 1003
 		
-		sleep 4000
+		sleep 3000
     }
 	else if dating_app == "okcupid"
 	{

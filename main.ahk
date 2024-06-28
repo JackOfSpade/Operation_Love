@@ -8,10 +8,10 @@
 ; 100% zoom in resolution settings
 ; Laptop must be plugged in or else the save/file dialog will lag.
 ; Greenshot: set output location to Screenshots folder
-; 			 set "capture region" hotkey to f11
-;            Capture --> turn "Show notifications" off
+; 			 set General ---> "capture region" hotkey to f11
+;            set Capture --> turn "Show notifications" off
 ; Capture2Text: unbind Win + R (under Hotkeys) so we can open run dialog
-;				turn off show popup window (under Output)
+;				turn off Output ---> "show popup window"
 ; In powershell (run as admin):
 ; 	Set-ExecutionPolicy Unrestricted -Scope LocalMachine
 ; 	Unblock-File -Path "...\Desktop\GitHub\Operation_Love\open_ai_clip\venv\Scripts\activate.ps1"

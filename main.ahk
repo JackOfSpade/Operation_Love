@@ -102,7 +102,8 @@ main(dating_app, root_directory)
 	
 	sleep 500
 	
-	count := 0
+	profile_count := 1
+	every_x_profile := 10
 	
 	while true
 	{	
@@ -111,10 +112,10 @@ main(dating_app, root_directory)
 		; Refresh Page Logics
 		if dating_app == "tinder"
 		{		
-			; Bad Gateway or out of profiles or "Aw, snap! Something went wrong..." or every 10 profiles
-			if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0) or InStr(ocr(1058, 711, 1108, 728, 100), "unable", 0) or InStr(ocr(662, 440, 701, 466, 100), "Aw", 0) or Mod(count, 10) == 0
+			; Bad Gateway or out of profiles or "Aw, snap! Something went wrong..." or every x profiles
+			if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0) or InStr(ocr(1058, 711, 1108, 728, 100), "unable", 0) or InStr(ocr(662, 440, 701, 466, 100), "Aw", 0) or Mod(profile_count, every_x_profile) == 0
 			{
-				count += 1
+				profile_count += 1
 			
 				; Click refresh
 				mouseClick "left", 100, 67			 
@@ -138,16 +139,15 @@ main(dating_app, root_directory)
 			mouseClick "left", 989, 519
 			sleep 500
 			
-			count += 1
+			profile_count += 1
 		}
 		else if dating_app == "bumble"
 		{
-			; neutral_profile or "Aw, snap! Something went wrong..." 
-			if neutral_profile or InStr(ocr(434, 527, 424, 362, 100), "Aw", 0)
-			{					
+			; neutral_profile
+			if neutral_profile
+			{							
 				restart_bumble()
 				neutral_profile := false
-				goto("start")
 			}
 		
 			; Click away any popups including "Second time's a charm" compliment suggestion and "It's a match!"
@@ -232,37 +232,29 @@ main(dating_app, root_directory)
 			}
 		}
 		else if dating_app == "hinge"
-		{
-			; search for "skipped" which mean out of profiles, then refreshes
-			; if InStr(ocr(910, 775, 1000, 808, 500), "sk", 0)
-			; {
-			; 	; Go into match preferences
-			; 	mouseClick "left", 943, 688
-			; 	sleep 5000
-			; 	; Go back
-			; 	mouseClick "left", 1229, 69
-			; 	sleep 7000
-			; 	goto("start")
-			; }
-			
-			; search for "skipped" text or "Try" in "Try Again", then refresh matches
-			; if InStr(ocr(900, 656, 946, 690, 500), "Try", 0)
-			; {
-			; 	; Click "Try Again"
-			; 	mouseClick "left", 957, 670
-			; 	sleep 500
-			; 	mouseClick "left", 957, 670
-			; 	sleep 7000
-			; 	goto("start")
-			; }
+		{			
+			if neutral_profile
+			{					
+				; Click refresh
+				
+				neutral_profile := false
+			}
 		}
 		else if dating_app == "okcupid"
 		{
 		
 			; need to refresh everytime because okcupid has unskippable popups like (you recevied a like) that requires scrolling down and clicking
-			; Click refresh
-			mouseClick "left", 102, 71		 
-			sleep 7000
+			; every x profiles
+			; neutral_profile
+			if neutral_profile
+			{					
+				; Click refresh
+				mouseClick "left", 102, 71		 
+				sleep 10000
+				
+				neutral_profile := false
+			}
+			
 		
 			; Click out of skippable popups
 			MouseClick "left", 168, 514
@@ -335,6 +327,8 @@ main(dating_app, root_directory)
 			; Click out of profile zoom-ins from empty text detection
 			MouseClick "left", 168, 514
 			sleep 500
+			
+			profile_count += 1
 		}
 		else if dating_app == "photofeeler" 
 		{			

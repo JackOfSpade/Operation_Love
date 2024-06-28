@@ -240,17 +240,21 @@ like(dating_app, root_directory)
 		
 		; hinge_opener := "Hi"
 		
-		; Click like with footer
-		mouseClick "left", 1152, 687
+		; Click like with footer and compatibility caption
+		mouseClick "left", 1156, 756
 		sleep 1000
 		
 		; Click like without footer
 		; mouseClick "left", 1157, 688
 		sleep 1000
 		
-		; Click like with footer and compatibility caption
-		mouseClick "left", 1156, 756
-		sleep 10000
+		; Click like with footer
+		mouseClick "left", 1151, 654
+		sleep 3000
+		
+		
+		
+		
 		
 		sleep 3000
 		

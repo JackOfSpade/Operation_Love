@@ -269,8 +269,8 @@ like(dating_app, root_directory)
 		mouseClick "left", 1017, 854
 		sleep 1000
 		
-		; Click away send a rose instead
-		mouseClick "left", 953, 1000
+		; Click away popups
+		mouseClick "left", 1185, 720
 		sleep 5000
     }	
 	else if dating_app == "okcupid"

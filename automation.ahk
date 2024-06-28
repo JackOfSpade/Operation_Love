@@ -26,8 +26,6 @@ navigate_to_discover(dating_app)
     {
 		winactivate "AirDroid"
 		sleep 500
-		MouseClick "left", 761, 1003
-		sleep 500
     }
 	else if dating_app == "okcupid"
 	{

@@ -26,6 +26,8 @@ navigate_to_discover(dating_app)
     {
 		winactivate "AirDroid"
 		sleep 500
+		MouseClick "left", 761, 1003
+		sleep 500
     }
 	else if dating_app == "okcupid"
 	{
@@ -245,17 +247,11 @@ like(dating_app, root_directory)
 		sleep 1000
 		
 		; Click like without footer
-		; mouseClick "left", 1157, 688
+		mouseClick "left", 1153, 683
 		sleep 1000
 		
 		; Click like with footer
 		mouseClick "left", 1151, 654
-		sleep 3000
-		
-		
-		
-		
-		
 		sleep 3000
 		
 		; Depending on resolution of the laptop, some resolution make the "Send Like" button disappear if try to add comments -----------------------

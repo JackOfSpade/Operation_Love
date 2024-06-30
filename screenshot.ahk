@@ -93,44 +93,42 @@ take_screenshot(dating_app)
 	}
 }
 
-
-clear_screenshot_directory(root_directory, dating_app)
+move_screenshot(root_directory, how_much_like, new_file_name) 
 {
-    send "<#r"
-    sleep 500
-	
-	if dating_app == "tinder"
-	{
-	}
-	else if dating_app == "okcupid"
-	{
-		sleep 1000
-	}
-	
-	winActivate "Run"
-	sleep 1000
-	A_Clipboard := root_directory . "/Screenshots"
-	sleep 100
-    send "^v"
-	sleep 1000
-    send "{enter}"
-    sleep 3000
-	
-	if dating_app == "okcupid"
-	{
-		sleep 500
-	}
-	
-	winActivate "Screenshots"
-	sleep 500
-    send "^a"
-    send "{delete}"
-    sleep 500
-    winClose "Screenshots"   
+    ; Define source and destination folders
+    screenshot_folder_path := root_directory . "/Screenshots"
+    processed_profiles_folder_path := root_directory . "/processed_profiles"
 
-	sleep 100
-    A_Clipboard := ""
-    sleep 100	
+    super_liked_folder_path := processed_profiles_folder_path . "/super_liked" 
+    liked_folder_path := processed_profiles_folder_path . "/liked" 
+    disliked_folder_path := processed_profiles_folder_path . "/disliked" 
+
+    ; Find the first .png file in the source folder
+	file_list := []
+    Loop Files, "*.png"
+    {
+        file_list.Push(A_LoopFileFullPath)
+    }
+
+    ; Ensure a file was found
+    if file_list.Length > 0
+    {
+        first_screenshot_path := file_list[1]
+
+        if how_much_like == "super_like"
+        {
+            destination_file_path := super_liked_folder_path . "/" . new_file_name . ".png"
+        }
+        else if how_much_like == "like"
+        {
+            destination_file_path := liked_folder_path . "/" . new_file_name . ".png"
+        }
+        else
+        {
+            destination_file_path := disliked_folder_path . "/" . new_file_name . ".png"
+        }
         
-    ; This deactivates the dating website, make sure you re-activate them in other functions.
+        ; Move the file to the appropriate folder
+        FileMove first_screenshot_path, destination_file_path
+    }
 }

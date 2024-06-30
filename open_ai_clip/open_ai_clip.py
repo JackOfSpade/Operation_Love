@@ -120,8 +120,8 @@ def main(test):
         print(f"Number of valid images: {num_images:.3f}\n")
     
         output_text += final_label + "\n"              
-        output_text += f"Average probability of being considered beautiful: {avg_beautiful_prob:.3f}\n"
-        output_text += f"Average probability of being considered ugly: {avg_ugly_prob:.3f}"
+        output_text += f"Beautiful probability: {avg_beautiful_prob:.3f}\n"
+        output_text += f"Ugly probability: {avg_ugly_prob:.3f}"
         f.write(output_text)
         print(output_text)
 

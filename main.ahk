@@ -10,6 +10,8 @@
 ; Greenshot: set output location to Screenshots folder
 ; 			 set General ---> "capture region" hotkey to f11
 ;            set Capture --> turn "Show notifications" off
+;            ensure output is .png
+;            Output ---> JPEG quality ---> 100%
 ; Capture2Text: unbind Win + R (under Hotkeys) so we can open run dialog
 ;				turn off Output ---> "show popup window"
 ; In powershell (run as admin):
@@ -372,6 +374,7 @@ main(dating_app, root_directory)
 		returned_list := make_decision()
 		decision := returned_list[1]
 		adjective := returned_list[2]
+		file_name := returned_list[3]
 		
 		if adjective == "neutral"
 		{
@@ -387,14 +390,20 @@ main(dating_app, root_directory)
 		{
 			super_like(dating_app, root_directory)
 			super_likes -= 1
+			
+			move_screenshot("super_like", file_name) 
 		}
 		else if decision == "super_like" || decision == "like"
 		{
 			hinge_opener := like(dating_app, root_directory)
+			
+			move_screenshot("like", file_name) 
 		}
 		else
 		{
 			dislike(dating_app)
+			
+			move_screenshot("dislike", file_name) 
 		}		
 		
 		; End of loop procedures
@@ -423,8 +432,6 @@ main(dating_app, root_directory)
 		else if dating_app == "photofeeler"
 		{
 		}
-		
-		clear_screenshot_directory(root_directory, dating_app)
 	}
 	
 }
@@ -435,13 +442,13 @@ main(dating_app, root_directory)
 ; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1366x768"
-main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
+; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1920x1080"
-; main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
+main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
 
 ; "1366x768"
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")

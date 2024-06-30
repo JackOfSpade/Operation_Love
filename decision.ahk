@@ -24,14 +24,14 @@ make_decision()
 	beautyMatch := ""
 	; Extract beauty probability
 	matchResult := RegExMatch(open_ai_clip_result, "Average probability of being considered beautiful: (\d+\.\d+)", &beautyMatch)
-	beauty_probability := beautyMatch[1]
+	beautiful_probability := beautyMatch[1]
 
 	uglyMatch := ""
 	; Extract ugly probability
 	RegExMatch(open_ai_clip_result, "Average probability of being considered ugly: (\d+\.\d+)", &uglyMatch)
 	ugly_probability := uglyMatch[1]	
     
-    if adjective == "beautiful" and beauty_probability >= 0.95
+    if adjective == "beautiful" and beautiful_probability >= 0.95
     {
         decision := "super_like"
     }
@@ -48,6 +48,8 @@ make_decision()
 		msgbox('Error: adjective is not "beautiful", "ugly" or "neutral".')
 	}
 	
-    return [decision, adjective]    
+	file_name := "decision: " . decision . "adjective: " . adjective . "beautiful_probability: " . beautiful_probability . "ugly_probability: " . ugly_probability
+	
+    return [decision, adjective, file_name]    
 }
 

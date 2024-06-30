@@ -23,12 +23,12 @@ make_decision()
 
 	beautyMatch := ""
 	; Extract beauty probability
-	matchResult := RegExMatch(open_ai_clip_result, "Average probability of being considered beautiful: (\d+\.\d+)", &beautyMatch)
+	matchResult := RegExMatch(open_ai_clip_result, "Beautiful probability: (\d+\.\d+)", &beautyMatch)
 	beautiful_probability := beautyMatch[1]
 
 	uglyMatch := ""
 	; Extract ugly probability
-	RegExMatch(open_ai_clip_result, "Average probability of being considered ugly: (\d+\.\d+)", &uglyMatch)
+	RegExMatch(open_ai_clip_result, "Ugly probability: (\d+\.\d+)", &uglyMatch)
 	ugly_probability := uglyMatch[1]	
     
     if adjective == "beautiful" and beautiful_probability >= 0.95

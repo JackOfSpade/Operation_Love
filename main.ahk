@@ -391,19 +391,19 @@ main(dating_app, root_directory)
 			super_like(dating_app, root_directory)
 			super_likes -= 1
 			
-			move_screenshot("super_like", file_name) 
+			move_screenshot(root_directory, "super_like", file_name) 
 		}
 		else if decision == "super_like" || decision == "like"
 		{
 			hinge_opener := like(dating_app, root_directory)
 			
-			move_screenshot("like", file_name) 
+			move_screenshot(root_directory, "like", file_name) 
 		}
 		else
 		{
 			dislike(dating_app)
 			
-			move_screenshot("dislike", file_name) 
+			move_screenshot(root_directory, "dislike", file_name) 
 		}		
 		
 		; End of loop procedures

@@ -48,7 +48,7 @@ make_decision()
 		msgbox('Error: adjective is not "beautiful", "ugly" or "neutral".')
 	}
 	
-	file_name := "decision: " . decision . "adjective: " . adjective . "beautiful_probability: " . beautiful_probability . "ugly_probability: " . ugly_probability
+	file_name := "decision_ " . decision . " adjective_ " . adjective . " beautiful_probability_ " . beautiful_probability . " ugly_probability_ " . ugly_probability
 	
     return [decision, adjective, file_name]    
 }

@@ -1,3 +1,3 @@
-beautiful
-Beautiful probability: 0.642
-Ugly probability: 0.300
+neutral
+Beautiful probability: 0.000
+Ugly probability: 0.000

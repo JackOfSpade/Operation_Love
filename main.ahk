@@ -375,7 +375,7 @@ main(dating_app, root_directory)
 		returned_list := make_decision()
 		decision := returned_list[1]
 		adjective := returned_list[2]
-		file_name := returned_list[3]
+		file_name := returned_list[3] . " id_ " . Random(0, 9223372036854775807)
 		
 		if adjective == "neutral"
 		{

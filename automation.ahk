@@ -240,20 +240,16 @@ like(dating_app, root_directory)
 		
 		; hinge_opener := "Hi"
 		
-		; Click like with footer and compatibility caption
+		; Click like locations
 		mouseClick "left", 1156, 756
 		sleep 1000
-		
-		; Click like with footer
 		mouseClick "left", 1152, 657
 		sleep 1000
-		
-		; Click like without footer 
 		mouseClick "left", 1153, 635
 		sleep 1000
-		
-		; Click like without footer 
 		mouseClick "left", 1152, 699
+		sleep 1000
+		mouseClick "left", 1153, 721
 		sleep 1000
 		
 		
@@ -276,8 +272,8 @@ like(dating_app, root_directory)
 		; Click away popups
 		mouseClick "left", 1185, 720
 		
-		; Click away roses popup
-		mouseClick "left", 949, 997
+		; Click away roses popup; can't do this because it'll click the like page on bottom banner.
+		; mouseClick "left", 949, 997
     }	
 	else if dating_app == "okcupid"
 	{

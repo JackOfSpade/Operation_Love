@@ -96,32 +96,26 @@ take_screenshot(dating_app)
 move_screenshot(root_directory, how_much_like, new_file_name) 
 {
     ; Define source and destination folders
-    screenshot_file_path := root_directory . "/Screenshots/screenshot.png"
+    screenshot_file_path := root_directory . "/Screenshots/screenshot.png" 
     processed_profiles_folder_path := root_directory . "/processed_profiles"
 
     super_liked_folder_path := processed_profiles_folder_path . "/super_liked" 
     liked_folder_path := processed_profiles_folder_path . "/liked" 
     disliked_folder_path := processed_profiles_folder_path . "/disliked"   
 
-    ; Ensure a file was found
-    if file_list.Length > 0
+    if how_much_like == "super_like"
     {
-        first_screenshot_path := file_list[1]
-
-        if how_much_like == "super_like"
-        {
-            destination_file_path := super_liked_folder_path . "/" . new_file_name . ".png"			  
-        }
-        else if how_much_like == "like"
-        {
-            destination_file_path := liked_folder_path . "/" . new_file_name . ".png"
-        }
-        else
-        {
-            destination_file_path := disliked_folder_path . "/" . new_file_name . ".png"
-        }
-        
-        ; Move the file to the appropriate folder
-        FileMove screenshot_file_path, destination_file_path
+        destination_file_path := super_liked_folder_path . "/" . new_file_name . ".png"			  
     }
+    else if how_much_like == "like"
+    {
+        destination_file_path := liked_folder_path . "/" . new_file_name . ".png"
+    }
+    else
+    {
+        destination_file_path := disliked_folder_path . "/" . new_file_name . ".png"
+    }
+	
+    ; Move the file to the appropriate folder
+    FileMove screenshot_file_path, destination_file_path
 }

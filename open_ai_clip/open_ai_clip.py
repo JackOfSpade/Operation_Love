@@ -73,7 +73,7 @@ def main(test):
         cropped_image = detect_and_crop_face(image, device)
         if cropped_image is None:
             # For debugging only
-            print(f"num_images -= 1: cropped_image is None\n") 
+            # print(f"num_images -= 1: cropped_image is None\n") 
             num_images -= 1
             continue
 
@@ -92,7 +92,7 @@ def main(test):
 
         if probs[0][2] > 0.5:  # Assuming the third category is "non-face"
             # For debugging only
-            print(f"num_images -= 1: indeterminate probability: {probs[0][2]:.3f}\n")
+            # print(f"num_images -= 1: indeterminate probability: {probs[0][2]:.3f}\n")
             num_images -= 1
             continue
 

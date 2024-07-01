@@ -11,7 +11,8 @@
 ; 			 set General ---> "capture region" hotkey to f11
 ;            set Capture --> turn "Show notifications" off
 ;            ensure output is .png
-;            Output ---> JPEG quality ---> 100%
+;            set Output ---> JPEG quality ---> 100%
+;			 set Filename ---> screenshot
 ; Capture2Text: unbind Win + R (under Hotkeys) so we can open run dialog
 ;				turn off Output ---> "show popup window"
 ; In powershell (run as admin):

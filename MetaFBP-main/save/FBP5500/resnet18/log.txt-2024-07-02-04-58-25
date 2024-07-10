@@ -1,0 +1,639 @@
+Args <========================
+backbone: resnet18
+batch_size: 64
+cpu_only: False
+data_root: ./datasets
+dataset: FBP5500
+dataset_dir: ./datasets/FBP5500
+img_dir: faces
+imgsz: 256
+log_dir: ./save/FBP5500/resnet18
+max_epoch: 100
+model_dir: ./save/FBP5500/resnet18/models
+num_workers: 6
+pretrain: True
+print_freq: 30
+save_epoch: 20
+seed: 2022
+train_split_file: train.txt
+train_way: 5
+val_split_file: val.txt
+work_dir: ./save
+Model <========================
+Using pretrained model of resnet18
+loading pretrained model from url:https://download.pytorch.org/models/resnet18-f37072fd.pth
+Successfully loaded pretrained weights
+** The following layers are discarded due to unmatched keys or layer size: ['fc.weight', 'fc.bias']
+Data <========================
+Dataset info: FBP5500, Train size:3000, Val size:500.
+Start Training <========================
+
+Start Epoch: 1/100 | Lr: 0.001000
+Epoch: 1, Batch: 1/47, Loss: 1.8200, Acc: 15.6250%
+Epoch: 1, Batch: 31/47, Loss: 0.8859, Acc: 64.0625%
+Saving the model at Epoch 1 with best acc: 38.942%
+Epoch 1 Summary: Train Loss: 0.849 | Train Acc: 64.998 | Test Loss: 1.791 | Test Acc: 38.942% [Best Acc: 38.942%]
+End Epoch: 1/100 | Epoch Time: 277.80s | Train Used Time: 0:04:37.804091 | Left Time: 7:38:22.576069
+
+Start Epoch: 2/100 | Lr: 0.001000
+Epoch: 2, Batch: 1/47, Loss: 0.6051, Acc: 71.8750%
+Epoch: 2, Batch: 31/47, Loss: 0.6945, Acc: 70.3125%
+Saving the model at Epoch 2 with best acc: 66.211%
+Epoch 2 Summary: Train Loss: 0.634 | Train Acc: 72.939 | Test Loss: 0.883 | Test Acc: 66.211% [Best Acc: 66.211%]
+End Epoch: 2/100 | Epoch Time: 280.80s | Train Used Time: 0:09:18.605055 | Left Time: 7:38:38.451141
+
+Start Epoch: 3/100 | Lr: 0.001000
+Epoch: 3, Batch: 1/47, Loss: 0.4272, Acc: 85.9375%
+Epoch: 3, Batch: 31/47, Loss: 0.6069, Acc: 65.6250%
+Epoch 3 Summary: Train Loss: 0.587 | Train Acc: 74.430 | Test Loss: 1.152 | Test Acc: 54.763% [Best Acc: 66.211%]
+End Epoch: 3/100 | Epoch Time: 276.71s | Train Used Time: 0:13:55.316018 | Left Time: 7:27:20.894217
+
+Start Epoch: 4/100 | Lr: 0.001000
+Epoch: 4, Batch: 1/47, Loss: 0.3700, Acc: 84.3750%
+Epoch: 4, Batch: 31/47, Loss: 0.5064, Acc: 81.2500%
+Saving the model at Epoch 4 with best acc: 66.496%
+Epoch 4 Summary: Train Loss: 0.550 | Train Acc: 77.394 | Test Loss: 0.931 | Test Acc: 66.496% [Best Acc: 66.496%]
+End Epoch: 4/100 | Epoch Time: 278.48s | Train Used Time: 0:18:33.793179 | Left Time: 7:25:33.715141
+
+Start Epoch: 5/100 | Lr: 0.001000
+Epoch: 5, Batch: 1/47, Loss: 0.4303, Acc: 87.5000%
+Epoch: 5, Batch: 31/47, Loss: 0.6127, Acc: 79.6875%
+Epoch 5 Summary: Train Loss: 0.543 | Train Acc: 76.221 | Test Loss: 0.936 | Test Acc: 63.431% [Best Acc: 66.496%]
+End Epoch: 5/100 | Epoch Time: 278.96s | Train Used Time: 0:23:12.754361 | Left Time: 7:21:41.246164
+
+Start Epoch: 6/100 | Lr: 0.001000
+Epoch: 6, Batch: 1/47, Loss: 0.4810, Acc: 78.1250%
+Epoch: 6, Batch: 31/47, Loss: 0.3702, Acc: 84.3750%
+Saving the model at Epoch 6 with best acc: 68.359%
+Epoch 6 Summary: Train Loss: 0.525 | Train Acc: 76.714 | Test Loss: 0.762 | Test Acc: 68.359% [Best Acc: 68.359%]
+End Epoch: 6/100 | Epoch Time: 302.97s | Train Used Time: 0:28:15.725632 | Left Time: 7:54:39.138968
+
+Start Epoch: 7/100 | Lr: 0.001000
+Epoch: 7, Batch: 1/47, Loss: 0.5293, Acc: 75.0000%
+Epoch: 7, Batch: 31/47, Loss: 0.4508, Acc: 73.4375%
+Epoch 7 Summary: Train Loss: 0.521 | Train Acc: 78.942 | Test Loss: 1.008 | Test Acc: 61.824% [Best Acc: 68.359%]
+End Epoch: 7/100 | Epoch Time: 298.63s | Train Used Time: 0:33:14.353912 | Left Time: 7:42:52.316264
+
+Start Epoch: 8/100 | Lr: 0.001000
+Epoch: 8, Batch: 1/47, Loss: 0.4287, Acc: 81.2500%
+Epoch: 8, Batch: 31/47, Loss: 0.3489, Acc: 87.5000%
+Saving the model at Epoch 8 with best acc: 68.990%
+Epoch 8 Summary: Train Loss: 0.468 | Train Acc: 80.291 | Test Loss: 0.982 | Test Acc: 68.990% [Best Acc: 68.990%]
+End Epoch: 8/100 | Epoch Time: 277.18s | Train Used Time: 0:37:51.535270 | Left Time: 7:05:00.565139
+
+Start Epoch: 9/100 | Lr: 0.001000
+Epoch: 9, Batch: 1/47, Loss: 0.4553, Acc: 78.1250%
+Epoch: 9, Batch: 31/47, Loss: 0.5629, Acc: 73.4375%
+Saving the model at Epoch 9 with best acc: 70.358%
+Epoch 9 Summary: Train Loss: 0.455 | Train Acc: 81.359 | Test Loss: 0.845 | Test Acc: 70.358% [Best Acc: 70.358%]
+End Epoch: 9/100 | Epoch Time: 281.80s | Train Used Time: 0:42:33.339318 | Left Time: 7:07:24.079723
+
+Start Epoch: 10/100 | Lr: 0.001000
+Epoch: 10, Batch: 1/47, Loss: 0.5273, Acc: 78.1250%
+Epoch: 10, Batch: 31/47, Loss: 0.3656, Acc: 82.8125%
+Epoch 10 Summary: Train Loss: 0.458 | Train Acc: 81.269 | Test Loss: 0.973 | Test Acc: 69.862% [Best Acc: 70.358%]
+End Epoch: 10/100 | Epoch Time: 271.79s | Train Used Time: 0:47:05.133373 | Left Time: 6:47:41.409888
+
+Start Epoch: 11/100 | Lr: 0.001000
+Epoch: 11, Batch: 1/47, Loss: 0.3327, Acc: 79.6875%
+Epoch: 11, Batch: 31/47, Loss: 0.5332, Acc: 82.8125%
+Saving the model at Epoch 11 with best acc: 71.274%
+Epoch 11 Summary: Train Loss: 0.456 | Train Acc: 81.084 | Test Loss: 0.768 | Test Acc: 71.274% [Best Acc: 71.274%]
+End Epoch: 11/100 | Epoch Time: 274.43s | Train Used Time: 0:51:39.568107 | Left Time: 6:47:04.612124
+
+Start Epoch: 12/100 | Lr: 0.001000
+Epoch: 12, Batch: 1/47, Loss: 0.3432, Acc: 85.9375%
+Epoch: 12, Batch: 31/47, Loss: 0.4894, Acc: 85.9375%
+Epoch 12 Summary: Train Loss: 0.427 | Train Acc: 83.311 | Test Loss: 1.400 | Test Acc: 53.921% [Best Acc: 71.274%]
+End Epoch: 12/100 | Epoch Time: 273.59s | Train Used Time: 0:56:13.156053 | Left Time: 6:41:15.677790
+
+Start Epoch: 13/100 | Lr: 0.001000
+Epoch: 13, Batch: 1/47, Loss: 0.3728, Acc: 87.5000%
+Epoch: 13, Batch: 31/47, Loss: 0.3572, Acc: 84.3750%
+Epoch 13 Summary: Train Loss: 0.393 | Train Acc: 84.000 | Test Loss: 0.949 | Test Acc: 67.578% [Best Acc: 71.274%]
+End Epoch: 13/100 | Epoch Time: 272.72s | Train Used Time: 1:00:45.875826 | Left Time: 6:35:26.502065
+
+Start Epoch: 14/100 | Lr: 0.001000
+Epoch: 14, Batch: 1/47, Loss: 0.2828, Acc: 87.5000%
+Epoch: 14, Batch: 31/47, Loss: 0.5030, Acc: 81.2500%
+Epoch 14 Summary: Train Loss: 0.397 | Train Acc: 83.739 | Test Loss: 0.976 | Test Acc: 69.471% [Best Acc: 71.274%]
+End Epoch: 14/100 | Epoch Time: 278.65s | Train Used Time: 1:05:24.530092 | Left Time: 6:39:24.165576
+
+Start Epoch: 15/100 | Lr: 0.001000
+Epoch: 15, Batch: 1/47, Loss: 0.3120, Acc: 87.5000%
+Epoch: 15, Batch: 31/47, Loss: 0.4735, Acc: 79.6875%
+Epoch 15 Summary: Train Loss: 0.340 | Train Acc: 85.776 | Test Loss: 0.795 | Test Acc: 70.883% [Best Acc: 71.274%]
+End Epoch: 15/100 | Epoch Time: 275.57s | Train Used Time: 1:10:00.098700 | Left Time: 6:30:23.212279
+
+Start Epoch: 16/100 | Lr: 0.001000
+Epoch: 16, Batch: 1/47, Loss: 0.3156, Acc: 82.8125%
+Epoch: 16, Batch: 31/47, Loss: 0.3852, Acc: 87.5000%
+Epoch 16 Summary: Train Loss: 0.319 | Train Acc: 87.139 | Test Loss: 1.131 | Test Acc: 66.301% [Best Acc: 71.274%]
+End Epoch: 16/100 | Epoch Time: 273.80s | Train Used Time: 1:14:33.905013 | Left Time: 6:23:19.609932
+
+Start Epoch: 17/100 | Lr: 0.001000
+Epoch: 17, Batch: 1/47, Loss: 0.2037, Acc: 90.6250%
+Epoch: 17, Batch: 31/47, Loss: 0.4625, Acc: 84.3750%
+Epoch 17 Summary: Train Loss: 0.311 | Train Acc: 87.096 | Test Loss: 1.122 | Test Acc: 61.914% [Best Acc: 71.274%]
+End Epoch: 17/100 | Epoch Time: 271.83s | Train Used Time: 1:19:05.739901 | Left Time: 6:16:02.206257
+
+Start Epoch: 18/100 | Lr: 0.001000
+Epoch: 18, Batch: 1/47, Loss: 0.3056, Acc: 84.3750%
+Epoch: 18, Batch: 31/47, Loss: 0.2978, Acc: 87.5000%
+Epoch 18 Summary: Train Loss: 0.287 | Train Acc: 88.113 | Test Loss: 1.562 | Test Acc: 58.353% [Best Acc: 71.274%]
+End Epoch: 18/100 | Epoch Time: 277.21s | Train Used Time: 1:23:42.947057 | Left Time: 6:18:50.917638
+
+Start Epoch: 19/100 | Lr: 0.001000
+Epoch: 19, Batch: 1/47, Loss: 0.2128, Acc: 92.1875%
+Epoch: 19, Batch: 31/47, Loss: 0.3526, Acc: 85.9375%
+Epoch 19 Summary: Train Loss: 0.273 | Train Acc: 89.219 | Test Loss: 1.070 | Test Acc: 69.561% [Best Acc: 71.274%]
+End Epoch: 19/100 | Epoch Time: 272.52s | Train Used Time: 1:28:15.470747 | Left Time: 6:07:54.350216
+
+Start Epoch: 20/100 | Lr: 0.001000
+Epoch: 20, Batch: 1/47, Loss: 0.2044, Acc: 90.6250%
+Epoch: 20, Batch: 31/47, Loss: 0.4441, Acc: 81.2500%
+Epoch 20 Summary: Train Loss: 0.281 | Train Acc: 88.987 | Test Loss: 1.039 | Test Acc: 65.520% [Best Acc: 71.274%]
+End Epoch: 20/100 | Epoch Time: 271.99s | Train Used Time: 1:32:47.463437 | Left Time: 6:02:39.298935
+
+Start Epoch: 21/100 | Lr: 0.000500
+Epoch: 21, Batch: 1/47, Loss: 0.3204, Acc: 87.5000%
+Epoch: 21, Batch: 31/47, Loss: 0.2193, Acc: 90.6250%
+Epoch 21 Summary: Train Loss: 0.194 | Train Acc: 92.159 | Test Loss: 1.146 | Test Acc: 70.252% [Best Acc: 71.274%]
+End Epoch: 21/100 | Epoch Time: 298.07s | Train Used Time: 1:37:45.533582 | Left Time: 6:32:27.439888
+
+Start Epoch: 22/100 | Lr: 0.000500
+Epoch: 22, Batch: 1/47, Loss: 0.0945, Acc: 96.8750%
+Epoch: 22, Batch: 31/47, Loss: 0.2877, Acc: 89.0625%
+Saving the model at Epoch 22 with best acc: 72.491%
+Epoch 22 Summary: Train Loss: 0.137 | Train Acc: 94.937 | Test Loss: 1.166 | Test Acc: 72.491% [Best Acc: 72.491%]
+End Epoch: 22/100 | Epoch Time: 284.87s | Train Used Time: 1:42:30.409667 | Left Time: 6:10:20.220469
+
+Start Epoch: 23/100 | Lr: 0.000500
+Epoch: 23, Batch: 1/47, Loss: 0.0574, Acc: 98.4375%
+Epoch: 23, Batch: 31/47, Loss: 0.1427, Acc: 93.7500%
+Epoch 23 Summary: Train Loss: 0.132 | Train Acc: 95.170 | Test Loss: 1.304 | Test Acc: 70.403% [Best Acc: 72.491%]
+End Epoch: 23/100 | Epoch Time: 278.91s | Train Used Time: 1:47:09.316945 | Left Time: 5:57:55.731095
+
+Start Epoch: 24/100 | Lr: 0.000500
+Epoch: 24, Batch: 1/47, Loss: 0.0485, Acc: 98.4375%
+Epoch: 24, Batch: 31/47, Loss: 0.0332, Acc: 100.0000%
+Epoch 24 Summary: Train Loss: 0.097 | Train Acc: 96.766 | Test Loss: 1.704 | Test Acc: 60.847% [Best Acc: 72.491%]
+End Epoch: 24/100 | Epoch Time: 277.19s | Train Used Time: 1:51:46.510495 | Left Time: 5:51:06.589004
+
+Start Epoch: 25/100 | Lr: 0.000500
+Epoch: 25, Batch: 1/47, Loss: 0.0365, Acc: 100.0000%
+Epoch: 25, Batch: 31/47, Loss: 0.1569, Acc: 93.7500%
+Epoch 25 Summary: Train Loss: 0.095 | Train Acc: 96.343 | Test Loss: 1.535 | Test Acc: 68.344% [Best Acc: 72.491%]
+End Epoch: 25/100 | Epoch Time: 275.84s | Train Used Time: 1:56:22.355326 | Left Time: 5:44:48.280374
+
+Start Epoch: 26/100 | Lr: 0.000500
+Epoch: 26, Batch: 1/47, Loss: 0.0506, Acc: 98.4375%
+Epoch: 26, Batch: 31/47, Loss: 0.0707, Acc: 96.8750%
+Epoch 26 Summary: Train Loss: 0.108 | Train Acc: 95.740 | Test Loss: 1.237 | Test Acc: 70.252% [Best Acc: 72.491%]
+End Epoch: 26/100 | Epoch Time: 274.71s | Train Used Time: 2:00:57.067240 | Left Time: 5:38:48.603729
+
+Start Epoch: 27/100 | Lr: 0.000500
+Epoch: 27, Batch: 1/47, Loss: 0.0409, Acc: 98.4375%
+Epoch: 27, Batch: 31/47, Loss: 0.0616, Acc: 95.3125%
+Epoch 27 Summary: Train Loss: 0.108 | Train Acc: 96.134 | Test Loss: 1.444 | Test Acc: 71.469% [Best Acc: 72.491%]
+End Epoch: 27/100 | Epoch Time: 276.39s | Train Used Time: 2:05:33.462593 | Left Time: 5:36:16.751022
+
+Start Epoch: 28/100 | Lr: 0.000500
+Epoch: 28, Batch: 1/47, Loss: 0.0857, Acc: 98.4375%
+Epoch: 28, Batch: 31/47, Loss: 0.0378, Acc: 100.0000%
+Epoch 28 Summary: Train Loss: 0.105 | Train Acc: 96.025 | Test Loss: 1.678 | Test Acc: 64.979% [Best Acc: 72.491%]
+End Epoch: 28/100 | Epoch Time: 273.94s | Train Used Time: 2:10:07.401732 | Left Time: 5:28:43.542177
+
+Start Epoch: 29/100 | Lr: 0.000500
+Epoch: 29, Batch: 1/47, Loss: 0.0721, Acc: 98.4375%
+Epoch: 29, Batch: 31/47, Loss: 0.1727, Acc: 95.3125%
+Epoch 29 Summary: Train Loss: 0.093 | Train Acc: 96.794 | Test Loss: 1.386 | Test Acc: 69.126% [Best Acc: 72.491%]
+End Epoch: 29/100 | Epoch Time: 274.69s | Train Used Time: 2:14:42.095025 | Left Time: 5:25:03.138816
+
+Start Epoch: 30/100 | Lr: 0.000500
+Epoch: 30, Batch: 1/47, Loss: 0.0633, Acc: 98.4375%
+Epoch: 30, Batch: 31/47, Loss: 0.0847, Acc: 96.8750%
+Epoch 30 Summary: Train Loss: 0.096 | Train Acc: 96.372 | Test Loss: 1.625 | Test Acc: 71.169% [Best Acc: 72.491%]
+End Epoch: 30/100 | Epoch Time: 274.74s | Train Used Time: 2:19:16.834766 | Left Time: 5:20:31.674664
+
+Start Epoch: 31/100 | Lr: 0.000500
+Epoch: 31, Batch: 1/47, Loss: 0.0824, Acc: 98.4375%
+Epoch: 31, Batch: 31/47, Loss: 0.1485, Acc: 93.7500%
+Epoch 31 Summary: Train Loss: 0.076 | Train Acc: 97.331 | Test Loss: 1.593 | Test Acc: 71.169% [Best Acc: 72.491%]
+End Epoch: 31/100 | Epoch Time: 274.49s | Train Used Time: 2:23:51.325238 | Left Time: 5:15:39.715523
+
+Start Epoch: 32/100 | Lr: 0.000500
+Epoch: 32, Batch: 1/47, Loss: 0.1429, Acc: 92.1875%
+Epoch: 32, Batch: 31/47, Loss: 0.0420, Acc: 98.4375%
+Epoch 32 Summary: Train Loss: 0.072 | Train Acc: 97.131 | Test Loss: 1.635 | Test Acc: 68.930% [Best Acc: 72.491%]
+End Epoch: 32/100 | Epoch Time: 276.74s | Train Used Time: 2:28:28.070237 | Left Time: 5:13:38.568911
+
+Start Epoch: 33/100 | Lr: 0.000500
+Epoch: 33, Batch: 1/47, Loss: 0.0606, Acc: 96.8750%
+Epoch: 33, Batch: 31/47, Loss: 0.0580, Acc: 98.4375%
+Epoch 33 Summary: Train Loss: 0.057 | Train Acc: 97.896 | Test Loss: 1.882 | Test Acc: 66.541% [Best Acc: 72.491%]
+End Epoch: 33/100 | Epoch Time: 273.55s | Train Used Time: 2:33:01.623543 | Left Time: 5:05:28.002805
+
+Start Epoch: 34/100 | Lr: 0.000500
+Epoch: 34, Batch: 1/47, Loss: 0.0181, Acc: 100.0000%
+Epoch: 34, Batch: 31/47, Loss: 0.0572, Acc: 96.8750%
+Epoch 34 Summary: Train Loss: 0.063 | Train Acc: 97.920 | Test Loss: 1.643 | Test Acc: 70.688% [Best Acc: 72.491%]
+End Epoch: 34/100 | Epoch Time: 273.33s | Train Used Time: 2:37:34.951541 | Left Time: 5:00:39.573339
+
+Start Epoch: 35/100 | Lr: 0.000500
+Epoch: 35, Batch: 1/47, Loss: 0.0374, Acc: 98.4375%
+Epoch: 35, Batch: 31/47, Loss: 0.0771, Acc: 96.8750%
+Epoch 35 Summary: Train Loss: 0.081 | Train Acc: 97.032 | Test Loss: 1.678 | Test Acc: 69.366% [Best Acc: 72.491%]
+End Epoch: 35/100 | Epoch Time: 275.00s | Train Used Time: 2:42:09.953682 | Left Time: 4:57:55.057495
+
+Start Epoch: 36/100 | Lr: 0.000500
+Epoch: 36, Batch: 1/47, Loss: 0.0176, Acc: 100.0000%
+Epoch: 36, Batch: 31/47, Loss: 0.2326, Acc: 92.1875%
+Epoch 36 Summary: Train Loss: 0.094 | Train Acc: 96.505 | Test Loss: 1.776 | Test Acc: 69.321% [Best Acc: 72.491%]
+End Epoch: 36/100 | Epoch Time: 271.78s | Train Used Time: 2:46:41.739516 | Left Time: 4:49:54.222778
+
+Start Epoch: 37/100 | Lr: 0.000500
+Epoch: 37, Batch: 1/47, Loss: 0.0581, Acc: 96.8750%
+Epoch: 37, Batch: 31/47, Loss: 0.1919, Acc: 92.1875%
+Epoch 37 Summary: Train Loss: 0.070 | Train Acc: 97.507 | Test Loss: 1.783 | Test Acc: 70.838% [Best Acc: 72.491%]
+End Epoch: 37/100 | Epoch Time: 273.34s | Train Used Time: 2:51:15.076597 | Left Time: 4:47:00.201103
+
+Start Epoch: 38/100 | Lr: 0.000500
+Epoch: 38, Batch: 1/47, Loss: 0.0623, Acc: 96.8750%
+Epoch: 38, Batch: 31/47, Loss: 0.0173, Acc: 100.0000%
+Epoch 38 Summary: Train Loss: 0.067 | Train Acc: 97.459 | Test Loss: 1.833 | Test Acc: 69.231% [Best Acc: 72.491%]
+End Epoch: 38/100 | Epoch Time: 275.69s | Train Used Time: 2:55:50.768320 | Left Time: 4:44:52.808607
+
+Start Epoch: 39/100 | Lr: 0.000500
+Epoch: 39, Batch: 1/47, Loss: 0.0484, Acc: 98.4375%
+Epoch: 39, Batch: 31/47, Loss: 0.1102, Acc: 95.3125%
+Saving the model at Epoch 39 with best acc: 72.927%
+Epoch 39 Summary: Train Loss: 0.044 | Train Acc: 98.466 | Test Loss: 1.778 | Test Acc: 72.927% [Best Acc: 72.927%]
+End Epoch: 39/100 | Epoch Time: 279.06s | Train Used Time: 3:00:29.828235 | Left Time: 4:43:42.579673
+
+Start Epoch: 40/100 | Lr: 0.000500
+Epoch: 40, Batch: 1/47, Loss: 0.1054, Acc: 95.3125%
+Epoch: 40, Batch: 31/47, Loss: 0.0593, Acc: 98.4375%
+Epoch 40 Summary: Train Loss: 0.042 | Train Acc: 98.537 | Test Loss: 1.881 | Test Acc: 68.149% [Best Acc: 72.927%]
+End Epoch: 40/100 | Epoch Time: 276.75s | Train Used Time: 3:05:06.579152 | Left Time: 4:36:44.975796
+
+Start Epoch: 41/100 | Lr: 0.000250
+Epoch: 41, Batch: 1/47, Loss: 0.0053, Acc: 100.0000%
+Epoch: 41, Batch: 31/47, Loss: 0.0557, Acc: 98.4375%
+Saving the model at Epoch 41 with best acc: 73.077%
+Epoch 41 Summary: Train Loss: 0.034 | Train Acc: 98.737 | Test Loss: 1.766 | Test Acc: 73.077% [Best Acc: 73.077%]
+End Epoch: 41/100 | Epoch Time: 274.22s | Train Used Time: 3:09:40.802998 | Left Time: 4:29:39.136522
+
+Start Epoch: 42/100 | Lr: 0.000250
+Epoch: 42, Batch: 1/47, Loss: 0.0035, Acc: 100.0000%
+Epoch: 42, Batch: 31/47, Loss: 0.0024, Acc: 100.0000%
+Epoch 42 Summary: Train Loss: 0.017 | Train Acc: 99.601 | Test Loss: 1.738 | Test Acc: 71.424% [Best Acc: 73.077%]
+End Epoch: 42/100 | Epoch Time: 273.76s | Train Used Time: 3:14:14.563796 | Left Time: 4:24:38.087453
+
+Start Epoch: 43/100 | Lr: 0.000250
+Epoch: 43, Batch: 1/47, Loss: 0.0123, Acc: 100.0000%
+Epoch: 43, Batch: 31/47, Loss: 0.0903, Acc: 96.8750%
+Epoch 43 Summary: Train Loss: 0.027 | Train Acc: 99.102 | Test Loss: 1.778 | Test Acc: 70.343% [Best Acc: 73.077%]
+End Epoch: 43/100 | Epoch Time: 276.86s | Train Used Time: 3:18:51.429368 | Left Time: 4:23:01.251375
+
+Start Epoch: 44/100 | Lr: 0.000250
+Epoch: 44, Batch: 1/47, Loss: 0.0096, Acc: 100.0000%
+Epoch: 44, Batch: 31/47, Loss: 0.0133, Acc: 100.0000%
+Epoch 44 Summary: Train Loss: 0.016 | Train Acc: 99.501 | Test Loss: 2.022 | Test Acc: 69.186% [Best Acc: 73.077%]
+End Epoch: 44/100 | Epoch Time: 277.94s | Train Used Time: 3:23:29.368812 | Left Time: 4:19:24.547998
+
+Start Epoch: 45/100 | Lr: 0.000250
+Epoch: 45, Batch: 1/47, Loss: 0.0020, Acc: 100.0000%
+Epoch: 45, Batch: 31/47, Loss: 0.0185, Acc: 98.4375%
+Epoch 45 Summary: Train Loss: 0.013 | Train Acc: 99.634 | Test Loss: 1.801 | Test Acc: 71.319% [Best Acc: 73.077%]
+End Epoch: 45/100 | Epoch Time: 276.74s | Train Used Time: 3:28:06.112900 | Left Time: 4:13:40.863087
+
+Start Epoch: 46/100 | Lr: 0.000250
+Epoch: 46, Batch: 1/47, Loss: 0.0046, Acc: 100.0000%
+Epoch: 46, Batch: 31/47, Loss: 0.0020, Acc: 100.0000%
+Epoch 46 Summary: Train Loss: 0.009 | Train Acc: 99.734 | Test Loss: 1.936 | Test Acc: 72.010% [Best Acc: 73.077%]
+End Epoch: 46/100 | Epoch Time: 273.79s | Train Used Time: 3:32:39.899847 | Left Time: 4:06:24.424084
+
+Start Epoch: 47/100 | Lr: 0.000250
+Epoch: 47, Batch: 1/47, Loss: 0.0016, Acc: 100.0000%
+Epoch: 47, Batch: 31/47, Loss: 0.0348, Acc: 98.4375%
+Epoch 47 Summary: Train Loss: 0.008 | Train Acc: 99.834 | Test Loss: 1.908 | Test Acc: 71.905% [Best Acc: 73.077%]
+End Epoch: 47/100 | Epoch Time: 276.32s | Train Used Time: 3:37:16.225226 | Left Time: 4:04:05.169239
+
+Start Epoch: 48/100 | Lr: 0.000250
+Epoch: 48, Batch: 1/47, Loss: 0.0104, Acc: 100.0000%
+Epoch: 48, Batch: 31/47, Loss: 0.0083, Acc: 100.0000%
+Epoch 48 Summary: Train Loss: 0.012 | Train Acc: 99.634 | Test Loss: 2.035 | Test Acc: 71.620% [Best Acc: 73.077%]
+End Epoch: 48/100 | Epoch Time: 277.71s | Train Used Time: 3:41:53.937922 | Left Time: 4:00:41.011882
+
+Start Epoch: 49/100 | Lr: 0.000250
+Epoch: 49, Batch: 1/47, Loss: 0.0319, Acc: 98.4375%
+Epoch: 49, Batch: 31/47, Loss: 0.0018, Acc: 100.0000%
+Epoch 49 Summary: Train Loss: 0.012 | Train Acc: 99.601 | Test Loss: 1.936 | Test Acc: 72.010% [Best Acc: 73.077%]
+End Epoch: 49/100 | Epoch Time: 275.93s | Train Used Time: 3:46:29.867653 | Left Time: 3:54:32.329057
+
+Start Epoch: 50/100 | Lr: 0.000250
+Epoch: 50, Batch: 1/47, Loss: 0.0046, Acc: 100.0000%
+Epoch: 50, Batch: 31/47, Loss: 0.0181, Acc: 100.0000%
+Epoch 50 Summary: Train Loss: 0.008 | Train Acc: 99.834 | Test Loss: 2.006 | Test Acc: 71.034% [Best Acc: 73.077%]
+End Epoch: 50/100 | Epoch Time: 272.54s | Train Used Time: 3:51:02.410367 | Left Time: 3:47:07.087557
+
+Start Epoch: 51/100 | Lr: 0.000250
+Epoch: 51, Batch: 1/47, Loss: 0.0085, Acc: 100.0000%
+Epoch: 51, Batch: 31/47, Loss: 0.0114, Acc: 100.0000%
+Epoch 51 Summary: Train Loss: 0.011 | Train Acc: 99.701 | Test Loss: 1.984 | Test Acc: 72.100% [Best Acc: 73.077%]
+End Epoch: 51/100 | Epoch Time: 276.23s | Train Used Time: 3:55:38.641547 | Left Time: 3:45:35.284534
+
+Start Epoch: 52/100 | Lr: 0.000250
+Epoch: 52, Batch: 1/47, Loss: 0.0006, Acc: 100.0000%
+Epoch: 52, Batch: 31/47, Loss: 0.0061, Acc: 100.0000%
+Epoch 52 Summary: Train Loss: 0.007 | Train Acc: 99.834 | Test Loss: 2.202 | Test Acc: 67.563% [Best Acc: 73.077%]
+End Epoch: 52/100 | Epoch Time: 273.99s | Train Used Time: 4:00:12.631401 | Left Time: 3:39:11.463261
+
+Start Epoch: 53/100 | Lr: 0.000250
+Epoch: 53, Batch: 1/47, Loss: 0.0025, Acc: 100.0000%
+Epoch: 53, Batch: 31/47, Loss: 0.0073, Acc: 100.0000%
+Epoch 53 Summary: Train Loss: 0.008 | Train Acc: 99.767 | Test Loss: 2.060 | Test Acc: 70.688% [Best Acc: 73.077%]
+End Epoch: 53/100 | Epoch Time: 274.05s | Train Used Time: 4:04:46.684601 | Left Time: 3:34:40.456250
+
+Start Epoch: 54/100 | Lr: 0.000250
+Epoch: 54, Batch: 1/47, Loss: 0.0013, Acc: 100.0000%
+Epoch: 54, Batch: 31/47, Loss: 0.0283, Acc: 98.4375%
+Epoch 54 Summary: Train Loss: 0.011 | Train Acc: 99.596 | Test Loss: 1.982 | Test Acc: 71.319% [Best Acc: 73.077%]
+End Epoch: 54/100 | Epoch Time: 273.08s | Train Used Time: 4:09:19.763732 | Left Time: 3:29:21.573614
+
+Start Epoch: 55/100 | Lr: 0.000250
+Epoch: 55, Batch: 1/47, Loss: 0.0010, Acc: 100.0000%
+Epoch: 55, Batch: 31/47, Loss: 0.0005, Acc: 100.0000%
+Epoch 55 Summary: Train Loss: 0.009 | Train Acc: 99.668 | Test Loss: 2.089 | Test Acc: 71.079% [Best Acc: 73.077%]
+End Epoch: 55/100 | Epoch Time: 273.58s | Train Used Time: 4:13:53.345341 | Left Time: 3:25:11.153780
+
+Start Epoch: 56/100 | Lr: 0.000250
+Epoch: 56, Batch: 1/47, Loss: 0.0014, Acc: 100.0000%
+Epoch: 56, Batch: 31/47, Loss: 0.0036, Acc: 100.0000%
+Epoch 56 Summary: Train Loss: 0.009 | Train Acc: 99.734 | Test Loss: 2.286 | Test Acc: 67.623% [Best Acc: 73.077%]
+End Epoch: 56/100 | Epoch Time: 273.10s | Train Used Time: 4:18:26.443411 | Left Time: 3:20:16.262204
+
+Start Epoch: 57/100 | Lr: 0.000250
+Epoch: 57, Batch: 1/47, Loss: 0.0024, Acc: 100.0000%
+Epoch: 57, Batch: 31/47, Loss: 0.0026, Acc: 100.0000%
+Epoch 57 Summary: Train Loss: 0.009 | Train Acc: 99.634 | Test Loss: 2.024 | Test Acc: 71.665% [Best Acc: 73.077%]
+End Epoch: 57/100 | Epoch Time: 276.82s | Train Used Time: 4:23:03.265175 | Left Time: 3:18:23.275898
+
+Start Epoch: 58/100 | Lr: 0.000250
+Epoch: 58, Batch: 1/47, Loss: 0.0027, Acc: 100.0000%
+Epoch: 58, Batch: 31/47, Loss: 0.0033, Acc: 100.0000%
+Epoch 58 Summary: Train Loss: 0.013 | Train Acc: 99.568 | Test Loss: 2.224 | Test Acc: 67.999% [Best Acc: 73.077%]
+End Epoch: 58/100 | Epoch Time: 274.20s | Train Used Time: 4:27:37.470894 | Left Time: 3:11:56.584362
+
+Start Epoch: 59/100 | Lr: 0.000250
+Epoch: 59, Batch: 1/47, Loss: 0.0072, Acc: 100.0000%
+Epoch: 59, Batch: 31/47, Loss: 0.0013, Acc: 100.0000%
+Epoch 59 Summary: Train Loss: 0.012 | Train Acc: 99.535 | Test Loss: 2.025 | Test Acc: 72.010% [Best Acc: 73.077%]
+End Epoch: 59/100 | Epoch Time: 273.68s | Train Used Time: 4:32:11.153961 | Left Time: 3:07:00.957207
+
+Start Epoch: 60/100 | Lr: 0.000250
+Epoch: 60, Batch: 1/47, Loss: 0.0326, Acc: 98.4375%
+Epoch: 60, Batch: 31/47, Loss: 0.0017, Acc: 100.0000%
+Epoch 60 Summary: Train Loss: 0.013 | Train Acc: 99.435 | Test Loss: 2.217 | Test Acc: 68.690% [Best Acc: 73.077%]
+End Epoch: 60/100 | Epoch Time: 274.73s | Train Used Time: 4:36:45.886816 | Left Time: 3:03:09.262867
+
+Start Epoch: 61/100 | Lr: 0.000125
+Epoch: 61, Batch: 1/47, Loss: 0.0025, Acc: 100.0000%
+Epoch: 61, Batch: 31/47, Loss: 0.0010, Acc: 100.0000%
+Epoch 61 Summary: Train Loss: 0.008 | Train Acc: 99.867 | Test Loss: 2.119 | Test Acc: 72.145% [Best Acc: 73.077%]
+End Epoch: 61/100 | Epoch Time: 276.00s | Train Used Time: 4:41:21.886447 | Left Time: 2:59:23.944582
+
+Start Epoch: 62/100 | Lr: 0.000125
+Epoch: 62, Batch: 1/47, Loss: 0.0052, Acc: 100.0000%
+Epoch: 62, Batch: 31/47, Loss: 0.0025, Acc: 100.0000%
+Epoch 62 Summary: Train Loss: 0.006 | Train Acc: 99.763 | Test Loss: 2.121 | Test Acc: 72.536% [Best Acc: 73.077%]
+End Epoch: 62/100 | Epoch Time: 274.65s | Train Used Time: 4:45:56.536443 | Left Time: 2:53:56.652611
+
+Start Epoch: 63/100 | Lr: 0.000125
+Epoch: 63, Batch: 1/47, Loss: 0.0014, Acc: 100.0000%
+Epoch: 63, Batch: 31/47, Loss: 0.0350, Acc: 98.4375%
+Epoch 63 Summary: Train Loss: 0.004 | Train Acc: 99.934 | Test Loss: 2.150 | Test Acc: 71.755% [Best Acc: 73.077%]
+End Epoch: 63/100 | Epoch Time: 272.99s | Train Used Time: 4:50:29.527536 | Left Time: 2:48:20.613460
+
+Start Epoch: 64/100 | Lr: 0.000125
+Epoch: 64, Batch: 1/47, Loss: 0.0013, Acc: 100.0000%
+Epoch: 64, Batch: 31/47, Loss: 0.0007, Acc: 100.0000%
+Epoch 64 Summary: Train Loss: 0.003 | Train Acc: 99.967 | Test Loss: 2.131 | Test Acc: 71.514% [Best Acc: 73.077%]
+End Epoch: 64/100 | Epoch Time: 276.70s | Train Used Time: 4:55:06.229582 | Left Time: 2:46:01.217683
+
+Start Epoch: 65/100 | Lr: 0.000125
+Epoch: 65, Batch: 1/47, Loss: 0.0002, Acc: 100.0000%
+Epoch: 65, Batch: 31/47, Loss: 0.0037, Acc: 100.0000%
+Epoch 65 Summary: Train Loss: 0.003 | Train Acc: 99.967 | Test Loss: 2.179 | Test Acc: 71.755% [Best Acc: 73.077%]
+End Epoch: 65/100 | Epoch Time: 274.55s | Train Used Time: 4:59:40.782870 | Left Time: 2:40:09.317774
+
+Start Epoch: 66/100 | Lr: 0.000125
+Epoch: 66, Batch: 1/47, Loss: 0.0061, Acc: 100.0000%
+Epoch: 66, Batch: 31/47, Loss: 0.0022, Acc: 100.0000%
+Epoch 66 Summary: Train Loss: 0.004 | Train Acc: 99.900 | Test Loss: 2.221 | Test Acc: 69.802% [Best Acc: 73.077%]
+End Epoch: 66/100 | Epoch Time: 278.01s | Train Used Time: 5:04:18.797662 | Left Time: 2:37:32.466214
+
+Start Epoch: 67/100 | Lr: 0.000125
+Epoch: 67, Batch: 1/47, Loss: 0.0013, Acc: 100.0000%
+Epoch: 67, Batch: 31/47, Loss: 0.0013, Acc: 100.0000%
+Epoch 67 Summary: Train Loss: 0.005 | Train Acc: 99.801 | Test Loss: 2.215 | Test Acc: 71.124% [Best Acc: 73.077%]
+End Epoch: 67/100 | Epoch Time: 274.80s | Train Used Time: 5:08:53.597555 | Left Time: 2:31:08.357599
+
+Start Epoch: 68/100 | Lr: 0.000125
+Epoch: 68, Batch: 1/47, Loss: 0.0003, Acc: 100.0000%
+Epoch: 68, Batch: 31/47, Loss: 0.0018, Acc: 100.0000%
+Epoch 68 Summary: Train Loss: 0.005 | Train Acc: 99.834 | Test Loss: 2.210 | Test Acc: 71.319% [Best Acc: 73.077%]
+End Epoch: 68/100 | Epoch Time: 273.00s | Train Used Time: 5:13:26.597626 | Left Time: 2:25:35.946213
+
+Start Epoch: 69/100 | Lr: 0.000125
+Epoch: 69, Batch: 1/47, Loss: 0.0024, Acc: 100.0000%
+Epoch: 69, Batch: 31/47, Loss: 0.0007, Acc: 100.0000%
+Epoch 69 Summary: Train Loss: 0.003 | Train Acc: 99.967 | Test Loss: 2.210 | Test Acc: 72.055% [Best Acc: 73.077%]
+End Epoch: 69/100 | Epoch Time: 274.19s | Train Used Time: 5:18:00.784410 | Left Time: 2:21:39.741414
+
+Start Epoch: 70/100 | Lr: 0.000125
+Epoch: 70, Batch: 1/47, Loss: 0.0001, Acc: 100.0000%
+Epoch: 70, Batch: 31/47, Loss: 0.0048, Acc: 100.0000%
+Epoch 70 Summary: Train Loss: 0.002 | Train Acc: 99.967 | Test Loss: 2.182 | Test Acc: 72.491% [Best Acc: 73.077%]
+End Epoch: 70/100 | Epoch Time: 276.60s | Train Used Time: 5:22:37.389408 | Left Time: 2:18:18.115919
+
+Start Epoch: 71/100 | Lr: 0.000125
+Epoch: 71, Batch: 1/47, Loss: 0.0004, Acc: 100.0000%
+Epoch: 71, Batch: 31/47, Loss: 0.0027, Acc: 100.0000%
+Epoch 71 Summary: Train Loss: 0.003 | Train Acc: 99.934 | Test Loss: 2.383 | Test Acc: 70.688% [Best Acc: 73.077%]
+End Epoch: 71/100 | Epoch Time: 274.45s | Train Used Time: 5:27:11.838899 | Left Time: 2:12:39.008205
+
+Start Epoch: 72/100 | Lr: 0.000125
+Epoch: 72, Batch: 1/47, Loss: 0.0002, Acc: 100.0000%
+Epoch: 72, Batch: 31/47, Loss: 0.0023, Acc: 100.0000%
+Epoch 72 Summary: Train Loss: 0.002 | Train Acc: 100.000 | Test Loss: 2.292 | Test Acc: 71.184% [Best Acc: 73.077%]
+End Epoch: 72/100 | Epoch Time: 276.24s | Train Used Time: 5:31:48.079970 | Left Time: 2:08:54.737611
+
+Start Epoch: 73/100 | Lr: 0.000125
+Epoch: 73, Batch: 1/47, Loss: 0.0002, Acc: 100.0000%
+Epoch: 73, Batch: 31/47, Loss: 0.0001, Acc: 100.0000%
+Epoch 73 Summary: Train Loss: 0.001 | Train Acc: 99.967 | Test Loss: 2.230 | Test Acc: 71.860% [Best Acc: 73.077%]
+End Epoch: 73/100 | Epoch Time: 278.50s | Train Used Time: 5:36:26.581928 | Left Time: 2:05:19.523309
+
+Start Epoch: 74/100 | Lr: 0.000125
+Epoch: 74, Batch: 1/47, Loss: 0.0007, Acc: 100.0000%
+Epoch: 74, Batch: 31/47, Loss: 0.0008, Acc: 100.0000%
+Epoch 74 Summary: Train Loss: 0.002 | Train Acc: 99.967 | Test Loss: 2.254 | Test Acc: 72.055% [Best Acc: 73.077%]
+End Epoch: 74/100 | Epoch Time: 275.24s | Train Used Time: 5:41:01.818589 | Left Time: 1:59:16.118130
+
+Start Epoch: 75/100 | Lr: 0.000125
+Epoch: 75, Batch: 1/47, Loss: 0.0004, Acc: 100.0000%
+Epoch: 75, Batch: 31/47, Loss: 0.0036, Acc: 100.0000%
+Epoch 75 Summary: Train Loss: 0.002 | Train Acc: 99.967 | Test Loss: 2.225 | Test Acc: 72.055% [Best Acc: 73.077%]
+End Epoch: 75/100 | Epoch Time: 276.40s | Train Used Time: 5:45:38.219957 | Left Time: 1:55:09.985077
+
+Start Epoch: 76/100 | Lr: 0.000125
+Epoch: 76, Batch: 1/47, Loss: 0.0021, Acc: 100.0000%
+Epoch: 76, Batch: 31/47, Loss: 0.0002, Acc: 100.0000%
+Epoch 76 Summary: Train Loss: 0.002 | Train Acc: 99.967 | Test Loss: 2.270 | Test Acc: 71.514% [Best Acc: 73.077%]
+End Epoch: 76/100 | Epoch Time: 276.59s | Train Used Time: 5:50:14.806295 | Left Time: 1:50:38.046770
+
+Start Epoch: 77/100 | Lr: 0.000125
+Epoch: 77, Batch: 1/47, Loss: 0.0009, Acc: 100.0000%
+Epoch: 77, Batch: 31/47, Loss: 0.0005, Acc: 100.0000%
+Epoch 77 Summary: Train Loss: 0.003 | Train Acc: 99.900 | Test Loss: 2.488 | Test Acc: 70.147% [Best Acc: 73.077%]
+End Epoch: 77/100 | Epoch Time: 276.21s | Train Used Time: 5:54:51.017995 | Left Time: 1:45:52.843990
+
+Start Epoch: 78/100 | Lr: 0.000125
+Epoch: 78, Batch: 1/47, Loss: 0.0009, Acc: 100.0000%
+Epoch: 78, Batch: 31/47, Loss: 0.0054, Acc: 100.0000%
+Epoch 78 Summary: Train Loss: 0.008 | Train Acc: 99.767 | Test Loss: 2.270 | Test Acc: 71.860% [Best Acc: 73.077%]
+End Epoch: 78/100 | Epoch Time: 274.00s | Train Used Time: 5:59:25.020970 | Left Time: 1:40:28.031345
+
+Start Epoch: 79/100 | Lr: 0.000125
+Epoch: 79, Batch: 1/47, Loss: 0.0009, Acc: 100.0000%
+Epoch: 79, Batch: 31/47, Loss: 0.0027, Acc: 100.0000%
+Epoch 79 Summary: Train Loss: 0.005 | Train Acc: 99.834 | Test Loss: 2.289 | Test Acc: 71.860% [Best Acc: 73.077%]
+End Epoch: 79/100 | Epoch Time: 285.97s | Train Used Time: 6:04:10.994485 | Left Time: 1:40:05.397578
+
+Start Epoch: 80/100 | Lr: 0.000125
+Epoch: 80, Batch: 1/47, Loss: 0.0913, Acc: 98.4375%
+Epoch: 80, Batch: 31/47, Loss: 0.0059, Acc: 100.0000%
+Epoch 80 Summary: Train Loss: 0.005 | Train Acc: 99.867 | Test Loss: 2.320 | Test Acc: 70.102% [Best Acc: 73.077%]
+End Epoch: 80/100 | Epoch Time: 277.17s | Train Used Time: 6:08:48.170543 | Left Time: 1:32:23.499060
+
+Start Epoch: 81/100 | Lr: 0.000063
+Epoch: 81, Batch: 1/47, Loss: 0.0004, Acc: 100.0000%
+Epoch: 81, Batch: 31/47, Loss: 0.0039, Acc: 100.0000%
+Epoch 81 Summary: Train Loss: 0.004 | Train Acc: 99.834 | Test Loss: 2.208 | Test Acc: 72.446% [Best Acc: 73.077%]
+End Epoch: 81/100 | Epoch Time: 274.73s | Train Used Time: 6:13:22.898161 | Left Time: 1:26:59.792679
+
+Start Epoch: 82/100 | Lr: 0.000063
+Epoch: 82, Batch: 1/47, Loss: 0.0014, Acc: 100.0000%
+Epoch: 82, Batch: 31/47, Loss: 0.0002, Acc: 100.0000%
+Epoch 82 Summary: Train Loss: 0.001 | Train Acc: 100.000 | Test Loss: 2.224 | Test Acc: 72.100% [Best Acc: 73.077%]
+End Epoch: 82/100 | Epoch Time: 275.13s | Train Used Time: 6:17:58.030111 | Left Time: 1:22:32.351817
+
+Start Epoch: 83/100 | Lr: 0.000063
+Epoch: 83, Batch: 1/47, Loss: 0.0003, Acc: 100.0000%
+Epoch: 83, Batch: 31/47, Loss: 0.0001, Acc: 100.0000%
+Epoch 83 Summary: Train Loss: 0.002 | Train Acc: 99.967 | Test Loss: 2.280 | Test Acc: 72.100% [Best Acc: 73.077%]
+End Epoch: 83/100 | Epoch Time: 278.73s | Train Used Time: 6:22:36.757654 | Left Time: 1:18:58.351635
+
+Start Epoch: 84/100 | Lr: 0.000063
+Epoch: 84, Batch: 1/47, Loss: 0.0011, Acc: 100.0000%
+Epoch: 84, Batch: 31/47, Loss: 0.0005, Acc: 100.0000%
+Epoch 84 Summary: Train Loss: 0.001 | Train Acc: 99.967 | Test Loss: 2.246 | Test Acc: 72.882% [Best Acc: 73.077%]
+End Epoch: 84/100 | Epoch Time: 276.51s | Train Used Time: 6:27:13.265500 | Left Time: 1:13:44.098251
+
+Start Epoch: 85/100 | Lr: 0.000063
+Epoch: 85, Batch: 1/47, Loss: 0.0004, Acc: 100.0000%
+Epoch: 85, Batch: 31/47, Loss: 0.0082, Acc: 100.0000%
+Epoch 85 Summary: Train Loss: 0.002 | Train Acc: 100.000 | Test Loss: 2.333 | Test Acc: 71.319% [Best Acc: 73.077%]
+End Epoch: 85/100 | Epoch Time: 275.84s | Train Used Time: 6:31:49.102811 | Left Time: 1:08:57.541634
+
+Start Epoch: 86/100 | Lr: 0.000063
+Epoch: 86, Batch: 1/47, Loss: 0.0002, Acc: 100.0000%
+Epoch: 86, Batch: 31/47, Loss: 0.0001, Acc: 100.0000%
+Epoch 86 Summary: Train Loss: 0.001 | Train Acc: 100.000 | Test Loss: 2.262 | Test Acc: 72.882% [Best Acc: 73.077%]
+End Epoch: 86/100 | Epoch Time: 274.99s | Train Used Time: 6:36:24.098841 | Left Time: 1:04:09.929181
+
+Start Epoch: 87/100 | Lr: 0.000063
+Epoch: 87, Batch: 1/47, Loss: 0.0002, Acc: 100.0000%
+Epoch: 87, Batch: 31/47, Loss: 0.0016, Acc: 100.0000%
+Epoch 87 Summary: Train Loss: 0.002 | Train Acc: 99.934 | Test Loss: 2.255 | Test Acc: 73.077% [Best Acc: 73.077%]
+End Epoch: 87/100 | Epoch Time: 274.77s | Train Used Time: 6:40:58.873164 | Left Time: 0:59:32.049174
+
+Start Epoch: 88/100 | Lr: 0.000063
+Epoch: 88, Batch: 1/47, Loss: 0.0004, Acc: 100.0000%
+Epoch: 88, Batch: 31/47, Loss: 0.0006, Acc: 100.0000%
+Epoch 88 Summary: Train Loss: 0.001 | Train Acc: 100.000 | Test Loss: 2.309 | Test Acc: 72.296% [Best Acc: 73.077%]
+End Epoch: 88/100 | Epoch Time: 275.74s | Train Used Time: 6:45:34.616007 | Left Time: 0:55:08.900242
+
+Start Epoch: 89/100 | Lr: 0.000063
+Epoch: 89, Batch: 1/47, Loss: 0.0002, Acc: 100.0000%
+Epoch: 89, Batch: 31/47, Loss: 0.0003, Acc: 100.0000%
+Epoch 89 Summary: Train Loss: 0.001 | Train Acc: 100.000 | Test Loss: 2.332 | Test Acc: 72.100% [Best Acc: 73.077%]
+End Epoch: 89/100 | Epoch Time: 275.43s | Train Used Time: 6:50:10.048923 | Left Time: 0:50:29.751894
+
+Start Epoch: 90/100 | Lr: 0.000063
+Epoch: 90, Batch: 1/47, Loss: 0.0004, Acc: 100.0000%
+Epoch: 90, Batch: 31/47, Loss: 0.0003, Acc: 100.0000%
+Epoch 90 Summary: Train Loss: 0.001 | Train Acc: 100.000 | Test Loss: 2.224 | Test Acc: 72.491% [Best Acc: 73.077%]
+End Epoch: 90/100 | Epoch Time: 274.34s | Train Used Time: 6:54:44.392353 | Left Time: 0:45:43.421900
+
+Start Epoch: 91/100 | Lr: 0.000063
+Epoch: 91, Batch: 1/47, Loss: 0.0168, Acc: 98.4375%
+Epoch: 91, Batch: 31/47, Loss: 0.0001, Acc: 100.0000%
+Epoch 91 Summary: Train Loss: 0.001 | Train Acc: 99.967 | Test Loss: 2.300 | Test Acc: 71.710% [Best Acc: 73.077%]
+End Epoch: 91/100 | Epoch Time: 276.78s | Train Used Time: 6:59:21.175879 | Left Time: 0:41:31.042670
+
+Start Epoch: 92/100 | Lr: 0.000063
+Epoch: 92, Batch: 1/47, Loss: 0.0004, Acc: 100.0000%
+Epoch: 92, Batch: 31/47, Loss: 0.0001, Acc: 100.0000%
+Epoch 92 Summary: Train Loss: 0.001 | Train Acc: 100.000 | Test Loss: 2.235 | Test Acc: 72.686% [Best Acc: 73.077%]
+End Epoch: 92/100 | Epoch Time: 280.15s | Train Used Time: 7:04:01.328283 | Left Time: 0:37:21.211039
+
+Start Epoch: 93/100 | Lr: 0.000063
+Epoch: 93, Batch: 1/47, Loss: 0.0004, Acc: 100.0000%
+Epoch: 93, Batch: 31/47, Loss: 0.0042, Acc: 100.0000%
+Epoch 93 Summary: Train Loss: 0.001 | Train Acc: 100.000 | Test Loss: 2.235 | Test Acc: 73.032% [Best Acc: 73.077%]
+End Epoch: 93/100 | Epoch Time: 275.80s | Train Used Time: 7:08:37.128854 | Left Time: 0:32:10.596078
+
+Start Epoch: 94/100 | Lr: 0.000063
+Epoch: 94, Batch: 1/47, Loss: 0.0004, Acc: 100.0000%
+Epoch: 94, Batch: 31/47, Loss: 0.0020, Acc: 100.0000%
+Epoch 94 Summary: Train Loss: 0.002 | Train Acc: 99.934 | Test Loss: 2.270 | Test Acc: 71.860% [Best Acc: 73.077%]
+End Epoch: 94/100 | Epoch Time: 277.30s | Train Used Time: 7:13:14.427333 | Left Time: 0:27:43.782311
+
+Start Epoch: 95/100 | Lr: 0.000063
+Epoch: 95, Batch: 1/47, Loss: 0.0001, Acc: 100.0000%
+Epoch: 95, Batch: 31/47, Loss: 0.0012, Acc: 100.0000%
+Epoch 95 Summary: Train Loss: 0.001 | Train Acc: 100.000 | Test Loss: 2.325 | Test Acc: 72.251% [Best Acc: 73.077%]
+End Epoch: 95/100 | Epoch Time: 295.33s | Train Used Time: 7:18:09.759003 | Left Time: 0:24:36.652282
+
+Start Epoch: 96/100 | Lr: 0.000063
+Epoch: 96, Batch: 1/47, Loss: 0.0005, Acc: 100.0000%
+Epoch: 96, Batch: 31/47, Loss: 0.0006, Acc: 100.0000%
+Epoch 96 Summary: Train Loss: 0.002 | Train Acc: 99.934 | Test Loss: 2.243 | Test Acc: 73.077% [Best Acc: 73.077%]
+End Epoch: 96/100 | Epoch Time: 275.70s | Train Used Time: 7:22:45.459999 | Left Time: 0:18:22.802009
+
+Start Epoch: 97/100 | Lr: 0.000063
+Epoch: 97, Batch: 1/47, Loss: 0.0034, Acc: 100.0000%
+Epoch: 97, Batch: 31/47, Loss: 0.0002, Acc: 100.0000%
+Epoch 97 Summary: Train Loss: 0.001 | Train Acc: 100.000 | Test Loss: 2.361 | Test Acc: 72.296% [Best Acc: 73.077%]
+End Epoch: 97/100 | Epoch Time: 276.65s | Train Used Time: 7:27:22.108347 | Left Time: 0:13:49.941634
+
+Start Epoch: 98/100 | Lr: 0.000063
+Epoch: 98, Batch: 1/47, Loss: 0.0005, Acc: 100.0000%
+Epoch: 98, Batch: 31/47, Loss: 0.0002, Acc: 100.0000%
+Epoch 98 Summary: Train Loss: 0.001 | Train Acc: 99.967 | Test Loss: 2.389 | Test Acc: 70.733% [Best Acc: 73.077%]
+End Epoch: 98/100 | Epoch Time: 273.92s | Train Used Time: 7:31:56.034858 | Left Time: 0:09:07.848451
+
+Start Epoch: 99/100 | Lr: 0.000063
+Epoch: 99, Batch: 1/47, Loss: 0.0007, Acc: 100.0000%
+Epoch: 99, Batch: 31/47, Loss: 0.0003, Acc: 100.0000%
+Epoch 99 Summary: Train Loss: 0.001 | Train Acc: 100.000 | Test Loss: 2.268 | Test Acc: 72.100% [Best Acc: 73.077%]
+End Epoch: 99/100 | Epoch Time: 275.68s | Train Used Time: 7:36:31.711961 | Left Time: 0:04:35.676091
+
+Start Epoch: 100/100 | Lr: 0.000063
+Epoch: 100, Batch: 1/47, Loss: 0.0010, Acc: 100.0000%
+Epoch: 100, Batch: 31/47, Loss: 0.0066, Acc: 100.0000%
+Epoch 100 Summary: Train Loss: 0.001 | Train Acc: 100.000 | Test Loss: 2.342 | Test Acc: 71.319% [Best Acc: 73.077%]
+End Epoch: 100/100 | Epoch Time: 276.38s | Train Used Time: 7:41:08.097910 | Left Time: 0:00:00

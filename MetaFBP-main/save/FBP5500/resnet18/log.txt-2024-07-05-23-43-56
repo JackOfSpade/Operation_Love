@@ -1,0 +1,84 @@
+Args <========================
+backbone: resnet18
+cpu_only: True
+data_root: ./datasets
+dataset: FBP5500
+dataset_dir: ./datasets/FBP5500
+dy_mode: rebirth
+img_dir: faces
+imgc: 3
+imgsz: 256
+k_qry: 5
+k_spt: 5
+log_dir: ./save/FBP5500/resnet18
+max_epoch: 4
+meta_lr: 0.001
+model: DynamicMAML
+model_dir: ./save/FBP5500/resnet18/models
+n_way: 5
+num_workers: 6
+pretrain_type: fea
+print_freq: 20
+seed: 2022
+task_num: 4
+test_episodes: 100
+test_split_file: test_maml.txt
+train_episodes: 10000
+train_split_file: train_maml.txt
+update_lr: 0.01
+update_step: 5
+update_step_test: 10
+val_episodes: 100
+val_split_file: val_maml.txt
+work_dir: ./save
+Model <========================
+Using pretrained backbone(resnet18) from fea file(./save/FBP5500/resnet18/models/epoch-last.pth)
+Successfully loaded pretrained weights
+** The following layers are discarded due to unmatched keys or layer size: ['fc.weight', 'fc.bias']
+Data <========================
+shuffle DB :train, b:10000, 5-way, 5-shot, 5-query, resize:256
+shuffle DB :val, b:100, 5-way, 5-shot, 5-query, resize:256
+shuffle DB :test, b:100, 5-way, 5-shot, 5-query, resize:256
+Dataset info: FBP5500, Train size:10000, Val size:100, Val size:100.
+Start Training <========================
+
+Start Epoch: 1/4
+Epoch: 1, Batch: 1/2500, Steps: 1, Loss: 1.0379, Corr: -0.1533 0.7139 0.7371 0.7442 0.7500 0.7552 (0.9085)
+Epoch: 1, Batch: 21/2500, Steps: 21, Loss: 0.6319, Corr: 0.8146 0.8237 0.8293 0.8327 0.8348 0.8362 (0.0215)
+Epoch: 1, Batch: 41/2500, Steps: 41, Loss: 0.5685, Corr: 0.8442 0.8460 0.8469 0.8475 0.8478 0.8479 (0.0037)
+Epoch: 1, Batch: 61/2500, Steps: 61, Loss: 0.6159, Corr: 0.8264 0.8287 0.8302 0.8311 0.8316 0.8319 (0.0055)
+Epoch: 1, Batch: 81/2500, Steps: 81, Loss: 0.5316, Corr: 0.8539 0.8555 0.8566 0.8575 0.8582 0.8586 (0.0048)
+Epoch: 1, Batch: 101/2500, Steps: 101, Loss: 0.5879, Corr: 0.8390 0.8396 0.8400 0.8403 0.8406 0.8407 (0.0018)
+Epoch: 1, Batch: 121/2500, Steps: 121, Loss: 0.5248, Corr: 0.8589 0.8600 0.8607 0.8611 0.8614 0.8615 (0.0026)
+Epoch: 1, Batch: 141/2500, Steps: 141, Loss: 0.5528, Corr: 0.8506 0.8520 0.8528 0.8534 0.8537 0.8540 (0.0034)
+Epoch: 1, Batch: 161/2500, Steps: 161, Loss: 0.5686, Corr: 0.8441 0.8460 0.8470 0.8477 0.8481 0.8483 (0.0042)
+Epoch: 1, Batch: 181/2500, Steps: 181, Loss: 0.5436, Corr: 0.8524 0.8545 0.8557 0.8565 0.8569 0.8571 (0.0047)
+Epoch: 1, Batch: 201/2500, Steps: 201, Loss: 0.5319, Corr: 0.8549 0.8565 0.8573 0.8578 0.8580 0.8582 (0.0032)
+Epoch: 1, Batch: 221/2500, Steps: 221, Loss: 0.5304, Corr: 0.8549 0.8567 0.8579 0.8586 0.8591 0.8595 (0.0046)
+Epoch: 1, Batch: 241/2500, Steps: 241, Loss: 0.5459, Corr: 0.8529 0.8536 0.8541 0.8543 0.8545 0.8546 (0.0016)
+Epoch: 1, Batch: 261/2500, Steps: 261, Loss: 0.5589, Corr: 0.8489 0.8497 0.8502 0.8505 0.8507 0.8508 (0.0019)
+Epoch: 1, Batch: 281/2500, Steps: 281, Loss: 0.5126, Corr: 0.8574 0.8604 0.8625 0.8639 0.8649 0.8655 (0.0081)
+Epoch: 1, Batch: 301/2500, Steps: 301, Loss: 0.5565, Corr: 0.8467 0.8485 0.8497 0.8506 0.8513 0.8518 (0.0050)
+Epoch: 1, Batch: 321/2500, Steps: 321, Loss: 0.5519, Corr: 0.8515 0.8528 0.8536 0.8541 0.8543 0.8544 (0.0030)
+Epoch: 1, Batch: 341/2500, Steps: 341, Loss: 0.5092, Corr: 0.8630 0.8637 0.8641 0.8644 0.8645 0.8645 (0.0016)
+Epoch: 1, Batch: 361/2500, Steps: 361, Loss: 0.5561, Corr: 0.8476 0.8491 0.8501 0.8507 0.8511 0.8514 (0.0038)
+Epoch: 1, Batch: 381/2500, Steps: 381, Loss: 0.5588, Corr: 0.8470 0.8484 0.8491 0.8495 0.8497 0.8498 (0.0028)
+Epoch: 1, Batch: 401/2500, Steps: 401, Loss: 0.5209, Corr: 0.8609 0.8614 0.8615 0.8615 0.8614 0.8613 (0.0004)
+Epoch: 1, Batch: 421/2500, Steps: 421, Loss: 0.5388, Corr: 0.8524 0.8542 0.8553 0.8560 0.8564 0.8566 (0.0041)
+Epoch: 1, Batch: 441/2500, Steps: 441, Loss: 0.5183, Corr: 0.8518 0.8562 0.8589 0.8606 0.8616 0.8621 (0.0103)
+Epoch: 1, Batch: 461/2500, Steps: 461, Loss: 0.5213, Corr: 0.8549 0.8582 0.8600 0.8610 0.8616 0.8619 (0.0071)
+Epoch: 1, Batch: 481/2500, Steps: 481, Loss: 0.4823, Corr: 0.8707 0.8725 0.8735 0.8740 0.8743 0.8744 (0.0037)
+Epoch: 1, Batch: 501/2500, Steps: 501, Loss: 0.5096, Corr: 0.8627 0.8633 0.8632 0.8629 0.8626 0.8624 (-0.0003)
+Epoch: 1, Batch: 521/2500, Steps: 521, Loss: 0.5615, Corr: 0.8474 0.8484 0.8490 0.8495 0.8498 0.8500 (0.0026)
+Epoch: 1, Batch: 541/2500, Steps: 541, Loss: 0.4928, Corr: 0.8686 0.8696 0.8701 0.8704 0.8705 0.8705 (0.0020)
+Epoch: 1, Batch: 561/2500, Steps: 561, Loss: 0.5331, Corr: 0.8565 0.8573 0.8576 0.8577 0.8577 0.8576 (0.0011)
+Epoch: 1, Batch: 581/2500, Steps: 581, Loss: 0.4982, Corr: 0.8663 0.8678 0.8687 0.8692 0.8694 0.8696 (0.0032)
+Epoch: 1, Batch: 601/2500, Steps: 601, Loss: 0.5203, Corr: 0.8596 0.8609 0.8616 0.8621 0.8624 0.8626 (0.0030)
+Epoch: 1, Batch: 621/2500, Steps: 621, Loss: 0.4540, Corr: 0.8765 0.8787 0.8800 0.8808 0.8813 0.8816 (0.0050)
+Epoch: 1, Batch: 641/2500, Steps: 641, Loss: 0.5031, Corr: 0.8660 0.8666 0.8668 0.8669 0.8669 0.8668 (0.0008)
+Epoch: 1, Batch: 661/2500, Steps: 661, Loss: 0.5072, Corr: 0.8636 0.8644 0.8648 0.8651 0.8652 0.8652 (0.0016)
+Epoch: 1, Batch: 681/2500, Steps: 681, Loss: 0.4759, Corr: 0.8730 0.8741 0.8748 0.8752 0.8754 0.8756 (0.0026)
+Epoch: 1, Batch: 701/2500, Steps: 701, Loss: 0.5400, Corr: 0.8536 0.8543 0.8546 0.8547 0.8547 0.8547 (0.0011)
+Epoch: 1, Batch: 721/2500, Steps: 721, Loss: 0.4814, Corr: 0.8636 0.8692 0.8719 0.8733 0.8740 0.8744 (0.0108)
+Epoch: 1, Batch: 741/2500, Steps: 741, Loss: 0.5209, Corr: 0.8591 0.8597 0.8600 0.8602 0.8602 0.8602 (0.0010)
+Epoch: 1, Batch: 761/2500, Steps: 761, Loss: 0.5160, Corr: 0.8611 0.8624 0.8631 0.8634 0.8636 0.8636 (0.0024)

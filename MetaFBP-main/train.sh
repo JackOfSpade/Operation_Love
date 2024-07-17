@@ -30,14 +30,14 @@ else
   exit 1
 fi
 
-MERGE_OPTION="$MODEL_OPTION $BASE_OPTION $DATASET_OPTION --cpu-only"
+MERGE_OPTION="$MODEL_OPTION $BASE_OPTION $DATASET_OPTION"
 
 echo "$MERGE_OPTION"
 
 # Use eval to correctly handle the merged options string
-eval python3 train.py $MODEL_OPTION $BASE_OPTION $DATASET_OPTION --k-spt 1 --cpu-only
-eval python3 train.py $MODEL_OPTION $BASE_OPTION $DATASET_OPTION --k-spt 5 --cpu-only
-eval python3 train.py $MODEL_OPTION $BASE_OPTION $DATASET_OPTION --k-spt 10 --cpu-only
-eval python3 train.py $MODEL_OPTION $BASE_OPTION $DATASET_OPTION --k-spt 15 --cpu-only
+eval python3 train.py $MODEL_OPTION $BASE_OPTION $DATASET_OPTION --k-spt 1
+eval python3 train.py $MODEL_OPTION $BASE_OPTION $DATASET_OPTION --k-spt 5
+eval python3 train.py $MODEL_OPTION $BASE_OPTION $DATASET_OPTION --k-spt 10
+eval python3 train.py $MODEL_OPTION $BASE_OPTION $DATASET_OPTION --k-spt 15
 
-eval python3 test.py $MODEL_OPTION $BASE_OPTION $DATASET_OPTION --k-spts 1 5 10 15 --load-epoch last --cpu-only
+eval python3 test.py $MODEL_OPTION $BASE_OPTION $DATASET_OPTION --k-spts 1 5 10 15 --load-epoch last

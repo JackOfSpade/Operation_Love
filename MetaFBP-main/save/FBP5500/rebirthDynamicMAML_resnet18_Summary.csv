@@ -1,0 +1,6 @@
+Dataset,FBP5500,N way,5,Model,DynamicMAML(rebirth),Backbone,resnet18(pretrain type:fea)
+Set/Shot,1 shot,5 shot,10 shot,15 shot
+test
+PC,X/X			,X/X			,X/X			,X/X			
+MAE,X/X			,X/X			,X/X			,X/X			
+RMSE,X/X			,X/X			,X/X			,X/X			

@@ -1,0 +1,56 @@
+Args <========================
+backbone: resnet18
+cpu_only: False
+data_root: ./datasets
+dataset: FBP5500
+dataset_dir: ./datasets/FBP5500
+dy_mode: rebirth
+img_dir: faces
+imgc: 3
+imgsz: 256
+k_qry: 5
+k_spt: 5
+log_dir: ./save/FBP5500/resnet18
+max_epoch: 4
+meta_lr: 0.001
+model: DynamicMAML
+model_dir: ./save/FBP5500/resnet18/models
+n_way: 5
+num_workers: 6
+pretrain_type: fea
+print_freq: 20
+seed: 2022
+task_num: 4
+test_episodes: 100
+test_split_file: test_maml.txt
+train_episodes: 10000
+train_split_file: train_maml.txt
+update_lr: 0.01
+update_step: 5
+update_step_test: 10
+val_episodes: 100
+val_split_file: val_maml.txt
+work_dir: ./save
+Model <========================
+Using pretrained backbone(resnet18) from fea file(./save/FBP5500/resnet18/models/epoch-last.pth)
+Data <========================
+shuffle DB :train, b:10000, 5-way, 5-shot, 5-query, resize:256
+shuffle DB :val, b:100, 5-way, 5-shot, 5-query, resize:256
+shuffle DB :test, b:100, 5-way, 5-shot, 5-query, resize:256
+Dataset info: FBP5500, Train size:10000, Val size:100, Val size:100.
+Start Training <========================
+
+Start Epoch: 1/4
+Epoch: 1, Batch: 1/2500, Steps: 1, Loss: 2.0167, Corr: -0.1820 -0.1724 -0.1635 -0.1540 -0.1441 -0.1326 (0.0494)
+Epoch: 1, Batch: 21/2500, Steps: 21, Loss: 1.7819, Corr: 0.3172 0.3443 0.3595 0.3695 0.3755 0.3781 (0.0610)
+Epoch: 1, Batch: 41/2500, Steps: 41, Loss: 1.7232, Corr: 0.3659 0.4062 0.4125 0.4124 0.4130 0.4137 (0.0479)
+Epoch: 1, Batch: 61/2500, Steps: 61, Loss: 1.6507, Corr: 0.3821 0.4124 0.4129 0.4143 0.4144 0.4151 (0.0330)
+Epoch: 1, Batch: 81/2500, Steps: 81, Loss: 1.7892, Corr: 0.4045 0.4232 0.4291 0.4386 0.4463 0.4490 (0.0446)
+Epoch: 1, Batch: 101/2500, Steps: 101, Loss: 1.5699, Corr: 0.4091 0.4619 0.4717 0.4716 0.4723 0.4726 (0.0634)
+Epoch: 1, Batch: 121/2500, Steps: 121, Loss: 1.5915, Corr: 0.3974 0.4596 0.4645 0.4632 0.4636 0.4632 (0.0658)
+Epoch: 1, Batch: 141/2500, Steps: 141, Loss: 1.6040, Corr: 0.3819 0.4524 0.4596 0.4600 0.4602 0.4613 (0.0794)
+Epoch: 1, Batch: 161/2500, Steps: 161, Loss: 1.5559, Corr: 0.4234 0.4751 0.4766 0.4775 0.4760 0.4776 (0.0542)
+Epoch: 1, Batch: 181/2500, Steps: 181, Loss: 1.5876, Corr: 0.4027 0.4697 0.4750 0.4729 0.4747 0.4736 (0.0708)
+Epoch: 1, Batch: 201/2500, Steps: 201, Loss: 1.5466, Corr: 0.4156 0.4762 0.4766 0.4781 0.4779 0.4788 (0.0632)
+Epoch: 1, Batch: 221/2500, Steps: 221, Loss: 1.6048, Corr: 0.4026 0.4570 0.4584 0.4587 0.4594 0.4600 (0.0574)
+Epoch: 1, Batch: 241/2500, Steps: 241, Loss: 1.5446, Corr: 0.4764 0.5133 0.5151 0.5176 0.5173 0.5186 (0.0422)

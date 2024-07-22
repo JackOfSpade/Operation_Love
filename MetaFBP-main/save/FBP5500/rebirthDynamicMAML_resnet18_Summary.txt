@@ -1,0 +1,59 @@
+Args <========================
+backbone: resnet18
+cpu_only: False
+data_root: ./datasets
+dataset: FBP5500
+dataset_dir: ./datasets/FBP5500
+dy_mode: rebirth
+img_dir: faces
+imgc: 3
+imgsz: 256
+k_qry: 5
+k_spts: [1, 5, 10, 15]
+load_epoch: last
+log_dir: ./save/FBP5500
+meta_lr: 0.001
+model: DynamicMAML
+n_way: 5
+num_workers: 6
+pretrain_type: fea
+seed: 2022
+task_num: 4
+test_episodes: 400
+test_split_file: test_maml.txt
+train_episodes: 800
+train_split_file: train_maml.txt
+update_lr: 0.01
+update_step: 5
+update_step_test: 10
+val_episodes: 100
+val_split_file: val_maml.txt
+work_dir: ./save
+Start Testing <========================
+Model <========================
+Using pretrained backbone(resnet18) from fea file(./save/FBP5500/resnet18/models/epoch-last.pth)
+Using the model at last epoch
+pth file(./save/FBP5500/rebirthDynamicMAML_resnet18_5W1S/models/epoch-last.pth) not found, skip to next shot
+Model <========================
+Using pretrained backbone(resnet18) from fea file(./save/FBP5500/resnet18/models/epoch-last.pth)
+Using the model at last epoch
+pth file(./save/FBP5500/rebirthDynamicMAML_resnet18_5W5S/models/epoch-last.pth) not found, skip to next shot
+Model <========================
+Using pretrained backbone(resnet18) from fea file(./save/FBP5500/resnet18/models/epoch-last.pth)
+Using the model at last epoch
+pth file(./save/FBP5500/rebirthDynamicMAML_resnet18_5W10S/models/epoch-last.pth) not found, skip to next shot
+Model <========================
+Using pretrained backbone(resnet18) from fea file(./save/FBP5500/resnet18/models/epoch-last.pth)
+Using the model at last epoch
+pth file(./save/FBP5500/rebirthDynamicMAML_resnet18_5W15S/models/epoch-last.pth) not found, skip to next shot
+Test Summary: Test Used Time: 0:00:01.282552
+Summary Result<========================
+Dataset:	FBP5500
+N way:	5
+Model:	DynamicMAML(rebirth)
+Backbone: resnet18(pretrain type:fea)
+Set/Shot	1 shot			5 shot			10 shot			15 shot
+test
+PC		X/X				X/X				X/X				X/X			
+MAE		X/X				X/X				X/X				X/X			
+RMSE		X/X				X/X				X/X				X/X			

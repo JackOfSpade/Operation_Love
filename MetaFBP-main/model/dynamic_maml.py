@@ -145,6 +145,11 @@ class DynamicMAML(nn.Module):
         # nn.init.kaiming_normal_(self.meta.fc.weight.data)
         # nn.init.constant_(self.meta.fc.bias.data, 0)
 
+    def forward(self, x):
+        features = self.net(x, feature_only=True)
+        output = self.meta(features)
+        return output
+
     def meta_train(self, x_spt, y_spt, x_qry, y_qry, mode=REBIRTH):
         """
         :param x_spt:   [b, setsz, c_, h, w]

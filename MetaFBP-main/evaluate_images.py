@@ -96,3 +96,6 @@ if __name__ == "__main__":
         print(f"Raw output for {image_path}: {score}")  # Debug print for raw output
         scaled_output = scale_prediction(score, min_score=min_score, max_score=max_score, new_min=1, new_max=10)
         print(f"Image: {image_path}, Prediction: {scaled_output:.2f}")
+
+
+# python evaluate_images.py --model-path ./save/FBP5500/resnet18/models/best-acc.pth --image-dir ../Screenshots --n-way 5 --k-spt 5 --k-qry 5 --imgsz 224 --update-lr 0.01 --update-step 5 --backbone resnet18 --dy-mode rebirth

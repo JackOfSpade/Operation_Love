@@ -1,0 +1,44 @@
+Remove-Item -Recurse -Force .\analyze_beauty.venv
+python -m venv analyze_beauty.venv
+.\analyze_beauty.venv\Scripts\Activate.ps1
+python.exe -m pip install --upgrade pip
+pip install numpy
+pip install torch torchvision torchaudio
+pip check
+deactivate
+
+
+
+
+
+
+Remove-Item -Recurse -Force .\analyze_bmi.venv
+virtualenv --python="C:\Program Files\Python311\python.exe" analyze_bmi.venv
+.\analyze_bmi.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip check
+deactivate
+
+
+
+To run:
+.\analyze_beauty_env\Scripts\Activate.ps1
+python evaluate_images.py
+deactivate
+
+
+
+# Clone the Caffe repository
+git clone https://github.com/BVLC/caffe/tree/windows
+cd caffe
+
+# Create a build directory and navigate to it
+mkdir build
+cd build
+
+# Configure the build with CMake
+cmake .. -G "MinGW Makefiles"
+
+
+# Build the project
+cmake --build . --config Release

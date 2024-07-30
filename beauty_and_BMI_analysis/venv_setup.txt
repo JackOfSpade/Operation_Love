@@ -2,43 +2,28 @@ Remove-Item -Recurse -Force .\analyze_beauty.venv
 python -m venv analyze_beauty.venv
 .\analyze_beauty.venv\Scripts\Activate.ps1
 python.exe -m pip install --upgrade pip
-pip install numpy
-pip install torch torchvision torchaudio
-pip check
+pip install torch torchvision torchaudio opencv-python joblib scikit-image pytorchcv dlib cmake
 deactivate
-
-
-
-
-
+clear
 
 Remove-Item -Recurse -Force .\analyze_bmi.venv
-virtualenv --python="C:\Program Files\Python311\python.exe" analyze_bmi.venv
+python -m venv analyze_bmi.venv
 .\analyze_bmi.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
+python.exe -m pip install --upgrade pip
+pip install pandas matplotlib tqdm torch torchvision torchaudio opencv-python
 pip check
 deactivate
+clear
 
-
-
-To run:
-.\analyze_beauty_env\Scripts\Activate.ps1
+# To run:
+.\analyze_beauty.venv\Scripts\Activate.ps1
 python evaluate_images.py
 deactivate
+clear
 
 
-
-# Clone the Caffe repository
-git clone https://github.com/BVLC/caffe/tree/windows
-cd caffe
-
-# Create a build directory and navigate to it
-mkdir build
-cd build
-
-# Configure the build with CMake
-cmake .. -G "MinGW Makefiles"
-
-
-# Build the project
-cmake --build . --config Release
+# Beauty Score range: 1 - 5
+# Underweight: BMI less than 18.5
+# Normal weight: BMI 18.5 – 24.9 (mid: 21.7)
+# Overweight: BMI 25 – 29.9
+# Obesity: BMI 30 or greater

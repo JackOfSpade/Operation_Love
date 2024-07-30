@@ -1,58 +1,49 @@
 import cv2
-import torch
-from PIL import Image
-import torchvision.transforms as transforms
-import os
-import numpy as np
 import joblib
-import caffe  # Ensure caffe is imported
+import numpy as np
+import os
+import sys
 
-# Import functions from forward.py
-from forward import load_img, get_mean_npy
+from ComboLoss.main.inference import FacialBeautyPredictor
 
-def detect_and_crop_face(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    haarcascade_path = './analyze_beauty_env/Lib/site-packages/cv2/data/haarcascade_frontalface_default.xml'
-    face_cascade = cv2.CascadeClassifier(haarcascade_path)
-    faces = face_cascade.detectMultiScale(gray, 1.3, 5)
-    if len(faces) == 0:
-        return None, None
-    x, y, w, h = faces[0]
-    cropped_face = image[y:y + h, x:x + w]
-    return cropped_face, (x, y, w, h)
 
-def preprocess_image(image, means, batch_shape):
-    image = load_img(image, resize=(256, 256), isColor=True, crop_size=batch_shape[3], crop_type='center_crop', raw_scale=255, means=means)
-    return image
-
-def analyze_beauty(face, net, batch_shape):
-    inputs = preprocess_image(face, means, batch_shape)
-    net.blobs['data'].data[...] = inputs
-    output = net.forward().values()[0][0][0]
-    return output
-
-def main():
+def main(cropped_image_path, uncropped_image_path):
     # Define paths
-    model_deploy_path = './CNN_beauty_predict/trained_models_for_caffe/resnext50_deploy.prototxt'
-    model_weights_path = './CNN_beauty_predict/trained_models_for_caffe/models/resnext50.caffemodel'
-    mean_file_path = './CNN_beauty_predict/data/1/256_train_mean.binaryproto'
-    image_path = "./temp_face.jpg"
+    pretrained_model_path = './ComboLoss/models/ComboNet_SCUTFBP5500.pth'
 
-    # Load the mean file
-    means = get_mean_npy(mean_file_path, crop_size=(224, 224), isColor=True)
+    # Load the pretrained model
+    predictor = FacialBeautyPredictor(pretrained_model_path)
 
-    # Load the Caffe model
-    caffe.set_mode_gpu()
-    net = caffe.Net(model_deploy_path, model_weights_path, caffe.TEST)
 
-    # Load and process the image
-    image = cv2.imread(image_path)
-    face, _ = detect_and_crop_face(image)
-    if face is not None:
-        beauty_score = analyze_beauty(face, net, batch_shape=(1, 3, 224, 224))
-        print(f"Predicted beauty score: {beauty_score}")
-    else:
-        print("No face detected")
+    if cropped_image_path is not None:
+        # Get the beauty score using the new model
+        beauty_score = predictor.infer(cropped_image_path)
+        print(f"Beauty Score: {beauty_score['beauty']:.2f}")
+
+        # Split the path into directory, base name, and extension
+        directory = os.path.dirname(cropped_image_path)
+        base_name, ext = os.path.splitext(os.path.basename(cropped_image_path))
+        parent_directory = os.path.dirname(uncropped_image_path)
+        parent_base_name, parent_ext = os.path.splitext(os.path.basename(uncropped_image_path))
+
+        # Define the new file name with the additional information
+        new_base_name = f"{base_name}  Beauty Score {beauty_score['beauty']:.2f}"
+        new_parent_base_name = f"{parent_base_name}  Beauty Score {beauty_score['beauty']:.2f}"
+
+        # Create the new file path by joining the directory, new base name, and extension
+        new_file_path = os.path.join(directory, new_base_name + ext)
+        new_file_path = new_file_path.replace("\\", "/")
+        parent_new_file_path = os.path.join(parent_directory, new_parent_base_name + parent_ext)
+        parent_new_file_path = parent_new_file_path.replace("\\", "/")
+
+        # Rename the file
+        os.rename(cropped_image_path, new_file_path)
+        print(f"{new_file_path}")
+        os.rename(uncropped_image_path, parent_new_file_path)
+        print(f"{parent_new_file_path}")
+
 
 if __name__ == "__main__":
-    main()
+    cropped_image_path = sys.argv[1]
+    uncropped_image_path = sys.argv[2]
+    main(cropped_image_path, uncropped_image_path)

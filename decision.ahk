@@ -26,6 +26,6 @@ make_decision()
 		msgbox('Error: firstLine is not "super-like", "like" or "dislike".')
 	}
 	
-    return decision  
+    return firstLine  
 }
 

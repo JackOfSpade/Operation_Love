@@ -65,7 +65,7 @@ def main():
     analyze_bmi_script_path = "analyze_bmi.py"
     analyze_beauty_venv_path = "./analyze_beauty.venv"
     analyze_bmi_venv_path = "./analyze_bmi.venv"
-    valid_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp'}
+    valid_extensions = {'.jpg', '.jpeg', '.jfif', '.png', '.bmp', '.gif', '.webp'}
     cropped_folder_path = screenshots_dir + "/cropped"
     # Make folder if it doesn't exist
     os.makedirs(cropped_folder_path, exist_ok=True)

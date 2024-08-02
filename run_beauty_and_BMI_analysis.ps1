@@ -8,7 +8,7 @@ python .\beauty_and_BMI_analysis\evaluate_images.py
 deactivate
 
 
-# Read-Host -Prompt "Press Enter to exit"
+Read-Host -Prompt "Press Enter to exit"
 
 # Exit the PowerShell script
 exit

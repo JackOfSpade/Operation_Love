@@ -230,15 +230,6 @@ like(dating_app, root_directory)
 	}
 	else if dating_app == "hinge"
     {		
-		; The 33 character limit for auto-type on hinge is crippling and makes nonsensical responses.
-		; Saving this for future platforms that allows more characters for auto-type.
-		; RunWait("bulk_image_ocr.exe")				
-		; 
-		; RunWait("chatgpt.exe")	
-		; 
-		; hinge_opener := FileRead("chatgpt_response.txt")
-		
-		; hinge_opener := "Hi"
 		
 		; Click like locations
 		mouseClick "left", 1156, 756

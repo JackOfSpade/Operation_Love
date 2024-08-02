@@ -117,20 +117,6 @@ move_screenshot(root_directory)
     ; Define source and destination folders
     screenshot_folder_path := root_directory . "/Screenshots" 
     processed_profiles_folder_path := root_directory . "/processed_profiles"
-
-
-; Ensure the destination folder exists
-	if !FileExist(destinationFolder)
-	{
-		FileCreateDir(destinationFolder)
-	}
-
-	; Loop through all files in the source folder
-	Loop Files, sourceFolder "\*"
-	{
-		; Move each file to the destination folder
-		FileMove(A_LoopFileFullPath, destinationFolder "\" A_LoopFileName)
-	}
     
 	DirMove screenshot_folder_path, processed_profiles_folder_path, 2
 	DirCreate screenshot_folder_path

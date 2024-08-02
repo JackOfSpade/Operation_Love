@@ -12,44 +12,20 @@ CoordMode "Mouse", "Window"
 
 make_decision()
 {	
-	RunWait('powershell.exe -Command ".\run_open_ai_clip.ps1"')
+	RunWait('powershell.exe -Command ".\run_beauty_and_BMI_analysis.ps1"')
 	
-	open_ai_clip_result := FileRead("open_ai_clip_result.txt")
+	beauty_and_BMI_analysis := FileRead("beauty_and_BMI_analysis_result.txt")
 
 	firstLine := ""
 	; Extract first line string
-	matchResult := RegExMatch(open_ai_clip_result, "^(.+)", &firstLine)
-	adjective := firstLine[1]
-
-	beautyMatch := ""
-	; Extract beauty probability
-	matchResult := RegExMatch(open_ai_clip_result, "Beautiful probability: (\d+\.\d+)", &beautyMatch)
-	beautiful_probability := beautyMatch[1]
-
-	uglyMatch := ""
-	; Extract ugly probability
-	RegExMatch(open_ai_clip_result, "Ugly probability: (\d+\.\d+)", &uglyMatch)
-	ugly_probability := uglyMatch[1]	
+	matchResult := RegExMatch(beauty_and_BMI_analysis, "^(.+)", &firstLine)
+	
     
-    if adjective == "beautiful" and beautiful_probability >= 0.95
-    {
-        decision := "super_like"
-    }
-    else if adjective == "beautiful" or adjective == "neutral"
-    {
-        decision := "like"
-    }
-    else if adjective == "ugly"
-    {
-        decision := "dislike"
-    }
-	else
-	{
-		msgbox('Error: adjective is not "beautiful", "ugly" or "neutral".')
+    if firstLine != "super-like" and firstLine != "like" and firstLine != "dislike"
+    {       
+		msgbox('Error: firstLine is not "super-like", "like" or "dislike".')
 	}
 	
-	file_name := "decision_ " . decision . " adjective_ " . adjective . " beautiful_probability_ " . beautiful_probability . " ugly_probability_ " . ugly_probability
-	
-    return [decision, adjective, file_name]    
+    return decision  
 }
 

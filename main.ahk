@@ -13,7 +13,7 @@
 ;            ensure output is .png
 ;            set Output ---> JPEG quality ---> 100%
 ;			 set Filename ---> screenshot
-; Capture2Text: unbind Win + R (under Hotkeys) so we can open run dialog
+; Capture2Text: unbind Win + R (under Hotkeys) so we can open run dialog (not needed now but may be needed in the future)
 ;				turn off Output ---> "show popup window"
 ; In powershell (run as admin):
 ; 	Set-ExecutionPolicy Unrestricted -Scope LocalMachine
@@ -81,7 +81,7 @@ main(dating_app, root_directory)
 	super_likes := 0
 	first_loop := true
 	; Potentially infiite loading
-	neutral_profile := false
+	no_face_detected := false
 	
 	navigate_to_discover(dating_app)
 	
@@ -146,11 +146,11 @@ main(dating_app, root_directory)
 		}
 		else if dating_app == "bumble"
 		{
-			; neutral_profile
-			if neutral_profile
+			; no_face_detected
+			if no_face_detected
 			{							
 				restart_bumble()
-				neutral_profile := false
+				no_face_detected := false
 			}
 		
 			; Click away any popups including "Second time's a charm" compliment suggestion and "It's a match!"
@@ -236,11 +236,11 @@ main(dating_app, root_directory)
 		}
 		else if dating_app == "hinge"
 		{			
-			if neutral_profile
+			if no_face_detected
 			{					
 				; Click refresh
 				
-				neutral_profile := false
+				no_face_detected := false
 			}
 		}
 		else if dating_app == "okcupid"
@@ -248,14 +248,14 @@ main(dating_app, root_directory)
 		
 			; need to refresh everytime because okcupid has unskippable popups like (you recevied a like) that requires scrolling down and clicking
 			; every x profiles
-			; neutral_profile
-			if neutral_profile
+			; no_face_detected
+			if no_face_detected
 			{					
 				; Click refresh
 				mouseClick "left", 102, 71		 
 				sleep 10000
 				
-				neutral_profile := false
+				no_face_detected := false
 			}
 			
 		
@@ -372,18 +372,15 @@ main(dating_app, root_directory)
 		
 		take_screenshot(dating_app)  
 		
-		returned_list := make_decision()
-		decision := returned_list[1]
-		adjective := returned_list[2]
-		file_name := returned_list[3] . " id_ " . Random(0, 9223372036854775807)
+		decision := make_decision()		
 		
-		if adjective == "neutral"
+		if decision == "No face detected"
 		{
-			neutral_profile := true
+			no_face_detected := true
 		}
 		else
 		{
-			neutral_profile := false
+			no_face_detected := false
 		}
 		
 		; Liking Logic
@@ -391,21 +388,17 @@ main(dating_app, root_directory)
 		{
 			super_like(dating_app, root_directory)
 			super_likes -= 1
-			
-			move_screenshot(root_directory, "super_like", file_name) 
 		}
 		else if decision == "super_like" || decision == "like"
 		{
 			hinge_opener := like(dating_app, root_directory)
-			
-			move_screenshot(root_directory, "like", file_name) 
 		}
-		else
+		else if decision == "dislike"
 		{
 			dislike(dating_app)
-			
-			move_screenshot(root_directory, "dislike", file_name) 
 		}		
+		
+		move_screenshot(root_directory)
 		
 		; End of loop procedures
 		if dating_app == "tinder"

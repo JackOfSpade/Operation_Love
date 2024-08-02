@@ -1,8 +1,8 @@
 # Activate the virtual environment
-. .\open_ai_clip\venv\Scripts\Activate
+. .\beauty_and_BMI_analysis\analyze_beauty.venv\Scripts\Activate.ps1
 
 # Run the Python script
-python .\open_ai_clip\open_ai_clip.py
+python .\beauty_and_BMI_analysis\evaluate_images.py
 
 # Deactivate the virtual environment (optional)
 deactivate
@@ -12,3 +12,4 @@ deactivate
 
 # Exit the PowerShell script
 exit
+

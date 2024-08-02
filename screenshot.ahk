@@ -93,29 +93,45 @@ take_screenshot(dating_app)
 	}
 }
 
-move_screenshot(root_directory, how_much_like, new_file_name) 
+move_screenshot(root_directory) 
 {
+	; Set the source and destination folders
+	sourceFolder := "C:\Path\To\SourceFolder"
+	destinationFolder := "C:\Path\To\DestinationFolder"
+
+	; Ensure the destination folder exists
+	if !FileExist(destinationFolder)
+	{
+		FileCreateDir(destinationFolder)
+	}
+
+	; Loop through all files in the source folder
+	Loop Files, sourceFolder "\*"
+	{
+		; Move each file to the destination folder
+		FileMove(A_LoopFileFullPath, destinationFolder "\" A_LoopFileName)
+	}
+
+
+
     ; Define source and destination folders
-    screenshot_file_path := root_directory . "/Screenshots/screenshot.png" 
+    screenshot_folder_path := root_directory . "/Screenshots" 
     processed_profiles_folder_path := root_directory . "/processed_profiles"
 
-    super_liked_folder_path := processed_profiles_folder_path . "/super_liked" 
-    liked_folder_path := processed_profiles_folder_path . "/liked" 
-    disliked_folder_path := processed_profiles_folder_path . "/disliked"   
 
-    if how_much_like == "super_like"
-    {
-        destination_file_path := super_liked_folder_path . "/" . new_file_name . ".png"			  
-    }
-    else if how_much_like == "like"
-    {
-        destination_file_path := liked_folder_path . "/" . new_file_name . ".png"
-    }
-    else
-    {
-        destination_file_path := disliked_folder_path . "/" . new_file_name . ".png"
-    }
-	
-    ; Move the file to the appropriate folder
-    FileMove screenshot_file_path, destination_file_path
+; Ensure the destination folder exists
+	if !FileExist(destinationFolder)
+	{
+		FileCreateDir(destinationFolder)
+	}
+
+	; Loop through all files in the source folder
+	Loop Files, sourceFolder "\*"
+	{
+		; Move each file to the destination folder
+		FileMove(A_LoopFileFullPath, destinationFolder "\" A_LoopFileName)
+	}
+    
+	DirMove screenshot_folder_path, processed_profiles_folder_path, 2
+	DirCreate screenshot_folder_path
 }

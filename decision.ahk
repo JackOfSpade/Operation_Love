@@ -14,11 +14,9 @@ make_decision()
 {	
 	RunWait('powershell.exe -Command ".\run_beauty_and_BMI_analysis.ps1"')
 	
-	beauty_and_BMI_analysis := FileRead("beauty_and_BMI_analysis_result.txt")
-
-	firstLine := ""
-	; Extract first line string
-	matchResult := RegExMatch(beauty_and_BMI_analysis, "^(.+)", &firstLine)
+	text := FileRead("./beauty_and_BMI_analysis/beauty_and_BMI_analysis_result.txt")
+	line_array := StrSplit(text, "`n", "`r")
+	firstLine := line_array[1]
 	
     
     if firstLine != "super-like" and firstLine != "like" and firstLine != "dislike"

@@ -117,14 +117,21 @@ main(dating_app, root_directory)
 		; Refresh Page Logics
 		if dating_app == "tinder"
 		{		
-			; Bad Gateway or out of profiles or "Aw, snap! Something went wrong..." or every x profiles
-			if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0) or InStr(ocr(1058, 711, 1108, 728, 100), "unable", 0) or InStr(ocr(662, 440, 701, 466, 100), "Aw", 0) or Mod(profile_count, every_x_profile) == 0
+			; Bad Gateway or out of profiles or "Aw, snap! Something went wrong..." or every x profiles or no face detected
+			if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0) 
+			or InStr(ocr(1058, 711, 1108, 728, 100), "unable", 0) 
+			or InStr(ocr(662, 440, 701, 466, 100), "Aw", 0) 
+			or Mod(profile_count, every_x_profile) == 0
+			or no_face_detected
 			{
 				profile_count += 1
 			
 				; Click refresh
 				mouseClick "left", 100, 67			 
 				sleep 15000
+				
+				no_face_detected := false
+				
 				goto("start")
 			}
 			
@@ -145,6 +152,9 @@ main(dating_app, root_directory)
 			sleep 500
 			
 			profile_count += 1
+			
+			; To detect when you run out of people ("Adjust your filters") --> change location
+			; TODO
 		}
 		else if dating_app == "bumble"
 		{
@@ -241,9 +251,12 @@ main(dating_app, root_directory)
 			if no_face_detected
 			{					
 				; Click refresh
-				
+				; TODO
 				no_face_detected := false
 			}
+			
+			; To detect when you run out of people ("Adjust your filters") --> change location
+			; TODO
 		}
 		else if dating_app == "okcupid"
 		{
@@ -386,12 +399,12 @@ main(dating_app, root_directory)
 		}
 		
 		; Liking Logic
-		if decision == "super_like" && super_likes > 0
+		if decision == "super_like" and super_likes > 0
 		{
 			super_like(dating_app, root_directory)
 			super_likes -= 1
 		}
-		else if decision == "super_like" || decision == "like"
+		else if decision == "super_like" or decision == "like" or no_face_detected
 		{
 			hinge_opener := like(dating_app, root_directory)
 		}

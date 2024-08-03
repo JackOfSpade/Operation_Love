@@ -87,7 +87,7 @@ main(dating_app, root_directory)
 	
 	navigate_to_discover(dating_app)
 	
-	; like/superlike/dislike test
+	; like/super_like/dislike test
 	; like(dating_app, root_directory)
 	; super_like(dating_app, root_directory)
 	; dislike(dating_app)

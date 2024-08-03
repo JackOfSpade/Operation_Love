@@ -19,9 +19,12 @@ make_decision()
 	firstLine := line_array[1]
 	
     
-    if firstLine != "super-like" and firstLine != "like" and firstLine != "dislike"
+    if firstLine != "super_like" 
+	and firstLine != "like" 
+	and firstLine != "dislike" 
+	and firstLine != "No face detected"
     {       
-		msgbox('Error: firstLine is not "super-like", "like" or "dislike".')
+		msgbox('Error: firstLine is not "super_like", "like", "dislike" or "No face detected".')
 	}
 	
     return firstLine  

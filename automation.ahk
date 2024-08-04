@@ -226,7 +226,9 @@ like(dating_app, root_directory)
 		
 		sleep 500
 		
-		; Click away second time's a charm (compliments promo)
+		; Click away second time's a charm (compliments promo). Need to click 2 times in case one of the profiles are enlarged.
+		mouseClick "left", 702, 67
+		sleep 500
 		mouseClick "left", 702, 67
 	}
 	else if dating_app == "bumble"

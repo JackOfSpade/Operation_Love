@@ -267,9 +267,13 @@ like(dating_app, root_directory)
 		
 		; Click away popups
 		mouseClick "left", 1185, 720
+		sleep 500
 		
-		; Click away roses popup; can't do this because it'll click the like page on bottom banner.
-		; mouseClick "left", 949, 997
+		; Click away roses suggestion popup; can't do this because it'll click the like page on bottom banner.
+		mouseClick "left", 949, 997
+		sleep 500
+		; If no rose, it'll go to like page. Click back to discover
+		mouseClick "left", 756, 1005
     }	
 	else if dating_app == "okcupid"
 	{

@@ -19,7 +19,7 @@
 ; 	Set-ExecutionPolicy Unrestricted -Scope LocalMachine
 ; 	Unblock-File -Path "...\Github\Operation_Love\beauty_and_BMI_analysis\analyze_beauty.venv\Scripts\Activate.ps1"
 ;	Unblock-File -Path "...\Github\Operation_Love\beauty_and_BMI_analysis\analyze_BMI.venv\Scripts\Activate.ps1"
-; Download C++ built tools
+; Download C++ Build Tools
 
 
 ; Warnings:

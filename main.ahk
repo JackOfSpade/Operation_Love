@@ -393,6 +393,9 @@ main(dating_app, root_directory)
 		
 		decision := make_decision()		
 		
+		; Wait for powershell to exit
+		sleep 1000
+		
 		if decision == "No face detected"
 		{
 			no_face_detected := true
@@ -455,7 +458,7 @@ main(dating_app, root_directory)
 ; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1366x768"
-; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
+main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
 main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")

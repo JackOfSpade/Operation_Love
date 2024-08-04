@@ -78,6 +78,10 @@ main(dating_app, root_directory)
 	; msgbox targeted_cities.length
 	; msgbox targeted_zip_codes.length
 	; exitApp
+	; winactivate("AirDroid")
+	; sleep 500
+	; mouseClick "left", 702, 67
+	; sleep 99999
 
 
 	super_likes := 0
@@ -448,13 +452,13 @@ main(dating_app, root_directory)
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
 ; "1920x1080"
-main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1366x768"
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1920x1080"
 ; main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")

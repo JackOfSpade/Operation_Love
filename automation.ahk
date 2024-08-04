@@ -223,6 +223,11 @@ like(dating_app, root_directory)
 		
 		; Click away super like upgrade popup
 		mouseClick "left", 908, 749
+		
+		sleep 500
+		
+		; Click away second time's a charm (compliments promo)
+		mouseClick "left", 702, 67
 	}
 	else if dating_app == "bumble"
 	{

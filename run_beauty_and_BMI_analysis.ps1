@@ -10,7 +10,7 @@ python evaluate_images.py
 deactivate
 
 # Test
-Read-Host "Press Enter to Exit"
+# Read-Host "Press Enter to Exit"
 
 # Exit the PowerShell script
 exit

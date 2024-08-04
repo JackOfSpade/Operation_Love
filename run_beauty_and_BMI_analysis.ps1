@@ -9,6 +9,9 @@ python evaluate_images.py
 # Deactivate the virtual environment (optional)
 deactivate
 
+# Test
+Read-Host "Press Enter to Exit"
+
 # Exit the PowerShell script
 exit
 

@@ -281,8 +281,8 @@ like(dating_app, root_directory)
 		; If no rose, it'll go to like page. Click back to discover
 		mouseClick "left", 756, 1005
 		sleep 1000
-		; Cancel like page if no banner (if no like page, this won't trigger it by clicking on the panel because it requries double click to like)
-		mouseClick "left", 955, 939
+		; This won't work: Cancel like page if no banner (if no like page, this won't trigger it by clicking on the panel because it requries double click to like UNLESS THE PANEL IS A POLL)
+		; mouseClick "left", 955, 939
     }	
 	else if dating_app == "okcupid"
 	{

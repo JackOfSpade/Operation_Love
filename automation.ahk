@@ -57,8 +57,12 @@ remaining_super_likes(dating_app)
 	}
 	else if dating_app == "bumble"
 	{		
-		; Click profile
-		MouseClick "left", 718, 1041
+		; Click profile (have to click multiple times for it to trigger for some reason sometimes)
+		mouseClick "left", 713, 1029
+		sleep 1000
+		mouseClick "left", 713, 1029
+		sleep 1000
+		mouseClick "left", 713, 1029
 		sleep 1000
 		
 		remainingSuperLikes := ocr(1060, 502, 1090, 539, 100)

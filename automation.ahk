@@ -57,8 +57,12 @@ remaining_super_likes(dating_app)
 	}
 	else if dating_app == "bumble"
 	{		
-		; Click profile
-		MouseClick "left", 718, 1041
+		; Click profile (have to click multiple times for it to trigger for some reason sometimes)
+		mouseClick "left", 713, 1029
+		sleep 1000
+		mouseClick "left", 713, 1029
+		sleep 1000
+		mouseClick "left", 713, 1029
 		sleep 1000
 		
 		remainingSuperLikes := ocr(1060, 502, 1090, 539, 100)
@@ -269,13 +273,9 @@ like(dating_app, root_directory)
 		
 		; Click away popups
 		mouseClick "left", 1185, 720
-		sleep 500
+		sleep 100
 		
-		; Click away roses suggestion popup; can't do this because it'll click the like page on bottom banner.
-		mouseClick "left", 949, 997
-		sleep 500
-		; If no rose, it'll go to like page. Click back to discover
-		mouseClick "left", 756, 1005
+		; Use up all your roses so the rose suggestion pop-up don't show up. It is difficult to account for it on device change b/c it only show up occasionally.
     }	
 	else if dating_app == "okcupid"
 	{

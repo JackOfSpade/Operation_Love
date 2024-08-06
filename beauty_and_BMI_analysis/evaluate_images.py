@@ -156,6 +156,7 @@ def main():
                     # Overweight: BMI 25 – 29.9
                     # Obesity: BMI 30 or greater
 
+                    # Original
                     baseline_beauty_score = 3
                     baseline_BMI_score = 21.7
 
@@ -173,9 +174,9 @@ def main():
                         decision = "super_like"
                     elif ((beauty_score >= baseline_beauty_score and BMI_score <= baseline_BMI_score)
                           or
-                          ((beauty_score < baseline_beauty_score and BMI_score < baseline_BMI_score) and (BMI_percentage_diff >= beauty_percentage_diff))
+                          ((beauty_score < baseline_beauty_score and BMI_score < baseline_BMI_score) and (BMI_percentage_diff >= beauty_percentage_diff - 0.065))
                           or
-                          ((BMI_score > baseline_BMI_score and beauty_score > baseline_beauty_score) and (beauty_percentage_diff >= BMI_percentage_diff))):
+                          ((BMI_score > baseline_BMI_score and beauty_score > baseline_beauty_score) and (beauty_percentage_diff >= BMI_percentage_diff - 0.17499999999999993))):
                         like_folder = screenshots_dir + "/like"
                         os.makedirs(like_folder, exist_ok=True)
                         # Move the file

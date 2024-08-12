@@ -157,26 +157,18 @@ def main():
                     # Obesity: BMI 30 or greater
 
                     # Original
-                    baseline_beauty_score = 3
-                    baseline_BMI_score = 21.7
-
-                    # Calculate percentage difference from baseline
-                    beauty_percentage_diff = abs((beauty_score - baseline_beauty_score) / baseline_beauty_score)
-                    BMI_percentage_diff = abs((BMI_score - baseline_BMI_score) / baseline_BMI_score)
+                    baseline_beauty_score = 2.5
+                    baseline_BMI_score = 24.9
 
 
-                    if (beauty_score >= baseline_beauty_score and BMI_score <= baseline_BMI_score) and (beauty_percentage_diff >= 0.125 and BMI_percentage_diff >= 0.125):
+                    if beauty_score >= 3.5 and BMI_score <= 18.5:
                         super_like_folder = screenshots_dir + "/super_like"
                         os.makedirs(super_like_folder, exist_ok=True)
                         # Move the file
                         shutil.move(parent_new_file_path2, super_like_folder)
 
                         decision = "super_like"
-                    elif ((beauty_score >= baseline_beauty_score and BMI_score <= baseline_BMI_score)
-                          or
-                          ((beauty_score < baseline_beauty_score and BMI_score < baseline_BMI_score) and (BMI_percentage_diff >= beauty_percentage_diff - 0.065))
-                          or
-                          ((BMI_score > baseline_BMI_score and beauty_score > baseline_beauty_score) and (beauty_percentage_diff >= BMI_percentage_diff - 0.17499999999999993))):
+                    elif beauty_score >= baseline_beauty_score and BMI_score <= baseline_BMI_score:
                         like_folder = screenshots_dir + "/like"
                         os.makedirs(like_folder, exist_ok=True)
                         # Move the file

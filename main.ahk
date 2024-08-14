@@ -54,10 +54,14 @@ restart_bumble()
 
 	; Click Bumble
 	MouseClick "left", -350, 380
+	
+	sleep 500
 
 	; Airdroid switch input button
 	send "^a"
-
+	
+	sleep 500
+	
 	; Click Bumble
 	MouseClick "left", -350, 370
 	sleep 9000

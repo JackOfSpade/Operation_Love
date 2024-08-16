@@ -128,7 +128,8 @@ super_like(dating_app, root_directory)
 		mouseClick "left", 1162, 751
 		sleep 500
 		; diff spot
-		mouseClick "left", 1166, 898		
+		mouseClick "left", 1175, 886	
+	
 	}
 	else if dating_app == "hinge"
     {

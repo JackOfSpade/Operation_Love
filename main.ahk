@@ -54,10 +54,14 @@ restart_bumble()
 
 	; Click Bumble
 	MouseClick "left", -350, 380
+	
+	sleep 500
 
 	; Airdroid switch input button
 	send "^a"
-
+	
+	sleep 500
+	
 	; Click Bumble
 	MouseClick "left", -350, 370
 	sleep 9000
@@ -461,10 +465,10 @@ main(dating_app, root_directory)
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1920x1080"
-main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
+; main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
 
 ; "1366x768"
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")

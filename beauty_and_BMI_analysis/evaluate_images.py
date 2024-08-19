@@ -156,19 +156,34 @@ def main():
                     # Overweight: BMI 25 – 29.9
                     # Obesity: BMI 30 or greater
 
-                    # Original
+                    # Baseline
                     baseline_beauty_score = 2.5
                     baseline_BMI_score = 24.9
 
+                    # Calculate percentage difference from baseline
+                    beauty_percentage_diff = abs((beauty_score - baseline_beauty_score) / baseline_beauty_score)
+                    BMI_percentage_diff = abs((BMI_score - baseline_BMI_score) / baseline_BMI_score)
+                    
+                    # Weights for perceived importance
+                    beauty_weight = 1
+                    BMI_weight = 3       # 0.5% change in BMI is equivalent to a 1.5% change in beauty score
 
-                    if beauty_score >= 3.5 and BMI_score <= 18.5:
+                    # Calculate weighted percentage differences
+                    weighted_beauty_diff = beauty_weight * beauty_percentage_diff
+                    weighted_BMI_diff = BMI_weight * BMI_percentage_diff
+
+                    if (beauty_score >= 3.5 and BMI_score <= 18.5):
                         super_like_folder = screenshots_dir + "/super_like"
                         os.makedirs(super_like_folder, exist_ok=True)
                         # Move the file
                         shutil.move(parent_new_file_path2, super_like_folder)
 
                         decision = "super_like"
-                    elif beauty_score >= baseline_beauty_score and BMI_score <= baseline_BMI_score:
+                    elif ((beauty_score >= baseline_beauty_score and BMI_score <= baseline_BMI_score)
+                    or
+                    (beauty_score < baseline_beauty_score and BMI_score < baseline_BMI_score and weighted_BMI_diff >= weighted_beauty_diff)
+                    or
+                    (BMI_score > baseline_BMI_score and beauty_score > baseline_beauty_score and weighted_beauty_diff >= weighted_BMI_diff)):
                         like_folder = screenshots_dir + "/like"
                         os.makedirs(like_folder, exist_ok=True)
                         # Move the file

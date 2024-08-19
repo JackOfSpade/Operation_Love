@@ -241,6 +241,9 @@ like(dating_app, root_directory)
 	}
 	else if dating_app == "hinge"
     {		
+		; Scroll up. This is only here because Hinge freeze buttons so they're not clickable sometimes.
+		click_and_drag(665, 319, 669, 776, 500)
+		sleep 1000
 		
 		; Click like locations
 		mouseClick "left", 1156, 756
@@ -253,8 +256,7 @@ like(dating_app, root_directory)
 		sleep 1000
 		mouseClick "left", 1153, 721
 		sleep 1000
-		
-		
+				
 		
 		; Depending on resolution of the laptop, some resolution make the "Send Like" button disappear if try to add comments -----------------------
 		; Click "Add a comment"

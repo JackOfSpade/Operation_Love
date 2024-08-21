@@ -72,9 +72,9 @@ restart_bumble()
 main(dating_app, root_directory)
 {
 	; Test
-	winactivate("AirDroid")
-	restart_bumble()	
-	exitApp
+	; winactivate("AirDroid")
+	; restart_bumble()	
+	; exitApp
 
 	global targeted_index
 

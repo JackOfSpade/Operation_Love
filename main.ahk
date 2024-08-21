@@ -69,11 +69,27 @@ restart_bumble()
 	sleep 5000
 }
 
+reload_hinge()
+{					
+	; Airdroid home button
+	MouseClick "left", 1535, 40
+	sleep 1000
+
+	; Airdroid recent tasks button
+	; F-keys like F2 shortcut for this stops working after awhile, use clicks
+	MouseClick "left", 276, 23
+	sleep 1000
+
+	; Click Hinge
+	MouseClick "left", -300, 549
+	sleep 4000
+}
+
 main(dating_app, root_directory)
 {
 	; Test
 	; winactivate("AirDroid")
-	; restart_bumble()	
+	; reload_hinge()	
 	; exitApp
 
 	global targeted_index
@@ -133,14 +149,12 @@ main(dating_app, root_directory)
 			or Mod(profile_count, every_x_profile) == 0
 			or no_face_detected
 			{
-				profile_count += 1
-
 				; Click refresh
 				mouseClick "left", 100, 67			 
 				sleep 15000
 
+				profile_count += 1
 				no_face_detected := false
-
 				goto("start")
 			}
 
@@ -169,9 +183,12 @@ main(dating_app, root_directory)
 		{
 			; no_face_detected
 			if no_face_detected
-			{							
+			{				
 				restart_bumble()
+				
+				profile_count += 1
 				no_face_detected := false
+				goto("start")
 			}
 
 			; Click away any popups including "Second time's a charm" compliment suggestion and "It's a match!"
@@ -180,6 +197,8 @@ main(dating_app, root_directory)
 			; Click discover to close side bar if above popup didn't happen
 			MouseClick "left", 962, 1042	
 			sleep 1500
+			
+			profile_count += 1
 
 			; To detect when you run out of people ("Adjust your filters") --> change location
 			; if true  ; test
@@ -257,13 +276,20 @@ main(dating_app, root_directory)
 		}
 		else if dating_app == "hinge"
 		{			
-			if no_face_detected
+			if no_face_detected 
+			or Mod(profile_count, every_x_profile) == 0
 			{					
 				; Click refresh
-				; TODO
+				reload_hinge()
+				
+				profile_count += 1
 				no_face_detected := false
+				goto("start")
 			}
-
+			
+			
+			profile_count += 1
+			
 			; To detect when you run out of people ("Adjust your filters") --> change location
 			; TODO
 		}
@@ -279,13 +305,17 @@ main(dating_app, root_directory)
 				mouseClick "left", 102, 71		 
 				sleep 10000
 
+				profile_count += 1
 				no_face_detected := false
+				goto("start")
 			}
 
 
 			; Click out of skippable popups
 			MouseClick "left", 168, 514
 			sleep 500
+			
+			profile_count += 1
 
 			; To detect when you run out of people --> change location
 			; if true  ; test
@@ -466,10 +496,10 @@ main(dating_app, root_directory)
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
 ; "1920x1080"
-main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1920x1080"
-; main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
+main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
 
 ; "1366x768"
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")

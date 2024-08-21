@@ -49,28 +49,32 @@ restart_bumble()
 	; 2 possible locations for some reason
 	MouseClick "left", 1770, 40
 	sleep 500
-	MouseClick "left", 470	, 30
+	MouseClick "left", 470, 30
 	sleep 2000
 
 	; Click Bumble
-	MouseClick "left", -350, 380
-	
+	MouseClick "left", -350, 380	
 	sleep 500
-
-	; Airdroid switch input button
+	
+	; Airdroid switch input method
 	send "^a"
-	
 	sleep 500
 	
-	; Click Bumble
-	MouseClick "left", -350, 370
-	sleep 9000
+	; Click off context menu
+	MouseClick "left", 951, 356
+	sleep 1000
+	; Click bumble again (location is diff because active window is not AirDroid main windows instead of the toolbar.
+	MouseClick "left", 951, 356
+	
+	sleep 5000
 }
 
 main(dating_app, root_directory)
 {
 	; Test
-	; restart_bumble()
+	winactivate("AirDroid")
+	restart_bumble()	
+	exitApp
 
 	global targeted_index
 
@@ -80,12 +84,9 @@ main(dating_app, root_directory)
 
 	; test
 	; msgbox targeted_cities.length
-	; msgbox targeted_zip_codes.length
-	; exitApp
+	; msgbox targeted_zip_codes.length	
 	; winactivate("AirDroid")
-	; sleep 500
-	; mouseClick "left", 702, 67
-	; sleep 99999
+	; exitApp
 
 
 	super_likes := 0

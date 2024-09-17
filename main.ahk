@@ -331,7 +331,7 @@ main(dating_app, root_directory)
 				MouseClick "left", 911, 486
 				sleep 5000
 
-				loop 11
+				loop 10
 				{
 					send "{tab}"	
 					sleep 500

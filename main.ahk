@@ -324,7 +324,7 @@ main(dating_app, root_directory)
 				first_loop := false			
 
 				; Click profile
-				MouseClick "left", 938, 161
+				MouseClick "left", 1098, 191
 				sleep 4000
 
 				; Click settings

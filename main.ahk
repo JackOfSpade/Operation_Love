@@ -296,10 +296,11 @@ main(dating_app, root_directory)
 		else if dating_app == "okcupid"
 		{
 
-			; need to refresh everytime because okcupid has unskippable popups like (you recevied a like) that requires scrolling down and clicking
+			; need to refresh in intervals because okcupid has unskippable popups like (you recevied a like) that requires scrolling down and clicking
 			; every x profiles
 			; no_face_detected
 			if no_face_detected
+			or Mod(profile_count, every_x_profile) == 0
 			{					
 				; Click refresh
 				mouseClick "left", 102, 71		 

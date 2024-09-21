@@ -321,6 +321,9 @@ main(dating_app, root_directory)
 
 				; Click profile
 				MouseClick "left", 1131, 153
+				sleep 500
+				; Click twice if no likes left which will open up another full screen dialog where first click closes the dialog
+				MouseClick "left", 1131, 153
 				sleep 4000
 
 				; Click settings

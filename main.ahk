@@ -310,11 +310,6 @@ main(dating_app, root_directory)
 				no_face_detected := false
 				goto("start")
 			}
-
-
-			; Click out of skippable popups
-			MouseClick "left", 168, 514
-			sleep 500
 			
 			profile_count += 1
 

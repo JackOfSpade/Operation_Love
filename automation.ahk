@@ -81,7 +81,7 @@ remaining_super_likes(dating_app)
 		MouseClick "left", 986, 410
 		sleep 1000
 		
-		remainingSuperLikes := ocr(1111, 702, 1134, 720, 100)
+		remainingSuperLikes := ocr(1120, 705, 1132, 720, 100)
 		
 		; Click out of superlike popup
 		MouseClick "left", 676, 583

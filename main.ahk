@@ -147,7 +147,9 @@ main(dating_app, root_directory)
 	; dislike(dating_app)
 	; exitApp
 
-	super_likes := remaining_super_likes(dating_app)
+	; Manually use super likes
+	; super_likes := remaining_super_likes(dating_app)
+	super_likes := 0
 
 	if super_likes == "o" or super_likes == "O"
 	{

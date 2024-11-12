@@ -4,8 +4,6 @@ Keep restarting the iPhone.
 First remote click needs to be on the black dot that appear.
 
 Bluetooth not detected fix:
-Turn bluetooth off and on for both phone AND PC.
-OR
-Start bluetooth support service
-Restart both devices
-Connect through bluetooth
+Connect phone bluetooth to PC
+Connect AirDriod PC to Phone
+Open Airdroid Mobile ---> profile ---> bluetooth ---> connect to PC

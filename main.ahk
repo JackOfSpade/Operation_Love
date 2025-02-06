@@ -186,8 +186,9 @@ main(dating_app, root_directory)
 				
 				; Click refresh
 				 mouseClick "left", 305, 66
-				 send "tinder.com"
 				 sleep 500
+				 send "^a"
+				 send "tinder.com"
 				 send "{Enter}"
 				 sleep 15000
 

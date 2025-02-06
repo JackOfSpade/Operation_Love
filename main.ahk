@@ -181,8 +181,15 @@ main(dating_app, root_directory)
 			or no_face_detected
 			{
 				; Click refresh
-				mouseClick "left", 100, 67			 
-				sleep 15000
+				; mouseClick "left", 100, 67			 
+				; sleep 15000
+				
+				; Click refresh
+				 mouseClick "left", 305, 66
+				 send "tinder.com"
+				 slepp 500
+				 send "{Enter}"
+				 sleep 15000
 
 				profile_count += 1
 				no_face_detected := false
@@ -520,7 +527,7 @@ main(dating_app, root_directory)
 ; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
 
 ; "1920x1080"
-; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; "1366x768"
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
@@ -529,7 +536,7 @@ main(dating_app, root_directory)
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; "1920x1080"
-main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
+; main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
 
 ; "1366x768"
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")

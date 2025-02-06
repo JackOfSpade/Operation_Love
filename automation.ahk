@@ -272,8 +272,6 @@ like(dating_app, root_directory)
 		
 		; Send like		
 		mouseClick "left", 1017, 854
-		sleep 500
-		mouseClick "left", 1017, 854
 		
 		sleep 3000
 		

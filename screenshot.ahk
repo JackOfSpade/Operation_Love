@@ -72,18 +72,14 @@ take_screenshot(dating_app)
 	{
 		winactivate "OkCupid"
 		
-		; For doing multi-photo iterations
-		; loop 6
-		; {
-	
-		; }
+		print_screen(225, 431, 522, 712)
 		
-		; For doing one-photo iterations
-		loop 1
-		{
-			print_screen(225, 431, 522, 712)
-		}
+	}
+	else if dating_app == "2redbeans"
+	{
+		winactivate "2RedBeans"
 		
+		print_screen(173, 178, 279, 276)
 	}
 	else if dating_app == "photofeeler"
     {

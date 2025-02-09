@@ -32,6 +32,20 @@ navigate_to_discover(dating_app)
 		winactivate "OkCupid"
 		sleep 500
 	}
+	else if dating_app == "2redbeans"
+	{
+		winactivate "2RedBeans"
+		sleep 500
+		
+		loop 17
+		{
+			send "{down}"
+			sleep 100
+		}
+		
+		; Wait for scrolling to stop
+		sleep 1000
+	}
 	else if dating_app == "photofeeler"
     {
 		; don't winactivate "Vote" because continous refresh make loading time inconsistent
@@ -86,6 +100,9 @@ remaining_super_likes(dating_app)
 		; Click out of superlike popup
 		MouseClick "left", 676, 583
 		sleep 500
+	}
+	else if dating_app == "2redbeans"
+	{
 	}
 	
 	if !IsNumber(remainingSuperLikes)
@@ -154,6 +171,9 @@ super_like(dating_app, root_directory)
 		;sleep 500
 		
 		like(dating_app, root_directory)
+	}
+	else if dating_app == "2redbeans"
+	{
 	}
 	else if dating_app == "photofeeler"
 	{
@@ -296,6 +316,22 @@ like(dating_app, root_directory)
 		MouseClick "left", 168, 514
 		sleep 500
 	}
+	else if dating_app == "2redbeans"
+	{
+		mouseClick "left", 222, 229
+		sleep 3000
+		mouseClick "left", 620, 311
+		send "Hi, how's your week going?"
+		mouseClick "left", 982, 365
+		sleep 500
+		
+		send "^l"
+		send "https://www.2redbeans.com/en/app/search"
+		send "{Enter}"
+		sleep 3000
+		
+		navigate_to_discover("2redbeans")
+	}
 	else if dating_app == "photofeeler"
 	{
 		
@@ -388,6 +424,15 @@ dislike(dating_app)
 	{
 		; Click dislike
 		mouseClick "left", 660, 410	
+	}
+	else if dating_app == "2redbeans"
+	{
+		mouseClick "left", 828, 190
+		sleep 500
+		mouseClick "left", 751, 224
+		
+		; Wait for list to scroll up
+		sleep 1000
 	}
 	else if dating_app == "photofeeler"
 	{

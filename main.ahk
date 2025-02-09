@@ -69,7 +69,7 @@ restart_bumble()
 	sleep 5000
 }
 
-reload_hinge()
+restart_hinge()
 {					
 	; Airdroid home button
 	MouseClick "left", 1535, 40
@@ -117,7 +117,7 @@ main(dating_app, root_directory)
 {
 	; Test
 	; winactivate("AirDroid")
-	; reload_hinge()	
+	; restart_hinge()	
 	; exitApp
 
 	global targeted_index
@@ -130,7 +130,7 @@ main(dating_app, root_directory)
 	; msgbox targeted_cities.length
 	; msgbox targeted_zip_codes.length	
 	; winactivate("AirDroid")
-	; reload_hinge()
+	; restart_hinge()
 	; exitApp
 
 
@@ -319,7 +319,7 @@ main(dating_app, root_directory)
 			or Mod(profile_count, every_x_profile) == 0
 			{					
 				; Click refresh
-				reload_hinge()
+				restart_hinge()
 				
 				profile_count += 1
 				no_face_detected := false
@@ -425,6 +425,30 @@ main(dating_app, root_directory)
 
 			profile_count += 1
 		}
+		else if dating_app == "2redbeans"
+		{		
+			; Bad Gateway or out of profiles or "Aw, snap! Something went wrong..." or every x profiles or no face detected
+			if Mod(profile_count, every_x_profile) == 0
+			or no_face_detected
+			{				
+				; Refresh
+				send "^l"
+				send "https://www.2redbeans.com/en/app/search"
+				send "{Enter}"
+				sleep 3000
+				
+				navigate_to_discover(dating_app)
+
+				profile_count += 1
+				no_face_detected := false
+				goto("start")
+			}
+
+			profile_count += 1
+
+			; To detect when you run out of people --> change location
+			; TODO
+		}
 		else if dating_app == "photofeeler" 
 		{			
 			; Test open_ai_clip
@@ -518,6 +542,9 @@ main(dating_app, root_directory)
 		else if dating_app == "okcupid"
 		{
 		}
+		else if dating_app == "2redbeans"
+		{
+		}
 		else if dating_app == "photofeeler"
 		{
 		}
@@ -525,21 +552,18 @@ main(dating_app, root_directory)
 
 }
 
-; "tinder", "bumble", "okcupid", "match", "eharmony", "hinge"
+; "tinder", "bumble", "hinge", "okcupid", "2redbeans"
 
-; "1920x1080"
 ; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
-; "1366x768"
-; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
-
-; "1920x1080"
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
-; "1920x1080"
-main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
+; main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
 
-; "1366x768"
+; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
+
+main("2redbeans", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
+
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 f12::

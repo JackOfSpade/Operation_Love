@@ -33,7 +33,7 @@ print_screen(x1, y1, x2, y2)
 	Send "{LButton down}"	
 	sleep 500	
 	MouseMove x2, y2
-	sleep 50000
+	sleep 500
 	Send "{LButton up}"
 	clipwait(1, 1)
 	

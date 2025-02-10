@@ -1,4 +1,9 @@
 ﻿
-winactivate "Bumble"
 
-mouseMove  563, 192
+
+1::
+{
+	mouseMove 276, 23
+}
+
+

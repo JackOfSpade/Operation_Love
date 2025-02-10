@@ -41,6 +41,7 @@ targeted_index := FileRead("targeted_index.txt") - 1  ; index start at 1. Making
 restart_bumble()
 {					
 	send "^l"
+	sleep 500
 	send "bumble.com/app"
 	send "{Enter}"
 	
@@ -50,44 +51,32 @@ restart_bumble()
 restart_hinge()
 {					
 	; Airdroid home button
-	MouseClick "left", 1535, 40
+	MouseClick "left", 1551, 37
 	sleep 1000
 
 	; Airdroid recent tasks button
 	; F-keys like F2 shortcut for this stops working after awhile, use clicks
-	MouseClick "left", 276, 23
+	MouseClick "left", 294, 23
 	sleep 1000
 	
 	; Swipe up -- takes a few tries to lift the app all the way up to close it
-	MouseClick "left", 425, 23
-	sleep 1000
-	MouseClick "left", 425, 23
-	sleep 1000
-	MouseClick "left", 425, 23
-	sleep 1000
-	MouseClick "left", 425, 23
-	sleep 1000
-	MouseClick "left", 425, 23
-	sleep 1000
-	MouseClick "left", 425, 23
-	sleep 1000
-	MouseClick "left", 425, 23
-	sleep 1000
-	MouseClick "left", 425, 23
-	sleep 1000
-	MouseClick "left", 425, 23
-	sleep 1000
-	MouseClick "left", 425, 23
+	loop 5
+	{
+		click_and_drag(942, 878, 997, 14, 500)
+	}
+	
+	; Airdroid home button
+	MouseClick "left", 1551, 37
 	sleep 1000
 
 	; Click Hinge
-	MouseClick "left", -450, 525
+	MouseClick "left", 737, 365
 	sleep 500
 	send "^a"
 	sleep 500
-	MouseClick "left", 843, 514
+	MouseClick "left", 823, 518
 	sleep 500
-	MouseClick "left", 843, 514
+	MouseClick "left", 823, 518
 	sleep 4000
 }
 
@@ -107,8 +96,8 @@ main(dating_app, root_directory)
 	navigate_to_discover(dating_app)
 
 	; like/super_like/dislike test
-	;sleep 1000
-	;like(dating_app, root_directory)
+	; sleep 1000
+	; like(dating_app, root_directory)
 	; dislike(dating_app)
 	; exitApp
 

@@ -10,6 +10,8 @@
 
 CoordMode "Mouse", "Window"
 
+hinge_opener := "Hi, how's your week going?"
+
 navigate_to_discover(dating_app)
 {
     if dating_app == "tinder"
@@ -229,7 +231,7 @@ like(dating_app, root_directory)
 
 	start_of_like_function_label:
 	
-	hinge_opener := ""
+	global hinge_opener
 	
 	if dating_app == "tinder"
 	{		
@@ -264,40 +266,35 @@ like(dating_app, root_directory)
 	else if dating_app == "hinge"
     {		
 		; Scroll up. This is only here because Hinge freeze buttons so they're not clickable sometimes.
-		click_and_drag(665, 319, 669, 776, 500)
+		click_and_drag(930, 349, 971, 1007, 500)
 		sleep 1000
 		
 		; Click like locations
-		mouseClick "left", 1156, 756
+		mouseClick "left", 1191, 754
 		sleep 1000
-		mouseClick "left", 1152, 657
-		sleep 1000
-		mouseClick "left", 1153, 635
-		sleep 1000
-		mouseClick "left", 1152, 699
-		sleep 1000
-		mouseClick "left", 1153, 721
-		sleep 1000
-				
+		mouseClick "left", 1192, 854
+		
+		sleep 3000
+	
 		
 		; Depending on resolution of the laptop, some resolution make the "Send Like" button disappear if try to add comments -----------------------
-		; Click "Add a comment"
-		; mouseClick "left", 812, 737
-		; 
-		; sleep 3000
-		; 
-		; send hinge_opener
-		; 
-		; sleep 6000
+		; Click textbox
+		mouseClick "left", 953, 791
+		
+		sleep 1000
+		
+		send hinge_opener
+		
+		sleep 6000
 		; ----------------------------------------------------------------
 		
-		; Send like		
+		; Send like after comment
 		mouseClick "left", 1017, 854
 		
 		sleep 3000
 		
 		; Click away popups
-		mouseClick "left", 1185, 720
+		;;;;;;;;;;;;;;;;;;;
 		sleep 100
 		
 		; Use up all your roses so the rose suggestion pop-up don't show up. It is difficult to account for it on device change b/c it only show up occasionally.
@@ -409,16 +406,15 @@ dislike(dating_app)
 	}
 	else if dating_app == "hinge"
     {
-		; Click dislike without footer
-		mouseClick "left", 768, 1003
+		; Scroll up.
+		click_and_drag(930, 349, 971, 1007, 500)
 		sleep 1000
 		
 		; Dislike button with footer
-		mouseClick "left", 769, 916
-		sleep 1000
+		mouseClick "left", 723, 918
 		
 		; Click dislike with footer and compatibility caption
-		; mouseClick "left", 768, 1003
+		;;;;;;;;;;;;;;;;;;;;
 		
 		sleep 3000
     }

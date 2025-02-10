@@ -31,7 +31,7 @@ take_screenshot(dating_app)
     {
 		winactivate "AirDroid"
 		
-		print_screen(711, 143, 1208, 975)
+		print_screen(655, 125, 1260, 993)
 	}
 	else if dating_app == "okcupid"
 	{

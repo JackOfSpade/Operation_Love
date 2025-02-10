@@ -20,11 +20,11 @@ take_screenshot(dating_app)
     }
     else if dating_app == "bumble"
     {
-       winactivate "AirDroid"
+       winactivate "Bumble"
        
        count := 0
 	   
-	   print_screen(658, 108, 1258, 999)
+	   print_screen(570, 195, 1162, 930)
        sleep 500
     }      
 	else if dating_app == "hinge"

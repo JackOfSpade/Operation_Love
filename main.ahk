@@ -40,31 +40,9 @@ targeted_index := FileRead("targeted_index.txt") - 1  ; index start at 1. Making
 
 restart_bumble()
 {					
-	; Airdroid recent tasks button
-	; F-keys like F2 shortcut for this stops working after awhile, use clicks
-	MouseClick "left", 1600, 40
-	sleep 1000
-
-	; Airdroid swipe up button
-	; 2 possible locations for some reason
-	MouseClick "left", 1770, 40
-	sleep 500
-	MouseClick "left", 470, 30
-	sleep 2000
-
-	; Click Bumble
-	MouseClick "left", -350, 380	
-	sleep 500
-	
-	; Airdroid switch input method
-	send "^a"
-	sleep 500
-	
-	; Click off context menu
-	MouseClick "left", 951, 356
-	sleep 1000
-	; Click bumble again (location is diff because active window is not AirDroid main windows instead of the toolbar.
-	MouseClick "left", 951, 356
+	send "^l"
+	send "bumble.com/app"
+	send "{Enter}"
 	
 	sleep 5000
 }
@@ -200,8 +178,8 @@ main(dating_app, root_directory)
 		}
 		else if dating_app == "bumble"
 		{
-			; no_face_detected
-			if no_face_detected
+			if Mod(profile_count, every_x_profile) == 0
+			or no_face_detected
 			{				
 				restart_bumble()
 				
@@ -211,11 +189,8 @@ main(dating_app, root_directory)
 			}
 
 			; Click away any popups including "Second time's a charm" compliment suggestion and "It's a match!"
-			mouseClick "left", 701, 71
+			;;;;;;;;;;;;;;;;;;;;
 			sleep 1000	
-			; Click discover to close side bar if above popup didn't happen
-			MouseClick "left", 962, 1042	
-			sleep 1500
 			
 			profile_count += 1
 
@@ -534,9 +509,9 @@ main(dating_app, root_directory)
 
 ; "tinder", "bumble", "hinge", "okcupid", "2redbeans"
 
-main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
 

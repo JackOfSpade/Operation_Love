@@ -19,7 +19,7 @@ navigate_to_discover(dating_app)
     }
 	else if dating_app == "bumble"
     {
-		winactivate "AirDroid"
+		winactivate "Bumble"
 		sleep 500
     }
 	else if dating_app == "hinge"
@@ -258,7 +258,8 @@ like(dating_app, root_directory)
 	}
 	else if dating_app == "bumble"
 	{
-		click_and_drag(724, 539, 1182, 536, 2000)
+		; click_and_drag(724, 539, 1182, 536, 2000)
+		mouseClick "left", 1261, 965
 	}
 	else if dating_app == "hinge"
     {		
@@ -403,7 +404,8 @@ dislike(dating_app)
 	}
 	else if dating_app == "bumble"
 	{
-		click_and_drag(1182, 536, 724, 539, 2000)
+		; click_and_drag(1182, 536, 724, 539, 2000)
+		mouseClick "left", 1055, 975
 	}
 	else if dating_app == "hinge"
     {

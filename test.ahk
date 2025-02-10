@@ -1,7 +1,4 @@
 ﻿
-winactivate "Tinder"
+winactivate "Bumble"
 
-
-mouseMove 964, 771
-sleep 5000
-mouseMove 0, 0
+mouseMove  563, 192

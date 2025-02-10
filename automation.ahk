@@ -54,174 +54,174 @@ navigate_to_discover(dating_app)
 
 
 
-remaining_super_likes(dating_app)
-{
-	remainingSuperLikes := 0
-	if dating_app == "tinder"
-    {
-		; Click profile
-		MouseClick "left", 46, 168
-		sleep 3000
-			
-		remainingSuperLikes := ocr(234, 394, 249, 420, 500)
-		
-		; Go back to discover
-		MouseClick "left", 46, 168
-		sleep 3000
-	}
-	else if dating_app == "bumble"
-	{		
-		; Click profile (have to click multiple times for it to trigger for some reason sometimes)
-		mouseClick "left", 713, 1029
-		sleep 1000
-		mouseClick "left", 713, 1029
-		sleep 1000
-		mouseClick "left", 713, 1029
-		sleep 1000
-		
-		remainingSuperLikes := ocr(1060, 502, 1090, 539, 100)
-		
-		; Go back to discover
-		MouseClick "left", 962, 1042
-		sleep 2000		
-	}	
-	else if dating_app == "hinge"
-    {
-		; Superlike manually in standouts since it doesn't replenish (only 1 free rose/week)
-    }
-	else if dating_app == "okcupid"
-	{
-		; Click superlike
-		MouseClick "left", 986, 410
-		sleep 1000
-		
-		remainingSuperLikes := ocr(1120, 705, 1132, 720, 100)
-		
-		; Click out of superlike popup
-		MouseClick "left", 676, 583
-		sleep 500
-	}
-	else if dating_app == "2redbeans"
-	{
-	}
-	
-	if !IsNumber(remainingSuperLikes)
-	{
-		remainingSuperLikes := 0
-	}
-	
-	return remainingSuperLikes
-	
-}
+; remaining_super_likes(dating_app)
+; {
+; 	remainingSuperLikes := 0
+; 	if dating_app == "tinder"
+;     {
+; 		; Click profile
+; 		MouseClick "left", 35, 168
+; 		sleep 3000
+; 			
+; 		remainingSuperLikes := ocr(234, 394, 249, 420, 500)
+; 		
+; 		; Go back to discover
+; 		MouseClick "left", 35, 168
+; 		sleep 3000
+; 	}
+; 	else if dating_app == "bumble"
+; 	{		
+; 		; Click profile (have to click multiple times for it to trigger for some reason sometimes)
+; 		mouseClick "left", 713, 1029
+; 		sleep 1000
+; 		mouseClick "left", 713, 1029
+; 		sleep 1000
+; 		mouseClick "left", 713, 1029
+; 		sleep 1000
+; 		
+; 		remainingSuperLikes := ocr(1060, 502, 1090, 539, 100)
+; 		
+; 		; Go back to discover
+; 		MouseClick "left", 962, 1042
+; 		sleep 2000		
+; 	}	
+; 	else if dating_app == "hinge"
+;     {
+; 		; Superlike manually in standouts since it doesn't replenish (only 1 free rose/week)
+;     }
+; 	else if dating_app == "okcupid"
+; 	{
+; 		; Click superlike
+; 		MouseClick "left", 986, 410
+; 		sleep 1000
+; 		
+; 		remainingSuperLikes := ocr(1120, 705, 1132, 720, 100)
+; 		
+; 		; Click out of superlike popup
+; 		MouseClick "left", 676, 583
+; 		sleep 500
+; 	}
+; 	else if dating_app == "2redbeans"
+; 	{
+; 	}
+; 	
+; 	if !IsNumber(remainingSuperLikes)
+; 	{
+; 		remainingSuperLikes := 0
+; 	}
+; 	
+; 	return remainingSuperLikes
+; 	
+; }
 		   
-super_like(dating_app, root_directory)
-{
-	if dating_app == "tinder"
-	{		
-		; Fix random profile popups
-		loop 4
-		{
-			; Tinder arrow keys sometimes don't work on first try
-			send "{down}"
-			sleep 500
-		}
-		
-		; Click super like
-		mouseClick "left", 1145, 820
-		sleep 2000
-		
-		; Add comment
-		mouseClick "left", 988, 792
-		sleep 1000
-		send "Hi"
-		; Need to sleep >500ms or else Tinder won't register the send; probably due to on-hover scripts running on the send button.
-		sleep 1000
-		; Click send
-		mouseClick "left", 1299, 794
-		
-	}
-	else if dating_app == "bumble"
-	{
-		mouseClick "left", 1162, 751
-		sleep 500
-		; diff spot
-		mouseClick "left", 1175, 886	
-	
-	}
-	else if dating_app == "hinge"
-    {
-		like(dating_app, root_directory)
-    }
-	else if dating_app == "okcupid"
-	{
-		;; Click superlike
-		;MouseClick "left", 986, 410
-		;sleep 1000
-		;
-		;; Click send without message
-		;mouseClick "left", 1154, 662
-		;
-		;; Wait for superlike animation to finish
-		;sleep 4000
-		;
-		;sleep 1000
-		;
-		;; Click out of it's a match popup
-		;MouseClick "left", 168, 514
-		;sleep 500
-		
-		like(dating_app, root_directory)
-	}
-	else if dating_app == "2redbeans"
-	{
-	}
-	else if dating_app == "photofeeler"
-	{
-		random_number := Random(1, 2)
-		
-		if random_number == 1
-		{
-			mouseClick "left", 746, 347
-		}
-		else if random_number == 2
-		{
-			mouseClick "left", 746, 387
-		}
-		
-		sleep 499
-		
-		
-		random_number := Random(1, 2)
-		
-		if random_number == 1
-		{
-			mouseClick "left", 946, 343
-		}
-		else if random_number == 2
-		{
-			mouseClick "left", 938, 382
-		}
-		
-		sleep 500
-		
-		
-		random_number := Random(1, 2)
-		
-		if random_number == 1
-		{
-			mouseClick "left", 1079, 344
-		}
-		else if random_number == 2
-		{
-			mouseClick "left", 1194, 391
-		}
-		
-		sleep 501
-		
-		; Click submit
-		mouseClick "left", 1177, 730
-	}
-}
+; super_like(dating_app, root_directory)
+; {
+; 	if dating_app == "tinder"
+; 	{		
+; 		; Fix random profile popups
+; 		loop 4
+; 		{
+; 			; Tinder arrow keys sometimes don't work on first try
+; 			send "{down}"
+; 			sleep 500
+; 		}
+; 		
+; 		; Click super like
+; 		mouseClick "left", 1145, 820
+; 		sleep 2000
+; 		
+; 		; Add comment
+; 		mouseClick "left", 988, 792
+; 		sleep 1000
+; 		send "Hi"
+; 		; Need to sleep >500ms or else Tinder won't register the send; probably due to on-hover scripts running on the send button.
+; 		sleep 1000
+; 		; Click send
+; 		mouseClick "left", 1299, 794
+; 		
+; 	}
+; 	else if dating_app == "bumble"
+; 	{
+; 		mouseClick "left", 1162, 751
+; 		sleep 500
+; 		; diff spot
+; 		mouseClick "left", 1175, 886	
+; 	
+; 	}
+; 	else if dating_app == "hinge"
+;     {
+; 		like(dating_app, root_directory)
+;     }
+; 	else if dating_app == "okcupid"
+; 	{
+; 		;; Click superlike
+; 		;MouseClick "left", 986, 410
+; 		;sleep 1000
+; 		;
+; 		;; Click send without message
+; 		;mouseClick "left", 1154, 662
+; 		;
+; 		;; Wait for superlike animation to finish
+; 		;sleep 4000
+; 		;
+; 		;sleep 1000
+; 		;
+; 		;; Click out of it's a match popup
+; 		;MouseClick "left", 168, 514
+; 		;sleep 500
+; 		
+; 		like(dating_app, root_directory)
+; 	}
+; 	else if dating_app == "2redbeans"
+; 	{
+; 	}
+; 	else if dating_app == "photofeeler"
+; 	{
+; 		random_number := Random(1, 2)
+; 		
+; 		if random_number == 1
+; 		{
+; 			mouseClick "left", 746, 347
+; 		}
+; 		else if random_number == 2
+; 		{
+; 			mouseClick "left", 746, 387
+; 		}
+; 		
+; 		sleep 499
+; 		
+; 		
+; 		random_number := Random(1, 2)
+; 		
+; 		if random_number == 1
+; 		{
+; 			mouseClick "left", 946, 343
+; 		}
+; 		else if random_number == 2
+; 		{
+; 			mouseClick "left", 938, 382
+; 		}
+; 		
+; 		sleep 500
+; 		
+; 		
+; 		random_number := Random(1, 2)
+; 		
+; 		if random_number == 1
+; 		{
+; 			mouseClick "left", 1079, 344
+; 		}
+; 		else if random_number == 2
+; 		{
+; 			mouseClick "left", 1194, 391
+; 		}
+; 		
+; 		sleep 501
+; 		
+; 		; Click submit
+; 		mouseClick "left", 1177, 730
+; 	}
+; }
 
    
 like(dating_app, root_directory)
@@ -233,7 +233,7 @@ like(dating_app, root_directory)
 	
 	if dating_app == "tinder"
 	{		
-		; Fix random profile popups
+		; Pull down profile description if up.
 		loop 4
 		{
 			; Tinder arrow keys sometimes don't work on first try
@@ -242,19 +242,19 @@ like(dating_app, root_directory)
 		}
 		
 		; Click like
-		mouseClick "left", 1216, 817
+		mouseClick "left", 1225, 845
 		
-		sleep 3000
+		sleep 1000
 		
 		; Click away super like upgrade popup
-		mouseClick "left", 908, 749
+		mouseClick "left", 964, 771
 		
 		sleep 500
 		
 		; Click away second time's a charm (compliments promo). Need to click 2 times in case one of the profiles are enlarged.
-		mouseClick "left", 702, 67
-		sleep 500
-		mouseClick "left", 702, 67
+		; mouseClick "left", 702, 67
+		; sleep 500
+		; mouseClick "left", 702, 67
 	}
 	else if dating_app == "bumble"
 	{
@@ -399,7 +399,7 @@ dislike(dating_app)
 			sleep 500
 		}
 		
-		mouseClick "left", 1071, 819
+		mouseClick "left", 1075, 845
 	}
 	else if dating_app == "bumble"
 	{

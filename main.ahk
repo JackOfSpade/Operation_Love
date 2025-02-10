@@ -129,9 +129,8 @@ main(dating_app, root_directory)
 	navigate_to_discover(dating_app)
 
 	; like/super_like/dislike test
-	; sleep 3000
+	; sleep 1000
 	; like(dating_app, root_directory)
-	; super_like(dating_app, root_directory)
 	; dislike(dating_app)
 	; exitApp
 
@@ -161,19 +160,12 @@ main(dating_app, root_directory)
 		; Refresh Page Logics
 		if dating_app == "tinder"
 		{		
-			; Bad Gateway or out of profiles or "Aw, snap! Something went wrong..." or every x profiles or no face detected
-			if InStr(ocr(900, 135, 964, 173, 100), "Bad", 0) 
-			or InStr(ocr(1058, 711, 1108, 728, 100), "unable", 0) 
-			or InStr(ocr(662, 440, 701, 466, 100), "Aw", 0) 
-			or Mod(profile_count, every_x_profile) == 0
+			 
+			if Mod(profile_count, every_x_profile) == 0
 			or no_face_detected
 			{
 				; Click refresh
-				; mouseClick "left", 100, 67			 
-				; sleep 15000
-				
-				; Click refresh
-				 mouseClick "left", 305, 66
+				 send "^l"
 				 sleep 500
 				 send "^a"
 				 send "tinder.com"
@@ -186,11 +178,11 @@ main(dating_app, root_directory)
 			}
 
 			; Click away "____ likes you"
-			mouseClick "left", 1300, 242
+			
 			sleep 500
 
 			; Click away pride stickers if no "____ likes you"
-			mouseClick "left", 1157, 245
+			
 			sleep 500
 
 
@@ -491,12 +483,12 @@ main(dating_app, root_directory)
 		}
 
 		; Liking Logic
-		if decision == "super_like" and super_likes > 0
-		{
-			super_like(dating_app, root_directory)
-			super_likes -= 1
-		}
-		else if decision == "super_like" or decision == "like" or no_face_detected
+		; if decision == "super_like" and super_likes > 0
+		; {
+		; 	super_like(dating_app, root_directory)
+		; 	super_likes -= 1
+		; }
+		if decision == "super_like" or decision == "like" or no_face_detected
 		{
 			hinge_opener := like(dating_app, root_directory)
 		}
@@ -542,7 +534,7 @@ main(dating_app, root_directory)
 
 ; "tinder", "bumble", "hinge", "okcupid", "2redbeans"
 
-; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
+main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
 ; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
@@ -550,7 +542,7 @@ main(dating_app, root_directory)
 
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
-main("2redbeans", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
+; main("2redbeans", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 

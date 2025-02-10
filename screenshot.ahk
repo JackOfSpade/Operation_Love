@@ -13,55 +13,19 @@ take_screenshot(dating_app)
 	
     if dating_app == "tinder"
     {
-       winactivate "Tinder"
-       
-	   ; For doing multi-photo iterations
-       ; loop 6
-       ; {
-       ;     print_screen(962, 215, 1339, 718)
-       ;     sleep 500
-		 ;   ; Space stops working for some reason sometimes
-       ;     
-		 ;   ; Go to next picture
-		 ;   mouseClick "left", 1318, 509
-       ;     sleep 1000
-       ; }        
+       winactivate "Tinder"     
 	   
-	   ; For doing one-photo iterations
-	   loop 1
-       {
-           print_screen(962, 205, 1339, 718)
-           sleep 500
-       }    
+	   print_screen(960, 220, 1340, 723)
+       sleep 500  
     }
     else if dating_app == "bumble"
     {
        winactivate "AirDroid"
        
        count := 0
-       
-	   ; For doing multi-photo iterations
-       ; loop 5
-       ; {
-       ;     print_screen(492, 193, 853, 628)
-       ;     sleep 500
-       ;     send "{down}"
-		 ;   
-		 ;   if count == 0
-		 ;   {
-		 ;		send "{down}"
-		 ;		count++
-		 ;   }
-		 ;   
-       ;     sleep 500
-       ; }
 	   
-	   ; For doing one-photo iterations
-	   loop 1
-       {
-           print_screen(658, 108, 1258, 999)
-           sleep 500
-       }
+	   print_screen(658, 108, 1258, 999)
+       sleep 500
     }      
 	else if dating_app == "hinge"
     {

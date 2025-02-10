@@ -52,32 +52,36 @@ restart_hinge()
 {					
 	; Airdroid home button
 	MouseClick "left", 1551, 37
-	sleep 1000
+	sleep 3000
 
 	; Airdroid recent tasks button
 	; F-keys like F2 shortcut for this stops working after awhile, use clicks
 	MouseClick "left", 294, 23
-	sleep 1000
+	sleep 3000
 	
-	; Swipe up -- takes a few tries to lift the app all the way up to close it
-	loop 5
-	{
-		click_and_drag(942, 878, 997, 14, 500)
-	}
+	; Swipe up button
+	MouseClick "left", 455, 22
+	sleep 3000
 	
 	; Airdroid home button
-	MouseClick "left", 1551, 37
-	sleep 1000
+	MouseClick "left", 251, 20
+	sleep 3000
 
-	; Click Hinge
-	MouseClick "left", 737, 365
+	
+	; Click off airdroid menu coords
+	MouseClick "left", -550, 379
 	sleep 500
+	; Click dating apps group
+	MouseClick "left", 719, 355
+	sleep 500
+	; Switch input method
 	send "^a"
 	sleep 500
+	MouseClick "left", 719, 355
+	sleep 3000
+	; Click Hinge
 	MouseClick "left", 823, 518
-	sleep 500
-	MouseClick "left", 823, 518
-	sleep 4000
+	sleep 10000
 }
 
 main(dating_app, root_directory)
@@ -502,9 +506,9 @@ main(dating_app, root_directory)
 
 ; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
-main("bumble", "C:\Users\super\Desktop\Github\Operation_Love")
+; main("bumble", "C:\Users\super\Desktop\Github\Operation_Love")
 
-; main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
+main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 

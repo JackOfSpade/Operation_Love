@@ -265,8 +265,8 @@ like(dating_app, root_directory)
 	}
 	else if dating_app == "hinge"
     {		
-		; Scroll up. This is only here because Hinge freeze buttons so they're not clickable sometimes.
-		click_and_drag(930, 349, 971, 1007, 500)
+		; Swipe down button
+		mouseClick "left", 1724, 39
 		sleep 1000
 		
 		; Click like locations
@@ -406,9 +406,10 @@ dislike(dating_app)
 	}
 	else if dating_app == "hinge"
     {
-		; Scroll up.
-		click_and_drag(930, 349, 971, 1007, 500)
+		; Swipe down button
+		mouseClick "left", 1724, 39
 		sleep 1000
+		
 		
 		; Dislike button with footer
 		mouseClick "left", 723, 918

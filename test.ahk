@@ -3,7 +3,7 @@
 
 1::
 {
-	mouseMove 276, 23
+	mouseMove 752, 385
 }
 
 

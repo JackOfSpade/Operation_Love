@@ -30,6 +30,7 @@ take_screenshot(dating_app)
 	else if dating_app == "hinge"
     {
 		winactivate "AirDroid"
+		
 		print_screen(711, 143, 1208, 975)
 	}
 	else if dating_app == "okcupid"

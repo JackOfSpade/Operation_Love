@@ -99,6 +99,8 @@ main(dating_app, root_directory)
 	; sleep 1000
 	; like(dating_app, root_directory)
 	; dislike(dating_app)
+	; restart_bumble()
+	; restart_hinge()
 	; exitApp
 
 	; Manually use super likes
@@ -500,9 +502,9 @@ main(dating_app, root_directory)
 
 ; main("tinder", "C:\Users\Bull\Desktop\Github\Operation_Love")
 
-; main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+main("bumble", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
-main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
+; main("hinge", "C:\Users\super\Desktop\Github\Operation_Love")
 
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 

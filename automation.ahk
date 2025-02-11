@@ -270,10 +270,10 @@ like(dating_app, root_directory)
 		mouseClick "left", 1724, 39
 		sleep 1000
 		
-		; Click like locations
-		mouseClick "left", 1186, 778
+		; Click like locations, but change from AirDroid menu coords first by clicking on an area away from the app area.
+		mouseClick "left", 230, 559
 		sleep 1000
-		mouseClick "left", 1192, 854		
+		mouseClick "left", 1186, 778
 		sleep 3000
 	
 		
@@ -414,7 +414,9 @@ dislike(dating_app)
 		sleep 1000
 		
 		
-		; Dislike button with footer
+		; Dislike button with footer, but change from AirDroid menu coords first by clicking on an area away from the app area.
+		mouseClick "left", 230, 559
+		sleep 1000
 		mouseClick "left", 723, 918
 		
 		; Click dislike with footer and compatibility caption

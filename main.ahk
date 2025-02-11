@@ -126,14 +126,14 @@ main(dating_app, root_directory)
 	no_face_detected := false
 	
 	; TEST
-	winactivate "AirDroid"
+	; winactivate "AirDroid"
 	; sleep 1000
-	like(dating_app, root_directory)
+	; like(dating_app, root_directory)
 	; dislike(dating_app)
 	; restart_tinder()
 	; restart_bumble()
 	; restart_2redbeans()
-	exitApp
+	; exitApp
 
 	navigate_to_discover(dating_app)
 

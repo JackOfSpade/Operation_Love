@@ -270,10 +270,9 @@ like(dating_app, root_directory)
 		sleep 1000
 		
 		; Click like locations
-		mouseClick "left", 1191, 754
+		mouseClick "left", 1186, 778
 		sleep 1000
-		mouseClick "left", 1192, 854
-		
+		mouseClick "left", 1192, 854		
 		sleep 3000
 	
 		

@@ -38,6 +38,17 @@ CoordMode "Mouse", "Window"
 
 targeted_index := FileRead("targeted_index.txt") - 1  ; index start at 1. Making it "- 1" just makes loop easier to start at the index indicated in the file.
 
+restart_tinder()
+{
+	; Click refresh
+	send "^l"
+	sleep 500
+	send "^a"
+	send "tinder.com"
+	send "{Enter}"
+	sleep 15000
+}
+
 restart_bumble()
 {					
 	send "^l"
@@ -84,6 +95,21 @@ restart_hinge()
 	sleep 10000
 }
 
+restart_2redbeans()
+{
+	; Refresh
+	send "^l"
+	send "https://www.2redbeans.com/en/app/search"
+	send "{Enter}"
+	; Need time for the site to restore previous search settings
+	sleep 7000
+	
+	; Make body of html active so down arrow works.
+	mouseClick "left", 78, 428
+				
+	navigate_to_discover("2redbeans")
+}
+
 main(dating_app, root_directory)
 {
 	global targeted_index
@@ -96,16 +122,19 @@ main(dating_app, root_directory)
 	first_loop := true
 	; Potentially infiite loading
 	no_face_detected := false
-
-	navigate_to_discover(dating_app)
-
-	; like/super_like/dislike test
-	; sleep 1000
+	
+	; TEST
+	winactivate "2RedBeans"
+	sleep 1000
 	; like(dating_app, root_directory)
 	; dislike(dating_app)
+	; restart_tinder()
 	; restart_bumble()
 	; restart_hinge()
-	; exitApp
+	restart_2redbeans()
+	exitApp
+
+	navigate_to_discover(dating_app)
 
 	; Manually use super likes
 	; super_likes := remaining_super_likes(dating_app)
@@ -137,13 +166,7 @@ main(dating_app, root_directory)
 			if Mod(profile_count, every_x_profile) == 0
 			or no_face_detected
 			{
-				; Click refresh
-				 send "^l"
-				 sleep 500
-				 send "^a"
-				 send "tinder.com"
-				 send "{Enter}"
-				 sleep 15000
+				restart_tinder()
 
 				profile_count += 1
 				no_face_detected := false
@@ -381,13 +404,7 @@ main(dating_app, root_directory)
 			if Mod(profile_count, every_x_profile) == 0
 			or no_face_detected
 			{				
-				; Refresh
-				send "^l"
-				send "https://www.2redbeans.com/en/app/search"
-				send "{Enter}"
-				sleep 3000
-				
-				navigate_to_discover(dating_app)
+				restart_2redbeans()
 
 				profile_count += 1
 				no_face_detected := false
@@ -508,11 +525,11 @@ main(dating_app, root_directory)
 
 ; main("bumble", "C:\Users\super\Desktop\Github\Operation_Love")
 
-main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
-; main("2redbeans", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
+main("2redbeans", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 

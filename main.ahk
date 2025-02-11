@@ -59,41 +59,42 @@ restart_bumble()
 	sleep 5000
 }
 
+; App restarts have too much instability. Do not do.
 restart_hinge()
 {					
-	; Airdroid home button
-	MouseClick "left", 1551, 37
-	sleep 3000
-
-	; Airdroid recent tasks button
-	; F-keys like F2 shortcut for this stops working after awhile, use clicks
-	MouseClick "left", 294, 23
-	sleep 3000
-	
-	; Swipe up button
-	MouseClick "left", 455, 22
-	sleep 3000
-	
-	; Airdroid home button
-	MouseClick "left", 251, 20
-	sleep 3000
-
-	
-	; Click off airdroid menu coords
-	MouseClick "left", -550, 379
-	sleep 1000
-	; Switch input method
-	send "^a"
-	sleep 500
-	; Click dating apps group
-	MouseClick "left", 719, 355
-	sleep 1000
-	; Switch input method
-	send "^a"
-	sleep 500
-	; Click Hinge
-	MouseClick "left", 823, 518
-	sleep 10000
+	;; Airdroid home button
+	;MouseClick "left", 1551, 37
+	;sleep 3000
+	;
+	;; Airdroid recent tasks button
+	;; F-keys like F2 shortcut for this stops working after awhile, use clicks
+	;MouseClick "left", 294, 23
+	;sleep 3000
+	;
+	;; Swipe up button
+	;MouseClick "left", 455, 22
+	;sleep 3000
+	;
+	;; Airdroid home button
+	;MouseClick "left", 251, 20
+	;sleep 3000
+	;
+	;
+	;; Click off airdroid menu coords
+	;MouseClick "left", -550, 379
+	;sleep 1000
+	;; Switch input method
+	;send "^a"
+	;sleep 500
+	;; Click dating apps group
+	;MouseClick "left", 719, 355
+	;sleep 1000
+	;; Switch input method
+	;send "^a"
+	;sleep 500
+	;; Click Hinge
+	;MouseClick "left", 823, 518
+	;sleep 10000
 }
 
 restart_2redbeans()
@@ -126,12 +127,11 @@ main(dating_app, root_directory)
 	
 	; TEST
 	; winactivate "2RedBeans"
-	sleep 1000
+	; sleep 1000
 	; like(dating_app, root_directory)
 	; dislike(dating_app)
 	; restart_tinder()
 	; restart_bumble()
-	; restart_hinge()
 	; restart_2redbeans()
 	; exitApp
 
@@ -287,24 +287,25 @@ main(dating_app, root_directory)
 			; 	goto("start")
 			; }
 		}
+		; App restarts have too much instability. Do not do.
 		else if dating_app == "hinge"
 		{			
-			if no_face_detected 
-			or Mod(profile_count, every_x_profile) == 0
-			{					
-				; Click refresh
-				restart_hinge()
-				
-				profile_count += 1
-				no_face_detected := false
-				goto("start")
-			}
-			
-			
-			profile_count += 1
-			
-			; To detect when you run out of people --> change location
-			; TODO
+			; if no_face_detected 
+			; or Mod(profile_count, every_x_profile) == 0
+			; {					
+			; 	; Refresh
+			; 	restart_hinge()
+			; 	
+			; 	profile_count += 1
+			; 	no_face_detected := false
+			; 	goto("start")
+			; }
+			; 
+			; 
+			; profile_count += 1
+			; 
+			; ; To detect when you run out of people --> change location
+			; ; TODO
 		}
 		else if dating_app == "okcupid"
 		{

@@ -81,15 +81,16 @@ restart_hinge()
 	
 	; Click off airdroid menu coords
 	MouseClick "left", -550, 379
-	sleep 500
-	; Click dating apps group
-	MouseClick "left", 719, 355
-	sleep 500
+	sleep 1000
 	; Switch input method
 	send "^a"
 	sleep 500
+	; Click dating apps group
 	MouseClick "left", 719, 355
-	sleep 3000
+	sleep 1000
+	; Switch input method
+	send "^a"
+	sleep 500
 	; Click Hinge
 	MouseClick "left", 823, 518
 	sleep 10000

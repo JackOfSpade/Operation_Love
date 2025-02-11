@@ -1,5 +1,5 @@
-﻿
-
+﻿#include automation.ahk
+navigate_to_discover(dating_app)
 
 1::
 {

@@ -4,6 +4,7 @@
 ; Selenium to automate these tasks.
 
 #include helper_functions.ahk
+#include main.ahk
 
 #SingleInstance
 #WinActivateForce
@@ -319,15 +320,18 @@ like(dating_app, root_directory)
 		sleep 3000
 		mouseClick "left", 620, 311
 		send "Hi, how's your week going?"
-		mouseClick "left", 982, 365
+		sleep 1000
+		; Click send
+		mouseClick "left", 900, 365
 		sleep 500
+		; Click send (something coords get messed up for some reason)
+		mouseClick "left", 993, 370
+		send 1000
 		
-		send "^l"
-		send "https://www.2redbeans.com/en/app/search"
-		send "{Enter}"
-		sleep 3000
+		restart_2redbeans()
 		
-		navigate_to_discover("2redbeans")
+		; Clear from search list
+		dislike(dating_app)
 	}
 	else if dating_app == "photofeeler"
 	{

@@ -273,9 +273,12 @@ like(dating_app, root_directory)
 		; Click like locations, but change from AirDroid menu coords first by clicking on an area away from the app area.
 		mouseClick "left", 230, 559
 		sleep 1000
+		; like location 1
 		mouseClick "left", 1186, 778
-		sleep 3000
-	
+		sleep 1000
+		; like location 2
+		mouseClick "left", 1186, 862
+		sleep 1000
 		
 		; Depending on resolution of the laptop, some resolution make the "Send Like" button disappear if try to add comments -----------------------
 		; Click textbox

@@ -162,7 +162,7 @@ def main():
                     
                     # 10% adjustment for possible inaccuracies
                     baseline_beauty_score = 2.25
-                    baseline_BMI_score = 22.41
+                    baseline_BMI_score = 27.39
 
                     # Calculate percentage difference from baseline
                     beauty_percentage_diff = abs((beauty_score - baseline_beauty_score) / baseline_beauty_score)

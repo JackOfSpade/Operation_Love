@@ -127,14 +127,14 @@ main(dating_app, root_directory)
 	no_face_detected := false
 	
 	; TEST
-	; winactivate "AirDroid"
-	; sleep 1000
-	; like(dating_app, root_directory)
+	winactivate "AirDroid"
+	sleep 1000
+	like(dating_app, root_directory)
 	; dislike(dating_app)
 	; restart_tinder()
 	; restart_bumble()
 	; restart_2redbeans()
-	; exitApp
+	exitApp
 
 	navigate_to_discover(dating_app)
 
@@ -528,11 +528,11 @@ main(dating_app, root_directory)
 
 ; main("bumble", "C:\Users\super\Desktop\Github\Operation_Love")
 
-; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
-main("2redbeans", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
+; main("2redbeans", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 

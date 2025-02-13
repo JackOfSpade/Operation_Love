@@ -101,6 +101,7 @@ restart_2redbeans()
 {
 	; Refresh
 	send "^l"
+	sleep 1000
 	send "https://www.2redbeans.com/en/app/search"
 	send "{Enter}"
 	; Need time for the site to restore previous search settings
@@ -527,11 +528,11 @@ main(dating_app, root_directory)
 
 ; main("bumble", "C:\Users\super\Desktop\Github\Operation_Love")
 
-main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
-; main("2redbeans", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
+main("2redbeans", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 

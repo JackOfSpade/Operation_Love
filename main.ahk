@@ -129,7 +129,7 @@ main(dating_app, root_directory)
 	; TEST
 	; winactivate "AirDroid"
 	; sleep 1000
-	like(dating_app, root_directory)
+	; like(dating_app, root_directory)
 	; dislike(dating_app)
 	; restart_tinder()
 	; restart_bumble()

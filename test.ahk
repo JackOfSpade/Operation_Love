@@ -2,7 +2,7 @@
 
 1::
 {
-	mouseMove 739, 244
+	mouseMove 468, 227
 }
 
 

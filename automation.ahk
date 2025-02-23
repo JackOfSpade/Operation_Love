@@ -49,18 +49,20 @@ navigate_to_discover(dating_app)
 		; Wait for scrolling to stop
 		sleep 1000
 		
-		mouseMove 264, 215
+		A_Clipboard := ""
+		
+		mouseMove 150, 215
 		sleep 500
 		send "{LButton down}"
-		mouseMove 312, 215
+		mouseMove 468, 227
 		sleep 500 
-		send "{LButton down}"
+		send "{LButton up}"
 		
-		A_Clipboard := ""
+		
 		Send "^c"
 		ClipWait
 		
-		If InStr(A_Clipboard, "people")
+		if InStr(A_Clipboard, "people")
 		{
 			exitApp
 		}

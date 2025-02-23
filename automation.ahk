@@ -263,6 +263,7 @@ like(dating_app, root_directory)
 	{
 		; click_and_drag(724, 539, 1182, 536, 2000)
 		mouseClick "left", 1261, 965
+		sleep 500
 	}
 	else if dating_app == "hinge"
     {		
@@ -412,11 +413,13 @@ dislike(dating_app)
 		}
 		
 		mouseClick "left", 1075, 845
+		sleep 500
 	}
 	else if dating_app == "bumble"
 	{
 		; click_and_drag(1182, 536, 724, 539, 2000)
 		mouseClick "left", 1055, 975
+		sleep 500
 	}
 	else if dating_app == "hinge"
     {

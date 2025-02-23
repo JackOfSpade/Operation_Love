@@ -48,6 +48,22 @@ navigate_to_discover(dating_app)
 		
 		; Wait for scrolling to stop
 		sleep 1000
+		
+		mouseMove 264, 215
+		sleep 500
+		send "{LButton down}"
+		mouseMove 312, 215
+		sleep 500 
+		send "{LButton down}"
+		
+		A_Clipboard := ""
+		Send "^c"
+		ClipWait
+		
+		If InStr(A_Clipboard, "people")
+		{
+			exitApp
+		}
 	}
 	else if dating_app == "photofeeler"
     {

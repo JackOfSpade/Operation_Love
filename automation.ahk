@@ -40,7 +40,7 @@ navigate_to_discover(dating_app)
 		winactivate "2RedBeans"
 		sleep 500
 		
-		loop 17
+		loop 15
 		{
 			send "{down}"
 			sleep 100
@@ -344,8 +344,11 @@ like(dating_app, root_directory)
 	}
 	else if dating_app == "2redbeans"
 	{
-		mouseClick "left", 222, 229
+		; click into profile
+		mouseClick "left", 219, 241
 		sleep 3000
+		
+		; click textbox
 		mouseClick "left", 620, 311
 		send "Hi, how's your week going?"
 		sleep 1000
@@ -460,10 +463,11 @@ dislike(dating_app)
 		mouseClick "left", 660, 410	
 	}
 	else if dating_app == "2redbeans"
-	{
-		mouseClick "left", 828, 190
+	{	
+		; click ...
+		mouseClick "left", 825, 215
 		sleep 500
-		mouseClick "left", 751, 224
+		mouseClick "left", 739, 244
 		
 		; Wait for list to scroll up
 		sleep 1000

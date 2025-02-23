@@ -1,7 +1,12 @@
-﻿
+﻿#SingleInstance force
+
 1::
 {
-	mouseMove 1195, 778
+	mouseMove 739, 244
 }
 
 
+f12:: 
+{
+	exitApp
+}

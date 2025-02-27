@@ -127,15 +127,15 @@ main(dating_app, root_directory)
 	no_face_detected := false
 	
 	; TEST
-	; winactivate "2RedBeans"
-	; sleep 1000
+	winactivate "2RedBeans"
+	sleep 1000
 	; navigate_to_discover(dating_app)
 	; like(dating_app, root_directory)
-	; dislike(dating_app)
+	dislike(dating_app)
 	; restart_tinder()
 	; restart_bumble()
 	; restart_2redbeans()
-	; exitApp
+	exitApp
 
 	navigate_to_discover(dating_app)
 

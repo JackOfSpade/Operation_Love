@@ -352,8 +352,15 @@ like(dating_app, root_directory)
 	else if dating_app == "2redbeans"
 	{
 		; click into profile
-		mouseClick "left", 219, 241
+		mouseClick "right", 219, 241
+		sleep 500
+		send "{down}"
+		send "{enter}"
 		sleep 3000
+		
+		; Go to new tab
+		send "^{tab}"
+		sleep 500
 		
 		; click textbox
 		mouseClick "left", 620, 311
@@ -366,7 +373,10 @@ like(dating_app, root_directory)
 		mouseClick "left", 993, 370
 		send 1000
 		
-		restart_2redbeans()
+		; close new tab
+		send "^w"
+		
+		sleep 500
 		
 		; Clear from search list
 		dislike(dating_app)

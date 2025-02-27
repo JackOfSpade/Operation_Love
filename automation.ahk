@@ -13,7 +13,7 @@ CoordMode "Mouse", "Window"
 
 hinge_opener := "Hi, how's your week going?"
 
-2redbeans_end_of_search_results_check()
+end_of_search_results_check_2redbeans()
 {
 	A_Clipboard := ""
 		
@@ -70,7 +70,7 @@ navigate_to_discover(dating_app)
 		; Wait for scrolling to stop
 		sleep 1000
 		
-		2redbeans_end_of_search_results_check()
+		end_of_search_results_check_2redbeans()
 	}
 	else if dating_app == "photofeeler"
     {
@@ -479,7 +479,7 @@ dislike(dating_app)
 		; Wait for list to scroll up
 		sleep 1000
 		
-		2redbeans_end_of_search_results_check()
+		end_of_search_results_check_2redbeans()
 	}
 	else if dating_app == "photofeeler"
 	{

@@ -13,6 +13,27 @@ CoordMode "Mouse", "Window"
 
 hinge_opener := "Hi, how's your week going?"
 
+2redbeans_end_of_search_results_check()
+{
+	A_Clipboard := ""
+		
+	mouseMove 150, 215
+	sleep 500
+	send "{LButton down}"
+	mouseMove 468, 227
+	sleep 500 
+	send "{LButton up}"
+	
+	
+	Send "^c"
+	ClipWait
+	
+	if InStr(A_Clipboard, "people")
+	{
+		exitApp
+	}
+}
+
 navigate_to_discover(dating_app)
 {
     if dating_app == "tinder"
@@ -49,23 +70,7 @@ navigate_to_discover(dating_app)
 		; Wait for scrolling to stop
 		sleep 1000
 		
-		A_Clipboard := ""
-		
-		mouseMove 150, 215
-		sleep 500
-		send "{LButton down}"
-		mouseMove 468, 227
-		sleep 500 
-		send "{LButton up}"
-		
-		
-		Send "^c"
-		ClipWait
-		
-		if InStr(A_Clipboard, "people")
-		{
-			exitApp
-		}
+		2redbeans_end_of_search_results_check()
 	}
 	else if dating_app == "photofeeler"
     {
@@ -473,6 +478,8 @@ dislike(dating_app)
 		
 		; Wait for list to scroll up
 		sleep 1000
+		
+		2redbeans_end_of_search_results_check()
 	}
 	else if dating_app == "photofeeler"
 	{

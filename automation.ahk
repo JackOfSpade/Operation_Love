@@ -356,7 +356,7 @@ like(dating_app, root_directory)
 		sleep 500
 		send "{down}"
 		send "{enter}"
-		sleep 3000
+		sleep 4000
 		
 		; Go to new tab
 		send "^{tab}"

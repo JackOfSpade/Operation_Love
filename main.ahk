@@ -104,8 +104,8 @@ restart_2redbeans()
 	sleep 1000
 	send "https://www.2redbeans.com/en/app/search"
 	send "{Enter}"
-	; Need time for the site to restore previous search settings
-	sleep 7000
+	; Need time for the site to restore previous search settings and page load
+	sleep 15000
 	
 	; Make body of html active so down arrow works.
 	mouseClick "left", 78, 428
@@ -404,21 +404,23 @@ main(dating_app, root_directory)
 		}
 		else if dating_app == "2redbeans"
 		{		
-			; Bad Gateway or out of profiles or "Aw, snap! Something went wrong..." or every x profiles or no face detected
-			if Mod(profile_count, every_x_profile) == 0
-			or no_face_detected
-			{				
-				restart_2redbeans()
-
-				profile_count += 1
-				no_face_detected := false
-				goto("start")
-			}
-
-			profile_count += 1
-
-			; To detect when you run out of people --> change location
-			; TODO
+			; 2redbean possibly already auto-refresh on profile hide
+		
+			;; Bad Gateway or out of profiles or "Aw, snap! Something went wrong..." or every x profiles or no face detected
+			;if Mod(profile_count, every_x_profile) == 0
+			;or no_face_detected
+			;{				
+			;	restart_2redbeans()
+			;
+			;	profile_count += 1
+			;	no_face_detected := false
+			;	goto("start")
+			;}
+			;
+			;profile_count += 1
+			;
+			;; To detect when you run out of people --> change location
+			;; TODO
 		}
 		else if dating_app == "photofeeler" 
 		{			

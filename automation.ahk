@@ -59,7 +59,7 @@ navigate_to_discover(dating_app)
 	else if dating_app == "2redbeans"
 	{
 		winactivate "2RedBeans"
-		sleep 500
+		sleep 1000
 		
 		loop 15
 		{

@@ -319,9 +319,13 @@ like(dating_app, root_directory)
 		sleep 6000
 		; ----------------------------------------------------------------
 		
-		; Send like after comment
+		; Send like after comment; gotta do it twice because it fails to do so sometimes.
 		mouseClick "left", 1017, 870
 		sleep 1000
+		mouseClick "left", 1017, 870
+		
+		sleep 1000
+		
 		; Click away rose suggestion
 		mouseClick "left", 945, 980
 		sleep 1000

@@ -59,7 +59,10 @@ navigate_to_discover(dating_app)
 	else if dating_app == "2redbeans"
 	{
 		winactivate "2RedBeans"
-		sleep 1000
+		sleep 5000
+		
+		; Have to click page or else scroll down don't work
+		mouseClick "left", 78, 355
 		
 		loop 15
 		{

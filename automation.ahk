@@ -493,7 +493,7 @@ dislike(dating_app)
 		; Wait for list to scroll up
 		sleep 1000
 		
-		end_of_search_results_check_2redbeans()
+		restart_2redbeans()
 	}
 	else if dating_app == "photofeeler"
 	{

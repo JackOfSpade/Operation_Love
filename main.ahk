@@ -105,7 +105,7 @@ restart_2redbeans()
 	send "https://www.2redbeans.com/en/app/search"
 	send "{Enter}"
 	; Need time for the site to restore previous search settings and page load
-	sleep 3000
+	sleep 6000
 	
 	; Make body of html active so down arrow works.
 	mouseClick "left", 78, 428

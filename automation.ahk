@@ -271,7 +271,8 @@ like(dating_app, root_directory)
 		}
 		
 		; Click like
-		mouseClick "left", 1225, 845
+		; mouseClick "left", 1225, 845
+		send "{right}"
 		
 		sleep 1000
 		
@@ -457,7 +458,8 @@ dislike(dating_app)
 			sleep 500
 		}
 		
-		mouseClick "left", 1075, 845
+		; mouseClick "left", 1075, 845
+		send "{left}"
 		sleep 500
 	}
 	else if dating_app == "bumble"

@@ -40,13 +40,15 @@ targeted_index := FileRead("targeted_index.txt") - 1  ; index start at 1. Making
 
 restart_tinder()
 {
+	; Do not refresh because it reset date categories and go to home Tinder page which may be empty.
+	
 	; Click refresh
-	send "^l"
-	sleep 500
-	send "^a"
-	send "tinder.com"
-	send "{Enter}"
-	sleep 15000
+	;send "^l"
+	;sleep 500
+	;send "^a"
+	;send "tinder.com"
+	;send "{Enter}"
+	;sleep 15000
 }
 
 restart_bumble()

@@ -44,7 +44,7 @@ take_screenshot(dating_app)
 	{
 		winactivate "2RedBeans"
 		
-		print_screen(185, 210, 288, 312)
+		print_screen(178, 201, 285, 310)
 	}
 	else if dating_app == "photofeeler"
     {

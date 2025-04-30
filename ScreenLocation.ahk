@@ -4,26 +4,34 @@
 
 CoordMode "Mouse", "Window"
 
-SetTimer Check, 50
 x := 0
 y := 0
 
 
-Check()
+check()
 {
 	global x
 	global y
-	MouseGetPos &x, &y
+	mouseMove x, y
+	
 }
 
 `::
 {
 	global x
 	global y
-	soundBeep
+	MouseGetPos &x, &y
 	A_Clipboard := x . ", " . y
+	
+	
+	soundBeep
 }
 
+1::
+{
+	check()
+	soundBeep
+}
 
 f12::
 {

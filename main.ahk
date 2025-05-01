@@ -40,13 +40,15 @@ targeted_index := FileRead("targeted_index.txt") - 1  ; index start at 1. Making
 
 restart_tinder()
 {
+	; Do not refresh because it reset date categories and go to home Tinder page which may be empty.
+	
 	; Click refresh
-	send "^l"
-	sleep 500
-	send "^a"
-	send "tinder.com"
-	send "{Enter}"
-	sleep 15000
+	;send "^l"
+	;sleep 500
+	;send "^a"
+	;send "tinder.com"
+	;send "{Enter}"
+	;sleep 15000
 }
 
 restart_bumble()
@@ -105,7 +107,7 @@ restart_2redbeans()
 	send "https://www.2redbeans.com/en/app/search"
 	send "{Enter}"
 	; Need time for the site to restore previous search settings and page load
-	sleep 6000
+	sleep 10000
 	
 	; Make body of html active so down arrow works.
 	mouseClick "left", 78, 428
@@ -531,11 +533,11 @@ main(dating_app, root_directory)
 
 ; main("bumble", "C:\Users\super\Desktop\Github\Operation_Love")
 
-main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
+; main("hinge", "C:\Users\Jack.Wu\Documents\GitHub\Operation_Love")
 
 ; main("okcupid", "C:\Users\Dell\Desktop\GitHub\Operation_Love")
 
-; main("2redbeans", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
+main("2redbeans", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 
 ; main("photofeeler", "C:\Users\LENOVO\Desktop\GitHub\Operation_Love")
 

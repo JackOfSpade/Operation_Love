@@ -7,3 +7,4 @@ Bluetooth not detected fix:
 Connect phone bluetooth to PC
 Connect AirDriod PC to Phone
 Open Airdroid Mobile ---> profile ---> bluetooth ---> connect to PC (keep clicking the PC)
+Keep repeating this process

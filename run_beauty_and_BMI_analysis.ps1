@@ -1,17 +1,15 @@
 cd beauty_and_BMI_analysis
 
-# Activate the virtual environment
+# Activate venv
 . .\analyze_beauty.venv\Scripts\Activate.ps1
 
-# Run the Python script
-python evaluate_images.py
+# Force single-threaded BLAS/OpenMP to reduce peak RAM
+$env:OMP_NUM_THREADS="1"
+$env:MKL_NUM_THREADS="1"
+$env:TORCH_NUM_THREADS="1"
 
-# Deactivate the virtual environment (optional)
+# Run in medium-RAM mode
+python evaluate_images.py --medium-ram
+
 deactivate
-
-# Test
-# Read-Host "Press Enter to Exit"
-
-# Exit the PowerShell script
 exit
-

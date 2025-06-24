@@ -11,7 +11,7 @@
 
 CoordMode "Mouse", "Window"
 
-hinge_opener := "Hi, how's your week going?"
+opener := "What's your favorite hobby?"
 
 end_of_search_results_check_2redbeans()
 {
@@ -258,7 +258,7 @@ like(dating_app, root_directory)
 
 	start_of_like_function_label:
 	
-	global hinge_opener
+	global opener
 	
 	if dating_app == "tinder"
 	{		
@@ -318,7 +318,7 @@ like(dating_app, root_directory)
 		
 		sleep 1000
 		
-		send hinge_opener
+		send opener
 		
 		sleep 6000
 		; ----------------------------------------------------------------
@@ -374,7 +374,7 @@ like(dating_app, root_directory)
 		
 		; click textbox
 		mouseClick "left", 620, 311
-		send "Hey, what's your favorite hobby?"
+		send opener
 		sleep 1000
 		; Click send
 		mouseClick "left", 900, 365
@@ -440,7 +440,7 @@ like(dating_app, root_directory)
 		mouseClick "left", 1175, 727		
 	}
 	
-	return hinge_opener
+	return opener
 }
 
 

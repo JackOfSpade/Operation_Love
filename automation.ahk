@@ -374,7 +374,7 @@ like(dating_app, root_directory)
 		
 		; click textbox
 		mouseClick "left", 620, 311
-		send "Hi, how's your week going?"
+		send "Hey, what's your favorite hobby?"
 		sleep 1000
 		; Click send
 		mouseClick "left", 900, 365

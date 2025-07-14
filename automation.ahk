@@ -64,7 +64,7 @@ navigate_to_discover(dating_app)
 		; Have to click page or else scroll down don't work
 		mouseClick "left", 78, 355
 		
-		loop 15
+		loop 14
 		{
 			send "{down}"
 			sleep 100

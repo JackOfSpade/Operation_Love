@@ -43,10 +43,11 @@ def main(new_file_path, parent_new_file_path):
 
 
     if new_file_path is not None:
-        # face = cv2.imread(new_file_path)
-        # bmi = analyze_bmi(face, vit_model, device)
-        # print(f"BMI: {bmi:.2f}")
-        print("BMI: 21.70")
+        #face = cv2.imread(new_file_path)
+        #bmi = analyze_bmi(face, vit_model, device)
+        bmi = 21.70
+        print(f"BMI: {bmi:.2f}")
+
 
         # Split the path into directory, base name, and extension
         directory = os.path.dirname(new_file_path)

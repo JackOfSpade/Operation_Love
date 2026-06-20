@@ -88,6 +88,38 @@ _OVERLAY_JS = """
 }
 """
 
+# Blocking "processing" modal: a full-screen, click-intercepting backdrop with a
+# spinner so a swipe can't land on the next card mid-embed. Pass a message to
+# show it, null to hide. Idempotent (builds once, then toggles).
+_BUSY_JS = """
+(msg) => {
+  let el = document.getElementById('oplove-busy');
+  if (!msg) { if (el) el.style.display = 'none'; return; }
+  if (!el) {
+    const style = document.createElement('style');
+    style.textContent = '@keyframes oplovespin{to{transform:rotate(360deg)}}';
+    document.head.appendChild(style);
+    el = document.createElement('div');
+    el.id = 'oplove-busy';
+    el.style.cssText = [
+      'position:fixed','inset:0','z-index:2147483646','display:flex',
+      'align-items:center','justify-content:center','pointer-events:auto',
+      'background:rgba(10,10,14,0.55)',
+      'font:600 17px/1.4 -apple-system,Segoe UI,Roboto,sans-serif','color:#fff'
+    ].join(';');
+    el.innerHTML =
+      '<div style="background:rgba(20,20,26,0.96);border:1px solid rgba(255,255,255,0.14);' +
+      'border-radius:16px;padding:22px 28px;text-align:center;box-shadow:0 12px 44px rgba(0,0,0,0.55)">' +
+      '<div style="width:34px;height:34px;margin:0 auto 12px;border:3px solid rgba(255,255,255,0.25);' +
+      'border-top-color:#fff;border-radius:50%;animation:oplovespin 0.8s linear infinite"></div>' +
+      '<div id="oplove-busy-msg"></div></div>';
+    document.body.appendChild(el);
+  }
+  el.style.display = 'flex';
+  document.getElementById('oplove-busy-msg').textContent = msg;
+}
+"""
+
 
 class BumbleDriver(DatingAppDriver):
     def __init__(self, cfg):
@@ -135,6 +167,16 @@ class BumbleDriver(DatingAppDriver):
             return
         try:
             self.page.evaluate(_OVERLAY_JS, status)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def render_busy(self, message: str | None = None) -> None:
+        # Full-screen click-blocking modal so you can't swipe the next card while
+        # this one is still embedding. message shows it; None hides it.
+        if not self.page:
+            return
+        try:
+            self.page.evaluate(_BUSY_JS, message)
         except Exception:  # noqa: BLE001
             pass
 

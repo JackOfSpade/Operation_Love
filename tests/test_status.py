@@ -7,7 +7,7 @@ seen live in the browser). The Hinge driver inherits the base no-op.
 import threading
 
 from operation_love.status import RunStatus
-from operation_love.drivers.bumble import BumbleDriver, _OVERLAY_JS
+from operation_love.drivers.bumble import BumbleDriver, _BUSY_JS, _OVERLAY_JS
 from operation_love.drivers.hinge import HingeDriver
 
 
@@ -122,6 +122,29 @@ def test_bumble_render_status_swallows_errors():
 
 def test_hinge_render_status_is_noop():
     HingeDriver(_Cfg()).render_status({"any": "thing"})  # base no-op; no page to inject
+
+
+def test_bumble_render_busy_shows_and_hides():
+    calls = []
+
+    class P:
+        def evaluate(self, script, arg=None):
+            calls.append((script, arg))
+
+    drv = BumbleDriver(_Cfg())
+    drv.page = P()
+    drv.render_busy("processing…")          # show
+    drv.render_busy(None)                    # hide
+    assert all(c[0] is _BUSY_JS for c in calls)
+    assert calls[0][1] == "processing…" and calls[1][1] is None
+
+
+def test_bumble_render_busy_no_page_is_noop():
+    BumbleDriver(_Cfg()).render_busy("x")    # page is None -> must not raise
+
+
+def test_hinge_render_busy_is_noop():
+    HingeDriver(_Cfg()).render_busy("x")     # base no-op
 
 
 if __name__ == "__main__":

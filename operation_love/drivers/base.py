@@ -56,5 +56,14 @@ class DatingAppDriver(ABC):
         Must never raise: a failed overlay must not break the swipe loop.
         """
 
+    def render_busy(self, message: str | None = None) -> None:
+        """Show/hide a blocking 'processing, please wait' overlay in the app UI.
+
+        Called in observe mode while a swipe is being embedded/stored so you don't
+        like/dislike the NEXT card mid-processing (which would mis-attribute it).
+        `message` shows the overlay; None hides it. No-op by default (e.g. Hinge).
+        Must never raise.
+        """
+
     def close(self) -> None:  # optional cleanup
         pass

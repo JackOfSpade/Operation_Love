@@ -81,10 +81,13 @@ class Worker(threading.Thread):
                 profile = self.driver.current_profile()      # capture the card you're viewing
                 if profile is None:
                     continue
+                self.driver.render_busy(None)                 # processing done -> OK to swipe now
                 self._stat(state="waiting")                   # overlay: "swipe — learning your taste"
                 liked = self.driver.wait_for_decision(should_stop=self.stop_event.is_set)
                 if liked is None:                             # card changed / timeout / stop -> skip
                     continue
+                # block the next swipe while this one embeds (avoids mis-attribution)
+                self.driver.render_busy("Processing — please wait before your next swipe")
                 vec = self.decider.embed(profile)
                 if vec is None:                               # no face -> not a useful label
                     self._stat(last_decision="no_face")
@@ -103,6 +106,7 @@ class Worker(threading.Thread):
             if added and added != last_retrained:
                 self._retrain_after_observe_labels(added)
         finally:
+            self.driver.render_busy(None)
             self._stat(state="stopped")
             self.driver.close()
 

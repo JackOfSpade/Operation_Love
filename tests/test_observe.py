@@ -34,6 +34,7 @@ class FakeObservingDriver(DatingAppDriver):
     def current_profile(self): return self.swipes[self.i][0]
     def wait_for_decision(self, timeout=120.0, should_stop=None):
         liked = self.swipes[self.i][1]; self.i += 1; return liked
+    def render_busy(self, message=None): pass
     def next_profile(self): return None
     def like(self, opener=None): pass
     def dislike(self): pass

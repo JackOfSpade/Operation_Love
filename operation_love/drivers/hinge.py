@@ -21,7 +21,7 @@ _OBSERVE_POLL_S = 0.35      # internal sampling cadence for your manual tap (not
 
 DEFAULTS = {
     "package": "co.hinge.app",
-    "scroll_captures": 5,        # screenshots taken while scrolling a profile
+    "scroll_captures": 10,       # maximum screenshots taken while scrolling a profile
     "ids": {
         "like": "co.hinge.app:id/like_button",
         "pass": "co.hinge.app:id/skip_button",
@@ -38,7 +38,7 @@ class HingeDriver(DatingAppDriver):
         app_cfg = (getattr(cfg, "apps", {}) or {}).get("hinge", {})
         self.serial = app_cfg.get("serial") or None
         self.package = app_cfg.get("package", DEFAULTS["package"])
-        self.scroll_captures = int(app_cfg.get("scroll_captures", DEFAULTS["scroll_captures"]))
+        self.scroll_captures = max(1, int(app_cfg.get("scroll_captures", DEFAULTS["scroll_captures"])))
         self.ids = {**DEFAULTS["ids"], **app_cfg.get("ids", {})}
         self.d = None
 
@@ -56,12 +56,20 @@ class HingeDriver(DatingAppDriver):
     def _capture_current(self) -> Profile:
         photos: list[bytes] = []
         prompts: list[tuple[str, str]] = []
+        seen_frames: set[tuple[bytes, tuple[str, ...]]] = set()
         for i in range(self.scroll_captures):
-            photos.append(self.d.screenshot(format="raw"))      # full-screen frame as bytes
+            shot = self.d.screenshot(format="raw")              # full-screen frame as bytes
+            texts: list[str] = []
             for el in self.d(resourceId=self.ids["prompt_text"]):
                 txt = (el.get_text() or "").strip()
                 if txt:
-                    prompts.append(("", txt))
+                    texts.append(txt)
+            sig = (shot, tuple(texts))
+            if sig in seen_frames:
+                break
+            seen_frames.add(sig)
+            photos.append(shot)
+            prompts.extend(("", txt) for txt in texts)
             if i < self.scroll_captures - 1:
                 self.d.swipe_ext("up", scale=0.8)               # scroll the profile
                 time.sleep(human_delay(0.5))                    # settle + "look" before next frame

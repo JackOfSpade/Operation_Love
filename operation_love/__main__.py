@@ -5,6 +5,9 @@ import argparse
 
 
 def main() -> None:
+    from ._warnings import configure_warnings
+    configure_warnings()
+
     p = argparse.ArgumentParser(prog="operation_love")
     p.add_argument("command", nargs="?", default="run",
                    choices=["run", "stats", "hub", "bugreport"])

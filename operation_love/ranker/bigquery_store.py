@@ -7,21 +7,36 @@ Design (per the chosen 'BQ of-record + memory cache' approach):
   close), so the swipe loop never waits on a per-row cloud round-trip and we
   never read-back a just-streamed row (avoids BigQuery's streaming-buffer
   consistency gap).
+- profile photos are archived as private bucket objects; BigQuery stores the
+  image manifest, labels, and embeddings keyed by profile_id.
 
 At personal scale this stays within BigQuery's free tier. The ``client`` is
 injectable so tests run without the google-cloud-bigquery package or network.
 """
 from __future__ import annotations
 
+import hashlib
 import threading
+import time
 from datetime import datetime, timezone
 
 from ..costing import Usage
 
+_UPLOAD_ATTEMPTS = 3        # bounded retry so a transient GCS blip doesn't drop a swipe
+_UPLOAD_BACKOFF_S = 0.5
+
 _TABLES = {
+    "profiles": (
+        "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, liked BOOL, "
+        "source STRING, photo_count INT64"
+    ),
+    "profile_photos": (
+        "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, "
+        "photo_index INT64, gcs_uri STRING, sha256 STRING, byte_size INT64, content_type STRING"
+    ),
     "labels": (
-        "run_id STRING, app STRING, created_at TIMESTAMP, liked BOOL, source STRING, "
-        "embedding ARRAY<FLOAT64>, bio STRING, prompts STRING, photo_count INT64"
+        "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, liked BOOL, "
+        "source STRING, embedding ARRAY<FLOAT64>, photo_count INT64"
     ),
     "decisions": "run_id STRING, app STRING, created_at TIMESTAMP, decision STRING, score FLOAT64",
     "openers": "run_id STRING, app STRING, created_at TIMESTAMP, model STRING, opener STRING, referenced STRING",
@@ -31,27 +46,53 @@ _TABLES = {
     ),
 }
 
+_MIGRATIONS = (
+    "ALTER TABLE `{labels}` ADD COLUMN IF NOT EXISTS profile_id STRING;",
+)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _copy_labels(labels: list[tuple[bool, list[float]]]) -> list[tuple[bool, list[float]]]:
+    return [(liked, list(embedding)) for liked, embedding in labels]
+
+
+def _image_type(data: bytes) -> tuple[str, str]:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", "jpg"
+    return "application/octet-stream", "bin"
+
+
 class BigQueryStore:
     def __init__(self, project_id: str, dataset: str = "operation_love",
-                 location: str = "US", flush_every: int = 25, client=None, ensure: bool = True):
+                 location: str = "US", photo_bucket: str = "", flush_every: int = 25,
+                 client=None, storage_client=None, ensure: bool = True):
         if not project_id:
             raise ValueError("storage.bigquery.project_id is required for the BigQuery backend")
+        if not photo_bucket:
+            raise ValueError("storage.bigquery.photo_bucket is required for the BigQuery backend")
         self.project_id = project_id
         self.dataset = dataset
         self.location = location
+        self.photo_bucket_name = photo_bucket
         self.flush_every = max(1, int(flush_every))
         if client is None:
             from google.cloud import bigquery  # lazy: only needed for real use
             client = bigquery.Client(project=project_id)
+        if storage_client is None:
+            from google.cloud import storage  # lazy: only needed for real use
+            storage_client = storage.Client(project=project_id)
         self.client = client
+        self.storage_client = storage_client
         self._buf: dict[str, list[dict]] = {name: [] for name in _TABLES}
         self._label_count = 0
+        self._labels_cache: list[tuple[bool, list[float]]] | None = None
         self._lock = threading.RLock()  # shared across worker threads
+        self._photo_bucket = self._get_or_create_photo_bucket() if ensure else self.storage_client.bucket(photo_bucket)
         if ensure:
             self._ensure_tables()
 
@@ -66,15 +107,42 @@ class BigQueryStore:
                  f"OPTIONS(location='{self.location}');"]
         for name, cols in _TABLES.items():
             stmts.append(f"CREATE TABLE IF NOT EXISTS `{self._tid(name)}` ({cols});")
+        for stmt in _MIGRATIONS:
+            stmts.append(stmt.format(labels=self._tid("labels")))
         self.client.query("\n".join(stmts)).result()
+
+    def _get_or_create_photo_bucket(self):
+        bucket = self.storage_client.bucket(self.photo_bucket_name)
+        if bucket.exists():
+            return bucket
+        bucket = self.storage_client.create_bucket(bucket, location=self.location)
+        # Private by default: uniform bucket-level access + enforced public-access-
+        # prevention so a freshly created bucket can never be exposed publicly. Log
+        # (don't silently swallow) if the lockdown patch fails — it's a privacy gap.
+        try:
+            bucket.iam_configuration.uniform_bucket_level_access_enabled = True
+            bucket.iam_configuration.public_access_prevention = "enforced"
+            bucket.patch()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[bigquery_store] WARNING: could not lock down bucket "
+                  f"{self.photo_bucket_name} (uniform access / public-access-prevention): {exc}")
+        return bucket
 
     # --- reads ----------------------------------------------------------
     def load_labels(self) -> list[tuple[bool, list[float]]]:
-        rows = self.client.query(f"SELECT liked, embedding FROM `{self._tid('labels')}`").result()
-        out = [(bool(r["liked"]), list(r["embedding"])) for r in rows]
+        # Hold the lock across the whole fill so the cache-miss check, the SELECT,
+        # and folding in buffered rows are atomic (no concurrent add_label can be
+        # dropped). Called once at startup before workers spawn, so the in-lock
+        # query doesn't contend in practice; RLock keeps it reentrancy-safe.
         with self._lock:
-            self._label_count = len(out)
-        return out
+            if self._labels_cache is not None:
+                return _copy_labels(self._labels_cache)
+            rows = self.client.query(f"SELECT liked, embedding FROM `{self._tid('labels')}`").result()
+            out = [(bool(r["liked"]), list(r["embedding"])) for r in rows]
+            out.extend((bool(r["liked"]), list(r["embedding"])) for r in self._buf["labels"])
+            self._labels_cache = _copy_labels(out)
+            self._label_count = len(self._labels_cache)
+            return _copy_labels(self._labels_cache)
 
     def label_count(self) -> int:
         with self._lock:
@@ -91,13 +159,77 @@ class BigQueryStore:
         return 0
 
     # --- writes (buffered, thread-safe) --------------------------------
-    def add_label(self, run_id, app, liked, embedding, source="manual", bio="", prompts="", photo_count=0):
+    def record_profile(self, run_id, app, profile_id, liked, source="manual",
+                       photos=None, photo_count=0) -> bool:
+        """Archive the profile's images + manifest row. Returns True if recorded.
+
+        Image archiving is the system of record, so it's best-effort-but-mandatory:
+        each upload is retried; a transient GCS blip never raises (which would tear
+        down the swipe loop). If photos were supplied but NONE could be stored after
+        retries, we record nothing (no orphan manifest, no label without its images)
+        and return False so the worker skips that swipe's label.
+        """
+        photos = list(photos or [])
+        created_at = _now()
+        photo_rows = self._upload_profile_photos(run_id, app, profile_id, created_at, photos)
+        if photos and not photo_rows:           # had images but archived none -> skip the swipe
+            print(f"[bigquery_store] WARNING: archived 0/{len(photos)} photos for "
+                  f"profile {profile_id}; skipping its label to keep image data complete.")
+            return False
+        with self._lock:
+            self._buf["profiles"].append({
+                "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": created_at,
+                "liked": bool(liked), "source": source, "photo_count": len(photo_rows),
+            })
+            self._buf["profile_photos"].extend(photo_rows)
+            self._maybe_flush("profiles")
+            self._maybe_flush("profile_photos")
+        return True
+
+    def _upload_blob(self, blob, data: bytes, content_type: str) -> bool:
+        delay = _UPLOAD_BACKOFF_S
+        for attempt in range(1, _UPLOAD_ATTEMPTS + 1):
+            try:
+                blob.upload_from_string(data, content_type=content_type)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                if attempt == _UPLOAD_ATTEMPTS:
+                    print(f"[bigquery_store] photo upload failed after {_UPLOAD_ATTEMPTS} "
+                          f"attempts ({getattr(blob, 'name', '?')}): {exc}")
+                    return False
+                time.sleep(delay)
+                delay *= 2
+        return False
+
+    def _upload_profile_photos(self, run_id: str, app: str, profile_id: str,
+                               created_at: str, photos: list[bytes]) -> list[dict]:
+        rows = []
+        for i, photo in enumerate(photos):
+            digest = hashlib.sha256(photo).hexdigest()
+            content_type, ext = _image_type(photo)
+            object_name = f"profiles/{app}/{run_id}/{profile_id}/{i:02d}-{digest[:16]}.{ext}"
+            blob = self._photo_bucket.blob(object_name)
+            if not self._upload_blob(blob, photo, content_type):
+                continue                         # drop only the failed photo, keep the rest
+            rows.append({
+                "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": created_at,
+                "photo_index": i, "gcs_uri": f"gs://{self.photo_bucket_name}/{object_name}",
+                "sha256": digest, "byte_size": len(photo), "content_type": content_type,
+            })
+        return rows
+
+    def add_label(self, run_id, app, liked, embedding, source="manual", photo_count=0,
+                  profile_id="", **_):
+        liked = bool(liked)
+        embedding_vec = [float(x) for x in embedding]
         with self._lock:
             self._buf["labels"].append({
-                "run_id": run_id, "app": app, "created_at": _now(), "liked": bool(liked),
-                "source": source, "embedding": [float(x) for x in embedding],
-                "bio": bio, "prompts": prompts, "photo_count": int(photo_count),
+                "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": _now(), "liked": liked,
+                "source": source, "embedding": embedding_vec, "photo_count": int(photo_count),
             })
+            label = (liked, list(embedding_vec))
+            if self._labels_cache is not None:
+                self._labels_cache.append(label)
             self._label_count += 1
             self._maybe_flush("labels")
 

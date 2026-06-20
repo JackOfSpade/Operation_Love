@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import threading
 import traceback
+import uuid
 
-from .drivers.base import DatingAppDriver
+from .drivers.base import DatingAppDriver, DriverClosed
 from .human import human_cooldown, human_delay
 from .ranker.decider import Decider
 
@@ -24,7 +25,7 @@ from .ranker.decider import Decider
 class Worker(threading.Thread):
     def __init__(self, app, driver: DatingAppDriver, decider: Decider, opener_service,
                  store, run_id, pacing, stop_event: threading.Event, mode: str = "observe",
-                 retrain_every: int = 10, limiter=None, max_restarts: int = 5, status=None):
+                 retrain_every: int = 1, limiter=None, max_restarts: int = 5, status=None):
         super().__init__(name=f"worker-{app}", daemon=True)
         self.app = app
         self.driver = driver
@@ -56,6 +57,10 @@ class Worker(threading.Thread):
             try:
                 self._observe_loop() if self.mode == "observe" else self._auto_loop()
                 return
+            except DriverClosed as exc:
+                print(f"[worker-{self.app}] {exc}; stopping run so buffered data can be saved.")
+                self.stop_event.set()
+                return
             except Exception:  # noqa: BLE001
                 restarts += 1
                 print(f"[worker-{self.app}] error (restart {restarts}/{self.max_restarts}):")
@@ -73,6 +78,7 @@ class Worker(threading.Thread):
         self._stat(mode="observe", state="waiting")
         added = 0
         last_retrained = 0
+        pending_error = False
         try:
             while not self.stop_event.is_set():
                 if self.driver.out_of_profiles():
@@ -88,11 +94,19 @@ class Worker(threading.Thread):
                     continue
                 # block the next swipe while this one embeds (avoids mis-attribution)
                 self.driver.render_busy("Processing — please wait before your next swipe")
+                profile_id = uuid.uuid4().hex
+                metadata = self._label_metadata(profile)
+                archived = self.store.record_profile(self.run_id, self.app, profile_id, liked,
+                                                     source="manual", photos=profile.photos, **metadata)
                 vec = self.decider.embed(profile)
                 if vec is None:                               # no face -> not a useful label
                     self._stat(last_decision="no_face")
                     continue
-                self.store.add_label(self.run_id, self.app, liked, vec, source="manual")
+                if archived is False:                         # images couldn't be saved -> no label without them
+                    self._stat(last_decision="archive_failed")
+                    continue
+                self.store.add_label(self.run_id, self.app, liked, vec, source="manual",
+                                     profile_id=profile_id, **metadata)
                 self.store.record_decision(self.run_id, self.app,
                                            "like" if liked else "dislike", 1.0 if liked else 0.0)
                 if self.status:
@@ -103,12 +117,23 @@ class Worker(threading.Thread):
                 if added % self.retrain_every == 0:
                     self._retrain_after_observe_labels(added)
                     last_retrained = added
-            if added and added != last_retrained:
-                self._retrain_after_observe_labels(added)
+        except BaseException:
+            pending_error = True
+            raise
         finally:
-            self.driver.render_busy(None)
-            self._stat(state="stopped")
-            self.driver.close()
+            try:
+                if added and added != last_retrained:
+                    try:
+                        self._retrain_after_observe_labels(added)
+                    except Exception:  # noqa: BLE001
+                        if not pending_error:
+                            raise
+                        print(f"[worker-{self.app}] final retrain skipped after shutdown error:")
+                        traceback.print_exc()
+            finally:
+                self.driver.render_busy(None)
+                self._stat(state="stopped")
+                self.driver.close()
 
     def _retrain_after_observe_labels(self, added: int) -> None:
         ready = self.decider.retrain(self.store)
@@ -147,10 +172,17 @@ class Worker(threading.Thread):
 
                 self.store.record_decision(self.run_id, self.app, d.decision, d.score)
                 if d.embedding:                               # the swipe becomes a label too
-                    self.store.add_label(self.run_id, self.app, d.decision == "like",
-                                         d.embedding, source=d.source)
-                    if self.status:
-                        self.status.inc_labels(1)
+                    profile_id = uuid.uuid4().hex
+                    metadata = self._label_metadata(profile)
+                    archived = self.store.record_profile(self.run_id, self.app, profile_id,
+                                                         d.decision == "like", source=d.source,
+                                                         photos=profile.photos, **metadata)
+                    if archived is not False:                 # keep label only if its images were stored
+                        self.store.add_label(self.run_id, self.app, d.decision == "like",
+                                             d.embedding, source=d.source,
+                                             profile_id=profile_id, **metadata)
+                        if self.status:
+                            self.status.inc_labels(1)
 
                 if d.decision == "like":
                     opener = self.opener_service.maybe_opener(self.run_id, self.app, profile)
@@ -171,3 +203,7 @@ class Worker(threading.Thread):
 
     def _pace(self) -> None:
         self.stop_event.wait(human_delay(self.pacing.swipe_delay_s))
+
+    @staticmethod
+    def _label_metadata(profile) -> dict:
+        return {"photo_count": len(profile.photos)}

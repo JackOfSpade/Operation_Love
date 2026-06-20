@@ -56,8 +56,42 @@ class FakeDevice:
         return FakeSel(resourceId, self.frames[self.i])
 
 
-def _frame(prompts=(), ids=()):
-    return {"prompts": tuple(prompts), "ids": tuple(ids)}
+class FakeCaptureDevice:
+    def __init__(self, frames):
+        self.frames = frames
+        self.i = 0
+        self.swipes = 0
+
+    def screenshot(self, format="raw"):
+        assert format == "raw"
+        return self.frames[self.i].get("shot", b"")
+
+    def swipe_ext(self, *_args, **_kwargs):
+        self.swipes += 1
+        if self.i < len(self.frames) - 1:
+            self.i += 1
+
+    def __call__(self, resourceId=None, **kw):
+        return FakeSel(resourceId, self.frames[self.i])
+
+
+def _frame(prompts=(), ids=(), shot=b""):
+    return {"prompts": tuple(prompts), "ids": tuple(ids), "shot": shot}
+
+
+def _capture(frames, scroll_captures=5):
+    class CaptureCfg:
+        apps = {"hinge": {"scroll_captures": scroll_captures}}
+
+    drv = HingeDriver(CaptureCfg())
+    dev = FakeCaptureDevice(frames)
+    drv.d = dev
+    orig_sleep = hinge.time.sleep
+    hinge.time.sleep = lambda *_: None
+    try:
+        return drv._capture_current(), dev
+    finally:
+        hinge.time.sleep = orig_sleep
 
 
 def _run(frames, timeout=50.0):
@@ -108,6 +142,30 @@ def test_deck_empty_returns_none():
 def test_timeout_returns_none():
     # never decides, deck never empties
     assert _run([_frame(["A"])], timeout=0.2) is None
+
+
+def test_capture_current_stops_when_scroll_repeats():
+    profile, dev = _capture([
+        _frame(["A"], shot=b"shot-a"),
+        _frame(["B"], shot=b"shot-b"),
+        _frame(["B"], shot=b"shot-b"),
+        _frame(["C"], shot=b"shot-c"),
+    ])
+
+    assert profile.photos == [b"shot-a", b"shot-b"]
+    assert profile.prompts == [("", "A"), ("", "B")]
+    assert dev.swipes == 2
+
+
+def test_capture_current_respects_scroll_capture_limit():
+    profile, _ = _capture([
+        _frame(["A"], shot=b"shot-a"),
+        _frame(["B"], shot=b"shot-b"),
+        _frame(["C"], shot=b"shot-c"),
+    ], scroll_captures=2)
+
+    assert profile.photos == [b"shot-a", b"shot-b"]
+    assert profile.prompts == [("", "A"), ("", "B")]
 
 
 if __name__ == "__main__":

@@ -50,6 +50,11 @@ def test_bigquery_requires_project_id():
     _expect_error(d, "project_id")
 
 
+def test_bigquery_requires_photo_bucket():
+    d = {**BASE, "storage": {"backend": "bigquery", "bigquery": {"project_id": "proj"}}}
+    _expect_error(d, "photo_bucket")
+
+
 def test_opener_model_needs_pricing():
     d = {**BASE, "opener": {"enabled": True, "model": "claude-unknown-9"}}
     _expect_error(d, "budget.pricing")

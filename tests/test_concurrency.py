@@ -37,6 +37,7 @@ class _Store:
     def record_decision(self, *a):
         with self._lock:
             self.decisions += 1
+    def record_profile(self, *a, **k): pass
     def add_label(self, *a, **k): pass
     def count_today(self, app): return 0
 

@@ -5,7 +5,9 @@ system + device info, the running build (git commit + a stale-code check), key
 dependency versions, the config (secrets stripped — only presence + a short
 prefix), the live run status (phase, labels, ranker, per-app decisions, budget,
 last error), and recent log lines. Output is markdown the owner can paste to a
-developer / Claude to debug.
+developer to debug. The report includes an instruction to improve this
+collector when it lacks enough context, and it caps output at 50k lines by
+dropping the oldest captured lines first.
 
 The hub serves it at GET /api/bugreport; install_log_capture() (called by the
 hub at startup) tees stdout/stderr into a ring buffer so "recent logs" has
@@ -18,13 +20,15 @@ import os
 import platform
 import subprocess
 import sys
+import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
-_MAX_CHARS = 50_000
-_LOG_RING: deque[str] = deque(maxlen=600)
+_MAX_REPORT_LINES = 50_000
+_LOG_RING: deque[str] = deque(maxlen=_MAX_REPORT_LINES)
+_LOG_LOCK = threading.Lock()
 _PROCESS_START = time.time()
 _REPO = Path(__file__).resolve().parent.parent
 _PKG = Path(__file__).resolve().parent
@@ -37,12 +41,22 @@ class _Tee:
 
     def __init__(self, stream):
         self._s = stream
+        self._buffers: dict[int, str] = {}
 
     def write(self, data):
+        text = str(data)
         try:
-            for line in str(data).splitlines():
-                if line.strip():
-                    _LOG_RING.append(f"{datetime.now().strftime('%H:%M:%S')} {line}")
+            ident = threading.get_ident()
+            with _LOG_LOCK:
+                chunk = self._buffers.get(ident, "") + text
+                lines = chunk.split("\n")
+                self._buffers[ident] = lines.pop()
+                if not self._buffers[ident]:
+                    self._buffers.pop(ident, None)
+                for line in lines:
+                    line = line.rstrip("\r")
+                    if line.strip():
+                        _LOG_RING.append(f"{datetime.now().strftime('%H:%M:%S')} {line}")
         except Exception:  # noqa: BLE001
             pass
         return self._s.write(data)
@@ -138,6 +152,16 @@ def _secrets_md() -> str:
     return f"- ANTHROPIC_API_KEY: {shown}"      # never the raw value
 
 
+def _diagnostic_improvement_md() -> str:
+    return (
+        "- If this report is not enough to diagnose the issue, improve "
+        "`operation_love/bugreport.py` to capture the missing diagnostics "
+        "(state, logs, config/build context, or reproduction details) while "
+        "keeping secrets redacted, then include that reporting improvement "
+        "with the bug fix."
+    )
+
+
 def _config_md(config_path: str) -> str:
     try:
         from . import config as cfg_mod
@@ -145,7 +169,8 @@ def _config_md(config_path: str) -> str:
         bq = c.storage.bigquery if isinstance(c.storage.bigquery, dict) else {}
         return (f"- enabled_apps: {c.enabled_apps}\n"
                 f"- mode: {c.mode}\n"
-                f"- storage: {c.storage.backend} (project_id={bq.get('project_id', '?')})\n"
+                f"- storage: {c.storage.backend} (project_id={bq.get('project_id', '?')}, "
+                f"photo_bucket={bq.get('photo_bucket', '?')})\n"
                 f"- ranker: min_labels={c.ranker.min_labels_to_engage}, "
                 f"threshold={c.ranker.like_threshold}, retrain_every={c.ranker.retrain_every}\n"
                 f"- quality_filter: enabled={c.quality_filter.enabled}, "
@@ -186,19 +211,49 @@ def _status_md(hub_state) -> str:
     return "\n".join(lines)
 
 
-def _logs_md(budget_chars: int) -> str:
-    if budget_chars <= 0:
-        return "_(omitted — report at size cap)_"
-    out, total = [], 0
-    for line in reversed(recent_logs(300)):     # newest first, fill backward
-        if total + len(line) + 1 > budget_chars:
-            break
-        out.append(line)
-        total += len(line) + 1
-    if not out:
+def _line_count(text: str) -> int:
+    return len(text.splitlines())
+
+
+def _logs_md(max_lines: int) -> str:
+    if max_lines <= 0:
+        return ""
+    logs = recent_logs(_MAX_REPORT_LINES)
+    if not logs:
         return "_(no logs captured this session)_"
-    body = "\n".join(reversed(out))
-    return f"```\n{body}\n```"
+    if max_lines < 3:
+        return "_(omitted - report at 50,000-line cap)_"
+
+    available_body_lines = max_lines - 2        # opening + closing code fences
+    omitted = max(0, len(logs) - available_body_lines)
+    prefix: list[str] = []
+    if omitted:
+        prefix = [
+            f"... {omitted} older log line(s) omitted to keep the report under "
+            f"{_MAX_REPORT_LINES:,} lines ..."
+        ]
+        available_body_lines -= len(prefix)
+
+    body_lines = prefix
+    if available_body_lines > 0:
+        body_lines += logs[-available_body_lines:]
+    return "```\n" + "\n".join(body_lines) + "\n```"
+
+
+def _cap_report_lines(report: str) -> str:
+    lines = report.splitlines()
+    if len(lines) <= _MAX_REPORT_LINES:
+        return report if report.endswith("\n") else report + "\n"
+
+    pinned = lines[:2]
+    marker = (
+        f"... {len(lines) - _MAX_REPORT_LINES + 1} older report line(s) "
+        f"omitted to keep the report under {_MAX_REPORT_LINES:,} lines ..."
+    )
+    tail_budget = _MAX_REPORT_LINES - len(pinned) - 1
+    if tail_budget <= 0:
+        return "\n".join(lines[-_MAX_REPORT_LINES:]) + "\n"
+    return "\n".join([*pinned, marker, *lines[-tail_budget:]]) + "\n"
 
 
 # ── assembly ───────────────────────────────────────────────────────────────
@@ -213,7 +268,8 @@ def build_report(hub_state=None, description: str = "", config_path: str = "conf
         f"## Dependencies\n{_deps_md()}\n\n"
         f"## Config (config.yaml)\n{_config_md(config_path)}\n\n"
         f"## Secrets (presence only — never raw values)\n{_secrets_md()}\n\n"
+        f"## Diagnostic improvement\n{_diagnostic_improvement_md()}\n\n"
         f"## Run status\n{_status_md(hub_state)}\n\n"
         f"## Recent logs\n"
     )
-    return head + _logs_md(_MAX_CHARS - len(head)) + "\n"
+    return _cap_report_lines(head + _logs_md(_MAX_REPORT_LINES - _line_count(head)))

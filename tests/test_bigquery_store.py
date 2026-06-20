@@ -31,8 +31,72 @@ class _FakeBQ:
         return self._insert_errors
 
 
+class _FakeBlob:
+    def __init__(self, name, fail=False):
+        self.name = name
+        self.data = b""
+        self.content_type = ""
+        self.public = False
+        self.fail = fail
+
+    def upload_from_string(self, data, content_type=None):
+        if self.fail:
+            raise RuntimeError("simulated GCS upload failure")
+        self.data = data
+        self.content_type = content_type or ""
+
+    def make_public(self):
+        self.public = True
+
+
+class _FakeIam:
+    def __init__(self):
+        self.uniform_bucket_level_access_enabled = False
+        self.public_access_prevention = "inherited"
+
+
+class _FakeBucket:
+    def __init__(self, name, exists=True, fail_uploads=False):
+        self.name = name
+        self._exists = exists
+        self.fail_uploads = fail_uploads
+        self.blobs: dict[str, _FakeBlob] = {}
+        self.iam_configuration = _FakeIam()
+        self.patched = False
+
+    def exists(self):
+        return self._exists
+
+    def blob(self, name):
+        self.blobs.setdefault(name, _FakeBlob(name, fail=self.fail_uploads))
+        return self.blobs[name]
+
+    def patch(self):
+        self.patched = True
+
+
+class _FakeStorage:
+    def __init__(self, bucket_exists=True, fail_uploads=False):
+        self.buckets: dict[str, _FakeBucket] = {}
+        self.created = []
+        self._bucket_exists = bucket_exists
+        self._fail_uploads = fail_uploads
+
+    def bucket(self, name):
+        self.buckets.setdefault(
+            name, _FakeBucket(name, exists=self._bucket_exists, fail_uploads=self._fail_uploads))
+        return self.buckets[name]
+
+    def create_bucket(self, bucket, location=None):
+        bucket._exists = True
+        self.buckets[bucket.name] = bucket
+        self.created.append((bucket.name, location))
+        return bucket
+
+
 def _store(client, flush_every=25):
-    return BigQueryStore("proj", "ds", flush_every=flush_every, client=client, ensure=False)
+    return BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=flush_every,
+                         client=client, storage_client=_FakeStorage(), ensure=False)
 
 
 def test_load_labels_parses_and_counts():
@@ -52,6 +116,112 @@ def test_buffer_flushes_at_threshold():
     s.add_label("r", "bumble", False, [0.2])
     assert len(client.inserted["proj.ds.labels"]) == 2       # flushed at threshold
     assert s.label_count() == 2
+
+
+def test_add_label_includes_profile_id():
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+    s.add_label("r", "bumble", True, [0.1], profile_id="profile-1")
+
+    assert client.inserted["proj.ds.labels"][0]["profile_id"] == "profile-1"
+
+
+def test_record_profile_uploads_photos_and_manifest_rows():
+    client = _FakeBQ()
+    storage = _FakeStorage()
+    s = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
+                      client=client, storage_client=storage, ensure=False)
+    png = b"\x89PNG\r\n\x1a\nprofile"
+    jpg = b"\xff\xd8\xffprofile"
+
+    s.record_profile("r", "bumble", "profile-1", True, photos=[png, jpg], photo_count=2)
+    s.flush()
+
+    profile = client.inserted["proj.ds.profiles"][0]
+    assert profile["profile_id"] == "profile-1"
+    assert profile["liked"] is True
+    assert "bio" not in profile and "prompts" not in profile
+
+    photo_rows = client.inserted["proj.ds.profile_photos"]
+    assert [r["photo_index"] for r in photo_rows] == [0, 1]
+    assert all(r["profile_id"] == "profile-1" for r in photo_rows)
+    assert photo_rows[0]["gcs_uri"].startswith("gs://photos/profiles/bumble/r/profile-1/")
+    assert photo_rows[0]["content_type"] == "image/png"
+    assert photo_rows[1]["content_type"] == "image/jpeg"
+
+    blobs = storage.bucket("photos").blobs
+    assert len(blobs) == 2
+    assert all(not blob.public for blob in blobs.values())
+
+
+def test_record_profile_returns_false_and_records_nothing_when_all_uploads_fail():
+    client = _FakeBQ()
+    storage = _FakeStorage(fail_uploads=True)
+    s = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=1,
+                      client=client, storage_client=storage, ensure=False)
+
+    ok = s.record_profile("r", "bumble", "profile-x", True, photos=[b"\x89PNG\r\n\x1a\nx"], photo_count=1)
+    s.flush()
+
+    assert ok is False                                   # signals the worker to skip the label
+    assert "proj.ds.profiles" not in client.inserted     # no orphan manifest row...
+    assert "proj.ds.profile_photos" not in client.inserted   # ...and no photo rows
+
+
+def test_record_profile_keeps_succeeding_photos_on_partial_failure():
+    client = _FakeBQ()
+    storage = _FakeStorage()
+    bucket = storage.bucket("photos")
+    s = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
+                      client=client, storage_client=storage, ensure=False)
+
+    # Make only the 2nd photo's blob fail (object path carries the photo index "/01-").
+    real_blob = bucket.blob
+    def flaky_blob(name):
+        b = real_blob(name)
+        b.fail = "/01-" in name
+        return b
+    bucket.blob = flaky_blob
+
+    ok = s.record_profile("r", "bumble", "profile-y", True, photos=[b"one", b"two", b"three"], photo_count=3)
+    s.flush()
+
+    assert ok is True
+    photo_rows = client.inserted["proj.ds.profile_photos"]
+    assert [r["photo_index"] for r in photo_rows] == [0, 2]      # the failed one is dropped
+    assert client.inserted["proj.ds.profiles"][0]["photo_count"] == 2   # manifest reflects stored count
+
+
+def test_create_bucket_enforces_private_access():
+    client = _FakeBQ()
+    storage = _FakeStorage(bucket_exists=False)
+    BigQueryStore("proj", "ds", photo_bucket="newbucket", client=client,
+                  storage_client=storage, ensure=True)
+
+    bucket = storage.buckets["newbucket"]
+    assert ("newbucket", "US") in storage.created
+    assert bucket.iam_configuration.uniform_bucket_level_access_enabled is True
+    assert bucket.iam_configuration.public_access_prevention == "enforced"
+    assert bucket.patched is True
+
+
+def test_load_labels_includes_buffered_labels_after_initial_load():
+    client = _FakeBQ(label_rows=[{"liked": False, "embedding": [0.0]}])
+    s = _store(client, flush_every=100)
+    assert s.load_labels() == [(False, [0.0])]
+
+    s.add_label("r", "bumble", True, [0.1, 0.2])
+
+    assert s.load_labels() == [(False, [0.0]), (True, [0.1, 0.2])]
+    assert len([q for q in client.queries if q.strip().upper().startswith("SELECT")]) == 1
+
+
+def test_load_labels_includes_unflushed_labels_before_initial_load():
+    client = _FakeBQ(label_rows=[{"liked": False, "embedding": [0.0]}])
+    s = _store(client, flush_every=100)
+    s.add_label("r", "bumble", True, [0.1])
+
+    assert s.load_labels() == [(False, [0.0]), (True, [0.1])]
 
 
 def test_flush_on_close():
@@ -78,11 +248,21 @@ def test_insert_errors_raise():
 
 def test_requires_project_id():
     try:
-        BigQueryStore("", "ds", client=_FakeBQ(), ensure=False)
+        BigQueryStore("", "ds", photo_bucket="photos", client=_FakeBQ(),
+                      storage_client=_FakeStorage(), ensure=False)
     except ValueError:
         pass
     else:
         raise AssertionError("expected ValueError without project_id")
+
+
+def test_requires_photo_bucket():
+    try:
+        BigQueryStore("proj", "ds", client=_FakeBQ(), storage_client=_FakeStorage(), ensure=False)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError without photo_bucket")
 
 
 if __name__ == "__main__":

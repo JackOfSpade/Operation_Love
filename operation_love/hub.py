@@ -150,17 +150,19 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def _bind(host: str, port: int) -> ThreadingHTTPServer:
-    for p in range(port, port + 20):        # find a free port near the default
+    for p in range(port, port + 200):       # find a free port near the default
         try:
             return ThreadingHTTPServer((host, p), _Handler)
         except OSError:
             continue
-    raise SystemExit(f"[hub] no free port in {port}..{port + 19}")
+    raise SystemExit(f"[hub] no free port in {port}..{port + 199}")
 
 
 def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
           port: int = 8765, open_browser: bool = True) -> None:
+    from ._warnings import configure_warnings
     from .bugreport import install_log_capture
+    configure_warnings()
     install_log_capture()                   # capture logs so bug reports include them
     _Handler.state = HubState(config_path)
     httpd = _bind(host, port)
@@ -178,101 +180,86 @@ def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
         httpd.shutdown()
 
 
-# Portable launcher bodies — written INTO the project folder and committed, so
-# they travel with the repo and work on any machine. They resolve the project
-# from the script's OWN location (no absolute paths) and use a project-local
-# .venv if present, else system python3. The app runs from source (editable
-# install): code changes are live on the next launch, so there's no build step —
-# "Update" just creates/refreshes the .venv. __EXTRAS__ is substituted.
-_MAC_LAUNCH = r'''#!/bin/zsh
-# Operation Love — open the control hub. Portable: works wherever this folder is.
-# Run "Update Operation Love" once first to create the .venv + install deps.
-cd "${0:A:h}" || exit 1
-PY=".venv/bin/python"
-[ -x "$PY" ] || PY="$(command -v python3)"
-exec "$PY" -m operation_love hub
-'''
-
-_MAC_UPDATE = r'''#!/bin/zsh
-# Update / set up Operation Love. Portable — resolves the project from this
-# script's own location, so it works on any machine. Creates a project-local
-# .venv on first run, then installs/refreshes dependencies. The app runs from
-# source (editable install): code changes are live next launch, no build step.
+# Portable launcher body — written INTO the project folder and committed, so it
+# travels with the repo and works on any machine. It resolves the project from
+# the script's OWN location (no absolute paths) and uses a project-local .venv.
+# __EXTRAS__ is substituted by make_launchers.
+#
+# The single launcher: install deps only when they change, then launch. The app
+# runs from source (editable install), so code changes are live with no rebuild;
+# we re-run pip only when pyproject.toml is newer than the last install (stamped
+# inside .venv) or there's no .venv yet. Then it execs the hub, so the window
+# stays open running the server.
+_MAC_UPDATE_RUN = r'''#!/bin/zsh
+# Operation Love — set up if needed, then launch, in one double-click. Portable:
+# resolves the project from this script's own location, so it works on any
+# machine. Dependencies are (re)installed ONLY when they change; otherwise it
+# launches straight away. The app runs from source, so there's no build step.
 cd "${0:A:h}" || exit 1
 notify() { osascript -e "display notification \"$1\" with title \"Operation Love\" sound name \"$2\"" >/dev/null 2>&1; }
 
-echo "==========================================="
-echo "  Operation Love - Update / Setup"
-echo "==========================================="
-
-if [ ! -x ".venv/bin/python" ]; then
-  echo "> Creating project virtualenv (.venv)..."
-  python3 -m venv .venv || { echo "x venv creation failed (is python3 installed?)"; notify "Update failed: venv creation." "Basso"; exit 1; }
-fi
 PY=".venv/bin/python"
-
-echo "> Installing / refreshing dependencies (first run can take a few minutes)..."
-"$PY" -m pip install -e ".[__EXTRAS__]" || { echo "x pip install failed."; notify "Update failed at pip install." "Basso"; exit 1; }
-
-echo "> Ensuring the Bumble browser is installed..."
-"$PY" -m playwright install chromium >/dev/null 2>&1
-
-echo "> Verifying..."
-"$PY" -m operation_love.runtime || { echo "x runtime check failed."; notify "Update: runtime check failed." "Basso"; exit 1; }
-
-echo ""
-echo "OK - Operation Love is ready."
-notify "Operation Love is up to date!" "Glass"
-
-# Auto-close this Terminal window shortly after exit (one-shot script).
-if [ "$TERM_PROGRAM" = "Apple_Terminal" ]; then
-  TTY_NAME=$(tty)
-  ( sleep 1
-    osascript -e 'tell application "Terminal"
-  repeat with w in windows
-    try
-      if tty of selected tab of w is "'"$TTY_NAME"'" then
-        close w
-        exit repeat
-      end if
-    end try
-  end repeat
-end tell' >/dev/null 2>&1
-  ) &
-  disown 2>/dev/null
+STAMP=".venv/.oplove-deps-stamp"
+need_install=0
+if [ ! -x "$PY" ]; then
+  echo "> Creating project virtualenv (.venv)..."
+  python3 -m venv .venv || { echo "x venv creation failed (is python3 installed?)"; notify "Setup failed: venv creation." "Basso"; exit 1; }
+  need_install=1
+elif [ ! -e "$STAMP" ] || [ pyproject.toml -nt "$STAMP" ]; then
+  need_install=1                       # deps changed since the last install
 fi
-exit 0
+
+if [ "$need_install" -eq 1 ]; then
+  echo "> Installing / refreshing dependencies (first run can take a few minutes)..."
+  "$PY" -m pip install -e ".[__EXTRAS__]" || { echo "x pip install failed."; notify "Setup failed at pip install." "Basso"; exit 1; }
+  "$PY" -m playwright install chromium >/dev/null 2>&1
+  "$PY" -m operation_love.runtime || { echo "x runtime check failed."; notify "Setup: runtime check failed." "Basso"; exit 1; }
+  touch "$STAMP"
+  notify "Operation Love is ready - launching." "Glass"
+else
+  echo "> Dependencies already up to date."
+fi
+
+echo "OK - launching the control hub (Ctrl-C to quit)..."
+exec "$PY" -m operation_love hub
 '''
 
-_LINUX_LAUNCH = ('#!/bin/sh\ncd "$(dirname "$0")" || exit 1\n'
-                 'PY=".venv/bin/python"; [ -x "$PY" ] || PY="$(command -v python3)"\n'
-                 'exec "$PY" -m operation_love hub\n')
+_LINUX_UPDATE_RUN = ('#!/bin/sh\ncd "$(dirname "$0")" || exit 1\n'
+                     'PY=".venv/bin/python"\nSTAMP=".venv/.oplove-deps-stamp"\nNEED=0\n'
+                     'if [ ! -x "$PY" ]; then python3 -m venv .venv || exit 1; NEED=1\n'
+                     'elif [ ! -e "$STAMP" ] || [ pyproject.toml -nt "$STAMP" ]; then NEED=1; fi\n'
+                     'if [ "$NEED" -eq 1 ]; then\n'
+                     '  "$PY" -m pip install -e ".[__EXTRAS__]" || exit 1\n'
+                     '  "$PY" -m playwright install chromium >/dev/null 2>&1\n'
+                     '  "$PY" -m operation_love.runtime || exit 1\n'
+                     '  touch "$STAMP"\nfi\n'
+                     'exec "$PY" -m operation_love hub\n')
 
-_LINUX_UPDATE = ('#!/bin/sh\ncd "$(dirname "$0")" || exit 1\n'
-                 '[ -x ".venv/bin/python" ] || python3 -m venv .venv\n'
-                 'PY=".venv/bin/python"\n'
-                 '"$PY" -m pip install -e ".[__EXTRAS__]" || exit 1\n'
-                 '"$PY" -m playwright install chromium >/dev/null 2>&1\n'
-                 '"$PY" -m operation_love.runtime\n')
-
-_WIN_LAUNCH = ('@echo off\r\ncd /d "%~dp0"\r\nset PY=.venv\\Scripts\\python.exe\r\n'
-               'if not exist "%PY%" set PY=python\r\nstart "" "%PY%" -m operation_love hub\r\n')
-
-_WIN_UPDATE = ('@echo off\r\ncd /d "%~dp0"\r\n'
-               'if not exist ".venv\\Scripts\\python.exe" python -m venv .venv\r\n'
-               'set PY=.venv\\Scripts\\python.exe\r\n'
-               '"%PY%" -m pip install -e ".[__EXTRAS__]" || exit /b 1\r\n'
-               '"%PY%" -m playwright install chromium\r\n'
-               '"%PY%" -m operation_love.runtime\r\npause\r\n')
+_WIN_UPDATE_RUN = ('@echo off\r\ncd /d "%~dp0"\r\n'
+                   'set "PY=.venv\\Scripts\\python.exe"\r\n'
+                   'set "STAMP=.venv\\.oplove-deps-stamp"\r\n'
+                   'set NEED=0\r\n'
+                   'if not exist "%PY%" ( python -m venv .venv || exit /b 1 & set NEED=1 ) else (\r\n'
+                   '  powershell -NoProfile -Command "if(!(Test-Path \'%STAMP%\') -or (Get-Item \'pyproject.toml\').LastWriteTime -gt (Get-Item \'%STAMP%\').LastWriteTime){exit 1}else{exit 0}"\r\n'
+                   '  if errorlevel 1 set NEED=1\r\n'
+                   ')\r\n'
+                   'if "%NEED%"=="1" (\r\n'
+                   '  "%PY%" -m pip install -e ".[__EXTRAS__]" || exit /b 1\r\n'
+                   '  "%PY%" -m playwright install chromium\r\n'
+                   '  "%PY%" -m operation_love.runtime || exit /b 1\r\n'
+                   '  echo ok> "%STAMP%"\r\n'
+                   ')\r\n'
+                   '"%PY%" -m operation_love hub\r\n')
 
 
 def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,bumble") -> None:
-    """Write portable double-click LAUNCH + UPDATE commands INTO the project folder.
+    """Write ONE portable double-click launcher INTO the project folder.
 
-    They use relative pathing (resolve the project from the script's own
-    location) and a project-local .venv, so the same committed files work on any
-    machine — clone the repo, double-click "Update Operation Love" once to build
-    the .venv, then "Operation Love" to launch. No absolute paths, no build step.
+    It resolves the project from the script's own location (no absolute paths)
+    and uses a project-local .venv, so the committed file works on any machine.
+    The app runs from source, so there's no build step; dependencies are
+    (re)installed only when they actually change (pyproject.toml newer than the
+    last install, or no .venv yet). It then opens the hub.
     """
     import stat
     import sys
@@ -280,29 +267,23 @@ def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,bumble
 
     proj = Path(config_path).resolve().parent
     plat = sys.platform
-    made: list[Path] = []
 
     def _write(name: str, body: str, executable: bool) -> None:
         p = proj / name
         p.write_text(body.replace("__EXTRAS__", extras))
         if executable:
             p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        made.append(p)
+        print(f"[hub] wrote: {p.name}")
 
     if plat == "darwin":
-        _write("Operation Love.command", _MAC_LAUNCH, True)
-        _write("Update Operation Love.command", _MAC_UPDATE, True)
+        _write("Operation Love.command", _MAC_UPDATE_RUN, True)
     elif plat.startswith("win"):
-        _write("Operation Love.bat", _WIN_LAUNCH, False)
-        _write("Update Operation Love.bat", _WIN_UPDATE, False)
+        _write("Operation Love.bat", _WIN_UPDATE_RUN, False)
     else:  # linux / *bsd
-        _write("operation-love.sh", _LINUX_LAUNCH, True)
-        _write("update-operation-love.sh", _LINUX_UPDATE, True)
+        _write("operation-love.sh", _LINUX_UPDATE_RUN, True)
 
-    for p in made:
-        print(f"[hub] wrote: {p.name}")
-    print("      committed in the project; portable across machines (relative paths + .venv).")
-    print("      'Operation Love' opens the hub; 'Update Operation Love' refreshes deps.")
+    print("      one launcher: installs deps only when they change, then opens the hub.")
+    print("      portable across machines (relative paths + project-local .venv).")
 
 
 _PAGE = """<!doctype html>
@@ -411,18 +392,22 @@ function renderGlobal(snap){
   $('#runpill').textContent = running ? ((phase && phase!=='live') ? phase : 'running') : 'stopped';
   $('#runpill').className = 'pill ' + (running ? 'run' : 'stop');
   $('#start').disabled = running; $('#stop').disabled = !running;
+  if(phase === 'saving data') $('#hint').textContent = 'saving data…';
+  else if(!running && $('#hint').textContent === 'saving data…') $('#hint').textContent = '';
   if(s){
     const ready = s.ranker_ready;
     $('#ranker').textContent = (ready?'ready':'defer') + (s.mode?(' · '+s.mode):'');
     $('#ranker').style.color = ready ? '#39d98a' : '#f0b429';
-    const pct = s.min_labels ? Math.min(100, Math.round(100*s.labels/s.min_labels)) : 100;
+    const pct = ready ? 100 : 0;
     $('#barfill').style.width = pct+'%';
     $('#barfill').style.background = ready ? '#39d98a' : '#f0b429';
-    $('#labels').textContent = `labels ${s.labels} / ${s.min_labels}` + (ready?'':` (need ${s.labels_needed})`);
+    $('#labels').textContent = ready
+      ? `labels ${s.labels} total · keep observing to improve`
+      : `labels ${s.labels} total · learning`;
     const cap = s.budget_cap!=null ? ' / $'+Number(s.budget_cap).toFixed(2) : '';
     $('#budget').textContent = `budget $${Number(s.budget_spent).toFixed(2)}${cap}`;
   } else {
-    $('#ranker').textContent='—'; $('#labels').textContent=`labels — / ${cfg.min_labels}`;
+    $('#ranker').textContent='—'; $('#labels').textContent='labels —';
     $('#budget').textContent='budget —'; $('#barfill').style.width='0%';
   }
   $('#err').textContent = (snap && snap.error) ? ('error: '+snap.error) : '';

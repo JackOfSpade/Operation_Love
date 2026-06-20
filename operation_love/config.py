@@ -14,7 +14,7 @@ class RankerCfg:
     embedders: list[str] = field(default_factory=lambda: ["arcface", "clip"])
     like_threshold: float = 0.5
     min_labels_to_engage: int = 40
-    retrain_every: int = 10          # retrain live after every N new labels (observe mode)
+    retrain_every: int = 1           # retrain live after each new observe label
 
 
 @dataclass
@@ -114,5 +114,7 @@ def validate(cfg: Config) -> None:
         raise ValueError(f"config: storage.backend must be 'bigquery' or 'sqlite' (got {cfg.storage.backend})")
     if cfg.storage.backend == "bigquery" and not cfg.storage.bigquery.get("project_id"):
         raise ValueError("config: storage.backend=bigquery requires storage.bigquery.project_id")
+    if cfg.storage.backend == "bigquery" and not cfg.storage.bigquery.get("photo_bucket"):
+        raise ValueError("config: storage.backend=bigquery requires storage.bigquery.photo_bucket")
     if cfg.opener.enabled and cfg.opener.model not in cfg.budget.pricing:
         raise ValueError(f"config: opener.model '{cfg.opener.model}' has no entry in budget.pricing")

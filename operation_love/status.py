@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 class AppStatus:
     app: str
     mode: str = "observe"
-    # starting | waiting | scoring | acting | out_of_profiles | rate_limited | stopped | error
+    # starting | waiting | scoring | acting | out_of_profiles | rate_limited | saving | stopped | error
     state: str = "starting"
     last_decision: str | None = None       # like | pass | dislike | defer | no_face
     last_score: float | None = None
@@ -37,7 +37,7 @@ class RunStatus:
         self.min_labels = int(min_labels)
         self.budget_cap = budget_cap
         # global slice
-        self.phase = "starting"             # starting | loading store | training | live | stopped
+        self.phase = "starting"             # starting | loading saved data | training ranker | launching app | live | saving data | stopped
         self.labels = int(labels)
         self.ranker_ready = bool(ranker_ready)
         self.budget_spent = 0.0

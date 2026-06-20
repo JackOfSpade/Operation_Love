@@ -11,6 +11,7 @@ def make_store(cfg):
             project_id=bq.get("project_id", ""),
             dataset=bq.get("dataset", "operation_love"),
             location=bq.get("location", "US"),
+            photo_bucket=bq.get("photo_bucket", ""),
             flush_every=int(bq.get("flush_every", 25)),
         )
     from .store import SQLiteStore

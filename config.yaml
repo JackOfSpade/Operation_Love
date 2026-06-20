@@ -34,14 +34,15 @@ storage:
     project_id: operation-love-2026   # dedicated GCP project (billing-linked; BQ API on)
     dataset: operation_love
     location: US
+    photo_bucket: operation-love-2026-profile-photos
     flush_every: 25            # buffer N rows before streaming to BigQuery
 
 # --- Decision engine (local, learns YOUR taste from YOUR swipes) ---
 ranker:
   embedders: [arcface, clip]   # concatenate facial-structure + style/vibe vectors
   like_threshold: 0.5          # P(like) above which we like
-  min_labels_to_engage: 40     # ranker stays "not ready" until this many labels
-  retrain_every: 10            # in observe mode, retrain live after every N swipes
+  min_labels_to_engage: 40     # ranker stays "not ready" until this many labels (needs both like+pass)
+  retrain_every: 1             # observe mode: retrain live after each new label
 
 quality_filter:
   enabled: true

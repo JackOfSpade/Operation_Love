@@ -1,5 +1,9 @@
 """Vision pure-logic tests — aggregation + quality gating (no torch/pyiqa)."""
-from operation_love.vision.embed import aggregate, concat
+import math
+
+from operation_love.vision.embed import (
+    _select_onnx_providers, aggregate, concat, dedup_by_cosine, gem_pool, l2_normalize,
+)
 from operation_love.vision.quality import QualityFilter
 
 
@@ -10,6 +14,62 @@ def test_aggregate_mean():
 
 def test_concat():
     assert concat([1.0], [2.0, 3.0]) == [1.0, 2.0, 3.0]
+
+
+def test_l2_normalize_unit_length_and_zero_safe():
+    out = l2_normalize([3.0, 4.0])
+    assert math.isclose(out[0], 0.6) and math.isclose(out[1], 0.8)
+    assert math.isclose(math.sqrt(sum(x * x for x in out)), 1.0)
+    assert l2_normalize([0.0, 0.0]) == [0.0, 0.0]      # no divide-by-zero
+
+
+def test_gem_pool_single_is_identity_and_amplifies_salient():
+    assert gem_pool([[0.2, -0.5, 0.9]]) == [0.2, -0.5, 0.9]      # K=1 -> identity
+    # GeM(p=3) sits between mean and max, so a spike dominates more than the mean would.
+    col = [0.1, 0.1, 0.9]
+    g = gem_pool([[v] for v in col], p=3.0)[0]
+    assert (sum(col) / 3) < g < max(col)
+
+
+def test_gem_pool_preserves_sign():
+    out = gem_pool([[-0.8], [-0.6]], p=3.0)
+    assert out[0] < 0                               # dominant sign kept negative
+
+
+def test_dedup_by_cosine_drops_near_duplicates():
+    a = l2_normalize([1.0, 0.0])
+    a2 = l2_normalize([0.99, 0.01])                # nearly identical to a -> dropped
+    b = l2_normalize([0.0, 1.0])                   # orthogonal -> kept
+    kept = dedup_by_cosine([a, a2, b], threshold=0.85)
+    assert kept == [a, b]
+
+
+def test_select_onnx_providers_prefers_coreml_on_mps():
+    available = ["CoreMLExecutionProvider", "AzureExecutionProvider", "CPUExecutionProvider"]
+    assert _select_onnx_providers("mps", available) == [
+        "CoreMLExecutionProvider", "CPUExecutionProvider"
+    ]
+
+
+def test_select_onnx_providers_prefers_cuda_when_available():
+    available = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    assert _select_onnx_providers("cuda", available) == [
+        "CUDAExecutionProvider", "CPUExecutionProvider"
+    ]
+
+
+def test_select_onnx_providers_omits_unavailable_entries():
+    available = ["AzureExecutionProvider", "CPUExecutionProvider"]
+    assert _select_onnx_providers("cuda", available) == ["CPUExecutionProvider"]
+    assert _select_onnx_providers("mps", available) == ["CPUExecutionProvider"]
+    assert _select_onnx_providers("cpu", available) == ["CPUExecutionProvider"]
+
+
+def test_select_onnx_providers_never_returns_empty():
+    # Even if nothing preferred is available, fall back to CPU (onnxruntime
+    # raises on an empty provider list).
+    assert _select_onnx_providers("mps", []) == ["CPUExecutionProvider"]
+    assert _select_onnx_providers("cuda", ["AzureExecutionProvider"]) == ["CPUExecutionProvider"]
 
 
 def test_quality_gating_with_injected_scorer():

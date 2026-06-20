@@ -3,7 +3,7 @@ import threading
 import time
 
 from operation_love.costing import CostTracker, ModelPricing, Usage
-from operation_love.drivers.base import DatingAppDriver
+from operation_love.drivers.base import DatingAppDriver, DriverClosed
 from operation_love.opener.opener import OpenerResult
 from operation_love.opener.service import OpenerService
 from operation_love.perception.capture import Profile
@@ -29,6 +29,13 @@ class FakeDriver(DatingAppDriver):
     def dislike(self): self.dislikes += 1
     def out_of_profiles(self): return self.i >= len(self.cards)
     def close(self): self.closed = True
+
+
+class ClosedDriver(FakeDriver):
+    def __init__(self):
+        super().__init__(1)
+    def next_profile(self):
+        raise DriverClosed("browser closed")
 
 
 class FakeDecider:
@@ -60,9 +67,12 @@ class BillingErrClient:
 
 class FakeStore:
     def __init__(self):
-        self.decisions, self.labels, self.spend, self.openers = [], [], [], []
+        self.decisions, self.labels, self.profiles, self.spend, self.openers = [], [], [], [], []
     def load_labels(self): return []
-    def add_label(self, run_id, app, liked, embedding, source="manual", **k): self.labels.append((app, liked))
+    def record_profile(self, run_id, app, profile_id, liked, source="manual", **k):
+        self.profiles.append((app, profile_id, liked, k))
+    def add_label(self, run_id, app, liked, embedding, source="manual", profile_id="", **k):
+        self.labels.append((app, profile_id, liked, k))
     def record_decision(self, run_id, app, decision, score): self.decisions.append((app, decision))
     def record_opener(self, run_id, app, model, opener, referenced): self.openers.append(opener)
     def record_spend(self, run_id, model, usage, cost): self.spend.append(cost)
@@ -135,6 +145,8 @@ def test_worker_dislikes_whole_deck():
     _worker(driver, FakeDecider("dislike"), svc, store).run()
     assert driver.dislikes == 3 and driver.likes == []
     assert len(store.decisions) == 3 and len(store.labels) == 3
+    assert len(store.profiles) == 3
+    assert {label[1] for label in store.labels} == {profile[1] for profile in store.profiles}
     assert driver.opened and driver.closed
 
 
@@ -158,6 +170,20 @@ def test_worker_stops_when_budget_exhausted():
     assert client.calls == 1
     assert driver.likes == ["hi 1"]
     assert driver.closed
+
+
+def test_worker_treats_browser_close_as_graceful_stop():
+    driver = ClosedDriver()
+    store = FakeStore()
+    stop_event = threading.Event()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           stop_event, mode="auto").run()
+
+    assert stop_event.is_set()
+    assert driver.closed
+    assert store.labels == []
+    assert store.profiles == []
 
 
 if __name__ == "__main__":

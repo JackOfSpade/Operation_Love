@@ -29,6 +29,9 @@ from .worker import Worker
 
 def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None = None,
         on_status=None, mode: str | None = None, enabled_apps=None) -> None:
+    from ._warnings import configure_warnings
+    configure_warnings()
+
     cfg = cfg_mod.load(config_path)
     if mode:                                  # hub/CLI override of config.yaml
         cfg.mode = mode
@@ -46,15 +49,17 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
 
     caps = Capabilities.detect()
     print(caps.banner())
-    if cfg.storage.backend == "bigquery" and caps.missing("bigquery"):
-        raise SystemExit("storage.backend=bigquery but google-cloud-bigquery isn't installed "
-                         "(`pip install -e '.[bq]'`, or set storage.backend: sqlite).")
+    missing_cloud = caps.missing("bigquery", "cloud_storage") if cfg.storage.backend == "bigquery" else []
+    if missing_cloud:
+        raise SystemExit("storage.backend=bigquery but cloud storage dependencies are missing "
+                         f"({', '.join(missing_cloud)}). Install `pip install -e '.[bq]'`, "
+                         "or set storage.backend: sqlite.")
 
     if caps.missing("arcface", "clip"):
         print("[degrade] ml extra not installed -> ranking unavailable "
               "(`pip install -e '.[ml]'`). Workers will defer until it's present.")
 
-    status.set_global(phase="loading store")          # BigQuery ensure-tables + label load
+    status.set_global(phase="loading saved data")     # BigQuery ensure-tables + label load
     store = make_store(cfg)
     labels = store.load_labels()
     status.set_global(labels=len(labels))
@@ -70,7 +75,7 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     opener_service = OpenerService(opener_client, tracker, store, cfg.opener.style,
                                    cfg.budget.on_exhausted)
 
-    status.set_global(phase="training")
+    status.set_global(phase="training ranker")
     model = PreferenceModel(min_labels=cfg.ranker.min_labels_to_engage,
                             threshold=cfg.ranker.like_threshold)
     ready = model.train(labels)
@@ -105,13 +110,20 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             status.set_global(budget_spent=tracker.run_spend_usd, openers=tracker.calls)
             stop_event.wait(0.5)
     finally:
-        status.set_global(running=False, phase="stopped",
-                          budget_spent=tracker.run_spend_usd, openers=tracker.calls)
+        status.set_global(phase="saving data", budget_spent=tracker.run_spend_usd, openers=tracker.calls)
         stop_event.set()
         for w in workers:
             w.join(timeout=30)
-        store.flush()
-        store.close()
+        for app in cfg.enabled_apps:
+            status.set_app(app, state="saving")
+        try:
+            store.flush()
+            store.close()
+        finally:
+            status.set_global(running=False, phase="stopped",
+                              budget_spent=tracker.run_spend_usd, openers=tracker.calls)
+            for app in cfg.enabled_apps:
+                status.set_app(app, state="stopped")
         print(f"[run {run_id}] openers={tracker.calls} spend=${tracker.run_spend_usd:.4f}")
 
 

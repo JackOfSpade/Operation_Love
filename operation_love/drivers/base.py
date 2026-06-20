@@ -11,6 +11,10 @@ from abc import ABC, abstractmethod
 from ..perception.capture import Profile
 
 
+class DriverClosed(RuntimeError):
+    """The user closed the app/browser window during a run."""
+
+
 class DatingAppDriver(ABC):
     @abstractmethod
     def open_session(self) -> None:

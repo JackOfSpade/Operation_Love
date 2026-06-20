@@ -20,9 +20,12 @@ from ..costing import Usage
 @runtime_checkable
 class Store(Protocol):
     def load_labels(self) -> list[tuple[bool, list[float]]]: ...
+    def record_profile(self, run_id: str, app: str, profile_id: str, liked: bool,
+                       source: str = "manual", photos: list[bytes] | None = None,
+                       photo_count: int = 0) -> bool: ...
     def add_label(self, run_id: str, app: str, liked: bool, embedding: list[float],
-                  source: str = "manual", bio: str = "", prompts: str = "",
-                  photo_count: int = 0) -> None: ...
+                  source: str = "manual", photo_count: int = 0,
+                  profile_id: str = "") -> None: ...
     def record_decision(self, run_id: str, app: str, decision: str, score: float) -> None: ...
     def record_opener(self, run_id: str, app: str, model: str, opener: str, referenced: str) -> None: ...
     def record_spend(self, run_id: str, model: str, usage: Usage, cost: float) -> None: ...
@@ -35,7 +38,7 @@ class Store(Protocol):
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS labels (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
-    liked INTEGER, source TEXT, embedding TEXT, bio TEXT, prompts TEXT, photo_count INTEGER
+    liked INTEGER, source TEXT, embedding TEXT, photo_count INTEGER
 );
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
@@ -69,12 +72,19 @@ class SQLiteStore:
             rows = self.con.execute("SELECT liked, embedding FROM labels").fetchall()
         return [(bool(liked), json.loads(emb)) for liked, emb in rows]
 
-    def add_label(self, run_id, app, liked, embedding, source="manual", bio="", prompts="", photo_count=0):
+    def record_profile(self, run_id, app, profile_id, liked, source="manual",
+                       photos=None, photo_count=0) -> bool:
+        # SQLite is the offline, labels-only fallback: it doesn't archive images,
+        # so there's nothing that can fail here — always "recorded".
+        return True
+
+    def add_label(self, run_id, app, liked, embedding, source="manual", photo_count=0,
+                  profile_id="", **_):
         with self._lock:
             self.con.execute(
-                "INSERT INTO labels (run_id, app, created_at, liked, source, embedding, bio,"
-                " prompts, photo_count) VALUES (?,?,?,?,?,?,?,?,?)",
-                (run_id, app, time.time(), int(liked), source, json.dumps(embedding), bio, prompts, photo_count),
+                "INSERT INTO labels (run_id, app, created_at, liked, source, embedding,"
+                " photo_count) VALUES (?,?,?,?,?,?,?)",
+                (run_id, app, time.time(), int(liked), source, json.dumps(embedding), photo_count),
             )
             self.con.commit()
 

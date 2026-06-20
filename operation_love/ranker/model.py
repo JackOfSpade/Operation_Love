@@ -76,7 +76,9 @@ class PreferenceModel:
             return False
         try:
             from sklearn.linear_model import LogisticRegression
-            clf = LogisticRegression(max_iter=1000)
+            # Strong L2 (small C) for ~1280-d features on tens–hundreds of labels,
+            # and balanced class weights since likes/passes are usually imbalanced.
+            clf = LogisticRegression(C=0.1, class_weight="balanced", max_iter=1000)
             clf.fit(X, y)
             self._impl, self._clf = "sklearn", clf
         except Exception:  # noqa: BLE001

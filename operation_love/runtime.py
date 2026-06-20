@@ -25,6 +25,7 @@ _OPTIONAL = {
     "hinge_driver": "uiautomator2",
     "anthropic": "anthropic",
     "bigquery": "google.cloud.bigquery",
+    "cloud_storage": "google.cloud.storage",
 }
 
 _ACCEL = {"mps": "Apple GPU (MPS)", "cuda": "NVIDIA GPU (CUDA)", "cpu": "CPU"}

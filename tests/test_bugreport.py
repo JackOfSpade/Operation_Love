@@ -1,15 +1,23 @@
 """bugreport — redacted markdown diagnostic. Offline."""
+import io
 import os
+import threading
 
 from operation_love import bugreport
+
+
+def _ring_bodies():
+    return [line.split(" ", 1)[1] for line in bugreport._LOG_RING]
 
 
 def test_report_has_core_sections():
     md = bugreport.build_report(None, description="it broke")
     for h in ["# Operation Love — Bug Report", "## What happened", "it broke",
               "## Build", "## System", "## Dependencies", "## Config",
-              "## Secrets", "## Run status", "## Recent logs"]:
+              "## Secrets", "## Diagnostic improvement", "## Run status",
+              "## Recent logs"]:
         assert h in md, f"missing section: {h}"
+    assert "improve `operation_love/bugreport.py`" in md
 
 
 def test_secrets_are_redacted():
@@ -34,6 +42,65 @@ def test_log_capture_roundtrip():
     assert "OPLOVE_TEST_LOGLINE_marker" in bugreport.build_report(None)
 
 
+def test_tee_keeps_multi_arg_print_as_one_line():
+    bugreport._LOG_RING.clear()
+    stream = io.StringIO()
+    tee = bugreport._Tee(stream)
+
+    print("find model:", "/path/x.onnx", "landmark_3d_68", ["None", 3, 192, 192],
+          0.0, 1.0, file=tee)
+
+    expected = "find model: /path/x.onnx landmark_3d_68 ['None', 3, 192, 192] 0.0 1.0"
+    assert stream.getvalue() == expected + "\n"
+    assert _ring_bodies() == [expected]
+
+
+def test_tee_emits_each_complete_multiline_write():
+    bugreport._LOG_RING.clear()
+    tee = bugreport._Tee(io.StringIO())
+
+    tee.write("alpha\n\n beta \ngamma\n")
+
+    assert _ring_bodies() == ["alpha", " beta ", "gamma"]
+
+
+def test_tee_buffers_partial_until_newline():
+    bugreport._LOG_RING.clear()
+    tee = bugreport._Tee(io.StringIO())
+
+    tee.write("partial")
+    assert _ring_bodies() == []
+    tee.flush()
+    assert _ring_bodies() == []
+    tee.write(" line\n")
+
+    assert _ring_bodies() == ["partial line"]
+
+
+def test_tee_concurrent_writes_stay_whole():
+    bugreport._LOG_RING.clear()
+    tee = bugreport._Tee(io.StringIO())
+    threads = []
+    per_thread = 40
+
+    def write_lines(tid):
+        for i in range(per_thread):
+            tee.write(f"T{tid}-")
+            tee.write(f"{i}\n")
+
+    for tid in range(5):
+        thread = threading.Thread(target=write_lines, args=(tid,))
+        threads.append(thread)
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    bodies = _ring_bodies()
+    expected = {f"T{tid}-{i}" for tid in range(5) for i in range(per_thread)}
+    assert len(bodies) == len(expected)
+    assert set(bodies) == expected
+
+
 class _FakeHub:
     def snapshot(self):
         return {"running": True, "error": None, "status": {
@@ -51,11 +118,29 @@ def test_status_section_renders_apps():
     assert "| bumble |" in md
 
 
-def test_char_cap_enforced():
-    for _ in range(3000):
-        bugreport._LOG_RING.append("x" * 80)
+def test_line_cap_enforced_by_dropping_oldest_logs():
+    bugreport._LOG_RING.clear()
+    for i in range(bugreport._MAX_REPORT_LINES + 200):
+        bugreport._LOG_RING.append(f"OPLOVE_LOG_{i:05d}")
+    oldest_captured = bugreport._LOG_RING[0]
+    newest_captured = bugreport._LOG_RING[-1]
+
     md = bugreport.build_report(None)
-    assert len(md) <= bugreport._MAX_CHARS
+    assert len(md.splitlines()) <= bugreport._MAX_REPORT_LINES
+    assert oldest_captured not in md
+    assert newest_captured in md
+    assert "older log line(s) omitted" in md
+
+
+def test_line_cap_handles_oversized_description():
+    bugreport._LOG_RING.clear()
+    desc = "\n".join(f"OPLOVE_DESC_{i:05d}" for i in range(bugreport._MAX_REPORT_LINES + 200))
+
+    md = bugreport.build_report(None, description=desc)
+    assert len(md.splitlines()) <= bugreport._MAX_REPORT_LINES
+    assert "OPLOVE_DESC_00000" not in md
+    assert "OPLOVE_DESC_50199" in md
+    assert "older report line(s) omitted" in md
 
 
 if __name__ == "__main__":

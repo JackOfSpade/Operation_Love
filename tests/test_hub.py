@@ -34,6 +34,8 @@ def test_hub_endpoints():
 
         code, html = _get(base, "/")
         assert code == 200 and "Operation" in html and "/api/status" in html
+        assert "keep observing to improve" in html
+        assert "saving data" in html
 
         code, raw = _get(base, "/api/config")
         cfg = json.loads(raw)

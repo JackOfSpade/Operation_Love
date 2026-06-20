@@ -55,6 +55,7 @@ class _Store:
     def __init__(self): self.decisions = 0
     def count_today(self, app): return 0
     def record_decision(self, *a): self.decisions += 1
+    def record_profile(self, *a, **k): pass
     def add_label(self, *a, **k): pass
 
 

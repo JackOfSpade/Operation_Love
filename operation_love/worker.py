@@ -82,8 +82,8 @@ class Worker(threading.Thread):
                 if profile is None:
                     continue
                 self._stat(state="waiting")                   # overlay: "swipe — learning your taste"
-                liked = self.driver.wait_for_decision()       # block until your manual like/pass
-                if liked is None:                             # card changed / timeout -> skip
+                liked = self.driver.wait_for_decision(should_stop=self.stop_event.is_set)
+                if liked is None:                             # card changed / timeout / stop -> skip
                     continue
                 vec = self.decider.embed(profile)
                 if vec is None:                               # no face -> not a useful label

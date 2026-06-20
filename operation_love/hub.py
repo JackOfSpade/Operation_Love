@@ -111,10 +111,21 @@ class _Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/":
             self._send(200, _PAGE, "text/html; charset=utf-8")
+        elif path == "/favicon.ico":
+            self.send_response(204)             # no icon; avoids a console 404
+            self.end_headers()
         elif path == "/api/status":
             self._json(self.state.snapshot())
         elif path == "/api/config":
             self._json(self.state.config_defaults())
+        elif path == "/api/bugreport":
+            from .bugreport import build_report
+            desc = ""
+            if "?" in self.path:
+                from urllib.parse import parse_qs, urlparse
+                desc = (parse_qs(urlparse(self.path).query).get("desc", [""])[0])
+            md = build_report(self.state, description=desc)
+            self._send(200, md, "text/markdown; charset=utf-8")
         else:
             self._json({"error": "not found"}, 404)
 
@@ -149,6 +160,8 @@ def _bind(host: str, port: int) -> ThreadingHTTPServer:
 
 def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
           port: int = 8765, open_browser: bool = True) -> None:
+    from .bugreport import install_log_capture
+    install_log_capture()                   # capture logs so bug reports include them
     _Handler.state = HubState(config_path)
     httpd = _bind(host, port)
     url = f"http://{host}:{httpd.server_address[1]}/"
@@ -265,6 +278,18 @@ _PAGE = """<!doctype html>
     </div>
     <div class="err" id="err"></div>
   </div>
+
+  <div class="card">
+    <div class="row"><span class="muted">report a bug</span><span class="meta" id="bughint"></span></div>
+    <textarea id="bugdesc" rows="2" placeholder="What went wrong? (optional)"
+      style="width:100%;margin:8px 0;background:#22222b;color:#e8e8ea;border:1px solid rgba(255,255,255,.14);border-radius:9px;padding:8px;font:inherit;resize:vertical"></textarea>
+    <div class="controls">
+      <button id="bugbtn">🐞 Generate report</button>
+      <button id="bugcopy" disabled>Copy</button>
+      <button id="bugdl" disabled>Download .md</button>
+    </div>
+    <pre id="bugout" style="display:none;max-height:260px;overflow:auto;background:#0c0c10;border:1px solid rgba(255,255,255,.09);border-radius:9px;padding:10px;margin-top:10px;font-size:11px;white-space:pre-wrap"></pre>
+  </div>
 </div>
 <script>
 const $ = s => document.querySelector(s);
@@ -292,10 +317,11 @@ function renderApps(snap){
 
 function renderGlobal(snap){
   const running = snap && snap.running;
-  $('#runpill').textContent = running ? 'running' : 'stopped';
+  const s = snap && snap.status;
+  const phase = s && s.phase;
+  $('#runpill').textContent = running ? ((phase && phase!=='live') ? phase : 'running') : 'stopped';
   $('#runpill').className = 'pill ' + (running ? 'run' : 'stop');
   $('#start').disabled = running; $('#stop').disabled = !running;
-  const s = snap && snap.status;
   if(s){
     const ready = s.ranker_ready;
     $('#ranker').textContent = (ready?'ready':'defer') + (s.mode?(' · '+s.mode):'');
@@ -329,6 +355,25 @@ $('#start').onclick = async () => {
   tick();
 };
 $('#stop').onclick = async () => { $('#hint').textContent='stopping…'; await postJSON('/api/stop',{}); tick(); };
+
+let bugMd = '';
+$('#bugbtn').onclick = async () => {
+  $('#bughint').textContent = 'generating…';
+  const r = await fetch('/api/bugreport?desc=' + encodeURIComponent($('#bugdesc').value || ''));
+  bugMd = await r.text();
+  const out = $('#bugout'); out.textContent = bugMd; out.style.display = 'block';
+  $('#bugcopy').disabled = false; $('#bugdl').disabled = false;
+  $('#bughint').textContent = bugMd.length + ' chars';
+};
+$('#bugcopy').onclick = async () => {
+  try { await navigator.clipboard.writeText(bugMd); $('#bughint').textContent = 'copied ✓'; }
+  catch(e){ $('#bughint').textContent = 'copy failed — select the text below'; }
+};
+$('#bugdl').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([bugMd], {type:'text/markdown'}));
+  a.download = 'operation-love-bug-report.md'; a.click(); URL.revokeObjectURL(a.href);
+};
 
 (async () => {
   const c = await getJSON('/api/config');

@@ -37,6 +37,13 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     cfg_mod.validate(cfg)
     run_id = uuid.uuid4().hex[:12]
 
+    # Create + publish status up front (before the slow store/model setup) so the
+    # hub shows a live "phase" immediately rather than appearing to hang on Start.
+    status = RunStatus(run_id, cfg.enabled_apps, min_labels=cfg.ranker.min_labels_to_engage,
+                       mode=cfg.mode, budget_cap=cfg.budget.run_budget_usd)
+    if on_status:
+        on_status(status)
+
     caps = Capabilities.detect()
     print(caps.banner())
     if cfg.storage.backend == "bigquery" and caps.missing("bigquery"):
@@ -47,8 +54,10 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         print("[degrade] ml extra not installed -> ranking unavailable "
               "(`pip install -e '.[ml]'`). Workers will defer until it's present.")
 
+    status.set_global(phase="loading store")          # BigQuery ensure-tables + label load
     store = make_store(cfg)
     labels = store.load_labels()
+    status.set_global(labels=len(labels))
     print(f"[store] backend={cfg.storage.backend} labels={len(labels)}  "
           f"apps={cfg.enabled_apps}")
 
@@ -61,21 +70,17 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     opener_service = OpenerService(opener_client, tracker, store, cfg.opener.style,
                                    cfg.budget.on_exhausted)
 
+    status.set_global(phase="training")
     model = PreferenceModel(min_labels=cfg.ranker.min_labels_to_engage,
                             threshold=cfg.ranker.like_threshold)
     ready = model.train(labels)
+    status.set_global(ranker_ready=ready, phase="launching app")
     print(f"[ranker] labels={len(labels)} ready={ready} "
           f"(min={cfg.ranker.min_labels_to_engage}, threshold={cfg.ranker.like_threshold})")
     quality = QualityFilter(cfg.quality_filter.enabled, cfg.quality_filter.min_score,
                             cfg.quality_filter.metric)
     embedder = Embedder(cfg)
     decider = RankerDecider(quality, embedder, model)
-
-    status = RunStatus(run_id, cfg.enabled_apps, min_labels=cfg.ranker.min_labels_to_engage,
-                       mode=cfg.mode, budget_cap=cfg.budget.run_budget_usd,
-                       labels=len(labels), ranker_ready=ready)
-    if on_status:
-        on_status(status)                # let a caller (the hub) capture the live status
 
     stop_event = stop_event if stop_event is not None else threading.Event()
     _install_signal_handlers(stop_event)
@@ -94,12 +99,14 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         workers.append(w)
         w.start()
 
+    status.set_global(phase="live")
     try:
         while any(w.is_alive() for w in workers):
             status.set_global(budget_spent=tracker.run_spend_usd, openers=tracker.calls)
             stop_event.wait(0.5)
     finally:
-        status.set_global(running=False, budget_spent=tracker.run_spend_usd, openers=tracker.calls)
+        status.set_global(running=False, phase="stopped",
+                          budget_spent=tracker.run_spend_usd, openers=tracker.calls)
         stop_event.set()
         for w in workers:
             w.join(timeout=30)

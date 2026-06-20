@@ -60,12 +60,13 @@ class BigQueryStore:
         return f"{self.project_id}.{self.dataset}.{name}"
 
     def _ensure_tables(self) -> None:
-        self.client.query(
-            f"CREATE SCHEMA IF NOT EXISTS `{self.project_id}.{self.dataset}` "
-            f"OPTIONS(location='{self.location}')"
-        ).result()
+        # One multi-statement script = a single job submission instead of 5
+        # sequential round-trips, so Start isn't gated on ~5 BigQuery job latencies.
+        stmts = [f"CREATE SCHEMA IF NOT EXISTS `{self.project_id}.{self.dataset}` "
+                 f"OPTIONS(location='{self.location}');"]
         for name, cols in _TABLES.items():
-            self.client.query(f"CREATE TABLE IF NOT EXISTS `{self._tid(name)}` ({cols})").result()
+            stmts.append(f"CREATE TABLE IF NOT EXISTS `{self._tid(name)}` ({cols});")
+        self.client.query("\n".join(stmts)).result()
 
     # --- reads ----------------------------------------------------------
     def load_labels(self) -> list[tuple[bool, list[float]]]:

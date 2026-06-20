@@ -182,16 +182,18 @@ class BumbleDriver(DatingAppDriver):
             [self.selectors["like"], self.selectors["pass"], self.selectors["superlike"]],
         )
 
-    def wait_for_decision(self, timeout: float = 120.0) -> bool | None:
+    def wait_for_decision(self, timeout: float = 120.0, should_stop=None) -> bool | None:
         """Block until YOU manually like/pass the current card.
 
-        Returns True (liked), False (passed), or None (deck emptied / timeout).
-        Mouse clicks on the like/pass controls are detected; if you also use
-        keyboard shortcuts, confirm coverage with tools/bumble_inspect.py.
+        Returns True (liked), False (passed), or None (deck emptied / timeout /
+        stop requested). Mouse clicks on the like/pass controls are detected; if
+        you also use keyboard shortcuts, confirm coverage with bumble_inspect.py.
         """
         self._install_observe_listener()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            if should_stop and should_stop():        # Stop pressed -> don't wait for a swipe
+                return None
             decision = self.page.evaluate(
                 "() => { const v = window.__oplove_decision; window.__oplove_decision = null; return v; }"
             )

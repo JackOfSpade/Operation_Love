@@ -6,7 +6,8 @@ import argparse
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="operation_love")
-    p.add_argument("command", nargs="?", default="run", choices=["run", "stats", "hub"])
+    p.add_argument("command", nargs="?", default="run",
+                   choices=["run", "stats", "hub", "bugreport"])
     p.add_argument("--config", default="config.yaml")
     p.add_argument("--port", type=int, default=8765, help="hub: port to serve on")
     p.add_argument("--no-browser", action="store_true", help="hub: don't auto-open the browser")
@@ -17,6 +18,9 @@ def main() -> None:
     if args.command == "stats":
         from .stats import show
         show(args.config)
+    elif args.command == "bugreport":
+        from .bugreport import build_report
+        print(build_report(None, config_path=args.config))
     elif args.command == "hub":
         from .hub import make_launchers, serve
         if args.make_launchers:

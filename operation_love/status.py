@@ -37,6 +37,7 @@ class RunStatus:
         self.min_labels = int(min_labels)
         self.budget_cap = budget_cap
         # global slice
+        self.phase = "starting"             # starting | loading store | training | live | stopped
         self.labels = int(labels)
         self.ranker_ready = bool(ranker_ready)
         self.budget_spent = 0.0
@@ -79,6 +80,7 @@ class RunStatus:
                 "started_at": self.started_at,
                 "uptime_s": round(time.time() - self.started_at, 1),
                 "mode": self.mode,
+                "phase": self.phase,
                 "running": self.running,
                 "labels": self.labels,
                 "min_labels": self.min_labels,

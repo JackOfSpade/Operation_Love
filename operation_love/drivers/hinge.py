@@ -102,7 +102,7 @@ class HingeDriver(DatingAppDriver):
             return None
         return self._capture_current()
 
-    def wait_for_decision(self, timeout: float = 120.0) -> bool | None:
+    def wait_for_decision(self, timeout: float = 120.0, should_stop=None) -> bool | None:
         """Block until YOU manually like/pass the current card.
 
         Android has no global tap callback (unlike Bumble's DOM click listener),
@@ -125,6 +125,8 @@ class HingeDriver(DatingAppDriver):
         deadline = time.monotonic() + timeout
         baseline = self._observe_state()[1]
         while time.monotonic() < deadline:
+            if should_stop and should_stop():         # Stop pressed -> don't wait for a tap
+                return None
             if self.out_of_profiles():
                 return None
             like_open, sig = self._observe_state()

@@ -1,5 +1,18 @@
 # Operation Love v2 — configuration (no hardcoded paths/coords; everything lives here)
-app: bumble                 # bumble | hinge
+
+# One process runs ALL of these concurrently (each as its own worker).
+enabled_apps: [bumble]      # e.g. [bumble, hinge]
+
+# Per-app options (headless toggle, login profile, DOM selectors to verify live).
+apps:
+  bumble:
+    headless: false         # false = real backgrounded window (lower bot-detection, keeps your cursor)
+    user_data_dir: ./data/bumble_profile   # persists your manual login
+    url: https://bumble.com/app
+    # selectors: {}         # override the defaults in drivers/bumble.py after live inspection
+  hinge:
+    # Phase 5: Android emulator over ADB (uiautomator2)
+    serial: ""              # adb device/emulator serial; empty = first available
 
 paths:
   data_dir: ./data

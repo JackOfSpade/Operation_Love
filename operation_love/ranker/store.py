@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -56,50 +57,60 @@ class SQLiteStore:
 
     def __init__(self, db_file: str | Path):
         Path(db_file).parent.mkdir(parents=True, exist_ok=True)
-        self.con = sqlite3.connect(str(db_file))
+        # check_same_thread=False + a lock: safe to share across worker threads.
+        self.con = sqlite3.connect(str(db_file), check_same_thread=False)
         self.con.executescript(_SCHEMA)
         self.con.commit()
+        self._lock = threading.Lock()
 
     def load_labels(self) -> list[tuple[bool, list[float]]]:
-        rows = self.con.execute("SELECT liked, embedding FROM labels").fetchall()
+        with self._lock:
+            rows = self.con.execute("SELECT liked, embedding FROM labels").fetchall()
         return [(bool(liked), json.loads(emb)) for liked, emb in rows]
 
     def add_label(self, run_id, app, liked, embedding, source="manual", bio="", prompts="", photo_count=0):
-        self.con.execute(
-            "INSERT INTO labels (run_id, app, created_at, liked, source, embedding, bio,"
-            " prompts, photo_count) VALUES (?,?,?,?,?,?,?,?,?)",
-            (run_id, app, time.time(), int(liked), source, json.dumps(embedding), bio, prompts, photo_count),
-        )
-        self.con.commit()
+        with self._lock:
+            self.con.execute(
+                "INSERT INTO labels (run_id, app, created_at, liked, source, embedding, bio,"
+                " prompts, photo_count) VALUES (?,?,?,?,?,?,?,?,?)",
+                (run_id, app, time.time(), int(liked), source, json.dumps(embedding), bio, prompts, photo_count),
+            )
+            self.con.commit()
 
     def record_decision(self, run_id, app, decision, score):
-        self.con.execute(
-            "INSERT INTO decisions (run_id, app, created_at, decision, score) VALUES (?,?,?,?,?)",
-            (run_id, app, time.time(), decision, score),
-        )
-        self.con.commit()
+        with self._lock:
+            self.con.execute(
+                "INSERT INTO decisions (run_id, app, created_at, decision, score) VALUES (?,?,?,?,?)",
+                (run_id, app, time.time(), decision, score),
+            )
+            self.con.commit()
 
     def record_opener(self, run_id, app, model, opener, referenced):
-        self.con.execute(
-            "INSERT INTO openers (run_id, app, created_at, model, opener, referenced) VALUES (?,?,?,?,?,?)",
-            (run_id, app, time.time(), model, opener, referenced),
-        )
-        self.con.commit()
+        with self._lock:
+            self.con.execute(
+                "INSERT INTO openers (run_id, app, created_at, model, opener, referenced) VALUES (?,?,?,?,?,?)",
+                (run_id, app, time.time(), model, opener, referenced),
+            )
+            self.con.commit()
 
     def record_spend(self, run_id, model, usage: Usage, cost):
-        self.con.execute(
-            "INSERT INTO spend (run_id, created_at, model, input_tokens, output_tokens,"
-            " cache_read_tokens, cache_write_tokens, cost_usd) VALUES (?,?,?,?,?,?,?,?)",
-            (run_id, time.time(), model, usage.input_tokens, usage.output_tokens,
-             usage.cache_read_input_tokens, usage.cache_creation_input_tokens, cost),
-        )
-        self.con.commit()
+        with self._lock:
+            self.con.execute(
+                "INSERT INTO spend (run_id, created_at, model, input_tokens, output_tokens,"
+                " cache_read_tokens, cache_write_tokens, cost_usd) VALUES (?,?,?,?,?,?,?,?)",
+                (run_id, time.time(), model, usage.input_tokens, usage.output_tokens,
+                 usage.cache_read_input_tokens, usage.cache_creation_input_tokens, cost),
+            )
+            self.con.commit()
 
     def label_count(self) -> int:
-        return self.con.execute("SELECT COUNT(*) FROM labels").fetchone()[0]
+        with self._lock:
+            return self.con.execute("SELECT COUNT(*) FROM labels").fetchone()[0]
 
     def flush(self) -> None:
-        self.con.commit()
+        with self._lock:
+            self.con.commit()
 
     def close(self) -> None:
-        self.con.close()
+        with self._lock:
+            self.con.close()

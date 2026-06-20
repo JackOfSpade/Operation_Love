@@ -7,6 +7,7 @@ out-of-credit/billing error so the bot degrades gracefully instead of crashing.
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 
 MILLION = 1_000_000
@@ -64,21 +65,30 @@ class BudgetExceeded(Exception):
 
 
 class CostTracker:
-    """Tracks cumulative opener spend for one run against an optional cap."""
+    """Cumulative opener spend for one run against an optional cap.
+
+    Thread-safe: one shared tracker enforces a single GLOBAL budget across all
+    app workers (Bumble + Hinge run concurrently but draw on one cap).
+    """
 
     def __init__(self, pricing: dict[str, ModelPricing], run_budget_usd: float | None):
         self.pricing = pricing
         self.run_budget_usd = run_budget_usd
         self.run_spend_usd: float = 0.0
         self.calls: int = 0
+        self._lock = threading.Lock()
 
     def remaining(self) -> float | None:
         if self.run_budget_usd is None:
             return None
-        return max(0.0, self.run_budget_usd - self.run_spend_usd)
+        with self._lock:
+            return max(0.0, self.run_budget_usd - self.run_spend_usd)
 
     def budget_reached(self) -> bool:
-        return self.run_budget_usd is not None and self.run_spend_usd >= self.run_budget_usd
+        if self.run_budget_usd is None:
+            return False
+        with self._lock:
+            return self.run_spend_usd >= self.run_budget_usd
 
     def record(self, model: str, usage: Usage) -> float:
         """Add a call's cost to the running total and return that cost."""
@@ -86,8 +96,9 @@ class CostTracker:
         if p is None:
             raise KeyError(f"No pricing configured for model {model!r}")
         c = cost_usd(usage, p)
-        self.run_spend_usd += c
-        self.calls += 1
+        with self._lock:
+            self.run_spend_usd += c
+            self.calls += 1
         return c
 
 

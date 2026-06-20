@@ -53,7 +53,8 @@ class StorageCfg:
 
 @dataclass
 class Config:
-    app: str
+    enabled_apps: list[str]          # e.g. ["bumble", "hinge"] — run concurrently
+    apps: dict                       # per-app options (headless, selectors, ...)
     data_dir: Path
     db_file: Path
     ranker: RankerCfg
@@ -69,8 +70,10 @@ def load(path: str | Path = "config.yaml") -> Config:
     paths = raw.get("paths", {})
     b = raw.get("budget", {})
     pricing = {m: ModelPricing.from_dict(d) for m, d in b.get("pricing", {}).items()}
+    enabled_apps = raw.get("enabled_apps") or ([raw["app"]] if "app" in raw else ["bumble"])
     return Config(
-        app=raw["app"],
+        enabled_apps=list(enabled_apps),
+        apps=raw.get("apps", {}),
         data_dir=Path(paths.get("data_dir", "./data")),
         db_file=Path(paths.get("db_file", "./data/operation_love.db")),
         ranker=RankerCfg(**raw.get("ranker", {})),

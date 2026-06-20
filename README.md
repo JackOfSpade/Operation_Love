@@ -66,8 +66,23 @@ cp .env.example .env   # add ANTHROPIC_API_KEY
 pytest                 # cost-control tests run without a GPU or the SDK
 ```
 
+## Concurrency & deployment
+
+**One process runs all enabled apps at once.** A supervisor launches one worker
+per app (`enabled_apps: [bumble, hinge]`), all sharing the taste model, the
+BigQuery store, and a single **global** opener budget. Because the drivers are
+element-based (CDP / ADB) rather than mouse-based, they don't fight over your
+cursor, don't stop you using the machine, and several can run in parallel.
+
+Run it with `python -m operation_love`. It's OS-agnostic (macOS/Windows/Linux,
+GPU or CPU) and host-agnostic — since state lives in BigQuery, you can develop
+on one machine and deploy the same code to an always-on box with no migration.
+
 ## Status
 
-Phase 0 (scaffold + config + SQLite + cost control) is in. Drivers, vision,
-ranker, and the Claude opener wiring land in subsequent phases — see the build
-plan.
+Done: scaffold, config, storage (BigQuery + SQLite), runtime auto-detect,
+cost-control/global-budget, the Claude opener, and the **supervisor + per-app
+worker** loop (all covered by offline tests). In progress: **Phase 1 — the
+Bumble (Playwright) driver** skeleton is in but its DOM selectors need live
+verification on your machine. Next: vision (quality filter + embeddings) and the
+ranker, then the Hinge driver.

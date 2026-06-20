@@ -86,6 +86,26 @@ def test_observe_learns_from_manual_swipes_and_becomes_ready():
     assert driver.opened and driver.closed
 
 
+def test_observe_retrains_final_partial_batch():
+    # If the session ends before retrain_every, the final labels should still
+    # engage the model before shutdown instead of waiting for the next run.
+    swipes = []
+    for _ in range(3):
+        swipes.append((_profile([2.0, 2.0]), True))
+        swipes.append((_profile([-2.0, -2.0]), False))
+
+    model = PreferenceModel(min_labels=4, threshold=0.5)
+    decider = RankerDecider(FakeQuality(), FakeEmbedder(), model)
+    store = FakeStore()
+    w = Worker("bumble", FakeObservingDriver(swipes), decider, None, store, "r",
+               _Pacing(), threading.Event(), mode="observe", retrain_every=10)
+    w._observe_loop()
+
+    assert len(store.labels) == 6
+    assert model.ready
+    assert model.decide([2.0, 2.0])[0] == "like"
+
+
 def test_observe_skips_no_face():
     # A card the embedder can't embed (no face) must not become a label.
     swipes = [(_profile(None), True), (_profile([1.0, 1.0]), True)]

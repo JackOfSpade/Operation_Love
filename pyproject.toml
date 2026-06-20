@@ -31,6 +31,12 @@ hinge = ["uiautomator2>=3.0"]   # drives an Android emulator / phone over ADB
 bq = ["google-cloud-bigquery>=3.20"]
 dev = ["pytest>=8.0"]
 
+# Only ship the library package; ops/, legacy/, tools/, tests/ are repo-only.
+# (Without this, setuptools' flat-layout auto-discovery errors on the extra
+# top-level dirs. tools/ and tests/ stay importable via cwd from the repo root.)
+[tool.setuptools.packages.find]
+include = ["operation_love*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

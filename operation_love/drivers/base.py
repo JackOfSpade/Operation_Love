@@ -45,5 +45,14 @@ class DatingAppDriver(ABC):
         """
         raise NotImplementedError("observe mode is not supported by this driver")
 
+    def render_status(self, status: dict) -> None:
+        """Optionally paint a live status overlay in the app's own UI.
+
+        Web drivers (Bumble) inject a HUD into the page so you see progress
+        without watching the terminal. No-op by default — e.g. the Hinge
+        Android driver has no injectable page (its status shows in the hub).
+        Must never raise: a failed overlay must not break the swipe loop.
+        """
+
     def close(self) -> None:  # optional cleanup
         pass

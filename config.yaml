@@ -14,7 +14,11 @@ apps:
     headless: false         # false = real backgrounded window (lower bot-detection, keeps your cursor)
     user_data_dir: ./data/bumble_profile   # persists your manual login
     url: https://bumble.com/app
-    # selectors: {}         # override the defaults in drivers/bumble.py after live inspection
+    selectors:              # live-verified on Bumble web (2026-06); override here if the DOM drifts
+      photo: 'img.media-box__picture-image, [data-qa-role="encounters-story-profile-image"] img'
+      bio: '[data-qa-role="encounters-user"]'   # whole-card text (Bumble has no isolated "about" hook)
+      prompt: '[data-qa-role="pill"]'           # structured attribute pills (height, drinking, …)
+      # like/pass confirmed live = code defaults; superlike is observe-only (bot never super-swipes)
   hinge:
     # Phase 5: Android emulator over ADB (uiautomator2)
     serial: ""              # adb device/emulator serial; empty = first available
@@ -27,7 +31,7 @@ paths:
 storage:
   backend: bigquery            # bigquery | sqlite
   bigquery:
-    project_id: ""             # <-- your GCP project id (required for bigquery backend)
+    project_id: operation-love-2026   # dedicated GCP project (billing-linked; BQ API on)
     dataset: operation_love
     location: US
     flush_every: 25            # buffer N rows before streaming to BigQuery

@@ -50,7 +50,12 @@ python -m tools.bumble_inspect          # opens Bumble headful; log in, reach a 
 **Hinge (Android)** — use the `uiautomator2`/`uiautodev` inspector:
 - Confirm the **resource-ids** (like / pass / comment box / send / prompt / empty)
   under `apps.hinge.ids`.
-- Wire **observe tap detection** the same way (`wait_for_decision()`).
+- **Observe tap detection** (`wait_for_decision()`) is implemented and unit-tested:
+  a like is detected when the comment / "Send Like" sheet opens (`send_like` /
+  `comment_box`) and is then sent; a pass is detected when the prompt text changes
+  to the next profile. Live-confirm those two ids are the ones the sheet exposes —
+  if not, fix them under `apps.hinge.ids` (no code change). Then dry-run
+  `mode: observe` and check it logs your manual like/pass correctly.
 
 > These are the items deferred to "do live, at the end." Everything they plug
 > into (capture, embed, store, ranker, openers, supervisor) already works and is

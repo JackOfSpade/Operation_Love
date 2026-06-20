@@ -26,8 +26,9 @@ from operation_love.drivers.bumble import BumbleDriver
 _CARD_SELECTORS = {"photo", "like", "pass"}     # expected to match while a card is shown
 
 
-def _probe(driver: BumbleDriver) -> None:
+def _probe(driver: BumbleDriver) -> bool:
     page = driver.page
+    any_miss = False
     print("\n--- selector probe (matches on the current screen) ---")
     for name, sel in driver.selectors.items():
         try:
@@ -38,6 +39,7 @@ def _probe(driver: BumbleDriver) -> None:
         # photo/like/pass should hit while a card is up; empty should hit only when out.
         good = (n > 0) if name in _CARD_SELECTORS else True
         flag = "OK  " if (n > 0 and good) else ("MISS" if name in _CARD_SELECTORS else "—   ")
+        any_miss = any_miss or flag.strip() == "MISS"
         sample = ""
         if n and name in ("bio", "prompt"):
             el = page.query_selector(sel)
@@ -45,6 +47,57 @@ def _probe(driver: BumbleDriver) -> None:
         print(f"  [{flag}] {name:6} x{n:<3} {sel}{sample}")
     print("  (photo/like/pass should be OK with a card shown; `empty` matches only "
           "when the deck is out.)")
+    return any_miss
+
+
+def _discover(driver: BumbleDriver) -> None:
+    """When a selector MISSes, dump raw DOM signals so the right CSS can be
+    derived without DevTools: Bumble's [data-qa-role] inventory (the stable
+    hooks — that's how like/pass match) and the actual large media elements."""
+    page = driver.page
+    print("\n--- discovery: raw DOM signals to derive the MISSing selectors ---")
+    roles = page.evaluate(r"""() => {
+        const map = {};
+        document.querySelectorAll('[data-qa-role]').forEach(e => {
+            const r = e.getAttribute('data-qa-role');
+            const txt = (e.innerText || '').trim().replace(/\s+/g, ' ');
+            if (!map[r]) map[r] = {count: 0, sample: ''};
+            map[r].count++;
+            if (!map[r].sample && txt) map[r].sample = txt.slice(0, 70);
+        });
+        return map;
+    }""")
+    print("  [data-qa-role] inventory (role  xCount  | sample text):")
+    for r in sorted(roles):
+        info = roles[r]
+        s = ("  | " + info["sample"]) if info["sample"] else ""
+        print(f"      {r:44} x{info['count']}{s}")
+
+    media = page.evaluate(r"""() => {
+        const out = [], seen = new Set();
+        const push = (o) => { const k = o.tag + '|' + o.cls; if (!seen.has(k)) { seen.add(k); out.push(o); } };
+        document.querySelectorAll('img').forEach(e => {
+            const r = e.getBoundingClientRect();
+            if (r.width * r.height > 8000)
+                push({tag: 'img', cls: (typeof e.className === 'string' ? e.className : ''),
+                      w: Math.round(r.width), h: Math.round(r.height), ref: (e.src || '').slice(0, 50)});
+        });
+        document.querySelectorAll('div,span,section,figure,picture,a').forEach(e => {
+            const bg = getComputedStyle(e).backgroundImage;
+            if (bg && bg.indexOf('url(') > -1) {
+                const r = e.getBoundingClientRect();
+                if (r.width * r.height > 8000)
+                    push({tag: e.tagName.toLowerCase(), cls: (typeof e.className === 'string' ? e.className : ''),
+                          w: Math.round(r.width), h: Math.round(r.height), ref: 'bg-image'});
+            }
+        });
+        return out.slice(0, 20);
+    }""")
+    print("\n  large media elements (likely profile photos — tag.class  WxH  src):")
+    for m in media:
+        cls = ("." + ".".join(m["cls"].split())) if m["cls"] else ""
+        print(f"      {m['tag']}{cls}  {m['w']}x{m['h']}  {m['ref']}")
+    print("\n  ➜ paste this whole discovery block back; I'll derive the photo/bio/prompt selectors.")
 
 
 def _watch(driver: BumbleDriver, rounds: int) -> None:
@@ -79,7 +132,8 @@ def main() -> None:
     driver.open_session()
     try:
         input("\nPress ENTER once a profile card is on screen ➜ ")
-        _probe(driver)
+        if _probe(driver):                 # a card selector MISSed -> show raw DOM signals
+            _discover(driver)
         if args.watch > 0:
             _watch(driver, args.watch)
         _paste_block(driver)

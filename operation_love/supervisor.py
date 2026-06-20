@@ -21,12 +21,14 @@ from .ranker import make_store
 from .ranker.decider import RankerDecider
 from .ranker.model import PreferenceModel
 from .runtime import Capabilities
+from .status import RunStatus
 from .vision.embed import Embedder
 from .vision.quality import QualityFilter
 from .worker import Worker
 
 
-def run(config_path: str = "config.yaml") -> None:
+def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None = None,
+        on_status=None) -> None:
     cfg = cfg_mod.load(config_path)
     cfg_mod.validate(cfg)
     run_id = uuid.uuid4().hex[:12]
@@ -65,7 +67,13 @@ def run(config_path: str = "config.yaml") -> None:
     embedder = Embedder(cfg)
     decider = RankerDecider(quality, embedder, model)
 
-    stop_event = threading.Event()
+    status = RunStatus(run_id, cfg.enabled_apps, min_labels=cfg.ranker.min_labels_to_engage,
+                       mode=cfg.mode, budget_cap=cfg.budget.run_budget_usd,
+                       labels=len(labels), ranker_ready=ready)
+    if on_status:
+        on_status(status)                # let a caller (the hub) capture the live status
+
+    stop_event = stop_event if stop_event is not None else threading.Event()
     _install_signal_handlers(stop_event)
 
     workers = []
@@ -76,15 +84,18 @@ def run(config_path: str = "config.yaml") -> None:
         limiter = RateLimiter(lim.get("max_per_run"), lim.get("max_per_day"))
         driver = make_driver(app, cfg)
         w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing,
-                   stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every, limiter=limiter)
+                   stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every,
+                   limiter=limiter, status=status)
         print(f"[worker-{app}] mode={mode} limits={limiter.describe()}")
         workers.append(w)
         w.start()
 
     try:
         while any(w.is_alive() for w in workers):
+            status.set_global(budget_spent=tracker.run_spend_usd, openers=tracker.calls)
             stop_event.wait(0.5)
     finally:
+        status.set_global(running=False, budget_spent=tracker.run_spend_usd, openers=tracker.calls)
         stop_event.set()
         for w in workers:
             w.join(timeout=30)

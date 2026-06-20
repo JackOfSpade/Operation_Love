@@ -1,5 +1,6 @@
 """Worker + OpenerService tests with fakes — no Playwright/emulator/SDK/network."""
 import threading
+import time
 
 from operation_love.costing import CostTracker, ModelPricing, Usage
 from operation_love.drivers.base import DatingAppDriver
@@ -46,6 +47,12 @@ class FakeOpenerClient:
                             usage=Usage(input_tokens=self.cost_tokens), model="claude-opus-4-8")
 
 
+class SlowOpenerClient(FakeOpenerClient):
+    def generate(self, profile, style):
+        time.sleep(0.05)
+        return super().generate(profile, style)
+
+
 class BillingErrClient:
     def generate(self, profile, style):
         raise Exception("Your credit balance is too low to access the Anthropic API")
@@ -81,6 +88,29 @@ def test_budget_caps_openers_globally():
     assert svc.maybe_opener("r", "bumble", Profile()) == "hi 1"   # first allowed
     assert svc.maybe_opener("r", "hinge", Profile()) is None      # second over budget
     assert client.calls == 1 and svc.stop_requested is True
+
+
+def test_budget_caps_openers_across_concurrent_workers():
+    tracker = CostTracker(PRICING, run_budget_usd=0.001)   # first call spends past cap
+    client = SlowOpenerClient(cost_tokens=400)
+    store = FakeStore()
+    svc = OpenerService(client, tracker, store, "style", on_exhausted="stop")
+    results = []
+
+    def call(app):
+        results.append(svc.maybe_opener("r", app, Profile()))
+
+    threads = [threading.Thread(target=call, args=(app,)) for app in ("bumble", "hinge")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=2)
+
+    assert all(not t.is_alive() for t in threads)
+    assert client.calls == 1
+    assert sorted(results, key=lambda x: x or "") == [None, "hi 1"]
+    assert len(store.spend) == 1 and len(store.openers) == 1
+    assert svc.stop_requested is True
 
 
 def test_out_of_credit_disables_service():
@@ -123,9 +153,10 @@ def test_worker_stops_when_budget_exhausted():
     client = FakeOpenerClient(cost_tokens=400)  # $0.002/call
     svc = OpenerService(client, CostTracker(PRICING, run_budget_usd=0.001), store, "s", on_exhausted="stop")
     _worker(driver, FakeDecider("like"), svc, store).run()
-    # 1st profile: opener sent; 2nd: budget hit -> None + stop -> loop ends
+    # The first opener is allowed, then the over-cap spend stops the run before
+    # a second profile is swiped.
     assert client.calls == 1
-    assert driver.likes == ["hi 1", None]
+    assert driver.likes == ["hi 1"]
     assert driver.closed
 
 

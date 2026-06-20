@@ -36,8 +36,57 @@ DEFAULT_SELECTORS = {
     "prompt": '.encounters-story-section--profile .pill, .encounters-story-about__field',
     "like": '[data-qa-role="encounters-action-like"]',
     "pass": '[data-qa-role="encounters-action-dislike"]',
+    # superlike is OBSERVE-ONLY: the bot never clicks it (super-likes/boosts are
+    # the owner's manual decision). It exists here solely so observe mode can read
+    # a manual super-swipe as a 'like' signal when learning taste.
+    "superlike": '[data-qa-role="encounters-action-superswipe"]',
     "empty": '[data-qa-role="encounters-out-of-people"], .encounters-out-of-people',
 }
+
+# In-page status HUD: a fixed, click-through (pointer-events:none) overlay updated
+# after every swipe so you watch progress on the page, not the terminal. Takes an
+# app_view() snapshot. Builds the element once, then just refreshes its contents.
+_OVERLAY_JS = """
+(s) => {
+  const a = s.app || {};
+  let el = document.getElementById('oplove-hud');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'oplove-hud';
+    el.style.cssText = [
+      'position:fixed','top:14px','right:14px','z-index:2147483647','pointer-events:none',
+      'font:12px/1.45 -apple-system,Segoe UI,Roboto,sans-serif','color:#e8e8ea',
+      'background:rgba(18,18,22,0.88)','border:1px solid rgba(255,255,255,0.12)',
+      'border-radius:12px','padding:10px 12px','min-width:198px',
+      'box-shadow:0 6px 24px rgba(0,0,0,0.35)'
+    ].join(';');
+    document.body.appendChild(el);
+  }
+  const ready = !!s.ranker_ready;
+  const pct = s.min_labels ? Math.min(100, Math.round(100 * s.labels / s.min_labels)) : 100;
+  const dec = a.last_decision ? String(a.last_decision).toUpperCase() : '—';
+  const decColor = a.last_decision === 'like' ? '#39d98a'
+                 : (a.last_decision === 'pass' || a.last_decision === 'dislike') ? '#ff6b6b' : '#c9c9cf';
+  const score = (a.last_score == null) ? '' : ' · ' + Number(a.last_score).toFixed(2);
+  const budget = (s.budget_cap != null)
+    ? '$' + Number(s.budget_spent).toFixed(2) + ' / $' + Number(s.budget_cap).toFixed(2)
+    : '$' + Number(s.budget_spent).toFixed(2);
+  el.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">' +
+      '<b style="letter-spacing:.3px">Operation&nbsp;Love</b>' +
+      '<span style="font-size:10px;padding:1px 6px;border-radius:999px;background:rgba(120,120,255,.25)">' +
+        String(s.mode || '').toUpperCase() + '</span></div>' +
+    '<div style="opacity:.7">bumble · ' + (a.state || '—') + '</div>' +
+    '<div style="margin-top:5px">labels <b>' + s.labels + '</b> / ' + s.min_labels +
+      ' <span style="color:' + (ready ? '#39d98a' : '#f0b429') + '">· ' + (ready ? 'ready' : 'defer') + '</span></div>' +
+    '<div style="height:5px;background:rgba(255,255,255,.12);border-radius:3px;margin:4px 0 6px">' +
+      '<div style="height:100%;width:' + pct + '%;background:' + (ready ? '#39d98a' : '#f0b429') + ';border-radius:3px"></div></div>' +
+    '<div>last <b style="color:' + decColor + '">' + dec + '</b>' + score + '</div>' +
+    '<div style="opacity:.7">swipes this run <b>' + (a.swipes_run || 0) + '</b></div>' +
+    '<div style="opacity:.7">budget ' + budget + '</div>' +
+    (ready ? '' : '<div style="margin-top:6px;opacity:.6;font-size:11px">swipe — learning your taste</div>');
+}
+"""
 
 
 class BumbleDriver(DatingAppDriver):
@@ -54,7 +103,7 @@ class BumbleDriver(DatingAppDriver):
 
     # --- lifecycle ------------------------------------------------------
     def open_session(self) -> None:
-        from playwright.sync_api import sync_playwright  # lazy: only needed at runtime
+        from playwright.sync_api import sync_playwright  # type: ignore  # lazy: optional [bumble] extra, runtime only
 
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
         self._pw = sync_playwright().start()
@@ -78,6 +127,16 @@ class BumbleDriver(DatingAppDriver):
             if self._pw:
                 self._pw.stop()
             self._pw = self._ctx = self.page = None
+
+    def render_status(self, status: dict) -> None:
+        # Paint/refresh the in-page HUD. Best-effort: a navigation mid-eval or a
+        # closed page must never interrupt the swipe loop.
+        if not self.page:
+            return
+        try:
+            self.page.evaluate(_OVERLAY_JS, status)
+        except Exception:  # noqa: BLE001
+            pass
 
     # --- capture --------------------------------------------------------
     def _capture_current(self) -> Profile:
@@ -108,18 +167,19 @@ class BumbleDriver(DatingAppDriver):
         network sniffing needed. Survives card changes (window-scoped).
         """
         self.page.evaluate(
-            """([likeSel, passSel]) => {
+            """([likeSel, passSel, superSel]) => {
                 if (window.__oplove_obs) return;
                 window.__oplove_obs = true;
                 window.__oplove_decision = null;
                 document.addEventListener('click', (e) => {
                     const t = e.target;
                     if (!t || !t.closest) return;
-                    if (t.closest(likeSel)) window.__oplove_decision = 'like';
+                    // a manual super-swipe is still a positive 'like' signal for taste-learning
+                    if (t.closest(likeSel) || t.closest(superSel)) window.__oplove_decision = 'like';
                     else if (t.closest(passSel)) window.__oplove_decision = 'pass';
                 }, true);   // capture phase: fires even if the app stops propagation
             }""",
-            [self.selectors["like"], self.selectors["pass"]],
+            [self.selectors["like"], self.selectors["pass"], self.selectors["superlike"]],
         )
 
     def wait_for_decision(self, timeout: float = 120.0) -> bool | None:
@@ -170,6 +230,8 @@ class BumbleDriver(DatingAppDriver):
 
     # --- actions --------------------------------------------------------
     def like(self, opener: str | None = None) -> None:
+        # NORMAL like only — never the super-swipe. Super-likes/boosts are the
+        # owner's manual call (see DEFAULT_SELECTORS["superlike"]).
         self.page.click(self.selectors["like"])
         # NOTE: opener is not sent here on standard Bumble (post-match / women-first).
         # Hook point for Bumble "Opening Moves" once that flow is mapped live.

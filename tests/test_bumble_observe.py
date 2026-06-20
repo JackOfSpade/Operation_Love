@@ -20,7 +20,8 @@ class FakePage:
     def evaluate(self, script, arg=None):
         if "__oplove_obs" in script:          # the install snippet
             self.installed = True
-            assert arg == [d.selectors["like"], d.selectors["pass"]]  # selectors passed through
+            # like/pass/superlike selectors passed through (superswipe -> 'like')
+            assert arg == [d.selectors["like"], d.selectors["pass"], d.selectors["superlike"]]
             return None
         return self.reads.pop(0) if self.reads else None   # the read snippet
 

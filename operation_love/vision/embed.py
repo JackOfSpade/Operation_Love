@@ -50,8 +50,11 @@ class Embedder:
         arc.prepare(ctx_id=0 if self._device != "cpu" else -1)
         self._arc = arc
 
+        # Use the -quickgelu variant: the OpenAI weights were trained with QuickGELU,
+        # so the plain "ViT-L-14" config (GELU) loads them with a mismatched
+        # activation and yields degraded embeddings. Match it for correct CLIP vectors.
         model, _, preprocess = open_clip.create_model_and_transforms(
-            "ViT-L-14", pretrained="openai"
+            "ViT-L-14-quickgelu", pretrained="openai"
         )
         model = model.to(self._device).eval()
         self._clip = model

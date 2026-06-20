@@ -17,6 +17,8 @@ from .base import DatingAppDriver
 from ..human import human_delay
 from ..perception.capture import Profile
 
+_OBSERVE_POLL_S = 0.35      # internal sampling cadence for your manual tap (not app-facing)
+
 DEFAULTS = {
     "package": "co.hinge.app",
     "scroll_captures": 5,        # screenshots taken while scrolling a profile
@@ -42,7 +44,7 @@ class HingeDriver(DatingAppDriver):
 
     # --- lifecycle ------------------------------------------------------
     def open_session(self) -> None:
-        import uiautomator2 as u2  # lazy: only needed at runtime
+        import uiautomator2 as u2  # type: ignore  # lazy: optional [hinge] extra, runtime only
 
         self.d = u2.connect(self.serial) if self.serial else u2.connect()
         self.d.app_start(self.package, use_monkey=True)
@@ -80,6 +82,8 @@ class HingeDriver(DatingAppDriver):
 
     # --- actions --------------------------------------------------------
     def like(self, opener: str | None = None) -> None:
+        # NORMAL like only — never send a Rose (Hinge's super-like). Roses/boosts
+        # are the owner's manual call.
         self.d(resourceId=self.ids["like"]).click()
         if opener:
             box = self.d(resourceId=self.ids["comment_box"])
@@ -99,12 +103,59 @@ class HingeDriver(DatingAppDriver):
         return self._capture_current()
 
     def wait_for_decision(self, timeout: float = 120.0) -> bool | None:
-        """Detect YOUR manual like/pass.
+        """Block until YOU manually like/pass the current card.
 
-        TODO(live): watch which control you tap (uiautomator2 watchers on the
-        like/pass ids) or the screen transition. Returns True/False/None.
-        Batched with the other live-verification steps — see ops/RUNBOOK.md.
+        Android has no global tap callback (unlike Bumble's DOM click listener),
+        so we poll the UI for each action's observable effect:
+          LIKE — tapping a like heart opens Hinge's comment / "Send Like" sheet
+                 (send_like / comment_box appear). We wait for that sheet to
+                 close with the deck advanced (the like was actually sent) ->
+                 True. A cancelled like (sheet closes, same card stays) is
+                 ignored and we keep watching.
+          PASS — the card is dismissed and the next profile loads with no like
+                 sheet -> the prompt-text signature changes -> False.
+          none — the deck empties or we hit the timeout -> None.
+
+        Returns True (liked), False (passed), or None.
+
+        ⚠️ The tap-detection signals (which ids the like sheet exposes) need live
+        confirmation on a real Hinge build; ids are config-overridable (see
+        ops/RUNBOOK.md). The polling/return logic is unit-tested offline.
         """
-        raise NotImplementedError(
-            "Hinge observe hook needs live verification (tap detection)."
-        )
+        deadline = time.monotonic() + timeout
+        baseline = self._observe_state()[1]
+        while time.monotonic() < deadline:
+            if self.out_of_profiles():
+                return None
+            like_open, sig = self._observe_state()
+            if like_open:
+                if self._await_like_sent(baseline, deadline):
+                    return True                       # like sent
+                baseline = self._observe_state()[1]   # cancelled -> resync, keep watching
+            elif sig and sig != baseline:             # card advanced, no like sheet -> pass
+                return False
+            time.sleep(_OBSERVE_POLL_S)
+        return None
+
+    def _observe_state(self) -> tuple[bool, tuple[str, ...]]:
+        """Cheap UI probes for observe mode: (is the like/send sheet open?, the
+        current card's prompt-text signature). The signature changes when the
+        deck advances to a new profile, which is how a pass is detected."""
+        like_open = (self.d(resourceId=self.ids["send_like"]).exists
+                     or self.d(resourceId=self.ids["comment_box"]).exists)
+        texts = [t for t in (
+            (el.get_text() or "").strip() for el in self.d(resourceId=self.ids["prompt_text"])
+        ) if t]
+        return like_open, tuple(texts)
+
+    def _await_like_sent(self, baseline: tuple[str, ...], deadline: float) -> bool:
+        """Once the send-like sheet is open, wait for it to close. True if the
+        like was sent (deck advanced or emptied); False if cancelled (same card)."""
+        while time.monotonic() < deadline:
+            if self.out_of_profiles():
+                return True                           # last like sent; deck now empty
+            like_open, sig = self._observe_state()
+            if not like_open:
+                return bool(sig) and sig != baseline  # advanced -> sent; unchanged -> cancelled
+            time.sleep(_OBSERVE_POLL_S)
+        return False

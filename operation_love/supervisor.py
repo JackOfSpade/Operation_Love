@@ -28,8 +28,12 @@ from .worker import Worker
 
 
 def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None = None,
-        on_status=None) -> None:
+        on_status=None, mode: str | None = None, enabled_apps=None) -> None:
     cfg = cfg_mod.load(config_path)
+    if mode:                                  # hub/CLI override of config.yaml
+        cfg.mode = mode
+    if enabled_apps:
+        cfg.enabled_apps = list(enabled_apps)
     cfg_mod.validate(cfg)
     run_id = uuid.uuid4().hex[:12]
 

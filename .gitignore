@@ -26,3 +26,8 @@ captures/
 # os / editor
 .DS_Store
 .idea/
+
+# Machine-specific hub launcher (absolute paths; generated per-OS)
+Operation Love.command
+operation-love.desktop
+Operation Love.bat

@@ -1,8 +1,5 @@
-"""Identity grouping for leakage-free evaluation. Needs sklearn (ml extra)."""
-import contextlib
-import io
-
-from tools.eval_aggregation import evaluate, identity_groups
+"""Identity grouping + result shape for leakage-free evaluation. Needs sklearn."""
+from operation_love.ranker.evaluate import evaluate, format_report, identity_groups
 
 
 def test_identity_groups_merges_same_face_separates_others():
@@ -19,11 +16,18 @@ def test_identity_groups_singletons_get_own_group():
     assert len(set(identity_groups(faces, eps=0.5))) == 3
 
 
-def test_evaluate_too_few_labels_is_graceful():
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        evaluate([(True, [0.0] * 1280), (False, [1.0] * 1280)])   # 2 labels -> graceful, no crash
-    assert "Need >=10 labels" in buf.getvalue()
+def test_evaluate_too_few_labels_returns_status_not_metrics():
+    r = evaluate([(True, [0.0] * 1280), (False, [1.0] * 1280)])   # 2 labels
+    assert r["status"] == "insufficient_data"
+    assert r["roc_auc"] is None and r["labels"] == 2
+    assert "Need" in format_report(r)                # renders the message, not numbers
+
+
+def test_evaluate_never_raises_on_malformed_embeddings():
+    # ragged embeddings (mixed lengths), enough labels with both classes -> must NOT raise.
+    samples = [(i % 2 == 0, [0.0] * (1280 if i % 3 else 8)) for i in range(12)]
+    r = evaluate(samples)
+    assert r["status"] == "error"                    # handled gracefully, no traceback
 
 
 if __name__ == "__main__":

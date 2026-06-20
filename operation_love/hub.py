@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -33,6 +34,8 @@ class HubState:
         self._stop: threading.Event | None = None
         self._status = None                 # RunStatus, captured via on_status
         self._error: str | None = None
+        self._eval: dict | None = None      # cached model-quality CV (eval_snapshot)
+        self._eval_at: float = 0.0
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -92,6 +95,32 @@ class HubState:
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)}
 
+    def eval_snapshot(self, ttl: float = 45.0) -> dict:
+        """Leakage-free, identity-grouped CV of the ranker, for the GUI's model-quality
+        card. Cached for `ttl` seconds — it loads labels + trains K folds, so we don't
+        recompute on every poll. Never raises (errors come back as a status dict)."""
+        with self._lock:
+            cached, at = self._eval, self._eval_at
+        if cached is not None and (time.time() - at) < ttl:
+            return cached
+        try:
+            from .ranker import make_store
+            from .ranker.evaluate import evaluate
+            cfg = cfg_mod.load(self.config_path)
+            store = make_store(cfg, ensure=False)   # read-only; don't run DDL just to eval
+            try:
+                samples = store.load_labels()
+            finally:
+                store.close()
+            result = evaluate(samples)
+        except Exception as exc:  # noqa: BLE001
+            result = {"status": "error", "message": f"{type(exc).__name__}: {exc}",
+                      "labels": None, "identities": None, "folds": 0,
+                      "roc_auc": None, "pr_auc": None, "brier": None, "base_rate": 0.0}
+        with self._lock:
+            self._eval, self._eval_at = result, time.time()
+        return result
+
 
 class _Handler(BaseHTTPRequestHandler):
     state: HubState | None = None           # set by serve()
@@ -118,6 +147,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(self.state.snapshot())
         elif path == "/api/config":
             self._json(self.state.config_defaults())
+        elif path == "/api/eval":
+            self._json(self.state.eval_snapshot())
         elif path == "/api/bugreport":
             from .bugreport import build_report
             desc = ""
@@ -333,6 +364,11 @@ _PAGE = """<!doctype html>
     <div class="row meta"><span id="labels">labels —</span><span id="budget">budget —</span></div>
   </div>
 
+  <div class="card">
+    <div class="row"><span class="muted">model quality · leakage-free CV</span><span class="meta" id="evalhint"></span></div>
+    <div class="meta" id="evalbody" style="margin-top:6px">evaluating…</div>
+  </div>
+
   <div class="apps" id="apps"></div>
 
   <div class="card">
@@ -415,6 +451,26 @@ function renderGlobal(snap){
 
 async function tick(){ try { const snap = await getJSON('/api/status'); renderGlobal(snap); renderApps(snap); } catch(e){} }
 
+function renderEval(e){
+  if(!e) return;
+  if(e.status !== 'ok'){
+    $('#evalhint').textContent = (e.identities!=null) ? `${e.identities} identities` : '';
+    $('#evalbody').style.color = '#9a9aa2';
+    $('#evalbody').textContent = e.message || 'evaluating…';
+    return;
+  }
+  const f = m => `${m[0].toFixed(2)}±${m[1].toFixed(2)}`;
+  const roc = e.roc_auc[0];
+  const col = roc>=0.7 ? '#39d98a' : (roc>=0.6 ? '#f0b429' : '#ff6b6b');   // good / ok / weak
+  $('#evalhint').textContent = `${e.folds}-fold · ${e.identities} identities`;
+  $('#evalbody').style.color = '#e8e8ea';
+  $('#evalbody').innerHTML =
+    `ROC-AUC <b style="color:${col}">${f(e.roc_auc)}</b> · `
+    + `PR-AUC <b>${f(e.pr_auc)}</b> <span class="muted">(base ${e.base_rate.toFixed(2)})</span> · `
+    + `Brier <b>${f(e.brier)}</b>`;
+}
+async function tickEval(){ try { renderEval(await getJSON('/api/eval')); } catch(e){} }
+
 function appChecks(){
   $('#appchecks').innerHTML = cfg.all_apps.map(a =>
     `<label class="chk"><input type="checkbox" value="${a}" ${cfg.enabled_apps.includes(a)?'checked':''}>${a}</label>`
@@ -454,7 +510,9 @@ $('#bugdl').onclick = async () => {
 (async () => {
   const c = await getJSON('/api/config');
   if(!c.error){ cfg = Object.assign(cfg, c); $('#mode').value = cfg.mode; $('#sub').textContent = `control hub · storage: ${cfg.backend}`; }
-  appChecks(); tick(); setInterval(tick, 1000);
+  appChecks();
+  tick(); setInterval(tick, 1000);
+  tickEval(); setInterval(tickEval, 20000);   // model quality: heavier, refresh slower (server caches 45s)
 })();
 </script>
 </body></html>

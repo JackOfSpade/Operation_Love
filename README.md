@@ -81,8 +81,14 @@ on one machine and deploy the same code to an always-on box with no migration.
 ## Status
 
 Done: scaffold, config, storage (BigQuery + SQLite), runtime auto-detect,
-cost-control/global-budget, the Claude opener, and the **supervisor + per-app
-worker** loop (all covered by offline tests). In progress: **Phase 1 — the
-Bumble (Playwright) driver** skeleton is in but its DOM selectors need live
-verification on your machine. Next: vision (quality filter + embeddings) and the
-ranker, then the Hinge driver.
+cost-control/global-budget, the Claude opener, the **supervisor + per-app
+worker** loop, and **the vision + personal-ranker core** — quality pre-filter,
+ArcFace+CLIP embeddings, and a logistic-regression `PreferenceModel` that learns
+your taste with cold-start gating (`defer` until enough labels). All pure logic
+is covered by offline tests; model *inference* runs on a machine with the `ml`
+extra installed.
+
+In progress / next:
+- **Phase 1 live** — confirm the Bumble (Playwright) DOM selectors on your machine.
+- **Cold-start labeling tool** — interactive capture→rate to seed the ranker.
+- **Hinge driver** — Android emulator + uiautomator2.

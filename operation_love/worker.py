@@ -58,6 +58,11 @@ class Worker(threading.Thread):
                     break
 
                 d = self.decider.decide(profile)
+                if d.decision == "defer":
+                    print(f"[worker-{self.app}] ranker not ready (cold-start) — seed labels with "
+                          f"the labeling tool, then run autonomously. Stopping {self.app}.")
+                    break
+
                 self.store.record_decision(self.run_id, self.app, d.decision, d.score)
                 if d.embedding:  # the swipe becomes a training label
                     self.store.add_label(self.run_id, self.app, d.decision == "like",

@@ -18,7 +18,10 @@ from .opener.opener import AnthropicOpener
 from .opener.service import OpenerService
 from .ranker import make_store
 from .ranker.decider import RankerDecider
+from .ranker.model import PreferenceModel
 from .runtime import Capabilities
+from .vision.embed import Embedder
+from .vision.quality import QualityFilter
 from .worker import Worker
 
 
@@ -31,6 +34,10 @@ def run(config_path: str = "config.yaml") -> None:
     if cfg.storage.backend == "bigquery" and caps.missing("bigquery"):
         raise SystemExit("storage.backend=bigquery but google-cloud-bigquery isn't installed "
                          "(`pip install -e '.[bq]'`, or set storage.backend: sqlite).")
+
+    if caps.missing("arcface", "clip"):
+        print("[degrade] ml extra not installed -> ranking unavailable "
+              "(`pip install -e '.[ml]'`). Workers will defer until it's present.")
 
     store = make_store(cfg)
     labels = store.load_labels()
@@ -46,7 +53,15 @@ def run(config_path: str = "config.yaml") -> None:
     opener_service = OpenerService(opener_client, tracker, store, cfg.opener.style,
                                    cfg.budget.on_exhausted)
 
-    decider = RankerDecider(labels, cfg)   # Phase 3 fills in real scoring
+    model = PreferenceModel(min_labels=cfg.ranker.min_labels_to_engage,
+                            threshold=cfg.ranker.like_threshold)
+    ready = model.train(labels)
+    print(f"[ranker] labels={len(labels)} ready={ready} "
+          f"(min={cfg.ranker.min_labels_to_engage}, threshold={cfg.ranker.like_threshold})")
+    quality = QualityFilter(cfg.quality_filter.enabled, cfg.quality_filter.min_score,
+                            cfg.quality_filter.metric)
+    embedder = Embedder(cfg)
+    decider = RankerDecider(quality, embedder, model)
 
     stop_event = threading.Event()
     _install_signal_handlers(stop_event)

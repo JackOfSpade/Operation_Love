@@ -1,0 +1,34 @@
+[project]
+name = "operation-love"
+version = "2.0.0"
+description = "Personal dating-app assistant: local preference ranker + Claude openers."
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+    "anthropic>=0.40",       # opener generation (Claude)
+]
+
+[project.optional-dependencies]
+# Local ML — embeddings, quality filter, ranker. Runs on Apple Silicon (MPS),
+# NVIDIA (CUDA), or CPU. See operation_love/device.py.
+ml = [
+    "torch>=2.2",
+    "numpy>=1.26",
+    "scikit-learn>=1.3",
+    "open_clip_torch>=2.24",
+    "insightface>=0.7.3",
+    "onnxruntime>=1.17",     # insightface backend (CoreML/CPU on macOS)
+    "pyiqa>=0.1.10",         # photo-quality pre-filter
+    "pillow>=10.0",
+]
+# App drivers
+bumble = ["playwright>=1.44"]
+hinge = ["uiautomator2>=3.0"]   # drives an Android emulator / phone over ADB
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

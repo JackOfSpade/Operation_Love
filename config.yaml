@@ -1,0 +1,43 @@
+# Operation Love v2 — configuration (no hardcoded paths/coords; everything lives here)
+app: bumble                 # bumble | hinge
+
+paths:
+  data_dir: ./data
+  db_file: ./data/operation_love.db
+
+# --- Decision engine (local, learns YOUR taste from YOUR swipes) ---
+ranker:
+  embedders: [arcface, clip]   # concatenate facial-structure + style/vibe vectors
+  like_threshold: 0.5          # P(like) above which we like
+  min_labels_to_engage: 40     # swipe manually until this many labels are collected
+
+quality_filter:
+  enabled: true
+  metric: clipiqa              # pyiqa metric; drops blurry/low-quality photos
+  min_score: 0.30
+
+# --- Opener (Claude) ---
+opener:
+  enabled: true
+  provider: anthropic
+  model: claude-opus-4-8       # best quality; swap to claude-sonnet-4-6 for ~5x lower cost
+  max_tokens: 400
+  style: |
+    Warm, specific, lightly playful. Reference ONE concrete detail from her
+    profile (a photo or a prompt answer). One or two sentences. No greeting
+    preamble ("Hey", "Hi there"), no pet names, no generic questions.
+
+# --- Cost control (see operation_love/costing.py) ---
+budget:
+  run_budget_usd: 5.00         # stop spending on openers past this, per run
+  on_exhausted: stop           # stop | swipe_without_opener
+  # $ per 1,000,000 tokens, per model (used for client-side spend tracking)
+  pricing:
+    claude-opus-4-8:   { input: 5.0, output: 25.0, cache_read: 0.50, cache_write: 6.25 }
+    claude-sonnet-4-6: { input: 3.0, output: 15.0, cache_read: 0.30, cache_write: 3.75 }
+    claude-haiku-4-5:  { input: 1.0, output: 5.0,  cache_read: 0.10, cache_write: 1.25 }
+
+# --- Human-like pacing ---
+pacing:
+  min_delay_s: 2.0
+  max_delay_s: 6.0

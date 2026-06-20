@@ -1,5 +1,28 @@
+# secrets / env
 .env
+.env.local
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+
+# data / models / runtime artifacts
+data/
+*.db
+*.sqlite3
+captures/
+
+# model weights (downloaded on first run)
 *.pth
-*.venv
 *.pt
+*.onnx
 *.mat
+*.venv
+
+# os / editor
+.DS_Store
+.idea/

@@ -8,6 +8,9 @@ dependencies = [
     "anthropic>=0.40",       # opener generation (Claude)
 ]
 
+[project.scripts]
+operation-love = "operation_love.__main__:main"
+
 [project.optional-dependencies]
 # Local ML — embeddings, quality filter, ranker. Runs on Apple Silicon (MPS),
 # NVIDIA (CUDA), or CPU. See operation_love/device.py.

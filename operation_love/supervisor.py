@@ -28,6 +28,7 @@ from .worker import Worker
 
 def run(config_path: str = "config.yaml") -> None:
     cfg = cfg_mod.load(config_path)
+    cfg_mod.validate(cfg)
     run_id = uuid.uuid4().hex[:12]
 
     caps = Capabilities.detect()

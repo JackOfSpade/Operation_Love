@@ -8,6 +8,7 @@ from .ranker.model import PreferenceModel
 
 def show(config_path: str = "config.yaml") -> None:
     cfg = cfg_mod.load(config_path)
+    cfg_mod.validate(cfg)
     store = make_store(cfg)
     try:
         labels = store.load_labels()

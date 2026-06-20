@@ -27,6 +27,7 @@ class Store(Protocol):
     def record_opener(self, run_id: str, app: str, model: str, opener: str, referenced: str) -> None: ...
     def record_spend(self, run_id: str, model: str, usage: Usage, cost: float) -> None: ...
     def label_count(self) -> int: ...
+    def count_today(self, app: str) -> int: ...
     def flush(self) -> None: ...
     def close(self) -> None: ...
 
@@ -106,6 +107,14 @@ class SQLiteStore:
     def label_count(self) -> int:
         with self._lock:
             return self.con.execute("SELECT COUNT(*) FROM labels").fetchone()[0]
+
+    def count_today(self, app: str) -> int:
+        import datetime
+        start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        with self._lock:
+            return self.con.execute(
+                "SELECT COUNT(*) FROM decisions WHERE app=? AND created_at>=?", (app, start)
+            ).fetchone()[0]
 
     def flush(self) -> None:
         with self._lock:

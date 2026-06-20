@@ -15,6 +15,7 @@ from . import config as cfg_mod
 from .costing import CostTracker
 from .drivers import make_driver
 from .opener.opener import AnthropicOpener
+from .limits import RateLimiter
 from .opener.service import OpenerService
 from .ranker import make_store
 from .ranker.decider import RankerDecider
@@ -68,11 +69,14 @@ def run(config_path: str = "config.yaml") -> None:
 
     workers = []
     for app in cfg.enabled_apps:
-        mode = (cfg.apps.get(app, {}) or {}).get("mode", cfg.mode)   # per-app override
+        app_cfg = cfg.apps.get(app, {}) or {}
+        mode = app_cfg.get("mode", cfg.mode)                          # per-app override
+        lim = {**cfg.limits, **(app_cfg.get("limits", {}))}
+        limiter = RateLimiter(lim.get("max_per_run"), lim.get("max_per_day"))
         driver = make_driver(app, cfg)
         w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing,
-                   stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every)
-        print(f"[worker-{app}] mode={mode}")
+                   stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every, limiter=limiter)
+        print(f"[worker-{app}] mode={mode} limits={limiter.describe()}")
         workers.append(w)
         w.start()
 

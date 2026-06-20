@@ -25,7 +25,7 @@ from .ranker.decider import Decider
 class Worker(threading.Thread):
     def __init__(self, app, driver: DatingAppDriver, decider: Decider, opener_service,
                  store, run_id, pacing, stop_event: threading.Event, mode: str = "observe",
-                 retrain_every: int = 10, max_restarts: int = 5):
+                 retrain_every: int = 10, limiter=None, max_restarts: int = 5):
         super().__init__(name=f"worker-{app}", daemon=True)
         self.app = app
         self.driver = driver
@@ -37,6 +37,7 @@ class Worker(threading.Thread):
         self.stop_event = stop_event
         self.mode = mode
         self.retrain_every = max(1, int(retrain_every))
+        self.limiter = limiter
         self.max_restarts = max_restarts
 
     def run(self) -> None:
@@ -85,10 +86,16 @@ class Worker(threading.Thread):
 
     # --- autonomous: the bot swipes ------------------------------------
     def _auto_loop(self) -> None:
+        acted = 0
+        today0 = self.store.count_today(self.app) if self.limiter else 0
         self.driver.open_session()
         try:
             while not self.stop_event.is_set():
                 if self.driver.out_of_profiles():
+                    break
+                if self.limiter and not self.limiter.allow(acted, today0 + acted):
+                    print(f"[worker-{self.app}] rate limit reached ({self.limiter.describe()}); "
+                          f"stopping {self.app}.")
                     break
                 profile = self.driver.next_profile()
                 if profile is None:
@@ -110,6 +117,7 @@ class Worker(threading.Thread):
                     self.driver.like(opener)
                 else:
                     self.driver.dislike()
+                acted += 1
 
                 if self.opener_service.stop_requested:        # global budget/credit stop
                     self.stop_event.set()

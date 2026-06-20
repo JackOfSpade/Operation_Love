@@ -69,3 +69,8 @@ budget:
 pacing:
   min_delay_s: 2.0
   max_delay_s: 6.0
+
+# --- Auto-mode safety caps (observe mode = your manual swipes, never capped) ---
+limits:
+  max_per_run: 60         # per app, per run
+  max_per_day: 100        # per app, per day  (override per app under apps.<app>.limits)

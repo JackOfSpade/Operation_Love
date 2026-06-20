@@ -97,7 +97,12 @@ extra installed.
 - **auto** — the bot swipes for you with the learned model, and every swipe is
   still a label.
 
-In progress / next (all need live verification on your machine):
-- **Bumble live hooks** — confirm the DOM selectors and the observe-mode
-  like/pass detection (vote request / button events).
-- **Hinge driver** — Android emulator + uiautomator2 (capture + observe + act).
+**Both apps are code-complete** (Bumble via Playwright, Hinge via uiautomator2),
+with autonomous-mode **rate limits** (`max_per_run` / `max_per_day`), a **stats**
+readout (`python -m operation_love stats`), and human-like pacing.
+
+Everything machine-independent is done and unit-tested (9 suites). The only
+remaining work needs your machine + a real account, and it's all batched in
+**[ops/RUNBOOK.md](ops/RUNBOOK.md)**: install, log in, confirm the config-driven
+DOM selectors / resource-ids and the observe-mode like/pass hooks, seed your
+taste in observe mode, then flip to auto.

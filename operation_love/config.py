@@ -57,6 +57,7 @@ class Config:
     enabled_apps: list[str]          # e.g. ["bumble", "hinge"] — run concurrently
     mode: str                        # "observe" (learn from your swipes) | "auto"
     apps: dict                       # per-app options (headless, selectors, ...)
+    limits: dict                     # auto-mode caps: {max_per_run, max_per_day}
     data_dir: Path
     db_file: Path
     ranker: RankerCfg
@@ -77,6 +78,7 @@ def load(path: str | Path = "config.yaml") -> Config:
         enabled_apps=list(enabled_apps),
         mode=raw.get("mode", "observe"),
         apps=raw.get("apps", {}),
+        limits=raw.get("limits", {}),
         data_dir=Path(paths.get("data_dir", "./data")),
         db_file=Path(paths.get("db_file", "./data/operation_love.db")),
         ranker=RankerCfg(**raw.get("ranker", {})),

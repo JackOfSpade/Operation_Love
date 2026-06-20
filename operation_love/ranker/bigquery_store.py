@@ -79,6 +79,16 @@ class BigQueryStore:
         with self._lock:
             return self._label_count
 
+    def count_today(self, app: str) -> int:
+        safe = app.replace("'", "").replace("\\", "")
+        rows = self.client.query(
+            f"SELECT COUNT(*) AS c FROM `{self._tid('decisions')}` "
+            f"WHERE app='{safe}' AND created_at >= TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), DAY)"
+        ).result()
+        for r in rows:
+            return int(r["c"])
+        return 0
+
     # --- writes (buffered, thread-safe) --------------------------------
     def add_label(self, run_id, app, liked, embedding, source="manual", bio="", prompts="", photo_count=0):
         with self._lock:

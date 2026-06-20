@@ -26,10 +26,22 @@ orchestrator  the loop (replaces main.ahk)
 
 ## Hardware & OS — cross-platform
 
-Runs on **macOS, Windows, or Linux**. The compute device is auto-detected
+Runs on **macOS, Windows, or Linux** and **auto-adjusts to each machine** — it
+inspects the OS, accelerator, and installed components at startup
+(`operation_love/runtime.py`) and adapts. The compute device is auto-detected
 (`operation_love/device.py`): **MPS** on Apple Silicon, **CUDA** on NVIDIA,
-**CPU** everywhere else (fine at tens–hundreds of profiles/day). Nothing is
-Mac-only. OS-specific notes:
+**CPU** everywhere else (fine at tens–hundreds of profiles/day). If an optional
+component isn't installed on a given machine, that feature is skipped with a
+warning instead of crashing. Force a device with `OPLOVE_DEVICE=cpu|cuda|mps`.
+
+Check what any machine will use:
+
+```bash
+python -m operation_love.runtime
+# Operation Love — Darwin arm64 · Python 3.12.x · Apple GPU (MPS)
+```
+
+OS-specific notes:
 
 | Piece | macOS | Windows | Linux |
 |---|---|---|---|

@@ -15,6 +15,7 @@ from . import config as cfg_mod
 from .costing import CostTracker, is_out_of_credit
 from .opener.opener import AnthropicOpener
 from .ranker.store import Store
+from .runtime import Capabilities
 
 
 def run(config_path: str = "config.yaml") -> None:
@@ -22,8 +23,19 @@ def run(config_path: str = "config.yaml") -> None:
     store = Store(cfg.db_file)
     run_id = uuid.uuid4().hex[:12]
 
+    # Inspect this machine and auto-adjust to what's installed (any OS, GPU or not).
+    caps = Capabilities.detect()
+    print(caps.banner())
+
+    opener_enabled = cfg.opener.enabled
+    if opener_enabled and caps.missing("anthropic"):
+        print("[degrade] anthropic SDK not installed -> openers disabled")
+        opener_enabled = False
+    if cfg.quality_filter.enabled and caps.missing("quality"):
+        print("[degrade] pyiqa not installed -> quality pre-filter skipped")
+
     tracker = CostTracker(cfg.budget.pricing, cfg.budget.run_budget_usd)
-    opener_client = AnthropicOpener(cfg.opener.model, cfg.opener.max_tokens) if cfg.opener.enabled else None
+    opener_client = AnthropicOpener(cfg.opener.model, cfg.opener.max_tokens) if opener_enabled else None
     openers_disabled = False  # flips on budget reached / out of credit
 
     driver = _make_driver(cfg)          # Phase 1/5

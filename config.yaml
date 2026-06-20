@@ -65,10 +65,9 @@ budget:
     claude-sonnet-4-6: { input: 3.0, output: 15.0, cache_read: 0.30, cache_write: 3.75 }
     claude-haiku-4-5:  { input: 1.0, output: 5.0,  cache_read: 0.10, cache_write: 1.25 }
 
-# --- Human-like pacing ---
+# --- Human-like pacing (log-normal spread around the anchor; see human.py) ---
 pacing:
-  min_delay_s: 2.0
-  max_delay_s: 6.0
+  swipe_delay_s: 3.5      # typical pause between swipes (sometimes shorter/longer, organic tail)
 
 # --- Auto-mode safety caps (observe mode = your manual swipes, never capped) ---
 limits:

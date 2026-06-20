@@ -65,8 +65,7 @@ class FakeStore:
 
 
 class _Pacing:
-    min_delay_s = 0.0
-    max_delay_s = 0.0
+    swipe_delay_s = 0.0
 
 
 def _worker(driver, decider, service, store):

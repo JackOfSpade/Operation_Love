@@ -13,12 +13,11 @@ global budget. Failures are isolated and auto-restarted with backoff.
 """
 from __future__ import annotations
 
-import random
 import threading
-import time
 import traceback
 
 from .drivers.base import DatingAppDriver
+from .human import human_cooldown, human_delay
 from .ranker.decider import Decider
 
 
@@ -53,7 +52,7 @@ class Worker(threading.Thread):
                 if restarts > self.max_restarts or self.stop_event.is_set():
                     print(f"[worker-{self.app}] giving up.")
                     return
-                self.stop_event.wait(min(backoff, 60))
+                self.stop_event.wait(human_cooldown(min(backoff, 60)))
                 backoff *= 2
 
     # --- shadow learning: you swipe, the bot learns ---------------------
@@ -126,4 +125,4 @@ class Worker(threading.Thread):
             self.driver.close()
 
     def _pace(self) -> None:
-        self.stop_event.wait(random.uniform(self.pacing.min_delay_s, self.pacing.max_delay_s))
+        self.stop_event.wait(human_delay(self.pacing.swipe_delay_s))

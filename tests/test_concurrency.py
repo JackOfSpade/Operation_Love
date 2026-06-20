@@ -42,7 +42,7 @@ class _Store:
 
 
 class _Pacing:
-    min_delay_s = max_delay_s = 0.0
+    swipe_delay_s = 0.0
 
 
 def test_two_workers_run_concurrently_and_share_store():

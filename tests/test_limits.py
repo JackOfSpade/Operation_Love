@@ -59,7 +59,7 @@ class _Store:
 
 
 class _Pacing:
-    min_delay_s = max_delay_s = 0.0
+    swipe_delay_s = 0.0
 
 
 def test_worker_stops_at_run_cap():

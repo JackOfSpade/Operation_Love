@@ -42,8 +42,7 @@ class BudgetCfg:
 
 @dataclass
 class PacingCfg:
-    min_delay_s: float = 2.0
-    max_delay_s: float = 6.0
+    swipe_delay_s: float = 3.5        # anchor; human.py adds a log-normal spread around it
 
 
 @dataclass

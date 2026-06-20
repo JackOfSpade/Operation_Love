@@ -86,26 +86,49 @@ def _select_onnx_providers(device: str, available) -> list[str]:
     return selected or ["CPUExecutionProvider"]
 
 
+def _is_onnx_provider_failure(error: BaseException | str) -> bool:
+    msg = str(error)
+    upper = msg.upper()
+    return (
+        "COREML" in upper
+        or "ONNXRUNTIMEERROR" in upper
+        or "STATUS FAIL" in upper
+        or "STATUS: FAIL" in upper
+        or " : FAIL :" in upper
+    )
+
+
 class Embedder:
     def __init__(self, cfg=None):
         self.cfg = cfg
         self._arc = None
+        self._arc_providers: list[str] | None = None
+        self._arc_on_cpu = False
         self._clip = None
         self._clip_preprocess = None
         self._device = None
+
+    def _build_arc(self, providers: list[str]):
+        from insightface.app import FaceAnalysis
+
+        arc = FaceAnalysis(name="buffalo_l", providers=providers)
+        arc.prepare(ctx_id=-1 if providers == ["CPUExecutionProvider"] else 0)
+        return arc
+
+    def _set_arc_providers(self, providers: list[str]) -> None:
+        self._arc = self._build_arc(providers)
+        self._arc_providers = list(providers)
+        self._arc_on_cpu = self._arc_providers == ["CPUExecutionProvider"]
 
     def _ensure(self) -> None:
         if self._arc is not None:
             return
         import open_clip  # lazy
         import onnxruntime as ort
-        from insightface.app import FaceAnalysis
 
         self._device = best_device()
         providers = _select_onnx_providers(self._device, ort.get_available_providers())
-        arc = FaceAnalysis(name="buffalo_l", providers=providers)
-        arc.prepare(ctx_id=0 if self._device != "cpu" else -1)
-        self._arc = arc
+        self._set_arc_providers(providers)
 
         # Use the -quickgelu variant: the OpenAI weights were trained with QuickGELU,
         # so the plain "ViT-L-14" config (GELU) loads them with a mismatched
@@ -148,20 +171,38 @@ class Embedder:
     # --- per-profile ---------------------------------------------------
     def embed_profile(self, profile: Profile) -> list[float] | None:
         self._ensure()
-        face_vecs: list[list[float]] = []
-        clip_vecs: list[list[float]] = []
-        errors = 0
-        for img in profile.photos:
-            try:
-                fv, cv = self._embed_image(img)
-            except Exception as exc:  # noqa: BLE001
-                errors += 1
-                if errors == 1:     # surface the first failure; don't spam one line per photo
-                    print(f"[embed] photo embedding error: {type(exc).__name__}: {exc}")
+        retried_on_cpu = False
+        while True:
+            face_vecs: list[list[float]] = []
+            clip_vecs: list[list[float]] = []
+            first_error: Exception | None = None
+            errors = 0
+            for img in profile.photos:
+                try:
+                    fv, cv = self._embed_image(img)
+                except Exception as exc:  # noqa: BLE001
+                    errors += 1
+                    if first_error is None:
+                        first_error = exc
+                        # Surface the first failure; don't spam one line per photo.
+                        print(f"[embed] photo embedding error: {type(exc).__name__}: {exc}")
+                    continue
+                if fv is not None:
+                    face_vecs.append(fv)
+                clip_vecs.append(cv)
+
+            provider_failed = (
+                bool(profile.photos)
+                and errors == len(profile.photos)
+                and first_error is not None
+                and _is_onnx_provider_failure(first_error)
+            )
+            if provider_failed and not self._arc_on_cpu and not retried_on_cpu:
+                self._set_arc_providers(["CPUExecutionProvider"])
+                retried_on_cpu = True
                 continue
-            if fv is not None:
-                face_vecs.append(fv)
-            clip_vecs.append(cv)
+            break
+
         # One line per profile so "no_face" is never a silent mystery: how many
         # photos came in, how many had a detectable face, how many errored.
         print(f"[embed] profile: {len(profile.photos)} photo(s) -> "

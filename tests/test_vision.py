@@ -1,10 +1,19 @@
 """Vision pure-logic tests — aggregation + quality gating (no torch/pyiqa)."""
 import math
+import types
 
+from operation_love.perception.capture import Profile
 from operation_love.vision.embed import (
-    _select_onnx_providers, aggregate, concat, dedup_by_cosine, gem_pool, l2_normalize,
+    Embedder, _is_onnx_provider_failure, _select_onnx_providers, aggregate, concat,
+    dedup_by_cosine, gem_pool, l2_normalize,
 )
 from operation_love.vision.quality import QualityFilter
+
+
+COREML_RUNTIME_ERROR = (
+    "[ONNXRuntimeError] : 1 : FAIL : CoreMLExecutionProvider CoreML static output "
+    "shape ({1,1,1,128,1}) and inferred shape ({3200,1}) have different ranks."
+)
 
 
 def test_aggregate_mean():
@@ -70,6 +79,60 @@ def test_select_onnx_providers_never_returns_empty():
     # raises on an empty provider list).
     assert _select_onnx_providers("mps", []) == ["CPUExecutionProvider"]
     assert _select_onnx_providers("cuda", ["AzureExecutionProvider"]) == ["CPUExecutionProvider"]
+
+
+def test_provider_failure_detector_matches_coreml_onnxruntime_failures():
+    assert _is_onnx_provider_failure(COREML_RUNTIME_ERROR)
+    assert _is_onnx_provider_failure(RuntimeError("[ONNXRuntimeError] : 1 : FAIL : failed"))
+    assert _is_onnx_provider_failure("status: fail while running provider")
+    assert not _is_onnx_provider_failure(ValueError("PIL cannot identify image file"))
+
+
+class _FakeFace:
+    bbox = [0.0, 0.0, 10.0, 10.0]
+    embedding = [3.0, 4.0]
+
+
+class _FakeArc:
+    def __init__(self, providers):
+        self.providers = list(providers)
+        self.calls = 0
+
+    def get(self, _img):
+        self.calls += 1
+        if self.providers and self.providers[0] == "CoreMLExecutionProvider":
+            raise RuntimeError(COREML_RUNTIME_ERROR)
+        return [_FakeFace()]
+
+
+def test_embed_profile_rebuilds_arcface_on_cpu_after_coreml_runtime_failure():
+    embedder = Embedder()
+    embedder._device = "mps"
+    embedder._arc_providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    embedder._arc_on_cpu = False
+    embedder._arc = _FakeArc(embedder._arc_providers)
+    rebuilds = []
+
+    def fake_build_arc(self, providers):
+        rebuilds.append(list(providers))
+        return _FakeArc(providers)
+
+    def fake_embed_image(self, _img):
+        faces = self._arc.get(None)
+        return list(faces[0].embedding), [0.6, 0.8]
+
+    embedder._build_arc = types.MethodType(fake_build_arc, embedder)
+    embedder._embed_image = types.MethodType(fake_embed_image, embedder)
+
+    vec = embedder.embed_profile(Profile(photos=[b"fake"]))
+
+    assert rebuilds == [["CPUExecutionProvider"]]
+    assert embedder._arc_on_cpu is True
+    assert embedder._arc_providers == ["CPUExecutionProvider"]
+    assert vec is not None
+    assert len(vec) == 4
+    assert math.isclose(math.sqrt(sum(x * x for x in vec[:2])), 1.0)
+    assert math.isclose(math.sqrt(sum(x * x for x in vec[2:])), 1.0)
 
 
 def test_quality_gating_with_injected_scorer():

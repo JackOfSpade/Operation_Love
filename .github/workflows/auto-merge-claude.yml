@@ -1,0 +1,125 @@
+name: Auto-merge claude/* branches to main
+
+# Merges claude/* session branches into main automatically — but ONLY once their
+# CI run is green. This keeps full hands-off automation while ensuring a red build
+# never lands on main.
+#
+# Why trigger on `workflow_run` (CI completed) instead of `push`:
+#   The old version triggered on push and merged immediately, *before* CI had even
+#   finished — so it couldn't gate on CI. Triggering when the "CI" workflow
+#   completes means (a) every drain happens with a known CI result in hand, and
+#   (b) when a branch's CI later turns green, that completion re-triggers this
+#   workflow and the branch gets picked up. No polling, no stranded branches.
+
+on:
+  workflow_run:
+    workflows: ["CI"]      # matches ci.yml's `name: CI`; fires on success AND failure
+    types: [completed]
+  workflow_dispatch: {}     # manual drain escape hatch
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read             # required: an explicit permissions block defaults every
+                            # unlisted scope to `none`, and the CI-gate check reads
+                            # workflow runs via the Actions API.
+
+concurrency:
+  group: auto-merge-main
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge all CI-green claude/* branches into main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          # Drain EVERY un-merged claude/* branch, not just the one whose CI just
+          # finished. The concurrency group (auto-merge-main) keeps only ONE run
+          # pending, so rapid CI completions from several sessions can drop a queued
+          # run (GitHub keeps one pending per group). Processing all branches here
+          # means whichever run does execute also picks up any stranded stragglers —
+          # a dropped queued run can no longer lose a branch's work.
+          if ! git fetch origin --prune; then
+            echo "::warning::git fetch failed; the next CI completion re-triggers and drains."
+            exit 0
+          fi
+
+          git checkout -B main origin/main
+
+          merged_branches=""
+          for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/ | grep '^origin/claude/' || true); do
+            br="${ref#origin/}"
+
+            # Already contained in main (e.g. a prior run merged it): just clean up.
+            if git merge-base --is-ancestor "$ref" main; then
+              merged_branches="$merged_branches $br"
+              continue
+            fi
+
+            # --- CI gate -----------------------------------------------------------
+            # Only merge a branch whose EXACT tip commit has a successful CI run.
+            # We query the latest "CI" workflow run for that precise SHA, so a commit
+            # pushed after CI passed (new tip, no green run yet) is skipped until its
+            # own CI completes green. The lint job is continue-on-error (advisory), so
+            # the *run* conclusion is "success" whenever the required test job passes —
+            # exactly the gate we want. Fail closed: any non-success (in-progress,
+            # failure, missing, or API error) skips the branch.
+            sha="$(git rev-parse "$ref")"
+            ci_conclusion="$(gh api \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$sha&per_page=1" \
+              --jq '.workflow_runs[0].conclusion // "none"' 2>/dev/null || echo "error")"
+            if [ "$ci_conclusion" != "success" ]; then
+              echo "::notice::Skipping $br — CI for ${sha:0:7} is '$ci_conclusion', not success. It merges once its CI run completes green."
+              continue
+            fi
+
+            # Fast-forward if possible, else a merge commit. The .gitattributes
+            # union driver auto-resolves append-only logs; anything else conflicts.
+            if git merge --ff-only "$ref" || git merge --no-ff "$ref" -m "Auto-merge $br into main"; then
+              merged_branches="$merged_branches $br"
+            else
+              git merge --abort || true
+              echo "::warning::Unresolved conflict merging $br (likely an in-place state file)."
+              gh pr create --base main --head "$br" \
+                --title "Auto-merge conflict: $br" \
+                --body "The auto-merge workflow hit a conflict the .gitattributes union driver could not resolve (likely an in-place state file). Resolve manually and merge, or close if superseded." \
+                || echo "PR already exists or could not be created."
+            fi
+          done
+
+          if [ -z "${merged_branches// }" ]; then
+            echo "No CI-green branches to merge."
+            exit 0
+          fi
+
+          if ! git push origin main; then
+            echo "::warning::push to main failed; branches left intact for the next run."
+            exit 0
+          fi
+
+          # Delete each merged branch ONLY after re-confirming its current remote
+          # tip is fully contained in the new main, so a commit pushed during the
+          # merge window is never deleted unmerged — it's left for the next run.
+          for br in $merged_branches; do
+            git fetch origin "$br" >/dev/null 2>&1 || continue
+            if git merge-base --is-ancestor "origin/$br" main; then
+              git push origin --delete "$br" || true
+            else
+              echo "::warning::$br advanced during the merge; not deleting (next run merges it)."
+            fi
+          done

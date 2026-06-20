@@ -35,11 +35,17 @@ Hinge only — Android emulator (no Android phone needed; it's a virtual phone):
 
 Both are config-overridable — **no code edits needed**, just fill `config.yaml`.
 
-**Bumble (web)** — run headful and open DevTools:
-- Confirm the DOM **selectors** (photo / bio / prompt / like / pass / empty) under
-  `apps.bumble.selectors` (defaults are in `drivers/bumble.py`).
-- Wire **observe like/pass detection**: in the Network tab, find the request Bumble
-  sends when you like vs pass; that's the signal `wait_for_decision()` needs.
+**Bumble (web)** — one command does it:
+```bash
+python -m tools.bumble_inspect          # opens Bumble headful; log in, reach a card, press ENTER
+```
+- It probes every **selector** (photo / bio / prompt / like / pass / empty) and
+  prints OK/MISS for each. Any MISS → open DevTools, find the right CSS, drop it
+  under `apps.bumble.selectors`, re-run.
+- It then asks you to like/pass a few cards and prints what it **detected** —
+  observe like/pass detection rides on the *same* like/pass selectors (a DOM
+  click listener), so there's **no network reverse-engineering**. If detection
+  prints the right LIKE/PASS, observe mode is wired.
 
 **Hinge (Android)** — use the `uiautomator2`/`uiautodev` inspector:
 - Confirm the **resource-ids** (like / pass / comment box / send / prompt / empty)

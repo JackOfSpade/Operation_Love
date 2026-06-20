@@ -5,11 +5,14 @@ real, backgrounded window — better for avoiding bot-detection, and it never
 steals your cursor because it's driven over CDP) or headless (for an always-on
 server). Login persists via a user-data dir, so you sign in once by hand.
 
-⚠️ PHASE 1 — STILL NEEDS LIVE VERIFICATION ON YOUR MACHINE.
+⚠️ STILL NEEDS LIVE VERIFICATION ON YOUR MACHINE (one step).
 The CSS selectors below are best-effort guesses; Bumble's DOM must be inspected
 live to confirm them. They're config-overridable (config.yaml -> apps.bumble.
-selectors) so you can fix them without touching code. Run on your Mac with
-headless:false, open DevTools, and adjust.
+selectors) so you can fix them without touching code. Run headless:false, open
+DevTools, and adjust — or just run `python -m tools.bumble_inspect`, which probes
+every selector for you. Observe-mode like/pass detection rides on the SAME
+like/pass selectors (see wait_for_decision), so confirming them is the only
+live step — no network reverse-engineering.
 
 NOTE on openers: on Bumble (hetero mode) you can't send a message at swipe time
 — matches message post-match (women-first), or via Bumble's profile-level
@@ -19,10 +22,13 @@ wired through for parity and future Bumble "Opening Moves" support.
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from .base import DatingAppDriver
 from ..perception.capture import Profile
+
+_OBSERVE_POLL_S = 0.15      # internal sampling cadence for your manual swipe (not app-facing)
 
 DEFAULT_SELECTORS = {
     "photo": '.encounters-album__story-content, [data-qa-role="encounters-story-photo"]',
@@ -93,19 +99,50 @@ class BumbleDriver(DatingAppDriver):
             return None
         return self._capture_current()
 
-    def wait_for_decision(self, timeout: float = 120.0) -> bool | None:
-        """Detect YOUR manual like/pass on the current card.
+    def _install_observe_listener(self) -> None:
+        """Inject a one-time capture-phase click listener on the like/pass buttons.
 
-        TODO(live): the robust implementation watches the vote network request
-        Bumble fires when you like/pass (Playwright `page.expect_request` /
-        `page.on("request")`), or hooks the like/pass buttons. The exact
-        endpoint + how it encodes like-vs-pass must be confirmed live (Network
-        tab) — same one-time, config-driven step as the selectors. Until then,
-        observe mode for Bumble is not wired.
+        Records 'like'/'pass' on window when you click either action. Depends
+        ONLY on the like/pass selectors (the same ones used to act), so once
+        those are confirmed live there's nothing else to reverse-engineer — no
+        network sniffing needed. Survives card changes (window-scoped).
         """
-        raise NotImplementedError(
-            "Bumble observe hook needs live verification (vote request / button events)."
+        self.page.evaluate(
+            """([likeSel, passSel]) => {
+                if (window.__oplove_obs) return;
+                window.__oplove_obs = true;
+                window.__oplove_decision = null;
+                document.addEventListener('click', (e) => {
+                    const t = e.target;
+                    if (!t || !t.closest) return;
+                    if (t.closest(likeSel)) window.__oplove_decision = 'like';
+                    else if (t.closest(passSel)) window.__oplove_decision = 'pass';
+                }, true);   // capture phase: fires even if the app stops propagation
+            }""",
+            [self.selectors["like"], self.selectors["pass"]],
         )
+
+    def wait_for_decision(self, timeout: float = 120.0) -> bool | None:
+        """Block until YOU manually like/pass the current card.
+
+        Returns True (liked), False (passed), or None (deck emptied / timeout).
+        Mouse clicks on the like/pass controls are detected; if you also use
+        keyboard shortcuts, confirm coverage with tools/bumble_inspect.py.
+        """
+        self._install_observe_listener()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            decision = self.page.evaluate(
+                "() => { const v = window.__oplove_decision; window.__oplove_decision = null; return v; }"
+            )
+            if decision == "like":
+                return True
+            if decision == "pass":
+                return False
+            if self.out_of_profiles():
+                return None
+            time.sleep(_OBSERVE_POLL_S)
+        return None
 
     def _capture_photos(self) -> list[bytes]:
         # TODO(live): Bumble shows photos in a carousel; may need to click through

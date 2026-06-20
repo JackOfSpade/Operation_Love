@@ -11,7 +11,10 @@ Resource-ids / gestures below are best-effort and config-overridable
 """
 from __future__ import annotations
 
+import time
+
 from .base import DatingAppDriver
+from ..human import human_delay
 from ..perception.capture import Profile
 
 DEFAULTS = {
@@ -59,6 +62,7 @@ class HingeDriver(DatingAppDriver):
                     prompts.append(("", txt))
             if i < self.scroll_captures - 1:
                 self.d.swipe_ext("up", scale=0.8)               # scroll the profile
+                time.sleep(human_delay(0.5))                    # settle + "look" before next frame
         # dedupe prompts preserving order
         seen, uniq = set(), []
         for q, a in prompts:
@@ -80,7 +84,9 @@ class HingeDriver(DatingAppDriver):
         if opener:
             box = self.d(resourceId=self.ids["comment_box"])
             if box.exists:
+                time.sleep(human_delay(0.8))                    # comment box animates in; you read/think
                 box.set_text(opener)                            # opener sent with the like
+                time.sleep(human_delay(0.6))                    # pause after typing, before sending
         self.d(resourceId=self.ids["send_like"]).click()
 
     def dislike(self) -> None:

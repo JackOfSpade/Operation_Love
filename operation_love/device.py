@@ -1,8 +1,8 @@
-"""Pick the best available torch device.
+"""Pick the best available torch device — cross-platform (macOS/Windows/Linux).
 
-On the MacBook Pro (Apple M4 Pro) this returns "mps" — PyTorch's Apple-Silicon
-GPU backend, which is well supported. Falls back to CUDA (NVIDIA) or CPU.
-ROCm/AMD is intentionally not targeted (poor PyTorch support, esp. on Windows).
+Returns "mps" on Apple Silicon, "cuda" on NVIDIA, else "cpu". CPU is fine for
+this project's volume, so it runs anywhere even without a GPU. (AMD/ROCm is not
+auto-selected — torch falls back to CPU there, which is intentional.)
 """
 from __future__ import annotations
 

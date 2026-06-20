@@ -24,12 +24,19 @@ orchestrator  the loop (replaces main.ahk)
 **Decision = local & private** (photos never leave your machine).
 **Opener = Claude** (the one cloud call; minimal data; only for likes).
 
-## Hardware
+## Hardware & OS — cross-platform
 
-Runs entirely on an **Apple Silicon MacBook (M-series)** — PyTorch uses the
-`mps` GPU backend automatically (`operation_love/device.py`). NVIDIA/CUDA and
-CPU are also supported. No AMD/ROCm needed. At tens–hundreds of profiles/day,
-embedding is effectively instant.
+Runs on **macOS, Windows, or Linux**. The compute device is auto-detected
+(`operation_love/device.py`): **MPS** on Apple Silicon, **CUDA** on NVIDIA,
+**CPU** everywhere else (fine at tens–hundreds of profiles/day). Nothing is
+Mac-only. OS-specific notes:
+
+| Piece | macOS | Windows | Linux |
+|---|---|---|---|
+| Local ML (torch, insightface, CLIP, pyiqa) | MPS | CUDA / CPU | CUDA / CPU |
+| Bumble (Playwright web) | ✅ | ✅ | ✅ |
+| Hinge (Android emulator + `uiautomator2`) | Android Studio AVD / physical phone over ADB | same | same / Waydroid |
+| Claude opener | cloud — any OS | cloud | cloud |
 
 ## Cost control
 

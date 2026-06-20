@@ -21,13 +21,12 @@ captures/
 *.pt
 *.onnx
 *.mat
-*.venv
+/.venv
 
 # os / editor
 .DS_Store
 .idea/
 
-# Machine-specific hub launcher (absolute paths; generated per-OS)
-Operation Love.command
-operation-love.desktop
-Operation Love.bat
+# NOTE: the hub launchers ("Operation Love.command" / "Update Operation Love.command",
+# and the .bat/.sh variants) are now PORTABLE (relative paths + project .venv) and
+# ARE committed, so they travel with the repo to other machines.

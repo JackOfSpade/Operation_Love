@@ -178,32 +178,51 @@ def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
         httpd.shutdown()
 
 
-# macOS "Update" command body. Operation Love runs from source (editable
-# install) so there's NO build step — this just refreshes deps and verifies the
-# install. Placeholders are substituted (avoids brace-escaping the shell body).
+# Portable launcher bodies — written INTO the project folder and committed, so
+# they travel with the repo and work on any machine. They resolve the project
+# from the script's OWN location (no absolute paths) and use a project-local
+# .venv if present, else system python3. The app runs from source (editable
+# install): code changes are live on the next launch, so there's no build step —
+# "Update" just creates/refreshes the .venv. __EXTRAS__ is substituted.
+_MAC_LAUNCH = r'''#!/bin/zsh
+# Operation Love — open the control hub. Portable: works wherever this folder is.
+# Run "Update Operation Love" once first to create the .venv + install deps.
+cd "${0:A:h}" || exit 1
+PY=".venv/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3)"
+exec "$PY" -m operation_love hub
+'''
+
 _MAC_UPDATE = r'''#!/bin/zsh
-# Update Operation Love — refresh dependencies + verify the install.
-# The app runs directly from source (editable install): code you change is live
-# on the next launch, so there is no build/deploy step. This refreshes the Python
-# environment (e.g. after a dependency change) and confirms it still imports.
-PROJECT_DIR="__PROJ__"
-PY="__PY__"
+# Update / set up Operation Love. Portable — resolves the project from this
+# script's own location, so it works on any machine. Creates a project-local
+# .venv on first run, then installs/refreshes dependencies. The app runs from
+# source (editable install): code changes are live next launch, no build step.
+cd "${0:A:h}" || exit 1
 notify() { osascript -e "display notification \"$1\" with title \"Operation Love\" sound name \"$2\"" >/dev/null 2>&1; }
 
 echo "==========================================="
-echo "  Operation Love - Update"
+echo "  Operation Love - Update / Setup"
 echo "==========================================="
-cd "$PROJECT_DIR" || { echo "ERROR: project dir not found: $PROJECT_DIR"; notify "Update failed: project dir not found." "Basso"; exit 1; }
 
-echo "> Refreshing dependencies..."
+if [ ! -x ".venv/bin/python" ]; then
+  echo "> Creating project virtualenv (.venv)..."
+  python3 -m venv .venv || { echo "x venv creation failed (is python3 installed?)"; notify "Update failed: venv creation." "Basso"; exit 1; }
+fi
+PY=".venv/bin/python"
+
+echo "> Installing / refreshing dependencies (first run can take a few minutes)..."
 "$PY" -m pip install -e ".[__EXTRAS__]" || { echo "x pip install failed."; notify "Update failed at pip install." "Basso"; exit 1; }
 
-echo "> Verifying install..."
+echo "> Ensuring the Bumble browser is installed..."
+"$PY" -m playwright install chromium >/dev/null 2>&1
+
+echo "> Verifying..."
 "$PY" -m operation_love.runtime || { echo "x runtime check failed."; notify "Update: runtime check failed." "Basso"; exit 1; }
 
 echo ""
-echo "OK - Operation Love is up to date."
-notify "Operation Love updated successfully!" "Glass"
+echo "OK - Operation Love is ready."
+notify "Operation Love is up to date!" "Glass"
 
 # Auto-close this Terminal window shortly after exit (one-shot script).
 if [ "$TERM_PROGRAM" = "Apple_Terminal" ]; then
@@ -225,69 +244,64 @@ fi
 exit 0
 '''
 
+_LINUX_LAUNCH = ('#!/bin/sh\ncd "$(dirname "$0")" || exit 1\n'
+                 'PY=".venv/bin/python"; [ -x "$PY" ] || PY="$(command -v python3)"\n'
+                 'exec "$PY" -m operation_love hub\n')
+
+_LINUX_UPDATE = ('#!/bin/sh\ncd "$(dirname "$0")" || exit 1\n'
+                 '[ -x ".venv/bin/python" ] || python3 -m venv .venv\n'
+                 'PY=".venv/bin/python"\n'
+                 '"$PY" -m pip install -e ".[__EXTRAS__]" || exit 1\n'
+                 '"$PY" -m playwright install chromium >/dev/null 2>&1\n'
+                 '"$PY" -m operation_love.runtime\n')
+
+_WIN_LAUNCH = ('@echo off\r\ncd /d "%~dp0"\r\nset PY=.venv\\Scripts\\python.exe\r\n'
+               'if not exist "%PY%" set PY=python\r\nstart "" "%PY%" -m operation_love hub\r\n')
+
+_WIN_UPDATE = ('@echo off\r\ncd /d "%~dp0"\r\n'
+               'if not exist ".venv\\Scripts\\python.exe" python -m venv .venv\r\n'
+               'set PY=.venv\\Scripts\\python.exe\r\n'
+               '"%PY%" -m pip install -e ".[__EXTRAS__]" || exit /b 1\r\n'
+               '"%PY%" -m playwright install chromium\r\n'
+               '"%PY%" -m operation_love.runtime\r\npause\r\n')
+
 
 def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,bumble") -> None:
-    """Write double-click LAUNCH + UPDATE commands to the Desktop for this OS.
+    """Write portable double-click LAUNCH + UPDATE commands INTO the project folder.
 
-    There's no single cross-OS double-click file, so we emit the right stubs for
-    the current platform. Files land on the Desktop to match the user's
-    "<App>.command" / "Update <App>.command" convention.
-
-    Operation Love runs directly from source (editable install) — code changes
-    are live on the next launch — so "update" just refreshes deps + verifies.
+    They use relative pathing (resolve the project from the script's own
+    location) and a project-local .venv, so the same committed files work on any
+    machine — clone the repo, double-click "Update Operation Love" once to build
+    the .venv, then "Operation Love" to launch. No absolute paths, no build step.
     """
     import stat
     import sys
     from pathlib import Path
 
-    py = sys.executable
     proj = Path(config_path).resolve().parent
-    desktop = Path.home() / "Desktop"
-    desktop.mkdir(exist_ok=True)
     plat = sys.platform
     made: list[Path] = []
 
-    def _exec(p: Path) -> None:
-        p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    def _write(name: str, body: str, executable: bool) -> None:
+        p = proj / name
+        p.write_text(body.replace("__EXTRAS__", extras))
+        if executable:
+            p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        made.append(p)
 
     if plat == "darwin":
-        launch = desktop / "Operation Love.command"
-        launch.write_text(f'#!/bin/zsh\ncd "{proj}"\nexec "{py}" -m operation_love hub\n')
-        _exec(launch); made.append(launch)
-
-        update = desktop / "Update Operation Love.command"
-        update.write_text(_MAC_UPDATE.replace("__PROJ__", str(proj))
-                          .replace("__PY__", py).replace("__EXTRAS__", extras))
-        _exec(update); made.append(update)
-
-        old = proj / "Operation Love.command"        # tidy the earlier repo-root copy
-        if old.exists():
-            try: old.unlink()
-            except OSError: pass
+        _write("Operation Love.command", _MAC_LAUNCH, True)
+        _write("Update Operation Love.command", _MAC_UPDATE, True)
     elif plat.startswith("win"):
-        pyw = Path(py).with_name("pythonw.exe")
-        launcher = str(pyw) if pyw.exists() else py
-        launch = desktop / "Operation Love.bat"
-        launch.write_text(f'@echo off\r\ncd /d "{proj}"\r\nstart "" "{launcher}" -m operation_love hub\r\n')
-        made.append(launch)
-        update = desktop / "Update Operation Love.bat"
-        update.write_text(f'@echo off\r\ncd /d "{proj}"\r\n'
-                          f'"{py}" -m pip install -e ".[{extras}]" && "{py}" -m operation_love.runtime\r\n'
-                          "pause\r\n")
-        made.append(update)
+        _write("Operation Love.bat", _WIN_LAUNCH, False)
+        _write("Update Operation Love.bat", _WIN_UPDATE, False)
     else:  # linux / *bsd
-        launch = desktop / "operation-love.desktop"
-        launch.write_text(
-            "[Desktop Entry]\nType=Application\nName=Operation Love\n"
-            f'Exec="{py}" -m operation_love hub\nPath={proj}\nTerminal=false\nCategories=Utility;\n')
-        _exec(launch); made.append(launch)
-        update = desktop / "update-operation-love.sh"
-        update.write_text(f'#!/bin/sh\ncd "{proj}" || exit 1\n'
-                          f'"{py}" -m pip install -e ".[{extras}]" && "{py}" -m operation_love.runtime\n')
-        _exec(update); made.append(update)
+        _write("operation-love.sh", _LINUX_LAUNCH, True)
+        _write("update-operation-love.sh", _LINUX_UPDATE, True)
 
     for p in made:
-        print(f"[hub] wrote: {p}")
+        print(f"[hub] wrote: {p.name}")
+    print("      committed in the project; portable across machines (relative paths + .venv).")
     print("      'Operation Love' opens the hub; 'Update Operation Love' refreshes deps.")
 
 

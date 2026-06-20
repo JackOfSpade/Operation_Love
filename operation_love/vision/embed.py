@@ -198,6 +198,8 @@ class Embedder:
                 and _is_onnx_provider_failure(first_error)
             )
             if provider_failed and not self._arc_on_cpu and not retried_on_cpu:
+                print("[embed] CoreML/ONNX provider failed; retrying this profile on CPU "
+                      "(CPU stays in effect for the rest of this run).")
                 self._set_arc_providers(["CPUExecutionProvider"])
                 retried_on_cpu = True
                 continue

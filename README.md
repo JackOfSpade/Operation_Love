@@ -88,7 +88,16 @@ your taste with cold-start gating (`defer` until enough labels). All pure logic
 is covered by offline tests; model *inference* runs on a machine with the `ml`
 extra installed.
 
-In progress / next:
-- **Phase 1 live** — confirm the Bumble (Playwright) DOM selectors on your machine.
-- **Cold-start labeling tool** — interactive capture→rate to seed the ranker.
-- **Hinge driver** — Android emulator + uiautomator2.
+**Two modes** (`mode: observe | auto`):
+- **observe** — shadow learning: you swipe manually on real profiles, the bot
+  captures each, watches your like/pass, stores it as a label, and **retrains
+  the ranker live** (transitions itself from `defer` → ready mid-session). No
+  autonomous swiping. This is how you seed your taste — from real usage, not
+  stock images.
+- **auto** — the bot swipes for you with the learned model, and every swipe is
+  still a label.
+
+In progress / next (all need live verification on your machine):
+- **Bumble live hooks** — confirm the DOM selectors and the observe-mode
+  like/pass detection (vote request / button events).
+- **Hinge driver** — Android emulator + uiautomator2 (capture + observe + act).

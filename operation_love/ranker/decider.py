@@ -35,12 +35,23 @@ class RankerDecider:
         self.embedder = embedder
         self.model = model
 
-    def decide(self, profile: Profile) -> Decision:
+    def embed(self, profile: Profile) -> list[float] | None:
+        """Quality-filter + embed a profile into a feature vector (no scoring).
+
+        Used in observe mode to turn your manual swipe into a training label.
+        None when no face is detected.
+        """
         photos = self.quality.filter(profile.photos)
         if not photos:                      # never drop the whole profile on the filter
             photos = profile.photos
-        vec = self.embedder.embed_profile(replace(profile, photos=photos))
+        return self.embedder.embed_profile(replace(profile, photos=photos))
 
+    def retrain(self, store) -> bool:
+        """Reload all labels and retrain the shared model in place. Returns ready."""
+        return self.model.train(store.load_labels())
+
+    def decide(self, profile: Profile) -> Decision:
+        vec = self.embed(profile)
         if vec is None:
             return Decision("no_face", 0.0, [], "ranker")
         if not self.model.ready:            # cold-start: collect labels first

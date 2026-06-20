@@ -3,6 +3,11 @@
 # One process runs ALL of these concurrently (each as its own worker).
 enabled_apps: [bumble]      # e.g. [bumble, hinge]
 
+# observe = YOU swipe manually on real profiles; the bot learns your taste live
+#           (no autonomous swiping). Start here to seed the ranker.
+# auto    = the bot swipes for you using the model it learned.
+mode: observe               # observe | auto  (override per app under apps.<app>.mode)
+
 # Per-app options (headless toggle, login profile, DOM selectors to verify live).
 apps:
   bumble:
@@ -31,7 +36,8 @@ storage:
 ranker:
   embedders: [arcface, clip]   # concatenate facial-structure + style/vibe vectors
   like_threshold: 0.5          # P(like) above which we like
-  min_labels_to_engage: 40     # swipe manually until this many labels are collected
+  min_labels_to_engage: 40     # ranker stays "not ready" until this many labels
+  retrain_every: 10            # in observe mode, retrain live after every N swipes
 
 quality_filter:
   enabled: true

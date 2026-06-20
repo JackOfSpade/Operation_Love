@@ -14,6 +14,7 @@ class RankerCfg:
     embedders: list[str] = field(default_factory=lambda: ["arcface", "clip"])
     like_threshold: float = 0.5
     min_labels_to_engage: int = 40
+    retrain_every: int = 10          # retrain live after every N new labels (observe mode)
 
 
 @dataclass
@@ -54,6 +55,7 @@ class StorageCfg:
 @dataclass
 class Config:
     enabled_apps: list[str]          # e.g. ["bumble", "hinge"] — run concurrently
+    mode: str                        # "observe" (learn from your swipes) | "auto"
     apps: dict                       # per-app options (headless, selectors, ...)
     data_dir: Path
     db_file: Path
@@ -73,6 +75,7 @@ def load(path: str | Path = "config.yaml") -> Config:
     enabled_apps = raw.get("enabled_apps") or ([raw["app"]] if "app" in raw else ["bumble"])
     return Config(
         enabled_apps=list(enabled_apps),
+        mode=raw.get("mode", "observe"),
         apps=raw.get("apps", {}),
         data_dir=Path(paths.get("data_dir", "./data")),
         db_file=Path(paths.get("db_file", "./data/operation_love.db")),

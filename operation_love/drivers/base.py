@@ -32,5 +32,18 @@ class DatingAppDriver(ABC):
     def out_of_profiles(self) -> bool:
         """True if there are no more profiles to swipe right now."""
 
+    # --- observe mode (shadow learning); only needed when mode="observe" ---
+    def current_profile(self) -> Profile | None:
+        """Capture the card currently shown WITHOUT acting (you swipe manually)."""
+        raise NotImplementedError("observe mode is not supported by this driver")
+
+    def wait_for_decision(self, timeout: float = 120.0) -> bool | None:
+        """Block until the user manually likes/passes the current card.
+
+        Returns True (liked), False (passed), or None (no decision before the
+        card changed / timeout).
+        """
+        raise NotImplementedError("observe mode is not supported by this driver")
+
     def close(self) -> None:  # optional cleanup
         pass

@@ -74,13 +74,38 @@ class BumbleDriver(DatingAppDriver):
             self._pw = self._ctx = self.page = None
 
     # --- capture --------------------------------------------------------
+    def _capture_current(self) -> Profile:
+        return Profile(
+            photos=self._capture_photos(),
+            bio=self._text(self.selectors["bio"]),
+            prompts=self._capture_prompts(),
+            meta={"app": "bumble"},
+        )
+
     def next_profile(self) -> Profile | None:
         if self.out_of_profiles():
             return None
-        photos = self._capture_photos()
-        bio = self._text(self.selectors["bio"])
-        prompts = self._capture_prompts()
-        return Profile(photos=photos, bio=bio, prompts=prompts, meta={"app": "bumble"})
+        return self._capture_current()
+
+    # --- observe mode (shadow learning) ---------------------------------
+    def current_profile(self) -> Profile | None:
+        if self.out_of_profiles():
+            return None
+        return self._capture_current()
+
+    def wait_for_decision(self, timeout: float = 120.0) -> bool | None:
+        """Detect YOUR manual like/pass on the current card.
+
+        TODO(live): the robust implementation watches the vote network request
+        Bumble fires when you like/pass (Playwright `page.expect_request` /
+        `page.on("request")`), or hooks the like/pass buttons. The exact
+        endpoint + how it encodes like-vs-pass must be confirmed live (Network
+        tab) — same one-time, config-driven step as the selectors. Until then,
+        observe mode for Bumble is not wired.
+        """
+        raise NotImplementedError(
+            "Bumble observe hook needs live verification (vote request / button events)."
+        )
 
     def _capture_photos(self) -> list[bytes]:
         # TODO(live): Bumble shows photos in a carousel; may need to click through

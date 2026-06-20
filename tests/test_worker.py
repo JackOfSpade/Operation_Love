@@ -70,7 +70,8 @@ class _Pacing:
 
 
 def _worker(driver, decider, service, store):
-    return Worker("bumble", driver, decider, service, store, "run1", _Pacing(), threading.Event())
+    return Worker("bumble", driver, decider, service, store, "run1", _Pacing(),
+                  threading.Event(), mode="auto")
 
 
 # --- OpenerService (global budget) --------------------------------------

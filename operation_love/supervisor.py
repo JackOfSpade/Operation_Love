@@ -68,8 +68,11 @@ def run(config_path: str = "config.yaml") -> None:
 
     workers = []
     for app in cfg.enabled_apps:
+        mode = (cfg.apps.get(app, {}) or {}).get("mode", cfg.mode)   # per-app override
         driver = make_driver(app, cfg)
-        w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing, stop_event)
+        w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing,
+                   stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every)
+        print(f"[worker-{app}] mode={mode}")
         workers.append(w)
         w.start()
 

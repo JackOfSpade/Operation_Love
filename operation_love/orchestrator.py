@@ -14,18 +14,28 @@ import uuid
 from . import config as cfg_mod
 from .costing import CostTracker, is_out_of_credit
 from .opener.opener import AnthropicOpener
-from .ranker.store import Store
+from .ranker import make_store
 from .runtime import Capabilities
 
 
 def run(config_path: str = "config.yaml") -> None:
     cfg = cfg_mod.load(config_path)
-    store = Store(cfg.db_file)
     run_id = uuid.uuid4().hex[:12]
 
     # Inspect this machine and auto-adjust to what's installed (any OS, GPU or not).
     caps = Capabilities.detect()
     print(caps.banner())
+
+    if cfg.storage.backend == "bigquery" and caps.missing("bigquery"):
+        raise SystemExit(
+            "storage.backend=bigquery but google-cloud-bigquery isn't installed.\n"
+            "  pip install -e '.[bq]'   (or set storage.backend: sqlite in config.yaml)"
+        )
+
+    store = make_store(cfg)
+    # BQ-of-record + memory cache: one query at startup, then in-memory inference.
+    labels = store.load_labels()
+    print(f"[store] backend={cfg.storage.backend} labels={len(labels)}")
 
     opener_enabled = cfg.opener.enabled
     if opener_enabled and caps.missing("anthropic"):
@@ -79,11 +89,12 @@ def run(config_path: str = "config.yaml") -> None:
             driver.like(opener_text)
             _pace(cfg)
     finally:
-        driver.close()
-        print(
-            f"[run {run_id}] openers={tracker.calls} "
-            f"spend=${tracker.run_spend_usd:.4f} lifetime=${store.lifetime_spend():.4f}"
-        )
+        try:
+            driver.close()
+        except Exception:  # noqa: BLE001
+            pass
+        store.flush()      # batch-append any buffered rows to the store
+        print(f"[run {run_id}] openers={tracker.calls} spend=${tracker.run_spend_usd:.4f}")
         store.close()
 
 

@@ -24,6 +24,7 @@ _OPTIONAL = {
     "bumble_driver": "playwright",
     "hinge_driver": "uiautomator2",
     "anthropic": "anthropic",
+    "bigquery": "google.cloud.bigquery",
 }
 
 _ACCEL = {"mps": "Apple GPU (MPS)", "cuda": "NVIDIA GPU (CUDA)", "cpu": "CPU"}

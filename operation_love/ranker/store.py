@@ -1,107 +1,105 @@
-"""SQLite persistence: swipe labels (training data), decisions, openers, spend.
+"""Storage interface + local SQLite backend.
 
-Replaces the old `targeted_index.txt` state file. Every swipe is a free label,
-so the personal ranker improves over time; the spend table gives exact per-run
-and lifetime opener cost.
+Two backends implement the same ``Store`` surface (see bigquery_store.py for the
+cloud one). The orchestrator loads labels once at startup, keeps them in memory
+for fast inference, and appends new rows through the store — so the hot path
+never blocks on per-row I/O regardless of backend.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from ..costing import Usage
 
+
+@runtime_checkable
+class Store(Protocol):
+    def load_labels(self) -> list[tuple[bool, list[float]]]: ...
+    def add_label(self, run_id: str, app: str, liked: bool, embedding: list[float],
+                  source: str = "manual", bio: str = "", prompts: str = "",
+                  photo_count: int = 0) -> None: ...
+    def record_decision(self, run_id: str, app: str, decision: str, score: float) -> None: ...
+    def record_opener(self, run_id: str, app: str, model: str, opener: str, referenced: str) -> None: ...
+    def record_spend(self, run_id: str, model: str, usage: Usage, cost: float) -> None: ...
+    def label_count(self) -> int: ...
+    def flush(self) -> None: ...
+    def close(self) -> None: ...
+
+
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS profiles (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id      TEXT,
-    app         TEXT,
-    captured_at REAL,
-    bio         TEXT,
-    prompts     TEXT,        -- JSON [[question, answer], ...]
-    photo_count INTEGER
-);
-CREATE TABLE IF NOT EXISTS labels (        -- training labels = your swipes
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    profile_id  INTEGER,
-    liked       INTEGER,      -- 1 like, 0 dislike
-    source      TEXT,         -- manual | ranker
-    embedding   BLOB,         -- float32 feature vector
-    created_at  REAL
+CREATE TABLE IF NOT EXISTS labels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
+    liked INTEGER, source TEXT, embedding TEXT, bio TEXT, prompts TEXT, photo_count INTEGER
 );
 CREATE TABLE IF NOT EXISTS decisions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    profile_id  INTEGER,
-    run_id      TEXT,
-    decision    TEXT,         -- like | dislike | no_face
-    score       REAL,
-    created_at  REAL
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
+    decision TEXT, score REAL
 );
 CREATE TABLE IF NOT EXISTS openers (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    profile_id  INTEGER,
-    run_id      TEXT,
-    model       TEXT,
-    opener      TEXT,
-    referenced  TEXT,
-    created_at  REAL
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
+    model TEXT, opener TEXT, referenced TEXT
 );
 CREATE TABLE IF NOT EXISTS spend (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id              TEXT,
-    created_at          REAL,
-    model               TEXT,
-    input_tokens        INTEGER,
-    output_tokens       INTEGER,
-    cache_read_tokens   INTEGER,
-    cache_write_tokens  INTEGER,
-    cost_usd            REAL
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, created_at REAL, model TEXT,
+    input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER, cost_usd REAL
 );
 """
 
 
-class Store:
+class SQLiteStore:
+    """Local, offline, zero-dependency backend. Good default / fallback."""
+
     def __init__(self, db_file: str | Path):
         Path(db_file).parent.mkdir(parents=True, exist_ok=True)
         self.con = sqlite3.connect(str(db_file))
         self.con.executescript(_SCHEMA)
         self.con.commit()
 
-    # --- writes ---------------------------------------------------------
-    def add_label(self, profile_id: int, liked: bool, source: str, embedding: bytes) -> None:
+    def load_labels(self) -> list[tuple[bool, list[float]]]:
+        rows = self.con.execute("SELECT liked, embedding FROM labels").fetchall()
+        return [(bool(liked), json.loads(emb)) for liked, emb in rows]
+
+    def add_label(self, run_id, app, liked, embedding, source="manual", bio="", prompts="", photo_count=0):
         self.con.execute(
-            "INSERT INTO labels (profile_id, liked, source, embedding, created_at)"
-            " VALUES (?,?,?,?,?)",
-            (profile_id, int(liked), source, embedding, time.time()),
+            "INSERT INTO labels (run_id, app, created_at, liked, source, embedding, bio,"
+            " prompts, photo_count) VALUES (?,?,?,?,?,?,?,?,?)",
+            (run_id, app, time.time(), int(liked), source, json.dumps(embedding), bio, prompts, photo_count),
         )
         self.con.commit()
 
-    def record_spend(self, run_id: str, model: str, usage: Usage, cost: float) -> None:
+    def record_decision(self, run_id, app, decision, score):
+        self.con.execute(
+            "INSERT INTO decisions (run_id, app, created_at, decision, score) VALUES (?,?,?,?,?)",
+            (run_id, app, time.time(), decision, score),
+        )
+        self.con.commit()
+
+    def record_opener(self, run_id, app, model, opener, referenced):
+        self.con.execute(
+            "INSERT INTO openers (run_id, app, created_at, model, opener, referenced) VALUES (?,?,?,?,?,?)",
+            (run_id, app, time.time(), model, opener, referenced),
+        )
+        self.con.commit()
+
+    def record_spend(self, run_id, model, usage: Usage, cost):
         self.con.execute(
             "INSERT INTO spend (run_id, created_at, model, input_tokens, output_tokens,"
             " cache_read_tokens, cache_write_tokens, cost_usd) VALUES (?,?,?,?,?,?,?,?)",
-            (
-                run_id, time.time(), model,
-                usage.input_tokens, usage.output_tokens,
-                usage.cache_read_input_tokens, usage.cache_creation_input_tokens,
-                cost,
-            ),
+            (run_id, time.time(), model, usage.input_tokens, usage.output_tokens,
+             usage.cache_read_input_tokens, usage.cache_creation_input_tokens, cost),
         )
         self.con.commit()
 
-    # --- reads ----------------------------------------------------------
     def label_count(self) -> int:
         return self.con.execute("SELECT COUNT(*) FROM labels").fetchone()[0]
 
-    def run_spend(self, run_id: str) -> float:
-        row = self.con.execute(
-            "SELECT COALESCE(SUM(cost_usd), 0) FROM spend WHERE run_id = ?", (run_id,)
-        ).fetchone()
-        return float(row[0])
-
-    def lifetime_spend(self) -> float:
-        return float(self.con.execute("SELECT COALESCE(SUM(cost_usd),0) FROM spend").fetchone()[0])
+    def flush(self) -> None:
+        self.con.commit()
 
     def close(self) -> None:
         self.con.close()

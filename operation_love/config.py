@@ -46,6 +46,12 @@ class PacingCfg:
 
 
 @dataclass
+class StorageCfg:
+    backend: str = "bigquery"   # bigquery | sqlite
+    bigquery: dict = field(default_factory=dict)
+
+
+@dataclass
 class Config:
     app: str
     data_dir: Path
@@ -55,6 +61,7 @@ class Config:
     opener: OpenerCfg
     budget: BudgetCfg
     pacing: PacingCfg
+    storage: StorageCfg
 
 
 def load(path: str | Path = "config.yaml") -> Config:
@@ -75,4 +82,8 @@ def load(path: str | Path = "config.yaml") -> Config:
             pricing=pricing,
         ),
         pacing=PacingCfg(**raw.get("pacing", {})),
+        storage=StorageCfg(
+            backend=raw.get("storage", {}).get("backend", "bigquery"),
+            bigquery=raw.get("storage", {}).get("bigquery", {}),
+        ),
     )

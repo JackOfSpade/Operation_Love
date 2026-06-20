@@ -24,6 +24,8 @@ ml = [
 # App drivers
 bumble = ["playwright>=1.44"]
 hinge = ["uiautomator2>=3.0"]   # drives an Android emulator / phone over ADB
+# Cloud storage (system-of-record + analytics)
+bq = ["google-cloud-bigquery>=3.20"]
 dev = ["pytest>=8.0"]
 
 [tool.pytest.ini_options]

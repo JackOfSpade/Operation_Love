@@ -1,0 +1,42 @@
+name: CI
+
+# Runs this repo's test suite on every push to claude/** and main (and on PRs).
+# The auto-merge workflow (auto-merge-claude.yml) gates on THIS workflow's
+# completion: a claude/* branch merges to main only if the CI run for its exact
+# tip commit concluded "success". The lint job is advisory (continue-on-error)
+# so it never affects that gate.
+
+on:
+  push:
+    branches: ['claude/**', main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test deps
+        run: pip install --quiet pytest pyyaml
+      - name: Run tests
+        run: python -m pytest -q
+
+  lint:
+    name: ruff (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true   # advisory; never blocks the merge gate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet ruff
+      - run: ruff check operation_love tests || true

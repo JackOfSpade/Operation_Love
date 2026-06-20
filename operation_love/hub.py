@@ -178,14 +178,63 @@ def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
         httpd.shutdown()
 
 
-def make_launchers(config_path: str = "config.yaml") -> None:
-    """Write a double-click launcher for THIS OS that opens the hub.
+# macOS "Update" command body. Operation Love runs from source (editable
+# install) so there's NO build step — this just refreshes deps and verifies the
+# install. Placeholders are substituted (avoids brace-escaping the shell body).
+_MAC_UPDATE = r'''#!/bin/zsh
+# Update Operation Love — refresh dependencies + verify the install.
+# The app runs directly from source (editable install): code you change is live
+# on the next launch, so there is no build/deploy step. This refreshes the Python
+# environment (e.g. after a dependency change) and confirms it still imports.
+PROJECT_DIR="__PROJ__"
+PY="__PY__"
+notify() { osascript -e "display notification \"$1\" with title \"Operation Love\" sound name \"$2\"" >/dev/null 2>&1; }
 
-    There's no single cross-OS double-click file, so we emit the right stub for
-    the current platform (all call the same `python -m operation_love hub`):
-      macOS  -> "Operation Love.command"   (double-click; opens Terminal + browser)
-      Windows-> "Operation Love.bat"        (uses pythonw -> no console window)
-      Linux  -> "operation-love.desktop"    (Exec entry; Terminal=false)
+echo "==========================================="
+echo "  Operation Love - Update"
+echo "==========================================="
+cd "$PROJECT_DIR" || { echo "ERROR: project dir not found: $PROJECT_DIR"; notify "Update failed: project dir not found." "Basso"; exit 1; }
+
+echo "> Refreshing dependencies..."
+"$PY" -m pip install -e ".[__EXTRAS__]" || { echo "x pip install failed."; notify "Update failed at pip install." "Basso"; exit 1; }
+
+echo "> Verifying install..."
+"$PY" -m operation_love.runtime || { echo "x runtime check failed."; notify "Update: runtime check failed." "Basso"; exit 1; }
+
+echo ""
+echo "OK - Operation Love is up to date."
+notify "Operation Love updated successfully!" "Glass"
+
+# Auto-close this Terminal window shortly after exit (one-shot script).
+if [ "$TERM_PROGRAM" = "Apple_Terminal" ]; then
+  TTY_NAME=$(tty)
+  ( sleep 1
+    osascript -e 'tell application "Terminal"
+  repeat with w in windows
+    try
+      if tty of selected tab of w is "'"$TTY_NAME"'" then
+        close w
+        exit repeat
+      end if
+    end try
+  end repeat
+end tell' >/dev/null 2>&1
+  ) &
+  disown 2>/dev/null
+fi
+exit 0
+'''
+
+
+def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,bumble") -> None:
+    """Write double-click LAUNCH + UPDATE commands to the Desktop for this OS.
+
+    There's no single cross-OS double-click file, so we emit the right stubs for
+    the current platform. Files land on the Desktop to match the user's
+    "<App>.command" / "Update <App>.command" convention.
+
+    Operation Love runs directly from source (editable install) — code changes
+    are live on the next launch — so "update" just refreshes deps + verifies.
     """
     import stat
     import sys
@@ -193,26 +242,53 @@ def make_launchers(config_path: str = "config.yaml") -> None:
 
     py = sys.executable
     proj = Path(config_path).resolve().parent
+    desktop = Path.home() / "Desktop"
+    desktop.mkdir(exist_ok=True)
     plat = sys.platform
+    made: list[Path] = []
+
+    def _exec(p: Path) -> None:
+        p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
     if plat == "darwin":
-        f = proj / "Operation Love.command"
-        f.write_text(f'#!/bin/bash\ncd "{proj}"\nexec "{py}" -m operation_love hub\n')
-        f.chmod(f.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        launch = desktop / "Operation Love.command"
+        launch.write_text(f'#!/bin/zsh\ncd "{proj}"\nexec "{py}" -m operation_love hub\n')
+        _exec(launch); made.append(launch)
+
+        update = desktop / "Update Operation Love.command"
+        update.write_text(_MAC_UPDATE.replace("__PROJ__", str(proj))
+                          .replace("__PY__", py).replace("__EXTRAS__", extras))
+        _exec(update); made.append(update)
+
+        old = proj / "Operation Love.command"        # tidy the earlier repo-root copy
+        if old.exists():
+            try: old.unlink()
+            except OSError: pass
     elif plat.startswith("win"):
         pyw = Path(py).with_name("pythonw.exe")
         launcher = str(pyw) if pyw.exists() else py
-        f = proj / "Operation Love.bat"
-        f.write_text(f'@echo off\r\ncd /d "{proj}"\r\nstart "" "{launcher}" -m operation_love hub\r\n')
+        launch = desktop / "Operation Love.bat"
+        launch.write_text(f'@echo off\r\ncd /d "{proj}"\r\nstart "" "{launcher}" -m operation_love hub\r\n')
+        made.append(launch)
+        update = desktop / "Update Operation Love.bat"
+        update.write_text(f'@echo off\r\ncd /d "{proj}"\r\n'
+                          f'"{py}" -m pip install -e ".[{extras}]" && "{py}" -m operation_love.runtime\r\n'
+                          "pause\r\n")
+        made.append(update)
     else:  # linux / *bsd
-        f = proj / "operation-love.desktop"
-        f.write_text(
+        launch = desktop / "operation-love.desktop"
+        launch.write_text(
             "[Desktop Entry]\nType=Application\nName=Operation Love\n"
             f'Exec="{py}" -m operation_love hub\nPath={proj}\nTerminal=false\nCategories=Utility;\n')
-        f.chmod(f.stat().st_mode | stat.S_IEXEC)
+        _exec(launch); made.append(launch)
+        update = desktop / "update-operation-love.sh"
+        update.write_text(f'#!/bin/sh\ncd "{proj}" || exit 1\n'
+                          f'"{py}" -m pip install -e ".[{extras}]" && "{py}" -m operation_love.runtime\n')
+        _exec(update); made.append(update)
 
-    print(f"[hub] wrote launcher: {f}")
-    print("      double-click it to open the hub — no terminal needed.")
+    for p in made:
+        print(f"[hub] wrote: {p}")
+    print("      'Operation Love' opens the hub; 'Update Operation Love' refreshes deps.")
 
 
 _PAGE = """<!doctype html>
@@ -284,9 +360,8 @@ _PAGE = """<!doctype html>
     <textarea id="bugdesc" rows="2" placeholder="What went wrong? (optional)"
       style="width:100%;margin:8px 0;background:#22222b;color:#e8e8ea;border:1px solid rgba(255,255,255,.14);border-radius:9px;padding:8px;font:inherit;resize:vertical"></textarea>
     <div class="controls">
-      <button id="bugbtn">🐞 Generate report</button>
-      <button id="bugcopy" disabled>Copy</button>
-      <button id="bugdl" disabled>Download .md</button>
+      <button id="bugcopy">📋 Copy report</button>
+      <button id="bugdl">⬇ Download .md</button>
     </div>
     <pre id="bugout" style="display:none;max-height:260px;overflow:auto;background:#0c0c10;border:1px solid rgba(255,255,255,.09);border-radius:9px;padding:10px;margin-top:10px;font-size:11px;white-space:pre-wrap"></pre>
   </div>
@@ -356,23 +431,25 @@ $('#start').onclick = async () => {
 };
 $('#stop').onclick = async () => { $('#hint').textContent='stopping…'; await postJSON('/api/stop',{}); tick(); };
 
-let bugMd = '';
-$('#bugbtn').onclick = async () => {
+async function getReport(){          // generate fresh each time (Copy/Download do this implicitly)
   $('#bughint').textContent = 'generating…';
   const r = await fetch('/api/bugreport?desc=' + encodeURIComponent($('#bugdesc').value || ''));
-  bugMd = await r.text();
-  const out = $('#bugout'); out.textContent = bugMd; out.style.display = 'block';
-  $('#bugcopy').disabled = false; $('#bugdl').disabled = false;
-  $('#bughint').textContent = bugMd.length + ' chars';
-};
+  const md = await r.text();
+  $('#bughint').textContent = md.length + ' chars';
+  return md;
+}
 $('#bugcopy').onclick = async () => {
-  try { await navigator.clipboard.writeText(bugMd); $('#bughint').textContent = 'copied ✓'; }
-  catch(e){ $('#bughint').textContent = 'copy failed — select the text below'; }
+  const md = await getReport();
+  try { await navigator.clipboard.writeText(md); $('#bughint').textContent = 'copied ✓'; }
+  catch(e){ const out = $('#bugout'); out.textContent = md; out.style.display = 'block';
+            $('#bughint').textContent = 'copy blocked — select the text below'; }
 };
-$('#bugdl').onclick = () => {
+$('#bugdl').onclick = async () => {
+  const md = await getReport();
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([bugMd], {type:'text/markdown'}));
+  a.href = URL.createObjectURL(new Blob([md], {type:'text/markdown'}));
   a.download = 'operation-love-bug-report.md'; a.click(); URL.revokeObjectURL(a.href);
+  $('#bughint').textContent = 'downloaded ✓';
 };
 
 (async () => {

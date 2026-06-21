@@ -7,7 +7,8 @@ live (see ops/RUNBOOK.md). Each poll cycle advances one frame, driven by the
 patched time.sleep inside the driver.
 """
 from operation_love.drivers import hinge
-from operation_love.drivers.hinge import HingeDriver
+from operation_love.drivers.base import DriverClosed
+from operation_love.drivers.hinge import HingeDriver, _is_device_lost_error
 
 
 class _Cfg:
@@ -142,6 +143,81 @@ def test_deck_empty_returns_none():
 def test_timeout_returns_none():
     # never decides, deck never empties
     assert _run([_frame(["A"])], timeout=0.2) is None
+
+
+# --- device-loss -> DriverClosed (clean stop on emulator/ADB disconnect) -----
+
+class DeviceError(Exception):
+    """Stand-in named exactly like uiautomator2.exceptions.DeviceError so the
+    detector's by-name match fires without importing uiautomator2."""
+
+
+class _LostDevice:
+    """A device that raises `exc` on every interaction (emulator/ADB gone)."""
+    def __init__(self, exc):
+        self._exc = exc
+
+    def screenshot(self, format="raw"):
+        raise self._exc
+
+    def swipe_ext(self, *_args, **_kwargs):
+        raise self._exc
+
+    def __call__(self, resourceId=None, **_kw):
+        raise self._exc
+
+
+def _lost_driver(exc):
+    drv = HingeDriver(_Cfg())
+    drv.d = _LostDevice(exc)
+    return drv
+
+
+def _expect_driver_closed(fn):
+    try:
+        fn()
+    except DriverClosed:
+        return
+    raise AssertionError("expected DriverClosed")
+
+
+def test_device_lost_detector_matches_disconnects_but_not_app_bugs():
+    # by exception type name (no uiautomator2 import needed to classify)
+    assert _is_device_lost_error(DeviceError("co.hinge.app gone"))
+    assert _is_device_lost_error(ConnectionResetError("Connection reset by peer"))
+    # by message fragment on a plain error
+    assert _is_device_lost_error(RuntimeError("device offline"))
+    assert _is_device_lost_error(OSError("cannot connect to 127.0.0.1:7912"))
+    assert _is_device_lost_error(RuntimeError("uiautomator is not running anymore"))
+    # a genuine app/logic bug must NOT be mistaken for a disconnect
+    assert not _is_device_lost_error(ValueError("prompt_answer text was unexpectedly None"))
+    assert not _is_device_lost_error(KeyError("send_like"))
+
+
+def test_out_of_profiles_disconnect_raises_driver_closed():
+    drv = _lost_driver(DeviceError("device 'emulator-5554' not found"))
+    _expect_driver_closed(drv.out_of_profiles)
+
+
+def test_current_profile_disconnect_raises_driver_closed():
+    drv = _lost_driver(ConnectionError("Connection refused"))
+    _expect_driver_closed(drv.current_profile)
+
+
+def test_wait_for_decision_disconnect_raises_driver_closed():
+    drv = _lost_driver(DeviceError("atx-agent gateway gone"))
+    _expect_driver_closed(lambda: drv.wait_for_decision(timeout=5.0))
+
+
+def test_non_device_error_is_not_masked_as_driver_closed():
+    # a real bug must propagate as itself so it isn't swallowed by the clean-stop path
+    drv = _lost_driver(ValueError("unexpected UI state"))
+    try:
+        drv.out_of_profiles()
+    except DriverClosed:
+        raise AssertionError("masked a real error as DriverClosed")
+    except ValueError:
+        pass
 
 
 def test_capture_current_stops_when_scroll_repeats():

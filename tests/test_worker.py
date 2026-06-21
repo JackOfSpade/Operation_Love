@@ -46,6 +46,15 @@ class FakeDecider:
         return Decision(decision=self.decision, score=0.9, embedding=[0.1, 0.2], source="ranker")
 
 
+class StopAfterDecide(FakeDecider):
+    def __init__(self, stop_event):
+        super().__init__("dislike")
+        self.stop_event = stop_event
+    def decide(self, profile):
+        self.stop_event.set()
+        return super().decide(profile)
+
+
 class FakeOpenerClient:
     def __init__(self, cost_tokens=400):
         self.calls = 0; self.cost_tokens = cost_tokens
@@ -147,9 +156,10 @@ def test_worker_dislikes_whole_deck():
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")  # openers disabled
     _worker(driver, FakeDecider("dislike"), svc, store).run()
     assert driver.dislikes == 3 and driver.likes == []
-    assert len(store.decisions) == 3 and len(store.labels) == 3
-    assert len(store.profiles) == 3
-    assert {label[1] for label in store.labels} == {profile[1] for profile in store.profiles}
+    # AUTO mode is pure inference: decisions are logged, but NO training labels/profiles
+    # are saved (training data comes only from manual/observe swipes).
+    assert len(store.decisions) == 3
+    assert store.labels == [] and store.profiles == []
     assert driver.opened and driver.closed
 
 
@@ -182,10 +192,10 @@ def test_worker_stops_at_per_run_like_budget():
     limiter = RateLimiter(max_likes_per_run=2)
     Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
            threading.Event(), mode="auto", limiter=limiter).run()
-    # Likes up to the budget, then stops the run BEFORE acting on the next card —
-    # so the would-be 3rd like is never mislabeled as a pass.
+    # Likes up to the budget, then stops the run before the over-budget like.
     assert driver.likes == ["hi 1", "hi 2"]
-    assert len(store.labels) == 2 and len(store.decisions) == 2
+    # AUTO is inference-only: 2 decisions logged, no training labels saved.
+    assert store.labels == [] and len(store.decisions) == 2
     assert driver.closed
 
 
@@ -201,6 +211,20 @@ def test_worker_treats_browser_close_as_graceful_stop():
     assert driver.closed
     assert store.labels == []
     assert store.profiles == []
+
+
+def test_worker_stops_before_writing_auto_decision_after_stop():
+    driver = FakeDriver(1)
+    store = FakeStore()
+    stop_event = threading.Event()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    Worker("bumble", driver, StopAfterDecide(stop_event), svc, store, "run1", _Pacing(),
+           stop_event, mode="auto").run()
+
+    assert store.decisions == []
+    assert store.labels == [] and store.profiles == []
+    assert driver.dislikes == 0 and driver.likes == []
+    assert driver.closed
 
 
 if __name__ == "__main__":

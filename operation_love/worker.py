@@ -93,6 +93,8 @@ class Worker(threading.Thread):
                     self._stat(state="out_of_profiles")
                     break
                 profile = self.driver.current_profile()      # capture the card you're viewing
+                if self.stop_event.is_set():
+                    break
                 if profile is None:
                     continue
                 if not profile.photos:
@@ -102,11 +104,16 @@ class Worker(threading.Thread):
                     continue
                 self.driver.render_busy(None)                 # processing done -> OK to swipe now
                 self._stat(state="waiting")                   # overlay: "swipe — learning your taste"
+                print(f"[worker-{self.app}] ✅ READY — swipe this profile (like or pass).")
                 liked = self.driver.wait_for_decision(should_stop=self.stop_event.is_set)
                 if liked is None:                             # card changed / timeout / stop -> skip
                     self._block_observe_capture()
                     continue
+                if self.stop_event.is_set():
+                    break
                 # block the next swipe while this one embeds (avoids mis-attribution)
+                print(f"[worker-{self.app}] got {'LIKE' if liked else 'PASS'} — "
+                      f"processing, don't swipe yet…")
                 self.driver.render_busy(_OBSERVE_PROCESSING_BUSY)
                 profile_id = uuid.uuid4().hex
                 metadata = self._label_metadata(profile)
@@ -116,6 +123,8 @@ class Worker(threading.Thread):
                 if vec is None:                               # no face -> not a useful label
                     self._stat(last_decision="no_face")
                     continue
+                if self.stop_event.is_set():
+                    break
                 if archived is False:                         # images couldn't be saved -> no label without them
                     self._stat(last_decision="archive_failed")
                     continue
@@ -174,11 +183,15 @@ class Worker(threading.Thread):
                           f"stopping {self.app}.")
                     break
                 profile = self.driver.next_profile()
+                if self.stop_event.is_set():
+                    break
                 if profile is None:
                     break
 
                 self._stat(state="scoring")
                 d = self.decider.decide(profile)
+                if self.stop_event.is_set():
+                    break
                 if d.decision == "defer":
                     self._stat(last_decision="defer", state="stopped")
                     print(f"[worker-{self.app}] ranker not ready (cold-start) — run in observe "
@@ -193,19 +206,14 @@ class Worker(threading.Thread):
                           f"({self.limiter.describe()}); stopping {self.app}.")
                     break
 
+                # AUTO mode is pure INFERENCE: log the decision (for stats + the daily
+                # rate limit), but do NOT store it as a training label. An autonomous
+                # swipe is the model's own PREDICTION, not ground truth — training on it
+                # would create a self-reinforcing feedback loop that amplifies the
+                # model's biases. Training labels come ONLY from manual/observe swipes.
                 self.store.record_decision(self.run_id, self.app, d.decision, d.score)
-                if d.embedding:                               # the swipe becomes a label too
-                    profile_id = uuid.uuid4().hex
-                    metadata = self._label_metadata(profile)
-                    archived = self.store.record_profile(self.run_id, self.app, profile_id,
-                                                         d.decision == "like", source=d.source,
-                                                         photos=profile.photos, **metadata)
-                    if archived is not False:                 # keep label only if its images were stored
-                        self.store.add_label(self.run_id, self.app, d.decision == "like",
-                                             d.embedding, source=d.source,
-                                             profile_id=profile_id, **metadata)
-                        if self.status:
-                            self.status.inc_labels(1)
+                if self.stop_event.is_set():
+                    break
 
                 if d.decision == "like":
                     opener = self.opener_service.maybe_opener(self.run_id, self.app, profile)

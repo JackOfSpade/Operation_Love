@@ -149,6 +149,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(self.state.config_defaults())
         elif path == "/api/eval":
             self._json(self.state.eval_snapshot())
+        elif path == "/api/logs":
+            from .bugreport import recent_logs   # tee'd stdout/stderr ring (install_log_capture)
+            self._json({"lines": recent_logs(300)})
         elif path == "/api/bugreport":
             from .bugreport import build_report
             desc = ""
@@ -387,6 +390,11 @@ _PAGE = """<!doctype html>
   </div>
 
   <div class="card">
+    <div class="row"><span class="muted">live log</span><span class="meta" id="loghint"></span></div>
+    <pre id="logs" style="max-height:320px;overflow:auto;background:#0c0c10;border:1px solid rgba(255,255,255,.09);border-radius:9px;padding:10px;margin-top:8px;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;color:#cfcfd6">waiting for output…</pre>
+  </div>
+
+  <div class="card">
     <div class="row"><span class="muted">report a bug</span><span class="meta" id="bughint"></span></div>
     <textarea id="bugdesc" rows="2" placeholder="What went wrong? (optional)"
       style="width:100%;margin:8px 0;background:#22222b;color:#e8e8ea;border:1px solid rgba(255,255,255,.14);border-radius:9px;padding:8px;font:inherit;resize:vertical"></textarea>
@@ -471,6 +479,17 @@ function renderEval(e){
 }
 async function tickEval(){ try { renderEval(await getJSON('/api/eval')); } catch(e){} }
 
+function _nearBottom(el){ return el.scrollHeight - el.scrollTop - el.clientHeight < 40; }
+async function tickLogs(){
+  try {
+    const r = await getJSON('/api/logs'); const el = $('#logs');
+    const stick = _nearBottom(el);                 // only auto-scroll if user is already at the bottom
+    el.textContent = (r.lines||[]).join('\n');
+    $('#loghint').textContent = (r.lines||[]).length + ' lines';
+    if(stick) el.scrollTop = el.scrollHeight;
+  } catch(e){}
+}
+
 function appChecks(){
   $('#appchecks').innerHTML = cfg.all_apps.map(a =>
     `<label class="chk"><input type="checkbox" value="${a}" ${cfg.enabled_apps.includes(a)?'checked':''}>${a}</label>`
@@ -513,6 +532,7 @@ $('#bugdl').onclick = async () => {
   appChecks();
   tick(); setInterval(tick, 1000);
   tickEval(); setInterval(tickEval, 20000);   // model quality: heavier, refresh slower (server caches 45s)
+  tickLogs(); setInterval(tickLogs, 1500);    // live log: tail the captured stdout/stderr
 })();
 </script>
 </body></html>

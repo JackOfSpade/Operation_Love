@@ -107,7 +107,11 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
 
     status.set_global(phase="live")
     try:
-        while any(w.is_alive() for w in workers):
+        # Break on stop_event too — not only when every worker has died. Otherwise a
+        # worker that's slow to exit (mid-capture/embed) makes Ctrl-C busy-spin here
+        # forever and never reach the flush/close below. With this, shutdown always
+        # proceeds to join(timeout) -> flush -> close.
+        while not stop_event.is_set() and any(w.is_alive() for w in workers):
             status.set_global(budget_spent=tracker.run_spend_usd, openers=tracker.calls)
             stop_event.wait(0.5)
     finally:

@@ -50,6 +50,9 @@ def _is_browser_closed_error(exc: Exception) -> bool:
         "target page, context or browser has been closed" in msg
         or "browser has been closed" in msg
         or "page has been closed" in msg
+        # Ctrl-C/SIGINT also kills patchright/playwright's node driver subprocess,
+        # so a later close() sees the driver gone — treat as already-closed.
+        or "connection closed" in msg
     )
 
 
@@ -66,8 +69,10 @@ DEFAULT_SELECTORS = {
     "pass": '[data-qa-role="encounters-action-dislike"]',
     # superlike is OBSERVE-ONLY: the bot never clicks it (super-likes/boosts are
     # the owner's manual decision). It exists here solely so observe mode can read
-    # a manual super-swipe as a 'like' signal when learning taste.
-    "superlike": '[data-qa-role="encounters-action-superswipe"]',
+    # a manual super-swipe as a 'like' signal when learning taste. Matches EITHER the
+    # action button's data-qa-role OR the icon's data-qa-icon-name (the latter
+    # confirmed live 2026-06-21), so detection survives Bumble button-DOM tweaks.
+    "superlike": '[data-qa-role="encounters-action-superswipe"], [data-qa-icon-name="floating-action-superswipe"]',
     "empty": '[data-qa-role="encounters-out-of-people"], .encounters-out-of-people',
 }
 

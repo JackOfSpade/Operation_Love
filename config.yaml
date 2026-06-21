@@ -37,7 +37,7 @@ storage:
     dataset: operation_love
     location: US
     photo_bucket: operation-love-2026-profile-photos
-    flush_every: 25            # buffer N rows before streaming to BigQuery
+    flush_every: 5             # buffer N rows before streaming to BigQuery (low = less seed data lost on a crash/kill)
 
 # --- Decision engine (local, learns YOUR taste from YOUR swipes) ---
 ranker:

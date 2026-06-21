@@ -79,7 +79,11 @@ def install_log_capture() -> None:
 
 
 def recent_logs(limit: int = 120) -> list[str]:
-    return list(_LOG_RING)[-limit:]
+    # Hold the lock for the snapshot: _Tee.write appends under _LOG_LOCK, and the hub
+    # polls this every ~1.5s during an actively-logging run — without the lock,
+    # list(_LOG_RING) can race an append and raise "deque mutated during iteration".
+    with _LOG_LOCK:
+        return list(_LOG_RING)[-limit:]
 
 
 # ── section builders ───────────────────────────────────────────────────────

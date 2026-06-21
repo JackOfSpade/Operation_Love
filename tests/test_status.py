@@ -101,9 +101,23 @@ def test_bumble_render_status_paints_overlay():
 
     drv = BumbleDriver(_Cfg())
     drv.page = P()
+    drv.inpage_overlays = True                          # opt in to the in-page HUD
     drv.render_status({"app": {"state": "waiting"}, "labels": 3})
     assert calls and calls[0][0] is _OVERLAY_JS         # injects the HUD script
     assert calls[0][1]["labels"] == 3                   # with the snapshot
+
+
+def test_bumble_render_overlays_disabled_by_default_is_noop():
+    # inpage_overlays defaults OFF on Bumble -> we never inject into Bumble's DOM
+    # (status lives in the hub). Both render hooks must be silent.
+    class P:
+        def evaluate(self, script, arg=None):
+            raise AssertionError("must not inject when in-page overlays are disabled")
+
+    drv = BumbleDriver(_Cfg())
+    drv.page = P()
+    drv.render_status({"labels": 1})
+    drv.render_busy("x")
 
 
 def test_bumble_render_status_no_page_is_noop():
@@ -117,6 +131,7 @@ def test_bumble_render_status_swallows_errors():
 
     drv = BumbleDriver(_Cfg())
     drv.page = P()
+    drv.inpage_overlays = True
     drv.render_status({"x": 1})                         # must not propagate
 
 
@@ -133,6 +148,7 @@ def test_bumble_render_busy_shows_and_hides():
 
     drv = BumbleDriver(_Cfg())
     drv.page = P()
+    drv.inpage_overlays = True               # opt in to the in-page busy modal
     drv.render_busy("processing…")          # show
     drv.render_busy(None)                    # hide
     assert all(c[0] is _BUSY_JS for c in calls)

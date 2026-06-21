@@ -16,9 +16,9 @@ from dataclasses import asdict, dataclass, field
 class AppStatus:
     app: str
     mode: str = "observe"
-    # starting | waiting | scoring | acting | out_of_profiles | rate_limited | saving | stopped | error
+    # starting | capturing | waiting | scoring | acting | out_of_profiles | rate_limited | saving | stopped | error
     state: str = "starting"
-    last_decision: str | None = None       # like | pass | dislike | defer | no_face
+    last_decision: str | None = None       # like | pass | dislike | defer | no_face | no_photos
     last_score: float | None = None
     swipes_run: int = 0                     # decisions recorded this run
     error: str | None = None

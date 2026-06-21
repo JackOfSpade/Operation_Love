@@ -48,6 +48,31 @@ class ClosingAfterSwipesDriver(FakeObservingDriver):
         return False
 
 
+class EmptyCaptureThenGoodDriver(FakeObservingDriver):
+    def __init__(self, swipes):
+        super().__init__(swipes)
+        self.current_calls = 0
+        self.busy_messages = []
+
+    def current_profile(self):
+        self.current_calls += 1
+        if self.current_calls == 1:
+            return Profile(photos=[], meta={"app": "bumble", "vec": None})
+        return self.swipes[self.i][0]
+
+    def render_busy(self, message=None):
+        self.busy_messages.append(message)
+
+
+class RecordingBusyDriver(FakeObservingDriver):
+    def __init__(self, swipes):
+        super().__init__(swipes)
+        self.busy_messages = []
+
+    def render_busy(self, message=None):
+        self.busy_messages.append(message)
+
+
 class FakeStore:
     def __init__(self):
         self.labels, self.profiles, self.sources, self.decisions = [], [], [], []
@@ -169,6 +194,40 @@ def test_observe_skips_no_face():
     w._observe_loop()
     assert len(store.labels) == 1                     # the no-face card was skipped
     assert len(store.profiles) == 2                   # raw profile decisions remain replayable
+
+
+def test_observe_recaptures_before_decision_when_profile_has_no_photos():
+    swipes = [(_profile([1.0, 1.0]), True)]
+    model = PreferenceModel(min_labels=10)
+    decider = RankerDecider(FakeQuality(), FakeEmbedder(), model)
+    store = FakeStore()
+    driver = EmptyCaptureThenGoodDriver(swipes)
+    w = Worker("bumble", driver, decider, None, store, "r",
+               _Pacing(), threading.Event(), mode="observe", retrain_every=5)
+    w._observe_loop()
+
+    assert driver.current_calls == 2
+    assert driver.busy_messages[0].startswith("Capturing profile")
+    assert sum(1 for msg in driver.busy_messages if msg and msg.startswith("Capturing profile")) == 2
+    assert None in driver.busy_messages                    # only unblocks after the good capture
+    assert len(store.profiles) == 1
+    assert len(store.labels) == 1
+    assert len(store.decisions) == 1
+
+
+def test_observe_reblocks_capture_after_decision_wait_returns_none():
+    swipes = [(_profile([1.0, 1.0]), None), (_profile([2.0, 2.0]), True)]
+    model = PreferenceModel(min_labels=10)
+    decider = RankerDecider(FakeQuality(), FakeEmbedder(), model)
+    store = FakeStore()
+    driver = RecordingBusyDriver(swipes)
+    w = Worker("bumble", driver, decider, None, store, "r",
+               _Pacing(), threading.Event(), mode="observe", retrain_every=5)
+    w._observe_loop()
+
+    assert sum(1 for msg in driver.busy_messages if msg and msg.startswith("Capturing profile")) >= 2
+    assert len(store.profiles) == 1
+    assert len(store.labels) == 1
 
 
 def test_observe_skips_label_when_image_archive_fails():

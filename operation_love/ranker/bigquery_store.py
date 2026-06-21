@@ -163,17 +163,23 @@ class BigQueryStore:
                        photos=None, photo_count=0) -> bool:
         """Archive the profile's images + manifest row. Returns True if recorded.
 
-        Image archiving is the system of record, so it's best-effort-but-mandatory:
-        each upload is retried; a transient GCS blip never raises (which would tear
-        down the swipe loop). If photos were supplied but NONE could be stored after
-        retries, we record nothing (no orphan manifest, no label without its images)
-        and return False so the worker skips that swipe's label.
+        Image archiving is the system of record, so it is mandatory but non-fatal
+        to the swipe loop: each upload is retried; a transient GCS blip never
+        raises. If any photo cannot be stored after retries, we record no manifest
+        and return False so the worker skips that swipe's label instead of keeping
+        a label without the complete profile image set.
         """
         photos = list(photos or [])
+        if not photos:
+            print(f"[bigquery_store] WARNING: captured 0 photos for profile {profile_id}; "
+                  "skipping profile archive.")
+            return False
         created_at = _now()
         photo_rows = self._upload_profile_photos(run_id, app, profile_id, created_at, photos)
-        if photos and not photo_rows:           # had images but archived none -> skip the swipe
-            print(f"[bigquery_store] WARNING: archived 0/{len(photos)} photos for "
+        if len(photo_rows) != len(photos):
+            if photo_rows:
+                self._delete_profile_photo_rows(photo_rows)
+            print(f"[bigquery_store] WARNING: archived {len(photo_rows)}/{len(photos)} photos for "
                   f"profile {profile_id}; skipping its label to keep image data complete.")
             return False
         with self._lock:
@@ -210,13 +216,24 @@ class BigQueryStore:
             object_name = f"profiles/{app}/{run_id}/{profile_id}/{i:02d}-{digest[:16]}.{ext}"
             blob = self._photo_bucket.blob(object_name)
             if not self._upload_blob(blob, photo, content_type):
-                continue                         # drop only the failed photo, keep the rest
+                break
             rows.append({
                 "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": created_at,
                 "photo_index": i, "gcs_uri": f"gs://{self.photo_bucket_name}/{object_name}",
                 "sha256": digest, "byte_size": len(photo), "content_type": content_type,
             })
         return rows
+
+    def _delete_profile_photo_rows(self, rows: list[dict]) -> None:
+        prefix = f"gs://{self.photo_bucket_name}/"
+        for row in rows:
+            uri = str(row.get("gcs_uri") or "")
+            if not uri.startswith(prefix):
+                continue
+            try:
+                self._photo_bucket.blob(uri[len(prefix):]).delete()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[bigquery_store] WARNING: could not delete partial photo {uri}: {exc}")
 
     def add_label(self, run_id, app, liked, embedding, source="manual", photo_count=0,
                   profile_id="", **_):

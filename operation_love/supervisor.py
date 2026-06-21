@@ -95,7 +95,8 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         app_cfg = cfg.apps.get(app, {}) or {}
         mode = app_cfg.get("mode", cfg.mode)                          # per-app override
         lim = {**cfg.limits, **(app_cfg.get("limits", {}))}
-        limiter = RateLimiter(lim.get("max_per_run"), lim.get("max_per_day"))
+        limiter = RateLimiter(lim.get("max_per_run"), lim.get("max_per_day"),
+                              lim.get("max_likes_per_run"))
         driver = make_driver(app, cfg)
         w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing,
                    stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every,

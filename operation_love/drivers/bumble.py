@@ -22,10 +22,12 @@ wired through for parity and future Bumble "Opening Moves" support.
 """
 from __future__ import annotations
 
+import random
 import time
 from pathlib import Path
 
 from .base import DatingAppDriver, DriverClosed
+from ..human import human_delay
 from ..perception.capture import Profile
 
 _OBSERVE_POLL_S = 0.15      # internal sampling cadence for your manual swipe (not app-facing)
@@ -35,6 +37,9 @@ _DEFAULT_PHOTO_CAPTURE_STEPS = 8
 _PHOTO_ADVANCE_SETTLE_S = 0.25
 _ALBUM_PRELOADED_MIN = 3      # if the first frame yields >= this many photos, the album is fully loaded
 _MAX_PHOTOS_PER_PROFILE = 12  # hard cap; real profiles top out ~6, so this bounds runaway re-capture
+_PHOTO_READY_TIMEOUT_S = 8.0
+_PHOTO_READY_POLL_S = 0.25
+_PHOTO_READY_SETTLE_S = 0.75
 
 
 def _is_browser_closed_error(exc: Exception) -> bool:
@@ -145,6 +150,45 @@ _BUSY_JS = """
 }
 """
 
+_PHOTO_LOADED_JS = """
+async (node) => {
+  const rect = node.getBoundingClientRect();
+  const minW = Math.max(96, rect.width * 0.60);
+  const minH = Math.max(96, rect.height * 0.60);
+  const imgs = [];
+  if (node instanceof HTMLImageElement) imgs.push(node);
+  if (node.querySelectorAll) imgs.push(...node.querySelectorAll('img'));
+  if (imgs.length) {
+    return imgs.some((img) => img.complete
+      && img.naturalWidth >= minW && img.naturalHeight >= minH);
+  }
+  const nodes = [node];
+  if (node.querySelectorAll) nodes.push(...node.querySelectorAll('*'));
+  const urls = [];
+  for (const n of nodes) {
+    const bg = window.getComputedStyle(n).backgroundImage;
+    const m = bg && bg.match(/url\\(["']?([^"')]+)["']?\\)/);
+    if (m) urls.push(m[1]);
+  }
+  if (!urls.length) return false;
+  const checks = urls.map((url) => new Promise((resolve) => {
+    const img = new Image();
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      resolve(!!ok && img.naturalWidth >= minW && img.naturalHeight >= minH);
+    };
+    img.onload = () => finish(true);
+    img.onerror = () => finish(false);
+    img.src = url;
+    if (img.complete) finish(true);
+    setTimeout(() => finish(false), 1500);
+  }));
+  return (await Promise.all(checks)).some(Boolean);
+}
+"""
+
 
 class BumbleDriver(DatingAppDriver):
     def __init__(self, cfg):
@@ -157,27 +201,82 @@ class BumbleDriver(DatingAppDriver):
         self.photo_capture_steps = max(
             1, int(app_cfg.get("photo_capture_steps", _DEFAULT_PHOTO_CAPTURE_STEPS))
         )
+        # Drive the real Chrome binary by default (more authentic than bundled
+        # Chromium); "" forces bundled. The in-page HUD is OFF by default so we
+        # don't mutate Bumble's DOM with our own element (status lives in the hub).
+        self.browser_channel = app_cfg.get("browser_channel", "chrome")
+        self.inpage_overlays = bool(app_cfg.get("inpage_overlays", False))
         self._pw = None
         self._ctx = None
         self.page = None
+        self._active_channel = None
+        self._mouse_xy = None        # last known cursor position (for human-like moves)
 
     # --- lifecycle ------------------------------------------------------
     def open_session(self) -> None:
-        from playwright.sync_api import sync_playwright  # type: ignore  # lazy: optional [bumble] extra, runtime only
+        sync_playwright, engine = self._import_playwright()
 
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
         self._pw = sync_playwright().start()
-        # Persistent context => your manual login is remembered across runs.
-        self._ctx = self._pw.chromium.launch_persistent_context(
-            user_data_dir=str(self.user_data_dir),
-            headless=self.headless,
-            viewport={"width": 1280, "height": 900},
-        )
-        self.page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
-        self.page.set_default_timeout(self.nav_timeout_ms)
-        self.page.goto(self.url, wait_until="domcontentloaded")
-        # First run: if not logged in, sign in by hand in the opened window; the
-        # user-data dir persists the session for subsequent runs.
+        try:
+            # Anti-automation hygiene (see Bumble risk review): hide the
+            # AutomationControlled blink feature so navigator.webdriver isn't set,
+            # and drop the --enable-automation switch. A patched engine (patchright
+            # / rebrowser-playwright, preferred in _import_playwright) additionally
+            # routes script evaluation through isolated worlds, avoiding the
+            # Runtime.enable / consoleAPICalled CDP leak that flags vanilla Playwright.
+            launch_kwargs = dict(
+                user_data_dir=str(self.user_data_dir),
+                headless=self.headless,
+                viewport={"width": 1280, "height": 900},
+                args=["--disable-blink-features=AutomationControlled"],
+                ignore_default_args=["--enable-automation"],
+            )
+            # Persistent context => your manual login is remembered across runs.
+            # Prefer the real Google Chrome binary over bundled Chromium for
+            # authentic WebGL/plugins/window.chrome; fall back if Chrome's absent.
+            self._ctx = self._launch_context(launch_kwargs)
+            print(f"[bumble] browser engine={engine}, channel={self._active_channel}")
+            self.page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
+            self.page.set_default_timeout(self.nav_timeout_ms)
+            self.page.goto(self.url, wait_until="domcontentloaded")
+            # First run: if not logged in, sign in by hand in the opened window; the
+            # user-data dir persists the session for subsequent runs.
+        except BaseException:
+            # A failed launch/goto must not orphan the Playwright driver subprocess:
+            # the worker only calls close() inside its own try/finally, AFTER
+            # open_session returns. close() is safe on a partially-started session.
+            self.close()
+            raise
+
+    @staticmethod
+    def _import_playwright():
+        """Prefer a stealth-patched Playwright (patchright, then rebrowser-playwright)
+        that avoids the Runtime.enable CDP leak; fall back to vanilla playwright.
+        All expose the same sync_api surface."""
+        from importlib import import_module
+        for mod, name in (("patchright", "patchright"),
+                          ("rebrowser_playwright", "rebrowser-playwright")):
+            try:
+                return import_module(f"{mod}.sync_api").sync_playwright, name
+            except Exception:  # noqa: BLE001
+                continue
+        from playwright.sync_api import sync_playwright  # type: ignore  # lazy: [bumble] extra
+        return sync_playwright, "playwright (unpatched — pip install patchright for stealth)"
+
+    def _launch_context(self, launch_kwargs: dict):
+        channel = (self.browser_channel or "").strip()
+        if channel:
+            try:
+                ctx = self._pw.chromium.launch_persistent_context(channel=channel, **launch_kwargs)
+                self._active_channel = channel
+                return ctx
+            except Exception as exc:  # noqa: BLE001
+                print(f"[bumble] channel='{channel}' unavailable ({type(exc).__name__}); "
+                      f"falling back to bundled Chromium.")
+        ctx = self._pw.chromium.launch_persistent_context(**launch_kwargs)
+        self._active_channel = "chromium (bundled)"
+        return ctx
 
     def close(self) -> None:
         try:
@@ -197,9 +296,10 @@ class BumbleDriver(DatingAppDriver):
             self._pw = self._ctx = self.page = None
 
     def render_status(self, status: dict) -> None:
-        # Paint/refresh the in-page HUD. Best-effort: a navigation mid-eval or a
-        # closed page must never interrupt the swipe loop.
-        if not self.page:
+        # Paint/refresh the in-page HUD. OFF by default on Bumble (inpage_overlays)
+        # so we don't mutate Bumble's DOM with our own element — status shows in the
+        # hub instead. Best-effort: a mid-eval navigation must not break the loop.
+        if not self.page or not self.inpage_overlays:
             return
         try:
             self.page.evaluate(_OVERLAY_JS, status)
@@ -208,8 +308,9 @@ class BumbleDriver(DatingAppDriver):
 
     def render_busy(self, message: str | None = None) -> None:
         # Full-screen click-blocking modal so you can't swipe the next card while
-        # this one is still embedding. message shows it; None hides it.
-        if not self.page:
+        # this one is still embedding. OFF by default on Bumble (inpage_overlays)
+        # to avoid injecting into Bumble's DOM. message shows it; None hides it.
+        if not self.page or not self.inpage_overlays:
             return
         try:
             self.page.evaluate(_BUSY_JS, message)
@@ -272,6 +373,18 @@ class BumbleDriver(DatingAppDriver):
         you also use keyboard shortcuts, confirm coverage with bumble_inspect.py.
         """
         self._install_observe_listener()
+        # Discard any decision recorded during the PREVIOUS card's capture/embed
+        # window. With the in-page busy modal off (inpage_overlays default False),
+        # you can physically swipe the next card while we're still embedding the
+        # last one; that stray swipe sets window.__oplove_decision and, left
+        # uncleared, would be mis-attributed to the card we're about to wait on ->
+        # corrupted labels. Clearing here means only a swipe made AFTER this
+        # card's capture can count for it.
+        try:
+            self.page.evaluate("() => { window.__oplove_decision = null; }")
+        except Exception as exc:  # noqa: BLE001
+            _raise_driver_closed_if_browser_closed(exc)
+            raise
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if should_stop and should_stop():        # Stop pressed -> don't wait for a swipe
@@ -321,6 +434,53 @@ class BumbleDriver(DatingAppDriver):
             if self._is_profile_photo_element(el)
         ]
 
+    def _profile_photo_element_loaded(self, el) -> bool:
+        try:
+            return bool(el.evaluate(_PHOTO_LOADED_JS))
+        except Exception as exc:  # noqa: BLE001
+            _raise_driver_closed_if_browser_closed(exc)
+            # Older/fake element handles may not support evaluate; fail open so
+            # capture still works instead of spinning until timeout.
+            return True
+
+    def _profile_photo_counts(self, *, require_loaded: bool = False) -> tuple[int, int, int]:
+        raw = self._query_selector_all(self.selectors["photo"])
+        filtered = loaded = 0
+        for el in raw:
+            if not self._is_profile_photo_element(el):
+                continue
+            filtered += 1
+            if not require_loaded or self._profile_photo_element_loaded(el):
+                loaded += 1
+        return len(raw), filtered, loaded
+
+    def _wait_for_profile_album_ready(self) -> tuple[int, int]:
+        """Wait until Bumble's album elements have appeared and had time to paint."""
+        deadline = time.monotonic() + _PHOTO_READY_TIMEOUT_S
+        stable_counts = None
+        stable_since = None
+        last_raw = last_filtered = 0
+        while True:
+            raw, filtered, loaded = self._profile_photo_counts(require_loaded=True)
+            last_raw, last_filtered = raw, filtered
+            now = time.monotonic()
+            ready = filtered > 0 and loaded >= filtered
+            counts = (filtered, loaded)
+            if ready:
+                if counts != stable_counts:
+                    stable_counts = counts
+                    stable_since = now
+                elif stable_since is not None and now - stable_since >= _PHOTO_READY_SETTLE_S:
+                    return raw, filtered
+                if _PHOTO_READY_SETTLE_S <= 0:
+                    return raw, filtered
+            else:
+                stable_counts = None
+                stable_since = None
+            if now >= deadline:
+                return last_raw, last_filtered
+            time.sleep(_PHOTO_READY_POLL_S)
+
     def _largest_profile_photo_element(self):
         best = None
         best_area = 0.0
@@ -348,11 +508,13 @@ class BumbleDriver(DatingAppDriver):
         if not box:
             return False
         try:
-            self.page.mouse.click(
+            self._human_mouse_click(
                 float(box.get("x") or 0) + float(box.get("width") or 0) * 0.88,
                 float(box.get("y") or 0) + float(box.get("height") or 0) * 0.50,
             )
             return True
+        except DriverClosed:
+            raise
         except Exception as exc:  # noqa: BLE001
             _raise_driver_closed_if_browser_closed(exc)
             return False
@@ -376,14 +538,16 @@ class BumbleDriver(DatingAppDriver):
     def _capture_photos(self) -> list[bytes]:
         # CRITICAL: el.screenshot() captures the PAGE pixels under the element, so
         # our own overlays (the centered "Processing" modal, the HUD) would be
-        # baked into the shot and hide the face -> no_face. Hide them first.
+        # baked into the shot and hide the face -> no_face. Keep the blocking
+        # overlay visible while waiting for photos to load, then hide overlays
+        # only immediately before screenshots.
         # Bumble preloads the whole album as <img>s, so the first frame usually has
         # every photo; we only click through the carousel if it didn't, and we cap
         # the total so a progress-bar animation can't yield dozens of near-dup frames.
+        raw_matched, filtered_first = self._wait_for_profile_album_ready()
         self._hide_oplove_overlays()
         shots: list[bytes] = []
         seen: set[bytes] = set()
-        raw_matched = filtered_first = 0
         for i in range(self.photo_capture_steps):
             if i == 0:
                 raw_matched = len(self._query_selector_all(self.selectors["photo"]))
@@ -407,8 +571,10 @@ class BumbleDriver(DatingAppDriver):
 
     def _hide_oplove_overlays(self) -> None:
         # Make our injected overlays invisible so they're never screenshotted on
-        # top of the profile photos. The worker re-shows the HUD on its next
-        # render_status, and the busy modal on its next render_busy.
+        # top of the profile photos. No-op when in-page overlays are disabled
+        # (nothing was injected). The worker re-shows them on its next render.
+        if not self.inpage_overlays:
+            return
         try:
             self.page.evaluate(
                 "() => { for (const id of ['oplove-hud','oplove-busy']) {"
@@ -457,24 +623,105 @@ class BumbleDriver(DatingAppDriver):
             _raise_driver_closed_if_browser_closed(exc)
             raise
 
+    # --- human-like pointer (AUTO mode only; observe mode = your real cursor) ---
+    def _human_target(self, box: dict) -> tuple[float, float]:
+        """A jittered point inside the element, not dead-center — humans don't click
+        the exact middle every time."""
+        x, y = float(box.get("x") or 0), float(box.get("y") or 0)
+        w, h = float(box.get("width") or 0), float(box.get("height") or 0)
+        return (x + w * (0.5 + random.uniform(-0.22, 0.22)),
+                y + h * (0.5 + random.uniform(-0.22, 0.22)))
+
+    def _human_move(self, x: float, y: float) -> None:
+        """Move the cursor to (x, y) along a curved (quadratic-Bezier) path with a
+        slight overshoot, instead of teleporting — defeats zero-transition-time
+        pointer detection. No-op on fakes/engines without a real mouse.move."""
+        mouse = getattr(self.page, "mouse", None)
+        move = getattr(mouse, "move", None)
+        if not callable(move):
+            return
+        vp = getattr(self.page, "viewport_size", None) or {"width": 1280, "height": 900}
+        sx, sy = self._mouse_xy or (float(vp.get("width", 1280)) * 0.5,
+                                    float(vp.get("height", 900)) * 0.85)
+        cx = (sx + x) / 2 + random.uniform(-60, 60)     # random control point...
+        cy = (sy + y) / 2 + random.uniform(-60, 60)
+        ox, oy = x + random.uniform(-4, 4), y + random.uniform(-4, 4)   # ...and overshoot
+        steps = random.randint(14, 26)
+        try:
+            for i in range(1, steps + 1):
+                t = i / steps
+                mt = 1 - t
+                px = mt * mt * sx + 2 * mt * t * cx + t * t * ox
+                py = mt * mt * sy + 2 * mt * t * cy + t * t * oy
+                move(px, py)
+                time.sleep(human_delay(0.012))
+            move(x, y)                                  # settle on the (jittered) target
+        except Exception as exc:  # noqa: BLE001
+            _raise_driver_closed_if_browser_closed(exc)
+            raise
+        self._mouse_xy = (x, y)
+
+    def _human_mouse_click(self, x: float, y: float) -> None:
+        """Human-ish move to (x, y), a brief hesitation, then click there."""
+        self._human_move(x, y)
+        time.sleep(human_delay(0.09))
+        try:
+            self.page.mouse.click(x, y)
+        except Exception as exc:  # noqa: BLE001
+            _raise_driver_closed_if_browser_closed(exc)
+            raise
+        self._mouse_xy = (x, y)
+
+    def _box_center_in_viewport(self, box: dict) -> bool:
+        vp = getattr(self.page, "viewport_size", None)
+        if not vp:
+            return True                          # unknown viewport -> don't block the human path
+        cx = float(box.get("x") or 0) + float(box.get("width") or 0) / 2
+        cy = float(box.get("y") or 0) + float(box.get("height") or 0) / 2
+        return 0 <= cx <= float(vp.get("width", 0)) and 0 <= cy <= float(vp.get("height", 0))
+
+    def _human_click(self, selector: str) -> None:
+        """Click an element with a human-like cursor path. Falls back to a plain
+        Playwright click — which keeps Playwright's actionability checks + auto
+        scroll-into-view — when the element box, a real mouse API, or an on-screen
+        target isn't available (e.g. in tests, or a control that's off-screen or
+        covered). Preserves the browser-closed -> DriverClosed contract on every path."""
+        el = self._query_selector(selector)
+        box = None
+        if el is not None:
+            try:
+                scroll = getattr(el, "scroll_into_view_if_needed", None)
+                if callable(scroll):
+                    scroll()                     # bring the control into view first
+                box = el.bounding_box()
+            except Exception as exc:  # noqa: BLE001
+                _raise_driver_closed_if_browser_closed(exc)
+                raise
+        mouse = getattr(self.page, "mouse", None)
+        if (box and self._box_center_in_viewport(box)
+                and callable(getattr(mouse, "move", None))
+                and callable(getattr(mouse, "click", None))):
+            x, y = self._human_target(box)
+            self._human_mouse_click(x, y)
+            return
+        # No box / off-screen / no mouse API -> raw-coordinate clicking isn't safe;
+        # page.click does its own actionability + scroll-into-view.
+        try:
+            self.page.click(selector)
+        except Exception as exc:  # noqa: BLE001
+            _raise_driver_closed_if_browser_closed(exc)
+            raise
+
     # --- actions --------------------------------------------------------
     def like(self, opener: str | None = None) -> None:
         # NORMAL like only — never the super-swipe. Super-likes/boosts are the
         # owner's manual call (see DEFAULT_SELECTORS["superlike"]).
-        try:
-            self.page.click(self.selectors["like"])
-        except Exception as exc:  # noqa: BLE001
-            _raise_driver_closed_if_browser_closed(exc)
-            raise
+        self._human_click(self.selectors["like"])
         # NOTE: opener is not sent here on standard Bumble (post-match / women-first).
         # Hook point for Bumble "Opening Moves" once that flow is mapped live.
 
     def dislike(self) -> None:
-        try:
-            self.page.click(self.selectors["pass"])
-        except Exception as exc:  # noqa: BLE001
-            _raise_driver_closed_if_browser_closed(exc)
-            raise
+        self._human_click(self.selectors["pass"])
 
     def out_of_profiles(self) -> bool:
         return self._query_selector(self.selectors["empty"]) is not None

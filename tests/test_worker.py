@@ -6,6 +6,7 @@ from operation_love.costing import CostTracker, ModelPricing, Usage
 from operation_love.drivers.base import DatingAppDriver, DriverClosed
 from operation_love.opener.opener import OpenerResult
 from operation_love.opener.service import OpenerService
+from operation_love.limits import RateLimiter
 from operation_love.perception.capture import Profile
 from operation_love.ranker.decider import Decision
 from operation_love.worker import Worker
@@ -71,12 +72,14 @@ class FakeStore:
     def load_labels(self): return []
     def record_profile(self, run_id, app, profile_id, liked, source="manual", **k):
         self.profiles.append((app, profile_id, liked, k))
+        return True
     def add_label(self, run_id, app, liked, embedding, source="manual", profile_id="", **k):
         self.labels.append((app, profile_id, liked, k))
     def record_decision(self, run_id, app, decision, score): self.decisions.append((app, decision))
     def record_opener(self, run_id, app, model, opener, referenced): self.openers.append(opener)
     def record_spend(self, run_id, model, usage, cost): self.spend.append(cost)
     def label_count(self): return len(self.labels)
+    def count_today(self, app): return 0
     def flush(self): pass
     def close(self): pass
 
@@ -169,6 +172,20 @@ def test_worker_stops_when_budget_exhausted():
     # a second profile is swiped.
     assert client.calls == 1
     assert driver.likes == ["hi 1"]
+    assert driver.closed
+
+
+def test_worker_stops_at_per_run_like_budget():
+    driver = FakeDriver(5)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    limiter = RateLimiter(max_likes_per_run=2)
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", limiter=limiter).run()
+    # Likes up to the budget, then stops the run BEFORE acting on the next card —
+    # so the would-be 3rd like is never mislabeled as a pass.
+    assert driver.likes == ["hi 1", "hi 2"]
+    assert len(store.labels) == 2 and len(store.decisions) == 2
     assert driver.closed
 
 

@@ -38,12 +38,16 @@ class _FakeBlob:
         self.content_type = ""
         self.public = False
         self.fail = fail
+        self.deleted = False
 
     def upload_from_string(self, data, content_type=None):
         if self.fail:
             raise RuntimeError("simulated GCS upload failure")
         self.data = data
         self.content_type = content_type or ""
+
+    def delete(self):
+        self.deleted = True
 
     def make_public(self):
         self.public = True
@@ -154,6 +158,18 @@ def test_record_profile_uploads_photos_and_manifest_rows():
     assert all(not blob.public for blob in blobs.values())
 
 
+def test_record_profile_rejects_empty_photo_set():
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    ok = s.record_profile("r", "bumble", "profile-empty", False, photos=[], photo_count=0)
+    s.flush()
+
+    assert ok is False
+    assert "proj.ds.profiles" not in client.inserted
+    assert "proj.ds.profile_photos" not in client.inserted
+
+
 def test_record_profile_returns_false_and_records_nothing_when_all_uploads_fail():
     client = _FakeBQ()
     storage = _FakeStorage(fail_uploads=True)
@@ -168,7 +184,7 @@ def test_record_profile_returns_false_and_records_nothing_when_all_uploads_fail(
     assert "proj.ds.profile_photos" not in client.inserted   # ...and no photo rows
 
 
-def test_record_profile_keeps_succeeding_photos_on_partial_failure():
+def test_record_profile_rolls_back_partial_upload_failure():
     client = _FakeBQ()
     storage = _FakeStorage()
     bucket = storage.bucket("photos")
@@ -186,10 +202,10 @@ def test_record_profile_keeps_succeeding_photos_on_partial_failure():
     ok = s.record_profile("r", "bumble", "profile-y", True, photos=[b"one", b"two", b"three"], photo_count=3)
     s.flush()
 
-    assert ok is True
-    photo_rows = client.inserted["proj.ds.profile_photos"]
-    assert [r["photo_index"] for r in photo_rows] == [0, 2]      # the failed one is dropped
-    assert client.inserted["proj.ds.profiles"][0]["photo_count"] == 2   # manifest reflects stored count
+    assert ok is False
+    assert "proj.ds.profiles" not in client.inserted
+    assert "proj.ds.profile_photos" not in client.inserted
+    assert next(blob for name, blob in bucket.blobs.items() if "/00-" in name).deleted is True
 
 
 def test_create_bucket_enforces_private_access():

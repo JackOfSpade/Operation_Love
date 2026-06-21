@@ -21,6 +21,10 @@ from .drivers.base import DatingAppDriver, DriverClosed
 from .human import human_cooldown, human_delay
 from .ranker.decider import Decider
 
+_OBSERVE_CAPTURE_BUSY = "Capturing profile — please wait before your next swipe"
+_OBSERVE_PROCESSING_BUSY = "Processing — please wait before your next swipe"
+_NO_PHOTO_RETRY_S = 0.5
+
 
 class Worker(threading.Thread):
     def __init__(self, app, driver: DatingAppDriver, decider: Decider, opener_service,
@@ -51,6 +55,10 @@ class Worker(threading.Thread):
         if self.status:
             self.driver.render_status(self.status.app_view(self.app))
 
+    def _block_observe_capture(self, **status_fields) -> None:
+        self.driver.render_busy(_OBSERVE_CAPTURE_BUSY)
+        self._stat(state="capturing", **status_fields)
+
     def run(self) -> None:
         backoff, restarts = 2.0, 0
         while not self.stop_event.is_set():
@@ -75,7 +83,7 @@ class Worker(threading.Thread):
     def _observe_loop(self) -> None:
         print(f"[worker-{self.app}] observe mode — swipe manually; I'll learn from each swipe.")
         self.driver.open_session()
-        self._stat(mode="observe", state="waiting")
+        self._block_observe_capture(mode="observe")
         added = 0
         last_retrained = 0
         pending_error = False
@@ -87,13 +95,19 @@ class Worker(threading.Thread):
                 profile = self.driver.current_profile()      # capture the card you're viewing
                 if profile is None:
                     continue
+                if not profile.photos:
+                    print(f"[worker-{self.app}] captured 0 profile photos; waiting to recapture before learning.")
+                    self._block_observe_capture(last_decision="no_photos")
+                    self.stop_event.wait(_NO_PHOTO_RETRY_S)
+                    continue
                 self.driver.render_busy(None)                 # processing done -> OK to swipe now
                 self._stat(state="waiting")                   # overlay: "swipe — learning your taste"
                 liked = self.driver.wait_for_decision(should_stop=self.stop_event.is_set)
                 if liked is None:                             # card changed / timeout / stop -> skip
+                    self._block_observe_capture()
                     continue
                 # block the next swipe while this one embeds (avoids mis-attribution)
-                self.driver.render_busy("Processing — please wait before your next swipe")
+                self.driver.render_busy(_OBSERVE_PROCESSING_BUSY)
                 profile_id = uuid.uuid4().hex
                 metadata = self._label_metadata(profile)
                 archived = self.store.record_profile(self.run_id, self.app, profile_id, liked,
@@ -145,6 +159,7 @@ class Worker(threading.Thread):
     # --- autonomous: the bot swipes ------------------------------------
     def _auto_loop(self) -> None:
         acted = 0
+        liked = 0
         today0 = self.store.count_today(self.app) if self.limiter else 0
         self.driver.open_session()
         self._stat(mode="auto", state="scoring")
@@ -170,6 +185,14 @@ class Worker(threading.Thread):
                           f"mode and swipe manually to seed it. Stopping {self.app}.")
                     break
 
+                # Per-run like budget: stop the run rather than mislabel a wanted
+                # like as a pass (keeps the right-swipe ratio human; see limits.py).
+                if d.decision == "like" and self.limiter and not self.limiter.allow_like(liked):
+                    self._stat(state="rate_limited")
+                    print(f"[worker-{self.app}] per-run like budget reached "
+                          f"({self.limiter.describe()}); stopping {self.app}.")
+                    break
+
                 self.store.record_decision(self.run_id, self.app, d.decision, d.score)
                 if d.embedding:                               # the swipe becomes a label too
                     profile_id = uuid.uuid4().hex
@@ -187,6 +210,7 @@ class Worker(threading.Thread):
                 if d.decision == "like":
                     opener = self.opener_service.maybe_opener(self.run_id, self.app, profile)
                     self.driver.like(opener)
+                    liked += 1
                 else:
                     self.driver.dislike()
                 if self.status:

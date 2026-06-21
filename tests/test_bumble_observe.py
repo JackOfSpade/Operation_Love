@@ -4,6 +4,9 @@ No browser: a FakePage scripts what window.__oplove_decision reads back, so we
 exercise wait_for_decision()'s polling/return logic (the DOM click listener is
 exercised live by tools/bumble_inspect.py).
 """
+from contextlib import contextmanager
+
+import operation_love.drivers.bumble as bumble
 from operation_love.drivers.base import DriverClosed
 from operation_love.drivers.bumble import BumbleDriver
 
@@ -17,12 +20,16 @@ class FakePage:
         self.reads = list(reads)
         self.empty = empty
         self.installed = False
+        self.cleared = 0
 
     def evaluate(self, script, arg=None):
         if "__oplove_obs" in script:          # the install snippet
             self.installed = True
             # like/pass/superlike selectors passed through (superswipe -> 'like')
             assert arg == [d.selectors["like"], d.selectors["pass"], d.selectors["superlike"]]
+            return None
+        if "return v" not in script:          # the pre-poll clear -> no-op, doesn't consume a read
+            self.cleared += 1
             return None
         return self.reads.pop(0) if self.reads else None   # the read snippet
 
@@ -36,12 +43,19 @@ class FakeClosedPage(FakePage):
 
 
 class FakePhotoElement:
-    def __init__(self, name, box):
+    def __init__(self, name, box, loaded_after=1):
         self.name = name
         self._box = box
+        self.loaded_after = loaded_after
+        self.load_checks = 0
 
     def bounding_box(self):
         return self._box
+
+    def evaluate(self, script):
+        assert script == bumble._PHOTO_LOADED_JS
+        self.load_checks += 1
+        return self.load_checks >= self.loaded_after
 
     def screenshot(self):
         return self.name.encode()
@@ -86,15 +100,94 @@ class FakePhotoPage:
             self.i += 1
 
 
+class FakeClosedAlbumAdvancePage(FakePhotoPage):
+    def click(self, *_):
+        raise RuntimeError("Target page, context or browser has been closed")
+
+
 class FakeClosedActionPage:
+    def query_selector(self, *_):
+        raise RuntimeError("Browser has been closed")
+
     def click(self, *_):
         raise RuntimeError("Browser has been closed")
+
+
+class _RecordingMouse:
+    def __init__(self):
+        self.moves = []
+        self.clicks = []
+
+    def move(self, x, y):
+        self.moves.append((x, y))
+
+    def click(self, x, y):
+        self.clicks.append((x, y))
+
+
+class FakeActionElement:
+    def __init__(self, box):
+        self._box = box
+
+    def bounding_box(self):
+        return self._box
+
+
+class FakeActionPage:
+    """Exercises the human-cursor click path: query_selector -> element with a box,
+    plus a real mouse exposing move + click."""
+    viewport_size = {"width": 1280, "height": 900}
+
+    def __init__(self, box):
+        self._box = box
+        self.mouse = _RecordingMouse()
+        self.plain_clicks = []
+
+    def query_selector(self, sel):
+        return FakeActionElement(self._box)
+
+    def click(self, sel):
+        self.plain_clicks.append(sel)
+
+
+class FakeNoElementPage:
+    """No element found -> human-click must fall back to a plain page.click."""
+    def __init__(self):
+        self.plain_clicks = []
+
+    def query_selector(self, sel):
+        return None
+
+    def click(self, sel):
+        self.plain_clicks.append(sel)
+
+
+class FakeLoadingPhotoPage(FakePhotoPage):
+    def query_selector_all(self, sel):
+        assert sel == d.selectors["photo"]
+        frame = self.frames[min(self.i, len(self.frames) - 1)]
+        if self.i < len(self.frames) - 1:
+            self.i += 1
+        return frame
 
 
 def _driver(page):
     drv = BumbleDriver(_Cfg())
     drv.page = page
     return drv
+
+
+@contextmanager
+def _fast_capture_waits(timeout=0.2, poll=0.0, settle=0.0):
+    old = (bumble._PHOTO_READY_TIMEOUT_S, bumble._PHOTO_READY_POLL_S, bumble._PHOTO_READY_SETTLE_S)
+    bumble._PHOTO_READY_TIMEOUT_S = timeout
+    bumble._PHOTO_READY_POLL_S = poll
+    bumble._PHOTO_READY_SETTLE_S = settle
+    try:
+        yield
+    finally:
+        (bumble._PHOTO_READY_TIMEOUT_S, bumble._PHOTO_READY_POLL_S,
+         bumble._PHOTO_READY_SETTLE_S) = old
 
 
 d = BumbleDriver(_Cfg())   # module-level for the selector assertion inside FakePage
@@ -114,6 +207,14 @@ def test_pass_detected():
 def test_none_then_like():
     drv = _driver(FakePage(reads=[None, None, "like"]))
     assert drv.wait_for_decision(timeout=5) is True
+
+
+def test_wait_clears_stale_decision_before_polling():
+    # A swipe captured during the previous card's embed (overlays off) must be
+    # discarded before we wait on the next card, not mis-attributed to it.
+    drv = _driver(FakePage(reads=["like"]))
+    assert drv.wait_for_decision(timeout=5) is True
+    assert drv.page.cleared == 1            # the pre-poll clear ran exactly once
 
 
 def test_deck_empty_returns_none():
@@ -160,11 +261,62 @@ def test_capture_photos_collects_distinct_album_steps():
     assert drv._capture_photos() == [b"profile_1", b"profile_2"]
 
 
+def test_capture_photos_waits_for_album_elements_before_screenshotting():
+    photo = FakePhotoElement("loaded_profile", {"x": 420, "y": 170, "width": 500, "height": 680})
+    page = FakeLoadingPhotoPage([[], [], [photo]])
+    drv = _driver(page)
+    with _fast_capture_waits():
+        assert drv._capture_photos() == [b"loaded_profile"]
+
+
+def test_capture_photos_waits_for_image_load_before_screenshotting():
+    photo = FakePhotoElement(
+        "loaded_late", {"x": 420, "y": 170, "width": 500, "height": 680}, loaded_after=3
+    )
+    drv = _driver(FakePhotoPage([photo]))
+    with _fast_capture_waits():
+        assert drv._capture_photos() == [b"loaded_late"]
+    assert photo.load_checks >= 3
+
+
+def test_capture_photos_waits_for_all_album_images_before_screenshotting():
+    ready = FakePhotoElement("ready", {"x": 420, "y": 170, "width": 500, "height": 680})
+    late = FakePhotoElement(
+        "late", {"x": 420, "y": 170, "width": 500, "height": 680}, loaded_after=3
+    )
+    drv = _driver(FakePhotoPage([ready, late]))
+    with _fast_capture_waits():
+        assert drv._capture_photos() == [b"ready", b"late"]
+    assert late.load_checks >= 3
+
+
+def test_capture_photos_times_out_when_image_never_reports_loaded():
+    photo = FakePhotoElement(
+        "eventual_capture", {"x": 420, "y": 170, "width": 500, "height": 680}, loaded_after=1_000_000
+    )
+    drv = _driver(FakePhotoPage([photo]))
+    with _fast_capture_waits(timeout=0.03, poll=0.01):
+        assert drv._capture_photos() == [b"eventual_capture"]
+    assert 1 < photo.load_checks < 1_000_000
+
+
 def test_capture_photos_browser_close_raises_driver_closed():
     drv = _driver(FakePhotoPage([FakeClosedPhotoElement("screenshot")]))
 
     try:
         drv._capture_photos()
+    except DriverClosed:
+        pass
+    else:
+        raise AssertionError("expected DriverClosed")
+
+
+def test_advance_photo_album_browser_close_raises_driver_closed():
+    photo = FakePhotoElement("profile", {"x": 420, "y": 170, "width": 500, "height": 680})
+    drv = _driver(FakeClosedAlbumAdvancePage([photo]))
+
+    try:
+        drv._advance_photo_album()
     except DriverClosed:
         pass
     else:
@@ -180,6 +332,25 @@ def test_like_browser_close_raises_driver_closed():
         pass
     else:
         raise AssertionError("expected DriverClosed")
+
+
+def test_like_uses_human_cursor_path_inside_button():
+    box = {"x": 1000, "y": 820, "width": 56, "height": 56}
+    drv = _driver(FakeActionPage(box))
+    drv.like()
+    page = drv.page
+    assert page.mouse.clicks, "expected a real mouse click (human path)"
+    cx, cy = page.mouse.clicks[-1]
+    assert box["x"] <= cx <= box["x"] + box["width"]      # landed inside the button
+    assert box["y"] <= cy <= box["y"] + box["height"]
+    assert page.mouse.moves, "expected curved cursor movement, not a teleport"
+    assert not page.plain_clicks                          # used the mouse path, not the fallback
+
+
+def test_dislike_falls_back_to_plain_click_without_box():
+    drv = _driver(FakeNoElementPage())
+    drv.dislike()
+    assert drv.page.plain_clicks == [drv.selectors["pass"]]
 
 
 if __name__ == "__main__":

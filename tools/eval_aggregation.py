@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 
-from operation_love.ranker.evaluate import evaluate, format_report
+from operation_love.ranker.evaluate import evaluate, format_report, marginal_return_summary
 
 
 def main() -> None:
@@ -32,7 +32,14 @@ def main() -> None:
     finally:
         store.close()
     print(f"[eval] loaded {len(samples)} label(s) from {cfg.storage.backend}\n")
-    print(format_report(evaluate(samples, n_splits=args.splits, eps=args.eps)))
+    result = evaluate(samples, n_splits=args.splits, eps=args.eps)
+    result = {
+        **result,
+        "marginal_return": marginal_return_summary(
+            samples, n_splits=args.splits, eps=args.eps, eval_result=result
+        ),
+    }
+    print(format_report(result))
 
 
 if __name__ == "__main__":

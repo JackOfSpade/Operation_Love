@@ -106,7 +106,7 @@ class HubState:
             return cached
         try:
             from .ranker import make_store
-            from .ranker.evaluate import evaluate
+            from .ranker.evaluate import evaluate, marginal_return_summary
             cfg = cfg_mod.load(self.config_path)
             store = make_store(cfg, ensure=False)   # read-only; don't run DDL just to eval
             try:
@@ -114,10 +114,16 @@ class HubState:
             finally:
                 store.close()
             result = evaluate(samples)
+            result = {**result, "marginal_return": marginal_return_summary(samples, eval_result=result)}
         except Exception as exc:  # noqa: BLE001
             result = {"status": "error", "message": f"{type(exc).__name__}: {exc}",
                       "labels": None, "identities": None, "folds": 0,
-                      "roc_auc": None, "pr_auc": None, "brier": None, "base_rate": 0.0}
+                      "roc_auc": None, "pr_auc": None, "brier": None, "base_rate": 0.0,
+                      "marginal_return": {
+                          "status": "error", "batch": 20, "marginal_return": None,
+                          "within_noise": None, "confidence": "low",
+                          "message": "marginal return unavailable",
+                      }}
         with self._lock:
             self._eval, self._eval_at = result, time.time()
         return result
@@ -475,21 +481,51 @@ async function tick(){ try { const snap = await getJSON('/api/status'); renderGl
 
 function renderEval(e){
   if(!e) return;
+  const esc = s => String(s).replace(/[&<>"]/g, ch => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]
+  ));
+  const gainFmt = v => {
+    const n = Number(v);
+    if(!Number.isFinite(n)) return null;
+    if(n === 0) return '+0';
+    let s = Math.abs(n).toPrecision(2);
+    if(!s.includes('e')) s = s.replace(/(\\.\\d*?[1-9])0+$/,'$1').replace(/\\.0+$/,'');
+    return (n >= 0 ? '+' : '-') + s;
+  };
+  const marginalLine = m => {
+    if(!m) return '';
+    if(m.status === 'too_early') return 'marginal return — too early to estimate · keep seeding';
+    if(m.status === 'plateau') return 'marginal return — gains have flattened (within measurement noise); add labels to resolve';
+    if(m.status !== 'ok') return 'marginal return — unavailable';
+    const g = gainFmt(m.marginal_return);
+    if(!g) return '';
+    let line = `marginal return ≈ ${g} PR-AUC per +${m.batch || 20} labels`;
+    if(m.within_noise) line += ' · within measurement noise — add labels to resolve';
+    return line;
+  };
+  const mr = marginalLine(e.marginal_return);
   if(e.status !== 'ok'){
     $('#evalhint').textContent = (e.identities!=null) ? `${e.identities} identities` : '';
     $('#evalbody').style.color = '#9a9aa2';
-    $('#evalbody').textContent = e.message || 'evaluating…';
+    $('#evalbody').innerHTML = `<div>${esc(e.message || 'evaluating…')}</div>`
+      + (mr ? `<div>${esc(mr)}</div>` : '');
     return;
   }
   const f = m => `${m[0].toFixed(2)}±${m[1].toFixed(2)}`;
-  const roc = e.roc_auc[0];
-  const col = roc>=0.7 ? '#39d98a' : (roc>=0.6 ? '#f0b429' : '#ff6b6b');   // good / ok / weak
+  // Headline = area under the precision–recall curve: the right metric for this
+  // imbalanced, positive-focused (find-the-likes) problem. Grade it by LIFT over
+  // the no-skill base rate, not an absolute cutoff — precision–recall's "good"
+  // scales with prevalence, unlike ROC where 0.5 is always chance.
+  const lift = (e.pr_auc[0] - e.base_rate) / Math.max(1e-9, 1 - e.base_rate);
+  const col = lift>=0.5 ? '#39d98a' : (lift>=0.3 ? '#f0b429' : '#ff6b6b');   // strong / ok / weak lift
   $('#evalhint').textContent = `${e.folds}-fold · ${e.identities} identities`;
   $('#evalbody').style.color = '#e8e8ea';
   $('#evalbody').innerHTML =
-    `ROC-AUC <b style="color:${col}">${f(e.roc_auc)}</b> · `
-    + `PR-AUC <b>${f(e.pr_auc)}</b> <span class="muted">(base ${e.base_rate.toFixed(2)})</span> · `
-    + `Brier <b>${f(e.brier)}</b>`;
+    `<div>Area under the precision–recall curve <b style="color:${col}">${f(e.pr_auc)}</b>`
+    + ` <span class="muted">(base ${e.base_rate.toFixed(2)})</span></div>`
+    + `<div>Area under the receiver-operating-characteristic curve <b>${f(e.roc_auc)}</b></div>`
+    + `<div>Brier score <b>${f(e.brier)}</b></div>`
+    + (mr ? `<div>${esc(mr)}</div>` : '');
 }
 async function tickEval(){ try { renderEval(await getJSON('/api/eval')); } catch(e){} }
 

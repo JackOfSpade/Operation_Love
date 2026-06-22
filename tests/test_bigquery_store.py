@@ -78,6 +78,9 @@ class _FakeBucket:
     def patch(self):
         self.patched = True
 
+    def reload(self):
+        pass
+
 
 class _FakeStorage:
     def __init__(self, bucket_exists=True, fail_uploads=False):
@@ -246,6 +249,32 @@ def test_create_bucket_enforces_private_access():
     assert bucket.iam_configuration.uniform_bucket_level_access_enabled is True
     assert bucket.iam_configuration.public_access_prevention == "enforced"
     assert bucket.patched is True
+
+
+def test_existing_bucket_gets_hardened():
+    # An ALREADY-EXISTING bucket (created before the hardening, e.g. fine-grained ACLs)
+    # must still be locked down on startup — not just freshly created ones.
+    client = _FakeBQ()
+    storage = _FakeStorage(bucket_exists=True)        # bucket already exists, unhardened defaults
+    BigQueryStore("proj", "ds", photo_bucket="existing", client=client,
+                  storage_client=storage, ensure=True)
+
+    bucket = storage.buckets["existing"]
+    assert ("existing", "US") not in storage.created   # not re-created
+    assert bucket.iam_configuration.uniform_bucket_level_access_enabled is True
+    assert bucket.iam_configuration.public_access_prevention == "enforced"
+    assert bucket.patched is True
+
+
+def test_already_hardened_bucket_is_not_repatched():
+    # Idempotent: a bucket already uniform + enforced shouldn't be patched again every startup.
+    client = _FakeBQ()
+    storage = _FakeStorage(bucket_exists=True)
+    storage.bucket("locked").iam_configuration.uniform_bucket_level_access_enabled = True
+    storage.bucket("locked").iam_configuration.public_access_prevention = "enforced"
+    BigQueryStore("proj", "ds", photo_bucket="locked", client=client,
+                  storage_client=storage, ensure=True)
+    assert storage.buckets["locked"].patched is False   # no needless write
 
 
 def test_load_labels_includes_buffered_labels_after_initial_load():

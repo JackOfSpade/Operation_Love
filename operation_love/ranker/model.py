@@ -37,8 +37,8 @@ class _PurePyLogReg:
         for _ in range(self.epochs):
             gw = [0.0] * d
             gb = 0.0
-            for xi, yi in zip(X, y):
-                p = _sigmoid(self.b + sum(wj * xj for wj, xj in zip(self.w, xi)))
+            for xi, yi in zip(X, y, strict=True):
+                p = _sigmoid(self.b + sum(wj * xj for wj, xj in zip(self.w, xi, strict=True)))
                 err = p - yi
                 for j in range(d):
                     gw[j] += err * xi[j]
@@ -48,7 +48,7 @@ class _PurePyLogReg:
             self.b -= self.lr * (gb / n)
 
     def predict_proba(self, x: list[float]) -> float:
-        return _sigmoid(self.b + sum(wj * xj for wj, xj in zip(self.w, x)))
+        return _sigmoid(self.b + sum(wj * xj for wj, xj in zip(self.w, x, strict=True)))
 
 
 class PreferenceModel:

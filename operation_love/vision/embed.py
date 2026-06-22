@@ -67,7 +67,7 @@ def dedup_by_cosine(vectors: list[list[float]], threshold: float = 0.85) -> list
     inputs (cosine == dot product). Keeps the first of each group. Pure-Python."""
     kept: list[list[float]] = []
     for v in vectors:
-        if any(sum(a * b for a, b in zip(v, u)) > threshold for u in kept):
+        if any(sum(a * b for a, b in zip(v, u, strict=True)) > threshold for u in kept):
             continue
         kept.append(v)
     return kept

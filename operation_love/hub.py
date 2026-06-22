@@ -24,6 +24,10 @@ from . import config as cfg_mod
 from . import supervisor
 
 
+_BROWSER_SHUTDOWN_GRACE_S = 1.5
+_CLOSED_BROWSER_CLIENT_TTL_S = 30.0
+
+
 class HubState:
     """Owns the (at most one) active run and exposes a JSON-able snapshot."""
 
@@ -39,6 +43,9 @@ class HubState:
         self._eval_labels: int | None = None  # label count when _eval was computed (cadence gate)
         self._eval_refreshing = False
         self._live_store = None             # the running supervisor's store (live in-memory labels)
+        self._browser_clients: dict[str, float] = {}
+        self._closed_browser_clients: dict[str, float] = {}
+        self._browser_shutdown_requested = False
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -83,6 +90,47 @@ class HubState:
             if self._stop:
                 self._stop.set()
         return True, "stopping"
+
+    def wait_for_run(self) -> None:
+        with self._lock:
+            thread = self._thread
+        if thread and thread.is_alive():
+            thread.join()
+
+    def browser_client_opened(self, client_id: str | None) -> None:
+        if not client_id:
+            return
+        now = time.time()
+        with self._lock:
+            self._prune_closed_browser_clients_locked(now)
+            if client_id in self._closed_browser_clients:
+                return
+            self._browser_clients[client_id] = now
+            self._browser_shutdown_requested = False
+
+    def browser_client_closed(self, client_id: str | None) -> bool:
+        """Return True once, when the last known hub page has gone away."""
+        if not client_id:
+            return False
+        now = time.time()
+        with self._lock:
+            self._prune_closed_browser_clients_locked(now)
+            self._browser_clients.pop(client_id, None)
+            self._closed_browser_clients[client_id] = now
+            if self._browser_clients or self._browser_shutdown_requested:
+                return False
+            self._browser_shutdown_requested = True
+            return True
+
+    def has_browser_clients(self) -> bool:
+        with self._lock:
+            return bool(self._browser_clients)
+
+    def _prune_closed_browser_clients_locked(self, now: float) -> None:
+        cutoff = now - _CLOSED_BROWSER_CLIENT_TTL_S
+        for client_id, closed_at in list(self._closed_browser_clients.items()):
+            if closed_at < cutoff:
+                self._closed_browser_clients.pop(client_id, None)
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -156,7 +204,7 @@ class HubState:
         running = self.is_running()
         try:
             from .ranker import make_store
-            from .ranker.evaluate import evaluate, marginal_return_summary
+            from .ranker.evaluate import evaluate
             cfg = cfg_mod.load(self.config_path)
             # FRESHNESS: when a run is live, read its in-memory store so the card sees
             # EVERY swipe (incl. the unflushed buffer) — not a re-query of BigQuery, which
@@ -176,7 +224,6 @@ class HubState:
                     store.close()
                 live_store = None                        # don't reuse a dead store for the chart
             result = evaluate(samples)
-            result = {**result, "marginal_return": marginal_return_summary(samples, eval_result=result)}
             result["trajectory"] = self._eval_trajectory(cfg, samples, result, every,
                                                          live_store if running else None)
             # Gate baseline must use the SAME counter the gate compares against: the live
@@ -186,12 +233,7 @@ class HubState:
         except Exception as exc:  # noqa: BLE001
             result = {"status": "error", "message": f"{type(exc).__name__}: {exc}",
                       "labels": None, "identities": None, "folds": 0,
-                      "roc_auc": None, "pr_auc": None, "brier": None, "base_rate": 0.0,
-                      "marginal_return": {
-                          "status": "error", "batch": 20, "marginal_return": None,
-                          "within_noise": None, "confidence": "low",
-                          "message": "diminishing-returns estimate failed",
-                      }}
+                      "roc_auc": None, "pr_auc": None, "brier": None, "base_rate": 0.0}
             computed_at = live if live is not None else base
         with self._lock:
             self._eval, self._eval_at, self._eval_labels = result, time.time(), computed_at
@@ -200,7 +242,7 @@ class HubState:
         return self._attach_refresh(result, every, live, computed_at, status)
 
     def _eval_trajectory(self, cfg, samples, result, every: int, live_store=None) -> list:
-        """Historical PR-AUC/ROC/Brier curve vs label count, for the hub chart. Reads the
+        """Historical ranker accuracy curve vs label count, for the hub chart. Reads the
         COMMITTED labels in swipe order and recomputes grouped CV at each prefix; then ties
         the final point to the live full-set result so the curve ends exactly on the card.
         Reuses the running store when given (its ordered read is off the worker lock for
@@ -222,13 +264,10 @@ class HubState:
             if not ordered:
                 return []
             traj = quality_trajectory(ordered, step=every)
-            if result.get("status") == "ok" and result.get("pr_auc"):
-                pr = result.get("pr_auc") or [None, None]
+            if result.get("status") == "ok" and result.get("roc_auc"):
                 roc = result.get("roc_auc") or [None, None]
-                brier = result.get("brier") or [None, None]
                 live_point = {"labels": len(samples), "identities": result.get("identities"),
-                              "pr_auc": pr[0], "pr_std": pr[1], "roc_auc": roc[0],
-                              "brier": brier[0], "base_rate": result.get("base_rate")}
+                              "roc_auc": roc[0], "roc_std": roc[1]}
                 if traj and traj[-1]["labels"] >= live_point["labels"]:
                     traj[-1] = live_point     # live full-set supersedes the committed tail
                 else:
@@ -297,6 +336,24 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._json({"error": "not found"}, 404)
 
+    def _schedule_shutdown_if_tab_stayed_closed(self) -> None:
+        state = self.state
+        server = self.server
+
+        def _target():
+            time.sleep(_BROWSER_SHUTDOWN_GRACE_S)  # reload/new tab gets a moment to register
+            if state and state.has_browser_clients():
+                return
+            if state and state.is_running():
+                print("Hub: browser hub tab closed; stopping active run before shutdown.")
+                state.stop()
+                state.wait_for_run()
+            else:
+                print("Hub: browser hub tab closed; shutting down.")
+            server.shutdown()
+
+        threading.Thread(target=_target, name="hub-tab-close-shutdown", daemon=True).start()
+
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", 0) or 0)
         raw = self.rfile.read(length) if length else b""
@@ -315,6 +372,14 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/stop":
             ok, msg = self.state.stop()
             self._json({"ok": ok, "msg": msg})
+        elif self.path == "/api/hub/open":
+            self.state.browser_client_opened(body.get("id"))
+            self._json({"ok": True})
+        elif self.path == "/api/hub/closed":
+            should_shutdown = self.state.browser_client_closed(body.get("id"))
+            self._json({"ok": True})
+            if should_shutdown:
+                self._schedule_shutdown_if_tab_stayed_closed()
         else:
             self._json({"error": "not found"}, 404)
 
@@ -361,8 +426,8 @@ def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
 # The single launcher: install deps only when they change, then launch. The app
 # runs from source (editable install), so code changes are live with no rebuild;
 # we re-run pip only when pyproject.toml is newer than the last install (stamped
-# inside .venv) or there's no .venv yet. Then it execs the hub, so the window
-# stays open running the server.
+# inside .venv) or there's no .venv yet. Then it launches the hub; when the
+# browser hub tab closes, the hub exits and the launcher closes this Terminal tab.
 _MAC_UPDATE_RUN = r'''#!/bin/zsh
 # Operation Love — set up if needed, then launch, in one double-click. Portable:
 # resolves the project from this script's own location, so it works on any
@@ -394,7 +459,24 @@ else
 fi
 
 echo "OK - launching the control hub (Ctrl-C to quit)..."
-exec "$PY" -m operation_love hub
+TTY_NAME="$(tty)"
+"$PY" -m operation_love hub
+status=$?
+if [ "$status" -eq 0 ] && [ -n "$TTY_NAME" ]; then
+  /usr/bin/nohup /usr/bin/osascript \
+    -e 'delay 0.2' \
+    -e 'tell application "Terminal"' \
+    -e 'repeat with w in windows' \
+    -e 'repeat with t in tabs of w' \
+    -e "if tty of t is \"$TTY_NAME\" then" \
+    -e 'close t' \
+    -e 'return' \
+    -e 'end if' \
+    -e 'end repeat' \
+    -e 'end repeat' \
+    -e 'end tell' >/dev/null 2>&1 &
+fi
+exit "$status"
 '''
 
 _LINUX_UPDATE_RUN = ('#!/bin/sh\ncd "$(dirname "$0")" || exit 1\n'
@@ -548,6 +630,17 @@ async function getJSON(u){ const r = await fetch(u); return r.json(); }
 async function postJSON(u,b){ const r = await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}); return r.json(); }
 
 let cfg = {all_apps:['bumble'], enabled_apps:['bumble'], mode:'observe', min_labels:40};
+const hubClientId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '-' + Math.random());
+function hubLifecycle(path){
+  const body = JSON.stringify({id: hubClientId});
+  if(path === '/api/hub/closed' && navigator.sendBeacon){
+    const sent = navigator.sendBeacon(path, new Blob([body], {type:'application/json'}));
+    if(sent) return;
+  }
+  fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body, keepalive: path === '/api/hub/closed'}).catch(() => {});
+}
+hubLifecycle('/api/hub/open');
+window.addEventListener('pagehide', () => hubLifecycle('/api/hub/closed'));
 
 function renderGlobal(snap){
   const running = snap && snap.running;
@@ -574,49 +667,32 @@ function renderEval(e){
   const esc = s => String(s).replace(/[&<>"]/g, ch => (
     {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]
   ));
-  const gainFmt = v => {
-    const x = Math.abs(Number(v));
-    if(!Number.isFinite(x) || x === 0) return null;
-    const places = Math.max(2, 1 - Math.floor(Math.log10(x)));   // ~2 sig figs, never 0.00
-    if(places > 9) return x.toExponential(1);
-    return x.toFixed(places).replace(/0+$/,'').replace(/\\.$/,'');
-  };
-  // One value-only indicator; the magnitude IS the signal (smaller = more diminished).
-  const diminishingHtml = m => {
-    const g = (m && m.status === 'ok') ? gainFmt(m.marginal_return) : null;
-    if(!g) return 'diminishing returns <b>—</b>';
-    const b = Number(m.batch) || 20;
-    return `diminishing returns <b>${g}</b> <span class="muted">PR-AUC / +${b} labels</span>`;
-  };
-  const mr = diminishingHtml(e.marginal_return);
-  // Quality-over-labels trend: how grouped-CV PR-AUC / ROC-AUC have moved as labels
-  // accumulated (reconstructed from swipe order), with the per-point base rate as the floor.
-  const trajSvg = traj => {
+  // Single metric "accuracy" = ROC-AUC as a % = P(model ranks a profile you'd LIKE above one
+  // you'd PASS). 50% = coin-flip, 100% = perfect; base-rate-independent, so it tracks the model
+  // not your pickiness. The chart is the same metric over labels with a dashed 50% chance line.
+  const accSvg = traj => {
     if(!Array.isArray(traj)) return '';
-    const pts = traj.filter(p => p && p.pr_auc != null && isFinite(p.pr_auc));
+    const pts = traj.filter(p => p && p.roc_auc != null && isFinite(p.roc_auc));
     if(pts.length < 2) return '';
     const W=600, H=150, L=8, Rr=8, T=16, B=22;
     const xs = pts.map(p => p.labels);
     const xmin = Math.min(...xs), xmax = Math.max(...xs);
-    const vv = [];
-    pts.forEach(p => [p.pr_auc, p.roc_auc, p.base_rate].forEach(v => { if(v!=null && isFinite(v)) vv.push(v); }));
+    const vv = pts.map(p => p.roc_auc).concat([0.5]);   // keep the chance line inside the y-range
     let lo = Math.min(...vv), hi = Math.max(...vv);
     const padv = (hi-lo)*0.18 || 0.05; lo = Math.max(0, lo-padv); hi = Math.min(1, hi+padv);
     const X = v => L + (xmax===xmin ? 0.5 : (v-xmin)/(xmax-xmin)) * (W-L-Rr);
     const Y = v => T + (1-(v-lo)/((hi-lo)||1)) * (H-T-B);
-    const poly = (key, color, dash) => {
-      const s = pts.filter(p => p[key]!=null && isFinite(p[key]))
-                   .map(p => `${X(p.labels).toFixed(1)},${Y(p[key]).toFixed(1)}`).join(' ');
-      return s ? `<polyline fill="none" stroke="${color}" stroke-width="1.6"${dash?' stroke-dasharray="3 3" opacity="0.55"':''} points="${s}"/>` : '';
-    };
+    const line = pts.map(p => `${X(p.labels).toFixed(1)},${Y(p.roc_auc).toFixed(1)}`).join(' ');
+    const chanceY = Y(0.5).toFixed(1);
     const txt = (x,y,t,anchor,col) => `<text x="${x}" y="${y}" fill="${col||'#6a6a72'}" font-size="10"${anchor?` text-anchor="${anchor}"`:''}>${t}</text>`;
     const svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;background:#0c0c10;border:1px solid rgba(255,255,255,.09);border-radius:9px">`
-      + poly('base_rate','#6a6a72',true) + poly('roc_auc','#9a9aa2',false) + poly('pr_auc','#5ab0ff',false)
-      + txt(L, T-5, hi.toFixed(2)) + txt(L, H-7, lo.toFixed(2))
-      + txt(L+18, H-7, xmin+' labels') + txt(W-Rr, H-7, xmax+'', 'end')
+      + `<line x1="${L}" y1="${chanceY}" x2="${W-Rr}" y2="${chanceY}" stroke="#6a6a72" stroke-dasharray="3 3" opacity="0.5"/>`
+      + `<polyline fill="none" stroke="#5ab0ff" stroke-width="1.8" points="${line}"/>`
+      + txt(L, T-5, (hi*100).toFixed(0)+'%') + txt(L, H-7, (lo*100).toFixed(0)+'%')
+      + txt(L+22, Number(chanceY)-3, 'random')
+      + txt(L+22, H-7, xmin+' labels') + txt(W-Rr, H-7, xmax+'', 'end')
       + `</svg>`;
-    return `<div style="margin-top:8px"><div class="meta" style="margin-bottom:3px">quality over labels`
-      + ` &nbsp;<span style="color:#5ab0ff">PR-AUC</span> · <span style="color:#9a9aa2">ROC-AUC</span> · <span style="color:#6a6a72">base</span></div>`
+    return `<div style="margin-top:8px"><div class="meta" style="margin-bottom:3px">accuracy over labels</div>`
       + svg + `</div>`;
   };
   // Mini-goal: refresh is gated on new labels (every N), not the clock — so show progress
@@ -632,36 +708,20 @@ function renderEval(e){
   if(e.status !== 'ok'){
     $('#evalhint').textContent = (e.identities!=null) ? `${e.identities} identities` : '';
     $('#evalbody').style.color = '#9a9aa2';
-    $('#evalbody').innerHTML = `<div>${esc(e.message || 'evaluating…')}</div>`
-      + `<div>${mr}</div>` + refreshHtml();
+    $('#evalbody').innerHTML = `<div>${esc(e.message || 'evaluating…')}</div>` + refreshHtml();
     return;
   }
-  const f = m => `${m[0].toFixed(2)}±${m[1].toFixed(2)}`;
-  // HIGH bar: green = confidently production-ready, so grade the PESSIMISTIC edge of the
-  // ±std band (mean-std, or mean+std for Brier where lower is better). A wide band can't
-  // be green no matter how good the point estimate looks.
+  // Accuracy % = ROC-AUC × 100 = P(ranks a profile you'd LIKE above one you'd PASS).
+  // Grade the PESSIMISTIC band edge (mean-std) so a wide band can't read green.
   const G='#39d98a', A='#f0b429', R='#ff6b6b';
-  const tier = (v, good, ok) => v>=good ? G : (v>=ok ? A : R);
-  // PR-AUC: lift over the no-skill base rate (precision–recall's "good" scales with
-  // prevalence), evaluated at the lower band edge.
-  const liftLo = (e.pr_auc[0]-e.pr_auc[1] - e.base_rate) / Math.max(1e-9, 1 - e.base_rate);
-  const prCol = tier(liftLo, 0.60, 0.35);
-  // ROC-AUC: 0.5 = chance; grade the lower band edge.
-  const rocCol = tier(e.roc_auc[0]-e.roc_auc[1], 0.85, 0.72);
-  // Brier: lower is better → Brier Skill Score vs the no-skill base·(1-base), at the
-  // upper (worst) band edge. Note: class_weight=balanced decalibrates probabilities, so
-  // Brier can stay red even when ranking (AUC) is strong.
-  const baseBrier = e.base_rate * (1 - e.base_rate);
-  const bssLo = (baseBrier - (e.brier[0]+e.brier[1])) / Math.max(1e-9, baseBrier);
-  const brierCol = tier(bssLo, 0.35, 0.12);
+  const acc = e.roc_auc[0]*100, band = e.roc_auc[1]*100, lo = acc - band;
+  const col = lo>=80 ? G : (lo>=70 ? A : R);
   $('#evalhint').textContent = `${e.folds}-fold · ${e.identities} identities`;
   $('#evalbody').style.color = '#e8e8ea';
   $('#evalbody').innerHTML =
-    `<div>PR-AUC <b style="color:${prCol}">${f(e.pr_auc)}</b>`
-    + ` <span class="muted">(base ${e.base_rate.toFixed(2)})</span></div>`
-    + `<div>ROC-AUC <b style="color:${rocCol}">${f(e.roc_auc)}</b></div>`
-    + `<div>Brier score <b style="color:${brierCol}">${f(e.brier)}</b></div>`
-    + `<div>${mr}</div>` + refreshHtml() + trajSvg(e.trajectory);
+    `<div>accuracy <b style="color:${col};font-size:18px">${acc.toFixed(0)}%</b>`
+    + ` <span class="muted">±${band.toFixed(0)}% · ranks a like above a pass (50% = random)</span></div>`
+    + refreshHtml() + accSvg(e.trajectory);
 }
 async function tickEval(){ try { renderEval(await getJSON('/api/eval')); } catch(e){} }
 

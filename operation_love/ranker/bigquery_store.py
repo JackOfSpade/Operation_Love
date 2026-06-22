@@ -120,19 +120,37 @@ class BigQueryStore:
     def _get_or_create_photo_bucket(self):
         bucket = self.storage_client.bucket(self.photo_bucket_name)
         if bucket.exists():
+            try:
+                bucket.reload()             # fetch iam_configuration before inspecting it
+            except Exception:  # noqa: BLE001
+                pass
+            self._lockdown_bucket(bucket, created=False)
             return bucket
         bucket = self.storage_client.create_bucket(bucket, location=self.location)
-        # Private by default: uniform bucket-level access + enforced public-access-
-        # prevention so a freshly created bucket can never be exposed publicly. Log
-        # (don't silently swallow) if the lockdown patch fails — it's a privacy gap.
+        self._lockdown_bucket(bucket, created=True)
+        return bucket
+
+    def _lockdown_bucket(self, bucket, *, created: bool) -> None:
+        """Make the photo bucket private: uniform bucket-level access + enforced public-
+        access-prevention so it can never be exposed publicly. Applied to EXISTING buckets
+        too (idempotently), not just freshly created ones — a bucket created before this
+        hardening would otherwise keep weaker defaults (e.g. fine-grained ACLs). Logs but
+        never raises: a permissions hiccup must not break startup, but it's a privacy gap
+        worth surfacing."""
         try:
-            bucket.iam_configuration.uniform_bucket_level_access_enabled = True
-            bucket.iam_configuration.public_access_prevention = "enforced"
+            iam = bucket.iam_configuration
+            if (getattr(iam, "uniform_bucket_level_access_enabled", False)
+                    and getattr(iam, "public_access_prevention", "") == "enforced"):
+                return                      # already locked down -> no needless patch
+            iam.uniform_bucket_level_access_enabled = True
+            iam.public_access_prevention = "enforced"
             bucket.patch()
+            if not created:
+                print(f"BigQuery store: hardened existing photo bucket {self.photo_bucket_name} "
+                      "(uniform bucket-level access + public-access-prevention enforced).")
         except Exception as exc:  # noqa: BLE001
             print(f"BigQuery store warning: could not lock down bucket "
                   f"{self.photo_bucket_name} (uniform access / public-access-prevention): {exc}")
-        return bucket
 
     # --- reads ----------------------------------------------------------
     def load_labels(self) -> list[tuple[bool, list[float]]]:

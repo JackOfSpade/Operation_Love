@@ -9,8 +9,9 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
-from operation_love.hub import HubState, _Handler, _PAGE, _bind
+from operation_love.hub import HubState, _Handler, _MAC_UPDATE_RUN, _PAGE, _bind
 
 
 def _get(base, path):
@@ -58,6 +59,26 @@ def test_hub_endpoints():
         httpd.shutdown()
 
 
+def test_hub_tab_close_shuts_server_after_last_client():
+    _Handler.state = HubState("config.yaml")
+    httpd = _bind("127.0.0.1", 8799)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        body = json.dumps({"id": "tab-1"}).encode()
+        code, opened = _post(base, "/api/hub/open", body)
+        assert code == 200 and opened["ok"] is True
+
+        code, closed = _post(base, "/api/hub/closed", body)
+        assert code == 200 and closed["ok"] is True
+
+        t.join(timeout=4)
+        assert t.is_alive() is False
+    finally:
+        httpd.shutdown()
+
+
 def test_hubstate_double_start_blocked():
     st = HubState("config.yaml")
     # fake a live run so the second start is rejected without launching anything
@@ -66,6 +87,39 @@ def test_hubstate_double_start_blocked():
     ok, msg = st.start()
     assert ok is False and "active" in msg
     st._thread.join()
+
+
+def test_hubstate_browser_client_lifecycle(monkeypatch):
+    import operation_love.hub as hub
+    now = 1000.0
+    monkeypatch.setattr(hub.time, "time", lambda: now)
+
+    st = HubState("config.yaml")
+    st.browser_client_opened("a")
+    st.browser_client_opened("b")
+    assert st.has_browser_clients() is True
+
+    assert st.browser_client_closed("a") is False
+    assert st.has_browser_clients() is True
+
+    assert st.browser_client_closed("b") is True
+    assert st.has_browser_clients() is False
+    assert st.browser_client_closed("b") is False
+
+    # A late /api/hub/open from the just-closed page must not resurrect it.
+    st.browser_client_opened("b")
+    assert st.has_browser_clients() is False
+
+    # The closed-id guard is only for late requests; it must not grow into a
+    # permanent tombstone set over a long hub session.
+    now += hub._CLOSED_BROWSER_CLIENT_TTL_S + 1
+    st.browser_client_opened("b")
+    assert st.has_browser_clients() is True
+    assert st.browser_client_closed("b") is True
+
+    st.browser_client_opened("c")
+    assert st.has_browser_clients() is True
+    assert st.browser_client_closed("c") is True
 
 
 def test_resolve_run_cap_override_semantics():
@@ -94,10 +148,26 @@ def test_hubstate_forwards_max_per_run(monkeypatch):
     assert seen["mode"] == "auto" and seen["max_per_run"] == 8
 
 
-def test_hub_diminishing_returns_uses_flat_color():
-    # Single flat color — no within-noise dimming on the value.
-    assert "diminishing returns <b>${g}</b>" in _PAGE
-    assert "within_noise ? '#9a9aa2'" not in _PAGE
+def test_hub_card_shows_single_accuracy_metric():
+    # One metric (ROC-AUC as accuracy %); the old PR-AUC/ROC-AUC/Brier/diminishing lines are gone.
+    assert "e.roc_auc[0]*100" in _PAGE                # accuracy = ROC-AUC x 100
+    assert "ranks a like above a pass" in _PAGE
+    assert "Brier score" not in _PAGE
+    assert "diminishing returns" not in _PAGE
+    assert "PR-AUC" not in _PAGE
+
+
+def test_hub_page_reports_browser_tab_lifecycle():
+    assert "/api/hub/open" in _PAGE
+    assert "/api/hub/closed" in _PAGE
+    assert "pagehide" in _PAGE
+    assert "sendBeacon" in _PAGE
+    assert "if(sent) return" in _PAGE
+
+
+def test_committed_mac_launcher_matches_template():
+    expected = _MAC_UPDATE_RUN.replace("__EXTRAS__", "ml,bq,bumble")
+    assert Path("Operation Love.command").read_text() == expected
 
 
 def test_hub_card_shows_label_gated_refresh_progress():
@@ -136,9 +206,9 @@ def test_hub_ranker_card_simplified_to_budget():
     assert 'id="budget"' in _PAGE
 
 
-def test_hub_renders_quality_trajectory_chart():
-    assert "trajSvg(e.trajectory)" in _PAGE
-    assert "quality over labels" in _PAGE
+def test_hub_renders_accuracy_trajectory_chart():
+    assert "accSvg(e.trajectory)" in _PAGE
+    assert "accuracy over labels" in _PAGE
 
 
 def test_attach_refresh_inactive_without_live_run():
@@ -181,8 +251,6 @@ def test_eval_snapshot_holds_full_progress_until_background_refresh_finishes(mon
     monkeypatch.setattr(ranker, "make_store", fake_make_store)
     monkeypatch.setattr(eval_mod, "evaluate",
                         lambda samples: {"status": "ok", "marker": "new", "labels": len(samples)})
-    monkeypatch.setattr(eval_mod, "marginal_return_summary",
-                        lambda samples, eval_result=None: {"status": "ok"})
 
     st = HubState("config.yaml")
     with st._lock:
@@ -252,7 +320,6 @@ def test_eval_snapshot_reads_live_store_while_running(monkeypatch):
     monkeypatch.setattr(eval_mod, "evaluate", lambda s: {
         "status": "ok", "labels": len(s), "identities": len(s), "base_rate": 0.4,
         "pr_auc": [0.7, 0.05], "roc_auc": [0.8, 0.03], "brier": [0.2, 0.0]})
-    monkeypatch.setattr(eval_mod, "marginal_return_summary", lambda s, eval_result=None: {"status": "ok"})
     monkeypatch.setattr(eval_mod, "quality_trajectory", lambda ordered, step=5: [])
 
     st = HubState("config.yaml")
@@ -298,7 +365,6 @@ def test_eval_snapshot_falls_back_when_live_store_read_fails(monkeypatch):
     monkeypatch.setattr(eval_mod, "evaluate", lambda s: {
         "status": "ok", "labels": len(s), "identities": len(s), "base_rate": 0.4,
         "pr_auc": [0.7, 0.05], "roc_auc": [0.8, 0.03], "brier": [0.2, 0.0]})
-    monkeypatch.setattr(eval_mod, "marginal_return_summary", lambda s, eval_result=None: {"status": "ok"})
     monkeypatch.setattr(eval_mod, "quality_trajectory", lambda ordered, step=5, **k: [])
 
     st = HubState("config.yaml")

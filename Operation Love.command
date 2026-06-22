@@ -29,4 +29,21 @@ else
 fi
 
 echo "OK - launching the control hub (Ctrl-C to quit)..."
-exec "$PY" -m operation_love hub
+TTY_NAME="$(tty)"
+"$PY" -m operation_love hub
+status=$?
+if [ "$status" -eq 0 ] && [ -n "$TTY_NAME" ]; then
+  /usr/bin/nohup /usr/bin/osascript \
+    -e 'delay 0.2' \
+    -e 'tell application "Terminal"' \
+    -e 'repeat with w in windows' \
+    -e 'repeat with t in tabs of w' \
+    -e "if tty of t is \"$TTY_NAME\" then" \
+    -e 'close t' \
+    -e 'return' \
+    -e 'end if' \
+    -e 'end repeat' \
+    -e 'end repeat' \
+    -e 'end tell' >/dev/null 2>&1 &
+fi
+exit "$status"

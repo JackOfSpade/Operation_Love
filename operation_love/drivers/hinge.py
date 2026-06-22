@@ -178,7 +178,8 @@ class HingeDriver(DatingAppDriver):
         seen, uniq = set(), []
         for q, a in prompts:
             if a not in seen:
-                seen.add(a); uniq.append((q, a))
+                seen.add(a)
+                uniq.append((q, a))
         return Profile(photos=photos, prompts=uniq, meta={"app": "hinge"})
 
     def next_profile(self) -> Profile | None:

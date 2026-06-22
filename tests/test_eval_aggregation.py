@@ -5,7 +5,6 @@ from operation_love.ranker.evaluate import (
     evaluate,
     format_report,
     identity_groups,
-    marginal_return_summary,
 )
 
 
@@ -59,151 +58,30 @@ def _fake_saturating_evaluate(samples, n_splits=5, eps=0.5):
                 "identities": n, "folds": 0, "roc_auc": None, "pr_auc": None,
                 "brier": None, "base_rate": (likes / n) if n else 0.0,
                 "message": "too small"}
-    std = getattr(_fake_saturating_evaluate, "std", 0.001)
-    pr = 0.72 - (3.0 / n)
+    score = 0.72 - (3.0 / n)
     return {"status": "ok", "labels": n, "likes": likes, "passes": passes,
             "identities": n, "folds": min(n_splits, likes, passes),
-            "roc_auc": [0.70, std], "pr_auc": [pr, std], "brier": [0.20, 0.01],
+            "roc_auc": [score, 0.01], "pr_auc": [score, 0.01], "brier": [0.20, 0.01],
             "base_rate": likes / n, "message": "fake grouped CV"}
 
 
-def _fake_flat_evaluate(samples, n_splits=5, eps=0.5):
-    # Saturated learning curve whose top CV points tick slightly DOWN with n (the
-    # signature of a plateau under fold noise): the reciprocal fit slope is non-positive
-    # (b<=0) and the finite-difference secant is negative, so no positive gain resolves.
-    n = len(samples)
-    likes = sum(1 for liked, _ in samples if liked)
-    passes = n - likes
-    if n < 10 or not likes or not passes:
-        return {"status": "insufficient_data", "labels": n, "likes": likes, "passes": passes,
-                "identities": n, "folds": 0, "roc_auc": None, "pr_auc": None,
-                "brier": None, "base_rate": (likes / n) if n else 0.0,
-                "message": "too small"}
-    pr = 0.71 - 0.0002 * n
-    return {"status": "ok", "labels": n, "likes": likes, "passes": passes,
-            "identities": n, "folds": min(n_splits, likes, passes),
-            "roc_auc": [0.70, 0.01], "pr_auc": [pr, 0.01], "brier": [0.20, 0.01],
-            "base_rate": likes / n, "message": "fake saturated CV"}
-
-
-def test_marginal_return_decreases_as_labels_grow(monkeypatch):
-    monkeypatch.setattr(eval_mod, "evaluate", _fake_saturating_evaluate)
-    small = marginal_return_summary(_identity_samples(50), batch=20)
-    large = marginal_return_summary(_identity_samples(140), batch=20)
-
-    assert small["status"] == "ok" and large["status"] == "ok"
-    assert small["marginal_return"] > large["marginal_return"] > 0
-
-
-def test_marginal_return_small_n_is_too_early():
-    r = marginal_return_summary(_identity_samples(12))
-    assert r["status"] == "too_early"
-    assert r["marginal_return"] is None
-
-
-def test_marginal_return_within_noise_tracks_cv_std(monkeypatch):
-    monkeypatch.setattr(eval_mod, "evaluate", _fake_saturating_evaluate)
-
-    _fake_saturating_evaluate.std = 0.001
-    clear = marginal_return_summary(_identity_samples(80), batch=20)
-    assert clear["status"] == "ok"
-    assert clear["within_noise"] is False
-
-    _fake_saturating_evaluate.std = 0.05
-    noisy = marginal_return_summary(_identity_samples(80), batch=20)
-    assert noisy["status"] == "ok"
-    assert noisy["within_noise"] is True
-
-    _fake_saturating_evaluate.std = 0.001
-
-
-def test_marginal_return_never_raises_on_edge_inputs():
-    cases = [
-        None,
-        [],
-        ["not a sample"] * 30,
-        [(i % 2 == 0, [0.0] * (1280 if i % 3 else 8)) for i in range(30)],
-    ]
-    for samples in cases:
-        r = marginal_return_summary(samples)
-        assert isinstance(r, dict)
-        assert "status" in r
-
-
-def test_format_report_includes_diminishing_returns_line():
+def test_format_report_shows_single_accuracy_metric():
+    # Terminal matches the hub: one accuracy % (ROC-AUC x 100), no PR-AUC/Brier/diminishing line.
     r = {
         "status": "ok", "labels": 80, "likes": 20, "passes": 60,
-        "identities": 80, "folds": 5, "roc_auc": [0.70, 0.02],
+        "identities": 80, "folds": 5, "roc_auc": [0.83, 0.04],
         "pr_auc": [0.42, 0.03], "brier": [0.20, 0.01], "base_rate": 0.25,
-        "marginal_return": {
-            "status": "ok", "batch": 20, "marginal_return": 0.0032,
-            "within_noise": False, "confidence": "med", "message": "ok",
-        },
     }
     out = format_report(r)
-    assert "Diminishing returns" in out
-    assert "0.0032 PR-AUC / +20 labels" in out
+    assert "Accuracy: 83% +/- 4%" in out
+    assert "ranks a like above a pass" in out
+    assert "PR-AUC" not in out and "Brier" not in out and "Diminishing returns" not in out
 
 
-def test_format_report_shows_dash_when_no_estimate():
-    r = {
-        "status": "error",
-        "message": "evaluation failed",
-        "marginal_return": {
-            "status": "error", "batch": 20, "marginal_return": None,
-            "within_noise": None, "confidence": "low", "message": "bad input",
-        },
-    }
-    out = format_report(r)
-    assert "Diminishing returns —" in out
+def test_format_report_nonok_returns_message_only():
+    out = format_report({"status": "error", "message": "evaluation failed"})
     assert out.startswith("Evaluation failed")
-    assert "too early" not in out and "keep seeding" not in out
-
-
-def test_format_marginal_value_keeps_enough_decimals_to_stay_nonzero():
-    fmt = eval_mod._format_marginal_value
-    assert fmt(0.014) == "0.014"
-    assert fmt(0.0021) == "0.0021"
-    assert fmt(0.00038) == "0.00038"
-    assert fmt(0.000061) == "0.000061"
-    # never collapses to zero, no matter how small the value gets
-    for v in (1e-3, 1e-5, 1e-7):
-        s = fmt(v)
-        assert s is not None and float(s) > 0
-
-
-def test_marginal_return_plateau_stays_a_positive_nonzero_value(monkeypatch):
-    # A flat/declining curve must NOT die to "too early" or zero: report a tiny positive
-    # magnitude (status ok) so the single indicator stays live and keeps shrinking.
-    monkeypatch.setattr(eval_mod, "evaluate", _fake_flat_evaluate)
-    r = marginal_return_summary(_identity_samples(80), batch=20)
-    assert r["status"] == "ok"
-    assert r["marginal_return"] > 0
-    line = eval_mod._format_marginal_return(r)
-    assert "Diminishing returns" in line
-    assert "too early" not in line and "keep seeding" not in line
-
-
-def test_marginal_return_hard_eval_failure_is_error(monkeypatch):
-    # When evaluate() fails for a non-quantity reason (sklearn missing / malformed data),
-    # more labels won't help — show the dash, never "too early"/"keep seeding".
-    def _no_sklearn(samples, n_splits=5, eps=0.5):
-        return {"status": "no_sklearn", "labels": len(samples), "likes": 0, "passes": 0,
-                "identities": None, "folds": 0, "roc_auc": None, "pr_auc": None,
-                "brier": None, "base_rate": 0.0, "message": "scikit-learn unavailable"}
-    monkeypatch.setattr(eval_mod, "evaluate", _no_sklearn)
-    r = marginal_return_summary(_identity_samples(40), batch=20)
-    assert r["status"] == "error"
-    assert eval_mod._format_marginal_return(r) == "Diminishing returns —"
-
-
-def test_marginal_return_post_ok_group_contradiction_is_error():
-    samples = [(i % 2 == 0, [1.0] + [0.0] * 1279) for i in range(30)]
-    stale_ok = {"status": "ok", "pr_auc": [0.50, 0.05]}
-
-    r = marginal_return_summary(samples, eval_result=stale_ok)
-    assert r["status"] == "error"
-    assert eval_mod._format_marginal_return(r) == "Diminishing returns —"
+    assert "Accuracy" not in out and "Diminishing returns" not in out
 
 
 def test_quality_trajectory_walks_prefixes_every_step(monkeypatch):
@@ -212,8 +90,8 @@ def test_quality_trajectory_walks_prefixes_every_step(monkeypatch):
     traj = eval_mod.quality_trajectory(_identity_samples(53), step=5)
     assert [p["labels"] for p in traj][:3] == [10, 15, 20]   # starts at min_labels (10), every 5
     assert traj[-1]["labels"] == 53                          # full set is always the final point
-    assert traj[0]["pr_auc"] < traj[-1]["pr_auc"]            # saturating curve rises with n
-    assert all(p.get("roc_auc") is not None and p.get("base_rate") is not None for p in traj)
+    assert traj[0]["roc_auc"] < traj[-1]["roc_auc"]          # visible accuracy curve rises with n
+    assert all(p.get("roc_std") is not None and p.get("base_rate") is not None for p in traj)
 
 
 def test_quality_trajectory_never_raises_on_edge_inputs():

@@ -122,7 +122,7 @@ class HubState:
                       "marginal_return": {
                           "status": "error", "batch": 20, "marginal_return": None,
                           "within_noise": None, "confidence": "low",
-                          "message": "marginal return unavailable",
+                          "message": "diminishing-returns estimate failed",
                       }}
         with self._lock:
             self._eval, self._eval_at = result, time.time()
@@ -485,30 +485,25 @@ function renderEval(e){
     {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]
   ));
   const gainFmt = v => {
-    const n = Number(v);
-    if(!Number.isFinite(n)) return null;
-    if(n === 0) return '+0';
-    let s = Math.abs(n).toPrecision(2);
-    if(!s.includes('e')) s = s.replace(/(\\.\\d*?[1-9])0+$/,'$1').replace(/\\.0+$/,'');
-    return (n >= 0 ? '+' : '-') + s;
+    const x = Math.abs(Number(v));
+    if(!Number.isFinite(x) || x === 0) return null;
+    const places = Math.max(2, 1 - Math.floor(Math.log10(x)));   // ~2 sig figs, never 0.00
+    if(places > 9) return x.toExponential(1);
+    return x.toFixed(places).replace(/0+$/,'').replace(/\\.$/,'');
   };
-  const marginalLine = m => {
-    if(!m) return '';
-    if(m.status === 'too_early') return 'marginal return — too early to estimate · keep seeding';
-    if(m.status === 'plateau') return 'marginal return — gains have flattened (within measurement noise); add labels to resolve';
-    if(m.status !== 'ok') return 'marginal return — unavailable';
-    const g = gainFmt(m.marginal_return);
-    if(!g) return '';
-    let line = `marginal return ≈ ${g} PR-AUC per +${m.batch || 20} labels`;
-    if(m.within_noise) line += ' · within measurement noise — add labels to resolve';
-    return line;
+  // One value-only indicator; the magnitude IS the signal (smaller = more diminished).
+  const diminishingHtml = m => {
+    const g = (m && m.status === 'ok') ? gainFmt(m.marginal_return) : null;
+    if(!g) return 'diminishing returns <b>—</b>';
+    const b = Number(m.batch) || 20;
+    return `diminishing returns <b>${g}</b> <span class="muted">PR-AUC / +${b} labels</span>`;
   };
-  const mr = marginalLine(e.marginal_return);
+  const mr = diminishingHtml(e.marginal_return);
   if(e.status !== 'ok'){
     $('#evalhint').textContent = (e.identities!=null) ? `${e.identities} identities` : '';
     $('#evalbody').style.color = '#9a9aa2';
     $('#evalbody').innerHTML = `<div>${esc(e.message || 'evaluating…')}</div>`
-      + (mr ? `<div>${esc(mr)}</div>` : '');
+      + `<div>${mr}</div>`;
     return;
   }
   const f = m => `${m[0].toFixed(2)}±${m[1].toFixed(2)}`;
@@ -525,7 +520,7 @@ function renderEval(e){
     + ` <span class="muted">(base ${e.base_rate.toFixed(2)})</span></div>`
     + `<div>Area under the receiver-operating-characteristic curve <b>${f(e.roc_auc)}</b></div>`
     + `<div>Brier score <b>${f(e.brier)}</b></div>`
-    + (mr ? `<div>${esc(mr)}</div>` : '');
+    + `<div>${mr}</div>`;
 }
 async function tickEval(){ try { renderEval(await getJSON('/api/eval')); } catch(e){} }
 

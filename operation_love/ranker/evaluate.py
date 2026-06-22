@@ -165,7 +165,7 @@ def marginal_return_summary(
         rows = list(samples) if samples is not None else []
     except Exception:  # noqa: BLE001
         return _marginal_unavailable(
-            batch, "marginal return unavailable: samples are malformed.", status="error"
+            batch, "diminishing-returns estimate failed: samples are malformed.", status="error"
         )
 
     n = len(rows)
@@ -177,8 +177,8 @@ def marginal_return_summary(
     try:
         full = eval_result if eval_result is not None else evaluate(rows, n_splits=n_splits, eps=eps)
         if full.get("status") != "ok":
-            # A hard failure (no sklearn / malformed data) won't be fixed by more labels,
-            # so surface it as "unavailable" — never tell the owner to "keep seeding".
+            # A hard failure (no sklearn / malformed data) won't be fixed by more labels;
+            # mark it error so the indicator shows a dash rather than a cold-start value.
             hard = full.get("status") in ("no_sklearn", "error")
             return _marginal_unavailable(
                 batch, "Need a scorable identity-grouped CV before estimating marginal return.",
@@ -206,7 +206,7 @@ def marginal_return_summary(
         groups = np.asarray(identity_groups(X[:, :face_dims].tolist(), eps=eps))
         if groups.shape[0] != n or len(set(groups.tolist())) < 2:
             return _marginal_unavailable(
-                batch, "marginal return unavailable: identity grouping contradicted full CV.",
+                batch, "diminishing-returns estimate failed: identity grouping contradicted full CV.",
                 status="error",
             )
 
@@ -266,7 +266,10 @@ def marginal_return_summary(
 
         ns = np.asarray([float(p["labels"]) for p in usable], dtype=float)
         prs = np.asarray([float(p["pr_auc"]) for p in usable], dtype=float)
-        gain = None
+
+        # Whole-curve reciprocal fit pr ≈ a - b/n (robust to a single noisy point); the
+        # projected gain from the next `batch` labels is then b*batch/(n*(n+batch)).
+        recip = None
         fit_method = "reciprocal_fit"
         fit_r2 = 0.0
         if len(usable) >= 3:
@@ -278,38 +281,28 @@ def marginal_return_summary(
                 ss_res = float(np.sum((prs - pred) ** 2))
                 ss_tot = float(np.sum((prs - float(np.mean(prs))) ** 2))
                 fit_r2 = 1.0 - (ss_res / ss_tot) if ss_tot > 1e-12 else 0.0
-                if b > 0:
-                    gain = b * batch / (n * (n + batch))
+                recip = _float_or_none(b * batch / (n * (n + batch)))
             except Exception:  # noqa: BLE001
-                gain = None
+                recip = None
 
-        if gain is None:
+        # Local secant over the top two points as fallback / cross-check.
+        prev, cur = usable[-2], usable[-1]
+        dn = float(cur["labels"] - prev["labels"])
+        fd = _float_or_none(((cur["pr_auc"] - prev["pr_auc"]) / dn) * batch) if dn > 0 else None
+        if recip is None:
             fit_method = "finite_difference"
-            prev, cur = usable[-2], usable[-1]
-            dn = float(cur["labels"] - prev["labels"])
-            dpr = float(cur["pr_auc"] - prev["pr_auc"])
-            if dn > 0 and dpr > 0:
-                gain = (dpr / dn) * batch
 
+        # ONE always-live value: prefer the positive whole-curve estimate; when noise
+        # dominates (estimate <=0), report the magnitude instead so the number stays
+        # a tiny positive that keeps shrinking: it decays toward, but never reaches, zero
+        # (no cap / no "done"). The user reads the magnitude itself as the degree of
+        # diminishing returns; smaller = more diminished.
+        gain = next((c for c in (recip, fd) if c is not None and c > 0), None)
+        if gain is None:
+            gain = abs(recip) if recip else (abs(fd) if fd else None)
         gain = _float_or_none(gain)
         if gain is None or gain <= 0:
-            # Data is sufficient (scorable CV, >=2 curve points) but the fit shows no
-            # resolvable positive gain: the curve has FLATTENED. That is a plateau, not a
-            # cold start — report it as such so we never say "keep seeding" at saturation
-            # (the opposite of the truth). within_noise=True: the gain, if any, is below
-            # the fold-noise floor.
-            return {
-                "status": "plateau",
-                "batch": batch,
-                "labels": n,
-                "marginal_return": 0.0,
-                "within_noise": True,
-                "confidence": "low",
-                "message": (f"projected PR-AUC gain from the next {batch} labels has "
-                            "flattened to within measurement noise."),
-                "curve": usable,
-                "fit": {"method": fit_method, "r2": float(fit_r2)},
-            }
+            gain = 1e-6   # floor: the indicator is never exactly zero (never "complete")
 
         within_noise = bool(gain < pr_std)
         if (fit_method != "reciprocal_fit" or within_noise or len(usable) < 4 or
@@ -327,8 +320,7 @@ def marginal_return_summary(
             "marginal_return": float(gain),
             "within_noise": within_noise,
             "confidence": confidence,
-            "message": (f"projected PR-AUC gain from the next {batch} labels"
-                        + (" is within measurement noise." if within_noise else ".")),
+            "message": f"projected PR-AUC gain from the next {batch} labels",
             "curve": usable,
             "fit": {"method": fit_method, "r2": float(fit_r2)},
         }
@@ -339,30 +331,33 @@ def marginal_return_summary(
 
 
 def _format_marginal_value(value) -> str | None:
+    """Format a small positive gain in decimal notation with enough places to keep ~2
+    significant figures, so it never rounds to zero as it shrinks (0.014 -> 0.0021 ->
+    0.00038 -> ...). Falls back to scientific only when absurdly small."""
     value = _float_or_none(value)
     if value is None:
         return None
-    return f"{value:+.2g}"
+    import math
+    v = abs(value)
+    if v == 0:
+        return "0"
+    places = max(2, 1 - math.floor(math.log10(v)))
+    if places > 9:
+        return f"{v:.2e}"
+    return f"{v:.{places}f}".rstrip("0").rstrip(".")
 
 
 def _format_marginal_return(m: dict | None) -> str | None:
+    """One indicator, value only — no qualifier wording. The magnitude is the signal:
+    smaller number = deeper into diminishing returns."""
     if not m:
         return None
-    status = m.get("status")
-    if status == "too_early":
-        return "marginal return — too early to estimate · keep seeding"
-    if status == "plateau":
-        return ("marginal return — gains have flattened "
-                "(within measurement noise); add labels to resolve")
-    if status != "ok":
-        return "marginal return — unavailable"
+    if m.get("status") != "ok":
+        return "diminishing returns —"
     value = _format_marginal_value(m.get("marginal_return"))
     if value is None:
-        return None
-    line = f"marginal return ≈ {value} PR-AUC per +{m.get('batch', _MARGINAL_RETURN_BATCH)} labels"
-    if m.get("within_noise"):
-        line += " · within measurement noise — add labels to resolve"
-    return line
+        return "diminishing returns —"
+    return f"diminishing returns {value} PR-AUC / +{m.get('batch', _MARGINAL_RETURN_BATCH)} labels"
 
 
 def format_report(r: dict) -> str:

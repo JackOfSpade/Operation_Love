@@ -9,7 +9,7 @@ import threading
 import urllib.error
 import urllib.request
 
-from operation_love.hub import HubState, _Handler, _bind
+from operation_love.hub import HubState, _Handler, _PAGE, _bind
 
 
 def _get(base, path):
@@ -91,6 +91,12 @@ def test_hubstate_forwards_max_per_run(monkeypatch):
     assert done.wait(timeout=5)
     st._thread.join(timeout=5)
     assert seen["mode"] == "auto" and seen["max_per_run"] == 8
+
+
+def test_hub_diminishing_returns_uses_flat_color():
+    # Single flat color — no within-noise dimming on the value.
+    assert "diminishing returns <b>${g}</b>" in _PAGE
+    assert "within_noise ? '#9a9aa2'" not in _PAGE
 
 
 if __name__ == "__main__":

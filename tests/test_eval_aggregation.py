@@ -130,7 +130,7 @@ def test_marginal_return_never_raises_on_edge_inputs():
         assert "status" in r
 
 
-def test_format_report_includes_marginal_return_line():
+def test_format_report_includes_diminishing_returns_line():
     r = {
         "status": "ok", "labels": 80, "likes": 20, "passes": 60,
         "identities": 80, "folds": 5, "roc_auc": [0.70, 0.02],
@@ -141,11 +141,11 @@ def test_format_report_includes_marginal_return_line():
         },
     }
     out = format_report(r)
-    assert "marginal return" in out
-    assert "+0.0032 PR-AUC per +20 labels" in out
+    assert "diminishing returns" in out
+    assert "0.0032 PR-AUC / +20 labels" in out
 
 
-def test_format_report_does_not_label_marginal_errors_too_early():
+def test_format_report_shows_dash_when_no_estimate():
     r = {
         "status": "error",
         "message": "evaluation failed",
@@ -155,25 +155,37 @@ def test_format_report_does_not_label_marginal_errors_too_early():
         },
     }
     out = format_report(r)
-    assert "marginal return — unavailable" in out
-    assert "too early" not in out
+    assert "diminishing returns —" in out
+    assert "too early" not in out and "keep seeding" not in out
 
 
-def test_marginal_return_plateau_is_not_labeled_too_early(monkeypatch):
-    # A flat learning curve must read as a plateau, NOT "too early · keep seeding"
-    # (that advice is the opposite of the truth once the curve has saturated).
+def test_format_marginal_value_keeps_enough_decimals_to_stay_nonzero():
+    fmt = eval_mod._format_marginal_value
+    assert fmt(0.014) == "0.014"
+    assert fmt(0.0021) == "0.0021"
+    assert fmt(0.00038) == "0.00038"
+    assert fmt(0.000061) == "0.000061"
+    # never collapses to zero, no matter how small the value gets
+    for v in (1e-3, 1e-5, 1e-7):
+        s = fmt(v)
+        assert s is not None and float(s) > 0
+
+
+def test_marginal_return_plateau_stays_a_positive_nonzero_value(monkeypatch):
+    # A flat/declining curve must NOT die to "too early" or zero: report a tiny positive
+    # magnitude (status ok) so the single indicator stays live and keeps shrinking.
     monkeypatch.setattr(eval_mod, "evaluate", _fake_flat_evaluate)
     r = marginal_return_summary(_identity_samples(80), batch=20)
-    assert r["status"] == "plateau"
-    assert r["within_noise"] is True
+    assert r["status"] == "ok"
+    assert r["marginal_return"] > 0
     line = eval_mod._format_marginal_return(r)
-    assert "flattened" in line
+    assert "diminishing returns" in line
     assert "too early" not in line and "keep seeding" not in line
 
 
-def test_marginal_return_hard_eval_failure_is_error_not_too_early(monkeypatch):
+def test_marginal_return_hard_eval_failure_is_error(monkeypatch):
     # When evaluate() fails for a non-quantity reason (sklearn missing / malformed data),
-    # more labels won't help — surface "unavailable", never "keep seeding".
+    # more labels won't help — show the dash, never "too early"/"keep seeding".
     def _no_sklearn(samples, n_splits=5, eps=0.5):
         return {"status": "no_sklearn", "labels": len(samples), "likes": 0, "passes": 0,
                 "identities": None, "folds": 0, "roc_auc": None, "pr_auc": None,
@@ -181,9 +193,7 @@ def test_marginal_return_hard_eval_failure_is_error_not_too_early(monkeypatch):
     monkeypatch.setattr(eval_mod, "evaluate", _no_sklearn)
     r = marginal_return_summary(_identity_samples(40), batch=20)
     assert r["status"] == "error"
-    line = eval_mod._format_marginal_return(r)
-    assert "unavailable" in line
-    assert "too early" not in line
+    assert eval_mod._format_marginal_return(r) == "diminishing returns —"
 
 
 def test_marginal_return_post_ok_group_contradiction_is_error():
@@ -192,9 +202,7 @@ def test_marginal_return_post_ok_group_contradiction_is_error():
 
     r = marginal_return_summary(samples, eval_result=stale_ok)
     assert r["status"] == "error"
-    line = eval_mod._format_marginal_return(r)
-    assert "unavailable" in line
-    assert "too early" not in line
+    assert eval_mod._format_marginal_return(r) == "diminishing returns —"
 
 
 if __name__ == "__main__":

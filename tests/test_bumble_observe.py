@@ -5,6 +5,7 @@ exercise wait_for_decision()'s polling/return logic (the DOM click listener is
 exercised live by tools/bumble_inspect.py).
 """
 from contextlib import contextmanager
+import tempfile
 
 import operation_love.drivers.bumble as bumble
 from operation_love.drivers.base import DriverClosed
@@ -160,6 +161,62 @@ class FakeNoElementPage:
 
     def click(self, sel):
         self.plain_clicks.append(sel)
+
+
+class FakeStartupPage:
+    def __init__(self):
+        self.default_timeout = None
+        self.goto_calls = []
+        self.clicks = []
+
+    def set_default_timeout(self, timeout):
+        self.default_timeout = timeout
+
+    def goto(self, url, wait_until=None):
+        self.goto_calls.append((url, wait_until))
+
+    def click(self, selector, **kwargs):
+        self.clicks.append((selector, kwargs))
+        raise RuntimeError("not found")
+
+
+class FakeContext:
+    def __init__(self, page):
+        self.pages = [page]
+        self.closed = False
+
+    def new_page(self):
+        return self.pages[0]
+
+    def close(self):
+        self.closed = True
+
+
+class FakeChromium:
+    def __init__(self, ctx):
+        self.ctx = ctx
+        self.launch_kwargs = None
+
+    def launch_persistent_context(self, **kwargs):
+        self.launch_kwargs = kwargs
+        return self.ctx
+
+
+class FakePlaywright:
+    def __init__(self, chromium):
+        self.chromium = chromium
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
+
+
+class FakePlaywrightManager:
+    def __init__(self, pw):
+        self.pw = pw
+
+    def start(self):
+        return self.pw
 
 
 class FakeLoadingPhotoPage(FakePhotoPage):
@@ -351,6 +408,40 @@ def test_dislike_falls_back_to_plain_click_without_box():
     drv = _driver(FakeNoElementPage())
     drv.dislike()
     assert drv.page.plain_clicks == [drv.selectors["pass"]]
+
+
+def test_open_session_denies_native_permission_prompts():
+    page = FakeStartupPage()
+    ctx = FakeContext(page)
+    chromium = FakeChromium(ctx)
+    pw = FakePlaywright(chromium)
+
+    def fake_sync_playwright():
+        return FakePlaywrightManager(pw)
+
+    old_import = BumbleDriver._import_playwright
+    BumbleDriver._import_playwright = staticmethod(lambda: (fake_sync_playwright, "fake"))
+    try:
+        with tempfile.TemporaryDirectory() as user_dir:
+            cfg = type("Cfg", (), {"apps": {"bumble": {"user_data_dir": user_dir}}})()
+            drv = BumbleDriver(cfg)
+            try:
+                drv.open_session()
+                args = chromium.launch_kwargs["args"]
+                assert "--disable-blink-features=AutomationControlled" in args
+                assert "--deny-permission-prompts" in args
+                assert page.goto_calls == [(drv.url, "domcontentloaded")]
+            finally:
+                drv.close()
+    finally:
+        BumbleDriver._import_playwright = old_import
+
+
+def test_dismiss_startup_interstitials_is_nonfatal_when_selectors_fail():
+    page = FakeStartupPage()
+    drv = _driver(page)
+    drv._dismiss_startup_interstitials()
+    assert len(page.clicks) == len(bumble._STARTUP_INTERSTITIALS)
 
 
 if __name__ == "__main__":

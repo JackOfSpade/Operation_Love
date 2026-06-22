@@ -81,6 +81,6 @@ pacing:
 # volume + a high right-swipe ratio is the most reliable bot signal. Override per
 # app under apps.<app>.limits.
 limits:
-  max_per_run: 30          # total swipes per app, per run
+  max_per_run: 30          # total swipes per app, per run (hub can override per-run in auto mode)
   max_per_day: 50          # total swipes per app, per day
   max_likes_per_run: 15    # cap RIGHT-swipes per run (keeps like:pass ratio human); run stops when hit

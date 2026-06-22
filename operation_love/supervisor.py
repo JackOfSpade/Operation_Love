@@ -27,8 +27,22 @@ from .vision.quality import QualityFilter
 from .worker import Worker
 
 
+def _resolve_run_cap(config_cap: int | None, override: int | None) -> int | None:
+    """Per-run override of the max-swipes-per-run cap (set from the hub, auto mode).
+
+    override is None -> no override, use the config value.
+    override == 0    -> UNLIMITED for this run (no per-run cap).
+    override > 0     -> cap this run at that many swipes.
+    (The per-DAY cap still applies regardless — it's the standing safety floor.)
+    """
+    if override is None:
+        return config_cap
+    return override or None
+
+
 def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None = None,
-        on_status=None, mode: str | None = None, enabled_apps=None) -> None:
+        on_status=None, mode: str | None = None, enabled_apps=None,
+        max_per_run: int | None = None) -> None:
     from ._warnings import configure_warnings
     configure_warnings()
 
@@ -95,7 +109,8 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         app_cfg = cfg.apps.get(app, {}) or {}
         mode = app_cfg.get("mode", cfg.mode)                          # per-app override
         lim = {**cfg.limits, **(app_cfg.get("limits", {}))}
-        limiter = RateLimiter(lim.get("max_per_run"), lim.get("max_per_day"),
+        run_cap = _resolve_run_cap(lim.get("max_per_run"), max_per_run)
+        limiter = RateLimiter(run_cap, lim.get("max_per_day"),
                               lim.get("max_likes_per_run"))
         driver = make_driver(app, cfg)
         w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing,

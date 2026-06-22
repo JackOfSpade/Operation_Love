@@ -81,7 +81,8 @@ class FakeStore:
     def add_label(self, run_id, app, liked, embedding, source="manual", profile_id="", **k):
         self.labels.append((liked, embedding, profile_id, k)); self.sources.append(source)
     def load_labels(self): return [(liked, embedding) for liked, embedding, _, _ in self.labels]
-    def record_decision(self, run_id, app, decision, score): self.decisions.append(decision)
+    def record_decision(self, run_id, app, decision, score, source="auto"):
+        self.decisions.append((decision, source))
     def label_count(self): return len(self.labels)
     def flush(self): pass
     def close(self): pass
@@ -132,6 +133,7 @@ def test_observe_learns_from_manual_swipes_and_becomes_ready():
     assert {label[2] for label in store.labels} == {profile[0] for profile in store.profiles}
     assert all(s == "manual" for s in store.sources)  # tagged as manual
     assert len(store.decisions) == 6
+    assert all(source == "manual" for _, source in store.decisions)
     assert model.ready                                # retrained live -> now usable
     assert model.decide([2.0, 2.0])[0] == "like"      # learned your taste
     assert model.decide([-2.0, -2.0])[0] == "dislike"

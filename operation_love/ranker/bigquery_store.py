@@ -38,7 +38,10 @@ _TABLES = {
         "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, liked BOOL, "
         "source STRING, embedding ARRAY<FLOAT64>, photo_count INT64"
     ),
-    "decisions": "run_id STRING, app STRING, created_at TIMESTAMP, decision STRING, score FLOAT64",
+    "decisions": (
+        "run_id STRING, app STRING, created_at TIMESTAMP, decision STRING, "
+        "score FLOAT64, source STRING"
+    ),
     "openers": "run_id STRING, app STRING, created_at TIMESTAMP, model STRING, opener STRING, referenced STRING",
     "spend": (
         "run_id STRING, created_at TIMESTAMP, model STRING, input_tokens INT64, output_tokens INT64, "
@@ -48,6 +51,7 @@ _TABLES = {
 
 _MIGRATIONS = (
     "ALTER TABLE `{labels}` ADD COLUMN IF NOT EXISTS profile_id STRING;",
+    "ALTER TABLE `{decisions}` ADD COLUMN IF NOT EXISTS source STRING;",
 )
 
 
@@ -107,8 +111,9 @@ class BigQueryStore:
                  f"OPTIONS(location='{self.location}');"]
         for name, cols in _TABLES.items():
             stmts.append(f"CREATE TABLE IF NOT EXISTS `{self._tid(name)}` ({cols});")
+        tids = {name: self._tid(name) for name in _TABLES}
         for stmt in _MIGRATIONS:
-            stmts.append(stmt.format(labels=self._tid("labels")))
+            stmts.append(stmt.format(**tids))
         self.client.query("\n".join(stmts)).result()
 
     def _get_or_create_photo_bucket(self):
@@ -152,7 +157,8 @@ class BigQueryStore:
         safe = app.replace("'", "").replace("\\", "")
         rows = self.client.query(
             f"SELECT COUNT(*) AS c FROM `{self._tid('decisions')}` "
-            f"WHERE app='{safe}' AND created_at >= TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), DAY)"
+            f"WHERE app='{safe}' AND created_at >= TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), DAY) "
+            "AND source='auto'"
         ).result()
         for r in rows:
             return int(r["c"])
@@ -250,11 +256,11 @@ class BigQueryStore:
             self._label_count += 1
             self._maybe_flush("labels")
 
-    def record_decision(self, run_id, app, decision, score):
+    def record_decision(self, run_id, app, decision, score, source="auto"):
         with self._lock:
             self._buf["decisions"].append({
                 "run_id": run_id, "app": app, "created_at": _now(),
-                "decision": decision, "score": float(score),
+                "decision": decision, "score": float(score), "source": source,
             })
             self._maybe_flush("decisions")
 

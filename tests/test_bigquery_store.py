@@ -130,6 +130,33 @@ def test_add_label_includes_profile_id():
     assert client.inserted["proj.ds.labels"][0]["profile_id"] == "profile-1"
 
 
+def test_ensure_tables_runs_decision_source_migration():
+    client = _FakeBQ()
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+    ddl = "\n".join(client.queries)
+    assert "ALTER TABLE `proj.ds.labels` ADD COLUMN IF NOT EXISTS profile_id STRING" in ddl
+    assert "ALTER TABLE `proj.ds.decisions` ADD COLUMN IF NOT EXISTS source STRING" in ddl
+
+
+def test_record_decision_includes_source():
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+    s.record_decision("r", "bumble", "like", 0.91, source="manual")
+
+    row = client.inserted["proj.ds.decisions"][0]
+    assert row["source"] == "manual"
+    assert row["decision"] == "like" and row["score"] == 0.91
+
+
+def test_count_today_counts_only_auto_decisions():
+    client = _FakeBQ(label_rows=[{"c": 7}])
+    s = _store(client)
+
+    assert s.count_today("bumble") == 7
+    assert "AND source='auto'" in client.queries[-1]
+
+
 def test_record_profile_uploads_photos_and_manifest_rows():
     client = _FakeBQ()
     storage = _FakeStorage()

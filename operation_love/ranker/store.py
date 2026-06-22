@@ -26,7 +26,8 @@ class Store(Protocol):
     def add_label(self, run_id: str, app: str, liked: bool, embedding: list[float],
                   source: str = "manual", photo_count: int = 0,
                   profile_id: str = "") -> None: ...
-    def record_decision(self, run_id: str, app: str, decision: str, score: float) -> None: ...
+    def record_decision(self, run_id: str, app: str, decision: str, score: float,
+                        source: str = "auto") -> None: ...
     def record_opener(self, run_id: str, app: str, model: str, opener: str, referenced: str) -> None: ...
     def record_spend(self, run_id: str, model: str, usage: Usage, cost: float) -> None: ...
     def label_count(self) -> int: ...
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS labels (
 );
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
-    decision TEXT, score REAL
+    decision TEXT, score REAL, source TEXT
 );
 CREATE TABLE IF NOT EXISTS openers (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
@@ -64,6 +65,11 @@ class SQLiteStore:
         # check_same_thread=False + a lock: safe to share across worker threads.
         self.con = sqlite3.connect(str(db_file), check_same_thread=False)
         self.con.executescript(_SCHEMA)
+        try:
+            self.con.execute("ALTER TABLE decisions ADD COLUMN source TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
         self.con.commit()
         self._lock = threading.Lock()
 
@@ -88,11 +94,11 @@ class SQLiteStore:
             )
             self.con.commit()
 
-    def record_decision(self, run_id, app, decision, score):
+    def record_decision(self, run_id, app, decision, score, source="auto"):
         with self._lock:
             self.con.execute(
-                "INSERT INTO decisions (run_id, app, created_at, decision, score) VALUES (?,?,?,?,?)",
-                (run_id, app, time.time(), decision, score),
+                "INSERT INTO decisions (run_id, app, created_at, decision, score, source) VALUES (?,?,?,?,?,?)",
+                (run_id, app, time.time(), decision, score, source),
             )
             self.con.commit()
 
@@ -123,7 +129,8 @@ class SQLiteStore:
         start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
         with self._lock:
             return self.con.execute(
-                "SELECT COUNT(*) FROM decisions WHERE app=? AND created_at>=?", (app, start)
+                "SELECT COUNT(*) FROM decisions WHERE app=? AND created_at>=? AND source='auto'",
+                (app, start),
             ).fetchone()[0]
 
     def flush(self) -> None:

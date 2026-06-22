@@ -84,11 +84,13 @@ class FakeStore:
         return True
     def add_label(self, run_id, app, liked, embedding, source="manual", profile_id="", **k):
         self.labels.append((app, profile_id, liked, k))
-    def record_decision(self, run_id, app, decision, score): self.decisions.append((app, decision))
+    def record_decision(self, run_id, app, decision, score, source="auto"):
+        self.decisions.append((app, decision, source))
     def record_opener(self, run_id, app, model, opener, referenced): self.openers.append(opener)
     def record_spend(self, run_id, model, usage, cost): self.spend.append(cost)
     def label_count(self): return len(self.labels)
-    def count_today(self, app): return 0
+    def count_today(self, app):
+        return sum(1 for row in self.decisions if row[0] == app and row[2] == "auto")
     def flush(self): pass
     def close(self): pass
 
@@ -159,6 +161,7 @@ def test_worker_dislikes_whole_deck():
     # AUTO mode is pure inference: decisions are logged, but NO training labels/profiles
     # are saved (training data comes only from manual/observe swipes).
     assert len(store.decisions) == 3
+    assert all(source == "auto" for _, _, source in store.decisions)
     assert store.labels == [] and store.profiles == []
     assert driver.opened and driver.closed
 
@@ -170,6 +173,18 @@ def test_worker_likes_with_openers():
     _worker(driver, FakeDecider("like"), svc, store).run()
     assert driver.likes == ["hi 1", "hi 2", "hi 3"]
     assert len(store.openers) == 3 and len(store.spend) == 3
+
+
+def test_worker_skips_openers_when_driver_declines():
+    # Bumble-style driver: no swipe-time opener -> never call Claude (no wasted credits).
+    driver = FakeDriver(3)
+    driver.accepts_opener = False
+    store = FakeStore()
+    client = FakeOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+    assert driver.likes == [None, None, None]      # liked, but with no opener
+    assert client.calls == 0 and store.openers == [] and store.spend == []
 
 
 def test_worker_stops_when_budget_exhausted():
@@ -197,6 +212,20 @@ def test_worker_stops_at_per_run_like_budget():
     # AUTO is inference-only: 2 decisions logged, no training labels saved.
     assert store.labels == [] and len(store.decisions) == 2
     assert driver.closed
+
+
+def test_worker_daily_limit_ignores_manual_decisions():
+    driver = FakeDriver(2)
+    store = FakeStore()
+    store.decisions = [("bumble", "like", "manual")] * 83
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    Worker("bumble", driver, FakeDecider("dislike"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", limiter=RateLimiter(max_per_day=1)).run()
+
+    assert driver.dislikes == 1
+    assert store.count_today("bumble") == 1
+    assert store.decisions[-1] == ("bumble", "dislike", "auto")
+    assert all(source == "manual" for _, _, source in store.decisions[:-1])
 
 
 def test_worker_treats_browser_close_as_graceful_stop():

@@ -16,6 +16,12 @@ class DriverClosed(RuntimeError):
 
 
 class DatingAppDriver(ABC):
+    # Whether this app lets you attach a written opener AT SWIPE TIME (Hinge's
+    # "send a like with a comment" model). When False, the worker must NOT call
+    # the opener service in auto mode — generating a Claude opener we can't send
+    # just wastes credits. Bumble is False (you match first, then message).
+    accepts_opener: bool = True
+
     @abstractmethod
     def open_session(self) -> None:
         """Attach to the app (launch browser / connect to emulator) and reach the swipe deck."""

@@ -131,7 +131,8 @@ class Worker(threading.Thread):
                 self.store.add_label(self.run_id, self.app, liked, vec, source="manual",
                                      profile_id=profile_id, **metadata)
                 self.store.record_decision(self.run_id, self.app,
-                                           "like" if liked else "dislike", 1.0 if liked else 0.0)
+                                           "like" if liked else "dislike", 1.0 if liked else 0.0,
+                                           source="manual")
                 if self.status:
                     self.status.record_swipe(self.app, "like" if liked else "pass")
                     self.status.inc_labels(1)
@@ -211,12 +212,15 @@ class Worker(threading.Thread):
                 # swipe is the model's own PREDICTION, not ground truth — training on it
                 # would create a self-reinforcing feedback loop that amplifies the
                 # model's biases. Training labels come ONLY from manual/observe swipes.
-                self.store.record_decision(self.run_id, self.app, d.decision, d.score)
+                self.store.record_decision(self.run_id, self.app, d.decision, d.score, source="auto")
                 if self.stop_event.is_set():
                     break
 
                 if d.decision == "like":
-                    opener = self.opener_service.maybe_opener(self.run_id, self.app, profile)
+                    # Only generate a Claude opener for apps that can actually send one
+                    # at swipe time (Hinge). On Bumble we'd just discard it — wasted credits.
+                    opener = (self.opener_service.maybe_opener(self.run_id, self.app, profile)
+                              if getattr(self.driver, "accepts_opener", True) else None)
                     self.driver.like(opener)
                     liked += 1
                 else:

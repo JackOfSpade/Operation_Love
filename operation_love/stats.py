@@ -24,6 +24,6 @@ def show(config_path: str = "config.yaml") -> None:
             need = max(0, cfg.ranker.min_labels_to_engage - len(labels))
             print(f"          seed ~{need} more swipes in observe mode to engage auto mode.")
         for app in cfg.enabled_apps:
-            print(f"today   : {app}: {store.count_today(app)} swipes")
+            print(f"today (auto): {app}: {store.count_today(app)} swipes")
     finally:
         store.close()

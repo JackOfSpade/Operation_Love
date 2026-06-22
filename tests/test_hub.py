@@ -67,6 +67,32 @@ def test_hubstate_double_start_blocked():
     st._thread.join()
 
 
+def test_resolve_run_cap_override_semantics():
+    from operation_love.supervisor import _resolve_run_cap
+    assert _resolve_run_cap(30, None) == 30      # no override -> config value
+    assert _resolve_run_cap(30, 0) is None       # 0 -> unlimited (no per-run cap)
+    assert _resolve_run_cap(30, 8) == 8          # N -> cap this run at N
+    assert _resolve_run_cap(None, 8) == 8        # config had no cap, override still applies
+
+
+def test_hubstate_forwards_max_per_run(monkeypatch):
+    import operation_love.hub as hub
+    seen = {}
+    done = threading.Event()
+
+    def fake_run(config_path, **kw):
+        seen.update(kw)
+        done.set()
+
+    monkeypatch.setattr(hub.supervisor, "run", fake_run)
+    st = HubState("config.yaml")
+    ok, _ = st.start(mode="auto", apps=["bumble"], max_per_run=8)
+    assert ok is True
+    assert done.wait(timeout=5)
+    st._thread.join(timeout=5)
+    assert seen["mode"] == "auto" and seen["max_per_run"] == 8
+
+
 if __name__ == "__main__":
     import sys
     import traceback

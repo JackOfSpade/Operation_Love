@@ -40,6 +40,18 @@ _MAX_PHOTOS_PER_PROFILE = 12  # hard cap; real profiles top out ~6, so this boun
 _PHOTO_READY_TIMEOUT_S = 8.0
 _PHOTO_READY_POLL_S = 0.25
 _PHOTO_READY_SETTLE_S = 0.75
+_STARTUP_INTERSTITIAL_TIMEOUT_MS = 500
+
+_STARTUP_INTERSTITIALS = (
+    ("cookie accept", '[data-qa-role="cookie-accept"], button:has-text("Accept")'),
+    ("cookie allow all", '[data-qa-role="cookie-allow-all"], button:has-text("Allow all")'),
+    ("cookie reject", '[data-qa-role="cookie-reject"], button:has-text("Reject")'),
+    ("not now", 'button:has-text("Not now")'),
+    ("maybe later", 'button:has-text("Maybe later")'),
+    ("close dialog", '[data-qa-role="modal-close"], button[aria-label="Close"]'),
+    # TODO(live): add the exact selector here once a specific in-app modal is
+    # identified by screenshot.
+)
 
 
 def _is_browser_closed_error(exc: Exception) -> bool:
@@ -196,6 +208,8 @@ async (node) => {
 
 
 class BumbleDriver(DatingAppDriver):
+    accepts_opener = False          # Bumble: match first, then message — no swipe-time opener (don't spend Claude credits)
+
     def __init__(self, cfg):
         app_cfg = (getattr(cfg, "apps", {}) or {}).get("bumble", {})
         self.url = app_cfg.get("url", "https://bumble.com/app")
@@ -234,7 +248,10 @@ class BumbleDriver(DatingAppDriver):
                 user_data_dir=str(self.user_data_dir),
                 headless=self.headless,
                 viewport={"width": 1280, "height": 900},
-                args=["--disable-blink-features=AutomationControlled"],
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--deny-permission-prompts",
+                ],
                 ignore_default_args=["--enable-automation"],
             )
             # Persistent context => your manual login is remembered across runs.
@@ -245,6 +262,7 @@ class BumbleDriver(DatingAppDriver):
             self.page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
             self.page.set_default_timeout(self.nav_timeout_ms)
             self.page.goto(self.url, wait_until="domcontentloaded")
+            self._dismiss_startup_interstitials()
             # First run: if not logged in, sign in by hand in the opened window; the
             # user-data dir persists the session for subsequent runs.
         except BaseException:
@@ -319,6 +337,26 @@ class BumbleDriver(DatingAppDriver):
             return
         try:
             self.page.evaluate(_BUSY_JS, message)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _dismiss_startup_interstitials(self) -> None:
+        """Best-effort startup cleanup for non-native cookie/modals.
+
+        Native Chrome permission prompts are handled by --deny-permission-prompts.
+        This only tries short, guarded clicks against known/likely in-page banners.
+        It must never block or break a run when Bumble changes markup.
+        """
+        if not self.page:
+            return
+        try:
+            for label, selector in _STARTUP_INTERSTITIALS:
+                try:
+                    self.page.click(selector, timeout=_STARTUP_INTERSTITIAL_TIMEOUT_MS)
+                    print(f"[bumble] dismissed startup interstitial: {label}")
+                    time.sleep(0.1)
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception:  # noqa: BLE001
             pass
 

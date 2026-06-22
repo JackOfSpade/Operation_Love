@@ -34,7 +34,7 @@ class _Store:
     def __init__(self):
         self._lock = threading.Lock()
         self.decisions = 0
-    def record_decision(self, *a):
+    def record_decision(self, *a, **k):
         with self._lock:
             self.decisions += 1
     def record_profile(self, *a, **k): pass

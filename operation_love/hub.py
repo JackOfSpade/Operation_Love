@@ -40,7 +40,8 @@ class HubState:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def start(self, mode: str | None = None, apps=None) -> tuple[bool, str]:
+    def start(self, mode: str | None = None, apps=None,
+              max_per_run: int | None = None) -> tuple[bool, str]:
         with self._lock:
             if self.is_running():
                 return False, "a run is already active"
@@ -56,7 +57,7 @@ class HubState:
             def _target():
                 try:
                     supervisor.run(self.config_path, stop_event=stop, on_status=_capture,
-                                   mode=mode, enabled_apps=apps)
+                                   mode=mode, enabled_apps=apps, max_per_run=max_per_run)
                 except Exception as exc:  # noqa: BLE001
                     with self._lock:
                         self._error = f"{type(exc).__name__}: {exc}"
@@ -130,6 +131,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")   # always serve the live build (no stale UI)
         self.end_headers()
         self.wfile.write(data)
 
@@ -171,7 +173,12 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             body = {}
         if self.path == "/api/start":
-            ok, msg = self.state.start(body.get("mode"), body.get("apps"))
+            mpr = body.get("max_per_run")           # auto-mode per-run cap (0 = unlimited)
+            try:
+                mpr = int(mpr) if mpr is not None else None
+            except (TypeError, ValueError):
+                mpr = None
+            ok, msg = self.state.start(body.get("mode"), body.get("apps"), mpr)
             self._json({"ok": ok, "msg": msg}, 200 if ok else 409)
         elif self.path == "/api/stop":
             ok, msg = self.state.stop()
@@ -381,6 +388,13 @@ _PAGE = """<!doctype html>
         <option value="auto">auto (bot swipes)</option></select>
       <span id="appchecks"></span>
     </div>
+    <div class="controls" id="maxrow" style="margin-top:10px;display:none">
+      <span class="muted">max profiles this run</span>
+      <input type="text" inputmode="numeric" id="maxrun" value="8"
+        style="width:72px;text-align:center;background:#22222b;color:#e8e8ea;border:1px solid rgba(255,255,255,.14);border-radius:7px;padding:5px 7px;font:inherit">
+      <label class="chk"><input type="checkbox" id="unlimited"> unlimited</label>
+      <span class="meta">(the per-day cap still applies)</span>
+    </div>
     <div class="controls" style="margin-top:12px">
       <button id="start" class="primary">▶ Start</button>
       <button id="stop" class="danger" disabled>■ Stop</button>
@@ -484,7 +498,7 @@ async function tickLogs(){
   try {
     const r = await getJSON('/api/logs'); const el = $('#logs');
     const stick = _nearBottom(el);                 // only auto-scroll if user is already at the bottom
-    el.textContent = (r.lines||[]).join('\n');
+    el.textContent = (r.lines||[]).join('\\n');
     $('#loghint').textContent = (r.lines||[]).length + ' lines';
     if(stick) el.scrollTop = el.scrollHeight;
   } catch(e){}
@@ -497,9 +511,28 @@ function appChecks(){
 }
 function chosenApps(){ return [...document.querySelectorAll('#appchecks input:checked')].map(i=>i.value); }
 
+function syncModeUI(){                         // the cap only applies in auto mode
+  $('#maxrow').style.display = $('#mode').value === 'auto' ? '' : 'none';
+  const off = $('#unlimited').checked;         // unlimited on -> show ∞, grey out + disable the number box
+  const box = $('#maxrun');
+  if (off) {
+    if (box.value !== '∞') box.dataset.prev = box.value;   // remember the number to restore later
+    box.value = '∞';
+  } else if (box.value === '∞') {
+    box.value = box.dataset.prev || '8';
+  }
+  box.disabled = off;
+  box.style.opacity = off ? '.45' : '1';
+  box.style.cursor = off ? 'not-allowed' : 'text';
+}
+$('#mode').onchange = syncModeUI;
+$('#unlimited').onchange = syncModeUI;
 $('#start').onclick = async () => {
   $('#hint').textContent='starting…';
-  const r = await postJSON('/api/start', {mode: $('#mode').value, apps: chosenApps()});
+  const mode = $('#mode').value;
+  let max_per_run = null;                       // null = use config; 0 = unlimited; N = cap
+  if (mode === 'auto') max_per_run = $('#unlimited').checked ? 0 : (parseInt($('#maxrun').value,10) || 0);
+  const r = await postJSON('/api/start', {mode, apps: chosenApps(), max_per_run});
   $('#hint').textContent = r.ok ? '' : (r.msg||'could not start');
   tick();
 };
@@ -529,6 +562,7 @@ $('#bugdl').onclick = async () => {
 (async () => {
   const c = await getJSON('/api/config');
   if(!c.error){ cfg = Object.assign(cfg, c); $('#mode').value = cfg.mode; $('#sub').textContent = `control hub · storage: ${cfg.backend}`; }
+  syncModeUI();
   appChecks();
   tick(); setInterval(tick, 1000);
   tickEval(); setInterval(tickEval, 20000);   // model quality: heavier, refresh slower (server caches 45s)

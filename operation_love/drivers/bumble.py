@@ -258,7 +258,7 @@ class BumbleDriver(DatingAppDriver):
             # Prefer the real Google Chrome binary over bundled Chromium for
             # authentic WebGL/plugins/window.chrome; fall back if Chrome's absent.
             self._ctx = self._launch_context(launch_kwargs)
-            print(f"[bumble] browser engine={engine}, channel={self._active_channel}")
+            print(f"Bumble browser engine={engine}, channel={self._active_channel}")
             self.page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
             self.page.set_default_timeout(self.nav_timeout_ms)
             self.page.goto(self.url, wait_until="domcontentloaded")
@@ -295,7 +295,7 @@ class BumbleDriver(DatingAppDriver):
                 self._active_channel = channel
                 return ctx
             except Exception as exc:  # noqa: BLE001
-                print(f"[bumble] channel='{channel}' unavailable ({type(exc).__name__}); "
+                print(f"Bumble channel='{channel}' unavailable ({type(exc).__name__}); "
                       f"falling back to bundled Chromium.")
         ctx = self._pw.chromium.launch_persistent_context(**launch_kwargs)
         self._active_channel = "chromium (bundled)"
@@ -353,7 +353,7 @@ class BumbleDriver(DatingAppDriver):
             for label, selector in _STARTUP_INTERSTITIALS:
                 try:
                     self.page.click(selector, timeout=_STARTUP_INTERSTITIAL_TIMEOUT_MS)
-                    print(f"[bumble] dismissed startup interstitial: {label}")
+                    print(f"Bumble dismissed startup interstitial: {label}")
                     time.sleep(0.1)
                 except Exception:  # noqa: BLE001
                     pass
@@ -408,12 +408,13 @@ class BumbleDriver(DatingAppDriver):
             _raise_driver_closed_if_browser_closed(exc)
             raise
 
-    def wait_for_decision(self, timeout: float = 120.0, should_stop=None) -> bool | None:
+    def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None) -> bool | None:
         """Block until YOU manually like/pass the current card.
 
         Returns True (liked), False (passed), or None (deck emptied / timeout /
-        stop requested). Mouse clicks on the like/pass controls are detected; if
-        you also use keyboard shortcuts, confirm coverage with bumble_inspect.py.
+        stop requested). timeout=None waits indefinitely. Mouse clicks on the
+        like/pass controls are detected; if you also use keyboard shortcuts,
+        confirm coverage with bumble_inspect.py.
         """
         self._install_observe_listener()
         # Discard any decision recorded during the PREVIOUS card's capture/embed
@@ -428,8 +429,8 @@ class BumbleDriver(DatingAppDriver):
         except Exception as exc:  # noqa: BLE001
             _raise_driver_closed_if_browser_closed(exc)
             raise
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while deadline is None or time.monotonic() < deadline:
             if should_stop and should_stop():        # Stop pressed -> don't wait for a swipe
                 return None
             try:
@@ -606,7 +607,7 @@ class BumbleDriver(DatingAppDriver):
             if i >= self.photo_capture_steps - 1 or not self._advance_photo_album():
                 break
             time.sleep(_PHOTO_ADVANCE_SETTLE_S)
-        print(f"[bumble] photos: selector matched {raw_matched}, "
+        print(f"Photos: selector matched {raw_matched}, "
               f"{filtered_first} passed the profile-photo filter, "
               f"{len(shots)} distinct captured")
         self._maybe_dump_photos(shots)
@@ -639,9 +640,9 @@ class BumbleDriver(DatingAppDriver):
             d.mkdir(parents=True, exist_ok=True)
             for idx, shot in enumerate(shots):
                 (d / f"{idx:02d}.png").write_bytes(shot)
-            print(f"[bumble] DEBUG: wrote {len(shots)} captured photo(s) to {d}")
+            print(f"Debug: wrote {len(shots)} captured photo(s) to {d}")
         except Exception as exc:  # noqa: BLE001
-            print(f"[bumble] DEBUG photo dump failed: {exc}")
+            print(f"Debug photo dump failed: {exc}")
 
     def _capture_prompts(self) -> list[tuple[str, str]]:
         # TODO(live): map Bumble's profile fields/prompts to (label, value) pairs.

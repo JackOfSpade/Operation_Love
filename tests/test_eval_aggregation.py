@@ -141,7 +141,7 @@ def test_format_report_includes_diminishing_returns_line():
         },
     }
     out = format_report(r)
-    assert "diminishing returns" in out
+    assert "Diminishing returns" in out
     assert "0.0032 PR-AUC / +20 labels" in out
 
 
@@ -155,7 +155,8 @@ def test_format_report_shows_dash_when_no_estimate():
         },
     }
     out = format_report(r)
-    assert "diminishing returns —" in out
+    assert "Diminishing returns —" in out
+    assert out.startswith("Evaluation failed")
     assert "too early" not in out and "keep seeding" not in out
 
 
@@ -179,7 +180,7 @@ def test_marginal_return_plateau_stays_a_positive_nonzero_value(monkeypatch):
     assert r["status"] == "ok"
     assert r["marginal_return"] > 0
     line = eval_mod._format_marginal_return(r)
-    assert "diminishing returns" in line
+    assert "Diminishing returns" in line
     assert "too early" not in line and "keep seeding" not in line
 
 
@@ -193,7 +194,7 @@ def test_marginal_return_hard_eval_failure_is_error(monkeypatch):
     monkeypatch.setattr(eval_mod, "evaluate", _no_sklearn)
     r = marginal_return_summary(_identity_samples(40), batch=20)
     assert r["status"] == "error"
-    assert eval_mod._format_marginal_return(r) == "diminishing returns —"
+    assert eval_mod._format_marginal_return(r) == "Diminishing returns —"
 
 
 def test_marginal_return_post_ok_group_contradiction_is_error():
@@ -202,7 +203,32 @@ def test_marginal_return_post_ok_group_contradiction_is_error():
 
     r = marginal_return_summary(samples, eval_result=stale_ok)
     assert r["status"] == "error"
-    assert eval_mod._format_marginal_return(r) == "diminishing returns —"
+    assert eval_mod._format_marginal_return(r) == "Diminishing returns —"
+
+
+def test_quality_trajectory_walks_prefixes_every_step(monkeypatch):
+    # Reconstructs the metric history at chronological prefixes, every `step` labels.
+    monkeypatch.setattr(eval_mod, "evaluate", _fake_saturating_evaluate)
+    traj = eval_mod.quality_trajectory(_identity_samples(53), step=5)
+    assert [p["labels"] for p in traj][:3] == [10, 15, 20]   # starts at min_labels (10), every 5
+    assert traj[-1]["labels"] == 53                          # full set is always the final point
+    assert traj[0]["pr_auc"] < traj[-1]["pr_auc"]            # saturating curve rises with n
+    assert all(p.get("roc_auc") is not None and p.get("base_rate") is not None for p in traj)
+
+
+def test_quality_trajectory_never_raises_on_edge_inputs():
+    for samples in (None, [], ["junk"] * 8):
+        assert eval_mod.quality_trajectory(samples, step=5) == []   # too small / malformed -> empty
+
+
+def test_quality_trajectory_caps_point_count_as_labels_grow(monkeypatch):
+    # Cost is one full grouped CV per point; the step widens so points stay bounded at scale.
+    monkeypatch.setattr(eval_mod, "evaluate", _fake_saturating_evaluate)
+    big = eval_mod.quality_trajectory(_identity_samples(1000), step=5, max_points=40)
+    assert len(big) <= 41                                  # ~max_points, not 200 (= 1000/5)
+    assert big[-1]["labels"] == 1000                       # still ends on the full set
+    # small N keeps the fine step-5 granularity (cap doesn't kick in)
+    assert [p["labels"] for p in eval_mod.quality_trajectory(_identity_samples(53), step=5)][:3] == [10, 15, 20]
 
 
 if __name__ == "__main__":

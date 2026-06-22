@@ -266,6 +266,12 @@ def test_none_then_like():
     assert drv.wait_for_decision(timeout=5) is True
 
 
+def test_no_timeout_waits_until_like(monkeypatch):
+    monkeypatch.setattr(bumble.time, "sleep", lambda *_: None)
+    drv = _driver(FakePage(reads=[None, None, "like"]))
+    assert drv.wait_for_decision(timeout=None) is True
+
+
 def test_wait_clears_stale_decision_before_polling():
     # A swipe captured during the previous card's embed (overlays off) must be
     # discarded before we wait on the next card, not mis-attributed to it.

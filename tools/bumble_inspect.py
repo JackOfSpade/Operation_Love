@@ -29,7 +29,7 @@ _CARD_SELECTORS = {"photo", "like", "pass"}     # expected to match while a card
 def _probe(driver: BumbleDriver) -> bool:
     page = driver.page
     any_miss = False
-    print("\n--- selector probe (matches on the current screen) ---")
+    print("\n--- Selector probe (matches on the current screen) ---")
     for name, sel in driver.selectors.items():
         try:
             n = len(page.query_selector_all(sel))
@@ -45,7 +45,7 @@ def _probe(driver: BumbleDriver) -> bool:
             el = page.query_selector(sel)
             sample = "  | " + (el.inner_text() or "").strip().replace("\n", " ")[:60]
         print(f"  [{flag}] {name:6} x{n:<3} {sel}{sample}")
-    print("  (photo/like/pass should be OK with a card shown; `empty` matches only "
+    print("  (Photo/like/pass should be OK with a card shown; `empty` matches only "
           "when the deck is out.)")
     return any_miss
 
@@ -55,7 +55,7 @@ def _discover(driver: BumbleDriver) -> None:
     derived without DevTools: Bumble's [data-qa-role] inventory (the stable
     hooks — that's how like/pass match) and the actual large media elements."""
     page = driver.page
-    print("\n--- discovery: raw DOM signals to derive the MISSing selectors ---")
+    print("\n--- Discovery: raw DOM signals to derive the MISSing selectors ---")
     roles = page.evaluate(r"""() => {
         const map = {};
         document.querySelectorAll('[data-qa-role]').forEach(e => {
@@ -67,7 +67,7 @@ def _discover(driver: BumbleDriver) -> None:
         });
         return map;
     }""")
-    print("  [data-qa-role] inventory (role  xCount  | sample text):")
+    print("  Data-qa-role inventory ([data-qa-role], role  xCount  | sample text):")
     for r in sorted(roles):
         info = roles[r]
         s = ("  | " + info["sample"]) if info["sample"] else ""
@@ -93,26 +93,26 @@ def _discover(driver: BumbleDriver) -> None:
         });
         return out.slice(0, 20);
     }""")
-    print("\n  large media elements (likely profile photos — tag.class  WxH  src):")
+    print("\n  Large media elements (likely profile photos — tag.class  WxH  src):")
     for m in media:
         cls = ("." + ".".join(m["cls"].split())) if m["cls"] else ""
         print(f"      {m['tag']}{cls}  {m['w']}x{m['h']}  {m['ref']}")
-    print("\n  ➜ paste this whole discovery block back; I'll derive the photo/bio/prompt selectors.")
+    print("\n  ➜ Paste this whole discovery block back; I'll derive the photo/bio/prompt selectors.")
 
 
 def _watch(driver: BumbleDriver, rounds: int) -> None:
-    print(f"\n--- observe detection: manually like/pass {rounds} cards ---")
+    print(f"\n--- Observe detection: manually like/pass {rounds} cards ---")
     for i in range(1, rounds + 1):
         liked = driver.wait_for_decision(timeout=120.0)
         if liked is None:
-            print(f"  {i}. no decision (timeout / deck empty) — stopping watch.")
+            print(f"  {i}. No decision (timeout / deck empty) — stopping watch.")
             return
-        print(f"  {i}. detected: {'LIKE  👍' if liked else 'PASS  👎'}")
-    print("  observe detection works ✔  (this is exactly what mode:observe records)")
+        print(f"  {i}. Detected: {'LIKE  👍' if liked else 'PASS  👎'}")
+    print("  Observe detection works ✔  (this is exactly what mode:observe records)")
 
 
 def _paste_block(driver: BumbleDriver) -> None:
-    print("\n--- paste-ready (drop into config.yaml only if you changed any) ---")
+    print("\n--- Paste-ready (drop into config.yaml only if you changed any) ---")
     print("apps:\n  bumble:\n    selectors:")
     for name, sel in driver.selectors.items():
         print(f"      {name}: '{sel}'")

@@ -28,11 +28,13 @@ class FakeObservingDriver(DatingAppDriver):
         self.swipes = list(swipes)
         self.i = 0
         self.opened = self.closed = False
+        self.wait_timeouts = []
 
     def open_session(self): self.opened = True
     def out_of_profiles(self): return self.i >= len(self.swipes)
     def current_profile(self): return self.swipes[self.i][0]
     def wait_for_decision(self, timeout=120.0, should_stop=None):
+        self.wait_timeouts.append(timeout)
         liked = self.swipes[self.i][1]; self.i += 1; return liked
     def render_busy(self, message=None): pass
     def next_profile(self): return None
@@ -138,6 +140,25 @@ def test_observe_learns_from_manual_swipes_and_becomes_ready():
     assert model.decide([2.0, 2.0])[0] == "like"      # learned your taste
     assert model.decide([-2.0, -2.0])[0] == "dislike"
     assert driver.opened and driver.closed
+    assert driver.wait_timeouts == [None] * 6
+
+
+def test_observe_logs_profile_text_separators(capsys):
+    model = PreferenceModel(min_labels=10)
+    decider = RankerDecider(FakeQuality(), FakeEmbedder(), model)
+    store = FakeStore()
+    driver = FakeObservingDriver([(_profile([1.0, 1.0]), True)])
+    w = Worker("bumble", driver, decider, None, store, "r",
+               _Pacing(), threading.Event(), mode="observe", retrain_every=5)
+
+    w._observe_loop()
+
+    out = capsys.readouterr().out
+    assert f"\n{'-' * 72}\n" in out
+    assert "✅ READY — swipe this profile" in out
+    assert "Got LIKE — processing" in out
+    assert "[worker-bumble]" not in out
+    assert "profile #1" not in out
 
 
 def test_observe_retrains_final_partial_batch():

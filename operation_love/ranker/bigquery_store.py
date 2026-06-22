@@ -76,9 +76,9 @@ class BigQueryStore:
                  location: str = "US", photo_bucket: str = "", flush_every: int = 25,
                  client=None, storage_client=None, ensure: bool = True):
         if not project_id:
-            raise ValueError("storage.bigquery.project_id is required for the BigQuery backend")
+            raise ValueError("Storage.bigquery.project_id is required for the BigQuery backend")
         if not photo_bucket:
-            raise ValueError("storage.bigquery.photo_bucket is required for the BigQuery backend")
+            raise ValueError("Storage.bigquery.photo_bucket is required for the BigQuery backend")
         self.project_id = project_id
         self.dataset = dataset
         self.location = location
@@ -93,6 +93,7 @@ class BigQueryStore:
         self.client = client
         self.storage_client = storage_client
         self._buf: dict[str, list[dict]] = {name: [] for name in _TABLES}
+        self._written: dict[str, int] = {name: 0 for name in _TABLES}  # rows confirmed inserted this run
         self._label_count = 0
         self._labels_cache: list[tuple[bool, list[float]]] | None = None
         self._lock = threading.RLock()  # shared across worker threads
@@ -129,7 +130,7 @@ class BigQueryStore:
             bucket.iam_configuration.public_access_prevention = "enforced"
             bucket.patch()
         except Exception as exc:  # noqa: BLE001
-            print(f"[bigquery_store] WARNING: could not lock down bucket "
+            print(f"BigQuery store warning: could not lock down bucket "
                   f"{self.photo_bucket_name} (uniform access / public-access-prevention): {exc}")
         return bucket
 
@@ -148,6 +149,18 @@ class BigQueryStore:
             self._labels_cache = _copy_labels(out)
             self._label_count = len(self._labels_cache)
             return _copy_labels(self._labels_cache)
+
+    def load_labels_ordered(self) -> list[tuple[bool, list[float]]]:
+        """Committed labels in swipe order (created_at asc) for the quality-trajectory
+        chart. Deliberately does NOT take self._lock or read the in-memory buffer: it's
+        called repeatedly by the hub's eval thread while workers are writing, so holding
+        the lock across this (multi-second) query would stall swipes. The unflushed tail
+        is therefore omitted here — the hub appends the live full-set point separately.
+        Streaming-buffer rows may lag, which is fine for a historical trend."""
+        rows = self.client.query(
+            f"SELECT liked, embedding FROM `{self._tid('labels')}` ORDER BY created_at"
+        ).result()
+        return [(bool(r["liked"]), list(r["embedding"])) for r in rows]
 
     def label_count(self) -> int:
         with self._lock:
@@ -177,7 +190,7 @@ class BigQueryStore:
         """
         photos = list(photos or [])
         if not photos:
-            print(f"[bigquery_store] WARNING: captured 0 photos for profile {profile_id}; "
+            print(f"BigQuery store warning: captured 0 photos for profile {profile_id}; "
                   "skipping profile archive.")
             return False
         created_at = _now()
@@ -185,7 +198,7 @@ class BigQueryStore:
         if len(photo_rows) != len(photos):
             if photo_rows:
                 self._delete_profile_photo_rows(photo_rows)
-            print(f"[bigquery_store] WARNING: archived {len(photo_rows)}/{len(photos)} photos for "
+            print(f"BigQuery store warning: archived {len(photo_rows)}/{len(photos)} photos for "
                   f"profile {profile_id}; skipping its label to keep image data complete.")
             return False
         with self._lock:
@@ -206,7 +219,7 @@ class BigQueryStore:
                 return True
             except Exception as exc:  # noqa: BLE001
                 if attempt == _UPLOAD_ATTEMPTS:
-                    print(f"[bigquery_store] photo upload failed after {_UPLOAD_ATTEMPTS} "
+                    print(f"BigQuery store photo upload failed after {_UPLOAD_ATTEMPTS} "
                           f"attempts ({getattr(blob, 'name', '?')}): {exc}")
                     return False
                 time.sleep(delay)
@@ -239,7 +252,7 @@ class BigQueryStore:
             try:
                 self._photo_bucket.blob(uri[len(prefix):]).delete()
             except Exception as exc:  # noqa: BLE001
-                print(f"[bigquery_store] WARNING: could not delete partial photo {uri}: {exc}")
+                print(f"BigQuery store warning: could not delete partial photo {uri}: {exc}")
 
     def add_label(self, run_id, app, liked, embedding, source="manual", photo_count=0,
                   profile_id="", **_):
@@ -294,6 +307,7 @@ class BigQueryStore:
         errors = self.client.insert_rows_json(self._tid(table), rows)
         if errors:
             raise RuntimeError(f"BigQuery insert errors for {table}: {errors}")
+        self._written[table] += len(rows)
         self._buf[table] = []
 
     def flush(self) -> None:
@@ -303,3 +317,12 @@ class BigQueryStore:
 
     def close(self) -> None:
         self.flush()
+
+    def saved_summary(self) -> str:
+        """Human-readable tally of rows confirmed inserted to BigQuery this run, for the
+        shutdown confirmation log. Empty buffers + a non-empty tally = everything landed."""
+        with self._lock:
+            parts = [f"{name}={self._written[name]}" for name in _TABLES if self._written[name]]
+            pending = sum(len(self._buf[name]) for name in _TABLES)
+        body = ", ".join(parts) if parts else "nothing new"
+        return f"{body} (pending={pending})" if pending else body

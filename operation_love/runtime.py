@@ -61,7 +61,7 @@ class Capabilities:
         line = f"Operation Love — {self.os_name} {self.machine} · Python {self.python} · {accel}"
         missing = [k for k, v in self.available.items() if not v]
         if missing:
-            line += f"\n  not installed (features will be skipped): {', '.join(missing)}"
+            line += f"\n  Not installed (features will be skipped): {', '.join(missing)}"
         return line
 
     def missing(self, *components: str) -> list[str]:

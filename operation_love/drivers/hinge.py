@@ -209,7 +209,7 @@ class HingeDriver(DatingAppDriver):
             return None
         return self._capture_current()
 
-    def wait_for_decision(self, timeout: float = 120.0, should_stop=None) -> bool | None:
+    def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None) -> bool | None:
         """Block until YOU manually like/pass the current card.
 
         Android has no global tap callback (unlike Bumble's DOM click listener),
@@ -221,7 +221,8 @@ class HingeDriver(DatingAppDriver):
                  ignored and we keep watching.
           PASS — the card is dismissed and the next profile loads with no like
                  sheet -> the prompt-text signature changes -> False.
-          none — the deck empties or we hit the timeout -> None.
+          none — the deck empties, stop is requested, or we hit the timeout -> None.
+                 timeout=None waits indefinitely.
 
         Returns True (liked), False (passed), or None. A device disconnect during
         the wait raises DriverClosed (handled by the worker as a clean stop).
@@ -230,16 +231,19 @@ class HingeDriver(DatingAppDriver):
         confirmation on a real Hinge build; ids are config-overridable (see
         ops/RUNBOOK.md). The polling/return logic is unit-tested offline.
         """
-        deadline = time.monotonic() + timeout
+        deadline = None if timeout is None else time.monotonic() + timeout
         baseline = self._observe_state()[1]
-        while time.monotonic() < deadline:
+        while deadline is None or time.monotonic() < deadline:
             if should_stop and should_stop():         # Stop pressed -> don't wait for a tap
                 return None
             if self.out_of_profiles():
                 return None
             like_open, sig = self._observe_state()
             if like_open:
-                if self._await_like_sent(baseline, deadline):
+                sent = self._await_like_sent(baseline, deadline, should_stop)
+                if sent is None:
+                    return None
+                if sent:
                     return True                       # like sent
                 baseline = self._observe_state()[1]   # cancelled -> resync, keep watching
             elif sig and sig != baseline:             # card advanced, no like sheet -> pass
@@ -254,10 +258,13 @@ class HingeDriver(DatingAppDriver):
         like_open = self._exists(self.ids["send_like"]) or self._exists(self.ids["comment_box"])
         return like_open, tuple(self._prompt_texts())
 
-    def _await_like_sent(self, baseline: tuple[str, ...], deadline: float) -> bool:
+    def _await_like_sent(self, baseline: tuple[str, ...], deadline: float | None,
+                         should_stop=None) -> bool | None:
         """Once the send-like sheet is open, wait for it to close. True if the
         like was sent (deck advanced or emptied); False if cancelled (same card)."""
-        while time.monotonic() < deadline:
+        while deadline is None or time.monotonic() < deadline:
+            if should_stop and should_stop():
+                return None
             if self.out_of_profiles():
                 return True                           # last like sent; deck now empty
             like_open, sig = self._observe_state()

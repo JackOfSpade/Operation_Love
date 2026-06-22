@@ -278,6 +278,21 @@ def test_flush_on_close():
     assert row["input_tokens"] == 10 and row["cost_usd"] == 0.0001
 
 
+def test_saved_summary_tallies_confirmed_inserts():
+    client = _FakeBQ()
+    s = _store(client, flush_every=100)
+    s.add_label("r", "bumble", True, [0.1])
+    s.add_label("r", "bumble", False, [0.2])
+    s.record_decision("r", "bumble", "like", 1.0)
+    # before flush: buffered, nothing confirmed yet -> shutdown would show it pending
+    summary = s.saved_summary()
+    assert "nothing new" in summary and "pending=3" in summary
+    s.flush()
+    summary = s.saved_summary()
+    assert "labels=2" in summary and "decisions=1" in summary
+    assert "pending" not in summary            # buffers drained -> everything landed
+
+
 def test_insert_errors_raise():
     client = _FakeBQ(insert_errors=[{"index": 0, "errors": ["bad row"]}])
     s = _store(client, flush_every=1)

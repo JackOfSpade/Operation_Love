@@ -41,7 +41,7 @@ def _resolve_run_cap(config_cap: int | None, override: int | None) -> int | None
 
 
 def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None = None,
-        on_status=None, mode: str | None = None, enabled_apps=None,
+        on_status=None, on_store=None, mode: str | None = None, enabled_apps=None,
         max_per_run: int | None = None) -> None:
     from ._warnings import configure_warnings
     configure_warnings()
@@ -65,19 +65,21 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     print(caps.banner())
     missing_cloud = caps.missing("bigquery", "cloud_storage") if cfg.storage.backend == "bigquery" else []
     if missing_cloud:
-        raise SystemExit("storage.backend=bigquery but cloud storage dependencies are missing "
+        raise SystemExit("Storage.backend=bigquery but cloud storage dependencies are missing "
                          f"({', '.join(missing_cloud)}). Install `pip install -e '.[bq]'`, "
                          "or set storage.backend: sqlite.")
 
     if caps.missing("arcface", "clip"):
-        print("[degrade] ml extra not installed -> ranking unavailable "
+        print("Degrade: ml extra not installed -> ranking unavailable "
               "(`pip install -e '.[ml]'`). Workers will defer until it's present.")
 
     status.set_global(phase="loading saved data")     # BigQuery ensure-tables + label load
     store = make_store(cfg)
+    if on_store:
+        on_store(store)            # publish the live store so the hub eval reads live in-memory labels
     labels = store.load_labels()
     status.set_global(labels=len(labels))
-    print(f"[store] backend={cfg.storage.backend} labels={len(labels)}  "
+    print(f"Store: backend={cfg.storage.backend} labels={len(labels)}  "
           f"apps={cfg.enabled_apps}")
 
     tracker = CostTracker(cfg.budget.pricing, cfg.budget.run_budget_usd)
@@ -85,7 +87,7 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     if cfg.opener.enabled and not caps.missing("anthropic"):
         opener_client = AnthropicOpener(cfg.opener.model, cfg.opener.max_tokens)
     elif cfg.opener.enabled:
-        print("[degrade] anthropic SDK not installed -> swiping without openers")
+        print("Degrade: anthropic SDK not installed -> swiping without openers")
     opener_service = OpenerService(opener_client, tracker, store, cfg.opener.style,
                                    cfg.budget.on_exhausted)
 
@@ -94,7 +96,7 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                             threshold=cfg.ranker.like_threshold)
     ready = model.train(labels)
     status.set_global(ranker_ready=ready, phase="launching app")
-    print(f"[ranker] labels={len(labels)} ready={ready} "
+    print(f"Ranker: labels={len(labels)} ready={ready} "
           f"(min={cfg.ranker.min_labels_to_engage}, threshold={cfg.ranker.like_threshold})")
     quality = QualityFilter(cfg.quality_filter.enabled, cfg.quality_filter.min_score,
                             cfg.quality_filter.metric)
@@ -116,7 +118,7 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing,
                    stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every,
                    limiter=limiter, status=status)
-        print(f"[worker-{app}] mode={mode} limits={limiter.describe()}")
+        print(f"{app.title()} worker mode={mode} limits={limiter.describe()}")
         workers.append(w)
         w.start()
 
@@ -136,20 +138,31 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             w.join(timeout=30)
         for app in cfg.enabled_apps:
             status.set_app(app, state="saving")
+        save_err = None
         try:
-            store.flush()
+            store.flush()                 # raises if any buffered insert was rejected
             store.close()
+        except Exception as exc:  # noqa: BLE001 — report a clear save outcome, then re-raise
+            save_err = exc
         finally:
-            status.set_global(running=False, phase="stopped",
+            status.set_global(running=False, phase=("stopped" if save_err is None else "save_failed"),
                               budget_spent=tracker.run_spend_usd, openers=tracker.calls)
             for app in cfg.enabled_apps:
-                status.set_app(app, state="stopped")
-        print(f"[run {run_id}] openers={tracker.calls} spend=${tracker.run_spend_usd:.4f}")
+                status.set_app(app, state=("stopped" if save_err is None else "error"))
+        tail = f"openers={tracker.calls} spend=${tracker.run_spend_usd:.4f}"
+        if save_err is None:
+            saved = getattr(store, "saved_summary", lambda: "")()
+            detail = f" [{saved}]" if saved else ""
+            print(f"Run {run_id}: ✅ all data saved to {cfg.storage.backend}{detail}; {tail}")
+        else:
+            print(f"Run {run_id}: ❌ SAVE FAILED to {cfg.storage.backend} "
+                  f"({type(save_err).__name__}: {save_err}) — buffered data may be incomplete; {tail}")
+            raise save_err
 
 
 def _install_signal_handlers(stop_event: threading.Event) -> None:
     def _stop(*_):
-        print("\n[supervisor] shutdown requested; stopping workers...")
+        print("\nSupervisor: shutdown requested; stopping workers...")
         stop_event.set()
     for sig in (signal.SIGINT, getattr(signal, "SIGTERM", signal.SIGINT)):
         try:

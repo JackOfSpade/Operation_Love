@@ -24,6 +24,7 @@ from .ranker.decider import Decider
 _OBSERVE_CAPTURE_BUSY = "Capturing profile — please wait before your next swipe"
 _OBSERVE_PROCESSING_BUSY = "Processing — please wait before your next swipe"
 _NO_PHOTO_RETRY_S = 0.5
+_PROFILE_LOG_WIDTH = 72
 
 
 class Worker(threading.Thread):
@@ -55,6 +56,9 @@ class Worker(threading.Thread):
         if self.status:
             self.driver.render_status(self.status.app_view(self.app))
 
+    def _profile_separator(self) -> None:
+        print("-" * _PROFILE_LOG_WIDTH)
+
     def _block_observe_capture(self, **status_fields) -> None:
         self.driver.render_busy(_OBSERVE_CAPTURE_BUSY)
         self._stat(state="capturing", **status_fields)
@@ -66,22 +70,22 @@ class Worker(threading.Thread):
                 self._observe_loop() if self.mode == "observe" else self._auto_loop()
                 return
             except DriverClosed as exc:
-                print(f"[worker-{self.app}] {exc}; stopping run so buffered data can be saved.")
+                print(f"{exc}; Stopping run so buffered data can be saved.")
                 self.stop_event.set()
                 return
             except Exception:  # noqa: BLE001
                 restarts += 1
-                print(f"[worker-{self.app}] error (restart {restarts}/{self.max_restarts}):")
+                print(f"{self.app.title()} worker error (restart {restarts}/{self.max_restarts}):")
                 traceback.print_exc()
                 if restarts > self.max_restarts or self.stop_event.is_set():
-                    print(f"[worker-{self.app}] giving up.")
+                    print(f"{self.app.title()} worker giving up.")
                     return
                 self.stop_event.wait(human_cooldown(min(backoff, 60)))
                 backoff *= 2
 
     # --- shadow learning: you swipe, the bot learns ---------------------
     def _observe_loop(self) -> None:
-        print(f"[worker-{self.app}] observe mode — swipe manually; I'll learn from each swipe.")
+        print(f"{self.app.title()} observe mode — swipe manually; I'll learn from each swipe.")
         self.driver.open_session()
         self._block_observe_capture(mode="observe")
         added = 0
@@ -92,28 +96,30 @@ class Worker(threading.Thread):
                 if self.driver.out_of_profiles():
                     self._stat(state="out_of_profiles")
                     break
+                self._profile_separator()
                 profile = self.driver.current_profile()      # capture the card you're viewing
                 if self.stop_event.is_set():
                     break
                 if profile is None:
                     continue
                 if not profile.photos:
-                    print(f"[worker-{self.app}] captured 0 profile photos; waiting to recapture before learning.")
+                    print("Captured 0 profile photos; waiting to recapture before learning.")
                     self._block_observe_capture(last_decision="no_photos")
                     self.stop_event.wait(_NO_PHOTO_RETRY_S)
                     continue
                 self.driver.render_busy(None)                 # processing done -> OK to swipe now
                 self._stat(state="waiting")                   # overlay: "swipe — learning your taste"
-                print(f"[worker-{self.app}] ✅ READY — swipe this profile (like or pass).")
-                liked = self.driver.wait_for_decision(should_stop=self.stop_event.is_set)
-                if liked is None:                             # card changed / timeout / stop -> skip
+                print("✅ READY — swipe this profile (like or pass).")
+                liked = self.driver.wait_for_decision(timeout=None,
+                                                      should_stop=self.stop_event.is_set)
+                if liked is None:                             # card changed / deck empty / stop -> skip
                     self._block_observe_capture()
                     continue
                 if self.stop_event.is_set():
                     break
                 # block the next swipe while this one embeds (avoids mis-attribution)
-                print(f"[worker-{self.app}] got {'LIKE' if liked else 'PASS'} — "
-                      f"processing, don't swipe yet…")
+                decision = "LIKE" if liked else "PASS"
+                print(f"Got {decision} — processing, don't swipe yet…")
                 self.driver.render_busy(_OBSERVE_PROCESSING_BUSY)
                 profile_id = uuid.uuid4().hex
                 metadata = self._label_metadata(profile)
@@ -152,7 +158,7 @@ class Worker(threading.Thread):
                     except Exception:  # noqa: BLE001
                         if not pending_error:
                             raise
-                        print(f"[worker-{self.app}] final retrain skipped after shutdown error:")
+                        print(f"{self.app.title()} final retrain skipped after shutdown error:")
                         traceback.print_exc()
             finally:
                 self.driver.render_busy(None)
@@ -164,7 +170,7 @@ class Worker(threading.Thread):
         if self.status:
             self.status.set_global(ranker_ready=ready)
         self._render()
-        print(f"[worker-{self.app}] learned {added} labels this run; ranker ready={ready}")
+        print(f"Learned {added} labels this run; ranker ready={ready}")
 
     # --- autonomous: the bot swipes ------------------------------------
     def _auto_loop(self) -> None:
@@ -180,7 +186,7 @@ class Worker(threading.Thread):
                     break
                 if self.limiter and not self.limiter.allow(acted, today0 + acted):
                     self._stat(state="rate_limited")
-                    print(f"[worker-{self.app}] rate limit reached ({self.limiter.describe()}); "
+                    print(f"{self.app.title()} rate limit reached ({self.limiter.describe()}); "
                           f"stopping {self.app}.")
                     break
                 profile = self.driver.next_profile()
@@ -195,7 +201,7 @@ class Worker(threading.Thread):
                     break
                 if d.decision == "defer":
                     self._stat(last_decision="defer", state="stopped")
-                    print(f"[worker-{self.app}] ranker not ready (cold-start) — run in observe "
+                    print(f"{self.app.title()} ranker not ready (cold-start) — run in observe "
                           f"mode and swipe manually to seed it. Stopping {self.app}.")
                     break
 
@@ -203,7 +209,7 @@ class Worker(threading.Thread):
                 # like as a pass (keeps the right-swipe ratio human; see limits.py).
                 if d.decision == "like" and self.limiter and not self.limiter.allow_like(liked):
                     self._stat(state="rate_limited")
-                    print(f"[worker-{self.app}] per-run like budget reached "
+                    print(f"{self.app.title()} per-run like budget reached "
                           f"({self.limiter.describe()}); stopping {self.app}.")
                     break
 

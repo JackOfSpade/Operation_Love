@@ -113,6 +113,24 @@ def test_pass_detected():
     assert _run([_frame(["A"]), _frame(["B"])]) is False
 
 
+def test_no_timeout_waits_until_pass():
+    assert _run([_frame(["A"]), _frame(["A"]), _frame(["B"])], timeout=None) is False
+
+
+def test_stop_interrupts_no_timeout_like_sheet_wait():
+    drv = HingeDriver(_Cfg())
+    drv.d = FakeDevice([_frame(["A"], ids=[SEND])])
+    calls = 0
+
+    def should_stop():
+        nonlocal calls
+        calls += 1
+        return calls > 1
+
+    assert drv.wait_for_decision(timeout=None, should_stop=should_stop) is None
+    assert calls == 2
+
+
 def test_like_detected():
     # like sheet opens, then closes with the deck advanced -> like sent
     frames = [_frame(["A"]), _frame(["A"]),

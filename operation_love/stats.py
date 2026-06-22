@@ -16,14 +16,14 @@ def show(config_path: str = "config.yaml") -> None:
         ready = model.train(labels)
         liked = sum(1 for liked, _ in labels if liked)
 
-        print(f"storage : {cfg.storage.backend}")
-        print(f"labels  : {len(labels)}  (liked {liked} / passed {len(labels) - liked})")
-        print(f"ranker  : ready={ready}  (min {cfg.ranker.min_labels_to_engage}, "
+        print(f"Storage : {cfg.storage.backend}")
+        print(f"Labels  : {len(labels)}  (liked {liked} / passed {len(labels) - liked})")
+        print(f"Ranker  : ready={ready}  (min {cfg.ranker.min_labels_to_engage}, "
               f"threshold {cfg.ranker.like_threshold})")
         if not ready:
             need = max(0, cfg.ranker.min_labels_to_engage - len(labels))
-            print(f"          seed ~{need} more swipes in observe mode to engage auto mode.")
+            print(f"          Seed ~{need} more swipes in observe mode to engage auto mode.")
         for app in cfg.enabled_apps:
-            print(f"today (auto): {app}: {store.count_today(app)} swipes")
+            print(f"Today (auto): {app}: {store.count_today(app)} swipes")
     finally:
         store.close()

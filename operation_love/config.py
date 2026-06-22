@@ -102,19 +102,19 @@ _KNOWN_APPS = {"bumble", "hinge"}
 def validate(cfg: Config) -> None:
     """Fail fast with a clear message on misconfig (called by the entry points)."""
     if not cfg.enabled_apps:
-        raise ValueError("config: enabled_apps is empty")
+        raise ValueError("Config: enabled_apps is empty")
     unknown = [a for a in cfg.enabled_apps if a not in _KNOWN_APPS]
     if unknown:
-        raise ValueError(f"config: unknown app(s) {unknown}; supported: {sorted(_KNOWN_APPS)}")
+        raise ValueError(f"Config: unknown app(s) {unknown}; supported: {sorted(_KNOWN_APPS)}")
     modes = {cfg.mode} | {(cfg.apps.get(a, {}) or {}).get("mode", cfg.mode) for a in cfg.enabled_apps}
     bad_modes = sorted(m for m in modes if m not in {"observe", "auto"})
     if bad_modes:
-        raise ValueError(f"config: mode must be 'observe' or 'auto' (got {bad_modes})")
+        raise ValueError(f"Config: mode must be 'observe' or 'auto' (got {bad_modes})")
     if cfg.storage.backend not in {"bigquery", "sqlite"}:
-        raise ValueError(f"config: storage.backend must be 'bigquery' or 'sqlite' (got {cfg.storage.backend})")
+        raise ValueError(f"Config: storage.backend must be 'bigquery' or 'sqlite' (got {cfg.storage.backend})")
     if cfg.storage.backend == "bigquery" and not cfg.storage.bigquery.get("project_id"):
-        raise ValueError("config: storage.backend=bigquery requires storage.bigquery.project_id")
+        raise ValueError("Config: storage.backend=bigquery requires storage.bigquery.project_id")
     if cfg.storage.backend == "bigquery" and not cfg.storage.bigquery.get("photo_bucket"):
-        raise ValueError("config: storage.backend=bigquery requires storage.bigquery.photo_bucket")
+        raise ValueError("Config: storage.backend=bigquery requires storage.bigquery.photo_bucket")
     if cfg.opener.enabled and cfg.opener.model not in cfg.budget.pricing:
-        raise ValueError(f"config: opener.model '{cfg.opener.model}' has no entry in budget.pricing")
+        raise ValueError(f"Config: opener.model '{cfg.opener.model}' has no entry in budget.pricing")

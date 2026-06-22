@@ -31,7 +31,7 @@ def main() -> None:
         samples = store.load_labels()
     finally:
         store.close()
-    print(f"[eval] loaded {len(samples)} label(s) from {cfg.storage.backend}\n")
+    print(f"Eval: loaded {len(samples)} label(s) from {cfg.storage.backend}\n")
     result = evaluate(samples, n_splits=args.splits, eps=args.eps)
     result = {
         **result,

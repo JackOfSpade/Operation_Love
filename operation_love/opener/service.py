@@ -59,7 +59,7 @@ class OpenerService:
         with self._lock:
             if not self.disabled:
                 action = "stopping all workers" if self.on_exhausted == "stop" else "swiping without openers"
-                print(f"[budget] {reason} -> {action}")
+                print(f"Budget: {reason} -> {action}")
             self.disabled = True
             if self.on_exhausted == "stop":
                 self.stop_requested = True

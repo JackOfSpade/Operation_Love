@@ -330,6 +330,50 @@ def marginal_return_summary(
         )
 
 
+def quality_trajectory(samples, step: int = 5, n_splits: int = 5, eps: float = 0.5,
+                       min_labels: int = 10, max_points: int = 40) -> list[dict]:
+    """Recompute leakage-free grouped-CV metrics at chronological prefixes (every `step`
+    labels) so the hub can chart how model quality evolved as labels accumulated.
+
+    `samples` MUST be in swipe (created_at) order — prefix [:k] is then "the first k
+    labels you collected". The effective step is widened so at most ~`max_points` prefixes
+    are scored, bounding cost (each prefix is a full grouped CV) as labels grow. Returns a
+    JSON-able list of points, only where grouped CV is valid (early prefixes with too few
+    identities/classes are skipped). Never raises.
+    """
+    try:
+        rows = list(samples) if samples else []
+    except Exception:  # noqa: BLE001
+        return []
+    n = len(rows)
+    step = max(1, int(step))
+    if max_points and max_points > 0:
+        step = max(step, -(-n // max_points))        # ceil(n/max_points): coarsen so points <= ~max_points
+    sizes = list(range(step, n + 1, step))
+    if n >= min_labels and (not sizes or sizes[-1] != n):
+        sizes.append(n)                              # always include the full set as the last point
+    points: list[dict] = []
+    for size in sizes:
+        if size < min_labels:
+            continue
+        try:
+            r = evaluate(rows[:size], n_splits=n_splits, eps=eps)
+        except Exception:  # noqa: BLE001
+            continue
+        if r.get("status") != "ok":
+            continue
+        pr = r.get("pr_auc") or [None, None]
+        roc = r.get("roc_auc") or [None, None]
+        brier = r.get("brier") or [None, None]
+        points.append({
+            "labels": size, "identities": r.get("identities"),
+            "pr_auc": pr[0], "pr_std": pr[1],
+            "roc_auc": roc[0], "brier": brier[0],
+            "base_rate": r.get("base_rate"),
+        })
+    return points
+
+
 def _format_marginal_value(value) -> str | None:
     """Format a small positive gain in decimal notation with enough places to keep ~2
     significant figures, so it never rounds to zero as it shrinks (0.014 -> 0.0021 ->
@@ -353,17 +397,24 @@ def _format_marginal_return(m: dict | None) -> str | None:
     if not m:
         return None
     if m.get("status") != "ok":
-        return "diminishing returns —"
+        return "Diminishing returns —"
     value = _format_marginal_value(m.get("marginal_return"))
     if value is None:
-        return "diminishing returns —"
-    return f"diminishing returns {value} PR-AUC / +{m.get('batch', _MARGINAL_RETURN_BATCH)} labels"
+        return "Diminishing returns —"
+    return f"Diminishing returns {value} PR-AUC / +{m.get('batch', _MARGINAL_RETURN_BATCH)} labels"
+
+
+def _capitalize_first_letter(s: str) -> str:
+    for i, ch in enumerate(s):
+        if ch.isalpha():
+            return s[:i] + ch.upper() + s[i + 1:]
+    return s
 
 
 def format_report(r: dict) -> str:
     """Render an evaluate() result for the terminal."""
     if r.get("status") != "ok":
-        msg = r.get("message", "evaluation unavailable")
+        msg = _capitalize_first_letter(str(r.get("message", "Evaluation unavailable")))
         marginal = _format_marginal_return(r.get("marginal_return"))
         return msg if not marginal else f"{msg}\n  {marginal}"
 
@@ -371,12 +422,12 @@ def format_report(r: dict) -> str:
         return f"{m[0]:.3f} +/- {m[1]:.3f}"
     marginal = _format_marginal_return(r.get("marginal_return"))
     marginal_line = f"\n  {marginal}" if marginal else ""
-    return (f"labels={r['labels']}  likes={r['likes']}  passes={r['passes']}  "
+    return (f"Labels={r['labels']}  likes={r['likes']}  passes={r['passes']}  "
             f"distinct identities={r['identities']}\n"
-            f"identity-grouped {r['folds']}-fold CV (LogReg C=0.1, class_weight=balanced):\n"
-            f"  Area under the precision-recall curve: {f(r['pr_auc'])}  "
+            f"Identity-grouped {r['folds']}-fold CV (LogReg C=0.1, class_weight=balanced):\n"
+            f"  PR-AUC: {f(r['pr_auc'])}  "
             f"(base rate {r['base_rate']:.2f}; primary metric here — watch lift over base)\n"
-            f"  Area under the receiver-operating-characteristic curve: {f(r['roc_auc'])}  "
+            f"  ROC-AUC: {f(r['roc_auc'])}  "
             f"(0.5 = chance, 1.0 = perfect)\n"
             f"  Brier score: {f(r['brier'])}  (lower is better; calibration)"
             f"{marginal_line}")

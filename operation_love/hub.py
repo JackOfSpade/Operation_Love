@@ -36,6 +36,9 @@ class HubState:
         self._error: str | None = None
         self._eval: dict | None = None      # cached model-quality CV (eval_snapshot)
         self._eval_at: float = 0.0
+        self._eval_labels: int | None = None  # label count when _eval was computed (cadence gate)
+        self._eval_refreshing = False
+        self._live_store = None             # the running supervisor's store (live in-memory labels)
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -48,19 +51,28 @@ class HubState:
             self._stop = threading.Event()
             self._status = None
             self._error = None
+            self._live_store = None
             stop = self._stop
 
             def _capture(st):
                 with self._lock:
                     self._status = st
 
+            def _capture_store(store):
+                with self._lock:
+                    self._live_store = store
+
             def _target():
                 try:
                     supervisor.run(self.config_path, stop_event=stop, on_status=_capture,
+                                   on_store=_capture_store,
                                    mode=mode, enabled_apps=apps, max_per_run=max_per_run)
                 except Exception as exc:  # noqa: BLE001
                     with self._lock:
                         self._error = f"{type(exc).__name__}: {exc}"
+                finally:
+                    with self._lock:
+                        self._live_store = None   # supervisor closed it on exit; don't read a dead store
 
             self._thread = threading.Thread(target=_target, name="hub-run", daemon=True)
             self._thread.start()
@@ -96,25 +108,81 @@ class HubState:
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)}
 
-    def eval_snapshot(self, ttl: float = 45.0) -> dict:
+    def eval_snapshot(self, every: int = 5, max_age: float = 300.0) -> dict:
         """Leakage-free, identity-grouped CV of the ranker, for the GUI's model-quality
-        card. Cached for `ttl` seconds — it loads labels + trains K folds, so we don't
-        recompute on every poll. Never raises (errors come back as a status dict)."""
+        card. Recomputed only when `every` new labels have been recorded since the last
+        run (read from the live in-memory label counter — no extra store/BigQuery read
+        just to check the gate), with `max_age` seconds as an idle fallback. Once a
+        cached card exists, threshold refreshes run in the background so the UI can show
+        every/every progress until the new metrics land. Never raises."""
+        every = max(1, every)
         with self._lock:
-            cached, at = self._eval, self._eval_at
-        if cached is not None and (time.time() - at) < ttl:
-            return cached
+            cached, at, base, status = self._eval, self._eval_at, self._eval_labels, self._status
+        live = getattr(status, "labels", None) if status is not None else None
+
+        fresh_enough = cached is not None and (time.time() - at) < max_age
+        if live is not None and base is not None:
+            enough_new = (live - base) >= every
+        else:
+            enough_new = cached is None           # no live counter -> lean on max_age
+        if cached is not None:
+            if enough_new:
+                self._start_eval_refresh(every)
+                return self._attach_refresh(cached, every, live, base, status)
+            if fresh_enough:
+                return self._attach_refresh(cached, every, live, base, status)
+
+        return self._compute_eval_snapshot(every)
+
+    def _start_eval_refresh(self, every: int) -> None:
+        with self._lock:
+            if self._eval_refreshing:
+                return
+            self._eval_refreshing = True
+
+        def _target():
+            try:
+                self._compute_eval_snapshot(every)
+            finally:
+                with self._lock:
+                    self._eval_refreshing = False
+
+        threading.Thread(target=_target, name="hub-eval-refresh", daemon=True).start()
+
+    def _compute_eval_snapshot(self, every: int) -> dict:
+        with self._lock:
+            base, status, live_store = self._eval_labels, self._status, self._live_store
+        live = getattr(status, "labels", None) if status is not None else None
+        running = self.is_running()
         try:
             from .ranker import make_store
             from .ranker.evaluate import evaluate, marginal_return_summary
             cfg = cfg_mod.load(self.config_path)
-            store = make_store(cfg, ensure=False)   # read-only; don't run DDL just to eval
-            try:
-                samples = store.load_labels()
-            finally:
-                store.close()
+            # FRESHNESS: when a run is live, read its in-memory store so the card sees
+            # EVERY swipe (incl. the unflushed buffer) — not a re-query of BigQuery, which
+            # only returns committed rows and lags behind the streaming buffer. When idle,
+            # a fresh read-only store is correct (shutdown already flushed everything).
+            samples = None
+            if running and live_store is not None:
+                try:
+                    samples = live_store.load_labels()
+                except Exception:  # noqa: BLE001 — run ended + store closed mid-read; fall back
+                    samples = None
+            if samples is None:
+                store = make_store(cfg, ensure=False)   # read-only; don't run DDL just to eval
+                try:
+                    samples = store.load_labels()
+                finally:
+                    store.close()
+                live_store = None                        # don't reuse a dead store for the chart
             result = evaluate(samples)
             result = {**result, "marginal_return": marginal_return_summary(samples, eval_result=result)}
+            result["trajectory"] = self._eval_trajectory(cfg, samples, result, every,
+                                                         live_store if running else None)
+            # Gate baseline must use the SAME counter the gate compares against: the live
+            # swipe counter (status.labels), not len(samples). Using len(samples) would lag
+            # status.labels by the worker's unflushed buffer and re-fire the gate every poll.
+            computed_at = live if live is not None else len(samples)
         except Exception as exc:  # noqa: BLE001
             result = {"status": "error", "message": f"{type(exc).__name__}: {exc}",
                       "labels": None, "identities": None, "folds": 0,
@@ -124,9 +192,67 @@ class HubState:
                           "within_noise": None, "confidence": "low",
                           "message": "diminishing-returns estimate failed",
                       }}
+            computed_at = live if live is not None else base
         with self._lock:
-            self._eval, self._eval_at = result, time.time()
-        return result
+            self._eval, self._eval_at, self._eval_labels = result, time.time(), computed_at
+            status = self._status
+        live = getattr(status, "labels", None) if status is not None else None
+        return self._attach_refresh(result, every, live, computed_at, status)
+
+    def _eval_trajectory(self, cfg, samples, result, every: int, live_store=None) -> list:
+        """Historical PR-AUC/ROC/Brier curve vs label count, for the hub chart. Reads the
+        COMMITTED labels in swipe order and recomputes grouped CV at each prefix; then ties
+        the final point to the live full-set result so the curve ends exactly on the card.
+        Reuses the running store when given (its ordered read is off the worker lock for
+        BigQuery), else opens a fresh read-only store. Never raises — returns [] on any
+        problem (incl. a store closed mid-read as a run ends)."""
+        try:
+            from .ranker import make_store
+            from .ranker.evaluate import quality_trajectory
+            store = live_store if live_store is not None else make_store(cfg, ensure=False)
+            close_after = live_store is None
+            try:
+                loader = getattr(store, "load_labels_ordered", None)
+                ordered = loader() if loader is not None else None
+            except Exception:  # noqa: BLE001 — store closed mid-read; chart just sits out a cycle
+                ordered = None
+            finally:
+                if close_after:
+                    store.close()
+            if not ordered:
+                return []
+            traj = quality_trajectory(ordered, step=every)
+            if result.get("status") == "ok" and result.get("pr_auc"):
+                pr = result.get("pr_auc") or [None, None]
+                roc = result.get("roc_auc") or [None, None]
+                brier = result.get("brier") or [None, None]
+                live_point = {"labels": len(samples), "identities": result.get("identities"),
+                              "pr_auc": pr[0], "pr_std": pr[1], "roc_auc": roc[0],
+                              "brier": brier[0], "base_rate": result.get("base_rate")}
+                if traj and traj[-1]["labels"] >= live_point["labels"]:
+                    traj[-1] = live_point     # live full-set supersedes the committed tail
+                else:
+                    traj.append(live_point)
+            return traj
+        except Exception:  # noqa: BLE001
+            return []
+
+    @staticmethod
+    def _attach_refresh(result: dict, every: int, live, base, status) -> dict:
+        """Return a shallow copy of the cached/fresh eval with a `refresh` countdown
+        attached (the cached dict itself stays refresh-free so the count stays live)."""
+        every = max(1, every)
+        running = bool(getattr(status, "running", False)) if status is not None else False
+        mode = getattr(status, "mode", None) if status is not None else None
+        if live is None or base is None or not running:
+            refresh = {"every": every, "remaining": None, "since": None,
+                       "live": False, "mode": mode}
+        else:
+            since = max(0, int(live) - int(base))
+            refresh = {"every": every, "since": since,
+                       "remaining": max(0, every - since) or every,
+                       "live": True, "mode": mode}
+        return {**result, "refresh": refresh}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -202,7 +328,7 @@ def _bind(host: str, port: int) -> ThreadingHTTPServer:
             return ThreadingHTTPServer((host, p), _Handler)
         except OSError:
             continue
-    raise SystemExit(f"[hub] no free port in {port}..{port + 199}")
+    raise SystemExit(f"Hub: no free port in {port}..{port + 199}")
 
 
 def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
@@ -214,13 +340,13 @@ def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
     _Handler.state = HubState(config_path)
     httpd = _bind(host, port)
     url = f"http://{host}:{httpd.server_address[1]}/"
-    print(f"[hub] Operation Love control hub → {url}   (Ctrl-C to quit)")
+    print(f"Hub: Operation Love control hub → {url}   (Ctrl-C to quit)")
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\n[hub] shutting down…")
+        print("\nHub: shutting down…")
     finally:
         if _Handler.state:
             _Handler.state.stop()
@@ -320,7 +446,7 @@ def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,bumble
         p.write_text(body.replace("__EXTRAS__", extras))
         if executable:
             p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        print(f"[hub] wrote: {p.name}")
+        print(f"Hub: wrote: {p.name}")
 
     if plat == "darwin":
         _write("Operation Love.command", _MAC_UPDATE_RUN, True)
@@ -329,8 +455,8 @@ def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,bumble
     else:  # linux / *bsd
         _write("operation-love.sh", _LINUX_UPDATE_RUN, True)
 
-    print("      one launcher: installs deps only when they change, then opens the hub.")
-    print("      portable across machines (relative paths + project-local .venv).")
+    print("      One launcher: installs deps only when they change, then opens the hub.")
+    print("      Portable across machines (relative paths + project-local .venv).")
 
 
 _PAGE = """<!doctype html>
@@ -353,11 +479,6 @@ _PAGE = """<!doctype html>
   .stop { background:rgba(255,255,255,.12); color:#c9c9cf; }
   .bar { height:6px; background:rgba(255,255,255,.12); border-radius:4px; margin:8px 0 4px; overflow:hidden; }
   .bar > div { height:100%; border-radius:4px; transition:width .3s; }
-  .apps { display:grid; gap:10px; }
-  .app { background:#1c1c23; border:1px solid rgba(255,255,255,.07);
-         border-radius:11px; padding:11px 13px; }
-  .app .nm { text-transform:capitalize; font-weight:600; }
-  .dec-like { color:#39d98a; } .dec-pass { color:#ff6b6b; } .dec-other { color:#c9c9cf; }
   .controls { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
   select, button { font:inherit; border-radius:9px; border:1px solid rgba(255,255,255,.14);
          background:#22222b; color:#e8e8ea; padding:8px 12px; }
@@ -375,9 +496,7 @@ _PAGE = """<!doctype html>
   <div class="sub" id="sub">control hub · live status</div>
 
   <div class="card">
-    <div class="row"><span class="muted">ranker</span><span id="ranker" class="b">—</span></div>
-    <div class="bar"><div id="barfill" style="width:0%;background:#f0b429"></div></div>
-    <div class="row meta"><span id="labels">labels —</span><span id="budget">budget —</span></div>
+    <div class="row"><span class="muted">budget</span><span id="budget" class="b">—</span></div>
   </div>
 
   <div class="card">
@@ -385,7 +504,10 @@ _PAGE = """<!doctype html>
     <div class="meta" id="evalbody" style="margin-top:6px">evaluating…</div>
   </div>
 
-  <div class="apps" id="apps"></div>
+  <div class="card">
+    <div class="row"><span class="muted">live log</span><span class="meta" id="loghint"></span></div>
+    <pre id="logs" style="max-height:320px;overflow:auto;background:#0c0c10;border:1px solid rgba(255,255,255,.09);border-radius:9px;padding:10px;margin-top:8px;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;color:#cfcfd6">waiting for output…</pre>
+  </div>
 
   <div class="card">
     <div class="controls">
@@ -410,11 +532,6 @@ _PAGE = """<!doctype html>
   </div>
 
   <div class="card">
-    <div class="row"><span class="muted">live log</span><span class="meta" id="loghint"></span></div>
-    <pre id="logs" style="max-height:320px;overflow:auto;background:#0c0c10;border:1px solid rgba(255,255,255,.09);border-radius:9px;padding:10px;margin-top:8px;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;color:#cfcfd6">waiting for output…</pre>
-  </div>
-
-  <div class="card">
     <div class="row"><span class="muted">report a bug</span><span class="meta" id="bughint"></span></div>
     <textarea id="bugdesc" rows="2" placeholder="What went wrong? (optional)"
       style="width:100%;margin:8px 0;background:#22222b;color:#e8e8ea;border:1px solid rgba(255,255,255,.14);border-radius:9px;padding:8px;font:inherit;resize:vertical"></textarea>
@@ -431,23 +548,6 @@ async function getJSON(u){ const r = await fetch(u); return r.json(); }
 async function postJSON(u,b){ const r = await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}); return r.json(); }
 
 let cfg = {all_apps:['bumble'], enabled_apps:['bumble'], mode:'observe', min_labels:40};
-function decClass(d){ return d==='like'?'dec-like':(d==='pass'||d==='dislike')?'dec-pass':'dec-other'; }
-
-function renderApps(snap){
-  const apps = (snap && snap.status && snap.status.apps) || {};
-  const known = cfg.all_apps.length ? cfg.all_apps : Object.keys(apps);
-  $('#apps').innerHTML = known.map(name => {
-    const a = apps[name];
-    if(!a) return `<div class="app"><div class="row"><span class="nm">${name}</span>`
-                 + `<span class="muted">idle</span></div></div>`;
-    const dec = a.last_decision ? a.last_decision.toUpperCase() : '—';
-    const score = (a.last_score==null)?'':' · '+Number(a.last_score).toFixed(2);
-    return `<div class="app"><div class="row"><span class="nm">${name}</span>`
-         + `<span class="muted">${a.mode||''} · ${a.state||'—'}</span></div>`
-         + `<div class="row meta"><span>last <b class="${decClass(a.last_decision)}">${dec}</b>${score}</span>`
-         + `<span>swipes this run <b>${a.swipes_run||0}</b></span></div></div>`;
-  }).join('');
-}
 
 function renderGlobal(snap){
   const running = snap && snap.running;
@@ -459,25 +559,15 @@ function renderGlobal(snap){
   if(phase === 'saving data') $('#hint').textContent = 'saving data…';
   else if(!running && $('#hint').textContent === 'saving data…') $('#hint').textContent = '';
   if(s){
-    const ready = s.ranker_ready;
-    $('#ranker').textContent = (ready?'ready':'defer') + (s.mode?(' · '+s.mode):'');
-    $('#ranker').style.color = ready ? '#39d98a' : '#f0b429';
-    const pct = ready ? 100 : 0;
-    $('#barfill').style.width = pct+'%';
-    $('#barfill').style.background = ready ? '#39d98a' : '#f0b429';
-    $('#labels').textContent = ready
-      ? `labels ${s.labels} total · keep observing to improve`
-      : `labels ${s.labels} total · learning`;
     const cap = s.budget_cap!=null ? ' / $'+Number(s.budget_cap).toFixed(2) : '';
-    $('#budget').textContent = `budget $${Number(s.budget_spent).toFixed(2)}${cap}`;
+    $('#budget').textContent = `$${Number(s.budget_spent).toFixed(2)}${cap}`;
   } else {
-    $('#ranker').textContent='—'; $('#labels').textContent='labels —';
-    $('#budget').textContent='budget —'; $('#barfill').style.width='0%';
+    $('#budget').textContent='—';
   }
   $('#err').textContent = (snap && snap.error) ? ('error: '+snap.error) : '';
 }
 
-async function tick(){ try { const snap = await getJSON('/api/status'); renderGlobal(snap); renderApps(snap); } catch(e){} }
+async function tick(){ try { const snap = await getJSON('/api/status'); renderGlobal(snap); } catch(e){} }
 
 function renderEval(e){
   if(!e) return;
@@ -499,28 +589,79 @@ function renderEval(e){
     return `diminishing returns <b>${g}</b> <span class="muted">PR-AUC / +${b} labels</span>`;
   };
   const mr = diminishingHtml(e.marginal_return);
+  // Quality-over-labels trend: how grouped-CV PR-AUC / ROC-AUC have moved as labels
+  // accumulated (reconstructed from swipe order), with the per-point base rate as the floor.
+  const trajSvg = traj => {
+    if(!Array.isArray(traj)) return '';
+    const pts = traj.filter(p => p && p.pr_auc != null && isFinite(p.pr_auc));
+    if(pts.length < 2) return '';
+    const W=600, H=150, L=8, Rr=8, T=16, B=22;
+    const xs = pts.map(p => p.labels);
+    const xmin = Math.min(...xs), xmax = Math.max(...xs);
+    const vv = [];
+    pts.forEach(p => [p.pr_auc, p.roc_auc, p.base_rate].forEach(v => { if(v!=null && isFinite(v)) vv.push(v); }));
+    let lo = Math.min(...vv), hi = Math.max(...vv);
+    const padv = (hi-lo)*0.18 || 0.05; lo = Math.max(0, lo-padv); hi = Math.min(1, hi+padv);
+    const X = v => L + (xmax===xmin ? 0.5 : (v-xmin)/(xmax-xmin)) * (W-L-Rr);
+    const Y = v => T + (1-(v-lo)/((hi-lo)||1)) * (H-T-B);
+    const poly = (key, color, dash) => {
+      const s = pts.filter(p => p[key]!=null && isFinite(p[key]))
+                   .map(p => `${X(p.labels).toFixed(1)},${Y(p[key]).toFixed(1)}`).join(' ');
+      return s ? `<polyline fill="none" stroke="${color}" stroke-width="1.6"${dash?' stroke-dasharray="3 3" opacity="0.55"':''} points="${s}"/>` : '';
+    };
+    const txt = (x,y,t,anchor,col) => `<text x="${x}" y="${y}" fill="${col||'#6a6a72'}" font-size="10"${anchor?` text-anchor="${anchor}"`:''}>${t}</text>`;
+    const svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;background:#0c0c10;border:1px solid rgba(255,255,255,.09);border-radius:9px">`
+      + poly('base_rate','#6a6a72',true) + poly('roc_auc','#9a9aa2',false) + poly('pr_auc','#5ab0ff',false)
+      + txt(L, T-5, hi.toFixed(2)) + txt(L, H-7, lo.toFixed(2))
+      + txt(L+18, H-7, xmin+' labels') + txt(W-Rr, H-7, xmax+'', 'end')
+      + `</svg>`;
+    return `<div style="margin-top:8px"><div class="meta" style="margin-bottom:3px">quality over labels`
+      + ` &nbsp;<span style="color:#5ab0ff">PR-AUC</span> · <span style="color:#9a9aa2">ROC-AUC</span> · <span style="color:#6a6a72">base</span></div>`
+      + svg + `</div>`;
+  };
+  // Mini-goal: refresh is gated on new labels (every N), not the clock — so show progress
+  // toward the next recompute. Only while a live observe run is feeding labels (auto mode
+  // never adds training labels).
+  const refreshHtml = () => {
+    const r = e.refresh;
+    if(!r || !r.live || r.mode !== 'observe' || r.since == null) return '';
+    const every = Math.max(1, Math.floor(Number(r.every) || 1));
+    const progress = Math.min(every, Math.max(0, Math.floor(Number(r.since) || 0)));
+    return `<div class="muted" style="margin-top:4px">↻ ${progress}/${every} till next refresh</div>`;
+  };
   if(e.status !== 'ok'){
     $('#evalhint').textContent = (e.identities!=null) ? `${e.identities} identities` : '';
     $('#evalbody').style.color = '#9a9aa2';
     $('#evalbody').innerHTML = `<div>${esc(e.message || 'evaluating…')}</div>`
-      + `<div>${mr}</div>`;
+      + `<div>${mr}</div>` + refreshHtml();
     return;
   }
   const f = m => `${m[0].toFixed(2)}±${m[1].toFixed(2)}`;
-  // Headline = area under the precision–recall curve: the right metric for this
-  // imbalanced, positive-focused (find-the-likes) problem. Grade it by LIFT over
-  // the no-skill base rate, not an absolute cutoff — precision–recall's "good"
-  // scales with prevalence, unlike ROC where 0.5 is always chance.
-  const lift = (e.pr_auc[0] - e.base_rate) / Math.max(1e-9, 1 - e.base_rate);
-  const col = lift>=0.5 ? '#39d98a' : (lift>=0.3 ? '#f0b429' : '#ff6b6b');   // strong / ok / weak lift
+  // HIGH bar: green = confidently production-ready, so grade the PESSIMISTIC edge of the
+  // ±std band (mean-std, or mean+std for Brier where lower is better). A wide band can't
+  // be green no matter how good the point estimate looks.
+  const G='#39d98a', A='#f0b429', R='#ff6b6b';
+  const tier = (v, good, ok) => v>=good ? G : (v>=ok ? A : R);
+  // PR-AUC: lift over the no-skill base rate (precision–recall's "good" scales with
+  // prevalence), evaluated at the lower band edge.
+  const liftLo = (e.pr_auc[0]-e.pr_auc[1] - e.base_rate) / Math.max(1e-9, 1 - e.base_rate);
+  const prCol = tier(liftLo, 0.60, 0.35);
+  // ROC-AUC: 0.5 = chance; grade the lower band edge.
+  const rocCol = tier(e.roc_auc[0]-e.roc_auc[1], 0.85, 0.72);
+  // Brier: lower is better → Brier Skill Score vs the no-skill base·(1-base), at the
+  // upper (worst) band edge. Note: class_weight=balanced decalibrates probabilities, so
+  // Brier can stay red even when ranking (AUC) is strong.
+  const baseBrier = e.base_rate * (1 - e.base_rate);
+  const bssLo = (baseBrier - (e.brier[0]+e.brier[1])) / Math.max(1e-9, baseBrier);
+  const brierCol = tier(bssLo, 0.35, 0.12);
   $('#evalhint').textContent = `${e.folds}-fold · ${e.identities} identities`;
   $('#evalbody').style.color = '#e8e8ea';
   $('#evalbody').innerHTML =
-    `<div>Area under the precision–recall curve <b style="color:${col}">${f(e.pr_auc)}</b>`
+    `<div>PR-AUC <b style="color:${prCol}">${f(e.pr_auc)}</b>`
     + ` <span class="muted">(base ${e.base_rate.toFixed(2)})</span></div>`
-    + `<div>Area under the receiver-operating-characteristic curve <b>${f(e.roc_auc)}</b></div>`
-    + `<div>Brier score <b>${f(e.brier)}</b></div>`
-    + `<div>${mr}</div>`;
+    + `<div>ROC-AUC <b style="color:${rocCol}">${f(e.roc_auc)}</b></div>`
+    + `<div>Brier score <b style="color:${brierCol}">${f(e.brier)}</b></div>`
+    + `<div>${mr}</div>` + refreshHtml() + trajSvg(e.trajectory);
 }
 async function tickEval(){ try { renderEval(await getJSON('/api/eval')); } catch(e){} }
 
@@ -596,7 +737,7 @@ $('#bugdl').onclick = async () => {
   syncModeUI();
   appChecks();
   tick(); setInterval(tick, 1000);
-  tickEval(); setInterval(tickEval, 20000);   // model quality: heavier, refresh slower (server caches 45s)
+  tickEval(); setInterval(tickEval, 5000);    // model quality: poll often for live label progress; the CV itself only recomputes every N new labels (server-gated)
   tickLogs(); setInterval(tickLogs, 1500);    // live log: tail the captured stdout/stderr
 })();
 </script>

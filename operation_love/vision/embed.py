@@ -185,7 +185,7 @@ class Embedder:
                     if first_error is None:
                         first_error = exc
                         # Surface the first failure; don't spam one line per photo.
-                        print(f"[embed] photo embedding error: {type(exc).__name__}: {exc}")
+                        print(f"Photo embedding error: {type(exc).__name__}: {exc}")
                     continue
                 if fv is not None:
                     face_vecs.append(fv)
@@ -198,7 +198,7 @@ class Embedder:
                 and _is_onnx_provider_failure(first_error)
             )
             if provider_failed and not self._arc_on_cpu and not retried_on_cpu:
-                print("[embed] CoreML/ONNX provider failed; retrying this profile on CPU "
+                print("CoreML/ONNX provider failed; retrying this profile on CPU "
                       "(CPU stays in effect for the rest of this run).")
                 self._set_arc_providers(["CPUExecutionProvider"])
                 retried_on_cpu = True
@@ -207,7 +207,7 @@ class Embedder:
 
         # One line per profile so "no_face" is never a silent mystery: how many
         # photos came in, how many had a detectable face, how many errored.
-        print(f"[embed] profile: {len(profile.photos)} photo(s) -> "
+        print(f"Profile: {len(profile.photos)} photo(s) -> "
               f"{len(face_vecs)} with a face"
               f"{f', {errors} errored' if errors else ''}")
         if not face_vecs:           # no face anywhere -> can't evaluate the person

@@ -20,6 +20,7 @@ from ..costing import Usage
 @runtime_checkable
 class Store(Protocol):
     def load_labels(self) -> list[tuple[bool, list[float]]]: ...
+    def load_labels_ordered(self) -> list[tuple[bool, list[float]]]: ...   # chronological (created_at)
     def record_profile(self, run_id: str, app: str, profile_id: str, liked: bool,
                        source: str = "manual", photos: list[bytes] | None = None,
                        photo_count: int = 0) -> bool: ...
@@ -76,6 +77,13 @@ class SQLiteStore:
     def load_labels(self) -> list[tuple[bool, list[float]]]:
         with self._lock:
             rows = self.con.execute("SELECT liked, embedding FROM labels").fetchall()
+        return [(bool(liked), json.loads(emb)) for liked, emb in rows]
+
+    def load_labels_ordered(self) -> list[tuple[bool, list[float]]]:
+        """Labels in swipe order (created_at asc) for the quality-trajectory chart."""
+        with self._lock:
+            rows = self.con.execute(
+                "SELECT liked, embedding FROM labels ORDER BY created_at, id").fetchall()
         return [(bool(liked), json.loads(emb)) for liked, emb in rows]
 
     def record_profile(self, run_id, app, profile_id, liked, source="manual",

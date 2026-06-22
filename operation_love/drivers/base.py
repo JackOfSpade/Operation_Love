@@ -47,13 +47,14 @@ class DatingAppDriver(ABC):
         """Capture the card currently shown WITHOUT acting (you swipe manually)."""
         raise NotImplementedError("observe mode is not supported by this driver")
 
-    def wait_for_decision(self, timeout: float = 120.0, should_stop=None) -> bool | None:
+    def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None) -> bool | None:
         """Block until the user manually likes/passes the current card.
 
-        Returns True (liked), False (passed), or None (no decision before the
-        card changed / timeout). `should_stop` is an optional callable polled in
-        the wait loop; when it returns True the driver returns None promptly so
-        a Stop request isn't blocked behind your next manual swipe.
+        Returns True (liked), False (passed), or None (card changed, timeout,
+        deck empty, or stop requested). Pass timeout=None to wait indefinitely.
+        `should_stop` is an optional callable polled in the wait loop; when it
+        returns True the driver returns None promptly so a Stop request isn't
+        blocked behind your next manual swipe.
         """
         raise NotImplementedError("observe mode is not supported by this driver")
 

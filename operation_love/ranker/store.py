@@ -40,7 +40,7 @@ class Store(Protocol):
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS labels (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
-    liked INTEGER, source TEXT, embedding TEXT, photo_count INTEGER
+    liked INTEGER, source TEXT, embedding TEXT, photo_count INTEGER, profile_id TEXT
 );
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
@@ -71,6 +71,11 @@ class SQLiteStore:
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
+        try:
+            self.con.execute("ALTER TABLE labels ADD COLUMN profile_id TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
         self.con.commit()
         self._lock = threading.Lock()
 
@@ -97,8 +102,9 @@ class SQLiteStore:
         with self._lock:
             self.con.execute(
                 "INSERT INTO labels (run_id, app, created_at, liked, source, embedding,"
-                " photo_count) VALUES (?,?,?,?,?,?,?)",
-                (run_id, app, time.time(), int(liked), source, json.dumps(embedding), photo_count),
+                " photo_count, profile_id) VALUES (?,?,?,?,?,?,?,?)",
+                (run_id, app, time.time(), int(liked), source, json.dumps(embedding),
+                 photo_count, profile_id),
             )
             self.con.commit()
 

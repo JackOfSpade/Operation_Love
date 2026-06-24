@@ -79,6 +79,28 @@ def test_hub_tab_close_shuts_server_after_last_client():
         httpd.shutdown()
 
 
+def test_hub_tab_stale_heartbeat_shutdown_when_close_beacon_is_missing(monkeypatch):
+    import operation_love.hub as hub
+    monkeypatch.setattr(hub, "_BROWSER_CLIENT_STALE_S", 0.05)
+    monkeypatch.setattr(hub, "_BROWSER_STALE_CHECK_S", 0.01)
+    monkeypatch.setattr(hub, "_BROWSER_SHUTDOWN_GRACE_S", 0.01)
+
+    _Handler.state = HubState("config.yaml")
+    httpd = _bind("127.0.0.1", 8799)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        body = json.dumps({"id": "tab-1"}).encode()
+        code, opened = _post(base, "/api/hub/open", body)
+        assert code == 200 and opened["ok"] is True
+
+        t.join(timeout=2)
+        assert t.is_alive() is False
+    finally:
+        httpd.shutdown()
+
+
 def test_hubstate_double_start_blocked():
     st = HubState("config.yaml")
     # fake a live run so the second start is rejected without launching anything
@@ -122,6 +144,25 @@ def test_hubstate_browser_client_lifecycle(monkeypatch):
     assert st.browser_client_closed("c") is True
 
 
+def test_hubstate_browser_heartbeat_prevents_stale_expiry(monkeypatch):
+    import operation_love.hub as hub
+    now = 1000.0
+    monkeypatch.setattr(hub.time, "time", lambda: now)
+    monkeypatch.setattr(hub, "_BROWSER_CLIENT_STALE_S", 10.0)
+
+    st = HubState("config.yaml")
+    assert st.browser_client_opened("a") is True
+    now += 9.0
+    assert st.browser_client_ping("a") is False
+    now += 9.0
+    assert st.expire_stale_browser_clients() is False
+    assert st.has_browser_clients() is True
+
+    now += 11.0
+    assert st.expire_stale_browser_clients() is True
+    assert st.has_browser_clients() is False
+
+
 def test_resolve_run_cap_override_semantics():
     from operation_love.supervisor import _resolve_run_cap
     assert _resolve_run_cap(30, None) == 30      # no override -> config value
@@ -159,10 +200,13 @@ def test_hub_card_shows_single_accuracy_metric():
 
 def test_hub_page_reports_browser_tab_lifecycle():
     assert "/api/hub/open" in _PAGE
+    assert "/api/hub/ping" in _PAGE
     assert "/api/hub/closed" in _PAGE
     assert "pagehide" in _PAGE
+    assert "pageshow" in _PAGE
     assert "sendBeacon" in _PAGE
     assert "if(sent) return" in _PAGE
+    assert "!event.persisted" in _PAGE
 
 
 def test_committed_mac_launcher_matches_template():

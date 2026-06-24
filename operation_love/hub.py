@@ -25,6 +25,8 @@ from . import supervisor
 
 
 _BROWSER_SHUTDOWN_GRACE_S = 1.5
+_BROWSER_CLIENT_STALE_S = 20.0
+_BROWSER_STALE_CHECK_S = 5.0
 _CLOSED_BROWSER_CLIENT_TTL_S = 30.0
 
 
@@ -46,6 +48,7 @@ class HubState:
         self._browser_clients: dict[str, float] = {}
         self._closed_browser_clients: dict[str, float] = {}
         self._browser_shutdown_requested = False
+        self._browser_stale_watch_active = False
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -97,16 +100,25 @@ class HubState:
         if thread and thread.is_alive():
             thread.join()
 
-    def browser_client_opened(self, client_id: str | None) -> None:
+    def browser_client_opened(self, client_id: str | None) -> bool:
+        """Mark a hub page as alive. Return True when a stale-client watch should start."""
         if not client_id:
-            return
+            return False
         now = time.time()
         with self._lock:
             self._prune_closed_browser_clients_locked(now)
             if client_id in self._closed_browser_clients:
-                return
+                return False
             self._browser_clients[client_id] = now
             self._browser_shutdown_requested = False
+            if self._browser_stale_watch_active:
+                return False
+            self._browser_stale_watch_active = True
+            return True
+
+    def browser_client_ping(self, client_id: str | None) -> bool:
+        """Heartbeat fallback for browsers that drop the pagehide close beacon."""
+        return self.browser_client_opened(client_id)
 
     def browser_client_closed(self, client_id: str | None) -> bool:
         """Return True once, when the last known hub page has gone away."""
@@ -119,12 +131,38 @@ class HubState:
             self._closed_browser_clients[client_id] = now
             if self._browser_clients or self._browser_shutdown_requested:
                 return False
+            self._browser_stale_watch_active = False
             self._browser_shutdown_requested = True
             return True
 
     def has_browser_clients(self) -> bool:
         with self._lock:
             return bool(self._browser_clients)
+
+    def browser_stale_watch_active(self) -> bool:
+        with self._lock:
+            return self._browser_stale_watch_active
+
+    def expire_stale_browser_clients(self) -> bool:
+        """Drop hub pages that stopped heartbeating.
+
+        Return True once if that leaves no live browser pages and should shut down the hub.
+        """
+        now = time.time()
+        cutoff = now - _BROWSER_CLIENT_STALE_S
+        with self._lock:
+            self._browser_clients = {
+                client_id: seen_at
+                for client_id, seen_at in self._browser_clients.items()
+                if seen_at >= cutoff
+            }
+            if self._browser_clients:
+                return False
+            self._browser_stale_watch_active = False
+            if self._browser_shutdown_requested:
+                return False
+            self._browser_shutdown_requested = True
+            return True
 
     def _prune_closed_browser_clients_locked(self, now: float) -> None:
         cutoff = now - _CLOSED_BROWSER_CLIENT_TTL_S
@@ -354,6 +392,18 @@ class _Handler(BaseHTTPRequestHandler):
 
         threading.Thread(target=_target, name="hub-tab-close-shutdown", daemon=True).start()
 
+    def _start_stale_browser_watch(self) -> None:
+        state = self.state
+
+        def _target():
+            while state and state.browser_stale_watch_active():
+                time.sleep(_BROWSER_STALE_CHECK_S)
+                if state.expire_stale_browser_clients():
+                    self._schedule_shutdown_if_tab_stayed_closed()
+                    return
+
+        threading.Thread(target=_target, name="hub-tab-stale-watch", daemon=True).start()
+
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", 0) or 0)
         raw = self.rfile.read(length) if length else b""
@@ -373,8 +423,15 @@ class _Handler(BaseHTTPRequestHandler):
             ok, msg = self.state.stop()
             self._json({"ok": ok, "msg": msg})
         elif self.path == "/api/hub/open":
-            self.state.browser_client_opened(body.get("id"))
+            start_watch = self.state.browser_client_opened(body.get("id"))
             self._json({"ok": True})
+            if start_watch:
+                self._start_stale_browser_watch()
+        elif self.path == "/api/hub/ping":
+            start_watch = self.state.browser_client_ping(body.get("id"))
+            self._json({"ok": True})
+            if start_watch:
+                self._start_stale_browser_watch()
         elif self.path == "/api/hub/closed":
             should_shutdown = self.state.browser_client_closed(body.get("id"))
             self._json({"ok": True})
@@ -640,7 +697,11 @@ function hubLifecycle(path){
   fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body, keepalive: path === '/api/hub/closed'}).catch(() => {});
 }
 hubLifecycle('/api/hub/open');
-window.addEventListener('pagehide', () => hubLifecycle('/api/hub/closed'));
+setInterval(() => hubLifecycle('/api/hub/ping'), 5000);
+window.addEventListener('pageshow', () => hubLifecycle('/api/hub/open'));
+window.addEventListener('pagehide', (event) => {
+  if (!event.persisted) hubLifecycle('/api/hub/closed');
+});
 
 function renderGlobal(snap){
   const running = snap && snap.running;
@@ -688,7 +749,7 @@ function renderEval(e){
     const svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;background:#0c0c10;border:1px solid rgba(255,255,255,.09);border-radius:9px">`
       + `<line x1="${L}" y1="${chanceY}" x2="${W-Rr}" y2="${chanceY}" stroke="#6a6a72" stroke-dasharray="3 3" opacity="0.5"/>`
       + `<polyline fill="none" stroke="#5ab0ff" stroke-width="1.8" points="${line}"/>`
-      + txt(L, T-5, (hi*100).toFixed(0)+'%') + txt(L, H-7, (lo*100).toFixed(0)+'%')
+      + txt(L, T-5, (hi*100).toFixed(3)+'%') + txt(L, H-7, (lo*100).toFixed(3)+'%')
       + txt(L+22, Number(chanceY)-3, 'random')
       + txt(L+22, H-7, xmin+' labels') + txt(W-Rr, H-7, xmax+'', 'end')
       + `</svg>`;
@@ -719,8 +780,8 @@ function renderEval(e){
   $('#evalhint').textContent = `${e.folds}-fold · ${e.identities} identities`;
   $('#evalbody').style.color = '#e8e8ea';
   $('#evalbody').innerHTML =
-    `<div>accuracy <b style="color:${col};font-size:18px">${acc.toFixed(0)}%</b>`
-    + ` <span class="muted">±${band.toFixed(0)}% · ranks a like above a pass (50% = random)</span></div>`
+    `<div>accuracy <b style="color:${col};font-size:18px">${acc.toFixed(3)}%</b>`
+    + ` <span class="muted">±${band.toFixed(3)}% · ranks a like above a pass (50% = random)</span></div>`
     + refreshHtml() + accSvg(e.trajectory);
 }
 async function tickEval(){ try { renderEval(await getJSON('/api/eval')); } catch(e){} }

@@ -155,5 +155,5 @@ def format_report(r: dict) -> str:
     return (f"Labels={r['labels']}  likes={r['likes']}  passes={r['passes']}  "
             f"distinct identities={r['identities']}\n"
             f"Identity-grouped {r['folds']}-fold CV (LogReg C=0.1, class_weight=balanced):\n"
-            f"  Accuracy: {acc:.0f}% +/- {band:.0f}%  "
+            f"  Accuracy: {acc:.3f}% +/- {band:.3f}%  "
             f"(ROC-AUC concordance — ranks a like above a pass; 50% = random, 100% = perfect)")

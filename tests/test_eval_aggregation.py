@@ -73,7 +73,7 @@ def test_format_report_shows_single_accuracy_metric():
         "pr_auc": [0.42, 0.03], "brier": [0.20, 0.01], "base_rate": 0.25,
     }
     out = format_report(r)
-    assert "Accuracy: 83% +/- 4%" in out
+    assert "Accuracy: 83.000% +/- 4.000%" in out
     assert "ranks a like above a pass" in out
     assert "PR-AUC" not in out and "Brier" not in out and "Diminishing returns" not in out
 

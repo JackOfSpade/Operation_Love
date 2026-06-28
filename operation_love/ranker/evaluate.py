@@ -11,6 +11,8 @@ as-is over HTTP; `format_report()` renders it for the terminal.
 """
 from __future__ import annotations
 
+from .model import RANKER_PARAMS, make_ranker_clf   # shared ranker hyperparameters (no drift)
+
 _FACE_DIMS = 512   # first 512 of the 1280-d vector = L2-normed ArcFace identity template
 
 
@@ -44,7 +46,6 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5, eps: fl
                            f"(have {n}: {likes} like / {passes} pass)."}
     try:
         import numpy as np
-        from sklearn.linear_model import LogisticRegression
         from sklearn.metrics import auc, brier_score_loss, precision_recall_curve, roc_auc_score
         from sklearn.model_selection import StratifiedGroupKFold
     except Exception as exc:  # noqa: BLE001
@@ -73,7 +74,7 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5, eps: fl
         for tr, va in folds:
             if len(set(yv[tr].tolist())) < 2 or len(set(yv[va].tolist())) < 2:
                 continue                    # a fold without both classes can't be scored
-            clf = LogisticRegression(C=0.1, class_weight="balanced", max_iter=1000)
+            clf = make_ranker_clf()              # same hyperparameters as the deployed ranker
             clf.fit(X[tr], yv[tr])
             p = clf.predict_proba(X[va])[:, 1]
             roc.append(float(roc_auc_score(yv[va], p)))
@@ -154,6 +155,7 @@ def format_report(r: dict) -> str:
     acc, band = roc[0] * 100, roc[1] * 100
     return (f"Labels={r['labels']}  likes={r['likes']}  passes={r['passes']}  "
             f"distinct identities={r['identities']}\n"
-            f"Identity-grouped {r['folds']}-fold CV (LogReg C=0.1, class_weight=balanced):\n"
+            f"Identity-grouped {r['folds']}-fold CV (LogReg C={RANKER_PARAMS['C']}, "
+            f"class_weight={RANKER_PARAMS['class_weight']}):\n"
             f"  Accuracy: {acc:.3f}% +/- {band:.3f}%  "
             f"(ROC-AUC concordance — ranks a like above a pass; 50% = random, 100% = perfect)")

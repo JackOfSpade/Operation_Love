@@ -138,24 +138,29 @@ class Embedder:
         self._arc_on_cpu = self._arc_providers == ["CPUExecutionProvider"]
 
     def _ensure(self) -> None:
-        if self._arc is not None:
+        if self._arc is not None:                  # _arc is the all-or-nothing init sentinel
             return
         import open_clip  # lazy
         import onnxruntime as ort
 
         self._device = best_device()
-        providers = _select_onnx_providers(self._device, ort.get_available_providers())
-        self._set_arc_providers(providers)
 
+        # Build CLIP FIRST and commit self._arc LAST. self._arc is the sentinel the guard
+        # above short-circuits on, so it must only be set once BOTH models have loaded. If
+        # CLIP's load raised (weight download / OOM) AFTER _arc were set, the next _ensure()
+        # would short-circuit on a half-initialized embedder (_clip still None) and every
+        # _embed_image would TypeError -> silently "no_face" for the rest of the run.
         # Use the -quickgelu variant: the OpenAI weights were trained with QuickGELU,
         # so the plain "ViT-L-14" config (GELU) loads them with a mismatched
         # activation and yields degraded embeddings. Match it for correct CLIP vectors.
         model, _, preprocess = open_clip.create_model_and_transforms(
             "ViT-L-14-quickgelu", pretrained="openai"
         )
-        model = model.to(self._device).eval()
-        self._clip = model
+        self._clip = model.to(self._device).eval()
         self._clip_preprocess = preprocess
+
+        providers = _select_onnx_providers(self._device, ort.get_available_providers())
+        self._set_arc_providers(providers)         # sets self._arc — LAST, after CLIP succeeded
 
     # --- per-photo -----------------------------------------------------
     def _embed_image(self, img_bytes: bytes) -> tuple[list[float] | None, list[float]]:

@@ -151,6 +151,28 @@ def test_embed_profile_rebuilds_arcface_on_cpu_after_coreml_runtime_failure():
     assert math.isclose(math.sqrt(sum(x * x for x in vec[2:])), 1.0)
 
 
+def test_ensure_leaves_embedder_retryable_if_clip_load_fails(monkeypatch):
+    # If CLIP's load raises (weight download / OOM), _ensure() must NOT leave a
+    # half-initialized embedder: _arc (the init sentinel) stays None so the next call
+    # retries cleanly, instead of short-circuiting on _arc-set/_clip-None and then
+    # TypeError-ing every embed into a silent "no_face" for the rest of the run.
+    import open_clip
+    import pytest
+
+    calls = {"n": 0}
+
+    def boom(*a, **k):
+        calls["n"] += 1
+        raise RuntimeError("CLIP weight download failed")
+
+    monkeypatch.setattr(open_clip, "create_model_and_transforms", boom)
+    e = Embedder()
+    with pytest.raises(RuntimeError):
+        e._ensure()
+    assert e._arc is None and e._clip is None        # nothing committed -> retry-able
+    assert calls["n"] == 1
+
+
 def test_quality_gating_with_injected_scorer():
     scores = {b"good": 0.8, b"bad": 0.1}
     qf = QualityFilter(enabled=True, min_score=0.3, scorer=lambda b: scores[b])

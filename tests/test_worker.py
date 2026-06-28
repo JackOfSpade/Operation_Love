@@ -26,7 +26,7 @@ class FakeDriver(DatingAppDriver):
         if self.i >= len(self.cards):
             return None
         p = self.cards[self.i]; self.i += 1; return p
-    def like(self, opener=None): self.likes.append(opener)
+    def like(self, opener=None, item_index=0): self.likes.append(opener)
     def dislike(self): self.dislikes += 1
     def out_of_profiles(self): return self.i >= len(self.cards)
     def close(self): self.closed = True
@@ -37,6 +37,24 @@ class ClosedDriver(FakeDriver):
         super().__init__(1)
     def next_profile(self):
         raise DriverClosed("browser closed")
+
+
+class RaisingLikeDriver(FakeDriver):
+    """Hinge-style: halts on unexpected, and its like() raises (e.g. an unsent like)."""
+    halt_on_error = True
+
+    def __init__(self, n):
+        super().__init__(n)
+        self.snapshotted = []
+
+    def like(self, opener=None, item_index=0):
+        raise RuntimeError("like did not land")
+
+    def snapshot_failure(self, exc):
+        self.snapshotted.append((self._adb_live(), exc))
+
+    def _adb_live(self):
+        return not self.closed          # snapshot must run while the transport is still open
 
 
 class FakeDecider:
@@ -109,8 +127,8 @@ def test_budget_caps_openers_globally():
     tracker = CostTracker(PRICING, run_budget_usd=0.001)   # 400 input tok = $0.002 > cap
     client = FakeOpenerClient(cost_tokens=400)
     svc = OpenerService(client, tracker, FakeStore(), "style", on_exhausted="stop")
-    assert svc.maybe_opener("r", "bumble", Profile()) == "hi 1"   # first allowed
-    assert svc.maybe_opener("r", "hinge", Profile()) is None      # second over budget
+    assert svc.maybe_opener("r", "bumble", Profile()).text == "hi 1"   # first allowed
+    assert svc.maybe_opener("r", "hinge", Profile()) is None           # second over budget
     assert client.calls == 1 and svc.stop_requested is True
 
 
@@ -122,7 +140,8 @@ def test_budget_caps_openers_across_concurrent_workers():
     results = []
 
     def call(app):
-        results.append(svc.maybe_opener("r", app, Profile()))
+        pick = svc.maybe_opener("r", app, Profile())
+        results.append(pick.text if pick else None)
 
     threads = [threading.Thread(target=call, args=(app,)) for app in ("bumble", "hinge")]
     for t in threads:
@@ -226,6 +245,18 @@ def test_worker_daily_limit_ignores_manual_decisions():
     assert store.count_today("bumble") == 1
     assert store.decisions[-1] == ("bumble", "dislike", "auto")
     assert all(source == "manual" for _, _, source in store.decisions[:-1])
+
+
+def test_no_auto_decision_recorded_when_like_raises_and_snapshot_runs_live():
+    driver = RaisingLikeDriver(2)
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")   # openers disabled -> pick None
+    _worker(driver, FakeDecider("like"), svc, store).run()
+    # like() raised -> halt_on_error -> the phantom 'like' must NOT be recorded (record is post-action)
+    assert store.decisions == []
+    assert driver.closed
+    # the failure snapshot must have run while the transport was still live (before close())
+    assert driver.snapshotted and driver.snapshotted[0][0] is True
 
 
 def test_worker_treats_browser_close_as_graceful_stop():

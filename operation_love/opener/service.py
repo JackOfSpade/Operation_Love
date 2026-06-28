@@ -9,10 +9,19 @@ supervisor to stop all workers.
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 
 from ..costing import CostTracker, is_out_of_credit
 from ..perception.capture import Profile
 from .opener import OpenerClient
+
+
+@dataclass
+class OpenerPick:
+    """An opener plus which profile item (0-based index, capture order) it is about, so the
+    driver can attach the comment to the RIGHT photo/prompt instead of always the first."""
+    text: str
+    index: int = 0
 
 
 class OpenerService:
@@ -27,8 +36,9 @@ class OpenerService:
         self.stop_requested = False     # set when budget/credit is exhausted and on_exhausted="stop"
         self._lock = threading.RLock()
 
-    def maybe_opener(self, run_id: str, app: str, profile: Profile) -> str | None:
-        """Return an opener, or None (disabled / budget reached / out of credit / over-budget).
+    def maybe_opener(self, run_id: str, app: str, profile: Profile) -> "OpenerPick | None":
+        """Return an OpenerPick (text + referenced item index), or None (disabled / budget
+        reached / out of credit / over-budget).
 
         The budget check, provider call, and spend recording are serialized so
         concurrent app workers cannot all pass the pre-call budget check and
@@ -53,7 +63,7 @@ class OpenerService:
             self.store.record_opener(run_id, app, result.model, result.opener, result.referenced)
             if self.tracker.budget_reached():
                 self._exhaust("run budget reached")
-            return result.opener
+            return OpenerPick(result.opener, getattr(result, "referenced_index", 0))
 
     def _exhaust(self, reason: str) -> None:
         with self._lock:

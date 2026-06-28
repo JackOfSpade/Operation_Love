@@ -1,8 +1,10 @@
 """Common interface every app driver implements.
 
 The orchestrator is app-agnostic: it only knows these methods. Concrete drivers
-(Bumble via Playwright, Hinge via Appium/uiautomator2) find UI elements by
-id/text — never fixed pixel coordinates — so they're resolution-independent.
+differ in transport: Bumble via Playwright (DOM selectors); Hinge via host-side
+ADB only (screencap perception + humanized `input motionevent` gestures at
+screen-fraction coordinates — no uiautomator2 / on-device helper, see
+ops/HINGE-PIXEL-RUNBOOK.md §5).
 """
 from __future__ import annotations
 
@@ -31,8 +33,10 @@ class DatingAppDriver(ABC):
         """Capture the current profile (all photos + text). None when the deck is empty."""
 
     @abstractmethod
-    def like(self, opener: str | None = None) -> None:
-        """Like the current profile, optionally sending an opener message."""
+    def like(self, opener: str | None = None, item_index: int = 0) -> None:
+        """Like the current profile, optionally sending an opener message. item_index is the
+        0-based index (capture order) of the photo/prompt the opener is about, so drivers that
+        comment per-item (Hinge) can target it; drivers without that notion ignore it."""
 
     @abstractmethod
     def dislike(self) -> None:

@@ -26,7 +26,7 @@ ml = [
 ]
 # App drivers
 bumble = ["playwright>=1.44", "patchright>=1.44"]   # patchright = stealth-patched Playwright (no Runtime.enable CDP leak)
-hinge = ["uiautomator2>=3.0"]   # drives an Android emulator / phone over ADB
+hinge = ["opencv-python>=4.8"]   # host-side ADB (needs `adb` CLI on PATH) + the `ml` extra (Pillow) for screencap diff; opencv template-matches the like/pass button glyphs
 # Cloud storage (system-of-record + analytics)
 bq = ["google-cloud-bigquery>=3.20", "google-cloud-storage>=2.16"]
 dev = ["pytest>=8.0"]
@@ -36,6 +36,10 @@ dev = ["pytest>=8.0"]
 # top-level dirs. tools/ and tests/ stay importable via cwd from the repo root.)
 [tool.setuptools.packages.find]
 include = ["operation_love*"]
+
+# Ship the Hinge button-glyph templates (vision-located like/pass) with the package.
+[tool.setuptools.package-data]
+operation_love = ["drivers/assets/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

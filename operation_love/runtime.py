@@ -11,18 +11,19 @@ from __future__ import annotations
 
 import importlib.util
 import platform
+import shutil
 from dataclasses import dataclass
 
 from .device import best_device
 
-# component key -> import name it needs
+# component key -> import name it needs (or "cli:<binary>" for a required CLI tool)
 _OPTIONAL = {
     "torch": "torch",
     "clip": "open_clip",
     "arcface": "insightface",
     "quality": "pyiqa",
     "bumble_driver": "playwright",
-    "hinge_driver": "uiautomator2",
+    "hinge_driver": "cli:adb",        # host-side ADB only — no uiautomator2/on-device helper
     "anthropic": "anthropic",
     "bigquery": "google.cloud.bigquery",
     "cloud_storage": "google.cloud.storage",
@@ -32,6 +33,8 @@ _ACCEL = {"mps": "Apple GPU (MPS)", "cuda": "NVIDIA GPU (CUDA)", "cpu": "CPU"}
 
 
 def _have(mod: str) -> bool:
+    if mod.startswith("cli:"):
+        return shutil.which(mod[4:]) is not None
     try:
         return importlib.util.find_spec(mod) is not None
     except Exception:

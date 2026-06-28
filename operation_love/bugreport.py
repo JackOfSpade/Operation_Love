@@ -116,7 +116,7 @@ def _device() -> str:
 
 def _dep_versions() -> dict[str, str]:
     deps = ["playwright", "torch", "insightface", "open_clip", "onnxruntime",
-            "google.cloud.bigquery", "anthropic", "uiautomator2", "sklearn", "yaml"]
+            "google.cloud.bigquery", "anthropic", "PIL", "sklearn", "yaml"]
     out: dict[str, str] = {}
     for d in deps:
         try:

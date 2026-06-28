@@ -22,8 +22,29 @@ apps:
       prompt: '[data-qa-role="pill"]'           # structured attribute pills (height, drinking, …)
       # like/pass confirmed live = code defaults; superlike is observe-only (bot never super-swipes)
   hinge:
-    # Phase 5: Android emulator over ADB (uiautomator2)
-    serial: ""              # adb device/emulator serial; empty = first available
+    # Physical Pixel over HOST-SIDE ADB only — no uiautomator2 / on-device helper
+    # (ops/HINGE-PIXEL-RUNBOOK.md). Taps/swipes are humanized motionevent gestures.
+    serial: ""              # adb device serial; empty = first available. `adb devices`
+    adb_path: adb           # path to the adb binary
+    touch_backend: auto     # auto = genuine UHID touchscreen, fall back to adb input | uhid (require) | adb (force input)
+    scroll_captures: 8      # max screencaps while reading one profile
+    dwell_s: 1.1            # per-card read dwell, humanized (Signals #1: read before deciding)
+    read_scroll_frac: 0.55  # how far each read-scroll advances the profile
+    change_threshold: 9.0   # mean grayscale delta (0..255, 24x24) to call a frame region "changed"
+    debug_log: true         # host debug log: data/hinge_debug/<run>/ = actions.jsonl + before/after screenshots
+    debug_dir: ./data/hinge_debug
+    halt_on_error: true     # auto mode STOPS on any unexpected error (no restart) so debug logs are preserved
+    # Action points as FRACTIONS of the screen (x, y in 0..1). Calibrated live on the Pixel 7a
+    # (1080x2400) 2026-06-27. like_heart / pass_x are located by VISION at runtime (template-
+    # matching the glyph) because the "Start sending likes" banner + per-profile photo heights
+    # shift the heart, and the X's disc merges into white prompt backgrounds; these fractions
+    # are only the FALLBACK used when vision can't find the glyph. comment_box / send_like are
+    # fixed (the like-sheet layout is consistent); send_like is kept clear of the 🌷Rose button.
+    coords:
+      like_heart: [0.868, 0.667]  # FALLBACK only — heart is vision-located on the first photo
+      pass_x: [0.116, 0.848]      # FALLBACK only — X is vision-located (floating, bottom-left)
+      comment_box: [0.500, 0.529] # comment field in the like sheet (calibrated)
+      send_like: [0.643, 0.576]   # "Send Like" button in the like sheet (calibrated; clear of Rose)
 
 paths:
   data_dir: ./data
@@ -58,9 +79,13 @@ opener:
   model: claude-opus-4-8       # best quality; swap to claude-sonnet-4-6 for ~5x lower cost
   max_tokens: 400
   style: |
-    Warm, specific, lightly playful. Reference ONE concrete detail from her
-    profile (a photo or a prompt answer). One or two sentences. No greeting
-    preamble ("Hey", "Hi there"), no pet names, no generic questions.
+    Voice: Coach Corey Wayne ("How to Be a 3% Man"). Short, playful, teasing, cocky
+    and funny, relaxed and confident. ONE line, two at most. Low investment so SHE
+    chases. Tease her like a bratty little sister (never mean). Reference ONE concrete
+    detail from a specific photo or prompt. NO interview questions, NO long earnest
+    paragraphs, NO compliments on looks, NO greeting ("Hey"/"Hi"), NO pet names.
+    HARD RULE: never use an em dash or any hyphen; use commas or periods instead
+    (write "physician assistant", not "PA-C").
 
 # --- Cost control (see operation_love/costing.py) ---
 budget:

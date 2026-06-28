@@ -633,6 +633,7 @@ _PAGE = """<!doctype html>
 <body><div class="wrap">
   <div class="row"><h1>Operation&nbsp;Love</h1><span id="runpill" class="pill stop">stopped</span></div>
   <div class="sub" id="sub">control hub · live status</div>
+  <div id="swipebanner" style="display:none"></div>
 
   <div class="card">
     <div class="row"><span class="muted">budget</span><span id="budget" class="b">—</span></div>
@@ -721,7 +722,27 @@ function renderGlobal(snap){
   $('#err').textContent = (snap && snap.error) ? ('error: '+snap.error) : '';
 }
 
-async function tick(){ try { const snap = await getJSON('/api/status'); renderGlobal(snap); } catch(e){} }
+// Observe mode has NO on-phone cue (an overlay would corrupt the screencaps), so this big
+// banner tells you when to SWIPE vs WAIT per app, driven by the worker's per-app state.
+function renderSwipe(snap){
+  const el = $('#swipebanner'); if(!el) return;
+  const s = snap && snap.status;
+  if(!snap || !snap.running || !s || s.mode !== 'observe' || !s.apps){ el.style.display='none'; return; }
+  const css = {go:'background:#123a23;border:1px solid #39d98a;color:#39d98a',
+               wait:'background:#3a2f12;border:1px solid #f0b429;color:#f0b429',
+               idle:'background:#22222b;border:1px solid rgba(255,255,255,.14);color:#9a9aa2'};
+  const box = (k,t,sub) => `<div style="${css[k]};border-radius:10px;padding:12px 14px;margin-top:8px;font-weight:700;font-size:18px">${t}${sub?` <span style="font-weight:400;font-size:12px;opacity:.8">${sub}</span>`:''}</div>`;
+  el.innerHTML = Object.values(s.apps).map(a => {
+    const st = a.state || '';
+    if(st==='waiting') return box('go', `👆 SWIPE ${a.app} now`, 'like or pass');
+    if(st==='capturing') return box('wait', `✋ wait — reading ${a.app} profile…`);
+    if(st==='acting' || st==='starting') return box('wait', '✋ wait — processing…');
+    return box('idle', `${a.app}: ${st}`, a.last_decision ? ('last '+a.last_decision) : '');
+  }).join('');
+  el.style.display = 'block';
+}
+
+async function tick(){ try { const snap = await getJSON('/api/status'); renderGlobal(snap); renderSwipe(snap); } catch(e){} }
 
 function renderEval(e){
   if(!e) return;

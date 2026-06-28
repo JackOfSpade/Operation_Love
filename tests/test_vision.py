@@ -5,9 +5,25 @@ import types
 from operation_love.perception.capture import Profile
 from operation_love.vision.embed import (
     Embedder, _is_onnx_provider_failure, _select_onnx_providers, aggregate, concat,
-    dedup_by_cosine, gem_pool, l2_normalize,
+    dedup_by_cosine, gem_pool, l2_normalize, square_crop_around_bbox,
 )
 from operation_love.vision.quality import QualityFilter
+
+
+def test_square_crop_around_bbox_is_square_and_in_bounds():
+    left, top, right, bottom = square_crop_around_bbox((1080, 2400), [500, 1000, 600, 1200], expand=3.0)
+    assert 0 <= left < right <= 1080 and 0 <= top < bottom <= 2400
+    assert abs((right - left) - (bottom - top)) <= 1            # square
+
+
+def test_square_crop_clamps_to_image_at_corner():
+    left, top, right, bottom = square_crop_around_bbox((1080, 2400), [0, 0, 120, 120], expand=6.0)
+    assert left >= 0 and top >= 0 and right <= 1080 and bottom <= 2400
+
+
+def test_square_crop_side_never_exceeds_image():
+    left, top, right, bottom = square_crop_around_bbox((1080, 2400), [400, 1100, 700, 1400], expand=99.0)
+    assert (right - left) <= 1080 and (bottom - top) <= 2400    # clamped to min dimension
 
 
 COREML_RUNTIME_ERROR = (

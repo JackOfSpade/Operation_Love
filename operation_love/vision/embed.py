@@ -61,6 +61,23 @@ def gem_pool(vectors: list[list[float]], p: float = 3.0) -> list[float]:
     return out
 
 
+def square_crop_around_bbox(size: tuple[int, int], bbox, expand: float = 3.5) -> tuple[int, int, int, int]:
+    """A square crop box (left, top, right, bottom) centered on a face bbox and expanded to
+    include the upper body / setting, clamped inside the image. Used to give CLIP a person-centric
+    ~square photo crop instead of the full screenshot (status bar, buttons, white margins), which
+    otherwise dilutes the style/vibe signal. Pure (takes image size + bbox); unit-tested."""
+    w, h = size
+    x1, y1, x2, y2 = (float(v) for v in bbox)
+    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    # at least 2px (never a degenerate empty crop), at most the image's min dimension
+    side = min(max(max(x2 - x1, y2 - y1) * expand, 2.0), float(min(w, h)))
+    half = side / 2.0
+    cx = min(max(cx, half), w - half)                              # keep the square inside the image
+    cy = min(max(cy, half), h - half)
+    left, top = int(round(cx - half)), int(round(cy - half))
+    return (left, top, int(round(left + side)), int(round(top + side)))
+
+
 def dedup_by_cosine(vectors: list[list[float]], threshold: float = 0.85) -> list[list[float]]:
     """Drop near-duplicate vectors (cosine > threshold vs an already-kept one), so a
     burst of near-identical photos can't dominate the pool. Assumes L2-normalized
@@ -153,6 +170,7 @@ class Embedder:
 
         # ArcFace (largest detected face)
         face_vec = None
+        clip_src = pil                                    # default: whole image (no face -> skipped anyway)
         faces = self._arc.get(np.array(pil)[:, :, ::-1])  # RGB->BGR
         if faces:
             faces.sort(key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]), reverse=True)
@@ -160,9 +178,17 @@ class Embedder:
             # quality, so averaging raws then L2-normalizing is an implicit
             # quality-weighted template (see embed_profile).
             face_vec = [float(x) for x in faces[0].embedding]
+            # CLIP sees a person-centric SQUARE crop around the face, not the whole screenshot:
+            # ArcFace already self-crops the face; this keeps CLIP's style/vibe signal on the
+            # actual photo instead of UI chrome + margins (the screenshot is host-side, no
+            # element selectors, so the photo is a fraction of the frame).
+            try:
+                clip_src = pil.crop(square_crop_around_bbox(pil.size, faces[0].bbox))
+            except Exception:  # noqa: BLE001 — bad bbox -> fall back to the whole image
+                clip_src = pil
 
-        # CLIP (whole image)
-        t = self._clip_preprocess(pil).unsqueeze(0).to(self._device)
+        # CLIP (person-centric square crop when a face was found, else the whole image)
+        t = self._clip_preprocess(clip_src).unsqueeze(0).to(self._device)
         with torch.no_grad():
             clip_vec = self._clip.encode_image(t)
             clip_vec = (clip_vec / clip_vec.norm(dim=-1, keepdim=True))[0].cpu().tolist()

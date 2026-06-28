@@ -56,6 +56,17 @@ class Worker(threading.Thread):
         if self.status:
             self.driver.render_status(self.status.app_view(self.app))
 
+    def _capture_failure(self, exc: BaseException) -> None:
+        """Let the driver snapshot the on-screen failure state into its debug log. Called from
+        inside the loop's except — WHILE the transport is still live — because the loop's finally
+        closes the driver before run()'s handler sees the exception."""
+        snap = getattr(self.driver, "snapshot_failure", None)
+        if callable(snap):
+            try:
+                snap(exc)
+            except Exception:  # noqa: BLE001 — debug capture must never mask the real error
+                pass
+
     def _profile_separator(self) -> None:
         print("-" * _PROFILE_LOG_WIDTH)
 
@@ -74,6 +85,18 @@ class Worker(threading.Thread):
                 self.stop_event.set()
                 return
             except Exception:  # noqa: BLE001
+                # NOTE: the on-screen failure screenshot is captured INSIDE the loop's except
+                # (_capture_failure), BEFORE the loop's finally closes the driver — by here the
+                # transport is already closed, so a snapshot would be blank.
+                # HALT-on-unexpected: an autonomous run that hits an unexpected error must STOP,
+                # not restart-and-continue — continuing would keep acting blindly (risky on a
+                # burner) and rotate the crucial failure logs away. Drivers opt in via
+                # `halt_on_error` (Hinge does by default; Bumble keeps the restart resilience).
+                if getattr(self.driver, "halt_on_error", False):
+                    print(f"{self.app.title()} unexpected error; HALTING (no restart) to preserve debug logs:")
+                    traceback.print_exc()
+                    self.stop_event.set()
+                    return
                 restarts += 1
                 print(f"{self.app.title()} worker error (restart {restarts}/{self.max_restarts}):")
                 traceback.print_exc()
@@ -147,8 +170,10 @@ class Worker(threading.Thread):
                 if added % self.retrain_every == 0:
                     self._retrain_after_observe_labels(added)
                     last_retrained = added
-        except BaseException:
+        except BaseException as exc:
             pending_error = True
+            if isinstance(exc, Exception) and not isinstance(exc, DriverClosed):
+                self._capture_failure(exc)                    # snapshot WHILE the transport is live
             raise
         finally:
             try:
@@ -213,24 +238,28 @@ class Worker(threading.Thread):
                           f"({self.limiter.describe()}); stopping {self.app}.")
                     break
 
-                # AUTO mode is pure INFERENCE: log the decision (for stats + the daily
-                # rate limit), but do NOT store it as a training label. An autonomous
-                # swipe is the model's own PREDICTION, not ground truth — training on it
-                # would create a self-reinforcing feedback loop that amplifies the
-                # model's biases. Training labels come ONLY from manual/observe swipes.
-                self.store.record_decision(self.run_id, self.app, d.decision, d.score, source="auto")
                 if self.stop_event.is_set():
                     break
 
                 if d.decision == "like":
                     # Only generate a Claude opener for apps that can actually send one
                     # at swipe time (Hinge). On Bumble we'd just discard it — wasted credits.
-                    opener = (self.opener_service.maybe_opener(self.run_id, self.app, profile)
-                              if getattr(self.driver, "accepts_opener", True) else None)
-                    self.driver.like(opener)
+                    pick = (self.opener_service.maybe_opener(self.run_id, self.app, profile)
+                            if getattr(self.driver, "accepts_opener", True) else None)
+                    # item_index lets the driver attach the comment to the photo/prompt the
+                    # opener is actually about, not blindly the first one.
+                    self.driver.like(pick.text if pick else None,
+                                     item_index=pick.index if pick else 0)
                     liked += 1
                 else:
                     self.driver.dislike()
+
+                # AUTO mode is pure INFERENCE: log the decision (for stats + the daily rate
+                # limit) AFTER the action actually landed — do NOT store it as a training label
+                # (training on the model's own prediction would create a self-reinforcing feedback
+                # loop), and do NOT record a phantom if like()/dislike() raised (e.g. a
+                # HingeActionError halt on an unsent like) and so never landed.
+                self.store.record_decision(self.run_id, self.app, d.decision, d.score, source="auto")
                 if self.status:
                     self.status.record_swipe(self.app, d.decision, d.score)
                 self._render()
@@ -239,6 +268,10 @@ class Worker(threading.Thread):
                 if self.opener_service.stop_requested:        # global budget/credit stop
                     self.stop_event.set()
                 self._pace()
+        except Exception as exc:  # noqa: BLE001
+            if not isinstance(exc, DriverClosed):             # DriverClosed = clean stop, not a fault
+                self._capture_failure(exc)                    # snapshot WHILE the transport is live
+            raise                                             # (the finally below closes it)
         finally:
             self._stat(state="stopped")
             self.driver.close()

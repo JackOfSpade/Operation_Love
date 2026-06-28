@@ -757,7 +757,8 @@ class BumbleDriver(DatingAppDriver):
             raise
 
     # --- actions --------------------------------------------------------
-    def like(self, opener: str | None = None) -> None:
+    def like(self, opener: str | None = None, item_index: int = 0) -> None:
+        # item_index is ignored: Bumble likes the whole profile (no per-photo comment).
         # NORMAL like only — never the super-swipe. Super-likes/boosts are the
         # owner's manual call (see DEFAULT_SELECTORS["superlike"]).
         self._human_click(self.selectors["like"])

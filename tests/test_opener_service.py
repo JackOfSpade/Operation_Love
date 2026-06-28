@@ -13,6 +13,7 @@ class _Res:
     usage = "usage"
     opener = "hey, that hiking photo is great"
     referenced = "hiking"
+    referenced_index = 2
 
 
 class _Client:
@@ -63,7 +64,7 @@ def test_generates_records_and_stays_enabled():
     c, t, st = _Client(), _Tracker([False, False]), _Store()
     s = OpenerService(c, t, st, "casual")
     out = s.maybe_opener("r", "bumble", object())
-    assert out == _Res.opener and c.calls == 1
+    assert out.text == _Res.opener and out.index == _Res.referenced_index and c.calls == 1
     assert len(st.spend) == 1 and len(st.openers) == 1     # both spend + opener persisted
     assert t.recorded == [("claude-x", "usage")]
     assert s.disabled is False and s.stop_requested is False
@@ -81,7 +82,7 @@ def test_budget_reached_after_call_disables_but_returns_this_opener():
     c, t, st = _Client(), _Tracker([False, True]), _Store()  # ok pre-call, exhausted post-call
     s = OpenerService(c, t, st, "casual", on_exhausted="stop")
     out = s.maybe_opener("r", "bumble", object())
-    assert out == _Res.opener                               # the in-flight opener still returns
+    assert out.text == _Res.opener                          # the in-flight opener still returns
     assert s.disabled is True and s.stop_requested is True  # but no more after this
 
 

@@ -16,6 +16,8 @@ apps:
     url: https://bumble.com/app
     browser_channel: chrome # drive the real Google Chrome binary (authentic WebGL/plugins/window.chrome); "" = bundled Chromium
     inpage_overlays: false  # don't inject our status HUD into Bumble's DOM (lower footprint); status shows in the hub
+    debug_log: true         # silent debug log: data/bumble_debug/<run>/ = actions.jsonl + a page screenshot on failure
+    debug_dir: ./data/bumble_debug
     selectors:              # live-verified on Bumble web (2026-06); override here if the DOM drifts
       photo: 'img.media-box__picture-image, [data-qa-role="encounters-story-profile-image"] img'
       bio: '[data-qa-role="encounters-user"]'   # whole-card text (Bumble has no isolated "about" hook)

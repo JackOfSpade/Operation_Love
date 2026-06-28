@@ -225,6 +225,12 @@ class BumbleDriver(DatingAppDriver):
         # don't mutate Bumble's DOM with our own element (status lives in the hub).
         self.browser_channel = app_cfg.get("browser_channel", "chrome")
         self.inpage_overlays = bool(app_cfg.get("inpage_overlays", False))
+        # Silent debug log (parity with Hinge): a text action trail + a page screenshot ONLY on
+        # failure (the browser is watchable, so per-action shots aren't worth the overhead).
+        # Surfaced in the bug report's "Debug log" section. Enabled via apps.bumble.debug_log.
+        self.debug_log = bool(app_cfg.get("debug_log", False))
+        self.debug_dir = app_cfg.get("debug_dir", "./data/bumble_debug")
+        self._dbg = None             # DebugLog (set in open_session when debug_log is on)
         self._pw = None
         self._ctx = None
         self.page = None
@@ -263,6 +269,12 @@ class BumbleDriver(DatingAppDriver):
             self.page.set_default_timeout(self.nav_timeout_ms)
             self.page.goto(self.url, wait_until="domcontentloaded")
             self._dismiss_startup_interstitials()
+            if self.debug_log:
+                try:
+                    from .debuglog import DebugLog
+                    self._dbg = DebugLog(self.debug_dir)
+                except Exception:  # noqa: BLE001 — logging must never break a run
+                    self._dbg = None
             # First run: if not logged in, sign in by hand in the opened window; the
             # user-data dir persists the session for subsequent runs.
         except BaseException:
@@ -756,17 +768,47 @@ class BumbleDriver(DatingAppDriver):
             _raise_driver_closed_if_browser_closed(exc)
             raise
 
+    # --- debug log (silent; parity with Hinge) --------------------------
+    def _dbg_action(self, name: str, **fields) -> None:
+        """Append a TEXT-only record to the debug log (no per-action screenshot — the browser is
+        watchable; a shot is taken only on failure). Best-effort; never raises."""
+        if self._dbg is None:
+            return
+        try:
+            self._dbg.action(name, **fields)
+        except Exception:  # noqa: BLE001 — logging must never break a swipe
+            pass
+
+    def snapshot_failure(self, exc: BaseException) -> None:
+        """On an unexpected error (worker calls this WHILE the browser is still live, before
+        close()), save a viewport screenshot + the error to the debug log so the bug report can
+        point at what the bot was looking at. Best-effort; never raises (it runs inside the
+        worker's except — it must not mask the real error)."""
+        if self._dbg is None or not self.page:
+            return
+        frame = None
+        try:
+            frame = self.page.screenshot()        # viewport PNG = what the bot was acting on
+        except Exception:  # noqa: BLE001 — page may be navigating/closed; record the error anyway
+            frame = None
+        try:
+            self._dbg.error("unexpected", frame, exc)
+        except Exception:  # noqa: BLE001
+            pass
+
     # --- actions --------------------------------------------------------
     def like(self, opener: str | None = None, item_index: int = 0) -> None:
         # item_index is ignored: Bumble likes the whole profile (no per-photo comment).
         # NORMAL like only — never the super-swipe. Super-likes/boosts are the
         # owner's manual call (see DEFAULT_SELECTORS["superlike"]).
         self._human_click(self.selectors["like"])
+        self._dbg_action("like", opener_chars=len(opener or ""))
         # NOTE: opener is not sent here on standard Bumble (post-match / women-first).
         # Hook point for Bumble "Opening Moves" once that flow is mapped live.
 
     def dislike(self) -> None:
         self._human_click(self.selectors["pass"])
+        self._dbg_action("dislike")
 
     def out_of_profiles(self) -> bool:
         return self._query_selector(self.selectors["empty"]) is not None

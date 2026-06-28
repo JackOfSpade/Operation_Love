@@ -732,12 +732,18 @@ function renderSwipe(snap){
                wait:'background:#3a2f12;border:1px solid #f0b429;color:#f0b429',
                idle:'background:#22222b;border:1px solid rgba(255,255,255,.14);color:#9a9aa2'};
   const box = (k,t,sub) => `<div style="${css[k]};border-radius:10px;padding:12px 14px;margin-top:8px;font-weight:700;font-size:18px">${t}${sub?` <span style="font-weight:400;font-size:12px;opacity:.8">${sub}</span>`:''}</div>`;
+  // Same per-app worker states drive this for EVERY app, so Bumble and Hinge show
+  // identical SWIPE/WAIT guidance. WAIT covers both phases you must not swipe in:
+  // reading the card (capturing) and learning the swipe you just made (acting).
   el.innerHTML = Object.values(s.apps).map(a => {
     const st = a.state || '';
-    if(st==='waiting') return box('go', `👆 SWIPE ${a.app} now`, 'like or pass');
-    if(st==='capturing') return box('wait', `✋ wait — reading ${a.app} profile…`);
-    if(st==='acting' || st==='starting') return box('wait', '✋ wait — processing…');
-    return box('idle', `${a.app}: ${st}`, a.last_decision ? ('last '+a.last_decision) : '');
+    const last = a.last_decision ? ('last '+a.last_decision) : '';
+    if(st==='waiting')   return box('go',   `🟢 SWIPE ${a.app} now`, 'like or pass');
+    if(st==='capturing') return box('wait', `🔴 wait — reading ${a.app} profile…`);
+    if(st==='acting')    return box('wait', `🔴 wait — processing your ${a.app} swipe…`);
+    if(st==='starting')  return box('wait', `🔴 wait — starting ${a.app}…`);
+    if(st==='out_of_profiles') return box('idle', `${a.app}: no more profiles`, last);
+    return box('idle', `${a.app}: ${st||'…'}`, last);
   }).join('');
   el.style.display = 'block';
 }

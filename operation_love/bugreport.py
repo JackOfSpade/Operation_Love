@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 _MAX_REPORT_LINES = 50_000
+_DEBUG_ACTION_TAIL = 30          # actions.jsonl lines to inline from the latest debug run
 _LOG_RING: deque[str] = deque(maxlen=_MAX_REPORT_LINES)
 _LOG_LOCK = threading.Lock()
 _PROCESS_START = time.time()
@@ -215,6 +216,54 @@ def _status_md(hub_state) -> str:
     return "\n".join(lines)
 
 
+def _debug_log_md(config_path: str) -> str:
+    """Surface the on-disk action/screenshot debug log (Hinge's silent auto-mode logging) so the
+    report points a developer straight at a failure: the latest run folder, the tail of its
+    actions.jsonl, and any error screenshots (which are kept un-rotated). Screenshots are binary,
+    so we list their paths rather than inline them. Best-effort; never raises."""
+    try:
+        from . import config as cfg_mod
+        apps = cfg_mod.load(config_path).apps
+    except Exception as exc:  # noqa: BLE001
+        return f"- (could not load config to locate debug logs: {exc})"
+    apps = apps if isinstance(apps, dict) else {}
+    sections = [_one_debug_dir_md(app, (opts or {}))
+                for app, opts in apps.items() if (opts or {}).get("debug_log")]
+    if not sections:
+        return "- (no app has `debug_log` enabled — nothing on-disk to include)"
+    return "\n".join(sections)
+
+
+def _one_debug_dir_md(app: str, opts: dict) -> str:
+    base = Path(opts.get("debug_dir", f"./data/{app}_debug"))
+    if not base.is_absolute():
+        base = Path.cwd() / base
+    try:
+        if not base.exists():
+            return f"- **{app}**: `debug_log` on, but no folder yet at `{base}` (no run has logged here)"
+        runs = sorted((p for p in base.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime)
+        if not runs:
+            return f"- **{app}**: `{base}` exists but has no run folders yet"
+        run = runs[-1]                                       # most recent run
+        pngs = sorted(run.glob("*.png"))
+        errors = [p.name for p in pngs if p.name.endswith("_error.png")]
+        out = [f"- **{app}** · latest run: `{run}` · screenshots: {len(pngs)}"
+               + (f" · ⚠️ error shots (kept): {', '.join(errors)}" if errors else "")]
+        log = run / "actions.jsonl"
+        if log.exists():
+            try:
+                tail = log.read_text().splitlines()[-_DEBUG_ACTION_TAIL:]
+            except Exception:  # noqa: BLE001
+                tail = []
+            if tail:
+                out.append("  - actions.jsonl (tail):\n```\n" + "\n".join(tail) + "\n```")
+        else:
+            out.append("  - (no actions.jsonl in the latest run)")
+        return "\n".join(out)
+    except Exception as exc:  # noqa: BLE001
+        return f"- **{app}**: could not read debug dir `{base}`: {exc}"
+
+
 def _line_count(text: str) -> int:
     return len(text.splitlines())
 
@@ -274,6 +323,7 @@ def build_report(hub_state=None, description: str = "", config_path: str = "conf
         f"## Secrets (presence only — never raw values)\n{_secrets_md()}\n\n"
         f"## Diagnostic improvement\n{_diagnostic_improvement_md()}\n\n"
         f"## Run status\n{_status_md(hub_state)}\n\n"
+        f"## Debug log (on-disk actions + screenshots)\n{_debug_log_md(config_path)}\n\n"
         f"## Recent logs\n"
     )
     return _cap_report_lines(head + _logs_md(_MAX_REPORT_LINES - _line_count(head)))

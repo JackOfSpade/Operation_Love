@@ -1,9 +1,11 @@
-"""Host-side debug log for the Hinge driver.
+"""Host-side debug log for a driver (Hinge phone, Bumble browser).
 
-When an auto-mode run misbehaves on the phone, this reconstructs what the screen showed and
-what we tapped. Each session writes a per-run folder under the configured debug dir containing
-`actions.jsonl` (one record per capture / like / dislike / error) plus before/after
-screenshots, with a rotating cap so it never fills the disk. Enabled via `apps.hinge.debug_log`.
+When an auto-mode run misbehaves, this reconstructs what the screen showed and what we did.
+Each session writes a per-run folder under the configured debug dir containing `actions.jsonl`
+(one record per capture / like / dislike / error) plus optional before/after screenshots, with
+a rotating cap so it never fills the disk. Hinge logs before/after shots per action; Bumble
+(a watchable browser) logs a text action trail plus a screenshot only on failure. Enabled via
+`apps.<app>.debug_log`.
 
 All methods are best-effort and never raise — debug logging must not break a live run.
 """
@@ -15,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-class HingeDebugLog:
+class DebugLog:
     def __init__(self, base_dir: str, *, keep_shots: int = 400, run_id: str | None = None):
         stamp = run_id or datetime.now().strftime("run_%Y%m%d_%H%M%S")
         self.dir = Path(base_dir) / stamp
@@ -70,3 +72,6 @@ class HingeDebugLog:
         if shot:
             rec["screenshot"] = shot
         self._write(rec)
+
+
+HingeDebugLog = DebugLog          # backward-compat alias (older imports / tests)

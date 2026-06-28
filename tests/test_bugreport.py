@@ -15,7 +15,7 @@ def test_report_has_core_sections():
     for h in ["# Operation Love — Bug Report", "## What happened", "it broke",
               "## Build", "## System", "## Dependencies", "## Config",
               "## Secrets", "## Diagnostic improvement", "## Run status",
-              "## Recent logs"]:
+              "## Debug log (on-disk actions + screenshots)", "## Recent logs"]:
         assert h in md, f"missing section: {h}"
     assert "improve `operation_love/bugreport.py`" in md
 
@@ -141,6 +141,32 @@ def test_line_cap_handles_oversized_description():
     assert "OPLOVE_DESC_00000" not in md
     assert "OPLOVE_DESC_50199" in md
     assert "older report line(s) omitted" in md
+
+
+def test_debug_log_section_tails_actions_and_flags_error_shots(tmp_path):
+    """The on-disk debug log (Hinge's silent auto-mode logging) is surfaced: latest run folder,
+    screenshot count, the kept error shot, and the tail of actions.jsonl — so a report points a
+    developer straight at the failure even though the screenshots themselves are binary."""
+    run = tmp_path / "run_20260627_120000"
+    run.mkdir(parents=True)
+    (run / "00001_capture_before.png").write_bytes(b"x")
+    (run / "00002_like_before.png").write_bytes(b"x")
+    (run / "00003_unexpected_error.png").write_bytes(b"x")        # kept-forever failure shot
+    (run / "actions.jsonl").write_text(
+        '{"action": "capture", "photos": 6}\n'
+        '{"action": "like", "heart": [922, 1617]}\n'
+        '{"action": "unexpected", "error": "HingeActionError: like did not land"}\n')
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+    assert "run_20260627_120000" in md and "latest run" in md
+    assert "screenshots: 3" in md
+    assert "error shots (kept): 00003_unexpected_error.png" in md
+    assert "like did not land" in md                              # actions.jsonl tail inlined
+
+
+def test_debug_log_section_handles_missing_dir():
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": "/no/such/oplove/debug/dir"})
+    assert "hinge" in md and "no folder yet" in md                # graceful, no raise
 
 
 if __name__ == "__main__":

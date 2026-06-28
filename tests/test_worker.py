@@ -287,6 +287,109 @@ def test_worker_stops_before_writing_auto_decision_after_stop():
     assert driver.closed
 
 
+def test_auto_mode_halts_on_unexpected_for_any_app_even_without_halt_flag():
+    """AUTO mode must STOP on any unexpected error for EVERY app — including a plain driver with
+    no halt_on_error flag (Bumble) — so an autonomous run never keeps swiping blindly. It must
+    halt on the FIRST error (no restart retries) and set the stop so buffered data is saved."""
+    class BoomDriver(FakeDriver):
+        def __init__(self, n):
+            super().__init__(n)
+            self.calls = 0
+        def next_profile(self):
+            self.calls += 1
+            raise RuntimeError("unexpected boom")
+
+    driver = BoomDriver(3)
+    assert not hasattr(driver, "halt_on_error") or driver.halt_on_error is False
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    stop = threading.Event()
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           stop, mode="auto", max_restarts=5).run()
+
+    assert driver.calls == 1        # halted on the first error — did NOT restart-and-retry
+    assert stop.is_set()            # stop set (halt path), so the supervisor saves buffered data
+    assert driver.closed
+
+
+def test_observe_mode_keeps_restart_resilience_for_non_halt_driver(monkeypatch):
+    """Observe mode is user-driven and low-risk, so a driver that doesn't opt into halt (Bumble)
+    keeps restart resilience there: a transient error retries rather than halting the session."""
+    import operation_love.worker as wmod
+    monkeypatch.setattr(wmod, "human_cooldown", lambda s: 0)   # no backoff sleep in the test
+
+    class FlakyObserve(FakeDriver):
+        def __init__(self, n):
+            super().__init__(n)
+            self.attempts = 0
+        def open_session(self):
+            self.attempts += 1
+            if self.attempts <= 2:
+                raise RuntimeError("transient")
+            self.opened = True                                  # 3rd try: empty deck -> clean finish
+
+    driver = FlakyObserve(0)                                    # 0 cards -> out_of_profiles True
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    stop = threading.Event()
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           stop, mode="observe", max_restarts=5).run()
+
+    assert driver.attempts == 3     # restarted twice, then succeeded — did NOT halt on first error
+    assert not stop.is_set()        # finished cleanly, not a halt
+    assert driver.closed
+
+
+def test_observe_status_says_wait_during_capture_and_embed():
+    """Hub banner = the only swipe/wait feedback both apps share in observe (Bumble's in-page
+    overlay is off by default, Hinge has none). It reads the per-app STATE, so the worker must
+    hold a non-'waiting' state through BOTH no-swipe phases: reading the card and embedding the
+    swipe you just made. Otherwise the banner says SWIPE during the slow embed and the next
+    swipe gets mis-attributed — identically wrong for both apps."""
+    from operation_love.status import RunStatus
+    from operation_love.worker import _OBSERVE_CAPTURE_BUSY, _OBSERVE_PROCESSING_BUSY
+
+    seen = {}
+
+    class ObserveDriver(FakeDriver):
+        def __init__(self):
+            super().__init__(1)
+            self._served = False
+            self.busy = []
+        def out_of_profiles(self):            # serve exactly one card, then the deck is empty
+            return self._served
+        def current_profile(self):
+            seen["capture_state"] = status.app_view("bumble")["app"]["state"]
+            self._served = True
+            return self.cards[0]
+        def wait_for_decision(self, timeout=None, should_stop=None):
+            seen["wait_state"] = status.app_view("bumble")["app"]["state"]
+            return True                        # user LIKEs
+        def render_busy(self, message=None):
+            self.busy.append(message)
+
+    class ObserveDecider(FakeDecider):
+        def embed(self, profile):
+            seen["embed_state"] = status.app_view("bumble")["app"]["state"]
+            return [0.1, 0.2]
+        def retrain(self, store):
+            return True
+
+    status = RunStatus("run1", ["bumble"], min_labels=40, mode="observe")
+    driver = ObserveDriver()
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    Worker("bumble", driver, ObserveDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    assert seen["capture_state"] == "capturing"   # WAIT while reading the card
+    assert seen["wait_state"] == "waiting"        # SWIPE: the one moment a swipe is wanted
+    assert seen["embed_state"] == "acting"        # WAIT while embedding (NOT 'waiting'/SWIPE)
+    # both no-swipe phases also drove the in-page busy channel (parity for overlay-capable apps)
+    assert _OBSERVE_CAPTURE_BUSY in driver.busy and _OBSERVE_PROCESSING_BUSY in driver.busy
+    assert driver.closed and store.labels and store.labels[0][0] == "bumble"
+
+
 if __name__ == "__main__":
     import sys
     import traceback

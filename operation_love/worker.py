@@ -74,6 +74,15 @@ class Worker(threading.Thread):
         self.driver.render_busy(_OBSERVE_CAPTURE_BUSY)
         self._stat(state="capturing", **status_fields)
 
+    def _block_observe_processing(self) -> None:
+        # Same "don't swipe yet" signal as capture, but for the embed/store window after a
+        # manual swipe. Drives BOTH channels identically for every app: the in-page busy
+        # modal (Bumble, when enabled) AND the shared status state the hub banner reads —
+        # so apps with no on-screen overlay (Hinge) still show WAIT during the slow embed
+        # instead of a stale SWIPE prompt that would mis-attribute the next swipe.
+        self.driver.render_busy(_OBSERVE_PROCESSING_BUSY)
+        self._stat(state="acting")
+
     def run(self) -> None:
         backoff, restarts = 2.0, 0
         while not self.stop_event.is_set():
@@ -88,12 +97,16 @@ class Worker(threading.Thread):
                 # NOTE: the on-screen failure screenshot is captured INSIDE the loop's except
                 # (_capture_failure), BEFORE the loop's finally closes the driver — by here the
                 # transport is already closed, so a snapshot would be blank.
-                # HALT-on-unexpected: an autonomous run that hits an unexpected error must STOP,
-                # not restart-and-continue — continuing would keep acting blindly (risky on a
-                # burner) and rotate the crucial failure logs away. Drivers opt in via
-                # `halt_on_error` (Hinge does by default; Bumble keeps the restart resilience).
-                if getattr(self.driver, "halt_on_error", False):
-                    print(f"{self.app.title()} unexpected error; HALTING (no restart) to preserve debug logs:")
+                # HALT-on-unexpected: any AUTO run that hits an unexpected error must STOP, for
+                # EVERY app — an autonomous loop that restart-and-continues would keep swiping
+                # blindly (risky) and rotate the crucial failure logs away. The HALT line + the
+                # traceback go to stdout/stderr, which the hub tees into the live-log panel, so
+                # the stop is visible on the GUI terminal view (and lands in the bug report).
+                # Observe mode keeps per-driver behavior: Hinge halts too (burner safety, via
+                # halt_on_error) while Bumble keeps restart resilience (you're driving it live).
+                if self.mode == "auto" or getattr(self.driver, "halt_on_error", False):
+                    print(f"{self.app.title()} unexpected error in {self.mode} mode; HALTING "
+                          f"(no restart) so nothing swipes blindly and the debug logs survive:")
                     traceback.print_exc()
                     self.stop_event.set()
                     return
@@ -110,7 +123,7 @@ class Worker(threading.Thread):
     def _observe_loop(self) -> None:
         print(f"{self.app.title()} observe mode — swipe manually; I'll learn from each swipe.")
         self.driver.open_session()
-        self._block_observe_capture(mode="observe")
+        self._stat(mode="observe")             # set mode for the hub; the loop owns per-card WAIT/SWIPE
         added = 0
         last_retrained = 0
         pending_error = False
@@ -120,6 +133,7 @@ class Worker(threading.Thread):
                     self._stat(state="out_of_profiles")
                     break
                 self._profile_separator()
+                self._block_observe_capture()                # WAIT cue for every card (capturing state)
                 profile = self.driver.current_profile()      # capture the card you're viewing
                 if self.stop_event.is_set():
                     break
@@ -127,7 +141,7 @@ class Worker(threading.Thread):
                     continue
                 if not profile.photos:
                     print("Captured 0 profile photos; waiting to recapture before learning.")
-                    self._block_observe_capture(last_decision="no_photos")
+                    self._stat(last_decision="no_photos")     # stays WAIT (busy still up from this iteration)
                     self.stop_event.wait(_NO_PHOTO_RETRY_S)
                     continue
                 self.driver.render_busy(None)                 # processing done -> OK to swipe now
@@ -135,15 +149,14 @@ class Worker(threading.Thread):
                 print("✅ READY — swipe this profile (like or pass).")
                 liked = self.driver.wait_for_decision(timeout=None,
                                                       should_stop=self.stop_event.is_set)
-                if liked is None:                             # card changed / deck empty / stop -> skip
-                    self._block_observe_capture()
-                    continue
+                if liked is None:                             # card changed / deck empty / stop -> recapture
+                    continue                                  # next iteration re-blocks + recaptures the card
                 if self.stop_event.is_set():
                     break
                 # block the next swipe while this one embeds (avoids mis-attribution)
                 decision = "LIKE" if liked else "PASS"
                 print(f"Got {decision} — processing, don't swipe yet…")
-                self.driver.render_busy(_OBSERVE_PROCESSING_BUSY)
+                self._block_observe_processing()
                 profile_id = uuid.uuid4().hex
                 metadata = self._label_metadata(profile)
                 archived = self.store.record_profile(self.run_id, self.app, profile_id, liked,

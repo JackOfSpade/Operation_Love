@@ -207,3 +207,30 @@ def test_device_lost_via_stdout_raises_driver_closed(monkeypatch):
 
     with pytest.raises(DriverClosed):
         Adb(serial="pixel").key("HOME")
+
+
+def test_write_file_cat_redirect_argv_and_raw_bytes(monkeypatch):
+    run = FakeRun(_ok())
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    Adb(serial="pixel").write_file("/data/local/tmp/g.json", b"\x00\x01")
+
+    assert run.argv == [["adb", "-s", "pixel", "shell", "cat > /data/local/tmp/g.json"]]
+    assert run.inputs == [b"\x00\x01"]      # raw bytes piped via stdin, untouched
+
+
+def test_write_file_quotes_path_with_spaces(monkeypatch):
+    run = FakeRun(_ok())
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    Adb(serial="pixel").write_file("/data/local/tmp/has space.json", b"x")
+
+    assert run.argv[0][4] == "cat > '/data/local/tmp/has space.json'"     # shlex.quote
+
+
+def test_write_file_device_lost_raises_driver_closed(monkeypatch):
+    run = FakeRun(_fail(stderr=b"error: device offline"))
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    with pytest.raises(DriverClosed):
+        Adb(serial="pixel").write_file("/data/local/tmp/g.json", b"x")

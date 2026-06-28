@@ -35,6 +35,21 @@ def test_threshold_respected():
     assert m.decide([0.2, 0.2])[0] == "dislike"
 
 
+def test_genuine_fit_failure_surfaces_and_stays_not_ready():
+    # NaN in the feature vectors: sklearn's LogisticRegression.fit rejects this with a
+    # ValueError. That genuine fit failure must surface loudly, NOT be swallowed into
+    # the pure-Python fallback (which has no NaN guard). Needs sklearn installed —
+    # without it the pure-Python path would happily fit NaN weights.
+    import pytest
+    pytest.importorskip("sklearn")
+    m = PreferenceModel(min_labels=10, threshold=0.5)
+    bad = [(True, [float("nan"), 2.0]) for _ in range(15)]
+    bad += [(False, [-2.0, float("inf")]) for _ in range(15)]
+    with pytest.raises(ValueError):
+        m.train(bad)
+    assert not m.ready
+
+
 if __name__ == "__main__":
     import sys
     import traceback

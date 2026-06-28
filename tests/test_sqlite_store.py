@@ -1,4 +1,5 @@
 """SQLiteStore source-tagging and daily-limit behavior."""
+import json
 import sqlite3
 import time
 
@@ -65,5 +66,26 @@ def test_sqlite_migrates_legacy_labels_profile_id_column(tmp_path):
         store.add_label("r", "bumble", False, [0.3], profile_id="profile-legacy")
         row = store.con.execute("SELECT profile_id FROM labels").fetchone()
         assert row == ("profile-legacy",)
+    finally:
+        store.close()
+
+
+def test_sqlite_load_labels_ordered_sorts_by_created_at(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        # Insert the later created_at row first so insertion order != chronological order.
+        store.con.execute(
+            "INSERT INTO labels (run_id, app, created_at, liked, source, embedding,"
+            " photo_count, profile_id) VALUES (?,?,?,?,?,?,?,?)",
+            ("r", "bumble", 200.0, 1, "manual", json.dumps([0.2]), 0, "later"),
+        )
+        store.con.execute(
+            "INSERT INTO labels (run_id, app, created_at, liked, source, embedding,"
+            " photo_count, profile_id) VALUES (?,?,?,?,?,?,?,?)",
+            ("r", "bumble", 100.0, 0, "manual", json.dumps([0.1]), 0, "earlier"),
+        )
+        store.con.commit()
+
+        assert store.load_labels_ordered() == [(False, [0.1]), (True, [0.2])]
     finally:
         store.close()

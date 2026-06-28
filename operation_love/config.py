@@ -118,3 +118,9 @@ def validate(cfg: Config) -> None:
         raise ValueError("Config: storage.backend=bigquery requires storage.bigquery.photo_bucket")
     if cfg.opener.enabled and cfg.opener.model not in cfg.budget.pricing:
         raise ValueError(f"Config: opener.model '{cfg.opener.model}' has no entry in budget.pricing")
+    if cfg.budget.on_exhausted not in {"stop", "swipe_without_opener"}:
+        # Closed enum, like mode/storage.backend above: a typo here would silently fall
+        # through to "keep swiping without openers" (OpenerService treats any non-"stop"
+        # value that way), quietly disabling the opt-in safety stop. Fail fast instead.
+        raise ValueError("Config: budget.on_exhausted must be 'stop' or "
+                         f"'swipe_without_opener' (got {cfg.budget.on_exhausted!r})")

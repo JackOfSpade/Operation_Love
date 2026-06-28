@@ -416,6 +416,20 @@ def test_dislike_falls_back_to_plain_click_without_box():
     assert drv.page.plain_clicks == [drv.selectors["pass"]]
 
 
+def test_like_falls_back_to_plain_click_when_box_center_off_screen():
+    # Valid box, but its center is far outside the ~1280x900 viewport -> raw-coord
+    # clicking there isn't safe, so we must use page.click (its own actionability +
+    # scroll-into-view), not a mouse.click at the off-screen point.
+    box = {"x": 4000, "y": 4000, "width": 56, "height": 56}
+    # FakeActionElement has no scroll_into_view_if_needed, so the box stays off-screen.
+    assert not hasattr(FakeActionElement(box), "scroll_into_view_if_needed")
+    drv = _driver(FakeActionPage(box))
+    drv.like()
+    page = drv.page
+    assert page.plain_clicks == [drv.selectors["like"]]   # plain-click fallback used
+    assert not page.mouse.clicks                          # no raw mouse click off-screen
+
+
 def test_open_session_denies_native_permission_prompts():
     page = FakeStartupPage()
     ctx = FakeContext(page)

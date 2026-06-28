@@ -169,6 +169,38 @@ def test_debug_log_section_handles_missing_dir():
     assert "hinge" in md and "no folder yet" in md                # graceful, no raise
 
 
+class _FakeHubError:
+    def snapshot(self):
+        return {"running": False, "error": "RuntimeError: boom", "status": None}
+
+
+def test_status_section_renders_error_and_no_run():
+    md = bugreport.build_report(_FakeHubError())
+    assert "last run error" in md
+    assert "boom" in md
+    assert "no active/last run" in md
+
+
+def test_omitted_log_count_is_exact():
+    import re
+
+    bugreport._LOG_RING.clear()
+    for i in range(20):
+        bugreport._LOG_RING.append(f"L{i:02d}")
+    try:
+        md = bugreport._logs_md(7)
+    finally:
+        bugreport._LOG_RING.clear()
+
+    m = re.search(r"\.\.\. (\d+) older log line\(s\) omitted", md)
+    assert m is not None
+    assert int(m.group(1)) == 16                 # locks the arithmetic (old undercount said 15)
+
+    shown = [ln for ln in md.splitlines() if re.fullmatch(r"L\d\d", ln)]
+    assert shown == ["L16", "L17", "L18", "L19"]  # exactly the 4 newest real lines
+    assert len(md.splitlines()) <= 7
+
+
 if __name__ == "__main__":
     import sys
     import traceback

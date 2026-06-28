@@ -106,15 +106,11 @@ class Adb:
         default_timeout: float = 10.0,
         *,
         jitter_px: float = 2.0,
-        tap_dwell_s: float = 0.08,
-        swipe_duration_s: float = 0.45,
     ):
         self.serial = serial
         self.adb_path = adb_path
         self.default_timeout = default_timeout
         self.jitter_px = float(jitter_px)
-        self.tap_dwell_s = float(tap_dwell_s)
-        self.swipe_duration_s = float(swipe_duration_s)
         self._size: tuple[int, int] | None = None
 
     # --- humanized input ----------------------------------------------

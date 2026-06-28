@@ -52,6 +52,27 @@ def test_ranker_dislikes():
     assert d.decision == "dislike" and d.score == 0.12
 
 
+class EmptyQuality:
+    def filter(self, photos):
+        return []
+
+
+class SpyEmbedder:
+    def __init__(self, vec):
+        self.vec = vec
+        self.seen = None
+    def embed_profile(self, profile):
+        self.seen = profile.photos
+        return self.vec
+
+
+def test_empty_filter_falls_back_to_original_photos():
+    embedder = SpyEmbedder([7.0, 8.0])
+    profile = _profile()
+    vec = RankerDecider(EmptyQuality(), embedder, FakeModel(True)).embed(profile)
+    assert embedder.seen == profile.photos and vec == [7.0, 8.0]
+
+
 if __name__ == "__main__":
     import sys
     import traceback

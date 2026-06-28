@@ -7,10 +7,17 @@ out-of-credit/billing error so the bot degrades gracefully instead of crashing.
 """
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass
 
 MILLION = 1_000_000
+
+# The Messages API echoes back the model id it actually served, which for some models is
+# the dated full id (e.g. "claude-haiku-4-5-20251001") while config.yaml's pricing table
+# is keyed by the bare alias ("claude-haiku-4-5"). Strip a trailing -YYYYMMDD so a dated
+# id still resolves to its alias's pricing instead of crashing the worker on a KeyError.
+_MODEL_DATE_SUFFIX = re.compile(r"-\d{8}$")
 
 
 @dataclass(frozen=True)
@@ -92,7 +99,7 @@ class CostTracker:
 
     def record(self, model: str, usage: Usage) -> float:
         """Add a call's cost to the running total and return that cost."""
-        p = self.pricing.get(model)
+        p = self.pricing.get(model) or self.pricing.get(_MODEL_DATE_SUFFIX.sub("", model))
         if p is None:
             raise KeyError(f"No pricing configured for model {model!r}")
         c = cost_usd(usage, p)

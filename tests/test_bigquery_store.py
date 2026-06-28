@@ -352,6 +352,14 @@ def test_requires_photo_bucket():
         raise AssertionError("expected ValueError without photo_bucket")
 
 
+def test_load_labels_ordered_queries_in_created_at_order():
+    client = _FakeBQ(label_rows=[{"liked": True, "embedding": [0.1]}])
+    s = _store(client)
+
+    assert s.load_labels_ordered() == [(True, [0.1])]
+    assert "ORDER BY created_at" in client.queries[-1]
+
+
 if __name__ == "__main__":
     import sys
     import traceback

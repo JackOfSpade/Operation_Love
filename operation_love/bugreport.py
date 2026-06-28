@@ -278,14 +278,14 @@ def _logs_md(max_lines: int) -> str:
         return "_(omitted - report at 50,000-line cap)_"
 
     available_body_lines = max_lines - 2        # opening + closing code fences
-    omitted = max(0, len(logs) - available_body_lines)
     prefix: list[str] = []
-    if omitted:
+    if len(logs) > available_body_lines:
+        available_body_lines -= 1               # the omission notice itself costs a body slot
+        shown = max(0, available_body_lines)    # derive the count from what's ACTUALLY shown
         prefix = [
-            f"... {omitted} older log line(s) omitted to keep the report under "
+            f"... {len(logs) - shown} older log line(s) omitted to keep the report under "
             f"{_MAX_REPORT_LINES:,} lines ..."
         ]
-        available_body_lines -= len(prefix)
 
     body_lines = prefix
     if available_body_lines > 0:

@@ -109,6 +109,47 @@ def test_quality_trajectory_caps_point_count_as_labels_grow(monkeypatch):
     assert [p["labels"] for p in eval_mod.quality_trajectory(_identity_samples(53), step=5)][:3] == [10, 15, 20]
 
 
+def _grouped_cv_samples(n_identities=10, per_identity=4):
+    # Real evaluate() 'ok' path: first 512 dims = L2-normed ArcFace face template (identity),
+    # a non-face dim linearly separates likes from passes. Same identity shares a near-identical
+    # normalized face prefix (one-hot per person => cosine dist 0 within, 1 across); deterministic.
+    samples = []
+    for ident in range(n_identities):
+        face = [0.0] * 512
+        face[ident] = 1.0                            # unit-norm face prefix unique to this identity
+        for k in range(per_identity):
+            emb = list(face) + [0.0] * 768
+            liked = (k % 2 == 0)
+            emb[512] = 1.0 if liked else -1.0        # non-face dim separates like/pass
+            samples.append((liked, emb))
+    return samples
+
+
+def test_evaluate_real_grouped_cv_ok_path():
+    # Drive the REAL sklearn StratifiedGroupKFold path (no monkeypatch): 40 rows / 10 identities.
+    samples = _grouped_cv_samples(n_identities=10, per_identity=4)
+    r = evaluate(samples)
+    assert r["status"] == "ok"
+    assert r["identities"] == 10                      # exactly the number of distinct faces built
+    assert r["folds"] >= 2
+    for key in ("roc_auc", "pr_auc", "brier"):
+        mean, std = r[key]                            # each metric is a [mean, std] 2-list
+        assert 0.0 <= mean <= 1.0 and 0.0 <= std <= 1.0
+
+
+def test_evaluate_real_grouped_cv_too_few_identities():
+    # Same face prefix on every row -> one identity -> can't split groups across folds.
+    samples = []
+    for i in range(12):
+        emb = [0.0] * 1280
+        emb[0] = 1.0                                  # identical face prefix => single identity group
+        emb[512] = 1.0 if i % 2 == 0 else -1.0
+        samples.append((i % 2 == 0, emb))
+    r = evaluate(samples)
+    assert r["status"] == "insufficient_groups"
+    assert r["identities"] == 1
+
+
 if __name__ == "__main__":
     import sys
     import traceback

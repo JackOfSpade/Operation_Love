@@ -60,6 +60,27 @@ def test_opener_model_needs_pricing():
     _expect_error(d, "budget.pricing")
 
 
+def test_bad_app_mode_override():
+    d = {**BASE, "mode": "observe", "apps": {"bumble": {"mode": "yolo"}}}
+    _expect_error(d, "observe")
+
+
+def test_valid_app_mode_override_passes():
+    d = {**BASE, "mode": "observe", "apps": {"bumble": {"mode": "auto"}}}
+    c.validate(_load(d))   # no raise
+
+
+def test_bad_on_exhausted():
+    d = {**BASE, "budget": {**BASE["budget"], "on_exhausted": "stp"}}
+    _expect_error(d, "on_exhausted")
+
+
+def test_valid_on_exhausted_passes():
+    for v in ("stop", "swipe_without_opener"):
+        d = {**BASE, "budget": {**BASE["budget"], "on_exhausted": v}}
+        c.validate(_load(d))   # no raise
+
+
 if __name__ == "__main__":
     import sys
     import traceback

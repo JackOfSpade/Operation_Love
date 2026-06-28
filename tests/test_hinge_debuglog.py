@@ -35,3 +35,28 @@ def test_logging_is_best_effort_no_frame(tmp_path):
     dl.action("capture", before=None, photos=0)               # no screenshot -> no shot keys
     rec = _recs(dl)[0]
     assert rec["action"] == "capture" and "before" not in rec
+
+
+def test_screenshot_write_failure_is_swallowed_but_record_still_written(tmp_path, monkeypatch):
+    import pathlib
+    dl = HingeDebugLog(str(tmp_path), run_id="r")
+    def boom(self, data):                                      # disk dies mid-write
+        raise OSError("disk full")
+    monkeypatch.setattr(pathlib.Path, "write_bytes", boom)
+    dl.action("like", before=b"PNGDATA")                       # must not raise despite the bad write
+    dl.error("unexpected", b"PNGDATA", RuntimeError("x"))      # error shots are best-effort too
+    recs = _recs(dl)
+    assert recs[0]["action"] == "like" and "before" not in recs[0]   # line written, just no shot key
+    assert recs[1]["action"] == "unexpected" and "screenshot" not in recs[1]
+
+
+def test_jsonl_append_failure_is_swallowed(tmp_path, monkeypatch):
+    import pathlib
+    dl = HingeDebugLog(str(tmp_path), run_id="r")
+    real_open = pathlib.Path.open
+    def boom(self, *a, **k):                                   # only the actions.jsonl append fails
+        if self.name == "actions.jsonl":
+            raise OSError("disk full")
+        return real_open(self, *a, **k)
+    monkeypatch.setattr(pathlib.Path, "open", boom)
+    dl.action("dislike")                                       # must not raise despite the bad append

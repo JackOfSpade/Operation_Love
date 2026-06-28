@@ -390,6 +390,28 @@ def test_observe_status_says_wait_during_capture_and_embed():
     assert driver.closed and store.labels and store.labels[0][0] == "bumble"
 
 
+def test_auto_defer_cold_start_stops_without_action_or_record():
+    """AUTO cold-start: a not-ready ranker returns 'defer' -> the loop STOPS after pulling the
+    first card, takes no swipe, records no decision/label, and still closes the driver."""
+    class DeferDecider(FakeDecider):
+        def decide(self, profile):
+            return Decision(decision="defer", score=0.0, embedding=[0.1], source="cold_start")
+
+    driver = FakeDriver(3)
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    _worker(driver, DeferDecider(), svc, store).run()
+
+    # (a) no action: nothing liked, nothing disliked
+    assert driver.likes == [] and driver.dislikes == 0
+    # (b) auto 'defer' records neither a decision nor a label/profile
+    assert store.decisions == [] and store.labels == [] and store.profiles == []
+    # (c) the finally ran -> driver closed
+    assert driver.closed
+    # (d) exactly one profile pulled, then the loop broke immediately
+    assert driver.i == 1
+
+
 if __name__ == "__main__":
     import sys
     import traceback

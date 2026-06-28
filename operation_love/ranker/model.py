@@ -74,17 +74,21 @@ class PreferenceModel:
         if len(set(y)) < 2:   # need both like and dislike examples
             self._clf = None
             return False
+        # The ONLY intended fallback is "sklearn isn't installed" (ImportError) -> the
+        # pure-Python LR. Scope the try to the import alone: a genuine fit FAILURE (e.g.
+        # NaN/inf in the feature vectors, which sklearn rejects) must surface loudly, not
+        # be swallowed into a silently-degraded model that reports ready=True and then
+        # auto-swipes on garbage (the pure-Python LR has no NaN guard and would fit NaN
+        # weights). This is training/inference code, not best-effort logging.
         try:
             from sklearn.linear_model import LogisticRegression
             # Strong L2 (small C) for ~1280-d features on tens–hundreds of labels,
             # and balanced class weights since likes/passes are usually imbalanced.
-            clf = LogisticRegression(C=0.1, class_weight="balanced", max_iter=1000)
-            clf.fit(X, y)
-            self._impl, self._clf = "sklearn", clf
-        except Exception:  # noqa: BLE001
-            clf = _PurePyLogReg()
-            clf.fit(X, y)
-            self._impl, self._clf = "purepy", clf
+            clf, impl = LogisticRegression(C=0.1, class_weight="balanced", max_iter=1000), "sklearn"
+        except ImportError:
+            clf, impl = _PurePyLogReg(), "purepy"
+        clf.fit(X, y)
+        self._impl, self._clf = impl, clf
         return True
 
     def predict_proba(self, vec: list[float]) -> float:

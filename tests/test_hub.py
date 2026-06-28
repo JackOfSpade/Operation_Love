@@ -423,6 +423,25 @@ def test_eval_snapshot_falls_back_when_live_store_read_fails(monkeypatch):
     assert fresh_used                                       # the fallback store was used
 
 
+def test_eval_snapshot_returns_error_dict_when_compute_raises(monkeypatch):
+    # If config load / make_store / evaluate blow up, the card gets a well-formed error
+    # dict (status=error, a message, identities None) — with the refresh block still attached.
+    import operation_love.hub as hub
+
+    def boom(path):
+        raise RuntimeError("config blew up")
+
+    monkeypatch.setattr(hub.cfg_mod, "load", boom)
+
+    st = HubState("config.yaml")
+    res = st.eval_snapshot(every=5)
+    assert res["status"] == "error"
+    assert res["message"]
+    assert "config blew up" in res["message"]
+    assert res["identities"] is None
+    assert "refresh" in res
+
+
 if __name__ == "__main__":
     import sys
     import traceback

@@ -50,6 +50,27 @@ def test_out_of_credit_detection():
     assert not is_out_of_credit(ValueError("some unrelated error"))
 
 
+def test_record_returns_call_cost():
+    pricing = {"m": ModelPricing(input=10.0, output=10.0)}
+    t = CostTracker(pricing, run_budget_usd=None)
+    c = t.record("m", Usage(input_tokens=1_000_000))  # $10 at 10.0/MTok
+    assert c == 10.0
+    assert t.run_spend_usd == c  # accumulation == returned delta
+
+
+def test_record_tolerates_dated_model_id():
+    pricing = {"claude-haiku-4-5": ModelPricing(input=10.0, output=10.0)}
+    t = CostTracker(pricing, run_budget_usd=None)
+    c = t.record("claude-haiku-4-5-20251001", Usage(input_tokens=1_000_000))  # dated id -> alias
+    assert c == 10.0
+    try:
+        t.record("gpt-9", Usage(input_tokens=1_000_000))  # unknown, no date suffix
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("expected KeyError for unknown model")
+
+
 if __name__ == "__main__":
     import sys
     import traceback

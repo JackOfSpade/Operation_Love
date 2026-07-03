@@ -60,6 +60,40 @@ def test_opener_model_needs_pricing():
     _expect_error(d, "budget.pricing")
 
 
+def test_opener_provider_must_be_supported():
+    d = {**BASE, "opener": {"enabled": True, "model": "claude-opus-4-8", "provider": "openai"}}
+    _expect_error(d, "opener.provider")
+
+
+def test_empty_config_file_loads_with_defaults():
+    f = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
+    f.close()                          # zero-byte file -> yaml.safe_load returns None
+    cfg = c.load(f.name)
+    assert cfg.mode == "observe" and cfg.enabled_apps == ["bumble"]
+
+
+def test_non_mapping_config_file_raises_clear_error():
+    f = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
+    yaml.safe_dump([1, 2, 3], f)        # a YAML list, not a mapping
+    f.close()
+    try:
+        c.load(f.name)
+    except ValueError as e:
+        assert "mapping" in str(e)
+    else:
+        raise AssertionError("expected ValueError for a non-mapping config file")
+
+
+def test_unknown_key_in_section_raises_clear_error():
+    d = {**BASE, "ranker": {"retrain_evry": 2}}   # typo'd key
+    try:
+        _load(d)
+    except ValueError as e:
+        assert "ranker" in str(e)
+    else:
+        raise AssertionError("expected ValueError for an unknown 'ranker' key")
+
+
 if __name__ == "__main__":
     import sys
     import traceback

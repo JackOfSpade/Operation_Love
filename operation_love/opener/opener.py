@@ -58,6 +58,11 @@ def _sanitize(text: str) -> str:
     return t
 
 
+class OpenerError(RuntimeError):
+    """Claude's response couldn't be turned into an opener (refusal, or truncated/
+    malformed structured output) — distinct from a transport/billing failure."""
+
+
 @dataclass
 class OpenerResult:
     opener: str
@@ -113,8 +118,17 @@ class AnthropicOpener:
             messages=[{"role": "user", "content": self._content(profile, style)}],
             output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
         )
-        text = next(b.text for b in resp.content if getattr(b, "type", None) == "text")
-        data = json.loads(text)
+        if resp.stop_reason == "refusal":
+            raise OpenerError(f"Claude refused to generate an opener (model={self.model!r})")
+        text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), None)
+        if text is None:
+            raise OpenerError(f"Claude returned no text content (stop_reason={resp.stop_reason!r})")
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            truncated = " (output was likely truncated — raise opener.max_tokens)" \
+                if resp.stop_reason == "max_tokens" else ""
+            raise OpenerError(f"Claude's opener output wasn't valid JSON{truncated}: {exc}") from exc
         try:
             idx = max(0, int(data.get("referenced_index", 0)))
         except (TypeError, ValueError):

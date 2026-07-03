@@ -19,12 +19,19 @@ import uuid
 
 from .drivers.base import DatingAppDriver, DriverClosed
 from .human import human_cooldown, human_delay
+from .human_motion import think_time_s
 from .ranker.decider import Decider
 
 _OBSERVE_CAPTURE_BUSY = "Capturing profile — please wait before your next swipe"
 _OBSERVE_PROCESSING_BUSY = "Processing — please wait before your next swipe"
 _NO_PHOTO_RETRY_S = 0.5
 _PROFILE_LOG_WIDTH = 72
+# think_time_s() is calibrated to real measured Hinge dwell data around this many
+# seconds (PacingCfg.swipe_delay_s's own default) — pacing.swipe_delay_s scales it
+# proportionally, so the config knob still speeds up/slows down pacing (and a test
+# fixture's swipe_delay_s=0.0 still paces instantly) while think_time_s supplies the
+# measured like-vs-pass asymmetry shape instead of a single flat anchor.
+_THINK_TIME_BASELINE_S = 3.5
 
 
 class Worker(threading.Thread):
@@ -66,6 +73,18 @@ class Worker(threading.Thread):
                 snap(exc)
             except Exception:  # noqa: BLE001 — debug capture must never mask the real error
                 pass
+
+    def _capture_failure_if_unexpected(self, exc: BaseException) -> None:
+        """Shared except-clause body for _observe_loop/_auto_loop: snapshot the on-screen
+        state for any failure that isn't a clean DriverClosed stop."""
+        if not isinstance(exc, DriverClosed):
+            self._capture_failure(exc)
+
+    def _finish_session(self) -> None:
+        """Shared unconditional cleanup for _observe_loop/_auto_loop's finally: mark the
+        app stopped and release the driver."""
+        self._stat(state="stopped")
+        self.driver.close()
 
     def _profile_separator(self) -> None:
         print("-" * _PROFILE_LOG_WIDTH)
@@ -185,8 +204,8 @@ class Worker(threading.Thread):
                     last_retrained = added
         except BaseException as exc:
             pending_error = True
-            if isinstance(exc, Exception) and not isinstance(exc, DriverClosed):
-                self._capture_failure(exc)                    # snapshot WHILE the transport is live
+            if isinstance(exc, Exception):
+                self._capture_failure_if_unexpected(exc)      # snapshot WHILE the transport is live
             raise
         finally:
             try:
@@ -200,8 +219,7 @@ class Worker(threading.Thread):
                         traceback.print_exc()
             finally:
                 self.driver.render_busy(None)
-                self._stat(state="stopped")
-                self.driver.close()
+                self._finish_session()
 
     def _retrain_after_observe_labels(self, added: int) -> None:
         ready = self.decider.retrain(self.store)
@@ -280,17 +298,23 @@ class Worker(threading.Thread):
 
                 if self.opener_service.stop_requested:        # global budget/credit stop
                     self.stop_event.set()
-                self._pace()
+                self._pace(d.decision)
         except Exception as exc:  # noqa: BLE001
-            if not isinstance(exc, DriverClosed):             # DriverClosed = clean stop, not a fault
-                self._capture_failure(exc)                    # snapshot WHILE the transport is live
+            self._capture_failure_if_unexpected(exc)          # snapshot WHILE the transport is live
             raise                                             # (the finally below closes it)
         finally:
-            self._stat(state="stopped")
-            self.driver.close()
+            self._finish_session()
 
-    def _pace(self) -> None:
-        self.stop_event.wait(human_delay(self.pacing.swipe_delay_s))
+    def _pace(self, decision: str | None = None) -> None:
+        # Decision-aware "think time" (measured Hinge like/pass dwell asymmetry), scaled
+        # by the configured anchor, when a decision is known; the flat anchor otherwise
+        # (defensive fallback — every real call site has a decision).
+        anchor = self.pacing.swipe_delay_s
+        if decision is None:
+            self.stop_event.wait(human_delay(anchor))
+            return
+        scale = anchor / _THINK_TIME_BASELINE_S
+        self.stop_event.wait(think_time_s("like" if decision == "like" else "pass") * scale)
 
     @staticmethod
     def _label_metadata(profile) -> dict:

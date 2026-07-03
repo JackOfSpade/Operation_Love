@@ -13,6 +13,18 @@ from __future__ import annotations
 
 import math
 
+# Shared with ranker/evaluate.py's offline CV, so the reported accuracy can't
+# silently drift from the classifier actually shipped in PreferenceModel.
+SKLEARN_LOGREG_KWARGS = {"C": 0.1, "class_weight": "balanced", "max_iter": 1000}
+
+
+def new_classifier():
+    """Strong L2 (small C) for ~1280-d features on tens-hundreds of labels, and
+    balanced class weights since likes/passes are usually imbalanced. Raises
+    ImportError if scikit-learn isn't installed."""
+    from sklearn.linear_model import LogisticRegression
+    return LogisticRegression(**SKLEARN_LOGREG_KWARGS)
+
 
 def _sigmoid(z: float) -> float:
     if z < -60:
@@ -52,7 +64,12 @@ class _PurePyLogReg:
 
 
 class PreferenceModel:
-    def __init__(self, min_labels: int = 40, threshold: float = 0.5):
+    # min_labels has no default: it comes from config.yaml's ranker.min_labels_to_engage
+    # (operation_love.config.RankerCfg) at every real call site, so a stale duplicate
+    # default here could silently drift from what's actually configured. threshold's
+    # default (0.5) is the standard binary-classifier decision boundary, not a
+    # project-tuned value, so it's fine to keep independently.
+    def __init__(self, min_labels: int, threshold: float = 0.5):
         self.min_labels = min_labels
         self.threshold = threshold
         self.n_labels = 0
@@ -75,16 +92,17 @@ class PreferenceModel:
             self._clf = None
             return False
         try:
-            from sklearn.linear_model import LogisticRegression
-            # Strong L2 (small C) for ~1280-d features on tens–hundreds of labels,
-            # and balanced class weights since likes/passes are usually imbalanced.
-            clf = LogisticRegression(C=0.1, class_weight="balanced", max_iter=1000)
-            clf.fit(X, y)
-            self._impl, self._clf = "sklearn", clf
-        except Exception:  # noqa: BLE001
+            clf = new_classifier()
+        except ImportError:
             clf = _PurePyLogReg()
             clf.fit(X, y)
             self._impl, self._clf = "purepy", clf
+        else:
+            # Outside the except: a real bug in .fit() (bad shapes, NaN/inf embeddings,
+            # a sklearn version incompatibility) propagates instead of silently and
+            # permanently degrading to the pure-Python fallback with no signal.
+            clf.fit(X, y)
+            self._impl, self._clf = "sklearn", clf
         return True
 
     def predict_proba(self, vec: list[float]) -> float:

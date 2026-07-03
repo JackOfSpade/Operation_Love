@@ -2,7 +2,16 @@
 import sqlite3
 import time
 
+from operation_love.ranker import Store
 from operation_love.ranker.store import SQLiteStore
+
+
+def test_sqlite_store_conforms_to_store_protocol(tmp_path):
+    s = SQLiteStore(tmp_path / "store.db")
+    try:
+        assert isinstance(s, Store)
+    finally:
+        s.close()
 
 
 def test_sqlite_count_today_counts_only_auto_decisions(tmp_path):

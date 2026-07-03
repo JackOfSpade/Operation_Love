@@ -58,7 +58,17 @@ class OpenerService:
                     return None
                 raise
 
-            cost = self.tracker.record(result.model, result.usage)
+            try:
+                cost = self.tracker.record(result.model, result.usage)
+            except KeyError:
+                # The API already ran (real credits spent) but its response echoed a model
+                # string with no budget.pricing entry, so spend can't be accounted for.
+                # Degrade the same way as budget-reached/out-of-credit rather than crash —
+                # continuing to spend with no way to track it would silently break the
+                # budget-enforcement contract the rest of this service is built around.
+                self._exhaust(f"no budget.pricing entry for model '{result.model}'; "
+                              "spend can no longer be tracked")
+                cost = 0.0
             self.store.record_spend(run_id, result.model, result.usage, cost)
             self.store.record_opener(run_id, app, result.model, result.opener, result.referenced)
             if self.tracker.budget_reached():

@@ -11,10 +11,14 @@ as-is over HTTP; `format_report()` renders it for the terminal.
 """
 from __future__ import annotations
 
+from .model import SKLEARN_LOGREG_KWARGS, new_classifier
+
 _FACE_DIMS = 512   # first 512 of the 1280-d vector = L2-normed ArcFace identity template
+_IDENTITY_EPS = 0.5   # DBSCAN cosine-distance threshold -> cosine similarity >= 0.5,
+                      # the buffalo_l same-identity threshold (see identity_groups below)
 
 
-def identity_groups(face_vectors: list[list[float]], eps: float = 0.5) -> list[int]:
+def identity_groups(face_vectors: list[list[float]], eps: float = _IDENTITY_EPS) -> list[int]:
     """Cluster rows by face identity via DBSCAN on cosine distance (eps=0.5 -> cosine
     similarity >= 0.5, the buffalo_l same-identity threshold). min_samples=1 so a face
     with no near neighbor becomes its own singleton group. One int id per input row."""
@@ -26,7 +30,8 @@ def identity_groups(face_vectors: list[list[float]], eps: float = 0.5) -> list[i
         np.asarray(face_vectors, dtype=float)).tolist()
 
 
-def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5, eps: float = 0.5) -> dict:
+def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5,
+             eps: float = _IDENTITY_EPS) -> dict:
     """Identity-grouped, stratified K-fold CV. Returns a JSON-able dict: status,
     label counts, distinct identities, and (when ok) ROC-AUC / PR-AUC / Brier as
     [mean, std]. Never raises — failure modes come back as a status + message."""
@@ -44,7 +49,6 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5, eps: fl
                            f"(have {n}: {likes} like / {passes} pass)."}
     try:
         import numpy as np
-        from sklearn.linear_model import LogisticRegression
         from sklearn.metrics import auc, brier_score_loss, precision_recall_curve, roc_auc_score
         from sklearn.model_selection import StratifiedGroupKFold
     except Exception as exc:  # noqa: BLE001
@@ -73,7 +77,7 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5, eps: fl
         for tr, va in folds:
             if len(set(yv[tr].tolist())) < 2 or len(set(yv[va].tolist())) < 2:
                 continue                    # a fold without both classes can't be scored
-            clf = LogisticRegression(C=0.1, class_weight="balanced", max_iter=1000)
+            clf = new_classifier()
             clf.fit(X[tr], yv[tr])
             p = clf.predict_proba(X[va])[:, 1]
             roc.append(float(roc_auc_score(yv[va], p)))
@@ -93,7 +97,7 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5, eps: fl
         return {**base, "status": "error", "message": f"evaluation failed: {type(exc).__name__}: {exc}"}
 
 
-def quality_trajectory(samples, step: int = 5, n_splits: int = 5, eps: float = 0.5,
+def quality_trajectory(samples, step: int = 5, n_splits: int = 5, eps: float = _IDENTITY_EPS,
                        min_labels: int = 10, max_points: int = 40) -> list[dict]:
     """Recompute leakage-free grouped-CV accuracy at chronological prefixes (every
     `step` labels) so the hub can chart how ranking quality evolved as labels accumulated.
@@ -152,8 +156,10 @@ def format_report(r: dict) -> str:
         return _capitalize_first_letter(str(r.get("message", "Evaluation unavailable")))
     roc = r.get("roc_auc") or [0.0, 0.0]
     acc, band = roc[0] * 100, roc[1] * 100
+    kw = SKLEARN_LOGREG_KWARGS
     return (f"Labels={r['labels']}  likes={r['likes']}  passes={r['passes']}  "
             f"distinct identities={r['identities']}\n"
-            f"Identity-grouped {r['folds']}-fold CV (LogReg C=0.1, class_weight=balanced):\n"
+            f"Identity-grouped {r['folds']}-fold CV "
+            f"(LogReg C={kw['C']}, class_weight={kw['class_weight']}):\n"
             f"  Accuracy: {acc:.3f}% +/- {band:.3f}%  "
             f"(ROC-AUC concordance — ranks a like above a pass; 50% = random, 100% = perfect)")

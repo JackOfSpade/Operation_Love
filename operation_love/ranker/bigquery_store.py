@@ -1,7 +1,7 @@
 """BigQuery backend — system-of-record + analytics, with batched writes.
 
 Design (per the chosen 'BQ of-record + memory cache' approach):
-- load_labels() runs ONE query at startup; the orchestrator holds labels in
+- load_labels() runs ONE query at startup; the supervisor holds labels in
   memory for fast inference.
 - writes are buffered and flushed in batches (default every 25 rows, and on
   close), so the swipe loop never waits on a per-row cloud round-trip and we
@@ -24,6 +24,10 @@ from ..costing import Usage
 
 _UPLOAD_ATTEMPTS = 3        # bounded retry so a transient GCS blip doesn't drop a swipe
 _UPLOAD_BACKOFF_S = 0.5
+# Shared with ranker/__init__.py's make_store(), so the config-parsing fallback (when
+# storage.bigquery.flush_every isn't set) can't silently drift from this constructor's
+# own default.
+DEFAULT_FLUSH_EVERY = 25
 
 _TABLES = {
     "profiles": (
@@ -73,7 +77,7 @@ def _image_type(data: bytes) -> tuple[str, str]:
 
 class BigQueryStore:
     def __init__(self, project_id: str, dataset: str = "operation_love",
-                 location: str = "US", photo_bucket: str = "", flush_every: int = 25,
+                 location: str = "US", photo_bucket: str = "", flush_every: int = DEFAULT_FLUSH_EVERY,
                  client=None, storage_client=None, ensure: bool = True):
         if not project_id:
             raise ValueError("Storage.bigquery.project_id is required for the BigQuery backend")

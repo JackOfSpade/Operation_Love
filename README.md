@@ -12,13 +12,13 @@ a natural, profile-specific opener. Targets **Bumble** (web) and **Hinge**
 ## Architecture
 
 ```
-drivers/      element-based control: Bumble (Playwright), Hinge (Appium/uiautomator2)
+drivers/      element-based control: Bumble (Playwright), Hinge (host-side ADB + vision)
 perception/   capture all photos + profile text -> Profile
 vision/       local pyiqa quality filter + ArcFace/CLIP embeddings   [Phase 2]
 ranker/       logistic-regression on YOUR swipe labels (SQLite)      [Phase 3]
 opener/       Claude writes the opener, enforced JSON output         [Phase 4]
 costing.py    client-side spend tracking + per-run budget guard
-orchestrator  the loop (replaces main.ahk)
+supervisor.py the loop (replaces main.ahk)
 ```
 
 **Decision = local & private** (photos never leave your machine).
@@ -47,7 +47,7 @@ OS-specific notes:
 |---|---|---|---|
 | Local ML (torch, insightface, CLIP, pyiqa) | MPS | CUDA / CPU | CUDA / CPU |
 | Bumble (Playwright web) | ✅ | ✅ | ✅ |
-| Hinge (Android emulator + `uiautomator2`) | Android Studio AVD / physical phone over ADB | same | same / Waydroid |
+| Hinge (physical Android phone, host-side ADB only) | ✅ (USB or wireless ADB) | ✅ | ✅ |
 | Claude opener | cloud — any OS | cloud | cloud |
 
 ## Cost control
@@ -97,7 +97,8 @@ extra installed.
 - **auto** — the bot swipes for you with the learned model, and every swipe is
   still a label.
 
-**Both apps are code-complete** (Bumble via Playwright, Hinge via uiautomator2),
+**Both apps are code-complete** (Bumble via Playwright, Hinge via host-side ADB +
+vision-located taps — no on-device helper, no emulator; see ops/HINGE-PIXEL-RUNBOOK.md),
 with autonomous-mode **rate limits** (`max_per_run` / `max_per_day`), a **stats**
 readout (`python -m operation_love stats`), and human-like pacing.
 

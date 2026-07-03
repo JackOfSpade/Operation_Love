@@ -80,10 +80,10 @@ def test_hub_tab_close_shuts_server_after_last_client():
 
 
 def test_hub_tab_stale_heartbeat_shutdown_when_close_beacon_is_missing(monkeypatch):
-    import operation_love.hub as hub
-    monkeypatch.setattr(hub, "_BROWSER_CLIENT_STALE_S", 0.05)
-    monkeypatch.setattr(hub, "_BROWSER_STALE_CHECK_S", 0.01)
-    monkeypatch.setattr(hub, "_BROWSER_SHUTDOWN_GRACE_S", 0.01)
+    from operation_love.hub import server as hub_server, state as hub_state
+    monkeypatch.setattr(hub_state, "_BROWSER_CLIENT_STALE_S", 0.05)
+    monkeypatch.setattr(hub_server, "_BROWSER_STALE_CHECK_S", 0.01)
+    monkeypatch.setattr(hub_server, "_BROWSER_SHUTDOWN_GRACE_S", 0.01)
 
     _Handler.state = HubState("config.yaml")
     httpd = _bind("127.0.0.1", 8799)
@@ -146,9 +146,10 @@ def test_hubstate_browser_client_lifecycle(monkeypatch):
 
 def test_hubstate_browser_heartbeat_prevents_stale_expiry(monkeypatch):
     import operation_love.hub as hub
+    from operation_love.hub import state as hub_state
     now = 1000.0
     monkeypatch.setattr(hub.time, "time", lambda: now)
-    monkeypatch.setattr(hub, "_BROWSER_CLIENT_STALE_S", 10.0)
+    monkeypatch.setattr(hub_state, "_BROWSER_CLIENT_STALE_S", 10.0)
 
     st = HubState("config.yaml")
     assert st.browser_client_opened("a") is True

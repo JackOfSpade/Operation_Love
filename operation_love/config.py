@@ -67,8 +67,27 @@ class Config:
     storage: StorageCfg
 
 
+def _section(cls, name: str, raw_section):
+    """Construct a config dataclass from its raw.yaml section, turning a typo'd/unknown
+    key into a clear ValueError instead of a cryptic TypeError. validate() only catches
+    semantic errors (unknown app, bad mode, ...) — this catches a config.yaml that fails
+    to even parse into the dataclasses."""
+    if not isinstance(raw_section, dict):
+        raise ValueError(f"Config: '{name}' section must be a mapping "
+                         f"(got {type(raw_section).__name__})")
+    try:
+        return cls(**raw_section)
+    except TypeError as exc:
+        raise ValueError(f"Config: invalid '{name}' section ({exc})") from exc
+
+
 def load(path: str | Path = "config.yaml") -> Config:
     raw = yaml.safe_load(Path(path).read_text())
+    if raw is None:                 # empty / comment-only YAML -> defaults everywhere
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Config: {path} must be a YAML mapping at the top level "
+                         f"(got {type(raw).__name__})")
     paths = raw.get("paths", {})
     b = raw.get("budget", {})
     pricing = {m: ModelPricing.from_dict(d) for m, d in b.get("pricing", {}).items()}
@@ -80,15 +99,15 @@ def load(path: str | Path = "config.yaml") -> Config:
         limits=raw.get("limits", {}),
         data_dir=Path(paths.get("data_dir", "./data")),
         db_file=Path(paths.get("db_file", "./data/operation_love.db")),
-        ranker=RankerCfg(**raw.get("ranker", {})),
-        quality_filter=QualityCfg(**raw.get("quality_filter", {})),
-        opener=OpenerCfg(**raw.get("opener", {})),
+        ranker=_section(RankerCfg, "ranker", raw.get("ranker", {})),
+        quality_filter=_section(QualityCfg, "quality_filter", raw.get("quality_filter", {})),
+        opener=_section(OpenerCfg, "opener", raw.get("opener", {})),
         budget=BudgetCfg(
             run_budget_usd=b.get("run_budget_usd"),
             on_exhausted=b.get("on_exhausted", "stop"),
             pricing=pricing,
         ),
-        pacing=PacingCfg(**raw.get("pacing", {})),
+        pacing=_section(PacingCfg, "pacing", raw.get("pacing", {})),
         storage=StorageCfg(
             backend=raw.get("storage", {}).get("backend", "bigquery"),
             bigquery=raw.get("storage", {}).get("bigquery", {}),
@@ -97,6 +116,10 @@ def load(path: str | Path = "config.yaml") -> Config:
 
 
 _KNOWN_APPS = {"bumble", "hinge"}
+# supervisor.py only ever constructs AnthropicOpener — opener.provider has no
+# pluggable-backend implementation yet, so any other value is a misconfig, not a
+# silently-ignored no-op.
+_KNOWN_OPENER_PROVIDERS = {"anthropic"}
 
 
 def validate(cfg: Config) -> None:
@@ -118,3 +141,6 @@ def validate(cfg: Config) -> None:
         raise ValueError("Config: storage.backend=bigquery requires storage.bigquery.photo_bucket")
     if cfg.opener.enabled and cfg.opener.model not in cfg.budget.pricing:
         raise ValueError(f"Config: opener.model '{cfg.opener.model}' has no entry in budget.pricing")
+    if cfg.opener.enabled and cfg.opener.provider not in _KNOWN_OPENER_PROVIDERS:
+        raise ValueError(f"Config: opener.provider must be one of "
+                         f"{sorted(_KNOWN_OPENER_PROVIDERS)} (got {cfg.opener.provider!r})")

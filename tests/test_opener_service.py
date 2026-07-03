@@ -95,6 +95,22 @@ def test_out_of_credit_disables_without_raising(monkeypatch):
     assert s.stop_requested is False                        # continue -> degrade, don't stop the run
 
 
+class _NoPricingTracker(_Tracker):
+    """record() raises KeyError, like the real CostTracker when the API echoes back
+    a model string with no budget.pricing entry."""
+    def record(self, model, usage):
+        raise KeyError(f"No pricing configured for model {model!r}")
+
+
+def test_unpriceable_model_disables_but_returns_this_opener():
+    c, t, st = _Client(), _NoPricingTracker([False]), _Store()
+    s = OpenerService(c, t, st, "casual", on_exhausted="stop")
+    out = s.maybe_opener("r", "bumble", object())
+    assert out.text == _Res.opener                          # already-spent credits aren't wasted
+    assert len(st.spend) == 1 and st.spend[0][-1] == 0.0     # cost recorded as untracked (0.0)
+    assert s.disabled is True and s.stop_requested is True   # but no more openers until pricing is fixed
+
+
 def test_non_credit_error_propagates(monkeypatch):
     monkeypatch.setattr(service_mod, "is_out_of_credit", lambda e: False)
     s = OpenerService(_Client(exc=RuntimeError("boom")), _Tracker([False]), _Store(), "casual")

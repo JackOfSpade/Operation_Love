@@ -1,5 +1,6 @@
 """BigQueryStore tests with a fake client — no google SDK or network required."""
 from operation_love.costing import Usage
+from operation_love.ranker import Store
 from operation_love.ranker.bigquery_store import BigQueryStore
 
 
@@ -104,6 +105,10 @@ class _FakeStorage:
 def _store(client, flush_every=25):
     return BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=flush_every,
                          client=client, storage_client=_FakeStorage(), ensure=False)
+
+
+def test_bigquery_store_conforms_to_store_protocol():
+    assert isinstance(_store(_FakeBQ()), Store)
 
 
 def test_load_labels_parses_and_counts():

@@ -60,10 +60,6 @@ def cost_usd(usage: Usage, p: ModelPricing) -> float:
     )
 
 
-class BudgetExceeded(Exception):
-    """Raised/used to signal the per-run spend cap has been reached."""
-
-
 class CostTracker:
     """Cumulative opener spend for one run against an optional cap.
 

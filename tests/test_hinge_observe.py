@@ -515,6 +515,35 @@ def test_snap_propagates_driver_closed():
         drv._snap()
 
 
+def test_snap_raises_after_two_failures_when_halt_on_error():
+    from operation_love.drivers.adb import AdbError
+    from operation_love.drivers.hinge import HingeActionError
+
+    class Wedged(FakeAdb):
+        def screencap(self):
+            raise AdbError(["adb"], "device offline")
+
+    drv = _drv(Wedged([b"x"]), halt_on_error=True)
+    # Two consecutive screencap failures must halt (not silently return None and let
+    # _verify_progress/_verify_like_landed treat the missing "before" frame as success).
+    with pytest.raises(HingeActionError):
+        drv._snap()
+
+
+def test_snap_returns_none_after_two_failures_when_halt_on_error_false():
+    from operation_love.drivers.adb import AdbError
+
+    class Wedged(FakeAdb):
+        def screencap(self):
+            raise AdbError(["adb"], "device offline")
+
+    # debug_log=True keeps _snap() from short-circuiting; halt_on_error=False means a
+    # flaky screencap here is debug-only best-effort and must not halt the run.
+    drv = _drv(Wedged([b"x"]), halt_on_error=False, debug_log=True)
+    drv._dbg = object()   # any non-None sentinel; _snap only checks "is None"
+    assert drv._snap() is None
+
+
 # --- debug logging + halt-on-unexpected --------------------------------
 def test_verify_progress_raises_when_screen_unchanged():
     from operation_love.drivers.hinge import HingeActionError

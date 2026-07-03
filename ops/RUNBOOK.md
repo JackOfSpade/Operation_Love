@@ -22,12 +22,14 @@ GCP / BigQuery (storage of record):
 - Auth once: `gcloud auth application-default login` (tables auto-create on first run).
 - Check the machine: `python -m operation_love.runtime` (should show your GPU/CPU + no missing components).
 
-Hinge only — Android emulator (no Android phone needed; it's a virtual phone):
-- Install Android Studio → create an AVD with a **Google Play** image.
-- Start the emulator; confirm `adb devices` lists it. Put its serial in
-  `config.yaml` → `apps.hinge.serial` (or leave blank for the first device).
-- Install Hinge (Play Store in the emulator, or `adb install hinge.apk`).
-- Log into Hinge with **your phone number** (SMS to your real phone).
+Hinge only — a physical Android phone over host-side ADB (**no emulator**: Play
+Integrity flags automation on an emulated device, so the driver only talks to a
+real phone — see `operation_love/drivers/hinge.py` and `apps.hinge` in
+`config.yaml`). Full first-time device setup (eSIM, enabling ADB, the
+no-on-device-automation-server guardrail, scrcpy, installing Hinge) is its own
+runbook: **[ops/HINGE-PIXEL-RUNBOOK.md](HINGE-PIXEL-RUNBOOK.md)**. Once
+`adb devices` lists your phone, put its serial in `config.yaml` →
+`apps.hinge.serial` (or leave blank for the first device).
 
 ---
 
@@ -47,15 +49,23 @@ python -m tools.bumble_inspect          # opens Bumble headful; log in, reach a 
   click listener), so there's **no network reverse-engineering**. If detection
   prints the right LIKE/PASS, observe mode is wired.
 
-**Hinge (Android)** — use the `uiautomator2`/`uiautodev` inspector:
-- Confirm the **resource-ids** (like / pass / comment box / send / prompt / empty)
-  under `apps.hinge.ids`.
+**Hinge (Android)** — one command does it (no `uiautomator2`/on-device inspector;
+that's the exact automation footprint ops/HINGE-PIXEL-RUNBOOK.md §5 forbids):
+```bash
+python -m tools.hinge_inspect            # screencaps your phone; reports vision-hit vs fallback-coord
+```
+- It screencaps the current Hinge screen and runs the SAME template-matching the
+  driver uses at runtime (`_load_template`/`_match_glyph` in
+  `operation_love/drivers/hinge.py`) to locate the like-heart and pass-X glyphs,
+  reporting a vision HIT or a FALLBACK (the fixed-fraction coord under
+  `apps.hinge.coords`). A FALLBACK on a fully-loaded profile screen means the
+  glyph templates need recapturing for your device, or `apps.hinge.coords` needs
+  a live tweak.
 - **Observe tap detection** (`wait_for_decision()`) is implemented and unit-tested:
-  a like is detected when the comment / "Send Like" sheet opens (`send_like` /
-  `comment_box`) and is then sent; a pass is detected when the prompt text changes
-  to the next profile. Live-confirm those two ids are the ones the sheet exposes —
-  if not, fix them under `apps.hinge.ids` (no code change). Then dry-run
-  `mode: observe` and check it logs your manual like/pass correctly.
+  a like is detected when the comment / "Send Like" sheet opens over the bottom
+  half of the screen (screencap diff) and is then sent; a pass is detected when
+  the whole card advances to the next profile. Dry-run `mode: observe` and check
+  it logs your manual like/pass correctly.
 
 > These are the items deferred to "do live, at the end." Everything they plug
 > into (capture, embed, store, ranker, openers, supervisor) already works and is
@@ -104,8 +114,9 @@ Because state lives in BigQuery, the **same code runs on any always-on box**
 # Linux (systemd) or just a screen/tmux session:
 nohup python -m operation_love >> oplove.log 2>&1 &
 ```
-- Bumble runs headless anywhere. Hinge needs an emulator-capable host (KVM/WHPX),
-  so the always-on box must be able to run the Android emulator.
+- Bumble runs headless anywhere. Hinge needs a physical Android phone reachable
+  over ADB (USB, or wireless ADB on the same network) from wherever the process
+  runs — no emulator, no special host virtualization support required.
 - Ctrl-C / SIGTERM shuts down cleanly and flushes the store.
 
 ---

@@ -35,6 +35,38 @@ def test_threshold_respected():
     assert m.decide([0.2, 0.2])[0] == "dislike"
 
 
+def test_train_falls_back_to_purepy_when_sklearn_unavailable(monkeypatch):
+    # sklearn IS installed in CI/this sandbox, so despite this file's docstring,
+    # the pure-Python fallback is otherwise never actually exercised here.
+    import operation_love.ranker.model as model_mod
+    monkeypatch.setattr(model_mod, "new_classifier",
+                        lambda: (_ for _ in ()).throw(ImportError("no sklearn")))
+    m = PreferenceModel(min_labels=2)
+    assert m.train(_separable()) is True
+    assert m._impl == "purepy"
+    assert m.decide([2.0, 2.0])[0] == "like"
+
+
+def test_train_propagates_a_real_fit_error_instead_of_silently_degrading(monkeypatch):
+    # Bug fix: a genuine bug in sklearn's .fit() (bad shapes, NaN/inf, a version
+    # incompatibility) must surface, not be silently swallowed as "no sklearn" and
+    # papered over with the (worse, untuned) pure-Python fallback.
+    import operation_love.ranker.model as model_mod
+
+    class _BoomClf:
+        def fit(self, X, y):
+            raise ValueError("bad shapes")
+
+    monkeypatch.setattr(model_mod, "new_classifier", lambda: _BoomClf())
+    m = PreferenceModel(min_labels=2)
+    try:
+        m.train(_separable())
+    except ValueError as e:
+        assert "bad shapes" in str(e)
+    else:
+        raise AssertionError("expected the real .fit() error to propagate")
+
+
 if __name__ == "__main__":
     import sys
     import traceback

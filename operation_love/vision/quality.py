@@ -13,7 +13,10 @@ from ..device import best_device
 
 
 class QualityFilter:
-    def __init__(self, enabled: bool = True, min_score: float = 0.30,
+    # enabled/min_score have no default: both come from config.yaml's quality_filter
+    # section (operation_love.config.QualityCfg) at every real call site, so a stale
+    # duplicate default here could silently drift from what's actually configured.
+    def __init__(self, enabled: bool, min_score: float,
                  metric: str = "clipiqa", scorer: Callable[[bytes], float] | None = None):
         self.enabled = enabled
         self.min_score = min_score

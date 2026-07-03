@@ -309,6 +309,16 @@ def _cap_report_lines(report: str) -> str:
     return "\n".join([*pinned, marker, *lines[-tail_budget:]]) + "\n"
 
 
+def _safe_section(fn, *args) -> str:
+    """Call a report-section builder, rendering a warning instead of crashing the whole
+    report if it raises. The bug-report endpoint is the tool reached for when something's
+    already broken — it must never itself be a single point of failure."""
+    try:
+        return fn(*args)
+    except Exception as exc:  # noqa: BLE001
+        return f"- ⚠️ this section failed to generate: {type(exc).__name__}: {exc}"
+
+
 # ── assembly ───────────────────────────────────────────────────────────────
 def build_report(hub_state=None, description: str = "", config_path: str = "config.yaml") -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -316,14 +326,14 @@ def build_report(hub_state=None, description: str = "", config_path: str = "conf
     head = (
         f"# Operation Love — Bug Report\n_Generated {now}_\n\n"
         f"## What happened\n{desc}\n\n"
-        f"## Build\n{_build_md()}\n\n"
-        f"## System\n{_system_md()}\n\n"
-        f"## Dependencies\n{_deps_md()}\n\n"
-        f"## Config (config.yaml)\n{_config_md(config_path)}\n\n"
-        f"## Secrets (presence only — never raw values)\n{_secrets_md()}\n\n"
-        f"## Diagnostic improvement\n{_diagnostic_improvement_md()}\n\n"
-        f"## Run status\n{_status_md(hub_state)}\n\n"
-        f"## Debug log (on-disk actions + screenshots)\n{_debug_log_md(config_path)}\n\n"
+        f"## Build\n{_safe_section(_build_md)}\n\n"
+        f"## System\n{_safe_section(_system_md)}\n\n"
+        f"## Dependencies\n{_safe_section(_deps_md)}\n\n"
+        f"## Config (config.yaml)\n{_safe_section(_config_md, config_path)}\n\n"
+        f"## Secrets (presence only — never raw values)\n{_safe_section(_secrets_md)}\n\n"
+        f"## Diagnostic improvement\n{_safe_section(_diagnostic_improvement_md)}\n\n"
+        f"## Run status\n{_safe_section(_status_md, hub_state)}\n\n"
+        f"## Debug log (on-disk actions + screenshots)\n{_safe_section(_debug_log_md, config_path)}\n\n"
         f"## Recent logs\n"
     )
-    return _cap_report_lines(head + _logs_md(_MAX_REPORT_LINES - _line_count(head)))
+    return _cap_report_lines(head + _safe_section(_logs_md, _MAX_REPORT_LINES - _line_count(head)))

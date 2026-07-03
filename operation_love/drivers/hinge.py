@@ -35,7 +35,7 @@ from pathlib import Path
 from ..human import human_cooldown, human_delay
 from ..perception.capture import Profile
 from .adb import Adb, AdbError
-from .base import DatingAppDriver, DriverClosed
+from .base import DatingAppDriver, DriverClosed, open_debug_log, snapshot_failure_frame
 from .uhid import UhidTouch, UhidUnavailable
 
 _ASSETS = Path(__file__).parent / "assets"
@@ -164,6 +164,19 @@ def _match_glyph(frame: bytes, template, *, side: str, threshold: float = 0.6) -
         return []
 
 
+def _retry_until(check_fn, tries: int, delay_s: float):
+    """Call check_fn() up to `tries` times, sleeping human_delay(delay_s) after each
+    falsy attempt. Returns the first truthy result, or None once attempts run out.
+    The shared shape behind _await_button/_verify_progress/_handle_rose_upsell: poll
+    something on-screen with humanized pacing until it appears or we give up."""
+    for _ in range(max(1, tries)):
+        result = check_fn()
+        if result:
+            return result
+        time.sleep(human_delay(delay_s))
+    return None
+
+
 class HingeDriver(DatingAppDriver):
     accepts_opener = True   # Hinge sends the opener as a comment at like-time
 
@@ -204,11 +217,7 @@ class HingeDriver(DatingAppDriver):
         self._touch = self._make_touch()              # genuine UHID touches; adb input fallback
         self._observe_ready = True                    # only True once fully open (touch ready too)
         if self.debug_log:
-            try:
-                from .debuglog import HingeDebugLog
-                self._dbg = HingeDebugLog(self.debug_dir)
-            except Exception:  # noqa: BLE001 — debug logging must never block a run
-                self._dbg = None
+            self._dbg = open_debug_log(self.debug_dir)
 
     def close(self) -> None:
         if self._touch is not None and self._touch is not self._adb:
@@ -264,11 +273,9 @@ class HingeDriver(DatingAppDriver):
         like/pass buttons out DURING a scroll and back in once it settles, so a tap fired
         immediately after a scroll-read can miss. Falls back to the calibrated fixed coord if
         vision can't find it (degraded, but better than not acting)."""
-        for _ in range(max(1, tries)):
-            pt = self._locate_button(which)
-            if pt is not None:
-                return pt
-            time.sleep(human_delay(0.4))
+        pt = _retry_until(lambda: self._locate_button(which), tries, 0.4)
+        if pt is not None:
+            return pt
         frac = self.coords["like_heart" if which == "like" else "pass_x"]
         w, h = self.adb.screen_size()
         print(f"Hinge: {which} button not found by vision; using fallback coord {frac}")
@@ -284,8 +291,17 @@ class HingeDriver(DatingAppDriver):
                 return self.adb.screencap()
             except DriverClosed:
                 raise                                  # device truly gone -> let it propagate
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 if attempt == 2:
+                    if self.halt_on_error:
+                        # Returning None here would silently defeat halt_on_error:
+                        # _verify_progress/_verify_like_landed treat a missing "before"
+                        # frame as "skip verification" / an automatic pass — exactly the
+                        # failure mode this safety net exists to catch. Two consecutive
+                        # screencap failures means the device/link is wedged, not a blip.
+                        raise HingeActionError(
+                            f"screencap failed twice in a row ({type(exc).__name__}: {exc}); "
+                            "halting rather than acting/verifying blind") from exc
                     return None
                 time.sleep(human_delay(0.3))
 
@@ -301,13 +317,7 @@ class HingeDriver(DatingAppDriver):
     def snapshot_failure(self, exc: BaseException) -> None:
         """Worker hook: snapshot the on-screen state of an unexpected error into the debug log
         (so the failure is reconstructable) before the worker halts the run."""
-        if self._dbg is None:
-            return
-        try:
-            frame = self.adb.screencap()
-        except Exception:  # noqa: BLE001
-            frame = None
-        self._dbg.error("unexpected", frame, exc)
+        snapshot_failure_frame(self._dbg, exc, self.adb.screencap)
 
     def _verify_progress(self, before, action: str) -> None:
         """After an autonomous action the screen MUST change (a new card / a confirmation). If it
@@ -316,10 +326,8 @@ class HingeDriver(DatingAppDriver):
         rotated away by continued blind swiping. Only active when halt_on_error is set."""
         if not self.halt_on_error or before is None:
             return
-        for _ in range(2):
-            if self._changed(before, self.adb.screencap()):
-                return
-            time.sleep(human_delay(0.6))
+        if _retry_until(lambda: self._changed(before, self.adb.screencap()), 2, 0.6):
+            return
         raise HingeActionError(f"{action} did not change the screen (stuck or unexpected state)")
 
     def _handle_rose_upsell(self, tries: int = 2) -> bool:
@@ -329,12 +337,12 @@ class HingeDriver(DatingAppDriver):
         never risk the "Send a Rose" button sitting just above it. No-op when the modal isn't
         shown. Returns True if it dismissed the modal."""
         template = _load_template("hinge_send_like_anyway.png")
-        for _ in range(max(1, tries)):
-            hits = _match_glyph(self.adb.screencap(), template, side="any", threshold=0.6)
-            if hits:
-                self.touch.tap(*hits[0])      # "Send Like anyway" — NEVER the Rose button above it
-                return True
-            time.sleep(human_delay(0.5))      # modal animates in (only when a Rose is available)
+        hits = _retry_until(
+            lambda: _match_glyph(self.adb.screencap(), template, side="any", threshold=0.6),
+            tries, 0.5)                       # modal animates in (only when a Rose is available)
+        if hits:
+            self.touch.tap(*hits[0])          # "Send Like anyway" — NEVER the Rose button above it
+            return True
         return False
 
     def _changed(self, a: bytes, b: bytes) -> bool:

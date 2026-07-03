@@ -89,3 +89,18 @@ def test_sqlite_load_labels_ordered_sorts_by_created_at(tmp_path):
         assert store.load_labels_ordered() == [(False, [0.1]), (True, [0.2])]
     finally:
         store.close()
+
+
+
+def test_sqlite_add_label_rejects_nan_embedding(tmp_path):
+    """add_label() must raise (not silently store) NaN/Inf values in embeddings."""
+    import math
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        try:
+            store.add_label("r", "bumble", True, [0.1, float("nan"), 0.3])
+            raise AssertionError("expected ValueError on NaN embedding")
+        except ValueError as e:
+            assert "nan" in str(e).lower() or "allow_nan" in str(e).lower()
+    finally:
+        store.close()

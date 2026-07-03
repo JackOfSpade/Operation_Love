@@ -3,7 +3,7 @@
 Personal dating-app assistant. A **local, private** preference ranker decides
 who *you'd* swipe right on (learned from your own swipes), and **Claude** writes
 a natural, profile-specific opener. Targets **Bumble** (web) and **Hinge**
-(Android emulator) — no AirDroid, no fixed pixel coordinates.
+(physical Android over host-side ADB + vision template-match) — no AirDroid, no fixed pixel coordinates.
 
 > The original AHK 2.0 project is archived in [`legacy/`](./legacy) for reference
 > to the *vision*, not the implementation. See the analysis that motivated this
@@ -12,7 +12,7 @@ a natural, profile-specific opener. Targets **Bumble** (web) and **Hinge**
 ## Architecture
 
 ```
-drivers/      element-based control: Bumble (Playwright), Hinge (Appium/uiautomator2)
+drivers/      element-based control: Bumble (Playwright), Hinge (host-side ADB + vision)
 perception/   capture all photos + profile text -> Profile
 vision/       local pyiqa quality filter + ArcFace/CLIP embeddings   [Phase 2]
 ranker/       logistic-regression on YOUR swipe labels (SQLite)      [Phase 3]
@@ -47,7 +47,7 @@ OS-specific notes:
 |---|---|---|---|
 | Local ML (torch, insightface, CLIP, pyiqa) | MPS | CUDA / CPU | CUDA / CPU |
 | Bumble (Playwright web) | ✅ | ✅ | ✅ |
-| Hinge (Android emulator + `uiautomator2`) | Android Studio AVD / physical phone over ADB | same | same / Waydroid |
+| Hinge (physical Android over host-side ADB + vision) | physical phone + `adb devices` | same | same |
 | Claude opener | cloud — any OS | cloud | cloud |
 
 ## Cost control
@@ -97,7 +97,8 @@ extra installed.
 - **auto** — the bot swipes for you with the learned model, and every swipe is
   still a label.
 
-**Both apps are code-complete** (Bumble via Playwright, Hinge via uiautomator2),
+**Both apps are code-complete** (Bumble via Playwright, Hinge via physical
+Android device over host-side ADB + vision template-match),
 with autonomous-mode **rate limits** (`max_per_run` / `max_per_day`), a **stats**
 readout (`python -m operation_love stats`), and human-like pacing.
 

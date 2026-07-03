@@ -95,15 +95,15 @@ def test_out_of_credit_disables_without_raising(monkeypatch):
     assert s.stop_requested is False                        # continue -> degrade, don't stop the run
 
 
-def test_non_credit_error_propagates(monkeypatch):
+def test_non_credit_error_degrades_gracefully(monkeypatch):
+    """Transient network/timeout errors skip this profile's opener but leave the service
+    enabled so subsequent profiles can still try (the run does not halt)."""
     monkeypatch.setattr(service_mod, "is_out_of_credit", lambda e: False)
-    s = OpenerService(_Client(exc=RuntimeError("boom")), _Tracker([False]), _Store(), "casual")
-    try:
-        s.maybe_opener("r", "bumble", object())
-        raise AssertionError("expected the non-credit error to propagate")
-    except RuntimeError as e:
-        assert "boom" in str(e)
-    assert s.disabled is False                              # a transient error doesn't disable openers
+    s = OpenerService(_Client(exc=RuntimeError("timeout")), _Tracker([False]), _Store(), "casual")
+    result = s.maybe_opener("r", "bumble", object())
+    assert result is None                                   # swipe without opener this time
+    assert s.disabled is False                              # service stays enabled (not permanent)
+    assert s.stop_requested is False                        # run keeps going
 
 
 if __name__ == "__main__":

@@ -120,7 +120,7 @@ def test_observe_learns_from_manual_swipes_and_becomes_ready():
         swipes.append((_profile([2.0, 2.0]), True))
         swipes.append((_profile([-2.0, -2.0]), False))
 
-    model = PreferenceModel(min_labels=4, threshold=0.5)   # not ready at start
+    model = PreferenceModel(min_labels=4, threshold=0.5, min_per_class=1)   # not ready at start
     assert not model.ready
     decider = RankerDecider(FakeQuality(), FakeEmbedder(), model)
     store = FakeStore()
@@ -169,7 +169,7 @@ def test_observe_retrains_final_partial_batch():
         swipes.append((_profile([2.0, 2.0]), True))
         swipes.append((_profile([-2.0, -2.0]), False))
 
-    model = PreferenceModel(min_labels=4, threshold=0.5)
+    model = PreferenceModel(min_labels=4, threshold=0.5, min_per_class=1)
     decider = RankerDecider(FakeQuality(), FakeEmbedder(), model)
     store = FakeStore()
     w = Worker("bumble", FakeObservingDriver(swipes), decider, None, store, "r",
@@ -187,7 +187,7 @@ def test_observe_retrains_final_partial_batch_on_browser_close():
         swipes.append((_profile([2.0, 2.0]), True))
         swipes.append((_profile([-2.0, -2.0]), False))
 
-    model = PreferenceModel(min_labels=4, threshold=0.5)
+    model = PreferenceModel(min_labels=4, threshold=0.5, min_per_class=1)
     decider = RankerDecider(FakeQuality(), FakeEmbedder(), model)
     store = FakeStore()
     driver = ClosingAfterSwipesDriver(swipes)

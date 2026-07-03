@@ -74,12 +74,13 @@ class OpenerClient(Protocol):
 class AnthropicOpener:
     """Claude-backed opener writer. Uses multimodal input (photos + text)."""
 
-    def __init__(self, model: str, max_tokens: int = 400, client=None):
+    def __init__(self, model: str, max_tokens: int = 400, request_timeout_s: float = 30,
+                 client=None):
         self.model = model
         self.max_tokens = max_tokens
         if client is None:
             import anthropic  # imported lazily so tests don't need the SDK
-            client = anthropic.Anthropic()
+            client = anthropic.Anthropic(timeout=request_timeout_s)
         self.client = client
 
     def _content(self, profile: Profile, style: str) -> list[dict]:

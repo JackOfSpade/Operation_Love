@@ -82,10 +82,21 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     print(f"Store: backend={cfg.storage.backend} labels={len(labels)}  "
           f"apps={cfg.enabled_apps}")
 
-    tracker = CostTracker(cfg.budget.pricing, cfg.budget.run_budget_usd)
+    effective_budget = cfg.budget.run_budget_usd
+    if cfg.budget.day_budget_usd is not None:
+        today_spend = getattr(store, "spend_today", lambda: 0.0)()
+        remaining_today = max(0.0, cfg.budget.day_budget_usd - today_spend)
+        print(f"Daily budget: ${cfg.budget.day_budget_usd:.2f}  "
+              f"spent today: ${today_spend:.4f}  remaining: ${remaining_today:.4f}")
+        if effective_budget is None:
+            effective_budget = remaining_today
+        else:
+            effective_budget = min(effective_budget, remaining_today)
+    tracker = CostTracker(cfg.budget.pricing, effective_budget)
     opener_client = None
     if cfg.opener.enabled and not caps.missing("anthropic"):
-        opener_client = AnthropicOpener(cfg.opener.model, cfg.opener.max_tokens)
+        opener_client = AnthropicOpener(cfg.opener.model, cfg.opener.max_tokens,
+                                        cfg.opener.request_timeout_s)
     elif cfg.opener.enabled:
         print("Degrade: anthropic SDK not installed -> swiping without openers")
     opener_service = OpenerService(opener_client, tracker, store, cfg.opener.style,
@@ -93,15 +104,25 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
 
     status.set_global(phase="training ranker")
     model = PreferenceModel(min_labels=cfg.ranker.min_labels_to_engage,
-                            threshold=cfg.ranker.like_threshold)
+                            threshold=cfg.ranker.like_threshold,
+                            min_per_class=cfg.ranker.min_per_class)
     ready = model.train(labels)
-    status.set_global(ranker_ready=ready, phase="launching app")
     print(f"Ranker: labels={len(labels)} ready={ready} "
           f"(min={cfg.ranker.min_labels_to_engage}, threshold={cfg.ranker.like_threshold})")
     quality = QualityFilter(cfg.quality_filter.enabled, cfg.quality_filter.min_score,
                             cfg.quality_filter.metric)
-    embedder = Embedder(cfg)
+    if not cfg.quality_filter.enabled:
+        print("Quality filter: DISABLED — all photos are scored as passing quality threshold")
+    embedder = Embedder()
     decider = RankerDecider(quality, embedder, model)
+
+    status.set_global(ranker_ready=ready, phase="loading ML models")
+    print("Warming up embedder and quality filter (avoids first-profile delay and init races)…")
+    embedder.warmup()
+    quality.warmup()
+
+    if "hinge" in cfg.enabled_apps:
+        _hinge_adb_preflight(cfg)
 
     stop_event = stop_event if stop_event is not None else threading.Event()
     _install_signal_handlers(stop_event)
@@ -113,7 +134,8 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         lim = {**cfg.limits, **(app_cfg.get("limits", {}))}
         run_cap = _resolve_run_cap(lim.get("max_per_run"), max_per_run)
         limiter = RateLimiter(run_cap, lim.get("max_per_day"),
-                              lim.get("max_likes_per_run"))
+                              lim.get("max_likes_per_run"),
+                              target_like_ratio=lim.get("target_like_ratio"))
         driver = make_driver(app, cfg)
         w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing,
                    stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every,
@@ -158,6 +180,32 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             print(f"Run {run_id}: ❌ SAVE FAILED to {cfg.storage.backend} "
                   f"({type(save_err).__name__}: {save_err}) — buffered data may be incomplete; {tail}")
             raise save_err
+
+
+def _hinge_adb_preflight(cfg) -> None:
+    """Warn early if the Hinge phone isn't visible to adb — avoids a confusing mid-run crash."""
+    import subprocess
+    hinge_cfg = cfg.apps.get("hinge", {}) or {}
+    serial = (hinge_cfg.get("serial") or "").strip()
+    adb = (hinge_cfg.get("adb_path") or "adb").strip() or "adb"
+    try:
+        result = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=5)
+        lines = result.stdout.strip().splitlines()[1:]   # skip "List of devices attached"
+        visible = [ln.split()[0] for ln in lines if ln.strip() and ln.split()[-1] == "device"]
+        if not visible:
+            print("WARNING: Hinge is enabled but `adb devices` shows no connected device. "
+                  "Connect the Pixel 7a via USB and authorize the RSA key before swiping.")
+        elif serial and serial not in visible:
+            print(f"WARNING: apps.hinge.serial={serial!r} not in `adb devices` output: {visible}. "
+                  "Check config.yaml → apps.hinge.serial.")
+        else:
+            label = serial if serial else visible[0]
+            print(f"Hinge ADB preflight OK: {label} (device connected)")
+    except FileNotFoundError:
+        print(f"WARNING: Hinge ADB preflight skipped — `{adb}` not found on PATH. "
+              "Set apps.hinge.adb_path in config.yaml if adb is not on your PATH.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"Hinge ADB preflight warning: {type(exc).__name__}: {exc}")
 
 
 def _install_signal_handlers(stop_event: threading.Event) -> None:

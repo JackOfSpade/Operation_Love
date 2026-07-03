@@ -564,3 +564,26 @@ def test_actions_route_through_touch_transport_not_adb():
     assert touch.taps == [(125, 2035)] and adb.taps == []   # X found via adb screencap, tapped via touch
     drv._scroll_to_top()
     assert touch.swipes >= 1 and adb.swipes == 0   # swipes via the touch transport
+
+
+def test_await_button_falls_back_to_config_coord_when_vision_fails(monkeypatch):
+    """When vision can't locate the glyph after all retries, _await_button() must fall
+    back to the configured coordinate fraction (not crash or return None)."""
+    adb = FakeAdb([_png()])    # non-action frame: vision finds nothing
+    drv = _drv(adb)
+    # Force every vision attempt to return None
+    monkeypatch.setattr(drv, "_locate_button", lambda _which: None)
+
+    w, h = adb.screen_size()   # 1080 x 2400
+
+    pt_like = drv._await_button("like", tries=2)
+    frac = drv.coords["like_heart"]
+    assert pt_like == (int(frac[0] * w), int(frac[1] * h)), (
+        f"like fallback coord wrong: {pt_like} != ({int(frac[0]*w)}, {int(frac[1]*h)})"
+    )
+
+    pt_pass = drv._await_button("pass", tries=2)
+    frac = drv.coords["pass_x"]
+    assert pt_pass == (int(frac[0] * w), int(frac[1] * h)), (
+        f"pass fallback coord wrong: {pt_pass} != ({int(frac[0]*w)}, {int(frac[1]*h)})"
+    )

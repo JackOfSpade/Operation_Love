@@ -146,16 +146,19 @@ def _capitalize_first_letter(s: str) -> str:
 
 
 def format_report(r: dict) -> str:
-    """Render an evaluate() result for the terminal — one headline metric, matching the hub:
-    accuracy = ROC-AUC as a percent (the probability the ranker scores a profile you'd LIKE
-    above one you'd PASS; 50% = random). Base-rate-independent, so it tracks the model."""
+    """Render an evaluate() result for the terminal — headline metrics with calibration context."""
     if r.get("status") != "ok":
         return _capitalize_first_letter(str(r.get("message", "Evaluation unavailable")))
     roc = r.get("roc_auc") or [0.0, 0.0]
+    brier = r.get("brier") or [0.0, 0.0]
     acc, band = roc[0] * 100, roc[1] * 100
+    base_rate = r.get("base_rate", 0.0)
     return (f"Labels={r['labels']}  likes={r['likes']}  passes={r['passes']}  "
             f"distinct identities={r['identities']}\n"
             f"Identity-grouped {r['folds']}-fold CV (LogReg C={RANKER_PARAMS['C']}, "
             f"class_weight={RANKER_PARAMS['class_weight']}):\n"
             f"  Accuracy: {acc:.3f}% +/- {band:.3f}%  "
-            f"(ROC-AUC concordance — ranks a like above a pass; 50% = random, 100% = perfect)")
+            f"(ROC-AUC concordance — ranks a like above a pass; 50% = random, 100% = perfect)\n"
+            f"  Brier: {brier[0]:.3f} +/- {brier[1]:.3f}  "
+            f"(calibration + accuracy combined; lower is better, 0.25 ≈ random at 50% base rate)\n"
+            f"  Base rate: {base_rate:.1%} likes in training labels")

@@ -9,8 +9,8 @@ background thread in THIS process; the page polls /api/status.
     python -m operation_love hub --make-launchers # write a double-click launcher
 
 The browser is only the face: start/stop POST to this local server, which does
-the real work (launch the Bumble browser, and — once an AVD exists — boot the
-Hinge emulator). UI choice has no bearing on what the backend can do.
+the real work (launch the Bumble browser and the Hinge ADB session). UI choice
+has no bearing on what the backend can do.
 """
 from __future__ import annotations
 

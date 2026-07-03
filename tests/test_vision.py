@@ -193,6 +193,28 @@ def test_quality_never_drops_on_scorer_error():
     assert qf.keep(b"x") is True   # fail-open: never drop a photo because scoring broke
 
 
+def test_embed_profile_returns_none_on_nan_in_final_vector(monkeypatch):
+    """A NaN/Inf in the final concatenated vector (e.g. from a degenerate l2_normalize)
+    must return None (treated as no_face) rather than storing a corrupted embedding."""
+    import math
+    from operation_love.vision.embed import Embedder
+    from operation_love.perception.capture import Profile
+
+    embedder = Embedder()
+    # Inject a degenerate face vector (all zeros -> l2_normalize returns zeros -> concat has zeros,
+    # not NaN, but we test the guard by patching concat to return a NaN-containing vector).
+    import operation_love.vision.embed as embed_mod
+    monkeypatch.setattr(embed_mod, "concat", lambda *_: [0.1, float("nan"), 0.3])
+    # Also patch _ensure so it doesn't try to import ML libs.
+    monkeypatch.setattr(embedder, "_ensure", lambda: None)
+    # Patch embed_profile to simulate one detected face and one CLIP vector.
+    monkeypatch.setattr(embedder, "_embed_image", lambda img: ([0.1, 0.2], [0.3, 0.4]))
+
+    profile = Profile(photos=[b"fake_photo"])
+    result = embedder.embed_profile(profile)
+    assert result is None, "expected None when final vector contains NaN"
+
+
 if __name__ == "__main__":
     import sys
     import traceback

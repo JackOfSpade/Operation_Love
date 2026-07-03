@@ -69,9 +69,10 @@ def make_ranker_clf():
 
 
 class PreferenceModel:
-    def __init__(self, min_labels: int = 40, threshold: float = 0.5):
+    def __init__(self, min_labels: int = 40, threshold: float = 0.5, min_per_class: int = 5):
         self.min_labels = min_labels
         self.threshold = threshold
+        self.min_per_class = min_per_class
         self.n_labels = 0
         self._clf = None
         self._impl = None
@@ -89,6 +90,10 @@ class PreferenceModel:
         X = [v for (_, v) in samples]
         y = [1 if liked else 0 for (liked, _) in samples]
         if len(set(y)) < 2:   # need both like and dislike examples
+            self._clf = None
+            return False
+        n_likes = sum(y)
+        if min(n_likes, len(y) - n_likes) < self.min_per_class:
             self._clf = None
             return False
         # The ONLY intended fallback is "sklearn isn't installed" (ImportError) -> the

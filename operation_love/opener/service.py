@@ -56,11 +56,19 @@ class OpenerService:
                 if is_out_of_credit(e):
                     self._exhaust("Claude credit exhausted")
                     return None
-                raise
+                # Transient network/timeout errors: skip this profile's opener but keep the
+                # service enabled so subsequent profiles can still get openers.
+                print(f"Opener skipped (transient error, swiping without): "
+                      f"{type(e).__name__}: {e}")
+                return None
 
             cost = self.tracker.record(result.model, result.usage)
-            self.store.record_spend(run_id, result.model, result.usage, cost)
-            self.store.record_opener(run_id, app, result.model, result.opener, result.referenced)
+            try:
+                self.store.record_spend(run_id, result.model, result.usage, cost)
+                self.store.record_opener(run_id, app, result.model, result.opener, result.referenced)
+            except Exception as e:  # noqa: BLE001
+                # Spend was already tracked in-memory by CostTracker; store failure is non-fatal.
+                print(f"Warning: failed to persist opener spend record (${cost:.4f}): {e}")
             if self.tracker.budget_reached():
                 self._exhaust("run budget reached")
             return OpenerPick(result.opener, getattr(result, "referenced_index", 0))

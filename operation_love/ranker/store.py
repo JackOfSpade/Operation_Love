@@ -103,7 +103,8 @@ class SQLiteStore:
             self.con.execute(
                 "INSERT INTO labels (run_id, app, created_at, liked, source, embedding,"
                 " photo_count, profile_id) VALUES (?,?,?,?,?,?,?,?)",
-                (run_id, app, time.time(), int(liked), source, json.dumps(embedding),
+                (run_id, app, time.time(), int(liked), source,
+                 json.dumps(embedding, allow_nan=False),
                  photo_count, profile_id),
             )
             self.con.commit()
@@ -146,6 +147,16 @@ class SQLiteStore:
                 "SELECT COUNT(*) FROM decisions WHERE app=? AND created_at>=? AND source='auto'",
                 (app, start),
             ).fetchone()[0]
+
+    def spend_today(self) -> float:
+        import datetime
+        start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        with self._lock:
+            row = self.con.execute(
+                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM spend WHERE created_at >= ?",
+                (start,),
+            ).fetchone()
+        return float(row[0]) if row else 0.0
 
     def flush(self) -> None:
         with self._lock:

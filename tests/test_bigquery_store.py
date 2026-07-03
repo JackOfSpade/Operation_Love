@@ -333,6 +333,38 @@ def test_insert_errors_raise():
         raise AssertionError("expected RuntimeError on insert errors")
 
 
+def test_flush_partial_failure_attempts_all_tables():
+    """When one table fails during flush(), the other tables are still attempted."""
+    class _PartialFailBQ(_FakeBQ):
+        def __init__(self, fail_table_suffix):
+            super().__init__()
+            self.fail_suffix = fail_table_suffix
+
+        def insert_rows_json(self, table_id, rows):
+            if table_id.endswith(self.fail_suffix):
+                return [{"index": 0, "errors": ["injected failure"]}]
+            self.inserted.setdefault(table_id, []).extend(rows)
+            return []
+
+    client = _PartialFailBQ(fail_table_suffix="labels")
+    s = _store(client, flush_every=100)
+    s.add_label("r", "bumble", True, [0.1])          # goes to 'labels' (will fail)
+    s.record_decision("r", "bumble", "like", 1.0)    # goes to 'decisions' (should succeed)
+
+    try:
+        s.flush()
+    except RuntimeError as e:
+        err_msg = str(e)
+        assert "labels" in err_msg                    # the failing table is named
+    else:
+        raise AssertionError("expected RuntimeError from partial flush failure")
+
+    # Despite 'labels' failing, 'decisions' must still have been attempted and inserted.
+    decisions_keys = [k for k in client.inserted if k.endswith("decisions")]
+    assert decisions_keys, "decisions table was never attempted after labels table failed"
+    assert len(client.inserted[decisions_keys[0]]) == 1
+
+
 def test_requires_project_id():
     try:
         BigQueryStore("", "ds", photo_bucket="photos", client=_FakeBQ(),

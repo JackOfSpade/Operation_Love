@@ -64,10 +64,10 @@ storage:
 
 # --- Decision engine (local, learns YOUR taste from YOUR swipes) ---
 ranker:
-  embedders: [arcface, clip]   # concatenate facial-structure + style/vibe vectors
   like_threshold: 0.5          # P(like) above which we like
   min_labels_to_engage: 40     # ranker stays "not ready" until this many labels (needs both like+pass)
   retrain_every: 1             # observe mode: retrain live after each new label
+  min_per_class: 5             # each class (like/pass) needs at least this many examples to train
 
 quality_filter:
   enabled: true
@@ -77,9 +77,9 @@ quality_filter:
 # --- Opener (Claude) ---
 opener:
   enabled: true
-  provider: anthropic
   model: claude-opus-4-8       # best quality; swap to claude-sonnet-4-6 for ~5x lower cost
   max_tokens: 400
+  request_timeout_s: 30        # seconds before a stalled Claude API call is abandoned
   style: |
     Voice: Coach Corey Wayne ("How to Be a 3% Man"). Short, playful, teasing, cocky
     and funny, relaxed and confident. ONE line, two at most. Low investment so SHE
@@ -92,6 +92,7 @@ opener:
 # --- Cost control (see operation_love/costing.py) ---
 budget:
   run_budget_usd: 5.00         # stop spending on openers past this, per run
+  # day_budget_usd: 10.00      # optional: hard daily ceiling across all runs (queries store at startup)
   on_exhausted: stop           # stop | swipe_without_opener
   # $ per 1,000,000 tokens, per model (used for client-side spend tracking)
   pricing:
@@ -110,4 +111,5 @@ pacing:
 limits:
   max_per_run: 30          # total swipes per app, per run (hub can override per-run in auto mode)
   max_per_day: 50          # total swipes per app, per day
-  max_likes_per_run: 15    # cap RIGHT-swipes per run (keeps like:pass ratio human); run stops when hit
+  max_likes_per_run: 10    # hard cap: run STOPS when hit (keeps right-swipe count very human)
+  target_like_ratio: 0.35  # soft cap: demotes individual likes to passes to hold the running ratio

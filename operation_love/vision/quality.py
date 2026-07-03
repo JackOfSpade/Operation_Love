@@ -7,6 +7,7 @@ The scorer is injectable for tests.
 """
 from __future__ import annotations
 
+import threading
 from typing import Callable
 
 from ..device import best_device
@@ -19,28 +20,41 @@ class QualityFilter:
         self.min_score = min_score
         self.metric = metric
         self._scorer = scorer  # bytes -> score in ~[0,1]
+        self._lock = threading.Lock()  # guards double-checked init in _ensure()
+
+    def warmup(self) -> None:
+        """Load the IQA model eagerly (call once from the main thread before workers start)."""
+        if not self.enabled:
+            return
+        try:
+            self._ensure()
+        except Exception as exc:  # noqa: BLE001
+            print(f"QualityFilter warmup failed (will retry per-photo): {type(exc).__name__}: {exc}")
 
     def _ensure(self) -> None:
-        if self._scorer is not None:
+        if self._scorer is not None:               # fast path: no lock needed
             return
-        import io
+        with self._lock:
+            if self._scorer is not None:           # second check under lock
+                return
+            import io
 
-        import pyiqa  # lazy
-        import torch
-        from PIL import Image
-        from torchvision import transforms
+            import pyiqa  # lazy
+            import torch
+            from PIL import Image
+            from torchvision import transforms
 
-        device = best_device()
-        model = pyiqa.create_metric(self.metric, device=device)
-        to_tensor = transforms.ToTensor()
+            device = best_device()
+            model = pyiqa.create_metric(self.metric, device=device)
+            to_tensor = transforms.ToTensor()
 
-        def _score(img_bytes: bytes) -> float:
-            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-            t = to_tensor(img).unsqueeze(0).to(device)
-            with torch.no_grad():
-                return float(model(t).item())
+            def _score(img_bytes: bytes) -> float:
+                img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                t = to_tensor(img).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    return float(model(t).item())
 
-        self._scorer = _score
+            self._scorer = _score
 
     def score(self, img_bytes: bytes) -> float:
         self._ensure()

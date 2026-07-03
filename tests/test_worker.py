@@ -233,6 +233,27 @@ def test_worker_stops_at_per_run_like_budget():
     assert driver.closed
 
 
+def test_like_ratio_ceiling_demotes_not_halts():
+    """Ratio ceiling demotes 'like' to 'pass' — the run continues, not halts."""
+    # With target_like_ratio=0.5 and all "like" decisions on 4 cards:
+    # card 1: acted=0 → allow (no history) → like.  liked=1, acted=1
+    # card 2: 1/1=100% >= 50% → demote → dislike.   liked=1, acted=2
+    # card 3: 1/2=50%  >= 50% → demote → dislike.   liked=1, acted=3
+    # card 4: 1/3=33%  <  50% → allow → like.       liked=2, acted=4
+    driver = FakeDriver(4)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    limiter = RateLimiter(target_like_ratio=0.5)
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", limiter=limiter).run()
+    # All 4 cards processed — NOT halted
+    assert len(store.decisions) == 4
+    assert driver.closed
+    likes = sum(1 for _, d, _ in store.decisions if d == "like")
+    passes = sum(1 for _, d, _ in store.decisions if d == "dislike")
+    assert likes == 2 and passes == 2
+
+
 def test_worker_daily_limit_ignores_manual_decisions():
     driver = FakeDriver(2)
     store = FakeStore()

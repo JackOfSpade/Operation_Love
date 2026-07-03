@@ -12,7 +12,8 @@ def show(config_path: str = "config.yaml") -> None:
     store = make_store(cfg)
     try:
         labels = store.load_labels()
-        model = PreferenceModel(cfg.ranker.min_labels_to_engage, cfg.ranker.like_threshold)
+        model = PreferenceModel(cfg.ranker.min_labels_to_engage, cfg.ranker.like_threshold,
+                                min_per_class=cfg.ranker.min_per_class)
         ready = model.train(labels)
         liked = sum(1 for liked, _ in labels if liked)
 

@@ -12,6 +12,7 @@ Returns None for a profile with no detectable face (-> "no_face" decision).
 from __future__ import annotations
 
 import math
+import threading
 
 from ..device import best_device
 from ..perception.capture import Profile
@@ -116,14 +117,14 @@ def _is_onnx_provider_failure(error: BaseException | str) -> bool:
 
 
 class Embedder:
-    def __init__(self, cfg=None):
-        self.cfg = cfg
+    def __init__(self):
         self._arc = None
         self._arc_providers: list[str] | None = None
         self._arc_on_cpu = False
         self._clip = None
         self._clip_preprocess = None
         self._device = None
+        self._lock = threading.Lock()  # guards double-checked init in _ensure()
 
     def _build_arc(self, providers: list[str]):
         from insightface.app import FaceAnalysis
@@ -137,30 +138,40 @@ class Embedder:
         self._arc_providers = list(providers)
         self._arc_on_cpu = self._arc_providers == ["CPUExecutionProvider"]
 
+    def warmup(self) -> None:
+        """Load ML models eagerly (call once from the main thread before workers start)."""
+        try:
+            self._ensure()
+        except Exception as exc:  # noqa: BLE001
+            print(f"Embedder warmup failed (will retry per-profile): {type(exc).__name__}: {exc}")
+
     def _ensure(self) -> None:
-        if self._arc is not None:                  # _arc is the all-or-nothing init sentinel
+        if self._arc is not None:                  # fast path: already init, no lock needed
             return
-        import open_clip  # lazy
-        import onnxruntime as ort
+        with self._lock:
+            if self._arc is not None:              # second check under lock (double-checked)
+                return
+            import open_clip  # lazy
+            import onnxruntime as ort
 
-        self._device = best_device()
+            self._device = best_device()
 
-        # Build CLIP FIRST and commit self._arc LAST. self._arc is the sentinel the guard
-        # above short-circuits on, so it must only be set once BOTH models have loaded. If
-        # CLIP's load raised (weight download / OOM) AFTER _arc were set, the next _ensure()
-        # would short-circuit on a half-initialized embedder (_clip still None) and every
-        # _embed_image would TypeError -> silently "no_face" for the rest of the run.
-        # Use the -quickgelu variant: the OpenAI weights were trained with QuickGELU,
-        # so the plain "ViT-L-14" config (GELU) loads them with a mismatched
-        # activation and yields degraded embeddings. Match it for correct CLIP vectors.
-        model, _, preprocess = open_clip.create_model_and_transforms(
-            "ViT-L-14-quickgelu", pretrained="openai"
-        )
-        self._clip = model.to(self._device).eval()
-        self._clip_preprocess = preprocess
+            # Build CLIP FIRST and commit self._arc LAST. self._arc is the sentinel the guard
+            # above short-circuits on, so it must only be set once BOTH models have loaded. If
+            # CLIP's load raised (weight download / OOM) AFTER _arc were set, the next _ensure()
+            # would short-circuit on a half-initialized embedder (_clip still None) and every
+            # _embed_image would TypeError -> silently "no_face" for the rest of the run.
+            # Use the -quickgelu variant: the OpenAI weights were trained with QuickGELU,
+            # so the plain "ViT-L-14" config (GELU) loads them with a mismatched
+            # activation and yields degraded embeddings. Match it for correct CLIP vectors.
+            model, _, preprocess = open_clip.create_model_and_transforms(
+                "ViT-L-14-quickgelu", pretrained="openai"
+            )
+            self._clip = model.to(self._device).eval()
+            self._clip_preprocess = preprocess
 
-        providers = _select_onnx_providers(self._device, ort.get_available_providers())
-        self._set_arc_providers(providers)         # sets self._arc — LAST, after CLIP succeeded
+            providers = _select_onnx_providers(self._device, ort.get_available_providers())
+            self._set_arc_providers(providers)     # sets self._arc — LAST, after CLIP succeeded
 
     # --- per-photo -----------------------------------------------------
     def _embed_image(self, img_bytes: bytes) -> tuple[list[float] | None, list[float]]:
@@ -254,4 +265,8 @@ class Embedder:
         # weights them equally and the pretrained cosine geometry is preserved.
         face = l2_normalize(aggregate(face_vecs))
         clip = l2_normalize(gem_pool(dedup_by_cosine(clip_vecs)))
-        return concat(face, clip)
+        vec = concat(face, clip)
+        if not all(math.isfinite(x) for x in vec):
+            print("Profile embedding contains non-finite values (NaN/Inf); treating as no_face.")
+            return None
+        return vec

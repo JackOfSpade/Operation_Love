@@ -22,12 +22,13 @@ GCP / BigQuery (storage of record):
 - Auth once: `gcloud auth application-default login` (tables auto-create on first run).
 - Check the machine: `python -m operation_love.runtime` (should show your GPU/CPU + no missing components).
 
-Hinge only — Android emulator (no Android phone needed; it's a virtual phone):
-- Install Android Studio → create an AVD with a **Google Play** image.
-- Start the emulator; confirm `adb devices` lists it. Put its serial in
-  `config.yaml` → `apps.hinge.serial` (or leave blank for the first device).
-- Install Hinge (Play Store in the emulator, or `adb install hinge.apk`).
-- Log into Hinge with **your phone number** (SMS to your real phone).
+Hinge only — physical Android device (Pixel recommended):
+- Connect the phone via USB. Run `adb devices` and confirm it appears as
+  `device` (not `unauthorized`). If prompted, tap **Allow** on the phone to
+  authorize the RSA key.
+- Set `apps.hinge.serial` in `config.yaml` to that serial (e.g. `2B221FDH300XXX`).
+  Leave blank to use the first USB device.
+- Optionally set `apps.hinge.adb_path` if `adb` is not on your `PATH`.
 
 ---
 
@@ -47,15 +48,17 @@ python -m tools.bumble_inspect          # opens Bumble headful; log in, reach a 
   click listener), so there's **no network reverse-engineering**. If detection
   prints the right LIKE/PASS, observe mode is wired.
 
-**Hinge (Android)** — use the `uiautomator2`/`uiautodev` inspector:
-- Confirm the **resource-ids** (like / pass / comment box / send / prompt / empty)
-  under `apps.hinge.ids`.
-- **Observe tap detection** (`wait_for_decision()`) is implemented and unit-tested:
-  a like is detected when the comment / "Send Like" sheet opens (`send_like` /
-  `comment_box`) and is then sent; a pass is detected when the prompt text changes
-  to the next profile. Live-confirm those two ids are the ones the sheet exposes —
-  if not, fix them under `apps.hinge.ids` (no code change). Then dry-run
-  `mode: observe` and check it logs your manual like/pass correctly.
+**Hinge (Android)** — use the built-in inspect tool:
+```bash
+python -m tools.hinge_inspect          # phone must be connected, Hinge open on a profile
+```
+- It prints the current `apps.hinge.coords` fractions (comment_box, send_like)
+  and vision-glyph positions (like_heart, pass_x). Paste any corrections into
+  `config.yaml` under `apps.hinge.coords`.
+- **Observe tap detection** works by watching ADB `getevent` after each human swipe:
+  a like is detected when the comment / "Send Like" sheet opens; a pass is detected
+  when the profile changes. Dry-run `mode: observe` and confirm it logs your
+  manual like/pass correctly.
 
 > These are the items deferred to "do live, at the end." Everything they plug
 > into (capture, embed, store, ranker, openers, supervisor) already works and is
@@ -104,8 +107,9 @@ Because state lives in BigQuery, the **same code runs on any always-on box**
 # Linux (systemd) or just a screen/tmux session:
 nohup python -m operation_love >> oplove.log 2>&1 &
 ```
-- Bumble runs headless anywhere. Hinge needs an emulator-capable host (KVM/WHPX),
-  so the always-on box must be able to run the Android emulator.
+- Bumble runs headless anywhere. Hinge requires a physical Android device
+  connected via USB (or USB-over-IP) — just run `adb devices` on the always-on
+  box to confirm the phone is visible.
 - Ctrl-C / SIGTERM shuts down cleanly and flushes the store.
 
 ---

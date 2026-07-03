@@ -13,13 +13,15 @@ global budget. Failures are isolated and auto-restarted with backoff.
 """
 from __future__ import annotations
 
+import random
 import threading
 import traceback
 import uuid
 
 from .drivers.base import DatingAppDriver, DriverClosed
-from .human import human_cooldown, human_delay
-from .ranker.decider import Decider
+from .human import human_cooldown
+from .human_motion import think_time_s
+from .ranker.decider import Decider, Decision
 
 _OBSERVE_CAPTURE_BUSY = "Capturing profile — please wait before your next swipe"
 _OBSERVE_PROCESSING_BUSY = "Processing — please wait before your next swipe"
@@ -108,6 +110,8 @@ class Worker(threading.Thread):
                     print(f"{self.app.title()} unexpected error in {self.mode} mode; HALTING "
                           f"(no restart) so nothing swipes blindly and the debug logs survive:")
                     traceback.print_exc()
+                    # Publish error to hub so the banner shows the failure (not a silent stop).
+                    self._stat(state="error", error=traceback.format_exc().strip().splitlines()[-1])
                     self.stop_event.set()
                     return
                 restarts += 1
@@ -251,6 +255,15 @@ class Worker(threading.Thread):
                           f"({self.limiter.describe()}); stopping {self.app}.")
                     break
 
+                # Ratio shape: demote this like to a pass when the running like-rate
+                # is at the ceiling (soft cap — does NOT halt the run).
+                if d.decision == "like" and self.limiter and not self.limiter.allow_like_ratio(liked, acted):
+                    assert acted > 0  # allow_like_ratio returns True when acted==0, so we can't be here
+                    ratio_pct = f"{liked / acted:.0%}"
+                    print(f"{self.app.title()} like-ratio ceiling "
+                          f"({ratio_pct} ≥ {self.limiter.target_like_ratio:.0%}) — demoting to pass")
+                    d = Decision("dislike", d.score, d.embedding, d.source)
+
                 if self.stop_event.is_set():
                     break
 
@@ -280,7 +293,8 @@ class Worker(threading.Thread):
 
                 if self.opener_service.stop_requested:        # global budget/credit stop
                     self.stop_event.set()
-                self._pace()
+                self._pace(d.decision)
+                self._maybe_session_break()
         except Exception as exc:  # noqa: BLE001
             if not isinstance(exc, DriverClosed):             # DriverClosed = clean stop, not a fault
                 self._capture_failure(exc)                    # snapshot WHILE the transport is live
@@ -289,8 +303,21 @@ class Worker(threading.Thread):
             self._stat(state="stopped")
             self.driver.close()
 
-    def _pace(self) -> None:
-        self.stop_event.wait(human_delay(self.pacing.swipe_delay_s))
+    def _pace(self, decision: str) -> None:
+        if self.pacing.swipe_delay_s == 0:
+            return
+        # Normalize driver decisions: "dislike" → "pass" for the timing model.
+        key = "like" if decision == "like" else "pass"
+        self.stop_event.wait(think_time_s(key))
+
+    def _maybe_session_break(self) -> None:
+        """~8% chance of a 20-90 s micro-break between profiles — mimics stepping away."""
+        if self.pacing.swipe_delay_s == 0:
+            return
+        if random.random() < 0.08:
+            pause = random.uniform(20, 90)
+            print(f"{self.app.title()} session micro-break: {pause:.0f}s")
+            self.stop_event.wait(pause)
 
     @staticmethod
     def _label_metadata(profile) -> dict:

@@ -65,8 +65,7 @@ def _fake_saturating_evaluate(samples, n_splits=5, eps=0.5):
             "base_rate": likes / n, "message": "fake grouped CV"}
 
 
-def test_format_report_shows_single_accuracy_metric():
-    # Terminal matches the hub: one accuracy % (ROC-AUC x 100), no PR-AUC/Brier/diminishing line.
+def test_format_report_shows_accuracy_brier_and_base_rate():
     r = {
         "status": "ok", "labels": 80, "likes": 20, "passes": 60,
         "identities": 80, "folds": 5, "roc_auc": [0.83, 0.04],
@@ -75,7 +74,9 @@ def test_format_report_shows_single_accuracy_metric():
     out = format_report(r)
     assert "Accuracy: 83.000% +/- 4.000%" in out
     assert "ranks a like above a pass" in out
-    assert "PR-AUC" not in out and "Brier" not in out and "Diminishing returns" not in out
+    assert "Brier: 0.200 +/- 0.010" in out
+    assert "Base rate: 25.0% likes" in out
+    assert "PR-AUC" not in out and "Diminishing returns" not in out
 
 
 def test_format_report_nonok_returns_message_only():

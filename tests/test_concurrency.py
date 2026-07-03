@@ -144,6 +144,45 @@ def test_one_worker_budget_exhaustion_stops_the_other_worker():
     assert store.rows == [("hinge", "like")]       # only A's single decision recorded
 
 
+def test_embedder_ensure_is_called_once_under_concurrent_access():
+    """Concurrent workers must not double-initialize the Embedder's heavy ML models.
+
+    Simulates the race: N threads all call _ensure() simultaneously after warmup failed
+    (i.e. _arc is still None). The double-checked lock must guarantee exactly one
+    initialization even when all threads pass the outer sentinel check at the same time.
+    """
+    import time
+    from operation_love.vision.embed import Embedder
+
+    embedder = Embedder()
+    init_count = [0]
+    gate = threading.Barrier(5)
+
+    def patched_ensure(self):
+        # Mirror the real double-checked locking. The gate is OUTSIDE the lock so
+        # all 5 threads pass the outer sentinel check together before racing for the lock.
+        if self._arc is not None:
+            return
+        gate.wait()            # synchronize: all threads pile up here simultaneously
+        with self._lock:
+            if self._arc is not None:  # second check: only the winner proceeds
+                return
+            time.sleep(0.01)   # simulate slow model load
+            init_count[0] += 1
+            self._arc = object()   # set sentinel LAST (same as real _ensure)
+
+    embedder._ensure = patched_ensure.__get__(embedder, type(embedder))
+
+    threads = [threading.Thread(target=embedder._ensure) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert init_count[0] == 1, f"Expected 1 init, got {init_count[0]} (double-init race!)"
+    assert embedder._arc is not None
+
+
 if __name__ == "__main__":
     import sys
     import traceback

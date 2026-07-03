@@ -35,6 +35,23 @@ def test_threshold_respected():
     assert m.decide([0.2, 0.2])[0] == "dislike"
 
 
+def test_min_per_class_defers_when_one_class_is_too_sparse():
+    """Ranker must stay not-ready when one class has fewer than min_per_class examples,
+    even if total label count exceeds min_labels and both classes are present."""
+    m = PreferenceModel(min_labels=10, threshold=0.5, min_per_class=5)
+    # 12 labels total, but only 2 likes — too few to train a reliable classifier.
+    samples = [(True, [1.0, 0.0])] * 2 + [(False, [-1.0, 0.0])] * 10
+    ready = m.train(samples)
+    assert not ready
+    assert not m.ready
+
+    # With exactly 5 of each class (10 total, at the floor) it should now train.
+    samples = [(True, [1.0, 0.0])] * 5 + [(False, [-1.0, 0.0])] * 5
+    ready = m.train(samples)
+    assert ready
+    assert m.ready
+
+
 def test_genuine_fit_failure_surfaces_and_stays_not_ready():
     # NaN in the feature vectors: sklearn's LogisticRegression.fit rejects this with a
     # ValueError. That genuine fit failure must surface loudly, NOT be swallowed into

@@ -195,6 +195,20 @@ class BigQueryStore:
             return int(r["c"])
         return 0
 
+    def spend_today(self) -> float:
+        """Sum of cost_usd already committed to BigQuery today (UTC day boundary).
+        Falls back to 0.0 on any error — used to seed the daily budget floor."""
+        try:
+            rows = self.client.query(
+                f"SELECT COALESCE(SUM(cost_usd), 0.0) AS total FROM `{self._tid('spend')}` "
+                "WHERE created_at >= TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), DAY)"
+            ).result()
+            for r in rows:
+                return float(r["total"])
+        except Exception:  # noqa: BLE001
+            pass
+        return 0.0
+
     # --- writes (buffered, thread-safe) --------------------------------
     def record_profile(self, run_id, app, profile_id, liked, source="manual",
                        photos=None, photo_count=0) -> bool:
@@ -329,9 +343,19 @@ class BigQueryStore:
         self._buf[table] = []
 
     def flush(self) -> None:
+        errors: list[Exception] = []
         with self._lock:
             for table in self._buf:
-                self._flush_table(table)
+                try:
+                    self._flush_table(table)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+                    print(f"BigQuery flush error for table '{table}': {exc}")
+        if errors:
+            raise RuntimeError(
+                f"BigQuery flush failed for {len(errors)} table(s): "
+                + "; ".join(str(e) for e in errors)
+            )
 
     def close(self) -> None:
         self.flush()

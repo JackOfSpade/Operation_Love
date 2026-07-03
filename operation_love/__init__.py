@@ -1,7 +1,7 @@
 """Operation Love v2 — personal dating-app assistant.
 
 Layers (see README):
-  drivers/      element-based app control (Bumble web, Hinge emulator)
+  drivers/      element-based app control (Bumble web, Hinge physical device over ADB)
   perception/   capture all photos + profile text into a Profile
   vision/       local quality filter + ArcFace/CLIP embeddings
   ranker/       learns YOUR taste from YOUR swipes (local, private)

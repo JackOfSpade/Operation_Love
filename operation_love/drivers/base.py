@@ -47,7 +47,10 @@ def snapshot_failure_frame(dbg, exc: BaseException, capture_frame) -> None:
         frame = capture_frame()
     except Exception:  # noqa: BLE001 — page/device may already be gone; log the error anyway
         frame = None
-    dbg.error("unexpected", frame, exc)
+    try:
+        dbg.error("unexpected", frame, exc)
+    except Exception:  # noqa: BLE001 — logging must never mask the real error being reported
+        pass
 
 
 class DatingAppDriver(ABC):

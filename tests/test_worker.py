@@ -186,15 +186,20 @@ def test_pace_scales_think_time_by_configured_anchor(monkeypatch):
     assert waited == [5.0]                    # 10.0 * 0.5
 
 
-def test_pace_falls_back_to_flat_anchor_without_a_decision(monkeypatch):
+def test_pace_maps_dislike_to_the_pass_think_time_bucket(monkeypatch):
     from operation_love import worker as worker_mod
 
     w = _worker(FakeDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
-    monkeypatch.setattr(worker_mod, "human_delay", lambda s: s * 2)
-    waited = []
-    monkeypatch.setattr(w.stop_event, "wait", lambda s: waited.append(s))
-    w._pace(None)
-    assert waited == [w.pacing.swipe_delay_s * 2]
+    seen = []
+    monkeypatch.setattr(worker_mod, "think_time_s", lambda decision: seen.append(decision) or 10.0)
+
+    class _Scaled:
+        swipe_delay_s = worker_mod._THINK_TIME_BASELINE_S   # -> scale 1.0
+
+    w.pacing = _Scaled()
+    monkeypatch.setattr(w.stop_event, "wait", lambda s: None)
+    w._pace("dislike")           # decider decisions are "like"/"dislike", never "pass"
+    assert seen == ["pass"]
 
 
 # --- Worker loop ---------------------------------------------------------

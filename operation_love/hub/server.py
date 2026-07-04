@@ -17,6 +17,12 @@ from .state import HubState
 
 _BROWSER_SHUTDOWN_GRACE_S = 1.5
 _BROWSER_STALE_CHECK_S = 5.0
+# Ctrl-C's grace period for an active run to flush/save before the process exits
+# anyway. Generous enough to cover the run's own bounded shutdown (supervisor.py
+# joins each of up to 2 app workers for up to 30s each) plus real save time, while
+# still guaranteeing Ctrl-C is never fully unresponsive if something is wedged
+# (e.g. a hung network call inside store.flush(), which has no timeout of its own).
+_SHUTDOWN_SAVE_TIMEOUT_S = 90.0
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -159,5 +165,10 @@ def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
     finally:
         if _Handler.state:
             _Handler.state.stop()
-            _Handler.state.wait_for_run()    # let the active run flush/save before the process exits
+            # Let the active run flush/save before the process exits — but bounded,
+            # so Ctrl-C can never hang forever if something in the run is wedged.
+            if not _Handler.state.wait_for_run(timeout=_SHUTDOWN_SAVE_TIMEOUT_S):
+                print(f"Hub: run did not finish saving within "
+                      f"{_SHUTDOWN_SAVE_TIMEOUT_S:.0f}s; exiting anyway "
+                      "(data may not be fully flushed).")
         httpd.shutdown()

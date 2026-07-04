@@ -9,16 +9,19 @@ background thread in THIS process; the page polls /api/status.
     python -m operation_love hub --make-launchers # write a double-click launcher
 
 The browser is only the face: start/stop POST to this local server, which does
-the real work (launch the Bumble browser, and — once an AVD exists — boot the
-Hinge emulator). UI choice has no bearing on what the backend can do.
+the real work (launch the Bumble browser, connect to the Hinge phone over ADB).
+UI choice has no bearing on what the backend can do.
 
 Split into state.py (HubState — the run + browser-liveness bookkeeping),
 server.py (the stdlib HTTP handler + process lifecycle), launchers.py
 (OS-specific double-click launcher scripts), and page.py (the inlined
-frontend). This module re-exports the full former flat-module surface so
-existing imports (`from .hub import make_launchers, serve`) and tests
-(`from operation_love.hub import HubState, _Handler, ...`) keep working
-unchanged.
+frontend). This module re-exports this package's own public surface (state/
+server/launchers/page's classes, functions, and constants) so existing imports
+(`from .hub import make_launchers, serve`) and tests (`from operation_love.hub
+import HubState, _Handler, ...`) keep working unchanged — it does NOT re-export
+every stdlib name (json, threading, webbrowser, ...) that happened to be
+reachable as an attribute on the old flat hub.py module as a side effect of its
+own top-level imports.
 """
 from __future__ import annotations
 

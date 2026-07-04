@@ -65,8 +65,8 @@ def _annotate(frame: bytes, point: tuple[int, int], out_path: Path) -> None:
 def _probe_buttons(driver: HingeDriver, out_dir: Path) -> None:
     print("\n--- Button probe (vision-hit vs fallback-coord on the current screen) ---")
     w, h = driver.adb.screen_size()
+    frame = driver.adb.screencap()   # one frame, shared by both glyphs (a consistent screen)
     for which, name in _BUTTON_TEMPLATES.items():
-        frame = driver.adb.screencap()
         hits = hinge._match_glyph(frame, hinge._load_template(name),
                                   side="right" if which == "like" else "left")
         if hits:

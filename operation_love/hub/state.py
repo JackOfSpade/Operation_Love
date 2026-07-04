@@ -79,11 +79,16 @@ class HubState:
                 self._stop.set()
         return True, "stopping"
 
-    def wait_for_run(self) -> None:
+    def wait_for_run(self, timeout: float | None = None) -> bool:
+        """Block until the active run's thread finishes (or `timeout` elapses).
+        Returns True if the thread is no longer alive (already stopped, or just
+        finished); False if `timeout` elapsed while it was still running."""
         with self._lock:
             thread = self._thread
         if thread and thread.is_alive():
-            thread.join()
+            thread.join(timeout=timeout)
+            return not thread.is_alive()
+        return True
 
     def browser_client_opened(self, client_id: str | None) -> bool:
         """Mark a hub page as alive. Return True when a stale-client watch should start."""

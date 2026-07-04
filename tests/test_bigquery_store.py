@@ -312,6 +312,17 @@ def test_flush_on_close():
     assert row["input_tokens"] == 10 and row["cost_usd"] == 0.0001
 
 
+def test_record_spend_stores_none_cost_as_null_not_zero():
+    # cost=None means "unknown/unpriceable" (e.g. no budget.pricing entry) -- must be
+    # stored as NULL, distinct from a genuinely free $0.00 call.
+    client = _FakeBQ()
+    s = _store(client, flush_every=100)
+    s.record_spend("r", "claude-unknown", Usage(input_tokens=10, output_tokens=5), None)
+    s.close()
+    row = client.inserted["proj.ds.spend"][0]
+    assert row["cost_usd"] is None
+
+
 def test_saved_summary_tallies_confirmed_inserts():
     client = _FakeBQ()
     s = _store(client, flush_every=100)

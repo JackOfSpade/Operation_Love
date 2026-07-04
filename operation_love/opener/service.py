@@ -66,9 +66,11 @@ class OpenerService:
                 # Degrade the same way as budget-reached/out-of-credit rather than crash —
                 # continuing to spend with no way to track it would silently break the
                 # budget-enforcement contract the rest of this service is built around.
+                # cost=None (not 0.0): the real cost was nonzero, just unrecoverable, and
+                # a fabricated $0.00 would misreport actual spend in the stored record.
                 self._exhaust(f"no budget.pricing entry for model '{result.model}'; "
                               "spend can no longer be tracked")
-                cost = 0.0
+                cost = None
             self.store.record_spend(run_id, result.model, result.usage, cost)
             self.store.record_opener(run_id, app, result.model, result.opener, result.referenced)
             if self.tracker.budget_reached():

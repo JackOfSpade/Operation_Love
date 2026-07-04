@@ -308,12 +308,16 @@ class BigQueryStore:
             self._maybe_flush("openers")
 
     def record_spend(self, run_id, model, usage: Usage, cost):
+        # cost is None when the call's price couldn't be determined (e.g. no
+        # budget.pricing entry for the model) — stored as NULL, distinct from a
+        # genuinely free $0.00 call.
         with self._lock:
             self._buf["spend"].append({
                 "run_id": run_id, "created_at": _now(), "model": model,
                 "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
                 "cache_read_tokens": usage.cache_read_input_tokens,
-                "cache_write_tokens": usage.cache_creation_input_tokens, "cost_usd": float(cost),
+                "cache_write_tokens": usage.cache_creation_input_tokens,
+                "cost_usd": None if cost is None else float(cost),
             })
             self._maybe_flush("spend")
 

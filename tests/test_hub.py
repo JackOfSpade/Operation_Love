@@ -111,6 +111,62 @@ def test_hubstate_double_start_blocked():
     st._thread.join()
 
 
+def test_wait_for_run_returns_true_when_thread_finishes_in_time():
+    st = HubState("config.yaml")
+    st._thread = threading.Thread(target=lambda: time.sleep(0.05))
+    st._thread.start()
+    assert st.wait_for_run(timeout=5) is True
+    assert st._thread.is_alive() is False
+
+
+def test_wait_for_run_returns_false_and_does_not_block_past_timeout():
+    st = HubState("config.yaml")
+    stuck = threading.Event()
+    st._thread = threading.Thread(target=stuck.wait, daemon=True)   # never finishes on its own
+    st._thread.start()
+    start = time.monotonic()
+    assert st.wait_for_run(timeout=0.1) is False
+    assert time.monotonic() - start < 2.0       # returned promptly, did not hang
+    assert st._thread.is_alive() is True
+    stuck.set()
+    st._thread.join(timeout=2)
+
+
+def test_serve_shutdown_warns_and_exits_when_run_does_not_finish_in_time(monkeypatch):
+    # A fake httpd (no real socket/serve_forever/shutdown handshake to fight) so this
+    # test exercises serve()'s own try/except/finally control flow in isolation.
+    import operation_love.hub.server as hub_server
+
+    monkeypatch.setattr(hub_server, "_SHUTDOWN_SAVE_TIMEOUT_S", 0.05)
+
+    stuck = threading.Event()
+    state = HubState("config.yaml")
+    state._thread = threading.Thread(target=stuck.wait, daemon=True)
+    state._thread.start()
+    monkeypatch.setattr(hub_server, "HubState", lambda config_path: state)
+
+    class _FakeHttpd:
+        server_address = ("127.0.0.1", 8799)
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(hub_server, "_bind", lambda host, port: _FakeHttpd())
+
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    try:
+        hub_server.serve("config.yaml", open_browser=False)
+    finally:
+        stuck.set()
+        state._thread.join(timeout=2)
+
+    assert any("did not finish saving" in line for line in printed)
+
+
 def test_hubstate_browser_client_lifecycle(monkeypatch):
     import operation_love.hub as hub
     now = 1000.0

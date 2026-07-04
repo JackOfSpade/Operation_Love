@@ -107,7 +107,9 @@ def test_unpriceable_model_disables_but_returns_this_opener():
     s = OpenerService(c, t, st, "casual", on_exhausted="stop")
     out = s.maybe_opener("r", "bumble", object())
     assert out.text == _Res.opener                          # already-spent credits aren't wasted
-    assert len(st.spend) == 1 and st.spend[0][-1] == 0.0     # cost recorded as untracked (0.0)
+    # cost recorded as None (unknown), NOT a fabricated 0.0 -- the call had a real,
+    # nonzero cost that just couldn't be priced; 0.0 would misreport actual spend.
+    assert len(st.spend) == 1 and st.spend[0][-1] is None
     assert s.disabled is True and s.stop_requested is True   # but no more openers until pricing is fixed
 
 

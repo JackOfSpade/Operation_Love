@@ -323,8 +323,9 @@ class HingeDriver(DatingAppDriver):
         """After an autonomous action the screen MUST change (a new card / a confirmation). If it
         doesn't, even after a short settle, something is wrong (missed tap, unknown modal, stuck
         deck) — raise so the worker HALTS and the debug logs are preserved instead of being
-        rotated away by continued blind swiping. Only active when halt_on_error is set."""
-        if not self.halt_on_error or before is None:
+        rotated away by continued blind swiping. Only active when halt_on_error is set (in which
+        case `before`, sourced from _snap(), is never None — _snap() raises instead)."""
+        if not self.halt_on_error:
             return
         if _retry_until(lambda: self._changed(before, self.adb.screencap()), 2, 0.6):
             return
@@ -449,7 +450,8 @@ class HingeDriver(DatingAppDriver):
         has moved off the pre-tap card. If a sheet/modal is still up (missed Send Like tap, or a
         Rose modal that out-raced _handle_rose_upsell) or the screen never changed (missed heart
         tap), raise so the worker HALTS instead of counting a like that never sent. Only active
-        under halt_on_error. Unlike a bare change-check, the scroll-to-top can't spoof this."""
+        under halt_on_error (in which case `before`, sourced from _snap(), is never None —
+        _snap() raises instead). Unlike a bare change-check, the scroll-to-top can't spoof this."""
         if not self.halt_on_error:
             return
         sheet_up = modal_up = False
@@ -457,7 +459,7 @@ class HingeDriver(DatingAppDriver):
             frame = self.adb.screencap()
             sheet_up = bool(_match_glyph(frame, _load_template("hinge_send_like.png"), side="any", threshold=0.6))
             modal_up = bool(_match_glyph(frame, _load_template("hinge_send_like_anyway.png"), side="any", threshold=0.6))
-            if not sheet_up and not modal_up and (before is None or self._changed(before, frame)):
+            if not sheet_up and not modal_up and self._changed(before, frame):
                 return                                # sheet/modal closed AND advanced -> sent
             time.sleep(human_delay(0.6))
         if sheet_up or modal_up:

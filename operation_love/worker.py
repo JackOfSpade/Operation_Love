@@ -18,7 +18,7 @@ import traceback
 import uuid
 
 from .drivers.base import DatingAppDriver, DriverClosed
-from .human import human_cooldown, human_delay
+from .human import human_cooldown
 from .human_motion import think_time_s
 from .ranker.decider import Decider
 
@@ -298,22 +298,18 @@ class Worker(threading.Thread):
 
                 if self.opener_service.stop_requested:        # global budget/credit stop
                     self.stop_event.set()
-                self._pace(d.decision)
+                self._pace(d.decision)                # d.decision is always "like"/"dislike"
         except Exception as exc:  # noqa: BLE001
             self._capture_failure_if_unexpected(exc)          # snapshot WHILE the transport is live
             raise                                             # (the finally below closes it)
         finally:
             self._finish_session()
 
-    def _pace(self, decision: str | None = None) -> None:
+    def _pace(self, decision: str) -> None:
         # Decision-aware "think time" (measured Hinge like/pass dwell asymmetry), scaled
-        # by the configured anchor, when a decision is known; the flat anchor otherwise
-        # (defensive fallback — every real call site has a decision).
-        anchor = self.pacing.swipe_delay_s
-        if decision is None:
-            self.stop_event.wait(human_delay(anchor))
-            return
-        scale = anchor / _THINK_TIME_BASELINE_S
+        # by the configured anchor so pacing.swipe_delay_s still speeds up/slows down
+        # pacing (and a test fixture's swipe_delay_s=0.0 still paces instantly).
+        scale = self.pacing.swipe_delay_s / _THINK_TIME_BASELINE_S
         self.stop_event.wait(think_time_s("like" if decision == "like" else "pass") * scale)
 
     @staticmethod

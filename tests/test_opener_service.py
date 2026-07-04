@@ -113,6 +113,21 @@ def test_unpriceable_model_disables_but_returns_this_opener():
     assert s.disabled is True and s.stop_requested is True   # but no more openers until pricing is fixed
 
 
+def test_opener_error_skips_this_swipe_without_disabling_the_service():
+    from operation_love.opener.opener import OpenerError
+
+    c, t, st = _Client(exc=OpenerError("Claude refused to generate an opener")), _Tracker([False, False]), _Store()
+    s = OpenerService(c, t, st, "casual", on_exhausted="stop")
+
+    assert s.maybe_opener("r", "bumble", object()) is None     # this swipe: no opener
+    assert s.disabled is False and s.stop_requested is False   # service stays live...
+    assert len(st.spend) == 0 and len(st.openers) == 0         # ...and nothing was billed/recorded
+
+    c.exc = None                                                # next profile: a normal response
+    out = s.maybe_opener("r", "bumble", object())
+    assert out.text == _Res.opener                             # subsequent calls are unaffected
+
+
 def test_non_credit_error_propagates(monkeypatch):
     monkeypatch.setattr(service_mod, "is_out_of_credit", lambda e: False)
     s = OpenerService(_Client(exc=RuntimeError("boom")), _Tracker([False]), _Store(), "casual")

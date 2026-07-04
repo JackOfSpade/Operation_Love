@@ -170,10 +170,15 @@ def test_swipe_without_opener_mode():
     assert svc.disabled is True and svc.stop_requested is False   # keep swiping, no stop
 
 
+class _CalibratedDriver(FakeDriver):
+    """A driver whose app has a real, measured think_time_s() calibration (Hinge)."""
+    think_time_calibrated = True
+
+
 def test_pace_scales_think_time_by_configured_anchor(monkeypatch):
     from operation_love import worker as worker_mod
 
-    w = _worker(FakeDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
+    w = _worker(_CalibratedDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
     monkeypatch.setattr(worker_mod, "think_time_s", lambda decision: 10.0)
 
     class _Scaled:
@@ -186,10 +191,25 @@ def test_pace_scales_think_time_by_configured_anchor(monkeypatch):
     assert waited == [5.0]                    # 10.0 * 0.5
 
 
-def test_pace_maps_dislike_to_the_pass_think_time_bucket(monkeypatch):
+def test_pace_uses_flat_anchor_for_a_driver_without_calibrated_pacing(monkeypatch):
+    # e.g. Bumble: no measured think-time model for this app, so pacing stays the
+    # original decision-agnostic anchor + log-normal spread, not a borrowed one.
     from operation_love import worker as worker_mod
 
     w = _worker(FakeDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
+    monkeypatch.setattr(worker_mod, "think_time_s",
+                        lambda decision: (_ for _ in ()).throw(AssertionError("must not be called")))
+    monkeypatch.setattr(worker_mod, "human_delay", lambda s: s * 2)
+    waited = []
+    monkeypatch.setattr(w.stop_event, "wait", lambda s: waited.append(s))
+    w._pace("like")
+    assert waited == [w.pacing.swipe_delay_s * 2]
+
+
+def test_pace_maps_dislike_to_the_pass_think_time_bucket(monkeypatch):
+    from operation_love import worker as worker_mod
+
+    w = _worker(_CalibratedDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
     seen = []
     monkeypatch.setattr(worker_mod, "think_time_s", lambda decision: seen.append(decision) or 10.0)
 

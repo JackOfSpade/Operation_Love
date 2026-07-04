@@ -4,7 +4,10 @@ One OpenerService is shared by every worker (Bumble, Hinge, ...) so the per-run
 spend cap is GLOBAL, not per-app. Thread-safe. Handles the two ways spending
 ends: the configured run budget, and the actual Anthropic out-of-credit error —
 either flips the service to disabled and (if on_exhausted="stop") asks the
-supervisor to stop all workers.
+supervisor to stop all workers. A per-call opener failure (refusal / malformed
+output — OpenerError) is handled separately and more narrowly: it's very likely
+specific to that one profile, so it just skips the opener for that swipe
+without disabling the service or stopping anything else.
 """
 from __future__ import annotations
 
@@ -13,7 +16,7 @@ from dataclasses import dataclass
 
 from ..costing import CostTracker, is_out_of_credit
 from ..perception.capture import Profile
-from .opener import OpenerClient
+from .opener import OpenerClient, OpenerError
 
 
 @dataclass
@@ -52,6 +55,15 @@ class OpenerService:
                 return None
             try:
                 result = self.client.generate(profile, self.style)
+            except OpenerError as e:
+                # A refusal or a truncated/malformed structured-output response is very
+                # likely specific to THIS profile's content (or one unlucky max_tokens
+                # cutoff) rather than a systemic failure — skip the opener for this swipe
+                # instead of taking down the whole auto-mode run. Unlike out-of-credit /
+                # budget-reached, this does NOT disable the service: the next profile's
+                # call is unrelated and should still be attempted normally.
+                print(f"Opener: {e}; swiping without an opener for this profile.")
+                return None
             except Exception as e:  # noqa: BLE001
                 if is_out_of_credit(e):
                     self._exhaust("Claude credit exhausted")

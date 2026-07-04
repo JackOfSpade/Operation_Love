@@ -18,7 +18,7 @@ import traceback
 import uuid
 
 from .drivers.base import DatingAppDriver, DriverClosed
-from .human import human_cooldown
+from .human import human_cooldown, human_delay
 from .human_motion import think_time_s
 from .ranker.decider import Decider
 
@@ -306,9 +306,14 @@ class Worker(threading.Thread):
             self._finish_session()
 
     def _pace(self, decision: str) -> None:
-        # Decision-aware "think time" (measured Hinge like/pass dwell asymmetry), scaled
-        # by the configured anchor so pacing.swipe_delay_s still speeds up/slows down
-        # pacing (and a test fixture's swipe_delay_s=0.0 still paces instantly).
+        if not getattr(self.driver, "think_time_calibrated", False):
+            # No app-specific calibration for this driver -> the flat, decision-agnostic
+            # anchor (unchanged pre-existing behavior for e.g. Bumble).
+            self.stop_event.wait(human_delay(self.pacing.swipe_delay_s))
+            return
+        # Decision-aware "think time" (measured like/pass dwell asymmetry for THIS app),
+        # scaled by the configured anchor so pacing.swipe_delay_s still speeds up/slows
+        # down pacing (and a test fixture's swipe_delay_s=0.0 still paces instantly).
         scale = self.pacing.swipe_delay_s / _THINK_TIME_BASELINE_S
         self.stop_event.wait(think_time_s("like" if decision == "like" else "pass") * scale)
 

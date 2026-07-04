@@ -164,14 +164,21 @@ def _match_glyph(frame: bytes, template, *, side: str, threshold: float = 0.6) -
         return []
 
 
-def _retry_until(check_fn, tries: int, delay_s: float):
+def _retry_until(check_fn, tries: int, delay_s: float, *, is_found=bool):
     """Call check_fn() up to `tries` times, sleeping human_delay(delay_s) after each
-    falsy attempt. Returns the first truthy result, or None once attempts run out.
-    The shared shape behind _await_button/_verify_progress/_handle_rose_upsell: poll
-    something on-screen with humanized pacing until it appears or we give up."""
+    attempt where `is_found(result)` is False. Returns the first result for which
+    is_found(result) is True, or None once attempts run out. The shared shape behind
+    _await_button/_verify_progress/_handle_rose_upsell: poll something on-screen with
+    humanized pacing until it appears or we give up.
+
+    `is_found` defaults to `bool` (any truthy result counts as found) — correct for
+    every current caller (None/bool/non-empty-list are never falsy-but-genuinely-found
+    here), but pass an explicit predicate (e.g. `lambda r: r is not None`) for a
+    check_fn whose "found" result can legitimately be falsy, so a falsy-but-valid hit
+    isn't mistaken for "not found yet" and silently retried away."""
     for _ in range(max(1, tries)):
         result = check_fn()
-        if result:
+        if is_found(result):
             return result
         time.sleep(human_delay(delay_s))
     return None
@@ -179,6 +186,7 @@ def _retry_until(check_fn, tries: int, delay_s: float):
 
 class HingeDriver(DatingAppDriver):
     accepts_opener = True   # Hinge sends the opener as a comment at like-time
+    think_time_calibrated = True   # human_motion._THINK was measured on this app
 
     def __init__(self, cfg):
         app_cfg = (getattr(cfg, "apps", {}) or {}).get("hinge", {})

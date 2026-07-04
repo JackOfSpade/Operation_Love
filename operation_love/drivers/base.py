@@ -60,6 +60,12 @@ class DatingAppDriver(ABC):
     # just wastes credits. Bumble is False (you match first, then message).
     accepts_opener: bool = True
 
+    # Whether human_motion.think_time_s()'s per-decision "think time" (measured
+    # like-vs-pass dwell asymmetry) is calibrated for THIS app's real behavior.
+    # True only for Hinge, which it was actually measured on; other drivers get
+    # the flat, decision-agnostic pacing anchor instead of a borrowed model.
+    think_time_calibrated: bool = False
+
     @abstractmethod
     def open_session(self) -> None:
         """Attach to the app (launch browser / connect to emulator) and reach the swipe deck."""

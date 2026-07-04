@@ -544,6 +544,29 @@ def test_snap_returns_none_after_two_failures_when_halt_on_error_false():
     assert drv._snap() is None
 
 
+def test_retry_until_default_bool_predicate_matches_existing_callers():
+    calls = iter([None, (0, 0)])   # a falsy-looking-but-later-truthy sequence: None then a tuple
+    assert hinge._retry_until(lambda: next(calls), tries=3, delay_s=0) == (0, 0)
+
+
+def test_retry_until_custom_predicate_accepts_a_falsy_found_result():
+    # A hypothetical check_fn whose "found" result can legitimately be falsy (e.g. 0)
+    # would be silently retried away by the default `bool` predicate; an explicit
+    # is_found predicate is exactly the escape hatch that prevents that.
+    calls = iter([0])
+    result = hinge._retry_until(lambda: next(calls), tries=3, delay_s=0,
+                                is_found=lambda r: r is not None)
+    assert result == 0
+
+
+def test_retry_until_default_predicate_would_have_missed_a_falsy_found_result():
+    # Documents the exact footgun the is_found parameter exists to close: with the
+    # default `bool` predicate, a legitimately-found-but-falsy result (0) reads as
+    # "not found" and retries exhaust to None instead of returning it.
+    calls = iter([0, 0, 0])
+    assert hinge._retry_until(lambda: next(calls), tries=3, delay_s=0) is None
+
+
 # --- debug logging + halt-on-unexpected --------------------------------
 def test_verify_progress_raises_when_screen_unchanged():
     from operation_love.drivers.hinge import HingeActionError

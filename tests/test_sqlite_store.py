@@ -101,6 +101,9 @@ def test_sqlite_add_label_rejects_nan_embedding(tmp_path):
             store.add_label("r", "bumble", True, [0.1, float("nan"), 0.3])
             raise AssertionError("expected ValueError on NaN embedding")
         except ValueError as e:
-            assert "nan" in str(e).lower() or "allow_nan" in str(e).lower()
+            # json.dumps(..., allow_nan=False) is what actually rejects it (store.py),
+            # and its real message is "Out of range float values are not JSON
+            # compliant" — it never literally says "nan"/"allow_nan".
+            assert "not json compliant" in str(e).lower()
     finally:
         store.close()

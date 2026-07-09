@@ -22,7 +22,9 @@ def _write_config(tmp_path, **overrides):
 
 
 def test_show_prints_storage_labels_and_ranker_readiness(tmp_path, capsys):
-    path = _write_config(tmp_path, ranker={"min_labels_to_engage": 2})
+    # min_per_class needs an explicit override too: its default (5) exceeds this
+    # test's deliberately minimal 1-like/1-dislike fixture.
+    path = _write_config(tmp_path, ranker={"min_labels_to_engage": 2, "min_per_class": 1})
     store = SQLiteStore(tmp_path / "store.db")
     store.add_label("r1", "bumble", True, [1.0, 1.0])
     store.add_label("r1", "bumble", False, [-1.0, -1.0])

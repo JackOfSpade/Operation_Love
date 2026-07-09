@@ -319,8 +319,6 @@ class Worker(threading.Thread):
             self._finish_session()
 
     def _pace(self, decision: str) -> None:
-        if self.pacing.swipe_delay_s == 0:
-            return
         if not getattr(self.driver, "think_time_calibrated", False):
             # No app-specific calibration for this driver -> the flat, decision-agnostic
             # anchor (unchanged pre-existing behavior for e.g. Bumble).

@@ -1,14 +1,17 @@
 name: CI
 
-# Runs this repo's test suite on every push to claude/** and main (and on PRs).
-# The auto-merge workflow (auto-merge-claude.yml) gates on THIS workflow's
-# completion: a claude/* branch merges to main only if the CI run for its exact
-# tip commit concluded "success". The lint job is advisory (continue-on-error)
-# so it never affects that gate.
+# Runs this repo's test suite on every push to every branch (and on PRs).
+# The auto-merge workflow (auto-merge-to-main.yml) gates on THIS workflow's
+# completion: a branch merges to main only if the CI run for its exact tip
+# commit concluded "success". The lint job is advisory (continue-on-error) so
+# it never affects that gate.
+#
+# push: has no branches: filter (was ['claude/**', main]) — CI must run on every
+# branch, not just claude/*, or the auto-merge CI-gate lookup finds no run for a
+# non-claude branch's SHA and fails closed forever (skips it every drain).
 
 on:
   push:
-    branches: ['claude/**', main]
   pull_request:
   workflow_dispatch:
 

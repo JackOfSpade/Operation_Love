@@ -95,6 +95,39 @@ def test_out_of_credit_disables_without_raising(monkeypatch):
     assert s.stop_requested is False                        # continue -> degrade, don't stop the run
 
 
+class _NoPricingTracker(_Tracker):
+    """record() raises KeyError, like the real CostTracker when the API echoes back
+    a model string with no budget.pricing entry."""
+    def record(self, model, usage):
+        raise KeyError(f"No pricing configured for model {model!r}")
+
+
+def test_unpriceable_model_disables_but_returns_this_opener():
+    c, t, st = _Client(), _NoPricingTracker([False]), _Store()
+    s = OpenerService(c, t, st, "casual", on_exhausted="stop")
+    out = s.maybe_opener("r", "bumble", object())
+    assert out.text == _Res.opener                          # already-spent credits aren't wasted
+    # cost recorded as None (unknown), NOT a fabricated 0.0 -- the call had a real,
+    # nonzero cost that just couldn't be priced; 0.0 would misreport actual spend.
+    assert len(st.spend) == 1 and st.spend[0][-1] is None
+    assert s.disabled is True and s.stop_requested is True   # but no more openers until pricing is fixed
+
+
+def test_opener_error_skips_this_swipe_without_disabling_the_service():
+    from operation_love.opener.opener import OpenerError
+
+    c, t, st = _Client(exc=OpenerError("Claude refused to generate an opener")), _Tracker([False, False]), _Store()
+    s = OpenerService(c, t, st, "casual", on_exhausted="stop")
+
+    assert s.maybe_opener("r", "bumble", object()) is None     # this swipe: no opener
+    assert s.disabled is False and s.stop_requested is False   # service stays live...
+    assert len(st.spend) == 0 and len(st.openers) == 0         # ...and nothing was billed/recorded
+
+    c.exc = None                                                # next profile: a normal response
+    out = s.maybe_opener("r", "bumble", object())
+    assert out.text == _Res.opener                             # subsequent calls are unaffected
+
+
 def test_non_credit_error_degrades_gracefully(monkeypatch):
     """Transient network/timeout errors skip this profile's opener but leave the service
     enabled so subsequent profiles can still try (the run does not halt)."""

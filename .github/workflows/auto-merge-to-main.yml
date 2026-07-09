@@ -1,0 +1,147 @@
+name: Auto-merge branches to main
+
+# Merges every branch in this repo into main automatically — but ONLY once that
+# branch's tip commit has a green run of the workflow named below (default: "CI").
+# A red/missing build never lands on main.
+#
+# SETUP (per repo):
+#   1. Drop this file at .github/workflows/auto-merge-to-main.yml (filename is just
+#      a label — fine to keep even when main below is not literally "main")
+#   2. Drop scripts/auto_merge_decision.sh alongside it (this workflow sources it).
+#   3. Set CI_WORKFLOW_NAME / CI_WORKFLOW_FILE below to match your repo's CI
+#      workflow (the `name:` field and filename respectively). Defaults assume a
+#      workflow at .github/workflows/ci.yml with `name: CI`.
+#   4. Settings → Actions → General → Workflow permissions → "Read and write
+#      permissions". Without this the bot's push/PR-create calls fail.
+#   5. If `main` has branch protection requiring reviews/status checks, either
+#      exempt this workflow's actor or this approach won't work as-is — a direct
+#      push will be rejected.
+#
+# Why trigger on `workflow_run` (CI completed) instead of `push`:
+#   Triggering on push would merge immediately, before CI even finishes, so it
+#   couldn't gate on CI. Triggering when CI_WORKFLOW_NAME completes means every
+#   drain happens with a known CI result in hand, and when a branch's CI later
+#   turns green, that completion re-triggers this workflow and picks it up.
+
+on:
+  workflow_run:
+    workflows: ["CI"]        # <-- must match your CI workflow's `name:` field
+    types: [completed]
+  workflow_dispatch: {}       # manual drain escape hatch
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read                # required: an explicit permissions block defaults
+                                # every unlisted scope to `none`, and the CI-gate
+                                # check reads workflow runs via the Actions API.
+
+concurrency:
+  group: auto-merge-main
+  cancel-in-progress: false
+
+env:
+  CI_WORKFLOW_FILE: ci.yml    # <-- must match your CI workflow's filename
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge all CI-green branches into main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          # shellcheck source=../../scripts/auto_merge_decision.sh
+          source scripts/auto_merge_decision.sh
+
+          # Drain EVERY un-merged branch, not just the one whose CI just finished.
+          # The concurrency group (auto-merge-main) keeps only ONE run pending, so
+          # rapid CI completions from several branches can drop a queued run
+          # (GitHub keeps one pending per group). Processing all branches here means
+          # whichever run does execute also picks up any stranded stragglers — a
+          # dropped queued run can no longer lose a branch's work.
+          if ! git fetch origin --prune; then
+            echo "::warning::git fetch failed; the next CI completion re-triggers and drains."
+            exit 0
+          fi
+
+          git checkout -B main origin/main
+
+          # Every remote branch is a candidate EXCEPT main itself (nothing to merge
+          # main into) and the origin/HEAD symbolic ref (not a real branch).
+          merged_branches=""
+          for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/ | grep -v -E '^origin/(main|HEAD)$' || true); do
+            br="${ref#origin/}"
+
+            # Already contained in main (e.g. a prior run merged it): just clean up.
+            if is_ancestor_of "$ref" main; then
+              merged_branches="$merged_branches $br"
+              continue
+            fi
+
+            # --- CI gate -----------------------------------------------------------
+            # Only merge a branch whose EXACT tip commit has a successful CI run.
+            # We query the latest run of CI_WORKFLOW_FILE for that precise SHA, so a
+            # commit pushed after CI passed (new tip, no green run yet) is skipped
+            # until its own CI completes green. Fail closed: any non-success
+            # (in-progress, failure, missing, or API error) skips the branch.
+            sha="$(git rev-parse "$ref")"
+            runs_json="$(gh api \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/$CI_WORKFLOW_FILE/runs?head_sha=$sha&per_page=1" \
+              2>/dev/null || echo "")"
+            ci_conclusion="$(ci_conclusion_from_json "$runs_json")"
+            if ! is_ci_green "$ci_conclusion"; then
+              echo "::notice::Skipping $br — CI for ${sha:0:7} is '$ci_conclusion', not success. It merges once its CI run completes green."
+              continue
+            fi
+
+            # Fast-forward if possible, else a merge commit. A real conflict (not
+            # auto-resolvable) falls back to opening a PR for manual resolution.
+            if git merge --ff-only "$ref" || git merge --no-ff "$ref" -m "Auto-merge $br into main"; then
+              merged_branches="$merged_branches $br"
+            else
+              git merge --abort || true
+              if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+                echo "::error::merge abort failed for $br — repo still mid-merge (MERGE_HEAD present); stopping the drain now to avoid cascading false conflicts on subsequent branches in this loop." >&2
+                exit 1
+              fi
+              echo "::warning::Unresolved conflict merging $br."
+              gh pr create --base main --head "$br" \
+                --title "Auto-merge conflict: $br" \
+                --body "The auto-merge workflow hit a conflict it could not resolve automatically. Resolve manually and merge, or close if superseded." \
+                || echo "PR already exists or could not be created."
+            fi
+          done
+
+          if [ -z "${merged_branches// }" ]; then
+            echo "No CI-green branches to merge."
+            exit 0
+          fi
+
+          if ! git push origin main; then
+            echo "::warning::push to main failed; branches left intact for the next run."
+            exit 0
+          fi
+
+          # Delete each merged branch ONLY after re-confirming its current remote
+          # tip is fully contained in the new main, so a commit pushed during the
+          # merge window is never deleted unmerged — it's left for the next run.
+          for br in $merged_branches; do
+            git fetch origin "$br" >/dev/null 2>&1 || continue
+            if is_ancestor_of "origin/$br" main; then
+              git push origin --delete "$br" || true
+            else
+              echo "::warning::$br advanced during the merge; not deleting (next run merges it)."
+            fi
+          done

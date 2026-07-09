@@ -1,128 +1,153 @@
-"""Hinge ADB inspect — confirm coordinate fractions and vision-glyph coverage.
+"""Hinge live bring-up inspector — confirm the vision-located like/pass buttons.
 
-Run ONCE after connecting a new device or after a Hinge UI update that moves
-buttons. The phone must be connected via USB with Hinge open on a completed,
-Selfie-Verified profile (so the heart / X glyphs are on screen).
+Run ONCE on the machine with your Hinge phone connected over ADB. It screencaps the
+current Hinge screen and runs the SAME template-matching the real driver uses at
+runtime (operation_love.drivers.hinge._load_template / _match_glyph / _locate_button)
+to locate the like-heart and pass-X glyphs, then saves an annotated screenshot so you
+can eyeball whether the located point actually lands on the button.
 
-What it does:
-  1. Runs `adb devices` and confirms the target serial is visible.
-  2. Takes a screenshot and writes it to data/hinge_inspect/ for manual review.
-  3. Runs the vision template-match for like_heart and pass_x on that screenshot
-     and prints the located (x_frac, y_frac) — these are what the driver uses at
-     runtime (falling back to the config fractions if the glyph isn't found).
-  4. Reports the configured fallback fractions for all four action points and
-     whether they look plausible for the device's resolution.
-
-Paste any corrections into config.yaml under apps.hinge.coords.
+This never taps, swipes, or installs anything on the phone — you stay in physical
+control the whole time. Unlike a uiautomator2/uiautodev inspector, it never puts an
+on-device automation helper on the phone; it only ever calls `adb exec-out screencap`
+(see ops/HINGE-PIXEL-RUNBOOK.md §5 on why that helper is the one thing this project
+refuses to install).
 
     python -m tools.hinge_inspect                  # uses config.yaml
     python -m tools.hinge_inspect --config x.yaml
+    python -m tools.hinge_inspect --watch 3         # confirm observe-mode detection on 3 swipes
 """
 from __future__ import annotations
 
 import argparse
-import subprocess
-import sys
-import time
 from pathlib import Path
 
+from operation_love import config as cfg_mod
+from operation_love.drivers import hinge
+from operation_love.drivers.hinge import HingeDriver
 
-def _adb(serial: str, adb: str, *args, timeout: int = 10) -> subprocess.CompletedProcess:
-    cmd = [adb]
-    if serial:
-        cmd += ["-s", serial]
-    cmd += list(args)
-    return subprocess.run(cmd, capture_output=True, timeout=timeout)
+_BUTTON_TEMPLATES = {"like": "hinge_heart.png", "pass": "hinge_pass_x.png"}
+_SHEET_TEMPLATES = {
+    "send_like sheet": "hinge_send_like.png",
+    "rose-upsell modal": "hinge_send_like_anyway.png",
+}
 
 
-def main(config_path: str = "config.yaml") -> int:
-    from operation_love import config as cfg_mod
+def _check_templates_load() -> bool:
+    print("\n--- Glyph templates (shipped with the package) ---")
+    ok = True
+    for label, name in {**_BUTTON_TEMPLATES, **_SHEET_TEMPLATES}.items():
+        found = hinge._load_template(name) is not None
+        ok = ok and found
+        print(f"  [{'OK  ' if found else 'MISS'}] {name:28} ({label})")
+    if not ok:
+        print("  MISS means cv2 isn't installed (`pip install -e '.[hinge]'`) or the "
+              "asset is missing from operation_love/drivers/assets/.")
+    return ok
 
-    cfg = cfg_mod.load(config_path)
-    hinge_cfg = cfg.apps.get("hinge", {}) or {}
-    serial = (hinge_cfg.get("serial") or "").strip()
-    adb = (hinge_cfg.get("adb_path") or "adb").strip() or "adb"
-    coords = hinge_cfg.get("coords", {}) or {}
 
-    print(f"Hinge inspect — adb={adb!r}  serial={serial or '(first device)'!r}")
-    print()
-
-    # 1. Check adb devices
+def _annotate(frame: bytes, point: tuple[int, int], out_path: Path) -> None:
+    """Save the screencap with a crosshair at `point`, so accuracy can be eyeballed
+    instead of trusted blind. Best-effort: a broken decode just skips the save."""
     try:
-        r = _adb("", adb, "devices", timeout=5)
-        lines = r.stdout.decode(errors="replace").strip().splitlines()[1:]
-        visible = [ln.split()[0] for ln in lines if ln.strip() and ln.split()[-1] == "device"]
-    except FileNotFoundError:
-        print(f"ERROR: `{adb}` not found. Set apps.hinge.adb_path in config.yaml.")
-        return 1
-    except Exception as exc:  # noqa: BLE001
-        print(f"ERROR: adb devices failed: {exc}")
-        return 1
+        import cv2
+        import numpy as np
+        img = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            return
+        cv2.drawMarker(img, (int(point[0]), int(point[1])), (0, 0, 255),
+                       markerType=cv2.MARKER_CROSS, markerSize=40, thickness=3)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(out_path), img)
+    except Exception as exc:  # noqa: BLE001 — annotation is a bonus, never fatal
+        print(f"  (could not save annotated screenshot: {exc})")
 
-    if not visible:
-        print("ERROR: no Android device connected. Connect the Pixel 7a and authorize RSA.")
-        return 1
-    if serial and serial not in visible:
-        print(f"ERROR: serial {serial!r} not found. Connected: {visible}")
-        return 1
-    target = serial or visible[0]
-    print(f"Device: {target}  ({len(visible)} device(s) total)")
 
-    # 2. Screenshot
-    out_dir = Path(cfg.data_dir) / "hinge_inspect"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    ts = int(time.time())
-    remote_path = f"/sdcard/hinge_inspect_{ts}.png"
-    local_path = out_dir / f"screenshot_{ts}.png"
-
-    r = _adb(target, adb, "shell", "screencap", "-p", remote_path, timeout=15)
-    if r.returncode != 0:
-        print(f"WARNING: screencap failed: {r.stderr.decode(errors='replace').strip()}")
-    else:
-        r2 = _adb(target, adb, "pull", remote_path, str(local_path), timeout=15)
-        _adb(target, adb, "shell", "rm", remote_path, timeout=5)
-        if r2.returncode == 0:
-            print(f"Screenshot saved: {local_path}")
+def _probe_buttons(driver: HingeDriver, out_dir: Path) -> None:
+    print("\n--- Button probe (vision-hit vs fallback-coord on the current screen) ---")
+    w, h = driver.adb.screen_size()
+    frame = driver.adb.screencap()   # one frame, shared by both glyphs (a consistent screen)
+    for which, name in _BUTTON_TEMPLATES.items():
+        hits = hinge._match_glyph(frame, hinge._load_template(name),
+                                  side="right" if which == "like" else "left")
+        if hits:
+            pt = hits[0]
+            print(f"  [HIT     ] {which:5} glyph at pixel {pt} "
+                  f"({pt[0] / w:.3f}, {pt[1] / h:.3f} of screen)")
         else:
-            print(f"WARNING: could not pull screenshot: {r2.stderr.decode(errors='replace').strip()}")
+            frac = driver.coords["like_heart" if which == "like" else "pass_x"]
+            pt = (int(frac[0] * w), int(frac[1] * h))
+            print(f"  [FALLBACK] {which:5} glyph not found by vision; using "
+                  f"apps.hinge.coords {frac} -> pixel {pt}")
+        shot = out_dir / f"hinge_inspect_{which}.png"
+        _annotate(frame, pt, shot)
+        print(f"             annotated screenshot: {shot}")
 
-    # 3. Run vision template-match if screenshot landed
-    if local_path.exists():
-        try:
-            import cv2
-            import numpy as np
-            from operation_love.drivers.hinge.vision import locate_glyph  # type: ignore[import]
 
-            img = cv2.imread(str(local_path))
-            h, w = img.shape[:2]
-            print(f"\nScreen resolution: {w}×{h}")
-            for glyph in ("like_heart", "pass_x"):
-                try:
-                    result = locate_glyph(img, glyph)
-                    if result:
-                        fx, fy = result[0] / w, result[1] / h
-                        print(f"  {glyph}: vision found at ({fx:.3f}, {fy:.3f})  "
-                              f"[pixel ({result[0]}, {result[1]})]")
-                    else:
-                        fb = coords.get(glyph, [None, None])
-                        print(f"  {glyph}: vision NOT found — fallback config: {fb}")
-                except Exception as exc:  # noqa: BLE001
-                    print(f"  {glyph}: vision error: {exc}")
-        except ImportError:
-            print("\nVision matching skipped (cv2 or hinge.vision not available).")
+def _probe_sheet_templates(driver: HingeDriver, out_dir: Path) -> None:
+    print("\n--- Sheet/modal probe (only visible during a like — optional) ---")
+    ans = input("  Trigger a like by hand so the 'Send Like' sheet is showing, "
+               "then press ENTER (or 's' + ENTER to skip) ➔ ")
+    if ans.strip().lower() == "s":
+        print("  Skipped.")
+        return
+    frame = driver.adb.screencap()
+    for label, name in _SHEET_TEMPLATES.items():
+        hits = hinge._match_glyph(frame, hinge._load_template(name), side="any", threshold=0.6)
+        if hits:
+            print(f"  [HIT ] {label:18} at pixel {hits[0]}")
+            _annotate(frame, hits[0], out_dir / f"hinge_inspect_{name}")
+        else:
+            print(f"  [MISS] {label:18} not found — expected if that screen isn't showing")
 
-    # 4. Report configured coordinate fractions
-    print("\nConfigured coordinate fractions (apps.hinge.coords):")
-    for key in ("like_heart", "pass_x", "comment_box", "send_like"):
-        val = coords.get(key, "(not set)")
-        print(f"  {key}: {val}")
 
-    print("\nDone. If any fractions look wrong, update apps.hinge.coords in config.yaml and re-run.")
-    return 0
+def _watch(driver: HingeDriver, rounds: int) -> None:
+    print(f"\n--- Observe detection: manually like/pass {rounds} cards ---")
+    for i in range(1, rounds + 1):
+        liked = driver.wait_for_decision(timeout=120.0)
+        if liked is None:
+            print(f"  {i}. No decision (timeout / deck empty) — stopping watch.")
+            return
+        print(f"  {i}. Detected: {'LIKE  👍' if liked else 'PASS  👎'}")
+    print("  Observe detection works ✔  (this is exactly what mode:observe records)")
+
+
+def _paste_block(driver: HingeDriver) -> None:
+    print("\n--- Paste-ready (drop into config.yaml only if you changed any) ---")
+    print("apps:\n  hinge:\n    coords:")
+    for name, frac in driver.coords.items():
+        print(f"      {name}: [{frac[0]}, {frac[1]}]")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        description="Confirm Hinge's vision-located buttons + observe detection.")
+    ap.add_argument("--config", default="config.yaml")
+    ap.add_argument("--watch", type=int, default=3,
+                    help="how many manual swipes to confirm detection (0 to skip)")
+    ap.add_argument("--out-dir", default="./data/hinge_inspect",
+                    help="where to save annotated screenshots")
+    args = ap.parse_args()
+
+    cfg = cfg_mod.load(args.config)
+    driver = HingeDriver(cfg)
+    out_dir = Path(args.out_dir)
+    print("Connecting to your Hinge phone over ADB…")
+    driver.open_session()
+    try:
+        if not _check_templates_load():
+            print("\nCan't vision-locate anything without cv2 + the templates — fix that first.")
+            return
+        input("\nPress ENTER once a profile card is on screen ➔ ")
+        _probe_buttons(driver, out_dir)
+        _probe_sheet_templates(driver, out_dir)
+        if args.watch > 0:
+            _watch(driver, args.watch)
+        _paste_block(driver)
+        print("\nDone. If everything is OK, set mode:observe and run "
+              "`python -m operation_love` to start seeding your taste.")
+    finally:
+        driver.close()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Hinge ADB inspect tool")
-    parser.add_argument("--config", default="config.yaml")
-    args = parser.parse_args()
-    sys.exit(main(args.config))
+    main()

@@ -515,6 +515,58 @@ def test_snap_propagates_driver_closed():
         drv._snap()
 
 
+def test_snap_raises_after_two_failures_when_halt_on_error():
+    from operation_love.drivers.adb import AdbError
+    from operation_love.drivers.hinge import HingeActionError
+
+    class Wedged(FakeAdb):
+        def screencap(self):
+            raise AdbError(["adb"], "device offline")
+
+    drv = _drv(Wedged([b"x"]), halt_on_error=True)
+    # Two consecutive screencap failures must halt (not silently return None and let
+    # _verify_progress/_verify_like_landed treat the missing "before" frame as success).
+    with pytest.raises(HingeActionError):
+        drv._snap()
+
+
+def test_snap_returns_none_after_two_failures_when_halt_on_error_false():
+    from operation_love.drivers.adb import AdbError
+
+    class Wedged(FakeAdb):
+        def screencap(self):
+            raise AdbError(["adb"], "device offline")
+
+    # debug_log=True keeps _snap() from short-circuiting; halt_on_error=False means a
+    # flaky screencap here is debug-only best-effort and must not halt the run.
+    drv = _drv(Wedged([b"x"]), halt_on_error=False, debug_log=True)
+    drv._dbg = object()   # any non-None sentinel; _snap only checks "is None"
+    assert drv._snap() is None
+
+
+def test_retry_until_default_bool_predicate_matches_existing_callers():
+    calls = iter([None, (0, 0)])   # a falsy-looking-but-later-truthy sequence: None then a tuple
+    assert hinge._retry_until(lambda: next(calls), tries=3, delay_s=0) == (0, 0)
+
+
+def test_retry_until_custom_predicate_accepts_a_falsy_found_result():
+    # A hypothetical check_fn whose "found" result can legitimately be falsy (e.g. 0)
+    # would be silently retried away by the default `bool` predicate; an explicit
+    # is_found predicate is exactly the escape hatch that prevents that.
+    calls = iter([0])
+    result = hinge._retry_until(lambda: next(calls), tries=3, delay_s=0,
+                                is_found=lambda r: r is not None)
+    assert result == 0
+
+
+def test_retry_until_default_predicate_would_have_missed_a_falsy_found_result():
+    # Documents the exact footgun the is_found parameter exists to close: with the
+    # default `bool` predicate, a legitimately-found-but-falsy result (0) reads as
+    # "not found" and retries exhaust to None instead of returning it.
+    calls = iter([0, 0, 0])
+    assert hinge._retry_until(lambda: next(calls), tries=3, delay_s=0) is None
+
+
 # --- debug logging + halt-on-unexpected --------------------------------
 def test_verify_progress_raises_when_screen_unchanged():
     from operation_love.drivers.hinge import HingeActionError

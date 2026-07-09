@@ -22,13 +22,14 @@ GCP / BigQuery (storage of record):
 - Auth once: `gcloud auth application-default login` (tables auto-create on first run).
 - Check the machine: `python -m operation_love.runtime` (should show your GPU/CPU + no missing components).
 
-Hinge only — physical Android device (Pixel recommended):
-- Connect the phone via USB. Run `adb devices` and confirm it appears as
-  `device` (not `unauthorized`). If prompted, tap **Allow** on the phone to
-  authorize the RSA key.
-- Set `apps.hinge.serial` in `config.yaml` to that serial (e.g. `2B221FDH300XXX`).
-  Leave blank to use the first USB device.
-- Optionally set `apps.hinge.adb_path` if `adb` is not on your `PATH`.
+Hinge only — a physical Android phone over host-side ADB (**no emulator**: Play
+Integrity flags automation on an emulated device, so the driver only talks to a
+real phone — see `operation_love/drivers/hinge.py` and `apps.hinge` in
+`config.yaml`). Full first-time device setup (eSIM, enabling ADB, the
+no-on-device-automation-server guardrail, scrcpy, installing Hinge) is its own
+runbook: **[ops/HINGE-PIXEL-RUNBOOK.md](HINGE-PIXEL-RUNBOOK.md)**. Once
+`adb devices` lists your phone, put its serial in `config.yaml` →
+`apps.hinge.serial` (or leave blank for the first device).
 
 ---
 
@@ -48,17 +49,23 @@ python -m tools.bumble_inspect          # opens Bumble headful; log in, reach a 
   click listener), so there's **no network reverse-engineering**. If detection
   prints the right LIKE/PASS, observe mode is wired.
 
-**Hinge (Android)** — use the built-in inspect tool:
+**Hinge (Android)** — one command does it (no `uiautomator2`/on-device inspector;
+that's the exact automation footprint ops/HINGE-PIXEL-RUNBOOK.md §5 forbids):
 ```bash
-python -m tools.hinge_inspect          # phone must be connected, Hinge open on a profile
+python -m tools.hinge_inspect            # screencaps your phone; reports vision-hit vs fallback-coord
 ```
-- It prints the current `apps.hinge.coords` fractions (comment_box, send_like)
-  and vision-glyph positions (like_heart, pass_x). Paste any corrections into
-  `config.yaml` under `apps.hinge.coords`.
-- **Observe tap detection** works by watching ADB `getevent` after each human swipe:
-  a like is detected when the comment / "Send Like" sheet opens; a pass is detected
-  when the profile changes. Dry-run `mode: observe` and confirm it logs your
-  manual like/pass correctly.
+- It screencaps the current Hinge screen and runs the SAME template-matching the
+  driver uses at runtime (`_load_template`/`_match_glyph` in
+  `operation_love/drivers/hinge.py`) to locate the like-heart and pass-X glyphs,
+  reporting a vision HIT or a FALLBACK (the fixed-fraction coord under
+  `apps.hinge.coords`). A FALLBACK on a fully-loaded profile screen means the
+  glyph templates need recapturing for your device, or `apps.hinge.coords` needs
+  a live tweak.
+- **Observe tap detection** (`wait_for_decision()`) is implemented and unit-tested:
+  a like is detected when the comment / "Send Like" sheet opens over the bottom
+  half of the screen (screencap diff) and is then sent; a pass is detected when
+  the whole card advances to the next profile. Dry-run `mode: observe` and check
+  it logs your manual like/pass correctly.
 
 > These are the items deferred to "do live, at the end." Everything they plug
 > into (capture, embed, store, ranker, openers, supervisor) already works and is
@@ -107,9 +114,9 @@ Because state lives in BigQuery, the **same code runs on any always-on box**
 # Linux (systemd) or just a screen/tmux session:
 nohup python -m operation_love >> oplove.log 2>&1 &
 ```
-- Bumble runs headless anywhere. Hinge requires a physical Android device
-  connected via USB (or USB-over-IP) — just run `adb devices` on the always-on
-  box to confirm the phone is visible.
+- Bumble runs headless anywhere. Hinge needs a physical Android phone reachable
+  over ADB (USB, or wireless ADB on the same network) from wherever the process
+  runs — no emulator, no special host virtualization support required.
 - Ctrl-C / SIGTERM shuts down cleanly and flushes the store.
 
 ---

@@ -45,8 +45,6 @@ _DEVICE_LOST_PHRASES = (
 
 _TEXT_SHELL_SPECIALS = frozenset("\\'\"`$&|;<>(){}[]*?!#~")
 
-KEYCODE_SPACE = 62
-
 
 class AdbError(RuntimeError):
     """An ADB command failed before a usable device response was produced."""

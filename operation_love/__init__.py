@@ -7,7 +7,7 @@ Layers (see README):
   ranker/       learns YOUR taste from YOUR swipes (local, private)
   opener/       Claude writes a natural, profile-specific opener
   costing.py    client-side spend tracking + per-run budget guard
-  orchestrator  ties the loop together
+  supervisor    ties the loop together (one process, all enabled apps)
 """
 
 __version__ = "2.0.0"

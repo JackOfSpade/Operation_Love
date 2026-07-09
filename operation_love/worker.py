@@ -19,7 +19,7 @@ import traceback
 import uuid
 
 from .drivers.base import DatingAppDriver, DriverClosed
-from .human import human_cooldown
+from .human import human_cooldown, human_delay
 from .human_motion import think_time_s
 from .ranker.decider import Decider, Decision
 
@@ -27,6 +27,12 @@ _OBSERVE_CAPTURE_BUSY = "Capturing profile — please wait before your next swip
 _OBSERVE_PROCESSING_BUSY = "Processing — please wait before your next swipe"
 _NO_PHOTO_RETRY_S = 0.5
 _PROFILE_LOG_WIDTH = 72
+# think_time_s() is calibrated to real measured Hinge dwell data around this many
+# seconds (PacingCfg.swipe_delay_s's own default) — pacing.swipe_delay_s scales it
+# proportionally, so the config knob still speeds up/slows down pacing (and a test
+# fixture's swipe_delay_s=0.0 still paces instantly) while think_time_s supplies the
+# measured like-vs-pass asymmetry shape instead of a single flat anchor.
+_THINK_TIME_BASELINE_S = 3.5
 
 
 class Worker(threading.Thread):
@@ -68,6 +74,18 @@ class Worker(threading.Thread):
                 snap(exc)
             except Exception:  # noqa: BLE001 — debug capture must never mask the real error
                 pass
+
+    def _capture_failure_if_unexpected(self, exc: BaseException) -> None:
+        """Shared except-clause body for _observe_loop/_auto_loop: snapshot the on-screen
+        state for any failure that isn't a clean DriverClosed stop."""
+        if not isinstance(exc, DriverClosed):
+            self._capture_failure(exc)
+
+    def _finish_session(self) -> None:
+        """Shared unconditional cleanup for _observe_loop/_auto_loop's finally: mark the
+        app stopped and release the driver."""
+        self._stat(state="stopped")
+        self.driver.close()
 
     def _profile_separator(self) -> None:
         print("-" * _PROFILE_LOG_WIDTH)
@@ -189,8 +207,8 @@ class Worker(threading.Thread):
                     last_retrained = added
         except BaseException as exc:
             pending_error = True
-            if isinstance(exc, Exception) and not isinstance(exc, DriverClosed):
-                self._capture_failure(exc)                    # snapshot WHILE the transport is live
+            if isinstance(exc, Exception):
+                self._capture_failure_if_unexpected(exc)      # snapshot WHILE the transport is live
             raise
         finally:
             try:
@@ -204,8 +222,7 @@ class Worker(threading.Thread):
                         traceback.print_exc()
             finally:
                 self.driver.render_busy(None)
-                self._stat(state="stopped")
-                self.driver.close()
+                self._finish_session()
 
     def _retrain_after_observe_labels(self, added: int) -> None:
         ready = self.decider.retrain(self.store)
@@ -293,22 +310,27 @@ class Worker(threading.Thread):
 
                 if self.opener_service.stop_requested:        # global budget/credit stop
                     self.stop_event.set()
-                self._pace(d.decision)
+                self._pace(d.decision)                # d.decision is always "like"/"dislike"
                 self._maybe_session_break()
         except Exception as exc:  # noqa: BLE001
-            if not isinstance(exc, DriverClosed):             # DriverClosed = clean stop, not a fault
-                self._capture_failure(exc)                    # snapshot WHILE the transport is live
+            self._capture_failure_if_unexpected(exc)          # snapshot WHILE the transport is live
             raise                                             # (the finally below closes it)
         finally:
-            self._stat(state="stopped")
-            self.driver.close()
+            self._finish_session()
 
     def _pace(self, decision: str) -> None:
         if self.pacing.swipe_delay_s == 0:
             return
-        # Normalize driver decisions: "dislike" → "pass" for the timing model.
-        key = "like" if decision == "like" else "pass"
-        self.stop_event.wait(think_time_s(key))
+        if not getattr(self.driver, "think_time_calibrated", False):
+            # No app-specific calibration for this driver -> the flat, decision-agnostic
+            # anchor (unchanged pre-existing behavior for e.g. Bumble).
+            self.stop_event.wait(human_delay(self.pacing.swipe_delay_s))
+            return
+        # Decision-aware "think time" (measured like/pass dwell asymmetry for THIS app),
+        # scaled by the configured anchor so pacing.swipe_delay_s still speeds up/slows
+        # down pacing (and a test fixture's swipe_delay_s=0.0 still paces instantly).
+        scale = self.pacing.swipe_delay_s / _THINK_TIME_BASELINE_S
+        self.stop_event.wait(think_time_s("like" if decision == "like" else "pass") * scale)
 
     def _maybe_session_break(self) -> None:
         """~8% chance of a 20-90 s micro-break between profiles — mimics stepping away."""

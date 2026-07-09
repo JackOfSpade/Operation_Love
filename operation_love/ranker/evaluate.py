@@ -11,12 +11,14 @@ as-is over HTTP; `format_report()` renders it for the terminal.
 """
 from __future__ import annotations
 
-from .model import RANKER_PARAMS, make_ranker_clf   # shared ranker hyperparameters (no drift)
+from .model import SKLEARN_LOGREG_KWARGS, new_classifier   # shared ranker hyperparameters (no drift)
 
 _FACE_DIMS = 512   # first 512 of the 1280-d vector = L2-normed ArcFace identity template
+_IDENTITY_EPS = 0.5   # DBSCAN cosine-distance threshold -> cosine similarity >= 0.5,
+                      # the buffalo_l same-identity threshold (see identity_groups below)
 
 
-def identity_groups(face_vectors: list[list[float]], eps: float = 0.5) -> list[int]:
+def identity_groups(face_vectors: list[list[float]], eps: float = _IDENTITY_EPS) -> list[int]:
     """Cluster rows by face identity via DBSCAN on cosine distance (eps=0.5 -> cosine
     similarity >= 0.5, the buffalo_l same-identity threshold). min_samples=1 so a face
     with no near neighbor becomes its own singleton group. One int id per input row."""
@@ -28,7 +30,8 @@ def identity_groups(face_vectors: list[list[float]], eps: float = 0.5) -> list[i
         np.asarray(face_vectors, dtype=float)).tolist()
 
 
-def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5, eps: float = 0.5) -> dict:
+def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5,
+             eps: float = _IDENTITY_EPS) -> dict:
     """Identity-grouped, stratified K-fold CV. Returns a JSON-able dict: status,
     label counts, distinct identities, and (when ok) ROC-AUC / PR-AUC / Brier as
     [mean, std]. Never raises — failure modes come back as a status + message."""
@@ -74,7 +77,7 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5, eps: fl
         for tr, va in folds:
             if len(set(yv[tr].tolist())) < 2 or len(set(yv[va].tolist())) < 2:
                 continue                    # a fold without both classes can't be scored
-            clf = make_ranker_clf()              # same hyperparameters as the deployed ranker
+            clf = new_classifier()               # same hyperparameters as the deployed ranker
             clf.fit(X[tr], yv[tr])
             p = clf.predict_proba(X[va])[:, 1]
             roc.append(float(roc_auc_score(yv[va], p)))
@@ -94,7 +97,7 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5, eps: fl
         return {**base, "status": "error", "message": f"evaluation failed: {type(exc).__name__}: {exc}"}
 
 
-def quality_trajectory(samples, step: int = 5, n_splits: int = 5, eps: float = 0.5,
+def quality_trajectory(samples, step: int = 5, n_splits: int = 5, eps: float = _IDENTITY_EPS,
                        min_labels: int = 10, max_points: int = 40) -> list[dict]:
     """Recompute leakage-free grouped-CV accuracy at chronological prefixes (every
     `step` labels) so the hub can chart how ranking quality evolved as labels accumulated.
@@ -153,10 +156,11 @@ def format_report(r: dict) -> str:
     brier = r.get("brier") or [0.0, 0.0]
     acc, band = roc[0] * 100, roc[1] * 100
     base_rate = r.get("base_rate", 0.0)
+    kw = SKLEARN_LOGREG_KWARGS
     return (f"Labels={r['labels']}  likes={r['likes']}  passes={r['passes']}  "
             f"distinct identities={r['identities']}\n"
-            f"Identity-grouped {r['folds']}-fold CV (LogReg C={RANKER_PARAMS['C']}, "
-            f"class_weight={RANKER_PARAMS['class_weight']}):\n"
+            f"Identity-grouped {r['folds']}-fold CV "
+            f"(LogReg C={kw['C']}, class_weight={kw['class_weight']}):\n"
             f"  Accuracy: {acc:.3f}% +/- {band:.3f}%  "
             f"(ROC-AUC concordance — ranks a like above a pass; 50% = random, 100% = perfect)\n"
             f"  Brier: {brier[0]:.3f} +/- {brier[1]:.3f}  "

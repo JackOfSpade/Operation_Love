@@ -24,8 +24,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install test deps
-        run: pip install --quiet pytest pyyaml
+      - name: Install package + test deps
+        # Was `pip install pytest pyyaml` only — never installed the package
+        # itself or its optional extras, so any test needing them (cv2 for
+        # tests/test_hinge_vision.py; sklearn/PIL/torch for the ml-dependent
+        # eval/observe tests) failed on a clean runner.
+        run: pip install --quiet -e '''.[dev,hinge,ml]'''
+
       - name: Run tests
         run: python -m pytest -q
 

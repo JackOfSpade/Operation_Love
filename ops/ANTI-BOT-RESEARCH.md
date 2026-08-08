@@ -103,12 +103,52 @@ helper, no accessibility service): capture via `adb exec-out screencap`, taps vi
 - **Network / IP** (HIGH): datacenter/VPN penalized; residential/mobile good; JA3/JA4;
   **Incognia** BSSID + GPS vs IP-geolocation consistency.
 - **Account / identity**: phone (VoIP rejected; carrier DB checked), GAID, **Widevine/DRM
-  device-id survives factory reset**, Firebase/Play install tokens.
+  device-id survives factory reset**, Firebase/Play install tokens. See §2.1 for what a
+  factory reset does and does not rotate.
 - **Biometric**: **face-hash federation across Match Group** (Tinder/Hinge/OkCupid/Match) — a
   banned face is recognized on a new account even with new number/device/IP.
 - **Cross-brand ban federation** (from privacy policy / litigation): Match's centralized
   safety repository shares device/photo/face/phone/payment across brands; bans cascade and
   persist.
+
+### 2.1 Device-identity reset — what a factory reset buys (added 2026-08-07)
+
+Question that prompted this: *can the Pixel be wiped so Hinge sees a new phone?* Short
+answer: **no.** A factory reset rotates the software identifiers and leaves the hardware
+identity — the part Match can actually pin you with — completely intact.
+
+| Identifier | Factory reset | Source / confidence |
+|---|---|---|
+| `ANDROID_ID` / SSAID | **Rotates** | Android O blog: *"only changes if the device is factory reset or if the signing key rotates"* — HIGH |
+| Advertising ID (GAID) | **Rotates** (also resettable anytime, no wipe needed) | HIGH |
+| Firebase install ID / GSF ID / Play install tokens | **New** | HIGH |
+| App data, cookies, accounts | **Gone** | HIGH |
+| Widevine / MediaDrm per-app ID | **Persists** | Per-APK scoped since O, but derived from the factory-provisioned keybox — HIGH |
+| Hardware attestation key (StrongBox / Titan M2) | **Permanent** | HIGH |
+| IMEI / serial | **Permanent**, but unreadable by third-party apps since Android 10 | HIGH — effectively moot for Hinge |
+| **Play Integrity Device Recall** | **Survives by design** | See below — HIGH mechanism / MEDIUM that Hinge uses it |
+
+**Play Integrity "Device Recall" — the feature that closes this door.** Google ships an API
+whose stated purpose is defeating exactly this manoeuvre. Three custom bits stored **on
+Google's servers**, keyed to the device: *"allowing your app to reliably recall your custom
+data even after your app is reinstalled or the device is reset."* Google's own example use
+is *"has or hasn't been known for high severity abuse."* Bits persist 3 years after last
+access. Beta, gated behind an interest form + Play Console opt-in, so adoption is not
+publicly enumerable — but Match Group is precisely the applicant profile that gets approved.
+**Assume a reset may be worth nothing against Hinge, not merely imperfect.**
+<https://developer.android.com/google/play/integrity/device-recall>
+
+**Do not escalate to bootloader unlock / root / ID spoofing.** The physical-Pixel path exists
+*only* because the device passes §2 gate 1. Unlocking trades a rotatable soft identifier for
+a permanent hard integrity failure — strictly worse. It also means Pixel factory-image
+flashing is unavailable (it requires an unlocked bootloader); the only integrity-preserving
+wipe is the plain Settings/recovery factory reset, which keeps the bootloader locked.
+
+**Consequence for strategy.** Device IDs were never the binding constraint. Per the vectors
+above, the durable linkers are **face-hash federation**, **phone number**, **payment
+instrument**, and **IP** — a wipe touches none of them. Rotating hardware identity in any
+real sense requires *different physical hardware*, and even that does not clear Recall bits
+or a face hash. Budget effort accordingly: account/face/number hygiene ≫ device-ID hygiene.
 
 ### Vendor / biometric claims — DISPUTED
 - **Report 1 (confident):** Incognia + ThreatMetrix SDKs embedded in Hinge; `MotionEvent`
@@ -167,6 +207,8 @@ helper, no accessibility service): capture via `adb exec-out screencap`, taps vi
 - Chromium/Playwright detection changes (CDP tricks come and go) → re-validate the patchright
   approach.
 - Play Integrity policy changes; and confirm whether Hinge enforces DEVICE vs STRONG.
+- **Device Recall leaving beta / becoming default-on** (§2.1) — would harden the "wipe and
+  start over" dead end into a permanent one. Re-check before any burner-rotation plan.
 - Bumble's actual vendor stack (only confirmable via authenticated-app inspection).
 - Hinge's true enforcement aggressiveness (report 2's open question) — resolvable only
   empirically, and only via shadowban-aware testing on a disposable account.

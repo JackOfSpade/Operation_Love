@@ -1,6 +1,9 @@
 """BigQueryStore tests with a fake client — no google SDK or network required."""
+from datetime import datetime, timezone
+
 from operation_love.costing import Usage
 from operation_love.ranker.bigquery_store import BigQueryStore
+from operation_love.ranker.store import local_midnight_epoch
 
 
 class _FakeJob:
@@ -16,19 +19,30 @@ class _FakeBQ:
 
     def __init__(self, label_rows=None, insert_errors=None):
         self.queries = []
+        self.job_configs = []          # parallel to `queries`, index-aligned
         self.inserted: dict[str, list[dict]] = {}
+        self.row_ids: dict[str, list] = {}
         self._label_rows = label_rows or []
         self._insert_errors = insert_errors or []
 
-    def query(self, sql):
+    def query(self, sql, job_config=None):
         self.queries.append(sql)
+        self.job_configs.append(job_config)
         if sql.strip().upper().startswith("SELECT"):
             return _FakeJob(self._label_rows)
         return _FakeJob()  # DDL
 
-    def insert_rows_json(self, table_id, rows):
+    def insert_rows_json(self, table_id, rows, row_ids=None):
+        # Real BigQuery semantics with skip_invalid_rows left unset (the default,
+        # False, and what BigQueryStore actually sends): if any row is invalid the
+        # WHOLE request fails and NOTHING is written, even though `errors` names only
+        # the offending row(s). Model that here rather than the (wrong) "rows not
+        # named in errors were accepted" behaviour.
+        if self._insert_errors:
+            return self._insert_errors
         self.inserted.setdefault(table_id, []).extend(rows)
-        return self._insert_errors
+        self.row_ids.setdefault(table_id, []).extend(row_ids or [])
+        return []
 
 
 class _FakeBlob:
@@ -112,7 +126,6 @@ def test_load_labels_parses_and_counts():
     s = _store(client)
     labels = s.load_labels()
     assert labels == [(True, [0.1, 0.2]), (False, [0.3])]
-    assert s.label_count() == 2
 
 
 def test_buffer_flushes_at_threshold():
@@ -122,7 +135,6 @@ def test_buffer_flushes_at_threshold():
     assert "proj.ds.labels" not in client.inserted          # buffered, not yet sent
     s.add_label("r", "bumble", False, [0.2])
     assert len(client.inserted["proj.ds.labels"]) == 2       # flushed at threshold
-    assert s.label_count() == 2
 
 
 def test_add_label_includes_profile_id():
@@ -332,6 +344,12 @@ def test_insert_errors_raise():
     else:
         raise AssertionError("expected RuntimeError on insert errors")
 
+    # Real BigQuery rejected the whole request -- nothing was actually written, so
+    # nothing may be credited as written, and the row must stay buffered (not lost).
+    assert s._written["labels"] == 0
+    assert "proj.ds.labels" not in client.inserted
+    assert len(s._buf["labels"]) == 1
+
 
 def test_flush_partial_failure_attempts_all_tables():
     """When one table fails during flush(), the other tables are still attempted."""
@@ -340,7 +358,7 @@ def test_flush_partial_failure_attempts_all_tables():
             super().__init__()
             self.fail_suffix = fail_table_suffix
 
-        def insert_rows_json(self, table_id, rows):
+        def insert_rows_json(self, table_id, rows, row_ids=None):
             if table_id.endswith(self.fail_suffix):
                 return [{"index": 0, "errors": ["injected failure"]}]
             self.inserted.setdefault(table_id, []).extend(rows)
@@ -392,18 +410,173 @@ def test_load_labels_ordered_queries_in_created_at_order():
     assert "ORDER BY created_at" in client.queries[-1]
 
 
-if __name__ == "__main__":
-    import sys
-    import traceback
+def test_count_today_parameterizes_local_midnight_matching_sqlite():
+    """count_today's day boundary must be the SAME instant SQLiteStore derives from
+    local_midnight_epoch() -- not a UTC-day truncation done in SQL."""
+    client = _FakeBQ(label_rows=[{"c": 0}])
+    s = _store(client)
+    s.count_today("bumble")
 
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
+    sql = client.queries[-1]
+    assert "@day_start" in sql
+    assert "TIMESTAMP_TRUNC" not in sql
+
+    param = client.job_configs[-1].query_parameters[0]
+    assert param.name == "day_start"
+    expected = datetime.fromtimestamp(local_midnight_epoch(), tz=timezone.utc)
+    assert abs((param.value - expected).total_seconds()) < 2   # same boundary as SQLite
+
+
+def test_spend_today_parameterizes_local_midnight_and_sums_cost():
+    client = _FakeBQ(label_rows=[{"total": 3.5}])
+    s = _store(client)
+
+    assert s.spend_today() == 3.5
+
+    sql = client.queries[-1]
+    assert "@day_start" in sql
+    assert "TIMESTAMP_TRUNC" not in sql
+
+    param = client.job_configs[-1].query_parameters[0]
+    assert param.name == "day_start"
+    expected = datetime.fromtimestamp(local_midnight_epoch(), tz=timezone.utc)
+    assert abs((param.value - expected).total_seconds()) < 2
+
+
+class _PoisonRowBQ(_FakeBQ):
+    """Models REAL BigQuery insertAll semantics with skip_invalid_rows left unset (the
+    default -- and what BigQueryStore actually sends): if the current call's `rows`
+    contains a row matching `bad_embedding`, the WHOLE request is rejected and NOTHING
+    is written -- not even the other, valid rows in that same batch. `errors` names
+    only the poison row's index within THAT call.
+
+    The poison row is matched by content, not position: a row's index shifts across
+    retries as other rows are appended to / evicted from the buffer, so matching by
+    content is what makes this fake keep "permanently" rejecting the same logical row
+    call after call, the way a genuinely malformed row would in reality."""
+
+    def __init__(self, bad_embedding):
+        super().__init__()
+        self.bad_embedding = bad_embedding
+        self.calls: list[tuple[str, list[dict], list]] = []
+
+    def insert_rows_json(self, table_id, rows, row_ids=None):
+        self.calls.append((table_id, list(rows), list(row_ids or [])))
+        bad_idx = next((i for i, r in enumerate(rows) if r.get("embedding") == self.bad_embedding), None)
+        if bad_idx is None:
+            self.inserted.setdefault(table_id, []).extend(rows)
+            self.row_ids.setdefault(table_id, []).extend(row_ids or [])
+            return []
+        return [{"index": bad_idx, "errors": ["boom"]}]        # whole request rejected
+
+
+def test_flush_partial_failure_keeps_whole_batch_buffered_not_just_the_named_row():
+    """Real BigQuery (skip_invalid_rows unset) fails the WHOLE request when any row is
+    invalid -- rows NOT named in `errors` are not written either. So a rejected flush
+    must keep the entire batch buffered (not evict the rows absent from `errors`, the
+    old -- wrong -- assumption), and `_written` must not credit rows that were never
+    actually persisted."""
+    client = _PoisonRowBQ(bad_embedding=[0.1])
+    s = _store(client, flush_every=100)
+    s.add_label("r", "bumble", True, [0.0])     # good
+    s.add_label("r", "bumble", False, [0.1])    # poison -- BigQuery keeps rejecting this one
+    s.add_label("r", "bumble", True, [0.2])     # good
+
+    try:
+        s.flush()
+        raise AssertionError("expected RuntimeError on partial failure")
+    except RuntimeError:
+        pass
+
+    # Nothing was actually written -- the whole request failed -- so nothing may be
+    # credited as written, no row is evicted, and no row may be BOTH counted as
+    # written AND absent from the store.
+    assert s._written["labels"] == 0
+    assert len(s._buf["labels"]) == 3
+    assert "proj.ds.labels" not in client.inserted
+    for row in s._buf["labels"]:
+        assert row not in client.inserted.get("proj.ds.labels", [])
+
+    # Remove the poison row by hand (simulating the bad data getting fixed/discarded)
+    # and retry: now the whole batch is valid, and it lands together, using the SAME
+    # row_ids as the first attempt (content-derived, stable) so a real BigQuery's
+    # best-effort dedup would not double-insert anything it happened to have ingested.
+    s._buf["labels"] = [r for r in s._buf["labels"] if r["embedding"] != [0.1]]
+    s.flush()
+
+    assert s._written["labels"] == 2
+    assert len(client.inserted["proj.ds.labels"]) == 2
+    assert s._buf["labels"] == []
+
+    _, first_rows, first_ids = client.calls[0]
+    assert len(first_ids) == len(set(first_ids))            # distinct ids within a batch
+    _, second_rows, second_ids = client.calls[1]
+    good_id_first_attempt = first_ids[[r["embedding"] for r in first_rows].index([0.0])]
+    good_id_retry = second_ids[[r["embedding"] for r in second_rows].index([0.0])]
+    assert good_id_first_attempt == good_id_retry            # same content -> same id on retry
+
+
+def test_flush_drops_permanently_invalid_row_after_bound_and_keeps_good_rows():
+    """A row BigQuery keeps rejecting forever must not block its table's buffer (and
+    every good row queued behind it) forever. After the bounded number of consecutive
+    failed attempts, the store must drop ONLY that row -- loudly, and never crediting
+    it as written, since it never was -- while the surviving good rows remain buffered
+    and land on the very next attempt."""
+    from operation_love.ranker.bigquery_store import _MAX_INSERT_ATTEMPTS
+
+    client = _PoisonRowBQ(bad_embedding=[0.1])
+    s = _store(client, flush_every=100)
+    s.add_label("r", "bumble", True, [0.0])     # good
+    s.add_label("r", "bumble", False, [0.1])    # permanently poison
+    s.add_label("r", "bumble", True, [0.2])     # good
+
+    for _ in range(_MAX_INSERT_ATTEMPTS):
         try:
-            fn()
-            print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL {fn.__name__}")
-            traceback.print_exc()
-    sys.exit(1 if failed else 0)
+            s.flush()
+        except RuntimeError:
+            pass
+
+    # The poison row is gone from the buffer (dropped, not retried forever) but was
+    # NEVER counted as written -- it was never accepted by BigQuery, so it is neither
+    # "written" nor silently lost without a trace: saved_summary() must surface it.
+    assert [r["embedding"] for r in s._buf["labels"]] == [[0.0], [0.2]]
+    assert s._written["labels"] == 0
+    assert s._dropped["labels"] == 1
+    assert "DROPPED" in s.saved_summary()
+    assert "labels=1" in s.saved_summary()
+
+    # With the poison row gone, the surviving good rows now flush successfully -- no
+    # data lost among them.
+    s.flush()
+    assert s._written["labels"] == 2
+    assert [r["embedding"] for r in client.inserted["proj.ds.labels"]] == [[0.0], [0.2]]
+    assert s._buf["labels"] == []
+
+
+def test_flush_partial_failure_attempts_survive_interleaved_new_rows():
+    """A row's failed-attempt count is tracked by its stable content-derived row_id,
+    not by its position in the buffer, so it must keep accumulating correctly even
+    as new (unrelated, good) rows are appended between retries -- which shifts every
+    row's index."""
+    from operation_love.ranker.bigquery_store import _MAX_INSERT_ATTEMPTS
+
+    client = _PoisonRowBQ(bad_embedding=[0.1])
+    s = _store(client, flush_every=100)
+    s.add_label("r", "bumble", False, [0.1])    # poison, starts at index 0
+
+    for i in range(_MAX_INSERT_ATTEMPTS - 1):
+        try:
+            s.flush()
+        except RuntimeError:
+            pass
+        s.add_label("r", "bumble", True, [float(i)])   # shifts the poison row's index
+
+    assert s._dropped["labels"] == 0             # not yet at the bound
+
+    try:
+        s.flush()
+    except RuntimeError:
+        pass
+
+    assert s._dropped["labels"] == 1
+    assert all(r["embedding"] != [0.1] for r in s._buf["labels"])

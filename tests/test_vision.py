@@ -193,10 +193,48 @@ def test_quality_never_drops_on_scorer_error():
     assert qf.keep(b"x") is True   # fail-open: never drop a photo because scoring broke
 
 
+def test_faceless_photo_clip_vector_excluded_from_profile_pool(monkeypatch):
+    """A photo with no detected face still returns a CLIP vector for the WHOLE screenshot
+    (_embed_image's clip_src falls back to the raw image, not a person-centric crop, when
+    no face is found). embed_profile must not fold that into the pooled CLIP vector -- it
+    would dilute the style/vibe signal with UI chrome (see square_crop_around_bbox's
+    docstring). Only the faced photo's crop should survive into the pool."""
+    embedder = Embedder()
+    monkeypatch.setattr(embedder, "_ensure", lambda: None)
+    results = iter([
+        ([1.0, 0.0], [1.0, 0.0]),  # photo 1: face found -> person-crop clip vec
+        (None, [0.0, 1.0]),        # photo 2: no face -> whole-screenshot clip vec, must be dropped
+    ])
+    monkeypatch.setattr(embedder, "_embed_image", lambda img: next(results))
+
+    vec = embedder.embed_profile(Profile(photos=[b"a", b"b"]))
+
+    assert vec == [1.0, 0.0, 1.0, 0.0]   # clip half == photo 1's vec alone, never photo 2's
+
+
+def test_embed_profile_flags_total_failure_distinctly_from_no_face(monkeypatch, capsys):
+    """When every photo's embedding call raises, that's a broken embedder (operator
+    problem), not a genuine no-face profile -- both currently return None, but the total
+    failure must print a distinguishable, loud signal so it isn't silently mistaken for a
+    normal run of faceless profiles."""
+    embedder = Embedder()
+    monkeypatch.setattr(embedder, "_ensure", lambda: None)
+
+    def boom(_img):
+        raise RuntimeError("simulated total embed failure")
+
+    monkeypatch.setattr(embedder, "_embed_image", boom)
+
+    result = embedder.embed_profile(Profile(photos=[b"a", b"b"]))
+
+    assert result is None
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "broken embedder" in out
+
+
 def test_embed_profile_returns_none_on_nan_in_final_vector(monkeypatch):
     """A NaN/Inf in the final concatenated vector (e.g. from a degenerate l2_normalize)
     must return None (treated as no_face) rather than storing a corrupted embedding."""
-    import math
     from operation_love.vision.embed import Embedder
     from operation_love.perception.capture import Profile
 
@@ -213,17 +251,3 @@ def test_embed_profile_returns_none_on_nan_in_final_vector(monkeypatch):
     profile = Profile(photos=[b"fake_photo"])
     result = embedder.embed_profile(profile)
     assert result is None, "expected None when final vector contains NaN"
-
-
-if __name__ == "__main__":
-    import sys
-    import traceback
-
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn(); print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
-    sys.exit(1 if failed else 0)

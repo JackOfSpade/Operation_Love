@@ -125,6 +125,7 @@ class Embedder:
         self._clip_preprocess = None
         self._device = None
         self._lock = threading.Lock()  # guards double-checked init in _ensure()
+        self._reported_total_failure = False  # surface a total-failure profile once, not per profile
 
     def _build_arc(self, providers: list[str]):
         from insightface.app import FaceAnalysis
@@ -231,7 +232,13 @@ class Embedder:
                     continue
                 if fv is not None:
                     face_vecs.append(fv)
-                clip_vecs.append(cv)
+                    # Only pool CLIP when a face was found: with no face, _embed_image's
+                    # clip_src falls back to the WHOLE screenshot (status bar, buttons, white
+                    # margins), not the person-centric crop square_crop_around_bbox exists to
+                    # produce. Mixing that in would dilute the pooled style/vibe vector with UI
+                    # chrome. A faceless photo just contributes nothing here (a profile with NO
+                    # faces at all still returns None below, so no photo signal is silently lost).
+                    clip_vecs.append(cv)
 
             provider_failed = (
                 bool(profile.photos)
@@ -240,9 +247,17 @@ class Embedder:
                 and _is_onnx_provider_failure(first_error)
             )
             if provider_failed and not self._arc_on_cpu and not retried_on_cpu:
-                print("CoreML/ONNX provider failed; retrying this profile on CPU "
-                      "(CPU stays in effect for the rest of this run).")
-                self._set_arc_providers(["CPUExecutionProvider"])
+                # Guard the provider swap with the same lock _ensure() uses: two Workers can
+                # hit this concurrently, and without the lock both would observe
+                # not self._arc_on_cpu and both rebuild the full FaceAnalysis model (duplicated
+                # multi-second loads + a torn read of _arc_on_cpu). Re-check under the lock so
+                # only the winner rebuilds; the loser just retries its own profile against the
+                # now-CPU model the winner installed. Scope stays tight — no inference in here.
+                with self._lock:
+                    if not self._arc_on_cpu:
+                        print("CoreML/ONNX provider failed; retrying this profile on CPU "
+                              "(CPU stays in effect for the rest of this run).")
+                        self._set_arc_providers(["CPUExecutionProvider"])
                 retried_on_cpu = True
                 continue
             break
@@ -252,6 +267,17 @@ class Embedder:
         print(f"Profile: {len(profile.photos)} photo(s) -> "
               f"{len(face_vecs)} with a face"
               f"{f', {errors} errored' if errors else ''}")
+        # A profile where EVERY photo threw is an operator problem (broken embedder: bad
+        # weights, OOM, corrupt install), not a profile property -- left alone it returns
+        # None exactly like a genuine no-face profile and silently vanishes into the same
+        # "skip" path, with zero signal that the embedder itself is broken. Say so loudly,
+        # once per run (same convention as quality.py's _report_failure).
+        if bool(profile.photos) and errors == len(profile.photos) and not self._reported_total_failure:
+            self._reported_total_failure = True
+            print(f"WARNING: total embedding failure ({errors}/{len(profile.photos)} photos "
+                  f"errored: {type(first_error).__name__}: {first_error}) -- this looks like a "
+                  "broken embedder, not a genuine no-face profile. (further occurrences this "
+                  "run are not logged)")
         if not face_vecs:           # no face anywhere -> can't evaluate the person
             return None
         # Modality-specific aggregation (per the small-data MIL research). All of a

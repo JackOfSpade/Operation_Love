@@ -35,7 +35,7 @@ import threading
 import time
 
 from ..human_motion import REPORT_HZ, plan_swipe, plan_tap
-from .adb import Adb, AdbError
+from .adb import Adb, AdbError, scroll_x
 from .base import DriverClosed
 
 
@@ -168,6 +168,9 @@ class UhidTouch:
                                      width_px=self.width_px, rng=self._rng))
 
     def scroll_up(self, distance_frac: float = 0.55, x_frac: float = 0.5) -> None:
+        # x jitter shared with Adb.scroll_up via adb.scroll_x() (HINGE-04): UHID is the
+        # genuine, proven transport, so it must not be the one emitting a pixel-identical
+        # column every scroll.
         w, h = self.adb.screen_size()
-        x = int(w * x_frac)
+        x = scroll_x(w, x_frac)
         self.swipe(x, int(h * (0.5 + distance_frac / 2)), x, int(h * (0.5 - distance_frac / 2)))

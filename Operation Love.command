@@ -19,7 +19,7 @@ fi
 
 if [ "$need_install" -eq 1 ]; then
   echo "> Installing / refreshing dependencies (first run can take a few minutes)..."
-  "$PY" -m pip install -e ".[ml,bq,bumble]" || { echo "x pip install failed."; notify "Setup failed at pip install." "Basso"; exit 1; }
+  "$PY" -m pip install -e ".[ml,bq,bumble,hinge]" || { echo "x pip install failed."; notify "Setup failed at pip install." "Basso"; exit 1; }
   "$PY" -m playwright install chromium >/dev/null 2>&1
   "$PY" -m operation_love.runtime || { echo "x runtime check failed."; notify "Setup: runtime check failed." "Basso"; exit 1; }
   touch "$STAMP"

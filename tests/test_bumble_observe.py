@@ -29,6 +29,8 @@ class FakePage:
             # like/pass/superlike selectors passed through (superswipe -> 'like')
             assert arg == [d.selectors["like"], d.selectors["pass"], d.selectors["superlike"]]
             return None
+        if script == bumble._CARD_PHOTO_IDS_JS:   # _card_fingerprint's photo-identity read;
+            return []                              # no card-identity signal in the base fake
         if "return v" not in script:          # the pre-poll clear -> no-op, doesn't consume a read
             self.cleared += 1
             return None
@@ -41,6 +43,92 @@ class FakePage:
 class FakeClosedPage(FakePage):
     def evaluate(self, script, arg=None):
         raise RuntimeError("Target page, context or browser has been closed")
+
+
+class _FakeBioElement:
+    def __init__(self, text):
+        self._text = text
+
+    def inner_text(self):
+        return self._text
+
+
+class FakeCardChangePage(FakePage):
+    """Like FakePage (drives wait_for_decision's decision-read loop), but also backs
+    _card_fingerprint() with a bio + photo-identity set that can change mid-poll --
+    simulating the deck advancing via a manual swipe GESTURE or keyboard shortcut (not
+    a like/pass button click), which the injected click listener can't observe.
+    bios/photo_ids are read together, one pair per _card_fingerprint() call (indexed
+    by fp_calls, then clamped to the last entry). photo_ids mirrors the real driver's
+    _CARD_PHOTO_IDS_JS return shape: a list of per-photo identity strings, read via
+    evaluate() (not query_selector_all -- see BUMBLE-7)."""
+    def __init__(self, reads, bios, photo_ids):
+        super().__init__(reads)
+        self.bios = list(bios)
+        self.photo_ids = list(photo_ids)
+        self.fp_calls = 0
+
+    def query_selector(self, sel):
+        if sel == d.selectors["bio"]:
+            idx = min(self.fp_calls, len(self.bios) - 1)
+            return _FakeBioElement(self.bios[idx])
+        return None                       # "empty" selector -> deck not empty
+
+    def evaluate(self, script, arg=None):
+        if script == bumble._CARD_PHOTO_IDS_JS:
+            idx = min(self.fp_calls, len(self.photo_ids) - 1)
+            self.fp_calls += 1            # advances the (bio, photo-ids) pair together
+            return list(self.photo_ids[idx])
+        return super().evaluate(script, arg)
+
+
+class FakeSwipePage:
+    """Drives like()/dislike() end to end -- the human-cursor click AND the real
+    _verify_swipe_landed check -- against a scripted sequence of _card_fingerprint()
+    snapshots (bio + per-photo identity strings, one entry per call, clamped to the
+    last once exhausted).
+
+    Unlike FakeActionPage/FakeNoElementPage (used by the click-path tests above),
+    this fake implements BOTH query_selector_all (the pre-fix, count-only signal)
+    AND evaluate (the current, identity-based signal from _CARD_PHOTO_IDS_JS), driven
+    by the SAME fp_calls counter/photo_ids list -- so the identical fake can exercise
+    either fingerprint implementation, which is what lets BUMBLE-7's regression test
+    below prove the old scheme collides while the new one doesn't (see the docstring
+    on test_like_tells_apart_distinct_profiles_with_same_bio_and_photo_count)."""
+    viewport_size = {"width": 1280, "height": 900}
+
+    def __init__(self, bios, photo_ids, box=None):
+        self.bios = list(bios)
+        self.photo_ids = list(photo_ids)
+        self.fp_calls = 0
+        self.mouse = _RecordingMouse()
+        self.plain_clicks = []
+        self._box = box or {"x": 1000, "y": 820, "width": 56, "height": 56}
+
+    def _ids_at(self, idx):
+        return self.photo_ids[min(idx, len(self.photo_ids) - 1)]
+
+    def query_selector(self, sel):
+        if sel == d.selectors["bio"]:
+            return _FakeBioElement(self.bios[min(self.fp_calls, len(self.bios) - 1)])
+        if sel in (d.selectors["like"], d.selectors["pass"]):
+            return FakeActionElement(self._box)
+        return None                       # "empty" selector -> deck not empty
+
+    def query_selector_all(self, sel):
+        assert sel == d.selectors["photo"]
+        ids = self._ids_at(self.fp_calls)
+        self.fp_calls += 1                # pre-fix path: count only, advances the pair
+        return [object()] * len(ids)
+
+    def evaluate(self, script, arg=None):
+        assert script == bumble._CARD_PHOTO_IDS_JS
+        ids = self._ids_at(self.fp_calls)
+        self.fp_calls += 1                # current path: real identities, advances the pair
+        return list(ids)
+
+    def click(self, sel):
+        self.plain_clicks.append(sel)
 
 
 class FakePhotoElement:
@@ -228,6 +316,41 @@ class FakeLoadingPhotoPage(FakePhotoPage):
         return frame
 
 
+class RecordingOverlayPage(FakePhotoPage):
+    """Like FakePhotoPage, but also simulates oplove-hud/oplove-busy visibility and
+    records every evaluate() call (plus, via RecordingElement, every screenshot())
+    into one ordered list -- so a test can assert the overlay-hide happens BEFORE
+    any el.screenshot() and is restored afterwards, not just that it happened."""
+    def __init__(self, elements, advance=False):
+        super().__init__(elements, advance=advance)
+        self.events = []
+        self.hud_visible = True
+        self.busy_visible = False
+
+    def evaluate(self, script, arg=None):
+        if script == bumble._OVERLAY_JS:
+            self.hud_visible = True
+            self.events.append("show_hud")
+        elif script == bumble._BUSY_JS:
+            self.busy_visible = bool(arg)
+            self.events.append("show_busy" if arg else "hide_busy")
+        else:                                  # _hide_oplove_overlays' inline hide script
+            self.hud_visible = False
+            self.busy_visible = False
+            self.events.append("hide_overlays")
+        return None
+
+
+class RecordingElement(FakePhotoElement):
+    def __init__(self, name, box, events):
+        super().__init__(name, box)
+        self._events = events
+
+    def screenshot(self):
+        self._events.append(f"screenshot:{self.name}")
+        return super().screenshot()
+
+
 def _driver(page):
     drv = BumbleDriver(_Cfg())
     drv.page = page
@@ -298,6 +421,46 @@ def test_browser_close_raises_driver_closed():
         pass
     else:
         raise AssertionError("expected DriverClosed")
+
+
+def test_card_change_without_click_returns_none_not_misattributed():
+    # Regression for BUMBLE-2: the deck can advance without the like/pass listener
+    # firing (a swipe gesture, a keyboard shortcut, an app-driven advance). Without a
+    # card-identity signal, wait_for_decision has no way to notice -- so the 'like'
+    # read on the 3rd poll (a real click, but on the profile that REPLACED the one we
+    # were waiting on) would be returned as True and mis-attributed to the old card, a
+    # silently mislabelled training example. The fingerprint (bio + photo identities)
+    # changes on the 2nd poll, before that 'like' is ever read, and must short-circuit
+    # to None instead.
+    page = FakeCardChangePage(
+        reads=[None, None, "like"],
+        bios=["profile A bio", "profile A bio", "profile B bio"],
+        photo_ids=[["p1", "p2", "p3", "p4"], ["p1", "p2", "p3", "p4"], ["q1", "q2"]],
+    )
+    drv = _driver(page)
+    assert drv.wait_for_decision(timeout=5) is None
+
+
+def test_stable_card_still_detects_like_through_fingerprint_checks():
+    # The new fingerprint check must not itself cause false positives: a card that
+    # hasn't changed should still let a like through once the listener fires.
+    page = FakeCardChangePage(
+        reads=[None, None, "like"],
+        bios=["profile A bio"],
+        photo_ids=[["p1", "p2", "p3", "p4"]],
+    )
+    drv = _driver(page)
+    assert drv.wait_for_decision(timeout=5) is True
+
+
+def test_wait_for_profile_album_ready_returns_nothing():
+    # Regression for BUMBLE-6: the raw/filtered counts used to be returned here, but
+    # the sole caller (_capture_photos) always recomputes both itself on the very next
+    # line, so the return value was dead. Locks in the pure-wait contract.
+    photo = FakePhotoElement("profile_photo", {"x": 420, "y": 170, "width": 500, "height": 680})
+    drv = _driver(FakePhotoPage([photo]))
+    with _fast_capture_waits():
+        assert drv._wait_for_profile_album_ready() is None
 
 
 def test_capture_photos_excludes_sidebar_and_small_images():
@@ -374,6 +537,48 @@ def test_capture_photos_browser_close_raises_driver_closed():
         raise AssertionError("expected DriverClosed")
 
 
+def test_capture_photos_hides_overlays_before_screenshotting():
+    # Regression for the no_face outage: our own HUD/busy overlays must be hidden
+    # BEFORE el.screenshot() captures a profile photo, or they get baked into the
+    # image, ArcFace finds zero faces, and embed_profile silently returns None for
+    # every profile (see bumble.py's _capture_photos / _hide_oplove_overlays).
+    page = RecordingOverlayPage([])
+    photo = RecordingElement(
+        "profile_photo", {"x": 420, "y": 170, "width": 500, "height": 680}, page.events
+    )
+    page.frames = [[photo]]
+    drv = _driver(page)
+    drv.inpage_overlays = True             # so the hide/show JS actually runs (off by default)
+
+    with _fast_capture_waits():
+        assert drv._capture_photos() == [b"profile_photo"]
+
+    assert page.events == ["hide_overlays", "screenshot:profile_photo"]
+    assert page.hud_visible is False and page.busy_visible is False
+
+
+def test_render_status_after_capture_restores_hidden_overlay():
+    # The hide is only supposed to be temporary: the worker's normal per-loop
+    # render_status() call afterwards must show the HUD again. If the hide were
+    # never undone (or happened again after the restore), the HUD would stay dark
+    # for the rest of the run.
+    page = RecordingOverlayPage([])
+    photo = RecordingElement(
+        "profile_photo", {"x": 420, "y": 170, "width": 500, "height": 680}, page.events
+    )
+    page.frames = [[photo]]
+    drv = _driver(page)
+    drv.inpage_overlays = True
+
+    with _fast_capture_waits():
+        drv._capture_photos()
+    assert page.hud_visible is False       # still hidden right after capture
+
+    drv.render_status({"mode": "observe"})
+    assert page.events[-1] == "show_hud"
+    assert page.hud_visible is True        # restored on the worker's next render
+
+
 def test_advance_photo_album_browser_close_raises_driver_closed():
     photo = FakePhotoElement("profile", {"x": 420, "y": 170, "width": 500, "height": 680})
     drv = _driver(FakeClosedAlbumAdvancePage([photo]))
@@ -430,6 +635,80 @@ def test_like_falls_back_to_plain_click_when_box_center_off_screen():
     assert not page.mouse.clicks                          # no raw mouse click off-screen
 
 
+# --- BUMBLE-7: _verify_swipe_landed actually executes against a real fingerprint ---
+# FakeActionPage/FakeNoElementPage (used by the click-path tests above) don't implement
+# evaluate() or query_selector_all(), so _card_fingerprint() raises internally, is
+# swallowed by its own broad `except Exception: return None`, and _verify_swipe_landed
+# silently no-ops (before is None) -- the verification path added alongside
+# _card_fingerprint is never actually reached by those tests. FakeSwipePage backs both
+# query_selector_all (the pre-fix count signal) and evaluate (the current identity
+# signal), so the checks below drive the real check, not a short-circuit.
+
+def test_like_verifies_swipe_landed_via_changing_fingerprint():
+    # (a) A genuinely landed swipe: bio + photo identities differ between the
+    # pre-click and post-click snapshot, so _verify_swipe_landed sees a real change
+    # and like() returns cleanly on the first re-check.
+    page = FakeSwipePage(
+        bios=["profile A bio", "profile B bio"],
+        photo_ids=[
+            ["https://cdn.bumble.example/a1.jpg", "https://cdn.bumble.example/a2.jpg"],
+            ["https://cdn.bumble.example/b1.jpg", "https://cdn.bumble.example/b2.jpg"],
+        ],
+    )
+    drv = _driver(page)
+    drv.like()                       # must not raise
+    assert page.fp_calls == 2        # before-click snapshot + one landed re-check
+
+
+def test_dislike_raises_when_fingerprint_never_changes(monkeypatch):
+    # (b) An unlanded swipe: the fingerprint reads identical before and after every
+    # re-check (e.g. the click was covered by a modal, or hit a card mid-animation),
+    # so _verify_swipe_landed must still raise BumbleActionError -- proving the check
+    # actually fires now, not just that it stays quiet on a genuine change.
+    monkeypatch.setattr(bumble.time, "sleep", lambda *_: None)   # skip the real settle delay
+    page = FakeSwipePage(
+        bios=["profile A bio"],
+        photo_ids=[["https://cdn.bumble.example/a1.jpg", "https://cdn.bumble.example/a2.jpg"]],
+    )
+    drv = _driver(page)
+    try:
+        drv.dislike()
+    except bumble.BumbleActionError:
+        pass
+    else:
+        raise AssertionError("expected BumbleActionError")
+
+
+def test_like_tells_apart_distinct_profiles_with_same_bio_and_photo_count():
+    # (c) Regression for BUMBLE-7: two DIFFERENT real profiles sharing a blank bio and
+    # the same photo COUNT -- entirely plausible on Bumble, since the "About" bio is
+    # optional and frequently blank, and photo counts cluster tightly at the app's max
+    # -- must NOT look identical to the verifier. Both snapshots here have bio="" and
+    # 3 photos: exactly the shape that collided under the pre-fix
+    # (out_of_profiles, bio, photo_count) fingerprint. The underlying photo URLs
+    # differ, so the identity-based fingerprint tells them apart and like() returns
+    # cleanly instead of raising BumbleActionError on a swipe that genuinely landed.
+    #
+    # This test is proven to catch the regression by temporarily reverting
+    # _card_fingerprint to the pre-fix (out_of_profiles, bio, photo_count) tuple: with
+    # that implementation the test fails (BumbleActionError, unlanded-swipe false
+    # positive) because FakeSwipePage's query_selector_all-backed count is 3 in both
+    # snapshots, colliding exactly like two real Bumble profiles would.
+    page = FakeSwipePage(
+        bios=["", ""],
+        photo_ids=[
+            ["https://cdn.bumble.example/photoA1.jpg",
+             "https://cdn.bumble.example/photoA2.jpg",
+             "https://cdn.bumble.example/photoA3.jpg"],
+            ["https://cdn.bumble.example/photoB1.jpg",
+             "https://cdn.bumble.example/photoB2.jpg",
+             "https://cdn.bumble.example/photoB3.jpg"],
+        ],
+    )
+    drv = _driver(page)
+    drv.like()                       # must not raise -- distinct photo identities prove the change
+
+
 def test_open_session_denies_native_permission_prompts():
     page = FakeStartupPage()
     ctx = FakeContext(page)
@@ -462,17 +741,3 @@ def test_dismiss_startup_interstitials_is_nonfatal_when_selectors_fail():
     drv = _driver(page)
     drv._dismiss_startup_interstitials()
     assert len(page.clicks) == len(bumble._STARTUP_INTERSTITIALS)
-
-
-if __name__ == "__main__":
-    import sys
-    import traceback
-
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn(); print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
-    sys.exit(1 if failed else 0)

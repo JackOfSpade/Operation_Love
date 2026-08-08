@@ -106,7 +106,6 @@ class FakeStore:
         self.decisions.append((app, decision, source))
     def record_opener(self, run_id, app, model, opener, referenced): self.openers.append(opener)
     def record_spend(self, run_id, model, usage, cost): self.spend.append(cost)
-    def label_count(self): return len(self.labels)
     def count_today(self, app):
         return sum(1 for row in self.decisions if row[0] == app and row[2] == "auto")
     def flush(self): pass
@@ -411,6 +410,74 @@ def test_observe_status_says_wait_during_capture_and_embed():
     assert driver.closed and store.labels and store.labels[0][0] == "bumble"
 
 
+def test_observe_persists_label_when_stop_requested_during_embed():
+    """WS-003: Stop pressed during the (slow) embed — after the manual swipe happened and
+    its photos were already archived via record_profile — must not discard the completed
+    label. Stop should end the loop AFTER committing the work in hand, not before."""
+    class ObserveDriver(FakeDriver):
+        def __init__(self):
+            super().__init__(1)
+            self._served = False
+        def out_of_profiles(self):
+            return self._served
+        def current_profile(self):
+            self._served = True
+            return self.cards[0]
+        def wait_for_decision(self, timeout=None, should_stop=None):
+            return True                        # user LIKEs
+        def render_busy(self, message=None):
+            pass
+
+    class StopDuringEmbedDecider(FakeDecider):
+        def __init__(self, stop_event):
+            super().__init__()
+            self.stop_event = stop_event
+        def embed(self, profile):
+            self.stop_event.set()              # Stop pressed while the (slow) embed was running
+            return [0.1, 0.2]
+        def retrain(self, store):
+            return True
+
+    driver = ObserveDriver()
+    store = FakeStore()
+    stop_event = threading.Event()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    Worker("bumble", driver, StopDuringEmbedDecider(stop_event), svc, store, "run1", _Pacing(),
+           stop_event, mode="observe").run()
+
+    # the swipe already happened and the profile was archived -> the label must survive
+    assert store.profiles and store.profiles[0][2] is True
+    assert store.labels and store.labels[0][2] is True
+    assert store.decisions and store.decisions[0][1] == "like"
+    assert driver.closed
+
+
+def test_pace_scales_wait_by_configured_swipe_delay(monkeypatch):
+    """Every existing pacing test uses _Pacing.swipe_delay_s == 0.0 (the early-return path)
+    -- the scaling branch itself (`scale = swipe_delay_s / _DEFAULT_SWIPE_DELAY_S`) was
+    entirely unexercised. Pin the formula deterministically: stub think_time_s() to a fixed
+    base and assert stop_event.wait() is called with base * scale, not the raw base."""
+    import operation_love.worker as wmod
+    monkeypatch.setattr(wmod, "think_time_s", lambda key: 2.0)   # fixed, deterministic base
+
+    class _Pacing2:
+        swipe_delay_s = 7.0   # 2x the 3.5s default anchor -> scale == 2.0
+
+    class _RecordingStopEvent:
+        def __init__(self):
+            self.waits = []
+        def wait(self, t):
+            self.waits.append(t)
+        def is_set(self):
+            return False
+
+    w = Worker.__new__(Worker)
+    w.pacing = _Pacing2()
+    w.stop_event = _RecordingStopEvent()
+    w._pace("like")
+    assert w.stop_event.waits == [4.0]   # 2.0 * (7.0 / 3.5)
+
+
 def test_auto_defer_cold_start_stops_without_action_or_record():
     """AUTO cold-start: a not-ready ranker returns 'defer' -> the loop STOPS after pulling the
     first card, takes no swipe, records no decision/label, and still closes the driver."""
@@ -431,17 +498,3 @@ def test_auto_defer_cold_start_stops_without_action_or_record():
     assert driver.closed
     # (d) exactly one profile pulled, then the loop broke immediately
     assert driver.i == 1
-
-
-if __name__ == "__main__":
-    import sys
-    import traceback
-
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn(); print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
-    sys.exit(1 if failed else 0)

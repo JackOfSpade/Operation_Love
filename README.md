@@ -15,10 +15,11 @@ a natural, profile-specific opener. Targets **Bumble** (web) and **Hinge**
 drivers/      element-based control: Bumble (Playwright), Hinge (host-side ADB + vision)
 perception/   capture all photos + profile text -> Profile
 vision/       local pyiqa quality filter + ArcFace/CLIP embeddings   [Phase 2]
-ranker/       logistic-regression on YOUR swipe labels (SQLite)      [Phase 3]
+ranker/       logistic-regression on YOUR swipe labels (BigQuery/SQLite)  [Phase 3]
 opener/       Claude writes the opener, enforced JSON output         [Phase 4]
 costing.py    client-side spend tracking + per-run budget guard
-orchestrator  the loop (replaces main.ahk)
+supervisor    one worker per enabled app; owns shutdown + flush
+worker.py     the per-app loop, observe or auto (replaces main.ahk)
 ```
 
 **Decision = local & private** (photos never leave your machine).
@@ -61,7 +62,7 @@ the bot either stops or keeps swiping without openers (`budget.on_exhausted`).
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[ml,bumble,hinge,dev]"
+pip install -e ".[ml,bq,bumble,hinge,dev]"
 cp .env.example .env   # add ANTHROPIC_API_KEY
 pytest                 # cost-control tests run without a GPU or the SDK
 ```
@@ -102,8 +103,9 @@ Android device over host-side ADB + vision template-match),
 with autonomous-mode **rate limits** (`max_per_run` / `max_per_day`), a **stats**
 readout (`python -m operation_love stats`), and human-like pacing.
 
-Everything machine-independent is done and unit-tested (9 suites). The only
-remaining work needs your machine + a real account, and it's all batched in
+Everything machine-independent is done and unit-tested (run `pytest` for the
+current suite/test count). The only remaining work needs your machine + a
+real account, and it's all batched in
 **[ops/RUNBOOK.md](ops/RUNBOOK.md)**: install, log in, confirm the config-driven
 DOM selectors / resource-ids and the observe-mode like/pass hooks, seed your
 taste in observe mode, then flip to auto.

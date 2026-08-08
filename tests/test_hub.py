@@ -5,13 +5,65 @@ Spins the stdlib server in a thread and hits /, /api/config, /api/status,
 browser); start/stop wiring is covered by HubState's logic.
 """
 import json
+import re
+import shutil
+import subprocess
 import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
+import pytest
+
 from operation_love.hub import HubState, _Handler, _MAC_UPDATE_RUN, _PAGE, _bind
+
+NODE_BIN = shutil.which("node")
+
+
+def _extract_js_function(js: str, name: str) -> str:
+    """Pull a top-level `function name(...) { ... }` out of the hub page's <script>, by
+    brace-matching from the definition to its close. Evaluating the REAL body with node
+    (rather than asserting a substring) means a comment-only revert of the guarded logic
+    can't fool the test — see the audit note this addresses."""
+    m = re.search(rf"function\s+{re.escape(name)}\s*\([^)]*\)\s*{{", js)
+    assert m, f"function {name} not found in hub.html"
+    start = m.end() - 1                      # index of the opening '{'
+    depth = 0
+    for i in range(start, len(js)):
+        if js[i] == "{":
+            depth += 1
+        elif js[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return js[m.start():i + 1]
+    raise AssertionError(f"unbalanced braces extracting {name}")
+
+
+def _run_node(script: str):
+    assert NODE_BIN, "node not available"
+    r = subprocess.run([NODE_BIN, "-e", script], capture_output=True, text=True, timeout=10)
+    assert r.returncode == 0, f"node script failed:\nSTDOUT: {r.stdout}\nSTDERR: {r.stderr}"
+    return json.loads(r.stdout)
+
+
+def _join_hub_watch_threads(timeout=3.0):
+    """Wait for hub.py's `hub-tab-stale-watch` daemon threads to exit.
+
+    /api/hub/open spawns one, and its loop only notices it should stop on its next wake —
+    i.e. after `_BROWSER_STALE_CHECK_S`. A test that returns without waiting leaks a live
+    thread that keeps sleeping and scheduler-contends with everything that runs after it,
+    which is what made the full suite non-deterministic (individual files passed alone,
+    the whole run failed in a different file each time). Pair this with monkeypatching
+    `_BROWSER_STALE_CHECK_S` down so the wait is instant.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not any(t.name == "hub-tab-stale-watch" and t.is_alive()
+                   for t in threading.enumerate()):
+            return
+        time.sleep(0.01)
+    raise AssertionError("hub-tab-stale-watch thread outlived the test")
 
 
 def _get(base, path):
@@ -57,9 +109,16 @@ def test_hub_endpoints():
             assert e.code == 404
     finally:
         httpd.shutdown()
+        httpd.server_close()   # release the listening socket too; shutdown() alone leaves it open
+        _join_hub_watch_threads()
 
 
-def test_hub_tab_close_shuts_server_after_last_client():
+def test_hub_tab_close_shuts_server_after_last_client(monkeypatch):
+    # Collapse the reload grace so the test asserts the shutdown CONTRACT, not the constant's
+    # value — otherwise retuning the grace silently breaks a test that isn't about timing.
+    import operation_love.hub as hub
+    monkeypatch.setattr(hub, "_BROWSER_SHUTDOWN_GRACE_S", 0.01)
+    monkeypatch.setattr(hub, "_BROWSER_STALE_CHECK_S", 0.01)   # so the watch thread can't outlive us
     _Handler.state = HubState("config.yaml")
     httpd = _bind("127.0.0.1", 8799)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -77,6 +136,8 @@ def test_hub_tab_close_shuts_server_after_last_client():
         assert t.is_alive() is False
     finally:
         httpd.shutdown()
+        httpd.server_close()   # release the listening socket too; shutdown() alone leaves it open
+        _join_hub_watch_threads()
 
 
 def test_hub_tab_stale_heartbeat_shutdown_when_close_beacon_is_missing(monkeypatch):
@@ -99,6 +160,8 @@ def test_hub_tab_stale_heartbeat_shutdown_when_close_beacon_is_missing(monkeypat
         assert t.is_alive() is False
     finally:
         httpd.shutdown()
+        httpd.server_close()   # release the listening socket too; shutdown() alone leaves it open
+        _join_hub_watch_threads()
 
 
 def test_hubstate_double_start_blocked():
@@ -210,7 +273,7 @@ def test_hub_page_reports_browser_tab_lifecycle():
 
 
 def test_committed_mac_launcher_matches_template():
-    expected = _MAC_UPDATE_RUN.replace("__EXTRAS__", "ml,bq,bumble")
+    expected = _MAC_UPDATE_RUN.replace("__EXTRAS__", "ml,bq,bumble,hinge")
     assert Path("Operation Love.command").read_text() == expected
 
 
@@ -442,15 +505,270 @@ def test_eval_snapshot_returns_error_dict_when_compute_raises(monkeypatch):
     assert "refresh" in res
 
 
-if __name__ == "__main__":
-    import sys
-    import traceback
+def test_hub_max_per_run_fails_closed_on_invalid_input():
+    # Clearing/breaking the "max profiles this run" box must fall back to the configured cap
+    # (null on the wire = "use config"), never to 0 (which means UNLIMITED autonomous
+    # swiping) — unlimited must stay reachable ONLY via the explicit "unlimited" checkbox.
+    #
+    # Evaluated for real with node (not a substring check): a mutation audit proved the old
+    # substring-only version of this test still passed when the guarded fail-closed logic was
+    # fully reverted to fail OPEN, as long as the substring survived in a comment. Extracting
+    # computeMaxPerRun() as a pure named function lets the test feed it real inputs and assert
+    # on the RESULT instead.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fn = _extract_js_function(_PAGE, "computeMaxPerRun")
+    # (mode, unlimitedChecked, rawValue)
+    cases = [
+        ("observe", False, "8"),    # not auto mode -> always null, regardless of the box
+        ("auto", True, "8"),        # unlimited checkbox -> 0, regardless of the box
+        ("auto", True, ""),
+        ("auto", False, ""),        # empty box -> fail CLOSED (not unlimited)
+        ("auto", False, "abc"),     # non-numeric -> fail CLOSED
+        ("auto", False, "0"),       # typing 0 directly must NOT mean unlimited
+        ("auto", False, "-3"),      # negative -> fail CLOSED
+        ("auto", False, "3.7"),     # parseInt truncates
+        ("auto", False, "8"),       # a genuine positive cap is honored
+    ]
+    expected = [None, 0, 0, None, None, None, None, 3, 8]
+    script = (
+        fn + "\n"
+        "const cases = " + json.dumps(cases) + ";\n"
+        "console.log(JSON.stringify(cases.map(c => computeMaxPerRun(c[0], c[1], c[2]))));\n"
+    )
+    assert _run_node(script) == expected
 
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
+
+def test_hub_page_rereigsters_on_tab_wake_events():
+    # Chrome throttles a hidden tab's setInterval ping to ~once/minute; the page must also
+    # re-register the instant the tab visibly wakes (these fire un-throttled), same as pageshow.
+    #
+    # Evaluated for real with node: a mutation audit proved the old substring-only version of
+    # this test still passed after both callback BODIES were gutted to no-ops, since the
+    # "visibilitychange"/"addEventListener('focus'" substrings still appeared in the wiring
+    # line. Extracting the callbacks as named functions lets the test call them and assert on
+    # whether they actually re-registered.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    assert "document.addEventListener('visibilitychange', _onHubVisibilityWake)" in _PAGE
+    assert "window.addEventListener('focus', _onHubFocusWake)" in _PAGE
+    vis_fn = _extract_js_function(_PAGE, "_onHubVisibilityWake")
+    focus_fn = _extract_js_function(_PAGE, "_onHubFocusWake")
+    script = (
+        "let calls = [];\n"
+        "function hubLifecycle(path){ calls.push(path); }\n"
+        "let document = { hidden: true };\n"
+        + vis_fn + "\n" + focus_fn + "\n"
+        "_onHubVisibilityWake();\n"                 # hidden -> must NOT re-register
+        "const afterHidden = calls.slice();\n"
+        "document.hidden = false;\n"
+        "_onHubVisibilityWake();\n"                 # became visible -> must re-register
+        "const afterVisible = calls.slice();\n"
+        "document.hidden = true;\n"                 # focus must fire regardless of hidden state
+        "_onHubFocusWake();\n"
+        "const afterFocus = calls.slice();\n"
+        "console.log(JSON.stringify({afterHidden, afterVisible, afterFocus}));\n"
+    )
+    result = _run_node(script)
+    assert result["afterHidden"] == []
+    assert result["afterVisible"] == ["/api/hub/open"]
+    assert result["afterFocus"] == ["/api/hub/open", "/api/hub/open"]
+
+
+def test_browser_stale_window_clears_throttled_worst_case():
+    import operation_love.hub as hub
+    # Chrome's intensive timer throttling aligns a hidden tab's setInterval to ~once/minute;
+    # the stale window must clear that with real margin so a throttled-but-alive tab is never
+    # mistaken for closed and used to stop a live run. Assert the INTENT (comfortably above a
+    # ~60s worst-case throttled ping) rather than pinning the exact constant.
+    assert hub._BROWSER_CLIENT_STALE_S >= 90.0
+
+
+def test_hub_dead_min_labels_key_removed():
+    # min_labels was carried by config_defaults()/the JS default but nothing ever read it.
+    assert "min_labels" not in _PAGE
+    assert "min_labels" not in HubState("config.yaml").config_defaults()
+
+
+def test_hubstate_start_rejects_empty_apps_list():
+    # chosenApps() sends [] when every app checkbox is unchecked. Silently falling back to
+    # config.enabled_apps (supervisor's behavior for a falsy override) would start the apps
+    # the user just deselected — refuse instead, with a clear reason.
+    st = HubState("config.yaml")
+    ok, msg = st.start(apps=[])
+    assert ok is False
+    assert "no apps selected" in msg
+    assert st.is_running() is False
+
+
+def test_hubstate_start_apps_none_is_not_rejected(monkeypatch):
+    # apps=None means "no override" (unrelated to the empty-list user-error case above) and
+    # must still fall through to supervisor.run/config as before.
+    import operation_love.hub as hub
+    seen = {}
+    done = threading.Event()
+
+    def fake_run(config_path, **kw):
+        seen.update(kw)
+        done.set()
+
+    monkeypatch.setattr(hub.supervisor, "run", fake_run)
+    st = HubState("config.yaml")
+    ok, msg = st.start(apps=None)
+    assert ok is True
+    assert done.wait(timeout=5)
+    st._thread.join(timeout=5)
+    assert seen["enabled_apps"] is None
+
+
+def test_hubstate_surfaces_systemexit_from_supervisor(monkeypatch):
+    # supervisor.run raises SystemExit (a BaseException, not Exception) for a fatal startup
+    # failure (e.g. missing cloud deps). It must surface in self._error like any other
+    # failure, not be silently swallowed by threading's default SystemExit handling.
+    import operation_love.hub as hub
+
+    def boom(config_path, **kw):
+        raise SystemExit("Storage.backend=bigquery but cloud storage dependencies are missing")
+
+    monkeypatch.setattr(hub.supervisor, "run", boom)
+    st = HubState("config.yaml")
+    ok, _ = st.start()
+    assert ok is True
+    st._thread.join(timeout=5)
+    assert st._error is not None
+    assert st._error.startswith("SystemExit:")
+    assert "missing" in st._error
+
+
+def test_wait_for_run_honors_timeout():
+    # Ctrl-C quit gives the run a bounded wait so a wedged worker can't hang quit forever.
+    st = HubState("config.yaml")
+    still_running = threading.Event()
+
+    def slow():
+        still_running.wait(timeout=5)
+
+    st._thread = threading.Thread(target=slow, daemon=True)
+    st._thread.start()
+    t0 = time.time()
+    st.wait_for_run(timeout=0.2)
+    elapsed = time.time() - t0
+    assert elapsed < 2.0             # returned promptly, not blocked for the full 5s
+    assert st._thread.is_alive() is True   # timed out, didn't actually finish
+    still_running.set()
+    st._thread.join(timeout=5)
+
+
+def test_swipe_banner_gates_on_per_app_mode_not_global_mode():
+    # X4: config.yaml documents apps.<app>.mode overriding the global run mode, and
+    # worker.py publishes that per-app mode via status.set_app(app, mode=...). The banner
+    # is the ONLY cue in Hinge observe mode (no on-phone overlay), so it must key off each
+    # app's OWN mode — not snap.status.mode (the global value), which would hide the
+    # banner for an observe-mode app running under a global auto mode (or vice versa).
+    #
+    # Evaluated for real with node: a mutation audit proved the old substring-only version of
+    # this test still passed after the gating was reverted to key off the global s.mode (the
+    # exact pre-fix bug), because the reverted code still contained "observeApps" and an
+    # "a.mode === 'observe'" comparison somewhere reachable. Extracting selectObserveApps() as
+    # a pure function lets the test build a status where the global mode and the per-app modes
+    # DISAGREE, and assert on which apps actually get selected.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fn = _extract_js_function(_PAGE, "selectObserveApps")
+
+    # Global mode says 'auto', but bumble is individually in 'observe' -> must still show for
+    # bumble only (not all-or-nothing on the global mode).
+    status_a = {
+        "mode": "auto",
+        "apps": {
+            "bumble": {"mode": "observe", "state": "waiting"},
+            "hinge": {"mode": "auto", "state": "acting"},
+        },
+    }
+    script_a = (
+        fn + "\n"
+        "const status = " + json.dumps(status_a) + ";\n"
+        "console.log(JSON.stringify(selectObserveApps(status).map(a => a.state)));\n"
+    )
+    assert _run_node(script_a) == ["waiting"]
+
+    # Inverse: global mode says 'observe', but every app is individually in 'auto' -> must
+    # select none. A global-mode-gated implementation would wrongly show the banner here.
+    status_b = {"mode": "observe", "apps": {"bumble": {"mode": "auto", "state": "waiting"}}}
+    script_b = (
+        fn + "\n"
+        "const status = " + json.dumps(status_b) + ";\n"
+        "console.log(JSON.stringify(selectObserveApps(status).map(a => a.state)));\n"
+    )
+    assert _run_node(script_b) == []
+
+
+def test_eval_snapshot_cold_start_single_flights_concurrent_pollers(monkeypatch):
+    # H-06: the page polls /api/eval every 5s and ThreadingHTTPServer gives each request
+    # its own thread. On a cold cache (_eval is None), concurrent pollers must share ONE
+    # underlying computation instead of each running a full grouped CV.
+    import operation_love.hub as hub
+    import operation_love.ranker as ranker
+    import operation_love.ranker.evaluate as eval_mod
+
+    started = threading.Event()
+    release = threading.Event()
+    compute_calls = []
+
+    class Store:
+        def load_labels(self):
+            compute_calls.append(1)
+            started.set()
+            assert release.wait(timeout=5)
+            return [object()] * 10
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hub.cfg_mod, "load", lambda path: object())
+    monkeypatch.setattr(ranker, "make_store", lambda cfg, ensure=True: Store())
+    monkeypatch.setattr(eval_mod, "evaluate",
+                        lambda samples: {"status": "ok", "labels": len(samples),
+                                          "identities": len(samples)})
+
+    st = HubState("config.yaml")
+    results = []
+    errors = []
+
+    def caller():
         try:
-            fn(); print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
-    sys.exit(1 if failed else 0)
+            results.append(st.eval_snapshot(every=5))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=caller) for _ in range(5)]
+    for t in threads:
+        t.start()
+    assert started.wait(timeout=5)     # one caller is now inside the (single) computation
+    time.sleep(0.05)                   # let the other pollers reach the cold path as waiters
+    release.set()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert not errors
+    assert len(results) == 5
+    assert len(compute_calls) == 1     # only ONE actual computation ran despite 5 pollers
+    assert all(r["status"] == "ok" and r["labels"] == 10 for r in results)
+
+
+def test_bugreport_uses_hub_config_path_not_default():
+    # A hub started with --config other.yaml must produce a report describing THAT config,
+    # not silently default to config.yaml.
+    _Handler.state = HubState("definitely-not-a-real-config.yaml")
+    httpd = _bind("127.0.0.1", 8799)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        code, md = _get(base, "/api/bugreport")
+        assert code == 200
+        assert "definitely-not-a-real-config.yaml" in md
+    finally:
+        httpd.shutdown()
+        httpd.server_close()   # release the listening socket too; shutdown() alone leaves it open
+        _join_hub_watch_threads()

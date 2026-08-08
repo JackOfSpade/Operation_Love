@@ -17,7 +17,9 @@ import random
 import threading
 import traceback
 import uuid
+from datetime import date
 
+from .config import PacingCfg
 from .drivers.base import DatingAppDriver, DriverClosed
 from .human import human_cooldown
 from .human_motion import think_time_s
@@ -27,6 +29,8 @@ _OBSERVE_CAPTURE_BUSY = "Capturing profile — please wait before your next swip
 _OBSERVE_PROCESSING_BUSY = "Processing — please wait before your next swipe"
 _NO_PHOTO_RETRY_S = 0.5
 _PROFILE_LOG_WIDTH = 72
+_DEFAULT_SWIPE_DELAY_S = PacingCfg().swipe_delay_s   # config.py's documented anchor default;
+                                                      # configured/default scales think_time_s
 
 
 class Worker(threading.Thread):
@@ -131,10 +135,12 @@ class Worker(threading.Thread):
         added = 0
         last_retrained = 0
         pending_error = False
+        terminal_state = "stopped"            # overwritten below when the loop ends for a known reason
         try:
             while not self.stop_event.is_set():
                 if self.driver.out_of_profiles():
-                    self._stat(state="out_of_profiles")
+                    terminal_state = "out_of_profiles"
+                    self._stat(state=terminal_state)
                     break
                 self._profile_separator()
                 self._block_observe_capture()                # WAIT cue for every card (capturing state)
@@ -169,11 +175,13 @@ class Worker(threading.Thread):
                 if vec is None:                               # no face -> not a useful label
                     self._stat(last_decision="no_face")
                     continue
-                if self.stop_event.is_set():
-                    break
                 if archived is False:                         # images couldn't be saved -> no label without them
                     self._stat(last_decision="archive_failed")
                     continue
+                # NOTE: deliberately no stop_event check here. A manual swipe already
+                # happened and its photos + embedding are already committed above — Stop
+                # must end the loop AFTER this label is saved (the while-loop condition
+                # below does that without starting a NEW capture), not discard work in hand.
                 self.store.add_label(self.run_id, self.app, liked, vec, source="manual",
                                      profile_id=profile_id, **metadata)
                 self.store.record_decision(self.run_id, self.app,
@@ -204,7 +212,7 @@ class Worker(threading.Thread):
                         traceback.print_exc()
             finally:
                 self.driver.render_busy(None)
-                self._stat(state="stopped")
+                self._stat(state=terminal_state)
                 self.driver.close()
 
     def _retrain_after_observe_labels(self, added: int) -> None:
@@ -219,15 +227,30 @@ class Worker(threading.Thread):
         acted = 0
         liked = 0
         today0 = self.store.count_today(self.app) if self.limiter else 0
+        today_acted = 0            # actions this worker made since today0 was last measured
+        today_date = date.today()  # LOCAL day — matches the store's count_today() day boundary
         self.driver.open_session()
         self._stat(mode="auto", state="scoring")
+        terminal_state = "stopped"            # overwritten below when the loop ends for a known reason
         try:
             while not self.stop_event.is_set():
+                if self.limiter:
+                    today = date.today()
+                    if today != today_date:
+                        # Local midnight crossed mid-run — re-baseline against the new day
+                        # instead of forever charging new-day actions against a day that's
+                        # already over. Only queries the store on the rollover itself, not
+                        # every profile.
+                        today0 = self.store.count_today(self.app)
+                        today_acted = 0
+                        today_date = today
                 if self.driver.out_of_profiles():
-                    self._stat(state="out_of_profiles")
+                    terminal_state = "out_of_profiles"
+                    self._stat(state=terminal_state)
                     break
-                if self.limiter and not self.limiter.allow(acted, today0 + acted):
-                    self._stat(state="rate_limited")
+                if self.limiter and not self.limiter.allow(acted, today0 + today_acted):
+                    terminal_state = "rate_limited"
+                    self._stat(state=terminal_state)
                     print(f"{self.app.title()} rate limit reached ({self.limiter.describe()}); "
                           f"stopping {self.app}.")
                     break
@@ -250,7 +273,8 @@ class Worker(threading.Thread):
                 # Per-run like budget: stop the run rather than mislabel a wanted
                 # like as a pass (keeps the right-swipe ratio human; see limits.py).
                 if d.decision == "like" and self.limiter and not self.limiter.allow_like(liked):
-                    self._stat(state="rate_limited")
+                    terminal_state = "rate_limited"
+                    self._stat(state=terminal_state)
                     print(f"{self.app.title()} per-run like budget reached "
                           f"({self.limiter.describe()}); stopping {self.app}.")
                     break
@@ -290,6 +314,7 @@ class Worker(threading.Thread):
                     self.status.record_swipe(self.app, d.decision, d.score)
                 self._render()
                 acted += 1
+                today_acted += 1
 
                 if self.opener_service.stop_requested:        # global budget/credit stop
                     self.stop_event.set()
@@ -300,7 +325,7 @@ class Worker(threading.Thread):
                 self._capture_failure(exc)                    # snapshot WHILE the transport is live
             raise                                             # (the finally below closes it)
         finally:
-            self._stat(state="stopped")
+            self._stat(state=terminal_state)
             self.driver.close()
 
     def _pace(self, decision: str) -> None:
@@ -308,7 +333,11 @@ class Worker(threading.Thread):
             return
         # Normalize driver decisions: "dislike" → "pass" for the timing model.
         key = "like" if decision == "like" else "pass"
-        self.stop_event.wait(think_time_s(key))
+        # Honor swipe_delay_s as the tuning anchor config.py documents it as: scale
+        # think_time_s's whole distribution by configured/default instead of only
+        # gating on zero (which made the anchor value itself a dead knob).
+        scale = self.pacing.swipe_delay_s / _DEFAULT_SWIPE_DELAY_S
+        self.stop_event.wait(think_time_s(key) * scale)
 
     def _maybe_session_break(self) -> None:
         """~8% chance of a 20-90 s micro-break between profiles — mimics stepping away."""

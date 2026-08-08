@@ -329,13 +329,101 @@ def test_capture_refuses_degraded_when_decode_fails():
         drv._capture_current()
 
 
-def test_scroll_to_top_capped_at_four_swipes(monkeypatch):
-    # fix 7: never swipe forever on an animated/video card whose frames always differ.
+def test_scroll_to_top_ceiling_derived_from_capture_scrolls_not_a_magic_four(monkeypatch):
+    # bug 1 fix: a fixed cap of 4 could NOT undo a capture that scrolled further than that
+    # (scroll_captures defaults to 8, i.e. up to 7 read-scrolls) -- it left the phone parked
+    # mid-profile, so the next heart/pass tap template-matched a photo from the WRONG card.
+    # The ceiling must track how far the just-completed capture actually scrolled, not a guess.
+    frames = [b"f0", b"f1", b"f2", b"f3", b"f4", b"f5", b"f6", b"f7"]   # 8 distinct -> 7 scrolls
+    adb = FakeAdb(frames)
+    drv = _drv(adb, scroll_captures=8)
+    drv._capture_current()
+    assert adb.scrolls == 7                          # sanity: capture scrolled down 7 times
+
+    adb.swipes = 0
+    monkeypatch.setattr(HingeDriver, "_changed", lambda self, a, b: True)  # never settles -> ceiling governs
+    drv._scroll_to_top()
+    assert adb.swipes == 7               # old code capped this at a magic 4 -> would fail here
+
+
+def test_scroll_to_top_still_bounded_against_a_stuck_screen(monkeypatch):
+    # the (now-correct) ceiling is still a hard cap, not an infinite loop, when a screen never
+    # settles (e.g. an animated/video card whose frames always differ).
     monkeypatch.setattr(HingeDriver, "_changed", lambda self, a, b: True)  # always "still moving"
     adb = FakeAdb([b"x"])
     drv = _drv(adb, scroll_captures=8)
+    drv._capture_scrolls = 3             # simulate a capture that scrolled 3 times
     drv._scroll_to_top()
-    assert adb.swipes == 4               # min(4, scroll_captures)
+    assert adb.swipes == 3               # stops at the ceiling, doesn't spin forever
+
+
+class PositionTrackingAdb(FakeAdb):
+    """FakeAdb that also tracks cumulative scroll DISPLACEMENT as a scalar profile position
+    (0 == top, growing as the profile is read further down) instead of just counting
+    scroll_up/swipe calls. A pure call-COUNT assertion (as in the tests above) can't see a
+    DISTANCE mismatch between a forward read-scroll and its undo-swipe -- it happily passes
+    even when the undo systematically travels less (or more) than the scroll it's meant to
+    cancel, which is exactly the bug a fixed-drag undo-swipe had: same swipe COUNT as
+    read-scrolls, but each swipe covered less ground, so the net position never reached zero.
+    """
+    def __init__(self, frames, **kw):
+        super().__init__(frames, **kw)
+        self.position = 0.0
+
+    def scroll_up(self, distance_frac=0.55, x_frac=0.5):
+        super().scroll_up(distance_frac=distance_frac, x_frac=x_frac)
+        self.position += distance_frac    # forward read-scroll: further down the profile
+
+    def swipe(self, x1, y1, x2, y2, duration_ms=450):
+        super().swipe(x1, y1, x2, y2, duration_ms=duration_ms)
+        h = self.screen_size()[1]
+        self.position += (y1 - y2) / h    # scroll_to_top's undo gesture: top-of-screen -> bottom-of-screen
+
+
+def test_scroll_to_top_returns_to_true_top_not_just_matching_swipe_count(monkeypatch):
+    # A swipe-COUNT match (test_scroll_to_top_ceiling_derived_from_capture_scrolls_not_a_magic_four
+    # above) is not enough: the undo-swipe must also cover the SAME DISTANCE as the read-scroll it
+    # cancels. A fixed 0.45h undo-swipe against a 0.55h default read-scroll left the profile
+    # scrolled down by ~18% per scroll even with a correct swipe count -- up to ~0.7 screen-heights
+    # short of the top on a long profile -- so the next heart/pass tap could land on the wrong
+    # photo. Track actual displacement (not just call counts) so an under/over-correction is visible.
+    monkeypatch.setattr(HingeDriver, "_changed", lambda self, a, b: True)   # never settle early -> full ceiling
+    frames = [f"f{i}".encode() for i in range(8)]     # 8 distinct frames -> 7 read-scrolls
+    adb = PositionTrackingAdb(frames)
+    drv = _drv(adb, scroll_captures=8, read_scroll_frac=0.55)
+
+    drv._capture_current()
+    assert adb.position == pytest.approx(7 * 0.55)     # capture read-scrolled forward 7 times
+
+    drv._scroll_to_top()
+    assert adb.position <= 1e-9, (
+        f"scroll-to-top left the profile at position {adb.position:.3f} screens down from the "
+        "top -- a like/opener can land on the wrong photo"
+    )
+
+
+def test_current_profile_returns_to_top_after_observe_capture(monkeypatch):
+    # bug 2 fix: current_profile() is the ONLY observe capture path, and worker.py prints
+    # "READY - swipe this profile" immediately after it returns -- so leaving the phone
+    # scrolled to the bottom (all _capture_current did before this fix) has the operator
+    # swipe a view that isn't the top of the profile they just read.
+    monkeypatch.setattr(HingeDriver, "_changed", lambda self, a, b: True)  # force full ceiling
+    adb = FakeAdb([b"a", b"b", b"c"])
+    drv = _drv(adb, scroll_captures=3)
+
+    drv.current_profile()
+
+    assert adb.scrolls == 2              # capture read-scrolled twice (3 distinct frames)
+    assert adb.swipes == 2               # _scroll_to_top swiped all the way back up before returning
+
+
+def test_next_profile_does_not_scroll_to_top_itself():
+    # auto path: like() already calls _scroll_to_top() before acting, so next_profile() must
+    # NOT also scroll back up -- that would be a redundant extra scroll (bug 2 fix note).
+    adb = FakeAdb([b"a", b"b", b"c"])
+    drv = _drv(adb, scroll_captures=3)
+    drv.next_profile()
+    assert adb.swipes == 0
 
 
 # --- Phase 4: touch transport selection (UHID preferred, adb input fallback) -----
@@ -463,6 +551,45 @@ def test_locate_target_heart_falls_back_on_none_sig():
     assert drv._locate_target_heart(1) == (937, 1600)    # falls back to the first photo's heart
 
 
+# --- HINGE-05: fallback must be recorded in the debug log, and the search must not sweep
+# the whole deck when the target is never found --------------------------------------------
+def test_locate_target_heart_logs_fallback_when_target_not_found(monkeypatch, tmp_path):
+    from operation_love.drivers.debuglog import HingeDebugLog
+    import numpy as np
+    never_matches = np.ones((24, 24)) * 250
+    monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: np.zeros((24, 24)))
+    adb = FakeAdb([b"f0"])
+    drv = _drv(adb, scroll_captures=8)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="r")
+    drv._current_sigs = [np.zeros((24, 24)), never_matches]
+
+    drv._locate_target_heart(1)   # target sig never matches any captured frame -> falls back
+
+    import json
+    recs = [json.loads(ln) for ln in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()]
+    fallback_recs = [r for r in recs if r["action"] == "locate_target_heart"]
+    assert len(fallback_recs) == 1
+    assert fallback_recs[0]["outcome"] == "fallback"
+    assert fallback_recs[0]["reason"] == "target_frame_not_found"
+
+
+def test_locate_target_heart_bounds_search_when_target_not_found(monkeypatch):
+    # Old code swept the FULL scroll_captures+1 depth (9 scrolls, for the default
+    # scroll_captures=8) before giving up on a target it never matched -- a target already
+    # scrolled past effectively costs a full wasted sweep. The search must be capped closer to
+    # item_index (how far down from the top the target should be).
+    import numpy as np
+    never_matches = np.ones((24, 24)) * 250
+    monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: np.zeros((24, 24)))
+    adb = FakeAdb([b"x"])
+    drv = _drv(adb, scroll_captures=8)
+    drv._current_sigs = [np.zeros((24, 24)), never_matches]
+
+    drv._locate_target_heart(1)
+
+    assert adb.scrolls <= 4   # old code: 9 (scroll_captures + 1); capped near item_index + 3 here
+
+
 def test_verify_like_landed_raises_when_sheet_or_modal_open(monkeypatch):
     from operation_love.drivers.hinge import HingeActionError
     drv = _drv(FakeAdb([b"f"]), halt_on_error=True)
@@ -485,6 +612,32 @@ def test_verify_like_landed_raises_when_screen_unchanged(monkeypatch):
     monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0))     # never advanced
     with pytest.raises(HingeActionError):
         drv._verify_like_landed(b"before")
+
+
+def test_verify_like_landed_dismisses_late_animating_rose_modal(monkeypatch):
+    # HINGE-07: the Rose modal can animate in AFTER _handle_rose_upsell's own poll window
+    # already gave up (it wasn't visible yet at that point). _verify_like_landed must tolerate
+    # that -- dismiss it itself and keep checking -- instead of treating a still-open modal as a
+    # dead run and halting a perfectly-sent like.
+    calls = {"n": 0}
+
+    def fake_match(frame, template, side="any", threshold=0.6):
+        calls["n"] += 1
+        # iter1: sheet check (gone), modal check (not yet animated in)
+        # iter2: sheet check (gone), modal check (now up -> gets dismissed)
+        # iter3: sheet check (gone), modal check (gone, dismissed)
+        if calls["n"] == 4:
+            return [(5, 5)]
+        return []
+
+    monkeypatch.setattr(hinge, "_match_glyph", fake_match)
+    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+
+    adb = FakeAdb([b"before", b"before", b"after"], advance_on_screencap=True)
+    drv = _drv(adb, halt_on_error=True)
+
+    drv._verify_like_landed(b"before")            # must NOT raise
+    assert drv._touch.taps == [(5, 5)]             # dismissed the late modal itself, never a Rose
 
 
 def test_snap_retries_once_past_transient_failure():

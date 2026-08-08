@@ -81,15 +81,38 @@ def test_valid_on_exhausted_passes():
         c.validate(_load(d))   # no raise
 
 
-if __name__ == "__main__":
-    import sys
-    import traceback
+# --- pacing.swipe_delay_s: live scale on worker._pace, must be bounded ---------------
+def test_pacing_swipe_delay_rejects_negative_and_near_zero():
+    # threading.Event.wait() treats a negative/near-zero timeout as "return immediately" --
+    # worker._pace() multiplies this straight into the wait, so an unbounded value here is
+    # machine-speed swiping on a live account. 0 is the explicit "pacing off" sentinel and
+    # must stay legal (see test_pacing_swipe_delay_floor_and_off_and_default_pass).
+    for bad in (-3.5, -0.01, 0.001, 0.999):
+        d = {**BASE, "pacing": {"swipe_delay_s": bad}}
+        _expect_error(d, "swipe_delay_s")
 
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn(); print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
-    sys.exit(1 if failed else 0)
+
+def test_pacing_swipe_delay_floor_and_off_and_default_pass():
+    for ok in (0, 1.0, 3.5):
+        d = {**BASE, "pacing": {"swipe_delay_s": ok}}
+        c.validate(_load(d))   # no raise
+
+
+# --- a bare `key:` (YAML null) must be treated as "key omitted", not crash -----------
+def test_null_top_level_limits_does_not_crash_validate():
+    d = {**BASE, "limits": None}
+    c.validate(_load(d))   # no raise -- pre-fix this hit `set(None)` -> TypeError, not ValueError
+
+
+def test_null_optional_blocks_are_treated_as_omitted():
+    """Sweep: the same 'YAML null slips past a dict .get(..., {}) default' gap that broke
+    `limits:` also affects every other optional block that gets spread (**) or further
+    indexed after load() reads it -- fixed at the source in config.load()."""
+    for key in ("ranker", "quality_filter", "opener", "pacing", "paths", "apps"):
+        d = {**BASE, key: None}
+        c.validate(_load(d))   # no raise
+
+
+def test_null_storage_bigquery_reports_clean_error_not_crash():
+    d = {**BASE, "storage": {"backend": "bigquery", "bigquery": None}}
+    _expect_error(d, "project_id")   # clean ValueError, not AttributeError on None.get(...)

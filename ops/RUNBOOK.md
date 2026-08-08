@@ -11,7 +11,7 @@ the device (`python -m operation_love.runtime`).
 
 ```bash
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -e ".[ml,bumble,hinge,bq,dev]"
+pip install -e ".[ml,bq,bumble,hinge,dev]"
 python -m playwright install chromium                   # Bumble browser
 cp .env.example .env                                    # add ANTHROPIC_API_KEY
 pytest -q                                               # sanity: all green

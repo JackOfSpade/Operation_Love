@@ -37,9 +37,10 @@ dev = ["pytest>=8.0"]
 [tool.setuptools.packages.find]
 include = ["operation_love*"]
 
-# Ship the Hinge button-glyph templates (vision-located like/pass) with the package.
+# Ship the Hinge button-glyph templates (vision-located like/pass) and the hub's
+# HTML/CSS/JS page (kept in its own file for editor tooling) with the package.
 [tool.setuptools.package-data]
-operation_love = ["drivers/assets/*.png"]
+operation_love = ["drivers/assets/*.png", "assets/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

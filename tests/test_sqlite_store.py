@@ -94,7 +94,6 @@ def test_sqlite_load_labels_ordered_sorts_by_created_at(tmp_path):
 
 def test_sqlite_add_label_rejects_nan_embedding(tmp_path):
     """add_label() must raise (not silently store) NaN/Inf values in embeddings."""
-    import math
     store = SQLiteStore(tmp_path / "store.db")
     try:
         try:
@@ -104,3 +103,57 @@ def test_sqlite_add_label_rejects_nan_embedding(tmp_path):
             assert "nan" in str(e).lower() or "allow_nan" in str(e).lower()
     finally:
         store.close()
+
+
+def test_sqlite_spend_today_sums_only_local_today(tmp_path):
+    """spend_today() gates budget.day_budget_usd -- it must sum only rows since local
+    midnight, excluding anything from a prior local day."""
+    from operation_love.costing import Usage
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        usage = Usage(input_tokens=1, output_tokens=1, cache_read_input_tokens=0,
+                      cache_creation_input_tokens=0)
+        store.record_spend("r", "claude-x", usage, 0.05)
+        store.record_spend("r", "claude-x", usage, 0.02)
+        # Backdate one row well outside any local day (25h) so it must be excluded.
+        store.con.execute(
+            "UPDATE spend SET created_at = ? WHERE id = (SELECT MIN(id) FROM spend)",
+            (time.time() - 90_000,),
+        )
+        store.con.commit()
+
+        assert abs(store.spend_today() - 0.02) < 1e-9
+    finally:
+        store.close()
+
+
+def test_stats_show_uses_read_only_store(tmp_path, monkeypatch):
+    """stats.show() only reads; it must ask make_store() for ensure=False so it doesn't
+    run BigQuery table DDL / bucket IAM patching just to print a readout (hub.py and
+    tools/eval_aggregation.py already pass ensure=False for their read-only paths)."""
+    from operation_love import config as cfg_mod
+    from operation_love import stats
+
+    cfg = cfg_mod.Config(
+        enabled_apps=["bumble"], mode="observe", apps={}, limits={},
+        data_dir=tmp_path, db_file=tmp_path / "s.db",
+        ranker=cfg_mod.RankerCfg(), quality_filter=cfg_mod.QualityCfg(),
+        opener=cfg_mod.OpenerCfg(enabled=False),
+        budget=cfg_mod.BudgetCfg(pricing={}),
+        pacing=cfg_mod.PacingCfg(),
+        storage=cfg_mod.StorageCfg(backend="sqlite"),
+    )
+    monkeypatch.setattr(cfg_mod, "load", lambda path: cfg)
+
+    seen = {}
+    real_store = SQLiteStore(tmp_path / "s.db")
+
+    def fake_make_store(passed_cfg, ensure=True):
+        seen["ensure"] = ensure
+        return real_store
+
+    monkeypatch.setattr(stats, "make_store", fake_make_store)
+
+    stats.show("unused.yaml")
+
+    assert seen["ensure"] is False

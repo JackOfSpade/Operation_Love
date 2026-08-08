@@ -40,18 +40,17 @@ def test_banner_is_str():
     assert isinstance(Capabilities.detect().banner(), str)
 
 
-if __name__ == "__main__":
-    import sys
-    import traceback
+def test_capabilities_detect_honours_hinge_adb_path(tmp_path, monkeypatch):
+    # adb not on PATH at all -> default (config-free) check reports it missing.
+    empty_dir = tmp_path / "empty_path"
+    empty_dir.mkdir()
+    monkeypatch.setenv("PATH", str(empty_dir))
+    assert Capabilities.detect().available["hinge_driver"] is False
 
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn()
-            print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL {fn.__name__}")
-            traceback.print_exc()
-    sys.exit(1 if failed else 0)
+    # But a configured apps.hinge.adb_path pointing at a real binary must be honoured,
+    # even though it's still not on PATH.
+    fake_adb = tmp_path / "adb"
+    fake_adb.write_text("#!/bin/sh\n")
+    fake_adb.chmod(0o755)
+    caps = Capabilities.detect(hinge_adb_path=str(fake_adb))
+    assert caps.available["hinge_driver"] is True

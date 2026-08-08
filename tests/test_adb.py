@@ -4,7 +4,13 @@ import subprocess
 import pytest
 
 from operation_love.drivers import adb as adb_mod
-from operation_love.drivers.adb import Adb, AdbError, plan_path
+from operation_love.drivers.adb import (
+    Adb,
+    AdbError,
+    _clean_text_for_input,
+    parse_devices_output,
+    plan_path,
+)
 from operation_love.drivers.base import DriverClosed
 
 
@@ -39,22 +45,78 @@ class FakeRun:
         return [call[3] for call in self.calls]
 
 
-def test_key_and_text_build_expected_argv(monkeypatch):
-    run = FakeRun(_ok(), _ok(), _ok())
+def test_text_builds_expected_argv(monkeypatch):
+    run = FakeRun(_ok())
     monkeypatch.setattr(adb_mod.subprocess, "run", run)
     d = Adb(serial="pixel-7a", adb_path="/opt/android/adb", default_timeout=3.5)
 
-    d.key("HOME")
-    d.key(66)
     d.text("hi there&you")
 
     assert run.argv == [
-        ["/opt/android/adb", "-s", "pixel-7a", "shell", "input", "keyevent", "HOME"],
-        ["/opt/android/adb", "-s", "pixel-7a", "shell", "input", "keyevent", "66"],
         ["/opt/android/adb", "-s", "pixel-7a", "shell", "input", "text", "hi%sthere\\&you"],
     ]
     assert all(c[1] is True for c in run.calls)     # capture_output
     assert all(c[2] == 3.5 for c in run.calls)      # timeout threaded through
+
+
+# --- _clean_text_for_input: fold non-ASCII typography, never delete it (bug 3) ----------
+def test_clean_text_folds_curly_quotes_and_ellipsis_instead_of_deleting():
+    out = _clean_text_for_input("that’s a “bold” choice… love it")
+    assert out == "that's a \"bold\" choice... love it"
+
+
+def test_clean_text_folds_exotic_spaces_to_a_normal_space():
+    out = _clean_text_for_input("a b c d")     # nbsp, narrow nbsp, thin space
+    assert out == "a b c d"
+
+
+def test_clean_text_removes_every_dash_variant():
+    # Owner rule (b): openers must contain no dash of any kind (reads as AI). Consistent with
+    # opener.py's _sanitize(), not a second policy.
+    dashes = "—–‒―−‑‐-"   # em en figure horiz-bar minus nb-hyphen hyphen ascii
+    out = _clean_text_for_input(f"a{dashes}b")
+    for ch in "-—–‐‑‒―−":
+        assert ch not in out
+
+
+def test_clean_text_collapses_double_space_artifacts():
+    # An unmapped codepoint (still dropped, as before) must not leave a double space where
+    # it used to sit.
+    out = _clean_text_for_input("choice \U0001F600 love")
+    assert "  " not in out
+    assert out == "choice love"
+
+
+def test_clean_text_realistic_claude_opener_reads_naturally():
+    opener = "that’s a bold choice — I love it… truly “unique”"
+    out = _clean_text_for_input(opener)
+    assert "  " not in out
+    assert not any(ch in out for ch in "—–‐‑‒―−-")
+    # No stray space before the comma the em dash folded into: this layer now shares
+    # opener.py's punctuation tidy-up, so both paths spell the same sentence.
+    assert out == "that's a bold choice, I love it... truly \"unique\""
+
+
+def test_clean_text_ascii_passthrough_unchanged():
+    # Regression guard: the only case previously covered (via text(), see below) must still
+    # pass through untouched now that folding is in the mix.
+    assert _clean_text_for_input("hi there&you") == "hi there&you"
+
+
+def test_text_folds_claude_opener_typography_then_escapes_for_shell(monkeypatch):
+    # Full-pipeline regression: fold -> escape -> shell argv, for typography Claude actually
+    # produces. Shell-escaping (%s for spaces, backslash for shell metacharacters) must still
+    # work on the FOLDED string.
+    run = FakeRun(_ok())
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    Adb(serial="pixel").text("that’s bold — love it…")
+
+    assert run.argv[0][:6] == ["adb", "-s", "pixel", "shell", "input", "text"]
+    sent = run.argv[0][6]
+    assert "’" not in sent and "—" not in sent and "…" not in sent
+    assert "%s" in sent                              # spaces still escaped (existing behaviour)
+    assert "\\'" in sent                              # folded apostrophe still shell-escaped
 
 
 def test_tap_is_single_fork_tap(monkeypatch):
@@ -154,14 +216,67 @@ pixel-4\tdevice product:foo model:bar
     assert run.argv == [["adb", "devices"]]
 
 
+# --- parse_devices_output: the ONE canonical `adb devices` parser (X8) --------------------
+# adb devices was previously parsed three different, disagreeing ways across the codebase
+# (drivers/adb.py, supervisor.py, tools/hinge_inspect.py); this is the single source of truth
+# the other two are being rewired to import.
+def test_parse_devices_output_handles_dash_l_extra_columns():
+    # `adb devices -l` appends trailing key:value columns. A naive `parts[-1] == "device"`
+    # check (used by the old ad-hoc parsers) is flat-out wrong on this output.
+    out = ("List of devices attached\n"
+           "0A051FDD4003ZR       device usb:1-1 product:panther model:Pixel_7a "
+           "device:panther transport_id:3\n")
+    assert parse_devices_output(out) == ["0A051FDD4003ZR"]
+
+
+def test_parse_devices_output_excludes_unauthorized_and_offline():
+    out = ("List of devices attached\n"
+           "pixel-1\tunauthorized\n"
+           "pixel-2\toffline\n"
+           "pixel-3\tdevice\n")
+    assert parse_devices_output(out) == ["pixel-3"]
+
+
+def test_parse_devices_output_skips_daemon_startup_chatter():
+    # A cold `adb devices` call prints daemon-startup lines to stdout BEFORE the header.
+    out = ("* daemon not running; starting now at tcp:5037\n"
+           "* daemon started successfully\n"
+           "List of devices attached\n"
+           "pixel-1\tdevice\n"
+           "\n")
+    assert parse_devices_output(out) == ["pixel-1"]
+
+
+def test_parse_devices_output_empty_when_no_devices():
+    assert parse_devices_output("List of devices attached\n\n") == []
+
+
+# --- scroll_up: x-column jitter, shared by Adb and UhidTouch (HINGE-04) -------------------
+def test_scroll_up_jitters_x_column(monkeypatch):
+    # UHID (uhid.py) previously had NO x jitter on scroll_up, unlike this one -- a repeated,
+    # pixel-identical swipe column is exactly the machine-like signature the humanized path
+    # exists to avoid. Both transports now share adb.scroll_x(); this pins Adb's side of it.
+    run = FakeRun(*[_ok() for _ in range(30)])
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+    d = Adb(serial="pixel")
+    d._size = (1080, 2400)
+
+    xs = set()
+    for _ in range(30):
+        d.scroll_up()
+        dx = int(re.search(r"DOWN (\d+) \d+", run.inputs[-1].decode()).group(1))
+        xs.add(dx)
+    assert len(xs) > 1     # jittered run to run, not a fixed column every time
+
+
 def test_non_zero_exit_raises_adb_error(monkeypatch):
     run = FakeRun(_fail(stderr=b"bad command"))
     monkeypatch.setattr(adb_mod.subprocess, "run", run)
 
     with pytest.raises(AdbError) as exc:
-        Adb().key("HOME")
+        Adb().text("HOME")
 
-    assert exc.value.argv == ["adb", "shell", "input", "keyevent", "HOME"]
+    assert exc.value.argv == ["adb", "shell", "input", "text", "HOME"]
     assert exc.value.stderr == "bad command"
     assert "ADB command failed with exit code 1" in str(exc.value)
     assert "stderr: bad command" in str(exc.value)
@@ -169,7 +284,7 @@ def test_non_zero_exit_raises_adb_error(monkeypatch):
 
 def test_timeout_raises_adb_error(monkeypatch):
     timeout = subprocess.TimeoutExpired(
-        ["adb", "shell", "input", "keyevent", "HOME"],
+        ["adb", "shell", "input", "text", "HOME"],
         timeout=10,
         stderr=b"still waiting",
     )
@@ -177,9 +292,9 @@ def test_timeout_raises_adb_error(monkeypatch):
     monkeypatch.setattr(adb_mod.subprocess, "run", run)
 
     with pytest.raises(AdbError) as exc:
-        Adb(default_timeout=10).key("HOME")
+        Adb(default_timeout=10).text("HOME")
 
-    assert exc.value.argv == ["adb", "shell", "input", "keyevent", "HOME"]
+    assert exc.value.argv == ["adb", "shell", "input", "text", "HOME"]
     assert exc.value.stderr == "still waiting"
     assert "timed out after 10s" in str(exc.value)
 
@@ -196,7 +311,9 @@ def test_device_lost_stderr_raises_driver_closed(monkeypatch, stderr):
     monkeypatch.setattr(adb_mod.subprocess, "run", run)
 
     with pytest.raises(DriverClosed):
-        Adb(serial="pixel").key("HOME")
+        Adb(serial="pixel").text("HOME")
+
+    assert run.argv == [["adb", "-s", "pixel", "shell", "input", "text", "HOME"]]
 
 
 def test_device_lost_via_stdout_raises_driver_closed(monkeypatch):
@@ -206,7 +323,9 @@ def test_device_lost_via_stdout_raises_driver_closed(monkeypatch):
     monkeypatch.setattr(adb_mod.subprocess, "run", run)
 
     with pytest.raises(DriverClosed):
-        Adb(serial="pixel").key("HOME")
+        Adb(serial="pixel").text("HOME")
+
+    assert run.argv == [["adb", "-s", "pixel", "shell", "input", "text", "HOME"]]
 
 
 def test_write_file_cat_redirect_argv_and_raw_bytes(monkeypatch):

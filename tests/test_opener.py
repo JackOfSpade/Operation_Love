@@ -4,8 +4,33 @@ No SDK/network: a fake Anthropic client returns a canned structured-output paylo
 """
 import json
 
-from operation_love.opener.opener import AnthropicOpener, _sanitize
+import pytest
+
+from operation_love.opener.opener import AnthropicOpener, OpenerParseError, _image_media_type, _sanitize
 from operation_love.perception.capture import Profile
+
+
+def test_image_media_type_detects_png():
+    assert _image_media_type(b"\x89PNG\r\n\x1a\n" + b"rest") == "image/png"
+
+
+def test_image_media_type_detects_jpeg():
+    assert _image_media_type(b"\xff\xd8\xff" + b"rest") == "image/jpeg"
+
+
+def test_image_media_type_detects_gif():
+    assert _image_media_type(b"GIF89a" + b"rest") == "image/gif"
+    assert _image_media_type(b"GIF87a" + b"rest") == "image/gif"
+
+
+def test_image_media_type_detects_webp():
+    assert _image_media_type(b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"rest") == "image/webp"
+
+
+def test_image_media_type_defaults_to_png_for_unknown_bytes():
+    assert _image_media_type(b"not an image") == "image/png"
+    assert _image_media_type(b"") == "image/png"
+    assert _image_media_type(b"\x00\x01") == "image/png"
 
 
 def test_sanitize_removes_em_dash_and_hyphen():
@@ -22,6 +47,30 @@ def test_sanitize_no_dangling_comma_from_boundary_dash():
     assert _sanitize("—start") == "start"                # leading dash -> no leading comma
     assert _sanitize("Bold move—!") == "Bold move!"      # dash before terminal -> clean
     assert "," not in _sanitize("nice try—")             # no stray comma anywhere
+
+
+# Every dash-like codepoint a model has been observed to emit (owner hard rule: NO em dashes,
+# NO hyphens of any kind in a generated opener -- it's the single biggest AI-written tell).
+# Property-style: loop over the codepoints so a newly-encountered dash is a one-line addition.
+_ALL_DASH_CODEPOINTS = [
+    "—",  # — em dash
+    "–",  # – en dash
+    "-",  # -  hyphen-minus
+    "‐",  # ‐ hyphen
+    "‑",  # ‑ non-breaking hyphen
+    "‒",  # ‒ figure dash
+    "―",  # ― horizontal bar
+    "−",  # − minus sign
+    "﹘",  # ﹘ small em dash
+    "﹣",  # ﹣ small hyphen-minus
+    "－",  # － fullwidth hyphen-minus
+]
+
+
+def test_sanitize_strips_every_dash_codepoint():
+    for ch in _ALL_DASH_CODEPOINTS:
+        out = _sanitize(f"left{ch}right")
+        assert ch not in out, f"dash codepoint U+{ord(ch):04X} survived sanitize: {out!r}"
 
 
 class _Usage:
@@ -65,3 +114,55 @@ def test_generate_defaults_bad_index_to_zero():
     op = AnthropicOpener("claude-test", client=_FakeAnthropic(payload))
     res = op.generate(Profile(photos=[b"a"]), style="s")
     assert res.referenced_index == 0
+
+
+def test_content_declares_png_media_type_for_real_png_bytes():
+    # regression guard: every real capture path (Playwright screenshot, adb screencap) is PNG,
+    # but the code used to hardcode "image/jpeg" — the API 400s on a mismatched media_type.
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"rest of a fake png"
+    op = AnthropicOpener("claude-test", client=_FakeAnthropic("{}"))
+    blocks = op._content(Profile(photos=[png_bytes]), style="be cool")
+    image_blocks = [b for b in blocks if b["type"] == "image"]
+    assert len(image_blocks) == 1
+    assert image_blocks[0]["source"]["media_type"] == "image/png"
+
+
+# regression: a call that returns 200 with real billed usage but a body that doesn't parse
+# into a usable opener must raise OpenerParseError carrying usage/model (not swallow the
+# spend) -- the caller (OpenerService) uses that to still record what Anthropic billed.
+
+def test_generate_raises_parse_error_on_invalid_json_and_preserves_usage():
+    op = AnthropicOpener("claude-test", client=_FakeAnthropic("not json at all"))
+    with pytest.raises(OpenerParseError) as exc_info:
+        op.generate(Profile(photos=[b"a"]), style="s")
+    assert exc_info.value.usage is not None
+    assert exc_info.value.model == "claude-test"
+
+
+def test_generate_raises_parse_error_on_missing_opener_key():
+    payload = json.dumps({"referenced": "x", "referenced_index": 0})  # no "opener" key
+    op = AnthropicOpener("claude-test", client=_FakeAnthropic(payload))
+    with pytest.raises(OpenerParseError):
+        op.generate(Profile(photos=[b"a"]), style="s")
+
+
+class _EmptyContentResp:
+    model = "claude-test"
+
+    def __init__(self):
+        self.content = []   # no text block at all
+        self.usage = _Usage()
+
+
+class _FakeAnthropicNoText:
+    def __init__(self):
+        self.messages = self
+
+    def create(self, **_):
+        return _EmptyContentResp()
+
+
+def test_generate_raises_parse_error_when_no_text_block():
+    op = AnthropicOpener("claude-test", client=_FakeAnthropicNoText())
+    with pytest.raises(OpenerParseError):
+        op.generate(Profile(photos=[b"a"]), style="s")

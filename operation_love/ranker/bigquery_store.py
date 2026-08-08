@@ -16,14 +16,21 @@ injectable so tests run without the google-cloud-bigquery package or network.
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from ..costing import Usage
+from .store import local_midnight_epoch
 
 _UPLOAD_ATTEMPTS = 3        # bounded retry so a transient GCS blip doesn't drop a swipe
 _UPLOAD_BACKOFF_S = 0.5
+
+_MAX_INSERT_ATTEMPTS = 5    # bounded retry so a row BigQuery keeps rejecting as invalid
+                            # can't poison its table's buffer (and everything queued
+                            # behind it) forever -- see _flush_table
 
 _TABLES = {
     "profiles": (
@@ -71,6 +78,27 @@ def _image_type(data: bytes) -> tuple[str, str]:
     return "application/octet-stream", "bin"
 
 
+def _row_id(row: dict) -> str:
+    """Deterministic insert id for a buffered row, derived from its own content (NOT a
+    random uuid) so BigQuery's best-effort streaming dedup recognizes a row resent on
+    retry as the same logical row instead of inserting it again."""
+    return hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
+
+
+def _day_start_job_config(start_dt: datetime):
+    """QueryJobConfig binding `start_dt` as the `day_start` TIMESTAMP parameter shared by
+    count_today/spend_today (see local_midnight_epoch). Falls back to a minimal duck-typed
+    stand-in when the SDK isn't installed: the ``client`` is injectable (see module
+    docstring) so tests run against a fake client and never touch the real BigQuery API."""
+    try:
+        from google.cloud import bigquery
+    except ImportError:
+        return SimpleNamespace(query_parameters=[
+            SimpleNamespace(name="day_start", type_="TIMESTAMP", value=start_dt)])
+    return bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("day_start", "TIMESTAMP", start_dt)])
+
+
 class BigQueryStore:
     def __init__(self, project_id: str, dataset: str = "operation_love",
                  location: str = "US", photo_bucket: str = "", flush_every: int = 25,
@@ -94,7 +122,8 @@ class BigQueryStore:
         self.storage_client = storage_client
         self._buf: dict[str, list[dict]] = {name: [] for name in _TABLES}
         self._written: dict[str, int] = {name: 0 for name in _TABLES}  # rows confirmed inserted this run
-        self._label_count = 0
+        self._dropped: dict[str, int] = {name: 0 for name in _TABLES}  # rows permanently given up on (never inserted)
+        self._fail_counts: dict[str, int] = {}  # f"{table}:{row_id}" -> consecutive failed-insert attempts
         self._labels_cache: list[tuple[bool, list[float]]] | None = None
         self._lock = threading.RLock()  # shared across worker threads
         self._photo_bucket = self._get_or_create_photo_bucket() if ensure else self.storage_client.bucket(photo_bucket)
@@ -165,7 +194,6 @@ class BigQueryStore:
             out = [(bool(r["liked"]), list(r["embedding"])) for r in rows]
             out.extend((bool(r["liked"]), list(r["embedding"])) for r in self._buf["labels"])
             self._labels_cache = _copy_labels(out)
-            self._label_count = len(self._labels_cache)
             return _copy_labels(self._labels_cache)
 
     def load_labels_ordered(self) -> list[tuple[bool, list[float]]]:
@@ -180,28 +208,31 @@ class BigQueryStore:
         ).result()
         return [(bool(r["liked"]), list(r["embedding"])) for r in rows]
 
-    def label_count(self) -> int:
-        with self._lock:
-            return self._label_count
-
     def count_today(self, app: str) -> int:
+        """Auto-mode swipes recorded today (LOCAL day — same boundary as
+        SQLiteStore.count_today, via local_midnight_epoch(), NOT a UTC reporting day)."""
         safe = app.replace("'", "").replace("\\", "")
+        start_dt = datetime.fromtimestamp(local_midnight_epoch(), tz=timezone.utc)
         rows = self.client.query(
             f"SELECT COUNT(*) AS c FROM `{self._tid('decisions')}` "
-            f"WHERE app='{safe}' AND created_at >= TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), DAY) "
-            "AND source='auto'"
+            f"WHERE app='{safe}' AND created_at >= @day_start AND source='auto'",
+            job_config=_day_start_job_config(start_dt),
         ).result()
         for r in rows:
             return int(r["c"])
         return 0
 
     def spend_today(self) -> float:
-        """Sum of cost_usd already committed to BigQuery today (UTC day boundary).
-        Falls back to 0.0 on any error — used to seed the daily budget floor."""
+        """Sum of cost_usd already committed to BigQuery today (LOCAL day — same
+        boundary as SQLiteStore.spend_today, via local_midnight_epoch(), NOT a UTC
+        reporting day). Falls back to 0.0 on any error — used to seed the daily budget
+        floor."""
         try:
+            start_dt = datetime.fromtimestamp(local_midnight_epoch(), tz=timezone.utc)
             rows = self.client.query(
                 f"SELECT COALESCE(SUM(cost_usd), 0.0) AS total FROM `{self._tid('spend')}` "
-                "WHERE created_at >= TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), DAY)"
+                "WHERE created_at >= @day_start",
+                job_config=_day_start_job_config(start_dt),
             ).result()
             for r in rows:
                 return float(r["total"])
@@ -298,7 +329,6 @@ class BigQueryStore:
             label = (liked, list(embedding_vec))
             if self._labels_cache is not None:
                 self._labels_cache.append(label)
-            self._label_count += 1
             self._maybe_flush("labels")
 
     def record_decision(self, run_id, app, decision, score, source="auto"):
@@ -336,9 +366,49 @@ class BigQueryStore:
         rows = self._buf[table]
         if not rows:
             return
-        errors = self.client.insert_rows_json(self._tid(table), rows)
+        row_ids = [_row_id(row) for row in rows]
+        # skip_invalid_rows is deliberately left unset (BigQuery's documented default,
+        # False): per google.cloud.bigquery.Client.insert_rows_json's own docstring,
+        # that means "if any invalid rows exist [...] the entire request [fails]" --
+        # i.e. NOT partial acceptance. `errors` names only the offending row(s), but
+        # rows absent from it were NOT written either; the whole request was rejected.
+        errors = self.client.insert_rows_json(self._tid(table), rows, row_ids=row_ids)
         if errors:
+            # Do NOT assume any row in this batch was accepted -- with skip_invalid_rows
+            # unset, none were. Keep the whole batch buffered so it gets resent on the
+            # next flush; this is safe (won't double-insert anything BigQuery actually
+            # did ingest, e.g. via a transport-level retry) because row_ids are stable,
+            # content-derived ids (see _row_id) that BigQuery's own best-effort streaming
+            # dedup recognizes as "already seen".
+            #
+            # A row that is genuinely, permanently invalid would otherwise sit in the
+            # buffer forever: every flush re-includes it, keeps failing, and blocks every
+            # valid row queued behind it. Bound that -- after _MAX_INSERT_ATTEMPTS
+            # consecutive failures naming the same row (tracked by its stable row_id, not
+            # its position, since position shifts as the buffer changes across retries),
+            # drop just that row, loudly, and keep the rest of the buffer intact.
+            bad_ids = {row_ids[e["index"]] for e in errors if e.get("index") is not None}
+            for rid in bad_ids:
+                key = f"{table}:{rid}"
+                self._fail_counts[key] = self._fail_counts.get(key, 0) + 1
+            drop_ids = {rid for rid in bad_ids if self._fail_counts[f"{table}:{rid}"] >= _MAX_INSERT_ATTEMPTS}
+            if drop_ids:
+                kept, dropped = [], []
+                for row, rid in zip(rows, row_ids):
+                    (dropped if rid in drop_ids else kept).append(row)
+                for row in dropped:
+                    print(f"BigQuery store: DROPPING a row from '{table}' after "
+                          f"{_MAX_INSERT_ATTEMPTS} consecutive failed insert attempts -- "
+                          f"this row's data is LOST (never written to BigQuery). "
+                          f"BigQuery errors: {errors}. Row: {row}")
+                self._dropped[table] += len(dropped)
+                for rid in drop_ids:
+                    self._fail_counts.pop(f"{table}:{rid}", None)
+                self._buf[table] = kept
             raise RuntimeError(f"BigQuery insert errors for {table}: {errors}")
+        # Whole request succeeded -- every row in it was actually written.
+        for rid in row_ids:
+            self._fail_counts.pop(f"{table}:{rid}", None)
         self._written[table] += len(rows)
         self._buf[table] = []
 
@@ -365,6 +435,9 @@ class BigQueryStore:
         shutdown confirmation log. Empty buffers + a non-empty tally = everything landed."""
         with self._lock:
             parts = [f"{name}={self._written[name]}" for name in _TABLES if self._written[name]]
+            dropped = [f"{name}={self._dropped[name]}" for name in _TABLES if self._dropped[name]]
             pending = sum(len(self._buf[name]) for name in _TABLES)
         body = ", ".join(parts) if parts else "nothing new"
+        if dropped:
+            body += f" (DROPPED, never written: {', '.join(dropped)})"
         return f"{body} (pending={pending})" if pending else body

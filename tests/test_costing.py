@@ -26,13 +26,11 @@ def test_tracker_budget_reached():
     assert not t.budget_reached()
     t.record("m", Usage(input_tokens=1_000_000))  # $10 -> way over $0.02
     assert t.budget_reached()
-    assert t.remaining() == 0.0
 
 
 def test_tracker_no_budget():
     t = CostTracker({"m": ModelPricing(input=1.0, output=1.0)}, run_budget_usd=None)
     t.record("m", Usage(input_tokens=5_000_000))
-    assert t.remaining() is None
     assert not t.budget_reached()
 
 
@@ -69,20 +67,3 @@ def test_record_tolerates_dated_model_id():
         pass
     else:
         raise AssertionError("expected KeyError for unknown model")
-
-
-if __name__ == "__main__":
-    import sys
-    import traceback
-
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn()
-            print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1
-            print(f"FAIL {fn.__name__}")
-            traceback.print_exc()
-    sys.exit(1 if failed else 0)

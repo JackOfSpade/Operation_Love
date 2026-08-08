@@ -72,17 +72,3 @@ def test_worker_stops_at_run_cap():
     w._auto_loop()
     assert driver.dislikes == 2   # capped at 2 even though 5 were available
     assert driver.closed
-
-
-if __name__ == "__main__":
-    import sys
-    import traceback
-
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn(); print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
-    sys.exit(1 if failed else 0)

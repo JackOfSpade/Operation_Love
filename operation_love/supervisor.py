@@ -27,6 +27,9 @@ from .vision.quality import QualityFilter
 from .worker import Worker
 
 
+_WORKER_JOIN_TIMEOUT_S = 30   # module constant so tests can shrink it instead of sleeping 30s
+
+
 def _resolve_run_cap(config_cap: int | None, override: int | None) -> int | None:
     """Per-run override of the max-swipes-per-run cap (set from the hub, auto mode).
 
@@ -38,6 +41,28 @@ def _resolve_run_cap(config_cap: int | None, override: int | None) -> int | None
     if override is None:
         return config_cap
     return override or None
+
+
+def _stop_requested(stop_event: threading.Event | None) -> bool:
+    return stop_event is not None and stop_event.is_set()
+
+
+def _abort_startup(run_id: str, status: RunStatus, cfg, store=None) -> None:
+    """Stop was requested during startup, before any worker was launched. Startup (store
+    setup, ranker training, embedder/quality warmup) can take many seconds with no other
+    interrupt point (H-10), so honour Stop here too: publish a clean 'stopped' status
+    (not a stuck 'starting'/'live') and close whatever store handle was already opened —
+    nothing has been swiped yet, so there's nothing worth keeping it open for."""
+    print(f"Run {run_id}: stop requested during startup; aborting before launching workers.")
+    if store is not None:
+        try:
+            store.flush()
+            store.close()
+        except Exception as exc:  # noqa: BLE001 — best-effort; nothing was buffered yet
+            print(f"Run {run_id}: warning closing store during startup abort: {exc}")
+    for app in cfg.enabled_apps:
+        status.set_app(app, state="stopped")
+    status.set_global(running=False, phase="stopped")
 
 
 def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None = None,
@@ -61,7 +86,10 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     if on_status:
         on_status(status)
 
-    caps = Capabilities.detect()
+    # Pass the configured adb path: the hinge_driver capability resolves `adb` via PATH, so a
+    # machine that sets apps.hinge.adb_path (adb not on PATH) would otherwise get a false
+    # "not installed" warning even though the driver and the preflight both honour it.
+    caps = Capabilities.detect(hinge_adb_path=((cfg.apps or {}).get("hinge", {}) or {}).get("adb_path"))
     print(caps.banner())
     missing_cloud = caps.missing("bigquery", "cloud_storage") if cfg.storage.backend == "bigquery" else []
     if missing_cloud:
@@ -71,7 +99,14 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
 
     if caps.missing("arcface", "clip"):
         print("Degrade: ml extra not installed -> ranking unavailable "
-              "(`pip install -e '.[ml]'`). Workers will defer until it's present.")
+              "(`pip install -e '.[ml]'`). There is no defer path: every profile embed will "
+              "fail — auto-mode workers halt on the first one, observe-mode workers keep "
+              "retrying (with backoff) until they exhaust their restart budget and give up. "
+              "Install the extra before starting a real run.")
+
+    if _stop_requested(stop_event):
+        _abort_startup(run_id, status, cfg)
+        return
 
     status.set_global(phase="loading saved data")     # BigQuery ensure-tables + label load
     store = make_store(cfg)
@@ -81,6 +116,10 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     status.set_global(labels=len(labels))
     print(f"Store: backend={cfg.storage.backend} labels={len(labels)}  "
           f"apps={cfg.enabled_apps}")
+
+    if _stop_requested(stop_event):
+        _abort_startup(run_id, status, cfg, store)
+        return
 
     effective_budget = cfg.budget.run_budget_usd
     if cfg.budget.day_budget_usd is not None:
@@ -92,6 +131,7 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             effective_budget = remaining_today
         else:
             effective_budget = min(effective_budget, remaining_today)
+    status.set_global(budget_cap=effective_budget)   # hub must show the EFFECTIVE cap, not the raw config value
     tracker = CostTracker(cfg.budget.pricing, effective_budget)
     opener_client = None
     if cfg.opener.enabled and not caps.missing("anthropic"):
@@ -101,6 +141,10 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         print("Degrade: anthropic SDK not installed -> swiping without openers")
     opener_service = OpenerService(opener_client, tracker, store, cfg.opener.style,
                                    cfg.budget.on_exhausted)
+
+    if _stop_requested(stop_event):
+        _abort_startup(run_id, status, cfg, store)
+        return
 
     status.set_global(phase="training ranker")
     model = PreferenceModel(min_labels=cfg.ranker.min_labels_to_engage,
@@ -116,36 +160,59 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     embedder = Embedder()
     decider = RankerDecider(quality, embedder, model)
 
+    if _stop_requested(stop_event):
+        _abort_startup(run_id, status, cfg, store)
+        return
+
     status.set_global(ranker_ready=ready, phase="loading ML models")
     print("Warming up embedder and quality filter (avoids first-profile delay and init races)…")
     embedder.warmup()
     quality.warmup()
 
+    if _stop_requested(stop_event):
+        _abort_startup(run_id, status, cfg, store)
+        return
+
     if "hinge" in cfg.enabled_apps:
         _hinge_adb_preflight(cfg)
+
+    if _stop_requested(stop_event):
+        _abort_startup(run_id, status, cfg, store)
+        return
 
     stop_event = stop_event if stop_event is not None else threading.Event()
     _install_signal_handlers(stop_event)
 
+    # Launch construction+start lives INSIDE this try so the finally below (which stops,
+    # joins, flushes and closes) always covers any worker already started — even if
+    # make_driver() raises while building a LATER app (e.g. app #2's driver construction
+    # fails after app #1's worker is already live). Without this, an already-started
+    # worker/browser/ADB session would be orphaned and its buffered rows never flushed.
     workers = []
-    for app in cfg.enabled_apps:
-        app_cfg = cfg.apps.get(app, {}) or {}
-        mode = app_cfg.get("mode", cfg.mode)                          # per-app override
-        lim = {**cfg.limits, **(app_cfg.get("limits", {}))}
-        run_cap = _resolve_run_cap(lim.get("max_per_run"), max_per_run)
-        limiter = RateLimiter(run_cap, lim.get("max_per_day"),
-                              lim.get("max_likes_per_run"),
-                              target_like_ratio=lim.get("target_like_ratio"))
-        driver = make_driver(app, cfg)
-        w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing,
-                   stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every,
-                   limiter=limiter, status=status)
-        print(f"{app.title()} worker mode={mode} limits={limiter.describe()}")
-        workers.append(w)
-        w.start()
-
-    status.set_global(phase="live")
     try:
+        for app in cfg.enabled_apps:
+            app_cfg = (cfg.apps or {}).get(app, {}) or {}
+            mode = app_cfg.get("mode", cfg.mode)                          # per-app override
+            # Defended the same way config.validate() defends the equivalent read (and must
+            # stay in lockstep with it — see _validate_limits' docstring): a bare `limits:`
+            # (top-level or per-app) is valid YAML null, and validate() blesses it as an
+            # empty override, not a crash. Without `or {}` on BOTH sides here, `**None`
+            # raises TypeError deep in startup, after the slow ML warmup — validate() would
+            # have given false confidence that this exact config was safe to run.
+            lim = {**(cfg.limits or {}), **(app_cfg.get("limits", {}) or {})}
+            run_cap = _resolve_run_cap(lim.get("max_per_run"), max_per_run)
+            limiter = RateLimiter(run_cap, lim.get("max_per_day"),
+                                  lim.get("max_likes_per_run"),
+                                  target_like_ratio=lim.get("target_like_ratio"))
+            driver = make_driver(app, cfg)
+            w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing,
+                       stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every,
+                       limiter=limiter, status=status)
+            print(f"{app.title()} worker mode={mode} limits={limiter.describe()}")
+            workers.append(w)
+            w.start()
+
+        status.set_global(phase="live")
         # Break on stop_event too — not only when every worker has died. Otherwise a
         # worker that's slow to exit (mid-capture/embed) makes Ctrl-C busy-spin here
         # forever and never reach the flush/close below. With this, shutdown always
@@ -156,8 +223,13 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     finally:
         status.set_global(phase="saving data", budget_spent=tracker.run_spend_usd, openers=tracker.calls)
         stop_event.set()
+        # A worker still alive after its join timeout is WEDGED, not stopped: it may write
+        # to the store DURING or AFTER the flush/close below, so a clean flush here is not
+        # an unqualified success. Detect it (without waiting any longer — a wedged worker
+        # must not block quit) so the summary and status can say so honestly.
         for w in workers:
-            w.join(timeout=30)
+            w.join(timeout=_WORKER_JOIN_TIMEOUT_S)
+        wedged = [w for w in workers if w.is_alive()]
         for app in cfg.enabled_apps:
             status.set_app(app, state="saving")
         save_err = None
@@ -167,31 +239,51 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         except Exception as exc:  # noqa: BLE001 — report a clear save outcome, then re-raise
             save_err = exc
         finally:
-            status.set_global(running=False, phase=("stopped" if save_err is None else "save_failed"),
+            if save_err is not None:
+                phase = "save_failed"
+            elif wedged:
+                phase = "wedged"
+            else:
+                phase = "stopped"
+            status.set_global(running=False, phase=phase,
                               budget_spent=tracker.run_spend_usd, openers=tracker.calls)
+            wedged_apps = {w.app for w in wedged}
             for app in cfg.enabled_apps:
-                status.set_app(app, state=("stopped" if save_err is None else "error"))
+                if save_err is not None:
+                    app_state = "error"
+                elif app in wedged_apps:
+                    app_state = "wedged"
+                else:
+                    app_state = "stopped"
+                status.set_app(app, state=app_state)
         tail = f"openers={tracker.calls} spend=${tracker.run_spend_usd:.4f}"
-        if save_err is None:
-            saved = getattr(store, "saved_summary", lambda: "")()
-            detail = f" [{saved}]" if saved else ""
-            print(f"Run {run_id}: ✅ all data saved to {cfg.storage.backend}{detail}; {tail}")
-        else:
+        if save_err is not None:
             print(f"Run {run_id}: ❌ SAVE FAILED to {cfg.storage.backend} "
                   f"({type(save_err).__name__}: {save_err}) — buffered data may be incomplete; {tail}")
             raise save_err
+        saved = getattr(store, "saved_summary", lambda: "")()
+        detail = f" [{saved}]" if saved else ""
+        if wedged:
+            names = ", ".join(w.app for w in wedged)
+            print(f"Run {run_id}: saved to {cfg.storage.backend}{detail}, but {len(wedged)} "
+                  f"worker(s) did not stop within 30s ({names}) — NOT an unqualified success, "
+                  f"a late write from a wedged worker could still land after this save; {tail}")
+        else:
+            print(f"Run {run_id}: ✅ all data saved to {cfg.storage.backend}{detail}; {tail}")
 
 
 def _hinge_adb_preflight(cfg) -> None:
     """Warn early if the Hinge phone isn't visible to adb — avoids a confusing mid-run crash."""
     import subprocess
-    hinge_cfg = cfg.apps.get("hinge", {}) or {}
+
+    from .drivers.adb import parse_devices_output
+
+    hinge_cfg = (cfg.apps or {}).get("hinge", {}) or {}
     serial = (hinge_cfg.get("serial") or "").strip()
     adb = (hinge_cfg.get("adb_path") or "adb").strip() or "adb"
     try:
         result = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=5)
-        lines = result.stdout.strip().splitlines()[1:]   # skip "List of devices attached"
-        visible = [ln.split()[0] for ln in lines if ln.strip() and ln.split()[-1] == "device"]
+        visible = parse_devices_output(result.stdout)   # X8: the ONE canonical parser
         if not visible:
             print("WARNING: Hinge is enabled but `adb devices` shows no connected device. "
                   "Connect the Pixel 7a via USB and authorize the RSA key before swiping.")

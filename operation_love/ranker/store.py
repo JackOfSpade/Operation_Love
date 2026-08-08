@@ -7,6 +7,7 @@ never blocks on per-row I/O regardless of backend.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import sqlite3
 import threading
@@ -15,6 +16,15 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from ..costing import Usage
+
+
+def local_midnight_epoch() -> float:
+    """Epoch seconds for local midnight — the start of "today" in the host's own
+    timezone. The daily anti-ban limits (limits.max_per_day, budget.day_budget_usd)
+    are human-scale, tied to the owner's own day, not a UTC reporting boundary, so
+    BOTH store backends derive "today" from this one function and can't drift apart
+    again (see BigQueryStore.count_today / spend_today)."""
+    return datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
 
 @runtime_checkable
@@ -31,7 +41,6 @@ class Store(Protocol):
                         source: str = "auto") -> None: ...
     def record_opener(self, run_id: str, app: str, model: str, opener: str, referenced: str) -> None: ...
     def record_spend(self, run_id: str, model: str, usage: Usage, cost: float) -> None: ...
-    def label_count(self) -> int: ...
     def count_today(self, app: str) -> int: ...
     def flush(self) -> None: ...
     def close(self) -> None: ...
@@ -135,13 +144,9 @@ class SQLiteStore:
             )
             self.con.commit()
 
-    def label_count(self) -> int:
-        with self._lock:
-            return self.con.execute("SELECT COUNT(*) FROM labels").fetchone()[0]
-
     def count_today(self, app: str) -> int:
-        import datetime
-        start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        """Auto-mode swipes recorded today (LOCAL day, i.e. since local midnight)."""
+        start = local_midnight_epoch()
         with self._lock:
             return self.con.execute(
                 "SELECT COUNT(*) FROM decisions WHERE app=? AND created_at>=? AND source='auto'",
@@ -149,8 +154,8 @@ class SQLiteStore:
             ).fetchone()[0]
 
     def spend_today(self) -> float:
-        import datetime
-        start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        """Sum of cost_usd recorded today (LOCAL day, i.e. since local midnight)."""
+        start = local_midnight_epoch()
         with self._lock:
             row = self.con.execute(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM spend WHERE created_at >= ?",

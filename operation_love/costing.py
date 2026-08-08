@@ -81,12 +81,6 @@ class CostTracker:
         self.calls: int = 0
         self._lock = threading.Lock()
 
-    def remaining(self) -> float | None:
-        if self.run_budget_usd is None:
-            return None
-        with self._lock:
-            return max(0.0, self.run_budget_usd - self.run_spend_usd)
-
     def budget_reached(self) -> bool:
         if self.run_budget_usd is None:
             return False

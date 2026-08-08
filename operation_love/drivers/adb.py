@@ -33,6 +33,7 @@ import subprocess
 from collections.abc import Sequence
 
 from ..human import human_delay
+from ..typography import DASH_FOLD, tidy_punctuation_spacing
 from .base import DriverClosed
 
 _DEVICE_LOST_PHRASES = (
@@ -44,8 +45,6 @@ _DEVICE_LOST_PHRASES = (
 )
 
 _TEXT_SHELL_SPECIALS = frozenset("\\'\"`$&|;<>(){}[]*?!#~")
-
-KEYCODE_SPACE = 62
 
 
 class AdbError(RuntimeError):
@@ -66,6 +65,18 @@ def _bezier(s: tuple[float, float], c: tuple[float, float],
     x = mt * mt * s[0] + 2 * mt * t * c[0] + t * t * e[0]
     y = mt * mt * s[1] + 2 * mt * t * c[1] + t * t * e[1]
     return x, y
+
+
+SCROLL_X_JITTER_PX = 25   # scroll_up column jitter, shared by Adb and UhidTouch (HINGE-04)
+
+
+def scroll_x(width: int, x_frac: float) -> int:
+    """The x column for a scroll_up swipe: `x_frac` of `width`, jittered by +/-
+    SCROLL_X_JITTER_PX px so repeated scrolls aren't pixel-identical. Shared between Adb and
+    UhidTouch (uhid.py imports this) so the two touch transports' humanization can't drift
+    apart again — a pixel-identical swipe column is exactly the machine-like signature the
+    humanized path exists to avoid."""
+    return int(width * x_frac) + random.randint(-SCROLL_X_JITTER_PX, SCROLL_X_JITTER_PX)
 
 
 def plan_path(x1: float, y1: float, x2: float, y2: float, steps: int,
@@ -141,13 +152,10 @@ class Adb:
     def scroll_up(self, distance_frac: float = 0.55, x_frac: float = 0.5) -> None:
         """Scroll content up (reveal what's below) — a humanized swipe low->high."""
         w, h = self.screen_size()
-        x = int(w * x_frac) + random.randint(-25, 25)
+        x = scroll_x(w, x_frac)
         y1 = int(h * (0.5 + distance_frac / 2))
         y2 = int(h * (0.5 - distance_frac / 2))
         self.swipe(x, y1, x, y2)
-
-    def key(self, keycode: int | str) -> None:
-        self._run_device(["shell", "input", "keyevent", str(keycode)])
 
     def text(self, s: str) -> None:
         """Type a string via ``adb shell input text``.
@@ -183,15 +191,7 @@ class Adb:
 
     def devices(self) -> list[str]:
         out = self._run(["devices"])
-        devices: list[str] = []
-        for raw_line in _decode(out).splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("List of devices"):
-                continue
-            parts = line.split()
-            if len(parts) >= 2 and parts[1] == "device":
-                devices.append(parts[0])
-        return devices
+        return parse_devices_output(_decode(out))
 
     def shell(self, cmd: str) -> str:
         """Run a shell command on the device and return its decoded output."""
@@ -260,14 +260,37 @@ class Adb:
         return result.stdout
 
 
+def parse_devices_output(stdout: str) -> list[str]:
+    """Canonical parser for `adb devices` / `adb devices -l` stdout (X8): the serials whose
+    state is exactly "device" (ready) — states like "unauthorized" / "offline" are excluded.
+
+    Skips the "List of devices attached" header, blank lines, and the daemon-startup chatter
+    adb prints to stdout on a cold start (lines like "* daemon not running; starting now at
+    tcp:5037" / "* daemon started successfully"). Checks the SECOND whitespace-split field, not
+    the last: `-l` appends trailing `key:value` columns (usb:... product:... model:...
+    device:... transport_id:...), so a `parts[-1] == "device"` check (as used by two other
+    ad-hoc parsers of this same command elsewhere in the codebase) breaks on that output.
+    """
+    devices: list[str] = []
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("*") or line.startswith("List of devices"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            devices.append(parts[0])
+    return devices
+
+
 def _escape_input_text(s: str) -> str:
     """Best-effort escaping for ``adb shell input text``.
 
     Whitespace -> ``%s`` (input text's space escape) and shell metacharacters are
     backslash-escaped so the on-device shell doesn't interpret them. Caveat: a
     literal ``%`` / ``%s`` in ``s`` is NOT round-trip-safe (it collides with the
-    space encoding); see :meth:`Adb.text`. Use the clipboard path when fidelity
-    matters.
+    space encoding); :meth:`Adb.text` works around that by rewriting a literal
+    ``%`` to the word "percent" before this escaping runs (see
+    :func:`_clean_text_for_input`).
     """
     escaped: list[str] = []
     for ch in str(s):
@@ -300,9 +323,39 @@ def _format_argv(argv: Sequence[str]) -> str:
     return shlex.join(argv)
 
 
+_QUOTE_FOLD = {
+    "’": "'", "‘": "'", "‚": "'", "‛": "'",   # curly single: ‘ ’ ‚ ‛
+    "“": '"', "”": '"', "„": '"', "‟": '"',   # curly double: “ ” „ ‟
+}
+_SPACE_FOLD = {" ": " ", " ": " ", " ": " "}       # nbsp, narrow no-break space, thin space
+# Owner rule (b): no dash of any kind may survive (reads as AI). Dash folding uses the SAME
+# canonical table as opener.py's _sanitize() (operation_love.typography.DASH_FOLD), so this
+# device-input safety net and the LLM-output sanitizer can't silently disagree again on which
+# codepoints count as a dash or what they fold to.
+
+
 def _clean_text_for_input(s: str) -> str:
-    cleaned = []
+    """Fold common non-ASCII typography to its ASCII equivalent (curly quotes, ellipsis,
+    exotic spaces, every dash variant) instead of silently deleting it. Anything still
+    unmapped after folding is dropped, same as before; the punctuation-spacing tidy-up
+    (shared with opener.py's _sanitize()) then cleans up whitespace/punctuation artifacts
+    the fold can leave behind (double spaces, a stray space before punctuation, a comma
+    stranded before terminal punctuation, leading/trailing connective punctuation)."""
+    folded = []
     for ch in s:
+        if ch in _QUOTE_FOLD:
+            folded.append(_QUOTE_FOLD[ch])
+        elif ch in DASH_FOLD:
+            folded.append(DASH_FOLD[ch])
+        elif ch == "…":
+            folded.append("...")
+        elif ch in _SPACE_FOLD:
+            folded.append(" ")
+        else:
+            folded.append(ch)
+
+    cleaned = []
+    for ch in "".join(folded):
         o = ord(ch)
         if 32 <= o <= 126:
             if ch == "%":
@@ -311,4 +364,4 @@ def _clean_text_for_input(s: str) -> str:
                 cleaned.append(ch)
         elif ch == "\n":
             cleaned.append(" ")
-    return "".join(cleaned)
+    return tidy_punctuation_spacing("".join(cleaned))

@@ -71,17 +71,3 @@ def test_empty_filter_falls_back_to_original_photos():
     profile = _profile()
     vec = RankerDecider(EmptyQuality(), embedder, FakeModel(True)).embed(profile)
     assert embedder.seen == profile.photos and vec == [7.0, 8.0]
-
-
-if __name__ == "__main__":
-    import sys
-    import traceback
-
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn(); print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
-    sys.exit(1 if failed else 0)

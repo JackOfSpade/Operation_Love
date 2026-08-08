@@ -9,7 +9,7 @@ from .ranker.model import PreferenceModel
 def show(config_path: str = "config.yaml") -> None:
     cfg = cfg_mod.load(config_path)
     cfg_mod.validate(cfg)
-    store = make_store(cfg)
+    store = make_store(cfg, ensure=False)   # read-only; don't run DDL/IAM setup just to print a readout
     try:
         labels = store.load_labels()
         model = PreferenceModel(cfg.ranker.min_labels_to_engage, cfg.ranker.like_threshold,

@@ -104,18 +104,3 @@ def test_non_credit_error_degrades_gracefully(monkeypatch):
     assert result is None                                   # swipe without opener this time
     assert s.disabled is False                              # service stays enabled (not permanent)
     assert s.stop_requested is False                        # run keeps going
-
-
-if __name__ == "__main__":
-    import sys
-    import traceback
-
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn() if fn.__code__.co_argcount == 0 else None
-            print(f"{'PASS' if fn.__code__.co_argcount == 0 else 'SKIP(monkeypatch)'} {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
-    sys.exit(1 if failed else 0)

@@ -32,9 +32,13 @@ _OPTIONAL = {
 _ACCEL = {"mps": "Apple GPU (MPS)", "cuda": "NVIDIA GPU (CUDA)", "cpu": "CPU"}
 
 
-def _have(mod: str) -> bool:
+def _have(mod: str, *, override: str | None = None) -> bool:
     if mod.startswith("cli:"):
-        return shutil.which(mod[4:]) is not None
+        # override lets a caller point a "cli:" check at a configured binary path instead
+        # of the bare command name (e.g. apps.hinge.adb_path when adb isn't on PATH).
+        # shutil.which handles both: a bare name searches PATH, a path with a separator
+        # is checked directly.
+        return shutil.which(override or mod[4:]) is not None
     try:
         return importlib.util.find_spec(mod) is not None
     except Exception:
@@ -50,13 +54,18 @@ class Capabilities:
     available: dict[str, bool]
 
     @classmethod
-    def detect(cls) -> "Capabilities":
+    def detect(cls, hinge_adb_path: str | None = None) -> "Capabilities":
+        """hinge_adb_path: optional apps.hinge.adb_path from config.yaml. Config-free
+        callers (bare `python -m operation_love.runtime`, bugreport) can omit it and get
+        today's PATH-only check; a caller that has loaded config should pass it so a
+        machine with adb configured off-PATH doesn't get a false "not installed"."""
+        overrides = {"hinge_driver": hinge_adb_path} if hinge_adb_path else {}
         return cls(
             os_name=platform.system() or "unknown",
             machine=platform.machine() or "unknown",
             python=platform.python_version(),
             device=best_device(),
-            available={k: _have(m) for k, m in _OPTIONAL.items()},
+            available={k: _have(m, override=overrides.get(k)) for k, m in _OPTIONAL.items()},
         )
 
     def banner(self) -> str:

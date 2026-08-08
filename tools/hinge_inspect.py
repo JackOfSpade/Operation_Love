@@ -37,6 +37,7 @@ def _adb(serial: str, adb: str, *args, timeout: int = 10) -> subprocess.Complete
 
 def main(config_path: str = "config.yaml") -> int:
     from operation_love import config as cfg_mod
+    from operation_love.drivers.adb import parse_devices_output
 
     cfg = cfg_mod.load(config_path)
     hinge_cfg = cfg.apps.get("hinge", {}) or {}
@@ -50,8 +51,7 @@ def main(config_path: str = "config.yaml") -> int:
     # 1. Check adb devices
     try:
         r = _adb("", adb, "devices", timeout=5)
-        lines = r.stdout.decode(errors="replace").strip().splitlines()[1:]
-        visible = [ln.split()[0] for ln in lines if ln.strip() and ln.split()[-1] == "device"]
+        visible = parse_devices_output(r.stdout.decode(errors="replace"))
     except FileNotFoundError:
         print(f"ERROR: `{adb}` not found. Set apps.hinge.adb_path in config.yaml.")
         return 1
@@ -89,27 +89,34 @@ def main(config_path: str = "config.yaml") -> int:
     # 3. Run vision template-match if screenshot landed
     if local_path.exists():
         try:
-            import cv2
-            import numpy as np
-            from operation_love.drivers.hinge.vision import locate_glyph  # type: ignore[import]
-
-            img = cv2.imread(str(local_path))
-            h, w = img.shape[:2]
+            from PIL import Image
+            from operation_love.drivers.hinge import _ASSETS, _load_template, _match_glyph
+        except ImportError as exc:
+            print(f"\nVision matching skipped ({exc}).")
+        else:
+            w, h = Image.open(local_path).size
             print(f"\nScreen resolution: {w}×{h}")
-            for glyph in ("like_heart", "pass_x"):
-                try:
-                    result = locate_glyph(img, glyph)
-                    if result:
-                        fx, fy = result[0] / w, result[1] / h
-                        print(f"  {glyph}: vision found at ({fx:.3f}, {fy:.3f})  "
-                              f"[pixel ({result[0]}, {result[1]})]")
+            frame = local_path.read_bytes()
+            for glyph, asset, side in (
+                ("like_heart", "hinge_heart.png", "right"),
+                ("pass_x", "hinge_pass_x.png", "left"),
+            ):
+                template = _load_template(asset)
+                if template is None:
+                    asset_path = _ASSETS / asset
+                    if not asset_path.exists():
+                        print(f"  {glyph}: vision unavailable — asset missing: {asset_path}")
                     else:
-                        fb = coords.get(glyph, [None, None])
-                        print(f"  {glyph}: vision NOT found — fallback config: {fb}")
-                except Exception as exc:  # noqa: BLE001
-                    print(f"  {glyph}: vision error: {exc}")
-        except ImportError:
-            print("\nVision matching skipped (cv2 or hinge.vision not available).")
+                        print(f"  {glyph}: vision unavailable — cv2 is not installed")
+                    continue
+                centers = _match_glyph(frame, template, side=side)
+                if centers:
+                    x, y = centers[0]
+                    fx, fy = x / w, y / h
+                    print(f"  {glyph}: vision found at ({fx:.3f}, {fy:.3f})  [pixel ({x}, {y})]")
+                else:
+                    fb = coords.get(glyph, [None, None])
+                    print(f"  {glyph}: vision NOT found — fallback config: {fb}")
 
     # 4. Report configured coordinate fractions
     print("\nConfigured coordinate fractions (apps.hinge.coords):")

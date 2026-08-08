@@ -77,7 +77,7 @@ quality_filter:
 # --- Opener (Claude) ---
 opener:
   enabled: true
-  model: claude-opus-4-8       # best quality; swap to claude-sonnet-4-6 for ~5x lower cost
+  model: claude-opus-4-8       # best quality; swap to claude-sonnet-4-6 for ~1.7x lower cost, or claude-haiku-4-5 for ~5x lower cost
   max_tokens: 400
   request_timeout_s: 30        # seconds before a stalled Claude API call is abandoned
   style: |

@@ -285,17 +285,3 @@ def test_observe_label_persists_profile_metadata():
     assert store.profiles[0][2]["photo_count"] == 2
     assert "bio" not in store.profiles[0][2]
     assert "prompts" not in store.profiles[0][2]
-
-
-if __name__ == "__main__":
-    import sys
-    import traceback
-
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn(); print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
-    sys.exit(1 if failed else 0)

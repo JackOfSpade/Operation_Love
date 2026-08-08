@@ -30,17 +30,3 @@ def test_zero_anchor_is_zero():
 def test_sigma_zero_returns_anchor_exactly():
     assert human_delay(4.0, sigma=0.0) == 4.0
     assert human_cooldown(4.0, sigma=0.0) == 4.0
-
-
-if __name__ == "__main__":
-    import sys
-    import traceback
-
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn(); print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
-    sys.exit(1 if failed else 0)

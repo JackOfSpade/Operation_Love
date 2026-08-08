@@ -178,6 +178,7 @@ class HingeDriver(DatingAppDriver):
         self.change_threshold = float(app_cfg.get("change_threshold", DEFAULTS["change_threshold"]))
         self.coords = {**DEFAULTS["coords"], **(app_cfg.get("coords") or {})}
         self._adb: Adb | None = None
+        self._capture_scrolls = 0     # read-scrolls the last _capture_current did; _scroll_to_top's ceiling
         self._touch = None            # touch transport: UhidTouch (genuine) or Adb (input fallback)
         self.touch_backend = app_cfg.get("touch_backend", "auto")   # auto | uhid | adb
         self._observe_ready = False   # True once open_session validated PIL/numpy + device
@@ -341,21 +342,64 @@ class HingeDriver(DatingAppDriver):
         top, bot = _split_diff(a, b)
         return top >= self.change_threshold or bot >= self.change_threshold
 
+    def _scroll_down_one(self) -> None:
+        """One humanized forward read-scroll, ALWAYS going through here (never a bare
+        `touch.scroll_up()` call) so self._capture_scrolls stays the single source of truth
+        for "how far down from the last confirmed top are we right now". Both
+        _capture_current's read loop and _locate_target_heart's own re-navigation scrolls use
+        this — if either called touch.scroll_up() directly instead, _scroll_to_top's ceiling
+        would silently under-count again exactly the way the hardcoded-distance bug did."""
+        self.touch.scroll_up(self.read_scroll_frac)
+        self._capture_scrolls += 1
+
     def _scroll_to_top(self) -> None:
-        """Swipe the profile back to the top (content down) until it stops moving."""
+        """Swipe the profile back to the top (content down) until it stops moving.
+
+        Two independent things have to be right for this to actually land back at the top,
+        and a while ago only one of them was fixed:
+
+          COUNT — how many undo-swipes to throw. Ceiling is self._capture_scrolls: the
+          number of forward read-scrolls actually performed since the last confirmed top
+          (tracked by _scroll_down_one, the only place that calls touch.scroll_up()) -- not a
+          fixed guess, which could not undo a capture that scrolled further than it assumed.
+
+          DISTANCE — how far each undo-swipe travels. This used to be a hardcoded drag
+          (0.35h -> 0.80h = 0.45h) while the read-scroll it must cancel travels
+          read_scroll_frac of the screen (0.55h by default) -- an 18%-per-scroll shortfall
+          that COUNT alone can't fix: matching the swipe COUNT to the scroll count still
+          leaves the profile scrolled down by N * (read_scroll_frac - 0.45) after N swipes,
+          which compounds on a long profile (up to ~0.7 screen-heights short at the default
+          scroll_captures=8). The two fractions must be tied together, not maintained as
+          separate magic numbers that can drift apart again -- so the undo-swipe's distance is
+          derived from read_scroll_frac, the exact mirror of touch.scroll_up's own geometry
+          (same y-extents, reversed direction), giving it the SAME travel distance as the
+          scroll it is undoing.
+
+        _changed() still ends the loop the moment the view settles (its own safety net against
+        an animated/video card whose frames never settle); the count is a ceiling, not a
+        target. On exit the profile IS at (or past) the top, so the counter resets to 0 -- the
+        next forward scroll (whether from a new capture or from _locate_target_heart's search)
+        starts counting fresh from a confirmed top.
+        """
         w, h = self.adb.screen_size()
-        max_swipes = min(4, self.scroll_captures)
+        max_swipes = max(1, self._capture_scrolls)
+        # Mirror of touch.scroll_up(read_scroll_frac): same y-extents, reversed direction, so
+        # one undo-swipe travels exactly as far as one forward read-scroll.
+        y_near = int(h * (0.5 - self.read_scroll_frac / 2))   # scroll_up's END y (near top)
+        y_far = int(h * (0.5 + self.read_scroll_frac / 2))    # scroll_up's START y (near bottom)
         for _ in range(max_swipes):
             before = self.adb.screencap()
-            self.touch.swipe(w // 2, int(h * 0.35), w // 2, int(h * 0.80))
+            self.touch.swipe(w // 2, y_near, w // 2, y_far)
             time.sleep(human_delay(0.3))
             if not self._changed(before, self.adb.screencap()):
                 break
+        self._capture_scrolls = 0     # confirmed (or ceiling-bounded) back at top: nothing outstanding
 
     # --- capture (Signals #1: read the whole profile, human-paced) ------
     def _capture_current(self) -> Profile | None:
         photos: list[bytes] = []
         self._current_sigs = []
+        self._capture_scrolls = 0     # reset: _scroll_to_top must undo THIS capture, not a stale one
         seen = set()
         for i in range(self.scroll_captures):
             frame = self.adb.screencap()
@@ -381,7 +425,7 @@ class HingeDriver(DatingAppDriver):
 
             if i < self.scroll_captures - 1:
                 time.sleep(human_delay(self.dwell_s))  # actually read this card before scrolling
-                self.touch.scroll_up(self.read_scroll_frac)
+                self._scroll_down_one()
         # H1: in a real run (open_session validated PIL/numpy), every frame should
         # downsample. If none did, decode is broken at runtime (PIL/numpy failure OR a wedged
         # device returning empty/truncated screencap) — refuse to continue in a degraded mode
@@ -401,9 +445,17 @@ class HingeDriver(DatingAppDriver):
         return self._capture_current()
 
     def current_profile(self) -> Profile | None:
+        # Observe mode's only capture path: worker.py prints "READY - swipe this profile"
+        # right after this returns, so the phone must be back at the top for that swipe to
+        # land on the card the operator actually read (bug 2). next_profile() (auto) does NOT
+        # get this: like() already calls _scroll_to_top() itself before acting, so adding it
+        # here too would just be a redundant extra scroll on that path.
         if self.out_of_profiles():
             return None
-        return self._capture_current()
+        profile = self._capture_current()
+        if profile is not None:
+            self._scroll_to_top()
+        return profile
 
     def out_of_profiles(self) -> bool:
         # LIVE-VERIFY: the empty-deck screen is gated until the profile is finished,
@@ -416,41 +468,68 @@ class HingeDriver(DatingAppDriver):
         index (capture order) the opener returned. We re-navigate to that captured frame by
         matching its downsample signature, then take its heart. Falls back to the topmost heart
         (first photo) when targeting isn't possible (index 0, no sigs, no match) — so it is never
-        worse than the old 'always first photo' behavior. (LIVE-VERIFY during observe seeding.)"""
+        worse than the old 'always first photo' behavior. Every genuine fallback (as opposed to
+        the ordinary index-0 fast path) is recorded via _dbg_action so a bug report can tell
+        "target not found" apart from "no sigs to search at all" (HINGE-05). (LIVE-VERIFY during
+        observe seeding.)"""
         sigs = getattr(self, "_current_sigs", None)
         if not sigs or item_index <= 0 or item_index >= len(sigs) or sigs[item_index] is None:
+            if sigs and item_index > 0:                # a genuine fallback, not the index-0 fast path
+                self._dbg_action("locate_target_heart", self._snap(), item_index=item_index,
+                                  outcome="fallback", reason="out_of_range_or_undecodable_target")
             return self._await_button("like")         # out of range / undecodable target -> first photo
         import numpy as np
         target = sigs[item_index]
-        for _ in range(self.scroll_captures + 1):
+        before = self._snap()
+        # like() always _scroll_to_top()s right before calling this, so item_index (a capture-
+        # order index counted down from the top) should need about that many scroll_up()s to
+        # reach. Cap the search there (+ slack) instead of sweeping the whole scroll_captures
+        # depth: on a real device a scroll can over/undershoot the intended frame, and without a
+        # cap a target we've scrolled past costs a full wasted sweep before the fallback below
+        # even starts (HINGE-05).
+        tries = min(self.scroll_captures + 1, item_index + 3)
+        matched_frame_no_heart = False
+        for _ in range(tries):
             frame = self.adb.screencap()
             ds = _downsample(frame)
             if ds is not None and float(np.mean(np.abs(ds - target))) < self.change_threshold:
                 hearts = _match_glyph(frame, _load_template("hinge_heart.png"), side="right")
                 if hearts:
                     return hearts[0]                  # the referenced item's heart, now in view
+                matched_frame_no_heart = True
                 break
-            self.touch.scroll_up(self.read_scroll_frac)
-            time.sleep(human_delay(self.dwell_s * 0.4))
+            self._scroll_down_one()          # tracked, so the fallback _scroll_to_top() below (if it
+            time.sleep(human_delay(self.dwell_s * 0.4))  # comes to that) undoes exactly these scrolls too
+        reason = "heart_not_visible_on_matched_frame" if matched_frame_no_heart else "target_frame_not_found"
+        self._dbg_action("locate_target_heart", before, item_index=item_index,
+                          outcome="fallback", reason=reason)
         self._scroll_to_top()                         # no match: reset and take the first photo
         time.sleep(human_delay(0.3))
         return self._await_button("like")
 
     def _verify_like_landed(self, before) -> None:
         """A like is COMPLETE only when the comment sheet AND the Rose modal are gone AND the deck
-        has moved off the pre-tap card. If a sheet/modal is still up (missed Send Like tap, or a
-        Rose modal that out-raced _handle_rose_upsell) or the screen never changed (missed heart
-        tap), raise so the worker HALTS instead of counting a like that never sent. Only active
-        under halt_on_error. Unlike a bare change-check, the scroll-to-top can't spoof this."""
+        has moved off the pre-tap card. If the sheet is still up (missed Send Like tap) or the
+        screen never changed (missed heart tap), raise so the worker HALTS instead of counting a
+        like that never sent. A Rose modal that animates in LATE — after
+        _handle_rose_upsell's own poll window already gave up and returned False — is tolerated
+        here rather than treated as a dead run: we dismiss it ourselves and keep checking
+        (HINGE-07). Only a modal/sheet that genuinely won't clear, or a deck that never advances,
+        still raises — an unsent like must never be mislabelled as sent (it would corrupt the
+        taste model). Only active under halt_on_error. Unlike a bare change-check, the
+        scroll-to-top can't spoof this."""
         if not self.halt_on_error:
             return
         sheet_up = modal_up = False
-        for _ in range(2):
+        for _ in range(3):        # a couple of extra passes tolerate a late-animating Rose modal
             frame = self.adb.screencap()
             sheet_up = bool(_match_glyph(frame, _load_template("hinge_send_like.png"), side="any", threshold=0.6))
-            modal_up = bool(_match_glyph(frame, _load_template("hinge_send_like_anyway.png"), side="any", threshold=0.6))
+            modal_hits = _match_glyph(frame, _load_template("hinge_send_like_anyway.png"), side="any", threshold=0.6)
+            modal_up = bool(modal_hits)
             if not sheet_up and not modal_up and (before is None or self._changed(before, frame)):
                 return                                # sheet/modal closed AND advanced -> sent
+            if modal_up:
+                self.touch.tap(*modal_hits[0])        # late-animating Rose upsell -> dismiss, never a Rose
             time.sleep(human_delay(0.6))
         if sheet_up or modal_up:
             raise HingeActionError("like did not complete — the like sheet / Rose modal is still open")

@@ -215,17 +215,3 @@ def test_bumble_like_dislike_log_action_trail(tmp_path):
     lines = [json.loads(x) for x in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()]
     assert [r["action"] for r in lines] == ["like", "dislike"]
     assert lines[0]["opener_chars"] == len("hey there")          # length only, never the text
-
-
-if __name__ == "__main__":
-    import sys
-    import traceback
-
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn(); print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
-    sys.exit(1 if failed else 0)

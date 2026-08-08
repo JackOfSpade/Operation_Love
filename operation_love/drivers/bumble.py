@@ -41,6 +41,8 @@ _PHOTO_READY_TIMEOUT_S = 8.0
 _PHOTO_READY_POLL_S = 0.25
 _PHOTO_READY_SETTLE_S = 0.75
 _STARTUP_INTERSTITIAL_TIMEOUT_MS = 500
+_SWIPE_VERIFY_TRIES = 2      # re-checks before concluding a like/pass never landed
+_SWIPE_VERIFY_SETTLE_S = 0.5 # gap between re-checks (SPA re-render lag)
 
 _STARTUP_INTERSTITIALS = (
     ("cookie accept", '[data-qa-role="cookie-accept"], button:has-text("Accept")'),
@@ -71,6 +73,13 @@ def _is_browser_closed_error(exc: Exception) -> bool:
 def _raise_driver_closed_if_browser_closed(exc: Exception) -> None:
     if _is_browser_closed_error(exc):
         raise DriverClosed("Bumble browser was closed") from exc
+
+
+class BumbleActionError(RuntimeError):
+    """A like/pass click did not actually land (covered hit-target, mid-animation card,
+    stale element). NOT a DriverClosed (which is a clean, restart-safe stop): this is
+    unexpected, so the worker halts the run rather than record a phantom decision — see
+    worker.py's "do not record a phantom" comment."""
 
 
 DEFAULT_SELECTORS = {
@@ -206,6 +215,24 @@ async (node) => {
 }
 """
 
+# Per-photo identity for _card_fingerprint (BUMBLE-7): one round trip (not one per
+# element) that reads back each matched photo node's actual image source -- <img>
+# src/currentSrc/srcset, or the CSS background-image url() for a div-based card --
+# so two different profiles are told apart even when their bio and photo COUNT
+# happen to coincide (common: bio is optional/often blank, and photo counts cluster
+# at the app's max). Same img-vs-background-image detection as _PHOTO_LOADED_JS,
+# so it rides the same DOM shape that's already relied on elsewhere in this file.
+_CARD_PHOTO_IDS_JS = """
+(sel) => Array.from(document.querySelectorAll(sel)).map((el) => {
+  const img = el.tagName === 'IMG' ? el : (el.querySelector ? el.querySelector('img') : null);
+  if (img) {
+    return img.currentSrc || img.getAttribute('src') || img.getAttribute('srcset') || '';
+  }
+  const bg = window.getComputedStyle(el).backgroundImage;
+  return (bg && bg !== 'none') ? bg : '';
+}).filter(Boolean);
+"""
+
 
 class BumbleDriver(DatingAppDriver):
     accepts_opener = False          # Bumble: match first, then message — no swipe-time opener (don't spend Claude credits)
@@ -314,21 +341,27 @@ class BumbleDriver(DatingAppDriver):
         return ctx
 
     def close(self) -> None:
-        try:
-            if self._ctx:
-                try:
-                    self._ctx.close()
-                except Exception as exc:  # noqa: BLE001
-                    if not _is_browser_closed_error(exc):
-                        raise
-        finally:
-            if self._pw:
-                try:
-                    self._pw.stop()
-                except Exception as exc:  # noqa: BLE001
-                    if not _is_browser_closed_error(exc):
-                        raise
-            self._pw = self._ctx = self.page = None
+        # Total + idempotent: every step below must run, and the refs must be cleared,
+        # even if an earlier step raises — otherwise a raising _pw.stop() would abandon
+        # cleanup with _pw/_ctx/page still set, orphaning the browser process while the
+        # driver looks alive. A genuine (non-"already closed") failure is still
+        # surfaced, just AFTER all cleanup has been attempted, not instead of it.
+        first_exc = None
+        if self._ctx:
+            try:
+                self._ctx.close()
+            except Exception as exc:  # noqa: BLE001
+                if not _is_browser_closed_error(exc):
+                    first_exc = exc
+        if self._pw:
+            try:
+                self._pw.stop()
+            except Exception as exc:  # noqa: BLE001
+                if not _is_browser_closed_error(exc) and first_exc is None:
+                    first_exc = exc
+        self._pw = self._ctx = self.page = None
+        if first_exc is not None:
+            raise first_exc
 
     def render_status(self, status: dict) -> None:
         # Paint/refresh the in-page HUD. OFF by default on Bumble (inpage_overlays)
@@ -423,10 +456,10 @@ class BumbleDriver(DatingAppDriver):
     def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None) -> bool | None:
         """Block until YOU manually like/pass the current card.
 
-        Returns True (liked), False (passed), or None (deck emptied / timeout /
-        stop requested). timeout=None waits indefinitely. Mouse clicks on the
-        like/pass controls are detected; if you also use keyboard shortcuts,
-        confirm coverage with bumble_inspect.py.
+        Returns True (liked), False (passed), or None (card changed under us /
+        deck emptied / timeout / stop requested). timeout=None waits
+        indefinitely. Mouse clicks on the like/pass controls are detected; if
+        you also use keyboard shortcuts, confirm coverage with bumble_inspect.py.
         """
         self._install_observe_listener()
         # Discard any decision recorded during the PREVIOUS card's capture/embed
@@ -441,6 +474,16 @@ class BumbleDriver(DatingAppDriver):
         except Exception as exc:  # noqa: BLE001
             _raise_driver_closed_if_browser_closed(exc)
             raise
+        # Card-identity signal (BUMBLE-2): the click listener only fires on a
+        # like/pass BUTTON click, so a swipe gesture, keyboard shortcut, or
+        # app-driven advance would sail past it undetected — the deck moves on
+        # to a new card, but we'd keep waiting, and the NEXT click we observe
+        # (on the new card) would get attributed to THIS one: a silently
+        # mislabelled training example. _card_fingerprint (already used by
+        # _verify_swipe_landed) gives a cheap "which profile is on screen"
+        # signal; None means it couldn't be read reliably, so we fail open
+        # (skip the check) exactly like _verify_swipe_landed does.
+        card_before = self._card_fingerprint()
         deadline = None if timeout is None else time.monotonic() + timeout
         while deadline is None or time.monotonic() < deadline:
             if should_stop and should_stop():        # Stop pressed -> don't wait for a swipe
@@ -458,6 +501,13 @@ class BumbleDriver(DatingAppDriver):
                 return False
             if self.out_of_profiles():
                 return None
+            if card_before is not None:
+                card_now = self._card_fingerprint()
+                if card_now is not None and card_now != card_before:
+                    # The card changed without a like/pass click firing our
+                    # listener -> it's gone. Report "no decision" so the caller
+                    # re-captures instead of attributing the next click to it.
+                    return None
             time.sleep(_OBSERVE_POLL_S)
         return None
 
@@ -510,15 +560,20 @@ class BumbleDriver(DatingAppDriver):
                 loaded += 1
         return len(raw), filtered, loaded
 
-    def _wait_for_profile_album_ready(self) -> tuple[int, int]:
-        """Wait until Bumble's album elements have appeared and had time to paint."""
+    def _wait_for_profile_album_ready(self) -> None:
+        """Wait until Bumble's album elements have appeared and had time to paint.
+
+        Its raw/filtered counts used to be returned, but the sole caller
+        (_capture_photos) always recomputes both itself on the very next line
+        (post overlay-hide, at actual capture time -- a more accurate moment
+        for the log line than "when readiness was confirmed"), so the return
+        value was dead. Fixed (BUMBLE-6): this is now a pure wait.
+        """
         deadline = time.monotonic() + _PHOTO_READY_TIMEOUT_S
         stable_counts = None
         stable_since = None
-        last_raw = last_filtered = 0
         while True:
             raw, filtered, loaded = self._profile_photo_counts(require_loaded=True)
-            last_raw, last_filtered = raw, filtered
             now = time.monotonic()
             ready = filtered > 0 and loaded >= filtered
             counts = (filtered, loaded)
@@ -527,14 +582,14 @@ class BumbleDriver(DatingAppDriver):
                     stable_counts = counts
                     stable_since = now
                 elif stable_since is not None and now - stable_since >= _PHOTO_READY_SETTLE_S:
-                    return raw, filtered
+                    return
                 if _PHOTO_READY_SETTLE_S <= 0:
-                    return raw, filtered
+                    return
             else:
                 stable_counts = None
                 stable_since = None
             if now >= deadline:
-                return last_raw, last_filtered
+                return
             time.sleep(_PHOTO_READY_POLL_S)
 
     def _largest_profile_photo_element(self):
@@ -600,10 +655,11 @@ class BumbleDriver(DatingAppDriver):
         # Bumble preloads the whole album as <img>s, so the first frame usually has
         # every photo; we only click through the carousel if it didn't, and we cap
         # the total so a progress-bar animation can't yield dozens of near-dup frames.
-        raw_matched, filtered_first = self._wait_for_profile_album_ready()
+        self._wait_for_profile_album_ready()
         self._hide_oplove_overlays()
         shots: list[bytes] = []
         seen: set[bytes] = set()
+        raw_matched = filtered_first = 0
         for i in range(self.photo_capture_steps):
             if i == 0:
                 raw_matched = len(self._query_selector_all(self.selectors["photo"]))
@@ -796,19 +852,92 @@ class BumbleDriver(DatingAppDriver):
         except Exception:  # noqa: BLE001
             pass
 
+    # --- swipe-landed verification ---------------------------------------
+    # _human_click's box-in-viewport test (_box_center_in_viewport) is a PURE
+    # coordinate check — it proves nothing about whether the click actually hit a
+    # live, unobstructed target. A no-op click (covered by a modal, or on a card
+    # mid-animation) would otherwise be recorded as a real swipe (worker.py logs
+    # the decision on a non-raising like()/dislike() return), corrupting the daily
+    # rate-limit count and stats. So like()/dislike() snapshot a cheap "which
+    # profile is on screen" fingerprint before clicking and confirm it changed.
+    #
+    # BUMBLE-7: the original fingerprint was (out_of_profiles, bio, photo COUNT).
+    # Bio is optional on Bumble and frequently blank, and photo counts cluster
+    # tightly (many profiles show exactly the app's max), so two distinct
+    # consecutive profiles sharing (False, "", 6) is entirely plausible — that
+    # collision reads as "the card didn't change" and _verify_swipe_landed raises
+    # BumbleActionError on a swipe that genuinely landed. Bio+count are still
+    # useful (free — already-configured selectors) but are no longer load-bearing
+    # on their own: _CARD_PHOTO_IDS_JS adds each photo's actual image identity
+    # (src/currentSrc/srcset, or background-image url()) in ONE extra round trip
+    # (not one per photo element), giving the fingerprint real per-profile entropy
+    # since photo URLs are effectively unique per image on Bumble's CDN.
+    def _card_fingerprint(self) -> tuple | None:
+        """Best-effort snapshot of the on-screen profile (bio text, empty-deck state, and the
+        set of on-screen photo identities). Returns None when it can't be read reliably (thin
+        test double, or a DOM shape we haven't live-verified) — callers must fail OPEN in that
+        case, same as _box_center_in_viewport's "unknown viewport -> don't block the human
+        path". Fail-open is deliberate here, not just convenient: on a live account, a false
+        "didn't land" (this fingerprint wrongly claims no change) HALTS the entire auto run
+        AND drops the swipe from the daily rate-limit / like-ratio counters (worker.py's
+        "don't record a phantom" guard skips logging when like()/dislike() raises) even though
+        the click already reached Bumble's servers — so those safety counters go stale-low,
+        the opposite of what they're for. A false "landed" (missing a genuine no-op click) only
+        records one phantom decision, which makes the counters slightly OVER-conservative, not
+        under. Given that asymmetry, every failure mode here (unreadable DOM, a stale handle, a
+        closed page) resolves to "assume it landed" (None), never to a raised error.
+        """
+        try:
+            empty = self.out_of_profiles()
+            bio = self._text(self.selectors["bio"])
+            photo_ids = self._card_photo_ids()
+        except DriverClosed:
+            raise
+        except Exception:  # noqa: BLE001 — no reliable signal -> caller fails open
+            return None
+        if not isinstance(photo_ids, list):
+            photo_ids = []
+        return (empty, bio, tuple(sorted(str(p) for p in photo_ids)))
+
+    def _card_photo_ids(self) -> list:
+        try:
+            return self.page.evaluate(_CARD_PHOTO_IDS_JS, self.selectors["photo"])
+        except Exception as exc:  # noqa: BLE001
+            _raise_driver_closed_if_browser_closed(exc)
+            raise
+
+    def _verify_swipe_landed(self, before: tuple | None, action: str) -> None:
+        """Raise if the on-screen profile is provably UNCHANGED after a like/pass click, so the
+        worker's phantom-decision guard engages (see worker.py:283-287) instead of recording a
+        swipe that never happened. Re-checks a couple of times to ride out SPA re-render lag
+        before concluding the click was a no-op."""
+        if before is None:
+            return
+        for attempt in range(_SWIPE_VERIFY_TRIES):
+            after = self._card_fingerprint()
+            if after is None or after != before:
+                return
+            if attempt < _SWIPE_VERIFY_TRIES - 1:
+                time.sleep(_SWIPE_VERIFY_SETTLE_S)
+        raise BumbleActionError(f"{action} did not land — the on-screen profile did not change")
+
     # --- actions --------------------------------------------------------
     def like(self, opener: str | None = None, item_index: int = 0) -> None:
         # item_index is ignored: Bumble likes the whole profile (no per-photo comment).
         # NORMAL like only — never the super-swipe. Super-likes/boosts are the
         # owner's manual call (see DEFAULT_SELECTORS["superlike"]).
+        before = self._card_fingerprint()
         self._human_click(self.selectors["like"])
         self._dbg_action("like", opener_chars=len(opener or ""))
         # NOTE: opener is not sent here on standard Bumble (post-match / women-first).
         # Hook point for Bumble "Opening Moves" once that flow is mapped live.
+        self._verify_swipe_landed(before, "like")
 
     def dislike(self) -> None:
+        before = self._card_fingerprint()
         self._human_click(self.selectors["pass"])
         self._dbg_action("dislike")
+        self._verify_swipe_landed(before, "dislike")
 
     def out_of_profiles(self) -> bool:
         return self._query_selector(self.selectors["empty"]) is not None

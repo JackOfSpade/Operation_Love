@@ -116,6 +116,22 @@ def test_swipe_writes_file_then_runs_hid():
     assert f"rm -f {drv.file_path}" in fa.shell_calls                           # cleaned up after
 
 
+def test_scroll_up_jitters_x_column():
+    # HINGE-04: UHID is the PROVEN, genuine-to-the-kernel transport, so it must not be the one
+    # emitting a pixel-identical swipe column every scroll -- Adb.scroll_up jitters x by +/-25px
+    # (adb.scroll_x, shared) but UhidTouch previously did not.
+    fa = FakeAdb()
+    drv = UhidTouch(fa)
+    xs = set()
+    for _ in range(30):
+        drv.scroll_up()
+        cmds = _cmds(fa.files[drv.file_path])
+        reports = [c["report"] for c in cmds if c["command"] == "report"]
+        x0 = reports[0][3] | (reports[0][4] << 8)   # first sample's x is exact (no path jitter at k=0)
+        xs.add(x0)
+    assert len(xs) > 1     # jittered run to run, not a fixed column every time
+
+
 def test_tap_writes_down_then_release():
     fa = FakeAdb()
     UhidTouch(fa, rng=random.Random(2)).tap(540, 1200)

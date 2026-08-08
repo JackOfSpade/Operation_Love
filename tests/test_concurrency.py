@@ -181,17 +181,3 @@ def test_embedder_ensure_is_called_once_under_concurrent_access():
 
     assert init_count[0] == 1, f"Expected 1 init, got {init_count[0]} (double-init race!)"
     assert embedder._arc is not None
-
-
-if __name__ == "__main__":
-    import sys
-    import traceback
-
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in fns:
-        try:
-            fn(); print(f"PASS {fn.__name__}")
-        except Exception:  # noqa: BLE001
-            failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
-    sys.exit(1 if failed else 0)

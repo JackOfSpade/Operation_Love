@@ -792,3 +792,202 @@ def test_await_button_falls_back_to_config_coord_when_vision_fails(monkeypatch):
     assert pt_pass == (int(frac[0] * w), int(frac[1] * h)), (
         f"pass fallback coord wrong: {pt_pass} != ({int(frac[0]*w)}, {int(frac[1]*h)})"
     )
+
+
+
+# --- blank-frame guard (screen off / keyguard) -------------------------------
+# `adb exec-out screencap` SUCCEEDS on a sleeping/locked device and returns solid
+# black. Two black frames read as "nothing changed" (silent stall); a good frame
+# followed by a black one reads as a huge delta (phantom "pass"). The guard fails
+# loudly on ACTING paths and merely keeps waiting on PASSIVE observe loops.
+
+def _sparse_bright_png():
+    """mean<=2 but LARGE spread. Deliberately tuned so ONLY the uniformity (ptp)
+    clause can reject it — the mean clause alone would call this blank. Delete the
+    ptp check and this fixture starts reading as a dead screen."""
+    from io import BytesIO
+
+    import numpy as np
+    from PIL import Image
+    arr = np.zeros((24, 24), dtype=np.uint8)
+    arr[0, 0] = arr[5, 5] = 200
+    arr[11, 11] = 180                       # -> mean 1.01, ptp 200
+    buf = BytesIO()
+    Image.fromarray(arr, mode="L").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _noisy_png(size=(24, 24), lo=40, hi=200):
+    """A decodable frame with real spread — stands in for rendered UI content."""
+    from io import BytesIO
+
+    import numpy as np
+    from PIL import Image
+    rng = np.random.default_rng(7)
+    arr = rng.integers(lo, hi, size=(size[1], size[0]), dtype=np.uint8)
+    buf = BytesIO()
+    Image.fromarray(arr, mode="L").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class _CountingAdb(FakeAdb):
+    """Counts screencaps so retry CARDINALITY is pinned, not just the outcome."""
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.caps = 0
+
+    def screencap(self):
+        self.caps += 1
+        return super().screencap()
+
+
+def test_is_blank_frame_detects_solid_black():
+    assert hinge._is_blank_frame(_png(0)) is True
+
+
+def test_is_blank_frame_needs_uniformity_not_just_darkness():
+    """The ptp clause must be load-bearing: a frame dark enough to pass the mean
+    test but full of edges (text on black) is real content, not a dead screen."""
+    frame = _sparse_bright_png()
+    import numpy as np
+    from io import BytesIO
+    from PIL import Image
+    arr = np.asarray(Image.open(BytesIO(frame)).convert("L").resize((24, 24)), dtype="int16")
+    assert np.mean(arr) <= hinge._BLANK_MEAN_MAX, "fixture must pass the MEAN clause..."
+    assert np.ptp(arr) > hinge._BLANK_SPREAD_MAX, "...so that only PTP can reject it"
+    assert hinge._is_blank_frame(frame) is False
+
+
+def test_is_blank_frame_tolerance_band_is_not_exactly_zero():
+    """Thresholds are 2.0, not 0.0, so a real panel that reads 1/255 instead of a
+    perfect 0 still counts as blank. Setting the constants to 0.0 breaks this."""
+    assert hinge._BLANK_MEAN_MAX > 0.0 and hinge._BLANK_SPREAD_MAX > 0.0
+    assert hinge._is_blank_frame(_png(1)) is True
+
+
+def test_is_blank_frame_allows_uniform_but_not_black():
+    assert hinge._is_blank_frame(_png(10)) is False
+    assert hinge._is_blank_frame(_png(255)) is False
+
+
+def test_is_blank_frame_false_when_undecodable():
+    """No decode -> we cannot tell, so we must not claim 'blank' and halt a healthy run."""
+    assert hinge._is_blank_frame(b"NOTAPNG") is False
+
+
+def test_is_blank_frame_ignores_a_monkeypatched_downsample(monkeypatch):
+    """Regression: the guard must NOT ride on _downsample. That helper serves the
+    dedup/diff layer and is freely stubbed by tests — sharing it let a sentinel
+    signature masquerade as a dead screen (and let a patch disable the guard)."""
+    import numpy as np
+    monkeypatch.setattr(hinge, "_downsample", lambda *a, **k: np.ones((24, 24)))
+    assert hinge._is_blank_frame(_noisy_png()) is False   # real content stays visible
+    assert hinge._is_blank_frame(_png(0)) is True         # real black stays blank
+
+
+# --- acting paths: raise -----------------------------------------------------
+def test_screencap_raises_on_persistently_blank_screen():
+    adb = FakeAdb([_png(0), _png(0)], advance_on_screencap=True)
+    with pytest.raises(hinge.HingeActionError) as ei:
+        _drv(adb)._screencap()
+    assert "blank" in str(ei.value).lower()
+
+
+def test_screencap_raises_even_when_halt_on_error_is_false():
+    """Deliberate departure from _snap's gating: you cannot tap blind on a burner,
+    so a blank screen on an ACTING path is fatal regardless of halt_on_error."""
+    adb = FakeAdb([_png(0)])
+    with pytest.raises(hinge.HingeActionError):
+        _drv(adb, halt_on_error=False)._screencap()
+
+
+def test_screencap_retries_exactly_once_before_raising():
+    """Cardinality, not just outcome — a 6-try version would still 'pass' otherwise."""
+    adb = _CountingAdb([_png(0)])
+    with pytest.raises(hinge.HingeActionError):
+        _drv(adb)._screencap()
+    assert adb.caps == 2, f"expected 2 captures (one retry), got {adb.caps}"
+
+
+def test_screencap_settles_between_the_two_attempts(monkeypatch):
+    """The retry must actually WAIT. The autouse _no_sleep fixture would otherwise
+    hide a tight busy-loop retry, so spy on sleep instead of relying on wall time."""
+    slept = []
+    monkeypatch.setattr(hinge.time, "sleep", lambda s: slept.append(s))
+    with pytest.raises(hinge.HingeActionError):
+        _drv(FakeAdb([_png(0)]))._screencap()
+    assert slept and any(s > 0 for s in slept), f"no settle between attempts: {slept}"
+
+
+def test_screencap_recovers_from_a_single_blank_frame():
+    good = _noisy_png()
+    adb = FakeAdb([_png(0), good], advance_on_screencap=True)
+    assert _drv(adb)._screencap() == good
+
+
+def test_screencap_passes_normal_frames_through_unchanged():
+    good = _noisy_png()
+    assert _drv(FakeAdb([good]))._screencap() == good
+
+
+def test_snap_does_not_bury_or_swallow_the_blank_diagnosis():
+    """_snap wraps captures in `except Exception`. The blank error must survive that
+    verbatim — not be re-wrapped as 'screencap failed twice in a row', and not be
+    swallowed to None when halt_on_error is False."""
+    adb = FakeAdb([_png(0)])
+    drv = _drv(adb, halt_on_error=False)
+    drv._dbg = object()                      # force _snap past its early-out
+    with pytest.raises(hinge.HingeActionError) as ei:
+        drv._snap()
+    assert "blank" in str(ei.value).lower()
+    assert "twice in a row" not in str(ei.value)
+
+
+# --- passive observe paths: keep waiting, never halt -------------------------
+def test_wait_for_decision_does_not_raise_when_screen_sleeps():
+    """THE regression this guard originally introduced: observe waits on a human
+    with no touches of its own, so the screen sleeping mid-wait is ordinary. It must
+    keep watching and time out benignly, NOT halt the run (which, via the shared
+    stop_event, would also kill the concurrent Bumble worker)."""
+    adb = FakeAdb([_png(0)])                 # asleep for the whole wait
+    assert _drv(adb).wait_for_decision(timeout=0.05) is None
+
+
+def test_wait_for_decision_resumes_after_the_screen_comes_back():
+    """Asleep, then the owner wakes it and swipes -> the decision is still detected."""
+    adb = FakeAdb([_png(0), _noisy_png(lo=10, hi=60), _noisy_png(lo=150, hi=250)],
+                  advance_on_screencap=True)
+    assert _drv(adb).wait_for_decision(timeout=5.0) is False   # advanced -> pass
+
+
+def test_wait_for_decision_never_scores_a_blank_frame_as_a_pass():
+    """A good baseline followed by black is a HUGE delta; diffing it would report a
+    phantom 'pass' the human never made. Skipping the frame is what prevents that."""
+    adb = FakeAdb([_noisy_png(), _png(0)], advance_on_screencap=True)
+    assert _drv(adb).wait_for_decision(timeout=0.05) is None    # not False
+
+
+def test_handle_rose_upsell_degrades_instead_of_raising_post_tap():
+    """It runs AFTER the Send Like tap. Raising here would abort before
+    worker.record_decision(), losing the record of a like that really went out."""
+    assert _drv(FakeAdb([_png(0)]))._handle_rose_upsell(tries=1) is False
+
+
+def test_blank_reason_reports_real_device_state():
+    """The message must carry the actual diagnosis — that is the whole point of it."""
+    class _Stateful(FakeAdb):
+        def shell(self, command="", **_):
+            if "power" in command:
+                return "mWakefulness=Dozing\n"
+            if "trust" in command:
+                return "deviceLocked=1\n"
+            return ""
+    reason = _drv(_Stateful([_png(0)]))._blank_reason()
+    assert "Dozing" in reason and "deviceLocked=1" in reason
+
+
+def test_blank_reason_never_raises_even_if_shell_fails():
+    class _Boom(FakeAdb):
+        def shell(self, command="", **_):
+            raise RuntimeError("device gone")
+    assert isinstance(_drv(_Boom([_png(0)]))._blank_reason(), str)

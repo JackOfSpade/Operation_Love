@@ -1,7 +1,7 @@
 # Operation Love v2 — configuration (no hardcoded paths/coords; everything lives here)
 
 # One process runs ALL of these concurrently (each as its own worker).
-enabled_apps: [bumble]      # e.g. [bumble, hinge]
+enabled_apps: [bumble, hinge]      # e.g. [bumble, hinge]
 
 # observe = YOU swipe manually on real profiles; the bot learns your taste live
 #           (no autonomous swiping). Start here to seed the ranker.
@@ -26,7 +26,7 @@ apps:
   hinge:
     # Physical Pixel over HOST-SIDE ADB only — no uiautomator2 / on-device helper
     # (ops/HINGE-PIXEL-RUNBOOK.md). Taps/swipes are humanized motionevent gestures.
-    serial: ""              # adb device serial; empty = first available. `adb devices`
+    serial: "33111JEHN04475"  # adb device serial (Pixel 7a); empty = first available. `adb devices`
     adb_path: adb           # path to the adb binary
     touch_backend: auto     # auto = genuine UHID touchscreen, fall back to adb input | uhid (require) | adb (force input)
     scroll_captures: 8      # max screencaps while reading one profile

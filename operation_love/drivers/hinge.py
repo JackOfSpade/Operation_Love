@@ -85,6 +85,40 @@ def _downsample(frame: bytes, size: int = 24):
         return None
 
 
+# A screen-off / keyguard-locked capture. Both bounds must hold: near-BLACK and
+# near-UNIFORM. Darkness alone would false-positive on legitimately dark content
+# (dark mode, a night photo) — but real content has text and edges, so its
+# peak-to-peak spread stays large even when its mean is low. A blank framebuffer
+# has essentially no spread at all.
+_BLANK_MEAN_MAX = 2.0      # 0..255 mean luminance
+_BLANK_SPREAD_MAX = 2.0    # 0..255 peak-to-peak
+
+
+def _is_blank_frame(frame: bytes) -> bool:
+    """True when `frame` is a solid-black capture (device asleep or on the keyguard).
+
+    Decodes independently rather than reusing _downsample, deliberately. This asks a
+    question about RAW PIXELS ("is the panel dark?"), whereas _downsample serves the
+    dedup/diff layer's notion of a frame SIGNATURE — a different concern that callers
+    and tests legitimately substitute. Sharing the helper would let a stubbed
+    signature masquerade as a dead screen (and would let a monkeypatch silently
+    disable this guard).
+
+    Returns False when PIL/numpy are unavailable or the bytes don't decode — if we
+    cannot see, we must not claim "blank" and halt a healthy run.
+    """
+    try:
+        from io import BytesIO
+
+        import numpy as np
+        from PIL import Image
+        arr = np.asarray(
+            Image.open(BytesIO(frame)).convert("L").resize((24, 24)), dtype="int16")
+    except Exception:  # noqa: BLE001 — any decode/dep failure -> "can't tell", not "blank"
+        return False
+    return bool(np.mean(arr) <= _BLANK_MEAN_MAX and np.ptp(arr) <= _BLANK_SPREAD_MAX)
+
+
 def _split_diff(a: bytes, b: bytes) -> tuple[float, float]:
     """(top-half delta, bottom-half delta) between two frames.
 
@@ -273,7 +307,7 @@ class HingeDriver(DatingAppDriver):
         """Screencap and template-match the like-heart ('like' -> topmost right glyph) or the
         floating pass-X ('pass' -> left glyph). Returns (x, y) or None when not visible."""
         template = _load_template("hinge_heart.png" if which == "like" else "hinge_pass_x.png")
-        centers = _match_glyph(self.adb.screencap(), template,
+        centers = _match_glyph(self._screencap(), template,
                                side="right" if which == "like" else "left")
         return centers[0] if centers else None
 
@@ -290,6 +324,81 @@ class HingeDriver(DatingAppDriver):
         print(f"Hinge: {which} button not found by vision; using fallback coord {frac}")
         return (int(frac[0] * w), int(frac[1] * h))
 
+    # --- capture (blank-frame guard) -----------------------------------
+    def _screencap(self, *, on_blank: str = "raise") -> bytes | None:
+        """Every decision-making capture goes through here, never `self.adb.screencap()`.
+
+        `adb exec-out screencap` on a device that is asleep or sitting on the
+        keyguard SUCCEEDS and returns a solid-black PNG — it does not error. Two
+        identical black frames read as "nothing changed", so a run would stall
+        blind; and a good frame followed by a black one reads as a BIG delta, which
+        wait_for_decision would mis-score as a card advance (a phantom "pass").
+
+        `on_blank` picks what a persistently-blank screen means to THIS caller:
+
+        - "raise" (default) — for paths that are about to ACT or verify an action.
+          Tapping blind on a burner is never an acceptable degradation, so this
+          raises regardless of `halt_on_error`. That is a deliberate departure from
+          the `halt_on_error` gating used by _snap/_verify_progress: those cover
+          *unexpected* errors the owner may opt out of halting on, whereas a blank
+          screen is a physical impossibility — there is nothing to look at.
+
+        - "none" — returns None for PASSIVE polling loops (wait_for_decision,
+          _await_like_resolved). Those wait on a HUMAN with no timeout and send no
+          touches, so nothing keeps the screen alive; a screen-off there is an
+          ordinary, recoverable event. They skip the iteration and keep watching,
+          which is both non-fatal AND avoids the phantom-pass above.
+
+        Retried once after a settle so a single odd frame mid-transition can't halt
+        a healthy run; only a frame that is STILL blank counts.
+
+        The two deliberate exceptions that keep calling `self.adb.screencap()` raw:
+        _dbg_action (best-effort debug capture, already swallows failures) and
+        snapshot_failure (must record whatever is on screen — including black — and
+        must never raise while handling another error).
+        """
+        frame = self.adb.screencap()
+        if not _is_blank_frame(frame):
+            return frame
+        time.sleep(human_delay(0.4))
+        frame = self.adb.screencap()
+        if not _is_blank_frame(frame):
+            return frame
+        if on_blank == "none":
+            return None
+        raise HingeActionError(
+            f"screen is blank ({self._blank_reason()}) — every capture is solid black, so "
+            "the run would act blind; wake and unlock the device before continuing")
+
+    def _blank_reason(self) -> str:
+        """Best-effort one-line diagnosis for the blank-frame error. Never raises:
+        it only ever decorates an error message that is already being raised."""
+        try:
+            wake = self.adb.shell("dumpsys power | grep -m1 -o 'mWakefulness=[A-Za-z]*'").strip()
+            lock = self.adb.shell("dumpsys trust | grep -m1 -o 'deviceLocked=[01]'").strip()
+        except Exception:  # noqa: BLE001 — diagnosis is optional, the raise is not
+            return "device state unreadable"
+        parts = [p for p in (wake, lock) if p]
+        return ", ".join(parts) if parts else "device state unknown"
+
+    def _await_live_frame(self, deadline, should_stop) -> bytes | None:
+        """Block until a NON-blank frame is available, for passive observe loops.
+
+        Observe waits on a human with no timeout and sends no touches, so nothing
+        keeps the screen alive — it going dark mid-wait is ordinary and recoverable,
+        not a run-ending error. We simply keep watching until the owner comes back
+        and wakes it. Returns None if `should_stop` fires or `deadline` passes,
+        which the callers already handle as "no decision".
+        """
+        while deadline is None or time.monotonic() < deadline:
+            if should_stop and should_stop():
+                return None
+            frame = self._screencap(on_blank="none")
+            if frame is not None:
+                return frame
+            time.sleep(_OBSERVE_POLL_S)
+        return None
+
     # --- debug logging + autonomous-safety (halt on unexpected) --------
     def _snap(self):
         """Screencap for debug/verify, or None when neither is active (skips the overhead)."""
@@ -297,9 +406,16 @@ class HingeDriver(DatingAppDriver):
             return None
         for attempt in (1, 2):                         # retry once: a transient screencap blip must
             try:                                       # not silently disable the _verify check below
-                return self.adb.screencap()
+                return self._screencap()
             except DriverClosed:
                 raise                                  # device truly gone -> let it propagate
+            except HingeActionError:
+                # Blank screen: _screencap already retried and already says exactly what
+                # is wrong ("screen is blank (mWakefulness=..., deviceLocked=...)").
+                # Re-raise rather than let the generic handler below bury that diagnosis
+                # under "screencap failed twice in a row" — or, worse, swallow it to None
+                # when halt_on_error is False and hand a caller a missing "before" frame.
+                raise
             except Exception as exc:  # noqa: BLE001
                 if attempt == 2:
                     if self.halt_on_error:
@@ -318,7 +434,7 @@ class HingeDriver(DatingAppDriver):
         if self._dbg is None:
             return
         try:
-            after = self.adb.screencap()
+            after = self.adb.screencap()   # RAW: best-effort debug capture, never gates the run
         except Exception:  # noqa: BLE001
             after = None
         self._dbg.action(name, before=before, after=after, **fields)
@@ -336,7 +452,7 @@ class HingeDriver(DatingAppDriver):
         case `before`, sourced from _snap(), is never None — _snap() raises instead)."""
         if not self.halt_on_error:
             return
-        if _retry_until(lambda: self._changed(before, self.adb.screencap()), 2, 0.6):
+        if _retry_until(lambda: self._changed(before, self._screencap()), 2, 0.6):
             return
         raise HingeActionError(f"{action} did not change the screen (stuck or unexpected state)")
 
@@ -345,11 +461,24 @@ class HingeDriver(DatingAppDriver):
         available (free Roses are granted periodically). We NEVER send a Rose (owner rule), so we
         tap "Send Like anyway" to send the NORMAL like. Vision-matched (the modal's text), so we
         never risk the "Send a Rose" button sitting just above it. No-op when the modal isn't
-        shown. Returns True if it dismissed the modal."""
+        shown. Returns True if it dismissed the modal.
+
+        Uses on_blank="none" rather than raising, deliberately: this runs AFTER the
+        "Send Like" tap has already landed. A like sent server-side but aborted here
+        would never reach worker.py's store.record_decision(), which assumes a raising
+        like() "never landed" — so we would silently lose the record of a real like.
+        A blank screen here degrades to "no modal seen"; _verify_like_landed is the
+        step that still gets to fail loudly.
+        """
         template = _load_template("hinge_send_like_anyway.png")
-        hits = _retry_until(
-            lambda: _match_glyph(self.adb.screencap(), template, side="any", threshold=0.6),
-            tries, 0.5)                       # modal animates in (only when a Rose is available)
+
+        def _probe():
+            frame = self._screencap(on_blank="none")
+            if frame is None:
+                return []                     # can't see -> assume no modal (see docstring)
+            return _match_glyph(frame, template, side="any", threshold=0.6)
+
+        hits = _retry_until(_probe, tries, 0.5)   # modal animates in (only when a Rose is available)
         if hits:
             self.touch.tap(*hits[0])          # "Send Like anyway" — NEVER the Rose button above it
             return True
@@ -405,10 +534,10 @@ class HingeDriver(DatingAppDriver):
         y_near = int(h * (0.5 - self.read_scroll_frac / 2))   # scroll_up's END y (near top)
         y_far = int(h * (0.5 + self.read_scroll_frac / 2))    # scroll_up's START y (near bottom)
         for _ in range(max_swipes):
-            before = self.adb.screencap()
+            before = self._screencap()
             self.touch.swipe(w // 2, y_near, w // 2, y_far)
             time.sleep(human_delay(0.3))
-            if not self._changed(before, self.adb.screencap()):
+            if not self._changed(before, self._screencap()):
                 break
         self._capture_scrolls = 0     # confirmed (or ceiling-bounded) back at top: nothing outstanding
 
@@ -419,7 +548,7 @@ class HingeDriver(DatingAppDriver):
         self._capture_scrolls = 0     # reset: _scroll_to_top must undo THIS capture, not a stale one
         seen = set()
         for i in range(self.scroll_captures):
-            frame = self.adb.screencap()
+            frame = self._screencap()
             ds = _downsample(frame)                    # None if PIL/numpy unavailable or undecodable
             sig = _frame_sig(frame)
             if sig in seen:
@@ -507,7 +636,7 @@ class HingeDriver(DatingAppDriver):
         tries = min(self.scroll_captures + 1, item_index + 3)
         matched_frame_no_heart = False
         for _ in range(tries):
-            frame = self.adb.screencap()
+            frame = self._screencap()
             ds = _downsample(frame)
             if ds is not None and float(np.mean(np.abs(ds - target))) < self.change_threshold:
                 hearts = _match_glyph(frame, _load_template("hinge_heart.png"), side="right")
@@ -539,7 +668,7 @@ class HingeDriver(DatingAppDriver):
             return
         sheet_up = modal_up = False
         for _ in range(3):        # a couple of extra passes tolerate a late-animating Rose modal
-            frame = self.adb.screencap()
+            frame = self._screencap()
             sheet_up = bool(_match_glyph(frame, _load_template("hinge_send_like.png"), side="any", threshold=0.6))
             modal_hits = _match_glyph(frame, _load_template("hinge_send_like_anyway.png"), side="any", threshold=0.6)
             modal_up = bool(modal_hits)
@@ -595,11 +724,16 @@ class HingeDriver(DatingAppDriver):
         manual scroll changes the top region and reads as a pass.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
-        base = self.adb.screencap()
+        base = self._await_live_frame(deadline, should_stop)
+        if base is None:
+            return None
         while deadline is None or time.monotonic() < deadline:
             if should_stop and should_stop():
                 return None
-            cur = self.adb.screencap()
+            cur = self._screencap(on_blank="none")
+            if cur is None:                           # screen asleep: the owner stepped away.
+                time.sleep(_OBSERVE_POLL_S)           # keep watching — do NOT diff a black frame
+                continue                              # against `base` (that reads as a phantom pass)
             top, bot = _split_diff(base, cur)
             if top < self.change_threshold and bot < self.change_threshold:
                 time.sleep(_OBSERVE_POLL_S)
@@ -615,7 +749,9 @@ class HingeDriver(DatingAppDriver):
                     return None
                 if sent:
                     return True                       # like sheet resolved to a new card
-                base = self.adb.screencap()           # cancelled -> resync, keep watching
+                base = self._await_live_frame(deadline, should_stop)   # cancelled -> resync
+                if base is None:
+                    return None
                 continue
 
             # Top changed (whole card moved): a manual SCROLL of the SAME profile (matches a
@@ -638,12 +774,17 @@ class HingeDriver(DatingAppDriver):
         while deadline is None or time.monotonic() < deadline:
             if should_stop and should_stop():
                 return None
-            cur = self.adb.screencap()
+            cur = self._screencap(on_blank="none")
+            if cur is None:                           # screen asleep mid-wait: keep watching
+                time.sleep(_OBSERVE_POLL_S)           # (never diff a black frame against base)
+                continue
             top, bot = _split_diff(base, cur)
             if top >= self.change_threshold:
                 # Wait 0.5s to verify the transition has stabilized
                 time.sleep(0.5)
-                confirm = self.adb.screencap()
+                confirm = self._screencap(on_blank="none")
+                if confirm is None:
+                    continue                          # can't confirm blind -> re-poll
                 c_top, c_bot = _split_diff(base, confirm)
                 if c_top >= self.change_threshold:
                     if self._is_current_profile_frame(confirm):
@@ -652,7 +793,9 @@ class HingeDriver(DatingAppDriver):
             if bot < self.change_threshold:
                 # Wait 0.5s to verify if it's a temporary transition or a genuine cancellation
                 time.sleep(0.5)
-                confirm = self.adb.screencap()
+                confirm = self._screencap(on_blank="none")
+                if confirm is None:
+                    continue                          # can't confirm blind -> re-poll
                 c_top, c_bot = _split_diff(base, confirm)
                 if c_top >= self.change_threshold:
                     if self._is_current_profile_frame(confirm):

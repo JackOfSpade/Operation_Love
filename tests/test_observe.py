@@ -85,7 +85,6 @@ class FakeStore:
     def load_labels(self): return [(liked, embedding) for liked, embedding, _, _ in self.labels]
     def record_decision(self, run_id, app, decision, score, source="auto"):
         self.decisions.append((decision, source))
-    def label_count(self): return len(self.labels)
     def flush(self): pass
     def close(self): pass
 

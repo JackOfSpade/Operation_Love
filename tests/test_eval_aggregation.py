@@ -39,6 +39,19 @@ def test_evaluate_never_raises_on_malformed_embeddings():
     assert r["status"] == "error"                    # handled gracefully, no traceback
 
 
+def test_evaluate_reports_no_sklearn_when_sklearn_is_unavailable(monkeypatch):
+    # sklearn IS installed in CI/this sandbox, so this branch is otherwise never
+    # exercised despite the "no_sklearn" status existing precisely for a machine
+    # without the `ml` extra. Force the import to fail the way it would there.
+    import sys
+    for name in ("sklearn", "sklearn.metrics", "sklearn.model_selection"):
+        monkeypatch.setitem(sys.modules, name, None)
+    samples = [(i % 2 == 0, [0.0] * 8) for i in range(12)]
+    r = evaluate(samples)
+    assert r["status"] == "no_sklearn"
+    assert "scikit-learn unavailable" in r["message"]
+
+
 def _identity_samples(n):
     samples = []
     for i in range(n):

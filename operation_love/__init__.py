@@ -9,6 +9,7 @@ Layers (see README):
   costing.py    client-side spend tracking + per-run budget guard
   supervisor    launches one worker per enabled app and owns shutdown/flush
   worker.py     the per-app loop (observe = learn from you, auto = swipe for you)
+  hub/          local control panel (state, server, page, launchers)
 """
 
 __version__ = "2.0.0"

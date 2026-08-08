@@ -1,7 +1,7 @@
 """BigQuery backend — system-of-record + analytics, with batched writes.
 
 Design (per the chosen 'BQ of-record + memory cache' approach):
-- load_labels() runs ONE query at startup; the orchestrator holds labels in
+- load_labels() runs ONE query at startup; the supervisor holds labels in
   memory for fast inference.
 - writes are buffered and flushed in batches (default every 25 rows, and on
   close), so the swipe loop never waits on a per-row cloud round-trip and we
@@ -27,6 +27,10 @@ from .store import local_midnight_epoch
 
 _UPLOAD_ATTEMPTS = 3        # bounded retry so a transient GCS blip doesn't drop a swipe
 _UPLOAD_BACKOFF_S = 0.5
+# Shared with ranker/__init__.py's make_store(), so the config-parsing fallback (when
+# storage.bigquery.flush_every isn't set) can't silently drift from this constructor's
+# own default.
+DEFAULT_FLUSH_EVERY = 25
 
 _MAX_INSERT_ATTEMPTS = 5    # bounded retry so a row BigQuery keeps rejecting as invalid
                             # can't poison its table's buffer (and everything queued
@@ -101,7 +105,7 @@ def _day_start_job_config(start_dt: datetime):
 
 class BigQueryStore:
     def __init__(self, project_id: str, dataset: str = "operation_love",
-                 location: str = "US", photo_bucket: str = "", flush_every: int = 25,
+                 location: str = "US", photo_bucket: str = "", flush_every: int = DEFAULT_FLUSH_EVERY,
                  client=None, storage_client=None, ensure: bool = True):
         if not project_id:
             raise ValueError("Storage.bigquery.project_id is required for the BigQuery backend")
@@ -348,12 +352,16 @@ class BigQueryStore:
             self._maybe_flush("openers")
 
     def record_spend(self, run_id, model, usage: Usage, cost):
+        # cost is None when the call's price couldn't be determined (e.g. no
+        # budget.pricing entry for the model) — stored as NULL, distinct from a
+        # genuinely free $0.00 call.
         with self._lock:
             self._buf["spend"].append({
                 "run_id": run_id, "created_at": _now(), "model": model,
                 "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
                 "cache_read_tokens": usage.cache_read_input_tokens,
-                "cache_write_tokens": usage.cache_creation_input_tokens, "cost_usd": float(cost),
+                "cache_write_tokens": usage.cache_creation_input_tokens,
+                "cost_usd": None if cost is None else float(cost),
             })
             self._maybe_flush("spend")
 

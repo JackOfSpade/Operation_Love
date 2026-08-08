@@ -2,7 +2,7 @@
 
 Call ``Capabilities.detect()`` once at startup: ``.device`` tells the ML layers
 which accelerator to use, and ``.available`` says which optional components are
-installed so the orchestrator can degrade gracefully (skip the quality filter,
+installed so the supervisor can degrade gracefully (skip the quality filter,
 disable openers, etc.) instead of crashing on a machine missing a dependency.
 
 Quick check on any machine:  ``python -m operation_love.runtime``

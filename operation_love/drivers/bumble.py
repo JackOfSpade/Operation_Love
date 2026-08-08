@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import random
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
-from .base import DatingAppDriver, DriverClosed
+from .base import DatingAppDriver, DriverClosed, open_debug_log, snapshot_failure_frame
 from ..human import human_delay
 from ..perception.capture import Profile
 
@@ -80,6 +81,19 @@ class BumbleActionError(RuntimeError):
     stale element). NOT a DriverClosed (which is a clean, restart-safe stop): this is
     unexpected, so the worker halts the run rather than record a phantom decision — see
     worker.py's "do not record a phantom" comment."""
+
+@contextmanager
+def _browser_guard():
+    """Run a Playwright call, translating a closed-browser error into DriverClosed;
+    any other exception re-raises unchanged. Collapses the except/translate/raise
+    boilerplate that would otherwise be hand-rolled at every Playwright call site
+    that must propagate its failure (call sites that instead degrade to a fallback
+    value keep their own try/except, since the fallback differs per site)."""
+    try:
+        yield
+    except Exception as exc:  # noqa: BLE001
+        _raise_driver_closed_if_browser_closed(exc)
+        raise
 
 
 DEFAULT_SELECTORS = {
@@ -297,11 +311,7 @@ class BumbleDriver(DatingAppDriver):
             self.page.goto(self.url, wait_until="domcontentloaded")
             self._dismiss_startup_interstitials()
             if self.debug_log:
-                try:
-                    from .debuglog import DebugLog
-                    self._dbg = DebugLog(self.debug_dir)
-                except Exception:  # noqa: BLE001 — logging must never break a run
-                    self._dbg = None
+                self._dbg = open_debug_log(self.debug_dir)
             # First run: if not logged in, sign in by hand in the opened window; the
             # user-data dir persists the session for subsequent runs.
         except BaseException:
@@ -313,16 +323,16 @@ class BumbleDriver(DatingAppDriver):
 
     @staticmethod
     def _import_playwright():
-        """Prefer a stealth-patched Playwright (patchright, then rebrowser-playwright)
-        that avoids the Runtime.enable CDP leak; fall back to vanilla playwright.
-        All expose the same sync_api surface."""
-        from importlib import import_module
-        for mod, name in (("patchright", "patchright"),
-                          ("rebrowser_playwright", "rebrowser-playwright")):
-            try:
-                return import_module(f"{mod}.sync_api").sync_playwright, name
-            except Exception:  # noqa: BLE001
-                continue
+        """Prefer a stealth-patched Playwright (patchright) that avoids the Runtime.enable
+        CDP leak; fall back to vanilla playwright. Both expose the same sync_api surface.
+        (rebrowser-playwright was considered too, but isn't in the `bumble` extra — pyproject
+        only installs patchright/playwright — so it's not offered here as a silent,
+        untested fallback tier.)"""
+        try:
+            from patchright.sync_api import sync_playwright
+            return sync_playwright, "patchright"
+        except Exception:  # noqa: BLE001
+            pass
         from playwright.sync_api import sync_playwright  # type: ignore  # lazy: [bumble] extra
         return sync_playwright, "playwright (unpatched — pip install patchright for stealth)"
 
@@ -433,7 +443,7 @@ class BumbleDriver(DatingAppDriver):
         those are confirmed live there's nothing else to reverse-engineer — no
         network sniffing needed. Survives card changes (window-scoped).
         """
-        try:
+        with _browser_guard():
             self.page.evaluate(
                 """([likeSel, passSel, superSel]) => {
                     if (window.__oplove_obs) return;
@@ -449,9 +459,6 @@ class BumbleDriver(DatingAppDriver):
                 }""",
                 [self.selectors["like"], self.selectors["pass"], self.selectors["superlike"]],
             )
-        except Exception as exc:  # noqa: BLE001
-            _raise_driver_closed_if_browser_closed(exc)
-            raise
 
     def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None) -> bool | None:
         """Block until YOU manually like/pass the current card.
@@ -469,11 +476,8 @@ class BumbleDriver(DatingAppDriver):
         # uncleared, would be mis-attributed to the card we're about to wait on ->
         # corrupted labels. Clearing here means only a swipe made AFTER this
         # card's capture can count for it.
-        try:
+        with _browser_guard():
             self.page.evaluate("() => { window.__oplove_decision = null; }")
-        except Exception as exc:  # noqa: BLE001
-            _raise_driver_closed_if_browser_closed(exc)
-            raise
         # Card-identity signal (BUMBLE-2): the click listener only fires on a
         # like/pass BUTTON click, so a swipe gesture, keyboard shortcut, or
         # app-driven advance would sail past it undetected — the deck moves on
@@ -488,13 +492,10 @@ class BumbleDriver(DatingAppDriver):
         while deadline is None or time.monotonic() < deadline:
             if should_stop and should_stop():        # Stop pressed -> don't wait for a swipe
                 return None
-            try:
+            with _browser_guard():
                 decision = self.page.evaluate(
                     "() => { const v = window.__oplove_decision; window.__oplove_decision = null; return v; }"
                 )
-            except Exception as exc:  # noqa: BLE001
-                _raise_driver_closed_if_browser_closed(exc)
-                raise
             if decision == "like":
                 return True
             if decision == "pass":
@@ -729,11 +730,8 @@ class BumbleDriver(DatingAppDriver):
         el = self._query_selector(selector)
         if not el:
             return ""
-        try:
+        with _browser_guard():
             return el.inner_text().strip()
-        except Exception as exc:  # noqa: BLE001
-            _raise_driver_closed_if_browser_closed(exc)
-            raise
 
     # --- human-like pointer (AUTO mode only; observe mode = your real cursor) ---
     def _human_target(self, box: dict) -> tuple[float, float]:
@@ -759,7 +757,7 @@ class BumbleDriver(DatingAppDriver):
         cy = (sy + y) / 2 + random.uniform(-60, 60)
         ox, oy = x + random.uniform(-4, 4), y + random.uniform(-4, 4)   # ...and overshoot
         steps = random.randint(14, 26)
-        try:
+        with _browser_guard():
             for i in range(1, steps + 1):
                 t = i / steps
                 mt = 1 - t
@@ -768,20 +766,14 @@ class BumbleDriver(DatingAppDriver):
                 move(px, py)
                 time.sleep(human_delay(0.012))
             move(x, y)                                  # settle on the (jittered) target
-        except Exception as exc:  # noqa: BLE001
-            _raise_driver_closed_if_browser_closed(exc)
-            raise
         self._mouse_xy = (x, y)
 
     def _human_mouse_click(self, x: float, y: float) -> None:
         """Human-ish move to (x, y), a brief hesitation, then click there."""
         self._human_move(x, y)
         time.sleep(human_delay(0.09))
-        try:
+        with _browser_guard():
             self.page.mouse.click(x, y)
-        except Exception as exc:  # noqa: BLE001
-            _raise_driver_closed_if_browser_closed(exc)
-            raise
         self._mouse_xy = (x, y)
 
     def _box_center_in_viewport(self, box: dict) -> bool:
@@ -801,14 +793,11 @@ class BumbleDriver(DatingAppDriver):
         el = self._query_selector(selector)
         box = None
         if el is not None:
-            try:
+            with _browser_guard():
                 scroll = getattr(el, "scroll_into_view_if_needed", None)
                 if callable(scroll):
                     scroll()                     # bring the control into view first
                 box = el.bounding_box()
-            except Exception as exc:  # noqa: BLE001
-                _raise_driver_closed_if_browser_closed(exc)
-                raise
         mouse = getattr(self.page, "mouse", None)
         if (box and self._box_center_in_viewport(box)
                 and callable(getattr(mouse, "move", None))
@@ -818,11 +807,8 @@ class BumbleDriver(DatingAppDriver):
             return
         # No box / off-screen / no mouse API -> raw-coordinate clicking isn't safe;
         # page.click does its own actionability + scroll-into-view.
-        try:
+        with _browser_guard():
             self.page.click(selector)
-        except Exception as exc:  # noqa: BLE001
-            _raise_driver_closed_if_browser_closed(exc)
-            raise
 
     # --- debug log (silent; parity with Hinge) --------------------------
     def _dbg_action(self, name: str, **fields) -> None:
@@ -842,15 +828,7 @@ class BumbleDriver(DatingAppDriver):
         worker's except — it must not mask the real error)."""
         if self._dbg is None or not self.page:
             return
-        frame = None
-        try:
-            frame = self.page.screenshot()        # viewport PNG = what the bot was acting on
-        except Exception:  # noqa: BLE001 — page may be navigating/closed; record the error anyway
-            frame = None
-        try:
-            self._dbg.error("unexpected", frame, exc)
-        except Exception:  # noqa: BLE001
-            pass
+        snapshot_failure_frame(self._dbg, exc, self.page.screenshot)
 
     # --- swipe-landed verification ---------------------------------------
     # _human_click's box-in-viewport test (_box_center_in_viewport) is a PURE
@@ -943,15 +921,9 @@ class BumbleDriver(DatingAppDriver):
         return self._query_selector(self.selectors["empty"]) is not None
 
     def _query_selector(self, selector: str):
-        try:
+        with _browser_guard():
             return self.page.query_selector(selector)
-        except Exception as exc:  # noqa: BLE001
-            _raise_driver_closed_if_browser_closed(exc)
-            raise
 
     def _query_selector_all(self, selector: str):
-        try:
+        with _browser_guard():
             return self.page.query_selector_all(selector)
-        except Exception as exc:  # noqa: BLE001
-            _raise_driver_closed_if_browser_closed(exc)
-            raise

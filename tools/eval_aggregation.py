@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 
-from operation_love.ranker.evaluate import evaluate, format_report
+from operation_love.ranker.evaluate import _IDENTITY_EPS, evaluate, format_report
 
 
 def main() -> None:
@@ -19,8 +19,9 @@ def main() -> None:
                                  description="Leakage-free, identity-grouped CV of the ranker.")
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--splits", type=int, default=5, help="max CV folds (clamped to your data)")
-    ap.add_argument("--eps", type=float, default=0.5,
-                    help="DBSCAN cosine-distance eps for identity grouping (0.5 = sim>=0.5)")
+    ap.add_argument("--eps", type=float, default=_IDENTITY_EPS,
+                    help=f"DBSCAN cosine-distance eps for identity grouping "
+                         f"(default {_IDENTITY_EPS} = sim>={_IDENTITY_EPS})")
     args = ap.parse_args()
 
     from operation_love import config as cfg_mod

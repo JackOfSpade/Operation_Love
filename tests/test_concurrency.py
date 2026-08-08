@@ -1,5 +1,8 @@
 """Two app workers run concurrently in one process sharing the store (offline)."""
+import sys
 import threading
+import time
+import types
 
 from operation_love.costing import CostTracker, ModelPricing, Usage
 from operation_love.drivers.base import DatingAppDriver
@@ -144,40 +147,208 @@ def test_one_worker_budget_exhaustion_stops_the_other_worker():
     assert store.rows == [("hinge", "like")]       # only A's single decision recorded
 
 
-def test_embedder_ensure_is_called_once_under_concurrent_access():
-    """Concurrent workers must not double-initialize the Embedder's heavy ML models.
+# --- Embedder._ensure() concurrency -------------------------------------------------
+#
+# The tests below exercise the REAL Embedder._ensure() (double-checked locking, sentinel
+# check, and commit ordering all run unmodified). They stub only the model-CONSTRUCTION
+# boundary: best_device(), the lazily-imported open_clip/onnxruntime modules (injected via
+# sys.modules so this file needs neither package actually installed), and
+# Embedder._build_arc (which itself lazily imports insightface -- stubbing the method
+# avoids having to fake that import chain too). _select_onnx_providers and
+# _set_arc_providers are NOT stubbed: they're cheap and their real behavior -- including
+# the commit-ordering guarantee this file cares about -- is exactly what's under test.
+#
+# A prior version of the first test below built a real Embedder() and then overwrote the
+# bound method with a hand-written replica of the locking ("mirror the real double-checked
+# locking"), so only the replica ever ran under test. Proof of the gap: gutting the real
+# _ensure() (deleting the fast-path sentinel check AND the `with self._lock:` double check)
+# left that test at "1 passed". None of the tests here touch operation_love/vision/embed.py.
 
-    Simulates the race: N threads all call _ensure() simultaneously after warmup failed
-    (i.e. _arc is still None). The double-checked lock must guarantee exactly one
-    initialization even when all threads pass the outer sentinel check at the same time.
-    """
-    import time
-    from operation_love.vision.embed import Embedder
+import operation_love.vision.embed as embed_mod  # noqa: E402
+from operation_love.vision.embed import Embedder  # noqa: E402
+
+
+def _install_fake_open_clip(monkeypatch, create_model_and_transforms):
+    """Inject a fake `open_clip` module via sys.modules (not a real import, and not a
+    monkeypatch of an already-imported real module) so this needs neither the real
+    package installed nor any particular import order -- works on a bare machine."""
+    module = types.ModuleType("open_clip")
+    module.create_model_and_transforms = create_model_and_transforms
+    monkeypatch.setitem(sys.modules, "open_clip", module)
+
+
+def _install_fake_onnxruntime(monkeypatch, providers=("CPUExecutionProvider",)):
+    module = types.ModuleType("onnxruntime")
+    module.get_available_providers = lambda: list(providers)
+    monkeypatch.setitem(sys.modules, "onnxruntime", module)
+
+
+class _FakeClipModel:
+    """Cheap stand-in for the real open_clip model object: only `.to().eval()` is used
+    by _ensure() before the model is stashed on the embedder."""
+
+    def to(self, device):
+        return self
+
+    def eval(self):
+        return self
+
+
+def test_ensure_builds_models_exactly_once_under_concurrent_access(monkeypatch):
+    """N threads racing on the REAL _ensure() build the (stubbed) heavy models exactly
+    once. The stand-ins count invocations and sleep briefly so callers genuinely overlap
+    instead of trivially serializing -- a real double-init race, guarded by the real lock."""
+    monkeypatch.setattr(embed_mod, "best_device", lambda: "cpu")
+
+    clip_calls = []
+
+    def fake_create(name, pretrained=None):
+        clip_calls.append(1)
+        time.sleep(0.02)             # slow enough that racers genuinely queue on the lock
+        return _FakeClipModel(), None, (lambda img: img)
+
+    _install_fake_open_clip(monkeypatch, fake_create)
+    _install_fake_onnxruntime(monkeypatch)
+
+    arc_calls = []
+
+    def fake_build_arc(self, providers):
+        arc_calls.append(1)
+        time.sleep(0.02)
+        return object()
+
+    monkeypatch.setattr(Embedder, "_build_arc", fake_build_arc)
 
     embedder = Embedder()
-    init_count = [0]
-    gate = threading.Barrier(5)
+    n = 8
+    barrier = threading.Barrier(n)
 
-    def patched_ensure(self):
-        # Mirror the real double-checked locking. The gate is OUTSIDE the lock so
-        # all 5 threads pass the outer sentinel check together before racing for the lock.
-        if self._arc is not None:
-            return
-        gate.wait()            # synchronize: all threads pile up here simultaneously
-        with self._lock:
-            if self._arc is not None:  # second check: only the winner proceeds
-                return
-            time.sleep(0.01)   # simulate slow model load
-            init_count[0] += 1
-            self._arc = object()   # set sentinel LAST (same as real _ensure)
+    def run():
+        barrier.wait(timeout=5)      # all threads hit _ensure() at essentially the same instant
+        embedder._ensure()
 
-    embedder._ensure = patched_ensure.__get__(embedder, type(embedder))
-
-    threads = [threading.Thread(target=embedder._ensure) for _ in range(5)]
+    threads = [threading.Thread(target=run) for _ in range(n)]
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=5)
 
-    assert init_count[0] == 1, f"Expected 1 init, got {init_count[0]} (double-init race!)"
-    assert embedder._arc is not None
+    assert not any(t.is_alive() for t in threads)
+    assert len(clip_calls) == 1, f"CLIP built {len(clip_calls)} times (expected 1 -> double-init race!)"
+    assert len(arc_calls) == 1, f"ArcFace built {len(arc_calls)} times (expected 1 -> double-init race!)"
+    assert embedder._arc is not None and embedder._clip is not None
+
+
+def test_ensure_never_exposes_a_half_initialized_embedder_to_a_racing_reader(monkeypatch):
+    """_ensure() deliberately builds CLIP first and commits self._arc -- the sentinel its
+    own fast path (and every other caller) short-circuits on -- LAST, so a thread that
+    ever observes self._arc set can safely assume self._clip is also ready. A background
+    thread polls the embedder's raw attributes, unsynchronized -- exactly like the fast
+    path's read at the top of _ensure() -- for the whole duration of the concurrent build,
+    and fails the test the instant it ever catches _arc set while _clip is still None.
+    This asserts on state a racing thread actually observed mid-build, not just the final
+    state, which the old replica-based test never exercised at all."""
+    monkeypatch.setattr(embed_mod, "best_device", lambda: "cpu")
+
+    def fake_create(name, pretrained=None):
+        time.sleep(0.03)
+        return _FakeClipModel(), None, (lambda img: img)
+
+    _install_fake_open_clip(monkeypatch, fake_create)
+    _install_fake_onnxruntime(monkeypatch)
+
+    def fake_build_arc(self, providers):
+        time.sleep(0.03)             # widen the arc-not-yet-committed window for the watcher
+        return object()
+
+    monkeypatch.setattr(Embedder, "_build_arc", fake_build_arc)
+
+    embedder = Embedder()
+    violations = []
+    stop = threading.Event()
+
+    def watch():
+        while not stop.is_set():
+            arc, clip = embedder._arc, embedder._clip
+            if arc is not None and clip is None:
+                violations.append((arc, clip))
+        arc, clip = embedder._arc, embedder._clip   # one last look after the builders joined
+        if arc is not None and clip is None:
+            violations.append((arc, clip))
+
+    watcher = threading.Thread(target=watch)
+    watcher.start()
+
+    n = 5
+    barrier = threading.Barrier(n)
+
+    def run():
+        barrier.wait(timeout=5)
+        embedder._ensure()
+
+    threads = [threading.Thread(target=run) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+    stop.set()
+    watcher.join(timeout=5)
+
+    assert violations == [], (
+        f"a racing reader observed self._arc set while self._clip was still None: {violations}"
+    )
+    assert embedder._arc is not None and embedder._clip is not None
+
+
+def test_ensure_stays_retryable_for_a_concurrent_caller_after_clip_load_fails(monkeypatch):
+    """Concurrent companion to test_vision.py's single-threaded
+    test_ensure_leaves_embedder_retryable_if_clip_load_fails (read there for the single-
+    call contract; not duplicated here). Two threads race on the real lock via the real
+    _ensure(): whichever wins hits a simulated CLIP load failure and -- because self._arc
+    is only committed after CLIP succeeds -- leaves nothing committed, so the other
+    thread, a genuinely concurrent SECOND caller (not a manual retry sequenced by the
+    test) rather than the same caller retrying, picks the build back up once it gets the
+    lock and completes it."""
+    monkeypatch.setattr(embed_mod, "best_device", lambda: "cpu")
+
+    create_calls = []
+
+    def fake_create(name, pretrained=None):
+        create_calls.append(1)
+        time.sleep(0.02)
+        if len(create_calls) == 1:
+            raise RuntimeError("simulated CLIP weight download failure")
+        return _FakeClipModel(), None, (lambda img: img)
+
+    _install_fake_open_clip(monkeypatch, fake_create)
+    _install_fake_onnxruntime(monkeypatch)
+
+    build_arc_calls = []
+
+    def fake_build_arc(self, providers):
+        build_arc_calls.append(1)
+        return object()
+
+    monkeypatch.setattr(Embedder, "_build_arc", fake_build_arc)
+
+    embedder = Embedder()
+    errors = []
+    barrier = threading.Barrier(2)
+
+    def run():
+        barrier.wait(timeout=5)
+        try:
+            embedder._ensure()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert len(errors) == 1 and isinstance(errors[0], RuntimeError)
+    assert len(create_calls) == 2       # first attempt failed; the concurrent 2nd caller retried
+    assert len(build_arc_calls) == 1    # only the successful attempt reached arc construction
+    assert embedder._arc is not None and embedder._clip is not None   # fully committed by the retry

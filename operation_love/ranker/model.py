@@ -13,6 +13,18 @@ from __future__ import annotations
 
 import math
 
+# Shared with ranker/evaluate.py's offline CV, so the reported accuracy can't
+# silently drift from the classifier actually shipped in PreferenceModel.
+SKLEARN_LOGREG_KWARGS = {"C": 0.1, "class_weight": "balanced", "max_iter": 1000}
+
+
+def new_classifier():
+    """Strong L2 (small C) for ~1280-d features on tens-hundreds of labels, and
+    balanced class weights since likes/passes are usually imbalanced. Raises
+    ImportError if scikit-learn isn't installed."""
+    from sklearn.linear_model import LogisticRegression
+    return LogisticRegression(**SKLEARN_LOGREG_KWARGS)
+
 
 def _sigmoid(z: float) -> float:
     if z < -60:
@@ -51,25 +63,13 @@ class _PurePyLogReg:
         return _sigmoid(self.b + sum(wj * xj for wj, xj in zip(self.w, x, strict=True)))
 
 
-# Single source of truth for the ranker's LogisticRegression hyperparameters, shared by the
-# production model (train, below) AND the leakage-free CV evaluator (ranker/evaluate.py). The
-# evaluator exists to estimate the quality of the classifier that actually swipes, so the two
-# MUST stay identical — keeping them in one place means changing C/class_weight/max_iter can't
-# silently leave the hub's reported accuracy scoring a different model than the one deployed.
-# Strong L2 (small C) for ~1280-d features on tens–hundreds of labels; balanced class weights
-# since likes/passes are usually imbalanced.
-RANKER_PARAMS = {"C": 0.1, "class_weight": "balanced", "max_iter": 1000}
-
-
-def make_ranker_clf():
-    """Construct the shared LogisticRegression. Imports sklearn lazily so this module still
-    loads without the ml extra; the caller handles ImportError (pure-Python fallback)."""
-    from sklearn.linear_model import LogisticRegression
-    return LogisticRegression(**RANKER_PARAMS)
-
-
 class PreferenceModel:
-    def __init__(self, min_labels: int = 40, threshold: float = 0.5, min_per_class: int = 5):
+    # min_labels has no default: it comes from config.yaml's ranker.min_labels_to_engage
+    # (operation_love.config.RankerCfg) at every real call site, so a stale duplicate
+    # default here could silently drift from what's actually configured. threshold's
+    # default (0.5) is the standard binary-classifier decision boundary, and min_per_class's
+    # default (5) is a reasonable floor, so both are fine to keep independently.
+    def __init__(self, min_labels: int, threshold: float = 0.5, min_per_class: int = 5):
         self.min_labels = min_labels
         self.threshold = threshold
         self.min_per_class = min_per_class
@@ -103,11 +103,17 @@ class PreferenceModel:
         # auto-swipes on garbage (the pure-Python LR has no NaN guard and would fit NaN
         # weights). This is training/inference code, not best-effort logging.
         try:
-            clf, impl = make_ranker_clf(), "sklearn"     # shared hyperparameters (RANKER_PARAMS)
+            clf = new_classifier()
         except ImportError:
-            clf, impl = _PurePyLogReg(), "purepy"
-        clf.fit(X, y)
-        self._impl, self._clf = impl, clf
+            clf = _PurePyLogReg()
+            clf.fit(X, y)
+            self._impl, self._clf = "purepy", clf
+        else:
+            # Outside the except: a real bug in .fit() (bad shapes, NaN/inf embeddings,
+            # a sklearn version incompatibility) propagates instead of silently and
+            # permanently degrading to the pure-Python fallback with no signal.
+            clf.fit(X, y)
+            self._impl, self._clf = "sklearn", clf
         return True
 
     def predict_proba(self, vec: list[float]) -> float:

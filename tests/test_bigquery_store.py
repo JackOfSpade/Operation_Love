@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 
 from operation_love.costing import Usage
+from operation_love.ranker import Store
 from operation_love.ranker.bigquery_store import BigQueryStore
 from operation_love.ranker.store import local_midnight_epoch
 
@@ -118,6 +119,10 @@ class _FakeStorage:
 def _store(client, flush_every=25):
     return BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=flush_every,
                          client=client, storage_client=_FakeStorage(), ensure=False)
+
+
+def test_bigquery_store_conforms_to_store_protocol():
+    assert isinstance(_store(_FakeBQ()), Store)
 
 
 def test_load_labels_parses_and_counts():
@@ -317,6 +322,17 @@ def test_flush_on_close():
     assert len(client.inserted["proj.ds.spend"]) == 1
     row = client.inserted["proj.ds.spend"][0]
     assert row["input_tokens"] == 10 and row["cost_usd"] == 0.0001
+
+
+def test_record_spend_stores_none_cost_as_null_not_zero():
+    # cost=None means "unknown/unpriceable" (e.g. no budget.pricing entry) -- must be
+    # stored as NULL, distinct from a genuinely free $0.00 call.
+    client = _FakeBQ()
+    s = _store(client, flush_every=100)
+    s.record_spend("r", "claude-unknown", Usage(input_tokens=10, output_tokens=5), None)
+    s.close()
+    row = client.inserted["proj.ds.spend"][0]
+    assert row["cost_usd"] is None
 
 
 def test_saved_summary_tallies_confirmed_inserts():

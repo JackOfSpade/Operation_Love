@@ -3,7 +3,16 @@ import json
 import sqlite3
 import time
 
+from operation_love.ranker import Store
 from operation_love.ranker.store import SQLiteStore
+
+
+def test_sqlite_store_conforms_to_store_protocol(tmp_path):
+    s = SQLiteStore(tmp_path / "store.db")
+    try:
+        assert isinstance(s, Store)
+    finally:
+        s.close()
 
 
 def test_sqlite_count_today_counts_only_auto_decisions(tmp_path):
@@ -100,7 +109,10 @@ def test_sqlite_add_label_rejects_nan_embedding(tmp_path):
             store.add_label("r", "bumble", True, [0.1, float("nan"), 0.3])
             raise AssertionError("expected ValueError on NaN embedding")
         except ValueError as e:
-            assert "nan" in str(e).lower() or "allow_nan" in str(e).lower()
+            # json.dumps(..., allow_nan=False) is what actually rejects it (store.py),
+            # and its real message is "Out of range float values are not JSON
+            # compliant" — it never literally says "nan"/"allow_nan".
+            assert "not json compliant" in str(e).lower()
     finally:
         store.close()
 

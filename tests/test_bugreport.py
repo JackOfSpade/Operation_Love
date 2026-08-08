@@ -118,6 +118,23 @@ def test_status_section_renders_apps():
     assert "| bumble |" in md
 
 
+class _MalformedHub:
+    """snapshot() with a status dict missing keys _status_md assumes exist — this must
+    not crash the whole report (Bug H): the section renders a warning and every other
+    section (build/system/deps/...) still comes through."""
+    def snapshot(self):
+        return {"running": True, "error": None, "status": {"phase": "live"}}   # no "labels" etc.
+
+
+def test_malformed_status_section_does_not_crash_whole_report():
+    md = bugreport.build_report(_MalformedHub())
+    assert "## Run status" in md
+    assert "⚠️" in md                     # the broken section renders a warning...
+    assert "## Build" in md               # ...but every other section still renders
+    assert "## System" in md
+    assert "## Recent logs" in md
+
+
 def test_line_cap_enforced_by_dropping_oldest_logs():
     bugreport._LOG_RING.clear()
     for i in range(bugreport._MAX_REPORT_LINES + 200):

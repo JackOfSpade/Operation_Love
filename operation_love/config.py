@@ -74,21 +74,44 @@ class Config:
 _BUDGET_KEYS = {"run_budget_usd", "day_budget_usd", "on_exhausted", "pricing"}
 
 
+def _section(cls, name: str, raw_section):
+    """Construct a config dataclass from its raw.yaml section, turning a typo'd/unknown
+    key into a clear ValueError instead of a cryptic TypeError. validate() only catches
+    semantic errors (unknown app, bad mode, ...) — this catches a config.yaml that fails
+    to even parse into the dataclasses.
+
+    A bare `key:` (YAML null) is treated as "section omitted" rather than an error: the
+    {} default on raw.get() only covers a MISSING key, and None would otherwise be spread
+    as **None a line later."""
+    if raw_section is None:
+        raw_section = {}
+    if not isinstance(raw_section, dict):
+        raise ValueError(f"Config: '{name}' section must be a mapping "
+                         f"(got {type(raw_section).__name__})")
+    try:
+        return cls(**raw_section)
+    except TypeError as exc:
+        raise ValueError(f"Config: invalid '{name}' section ({exc})") from exc
+
+
 def load(path: str | Path = "config.yaml") -> Config:
     raw = yaml.safe_load(Path(path).read_text())
-    # Every `raw.get(key, {})` below is guarded with `or {}` too: the {} default only
-    # covers a MISSING key. A key present but written bare (YAML null, e.g. `budget:`
-    # with nothing after it) makes .get() return None right past that default, and
-    # None then gets indexed/spread (`set(b)`, `**raw.get(...)`, `.get("x", ...)`)
-    # a few lines below — crashing with a raw TypeError/AttributeError instead of the
-    # clean ValueError this module exists to give. Fail-fast belongs in validate();
-    # load() just has to not crash first.
+    if raw is None:                 # empty / comment-only YAML -> defaults everywhere
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Config: {path} must be a YAML mapping at the top level "
+                         f"(got {type(raw).__name__})")
+    # `or {}` on every hand-built section: the {} default only covers a MISSING key. A key
+    # present but written bare (YAML null, e.g. `budget:` with nothing after it) makes
+    # .get() return None right past that default, and None is then indexed/spread a few
+    # lines below — a raw TypeError instead of the clean ValueError this module owes.
     paths = raw.get("paths", {}) or {}
     b = raw.get("budget", {}) or {}
     unknown = set(b) - _BUDGET_KEYS
     if unknown:
-        # budget: is a money control — a typo'd key (e.g. run_budget vs run_budget_usd)
-        # must fail loudly rather than silently produce an unlimited spend cap.
+        # budget: is a money control, and it's hand-built with .get() rather than through
+        # _section(), so it needs its own typo guard — a typo'd key (run_budget vs
+        # run_budget_usd) must fail loudly, not silently yield an unlimited spend cap.
         raise ValueError(f"Config: unknown key(s) under budget: {sorted(unknown)}; "
                          f"supported: {sorted(_BUDGET_KEYS)}")
     pricing = {m: ModelPricing.from_dict(d) for m, d in (b.get("pricing", {}) or {}).items()}
@@ -101,16 +124,16 @@ def load(path: str | Path = "config.yaml") -> Config:
         limits=raw.get("limits", {}) or {},
         data_dir=Path(paths.get("data_dir", "./data")),
         db_file=Path(paths.get("db_file", "./data/operation_love.db")),
-        ranker=RankerCfg(**(raw.get("ranker", {}) or {})),
-        quality_filter=QualityCfg(**(raw.get("quality_filter", {}) or {})),
-        opener=OpenerCfg(**(raw.get("opener", {}) or {})),
+        ranker=_section(RankerCfg, "ranker", raw.get("ranker", {})),
+        quality_filter=_section(QualityCfg, "quality_filter", raw.get("quality_filter", {})),
+        opener=_section(OpenerCfg, "opener", raw.get("opener", {})),
         budget=BudgetCfg(
             run_budget_usd=b.get("run_budget_usd"),
             day_budget_usd=b.get("day_budget_usd"),
             on_exhausted=b.get("on_exhausted", "stop"),
             pricing=pricing,
         ),
-        pacing=PacingCfg(**(raw.get("pacing", {}) or {})),
+        pacing=_section(PacingCfg, "pacing", raw.get("pacing", {})),
         storage=StorageCfg(
             backend=storage_raw.get("backend", "bigquery"),
             bigquery=storage_raw.get("bigquery", {}) or {},

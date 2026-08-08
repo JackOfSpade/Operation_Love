@@ -17,6 +17,11 @@ a run of consecutive 400s (see _BAD_REQUEST_LATCH_THRESHOLD) -- which a genuine
 schema/param bug produces deterministically, since it re-fires on literally the
 next call regardless of that call's content -- latches the service permanently
 disabled.
+
+A per-call failure (refusal, or truncated/malformed structured output -- OpenerError /
+OpenerParseError) is handled far more narrowly: it is almost always specific to THAT
+profile's content, so the swipe just proceeds without an opener. The call is still billed,
+so its spend is recorded before degrading.
 """
 from __future__ import annotations
 
@@ -25,7 +30,7 @@ from dataclasses import dataclass
 
 from ..costing import CostTracker, is_out_of_credit
 from ..perception.capture import Profile
-from .opener import OpenerClient, OpenerParseError
+from .opener import OpenerClient, OpenerError, OpenerParseError
 
 
 @dataclass
@@ -118,7 +123,14 @@ class OpenerService:
                 # Reaching the API at all (billed usage came back) proves the request shape
                 # itself is fine, so this breaks any streak of bad-request failures too.
                 self._consecutive_bad_requests = 0
-                cost = self.tracker.record(e.model, e.usage)
+                try:
+                    cost = self.tracker.record(e.model, e.usage)
+                except KeyError:
+                    # Same guard as the success path: the API echoed a model with no
+                    # budget.pricing entry, so this (real, billed) spend can't be tracked.
+                    self._exhaust(f"no budget.pricing entry for model '{e.model}'; "
+                                  "spend can no longer be tracked")
+                    cost = None
                 try:
                     self.store.record_spend(run_id, e.model, e.usage, cost)
                 except Exception as store_exc:  # noqa: BLE001
@@ -127,6 +139,11 @@ class OpenerService:
                       f"swiping without): {e}")
                 if self.tracker.budget_reached():
                     self._exhaust("run budget reached")
+            except OpenerError as e:
+                # Same class of per-profile failure, but raised without usage attached, so
+                # there is no billed amount to record -- just skip the opener this once.
+                self._consecutive_bad_requests = 0
+                print(f"Opener: {e}; swiping without an opener for this profile.")
                 return None
             except Exception as e:  # noqa: BLE001
                 if is_out_of_credit(e):
@@ -165,13 +182,26 @@ class OpenerService:
 
             self._consecutive_bad_requests = 0   # success -- request shape is fine
 
-            cost = self.tracker.record(result.model, result.usage)
+            try:
+                cost = self.tracker.record(result.model, result.usage)
+            except KeyError:
+                # The API already ran (real credits spent) but its response echoed a model
+                # string with no budget.pricing entry, so spend can't be accounted for.
+                # Degrade the same way as budget-reached/out-of-credit rather than crash —
+                # continuing to spend with no way to track it would silently break the
+                # budget-enforcement contract the rest of this service is built around.
+                # cost=None (not 0.0): the real cost was nonzero, just unrecoverable, and
+                # a fabricated $0.00 would misreport actual spend in the stored record.
+                self._exhaust(f"no budget.pricing entry for model '{result.model}'; "
+                              "spend can no longer be tracked")
+                cost = None
             try:
                 self.store.record_spend(run_id, result.model, result.usage, cost)
                 self.store.record_opener(run_id, app, result.model, result.opener, result.referenced)
             except Exception as e:  # noqa: BLE001
-                # Spend was already tracked in-memory by CostTracker; store failure is non-fatal.
-                print(f"Warning: failed to persist opener spend record (${cost:.4f}): {e}")
+                # Spend was already tracked in-memory by CostTracker (or deliberately
+                # marked unrecoverable above); store failure is non-fatal.
+                print(f"Warning: failed to persist opener spend record (${cost}): {e}")
             if self.tracker.budget_reached():
                 self._exhaust("run budget reached")
             return OpenerPick(result.opener, getattr(result, "referenced_index", 0))

@@ -169,6 +169,58 @@ def test_swipe_without_opener_mode():
     assert svc.disabled is True and svc.stop_requested is False   # keep swiping, no stop
 
 
+class _CalibratedDriver(FakeDriver):
+    """A driver whose app has a real, measured think_time_s() calibration (Hinge)."""
+    think_time_calibrated = True
+
+
+def test_pace_scales_think_time_by_configured_anchor(monkeypatch):
+    from operation_love import worker as worker_mod
+
+    w = _worker(_CalibratedDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
+    monkeypatch.setattr(worker_mod, "think_time_s", lambda decision: 10.0)
+
+    class _Scaled:
+        swipe_delay_s = worker_mod._THINK_TIME_BASELINE_S * 0.5   # -> scale 0.5
+
+    w.pacing = _Scaled()
+    waited = []
+    monkeypatch.setattr(w.stop_event, "wait", lambda s: waited.append(s))
+    w._pace("like")
+    assert waited == [5.0]                    # 10.0 * 0.5
+
+
+def test_pace_uses_flat_anchor_for_a_driver_without_calibrated_pacing(monkeypatch):
+    # e.g. Bumble: no measured think-time model for this app, so pacing stays the
+    # original decision-agnostic anchor + log-normal spread, not a borrowed one.
+    from operation_love import worker as worker_mod
+
+    w = _worker(FakeDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
+    monkeypatch.setattr(worker_mod, "think_time_s",
+                        lambda decision: (_ for _ in ()).throw(AssertionError("must not be called")))
+    monkeypatch.setattr(worker_mod, "human_delay", lambda s: s * 2)
+    waited = []
+    monkeypatch.setattr(w.stop_event, "wait", lambda s: waited.append(s))
+    w._pace("like")
+    assert waited == [w.pacing.swipe_delay_s * 2]
+
+
+def test_pace_maps_dislike_to_the_pass_think_time_bucket(monkeypatch):
+    from operation_love import worker as worker_mod
+
+    w = _worker(_CalibratedDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
+    seen = []
+    monkeypatch.setattr(worker_mod, "think_time_s", lambda decision: seen.append(decision) or 10.0)
+
+    class _Scaled:
+        swipe_delay_s = worker_mod._THINK_TIME_BASELINE_S   # -> scale 1.0
+
+    w.pacing = _Scaled()
+    monkeypatch.setattr(w.stop_event, "wait", lambda s: None)
+    w._pace("dislike")           # decider decisions are "like"/"dislike", never "pass"
+    assert seen == ["pass"]
+
+
 # --- Worker loop ---------------------------------------------------------
 def test_worker_dislikes_whole_deck():
     driver = FakeDriver(3)
@@ -454,9 +506,13 @@ def test_observe_persists_label_when_stop_requested_during_embed():
 
 def test_pace_scales_wait_by_configured_swipe_delay(monkeypatch):
     """Every existing pacing test uses _Pacing.swipe_delay_s == 0.0 (the early-return path)
-    -- the scaling branch itself (`scale = swipe_delay_s / _DEFAULT_SWIPE_DELAY_S`) was
+    -- the scaling branch itself (`scale = swipe_delay_s / _THINK_TIME_BASELINE_S`) was
     entirely unexercised. Pin the formula deterministically: stub think_time_s() to a fixed
-    base and assert stop_event.wait() is called with base * scale, not the raw base."""
+    base and assert stop_event.wait() is called with base * scale, not the raw base.
+
+    Needs a driver declaring think_time_calibrated: _pace() only uses the measured
+    like/pass dwell shape for apps it was actually calibrated on (Hinge), and falls back
+    to a flat anchor otherwise -- so without one this exercises the wrong branch."""
     import operation_love.worker as wmod
     monkeypatch.setattr(wmod, "think_time_s", lambda key: 2.0)   # fixed, deterministic base
 
@@ -471,7 +527,11 @@ def test_pace_scales_wait_by_configured_swipe_delay(monkeypatch):
         def is_set(self):
             return False
 
+    class _CalibratedDriver:
+        think_time_calibrated = True
+
     w = Worker.__new__(Worker)
+    w.driver = _CalibratedDriver()
     w.pacing = _Pacing2()
     w.stop_event = _RecordingStopEvent()
     w._pace("like")

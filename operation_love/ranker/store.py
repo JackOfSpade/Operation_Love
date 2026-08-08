@@ -1,9 +1,9 @@
-"""Storage interface + local SQLite backend.
+"""Local SQLite storage backend.
 
-Two backends implement the same ``Store`` surface (see bigquery_store.py for the
-cloud one). The orchestrator loads labels once at startup, keeps them in memory
-for fast inference, and appends new rows through the store — so the hot path
-never blocks on per-row I/O regardless of backend.
+Two backends implement the same ``Store`` surface defined in ranker/__init__.py
+(see bigquery_store.py for the cloud one). The supervisor loads labels once at
+startup, keeps them in memory for fast inference, and appends new rows through
+the store — so the hot path never blocks on per-row I/O regardless of backend.
 """
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Protocol, runtime_checkable
 
 from ..costing import Usage
 
@@ -25,26 +24,6 @@ def local_midnight_epoch() -> float:
     BOTH store backends derive "today" from this one function and can't drift apart
     again (see BigQueryStore.count_today / spend_today)."""
     return datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-
-
-@runtime_checkable
-class Store(Protocol):
-    def load_labels(self) -> list[tuple[bool, list[float]]]: ...
-    def load_labels_ordered(self) -> list[tuple[bool, list[float]]]: ...   # chronological (created_at)
-    def record_profile(self, run_id: str, app: str, profile_id: str, liked: bool,
-                       source: str = "manual", photos: list[bytes] | None = None,
-                       photo_count: int = 0) -> bool: ...
-    def add_label(self, run_id: str, app: str, liked: bool, embedding: list[float],
-                  source: str = "manual", photo_count: int = 0,
-                  profile_id: str = "") -> None: ...
-    def record_decision(self, run_id: str, app: str, decision: str, score: float,
-                        source: str = "auto") -> None: ...
-    def record_opener(self, run_id: str, app: str, model: str, opener: str, referenced: str) -> None: ...
-    def record_spend(self, run_id: str, model: str, usage: Usage, cost: float) -> None: ...
-    def count_today(self, app: str) -> int: ...
-    def flush(self) -> None: ...
-    def close(self) -> None: ...
-
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS labels (

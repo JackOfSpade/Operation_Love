@@ -21,7 +21,7 @@ from datetime import date
 
 from .config import PacingCfg
 from .drivers.base import DatingAppDriver, DriverClosed
-from .human import human_cooldown
+from .human import human_cooldown, human_delay
 from .human_motion import think_time_s
 from .ranker.decider import Decider, Decision
 
@@ -29,8 +29,12 @@ _OBSERVE_CAPTURE_BUSY = "Capturing profile — please wait before your next swip
 _OBSERVE_PROCESSING_BUSY = "Processing — please wait before your next swipe"
 _NO_PHOTO_RETRY_S = 0.5
 _PROFILE_LOG_WIDTH = 72
-_DEFAULT_SWIPE_DELAY_S = PacingCfg().swipe_delay_s   # config.py's documented anchor default;
-                                                      # configured/default scales think_time_s
+# think_time_s() is calibrated to real measured Hinge dwell data around this many
+# seconds — pacing.swipe_delay_s scales it proportionally, so the config knob still
+# speeds up/slows down pacing (and a test fixture's swipe_delay_s=0.0 still paces
+# instantly) while think_time_s supplies the measured like-vs-pass asymmetry shape.
+# Derived from PacingCfg's own default so the baseline can't drift from the config.
+_THINK_TIME_BASELINE_S = PacingCfg().swipe_delay_s
 
 
 class Worker(threading.Thread):
@@ -72,6 +76,19 @@ class Worker(threading.Thread):
                 snap(exc)
             except Exception:  # noqa: BLE001 — debug capture must never mask the real error
                 pass
+
+    def _capture_failure_if_unexpected(self, exc: BaseException) -> None:
+        """Shared except-clause body for _observe_loop/_auto_loop: snapshot the on-screen
+        state for any failure that isn't a clean DriverClosed stop."""
+        if not isinstance(exc, DriverClosed):
+            self._capture_failure(exc)
+
+    def _finish_session(self, state: str = "stopped") -> None:
+        """Shared unconditional cleanup for _observe_loop/_auto_loop's finally: publish the
+        loop's TERMINAL state (rate_limited / out_of_profiles / stopped — not a blanket
+        "stopped", which would hide why the run ended) and release the driver."""
+        self._stat(state=state)
+        self.driver.close()
 
     def _profile_separator(self) -> None:
         print("-" * _PROFILE_LOG_WIDTH)
@@ -197,8 +214,8 @@ class Worker(threading.Thread):
                     last_retrained = added
         except BaseException as exc:
             pending_error = True
-            if isinstance(exc, Exception) and not isinstance(exc, DriverClosed):
-                self._capture_failure(exc)                    # snapshot WHILE the transport is live
+            if isinstance(exc, Exception):
+                self._capture_failure_if_unexpected(exc)      # snapshot WHILE the transport is live
             raise
         finally:
             try:
@@ -212,8 +229,7 @@ class Worker(threading.Thread):
                         traceback.print_exc()
             finally:
                 self.driver.render_busy(None)
-                self._stat(state=terminal_state)
-                self.driver.close()
+                self._finish_session(terminal_state)
 
     def _retrain_after_observe_labels(self, added: int) -> None:
         ready = self.decider.retrain(self.store)
@@ -318,26 +334,27 @@ class Worker(threading.Thread):
 
                 if self.opener_service.stop_requested:        # global budget/credit stop
                     self.stop_event.set()
-                self._pace(d.decision)
+                self._pace(d.decision)                # d.decision is always "like"/"dislike"
                 self._maybe_session_break()
         except Exception as exc:  # noqa: BLE001
-            if not isinstance(exc, DriverClosed):             # DriverClosed = clean stop, not a fault
-                self._capture_failure(exc)                    # snapshot WHILE the transport is live
+            self._capture_failure_if_unexpected(exc)          # snapshot WHILE the transport is live
             raise                                             # (the finally below closes it)
         finally:
-            self._stat(state=terminal_state)
-            self.driver.close()
+            self._finish_session(terminal_state)
 
     def _pace(self, decision: str) -> None:
-        if self.pacing.swipe_delay_s == 0:
+        if not getattr(self.driver, "think_time_calibrated", False):
+            # No app-specific calibration for this driver -> the flat, decision-agnostic
+            # anchor (unchanged pre-existing behavior for e.g. Bumble).
+            self.stop_event.wait(human_delay(self.pacing.swipe_delay_s))
             return
-        # Normalize driver decisions: "dislike" → "pass" for the timing model.
-        key = "like" if decision == "like" else "pass"
-        # Honor swipe_delay_s as the tuning anchor config.py documents it as: scale
-        # think_time_s's whole distribution by configured/default instead of only
-        # gating on zero (which made the anchor value itself a dead knob).
-        scale = self.pacing.swipe_delay_s / _DEFAULT_SWIPE_DELAY_S
-        self.stop_event.wait(think_time_s(key) * scale)
+        # Decision-aware "think time" (measured like/pass dwell asymmetry), scaled by the
+        # configured anchor so pacing.swipe_delay_s is a real knob rather than an on/off
+        # switch. config.validate() bounds it: an unbounded scale lets a negative or
+        # near-zero value collapse the wait to ~0 (Event.wait treats a negative timeout as
+        # "return now"), i.e. machine-speed swiping on a live account.
+        scale = self.pacing.swipe_delay_s / _THINK_TIME_BASELINE_S
+        self.stop_event.wait(think_time_s("like" if decision == "like" else "pass") * scale)
 
     def _maybe_session_break(self) -> None:
         """~8% chance of a 20-90 s micro-break between profiles — mimics stepping away."""

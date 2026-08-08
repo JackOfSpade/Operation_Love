@@ -116,9 +116,13 @@ def test_hub_endpoints():
 def test_hub_tab_close_shuts_server_after_last_client(monkeypatch):
     # Collapse the reload grace so the test asserts the shutdown CONTRACT, not the constant's
     # value — otherwise retuning the grace silently breaks a test that isn't about timing.
-    import operation_love.hub as hub
-    monkeypatch.setattr(hub, "_BROWSER_SHUTDOWN_GRACE_S", 0.01)
-    monkeypatch.setattr(hub, "_BROWSER_STALE_CHECK_S", 0.01)   # so the watch thread can't outlive us
+    # Patch on hub.server directly: operation_love.hub (the package __init__) re-exports these
+    # names as its OWN module-level attributes, a separate object from hub.server's globals —
+    # patching the re-export wouldn't touch what _schedule_shutdown_if_tab_stayed_closed and
+    # _start_stale_browser_watch actually read.
+    from operation_love.hub import server as hub_server
+    monkeypatch.setattr(hub_server, "_BROWSER_SHUTDOWN_GRACE_S", 0.01)
+    monkeypatch.setattr(hub_server, "_BROWSER_STALE_CHECK_S", 0.01)   # so the watch thread can't outlive us
     _Handler.state = HubState("config.yaml")
     httpd = _bind("127.0.0.1", 8799)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -141,10 +145,10 @@ def test_hub_tab_close_shuts_server_after_last_client(monkeypatch):
 
 
 def test_hub_tab_stale_heartbeat_shutdown_when_close_beacon_is_missing(monkeypatch):
-    import operation_love.hub as hub
-    monkeypatch.setattr(hub, "_BROWSER_CLIENT_STALE_S", 0.05)
-    monkeypatch.setattr(hub, "_BROWSER_STALE_CHECK_S", 0.01)
-    monkeypatch.setattr(hub, "_BROWSER_SHUTDOWN_GRACE_S", 0.01)
+    from operation_love.hub import server as hub_server, state as hub_state
+    monkeypatch.setattr(hub_state, "_BROWSER_CLIENT_STALE_S", 0.05)
+    monkeypatch.setattr(hub_server, "_BROWSER_STALE_CHECK_S", 0.01)
+    monkeypatch.setattr(hub_server, "_BROWSER_SHUTDOWN_GRACE_S", 0.01)
 
     _Handler.state = HubState("config.yaml")
     httpd = _bind("127.0.0.1", 8799)
@@ -172,6 +176,62 @@ def test_hubstate_double_start_blocked():
     ok, msg = st.start()
     assert ok is False and "active" in msg
     st._thread.join()
+
+
+def test_wait_for_run_returns_true_when_thread_finishes_in_time():
+    st = HubState("config.yaml")
+    st._thread = threading.Thread(target=lambda: time.sleep(0.05))
+    st._thread.start()
+    assert st.wait_for_run(timeout=5) is True
+    assert st._thread.is_alive() is False
+
+
+def test_wait_for_run_returns_false_and_does_not_block_past_timeout():
+    st = HubState("config.yaml")
+    stuck = threading.Event()
+    st._thread = threading.Thread(target=stuck.wait, daemon=True)   # never finishes on its own
+    st._thread.start()
+    start = time.monotonic()
+    assert st.wait_for_run(timeout=0.1) is False
+    assert time.monotonic() - start < 2.0       # returned promptly, did not hang
+    assert st._thread.is_alive() is True
+    stuck.set()
+    st._thread.join(timeout=2)
+
+
+def test_serve_shutdown_warns_and_exits_when_run_does_not_finish_in_time(monkeypatch):
+    # A fake httpd (no real socket/serve_forever/shutdown handshake to fight) so this
+    # test exercises serve()'s own try/except/finally control flow in isolation.
+    import operation_love.hub.server as hub_server
+
+    monkeypatch.setattr(hub_server, "_SHUTDOWN_SAVE_TIMEOUT_S", 0.05)
+
+    stuck = threading.Event()
+    state = HubState("config.yaml")
+    state._thread = threading.Thread(target=stuck.wait, daemon=True)
+    state._thread.start()
+    monkeypatch.setattr(hub_server, "HubState", lambda config_path: state)
+
+    class _FakeHttpd:
+        server_address = ("127.0.0.1", 8799)
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(hub_server, "_bind", lambda host, port: _FakeHttpd())
+
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    try:
+        hub_server.serve("config.yaml", open_browser=False)
+    finally:
+        stuck.set()
+        state._thread.join(timeout=2)
+
+    assert any("did not finish saving" in line for line in printed)
 
 
 def test_hubstate_browser_client_lifecycle(monkeypatch):
@@ -209,9 +269,10 @@ def test_hubstate_browser_client_lifecycle(monkeypatch):
 
 def test_hubstate_browser_heartbeat_prevents_stale_expiry(monkeypatch):
     import operation_love.hub as hub
+    from operation_love.hub import state as hub_state
     now = 1000.0
     monkeypatch.setattr(hub.time, "time", lambda: now)
-    monkeypatch.setattr(hub, "_BROWSER_CLIENT_STALE_S", 10.0)
+    monkeypatch.setattr(hub_state, "_BROWSER_CLIENT_STALE_S", 10.0)
 
     st = HubState("config.yaml")
     assert st.browser_client_opened("a") is True

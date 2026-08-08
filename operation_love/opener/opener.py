@@ -71,6 +71,11 @@ def _sanitize(text: str) -> str:
     return tidy_punctuation_spacing(t)
 
 
+class OpenerError(RuntimeError):
+    """Claude's response couldn't be turned into an opener (refusal, or truncated/
+    malformed structured output) — distinct from a transport/billing failure."""
+
+
 @dataclass
 class OpenerResult:
     opener: str
@@ -80,7 +85,7 @@ class OpenerResult:
     referenced_index: int = 0
 
 
-class OpenerParseError(Exception):
+class OpenerParseError(OpenerError):
     """The API call reached Anthropic and was billed (it returned token usage), but the
     response body didn't parse into a usable opener (bad JSON, missing keys, no text
     block). Carries usage/model so the caller can still record the spend -- Anthropic
@@ -139,16 +144,30 @@ class AnthropicOpener:
             messages=[{"role": "user", "content": self._content(profile, style)}],
             output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
         )
-        # Capture usage/model before parsing: Anthropic bills for the call the moment it
-        # returns, regardless of whether the body below parses into a usable opener, so a
-        # parse failure must still surface what was billed (see OpenerParseError).
+        # Capture usage/model BEFORE parsing: Anthropic bills for the call the moment it
+        # returns, whether or not the body parses into a usable opener — a refusal and a
+        # truncated response are both billed. Every failure below therefore raises
+        # OpenerParseError, which carries usage/model so the caller can still record spend.
         usage = Usage.from_response(resp.usage)
         model = getattr(resp, "model", self.model)
+        if getattr(resp, "stop_reason", None) == "refusal":
+            raise OpenerParseError(
+                f"Claude refused to generate an opener (model={self.model!r})", usage, model)
+        text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), None)
+        if text is None:
+            raise OpenerParseError(
+                f"Claude returned no text content (stop_reason={getattr(resp, 'stop_reason', None)!r})",
+                usage, model)
         try:
-            text = next(b.text for b in resp.content if getattr(b, "type", None) == "text")
             data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            truncated = " (output was likely truncated — raise opener.max_tokens)" \
+                if getattr(resp, "stop_reason", None) == "max_tokens" else ""
+            raise OpenerParseError(
+                f"Claude's opener output wasn't valid JSON{truncated}: {exc}", usage, model) from exc
+        try:
             opener = data["opener"]
-        except (StopIteration, json.JSONDecodeError, KeyError, TypeError) as e:
+        except (KeyError, TypeError) as e:
             raise OpenerParseError(f"{type(e).__name__}: {e}", usage, model) from e
         try:
             idx = max(0, int(data.get("referenced_index", 0)))

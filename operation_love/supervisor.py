@@ -26,8 +26,8 @@ from .vision.embed import Embedder
 from .vision.quality import QualityFilter
 from .worker import Worker
 
-
-_WORKER_JOIN_TIMEOUT_S = 30   # module constant so tests can shrink it instead of sleeping 30s
+_STATUS_POLL_INTERVAL_S = 0.5
+_WORKER_JOIN_TIMEOUT_S = 30.0   # module constant so tests can shrink it instead of sleeping 30s
 
 
 def _resolve_run_cap(config_cap: int | None, override: int | None) -> int | None:
@@ -219,7 +219,7 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         # proceeds to join(timeout) -> flush -> close.
         while not stop_event.is_set() and any(w.is_alive() for w in workers):
             status.set_global(budget_spent=tracker.run_spend_usd, openers=tracker.calls)
-            stop_event.wait(0.5)
+            stop_event.wait(_STATUS_POLL_INTERVAL_S)
     finally:
         status.set_global(phase="saving data", budget_spent=tracker.run_spend_usd, openers=tracker.calls)
         stop_event.set()
@@ -229,6 +229,15 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         # must not block quit) so the summary and status can say so honestly.
         for w in workers:
             w.join(timeout=_WORKER_JOIN_TIMEOUT_S)
+            if w.is_alive():
+                # Proceeding anyway (below) rather than blocking forever: the worker's
+                # own stop_event is set, but it's still stuck mid-capture/embed/API-call.
+                # It may call store.add_label()/record_decision() after store.close()
+                # runs — a store write racing a closed store is the tradeoff for not
+                # hanging shutdown indefinitely on one wedged app.
+                print(f"Supervisor: worker '{w.app}' did not stop within "
+                      f"{_WORKER_JOIN_TIMEOUT_S:.0f}s; proceeding to save without it "
+                      "(it may still be running in the background).")
         wedged = [w for w in workers if w.is_alive()]
         for app in cfg.enabled_apps:
             status.set_app(app, state="saving")

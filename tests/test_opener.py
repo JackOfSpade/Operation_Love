@@ -6,7 +6,8 @@ import json
 
 import pytest
 
-from operation_love.opener.opener import AnthropicOpener, OpenerParseError, _image_media_type, _sanitize
+from operation_love.opener.opener import (AnthropicOpener, OpenerError, OpenerParseError,
+                                          _image_media_type, _sanitize)
 from operation_love.perception.capture import Profile
 
 
@@ -87,18 +88,20 @@ class _Block:
 class _Resp:
     model = "claude-test"
 
-    def __init__(self, text):
-        self.content = [_Block(text)]
+    def __init__(self, text, stop_reason="end_turn"):
+        self.content = [_Block(text)] if text is not None else []
         self.usage = _Usage()
+        self.stop_reason = stop_reason
 
 
 class _FakeAnthropic:
-    def __init__(self, payload):
+    def __init__(self, payload, stop_reason="end_turn"):
         self.payload = payload
+        self.stop_reason = stop_reason
         self.messages = self
 
     def create(self, **_):
-        return _Resp(self.payload)
+        return _Resp(self.payload, self.stop_reason)
 
 
 def test_generate_parses_index_and_sanitizes_dashes():
@@ -165,4 +168,24 @@ class _FakeAnthropicNoText:
 def test_generate_raises_parse_error_when_no_text_block():
     op = AnthropicOpener("claude-test", client=_FakeAnthropicNoText())
     with pytest.raises(OpenerParseError):
+        op.generate(Profile(photos=[b"a"]), style="s")
+
+
+def test_generate_raises_opener_error_on_refusal():
+    op = AnthropicOpener("claude-test", client=_FakeAnthropic("", stop_reason="refusal"))
+    with pytest.raises(OpenerError):
+        op.generate(Profile(photos=[b"a"]), style="s")
+
+
+def test_generate_raises_opener_error_when_no_text_block():
+    client = _FakeAnthropic(None)
+    with pytest.raises(OpenerError):
+        op = AnthropicOpener("claude-test", client=client)
+        op.generate(Profile(photos=[b"a"]), style="s")
+
+
+def test_generate_raises_opener_error_on_truncated_json():
+    # max_tokens hit mid-JSON -> not parseable
+    op = AnthropicOpener("claude-test", client=_FakeAnthropic('{"opener": "hi"', stop_reason="max_tokens"))
+    with pytest.raises(OpenerError, match="truncated"):
         op.generate(Profile(photos=[b"a"]), style="s")

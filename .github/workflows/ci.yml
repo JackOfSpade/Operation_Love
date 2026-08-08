@@ -22,11 +22,28 @@ jobs:
   test:
     name: pytest
     runs-on: ubuntu-latest
+    env:
+      # Don't keep a second copy of every wheel on disk after unpacking it.
+      # The ml extra downloads GBs; the runner only has ~14 GB free.
+      PIP_NO_CACHE_DIR: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Install CPU-only torch
+        # torch on PyPI has no CPU/GPU split: on Linux its deps unconditionally
+        # pull the whole CUDA runtime (~3 GB of nvidia-cu* + triton) that CI
+        # never uses. That is what filled the disk ([Errno 28]) — it doesn't
+        # reproduce on the Mac dev box, where torch resolves a small MPS wheel.
+        # Pre-installing the +cpu build satisfies `torch>=2.2` below so the
+        # extras install never resolves the CUDA one. The +cpu local-version
+        # segment sorts above the plain PyPI wheel, so the cpu index wins.
+        run: >
+          pip install --quiet
+          --index-url https://download.pytorch.org/whl/cpu
+          --extra-index-url https://pypi.org/simple
+          torch torchvision
       - name: Install package + test deps
         # Was `pip install pytest pyyaml` only — never installed the package
         # itself or its optional extras, so any test needing them (cv2 for

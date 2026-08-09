@@ -125,9 +125,18 @@ class Worker(threading.Thread):
                 # blindly (risky) and rotate the crucial failure logs away. The HALT line + the
                 # traceback go to stdout/stderr, which the hub tees into the live-log panel, so
                 # the stop is visible on the GUI terminal view (and lands in the bug report).
-                # Observe mode keeps per-driver behavior: Hinge halts too (burner safety, via
-                # halt_on_error) while Bumble keeps restart resilience (you're driving it live).
-                if self.mode == "auto" or getattr(self.driver, "halt_on_error", False):
+                # Observe mode keeps per-driver behavior via halt_on_error — which now
+                # DEFAULTS TO TRUE on the driver ABC (see DatingAppDriver.halt_on_error).
+                # The default used to be False here, so a driver that never declared the
+                # attribute (PlaywrightDriver did not) got restart-with-backoff by omission
+                # rather than by decision: the riskier path was what you got by forgetting.
+                # Restarting is not free even in observe mode, where the bot only reads — the
+                # worker re-attaches to whatever is on screen, and a driver that was confused
+                # about which card it was on then mis-attributes the manual swipes it records,
+                # corrupting the taste model permanently. Restart is now reachable only by
+                # explicitly setting apps.<app>.halt_on_error: false, which config validation
+                # allows in observe mode only.
+                if self.mode == "auto" or getattr(self.driver, "halt_on_error", True):
                     print(f"{self.app.title()} unexpected error in {self.mode} mode; HALTING "
                           f"(no restart) so nothing swipes blindly and the debug logs survive:")
                     traceback.print_exc()

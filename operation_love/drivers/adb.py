@@ -13,8 +13,10 @@ jitter, and log-normal timing (../human.py) — not a straight `input swipe`.
 path is piped to a single `adb shell`. Taps use a single jittered `input tap` (one
 fast fork; a multi-step motionevent tap risked crossing Android's ~500ms long-press
 threshold on slower devices). NOTE: the genuine-to-the-kernel path (variable
-pressure/size at ~180Hz, no FLAG_INJECTED) is the planned UHID transport (uhid.py);
-this `input`-based transport is the validated fallback.
+pressure/size at ~180Hz, no FLAG_INJECTED) is the UHID transport (uhid.py), which is what
+the driver REQUIRES by default. This `input`-based transport is validated and humanized
+(curved paths, jitter, log-normal timing) but cannot vary pressure, so it is reachable only
+via an explicit `touch_backend: adb` — never as an automatic fallback.
 
 Why not raw `sendevent` (which could also vary pressure): writing /dev/input/eventX
 is blocked by SELinux for the non-root `shell` domain (verified on the Pixel 7a),

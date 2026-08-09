@@ -7,11 +7,19 @@ on exit. This replaces the single-app loop.
 """
 from __future__ import annotations
 
+import os
 import signal
 import threading
 import uuid
+from pathlib import Path
+
+try:
+    import fcntl                 # POSIX only; _AndroidDeviceLock degrades to a no-op without it
+except ImportError:               # pragma: no cover — exercised only on Windows
+    fcntl = None
 
 from . import config as cfg_mod
+from . import platforms
 from .costing import CostTracker
 from .drivers import make_driver
 from .opener.opener import AnthropicOpener
@@ -28,6 +36,93 @@ from .worker import Worker
 
 _STATUS_POLL_INTERVAL_S = 0.5
 _WORKER_JOIN_TIMEOUT_S = 30.0   # module constant so tests can shrink it instead of sleeping 30s
+
+
+def _android_app(enabled_apps: list[str]) -> str | None:
+    """The (at most one — platforms.check_runnable enforces this) enabled Android-kind app,
+    or None. Shared by the ADB preflight, the Capabilities probe, and the device lock so
+    all three agree on which app's config block to read."""
+    return next((a for a in enabled_apps if platforms.get(a).kind == platforms.KIND_ANDROID), None)
+
+
+def _android_lock_path(cfg, app: str) -> Path:
+    """ONE lock file for "the Android phone", deliberately not keyed by serial.
+
+    Keying it on the configured serial string looked more precise and was actually a hole:
+    the same physical device is named two different ways depending on the app block. With
+    `apps.hinge.serial: "33111JEHN04475"` and `apps.bumble.serial: ""` (blank = adb's
+    "first available device", which with one phone plugged in IS that same Pixel), the two
+    resolved to `.android-33111JEHN04475.lock` and `.android-default.lock` — two files, no
+    mutual exclusion at all, in exactly the scenario the lock exists to prevent. Nothing
+    kept the two config blocks' serials in sync, and a blank serial cannot be compared to
+    an explicit one without asking adb.
+
+    A single shared lock cannot have that failure mode. The cost is that it would also
+    serialise two runs against two DIFFERENT phones — a configuration this project does not
+    support (ops/HINGE-PIXEL-RUNBOOK.md is one Pixel throughout). Between "occasionally too
+    conservative in an unsupported setup" and "silently lets two processes fight over the
+    one real phone", the conservative failure is the right one.
+
+    `app` and `cfg` stay in the signature so a future multi-device setup can reintroduce
+    per-device keying deliberately — with the serial actually RESOLVED through adb, not
+    compared as a raw config string.
+    """
+    return Path(cfg.data_dir) / ".android-device.lock"
+
+
+class _AndroidDeviceLock:
+    """Advisory cross-process lock so two Android runs (Hinge, Bumble-once-calibrated, or
+    two copies of the same one) can never overlap on the one physical Pixel — Android shows
+    a single app in the foreground and `adb exec-out screencap`/the UHID touchscreen both
+    act on whatever currently holds it. platforms.check_runnable() already stops two Android
+    platforms being requested in the SAME run; this covers the case check_runnable can't see:
+    two separate processes (e.g. the hub plus a manually launched CLI run).
+
+    Uses flock(2) on a lockfile keyed by adb serial under paths.data_dir. flock ties the
+    lock to this process's open file descriptor, so a crash or `kill -9` releases it
+    automatically when the fd closes — no separate cleanup path needed, and no stale lock
+    left behind for the next run to trip over.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._fh = None
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if fcntl is None:
+            return   # non-POSIX (Windows): no flock -- best-effort; check_runnable is the
+                      # remaining guard against overlap within a single process/hub.
+        fh = open(self.path, "a+")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fh.seek(0)
+            holder = fh.read().strip() or "an unknown process"
+            fh.close()
+            raise RuntimeError(
+                f"Android device is already in use by another Operation Love run (lock held "
+                f"by pid {holder}, {self.path}). Android shows one app in the foreground at "
+                "a time, so two Android runs can never share the phone -- stop that run "
+                "first.") from None
+        fh.seek(0)
+        fh.truncate()
+        fh.write(str(os.getpid()))
+        fh.flush()
+        self._fh = fh
+
+    def release(self) -> None:
+        if self._fh is None:
+            return
+        try:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            self._fh.close()
+        except OSError:
+            pass
+        self._fh = None
 
 
 def _resolve_run_cap(config_cap: int | None, override: int | None) -> int | None:
@@ -76,6 +171,18 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         cfg.mode = mode
     if enabled_apps:
         cfg.enabled_apps = list(enabled_apps)
+
+    # Hard guard, ahead of everything else (including validate()'s heavier checks, which
+    # would also catch this but with less specific ordering): reject an unrunnable platform
+    # selection before any driver is constructed, any browser launches, or any tap reaches
+    # the phone. This is what stops two Android apps from ever being started together and
+    # stops an uncalibrated/unavailable platform from ever getting this far. HubState.start()
+    # applies the same check before it even spins up the run thread — this is the backstop
+    # for callers that invoke supervisor.run() directly (CLI, tests) without going through it.
+    unrunnable = platforms.check_runnable(cfg.enabled_apps)
+    if unrunnable:
+        raise ValueError(unrunnable)   # same exception type cfg_mod.validate() raises for this
+
     cfg_mod.validate(cfg)
     run_id = uuid.uuid4().hex[:12]
 
@@ -86,10 +193,14 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     if on_status:
         on_status(status)
 
-    # Pass the configured adb path: the hinge_driver capability resolves `adb` via PATH, so a
-    # machine that sets apps.hinge.adb_path (adb not on PATH) would otherwise get a false
+    # At most one enabled app is Android-kind (check_runnable guarantees it above).
+    android_app = _android_app(cfg.enabled_apps)
+
+    # Pass the configured adb path: the android_driver capability resolves `adb` via PATH, so a
+    # machine that sets apps.<app>.adb_path (adb not on PATH) would otherwise get a false
     # "not installed" warning even though the driver and the preflight both honour it.
-    caps = Capabilities.detect(hinge_adb_path=((cfg.apps or {}).get("hinge", {}) or {}).get("adb_path"))
+    android_adb_path = ((cfg.apps or {}).get(android_app, {}) or {}).get("adb_path") if android_app else None
+    caps = Capabilities.detect(android_adb_path=android_adb_path)
     print(caps.banner())
     missing_cloud = caps.missing("bigquery", "cloud_storage") if cfg.storage.backend == "bigquery" else []
     if missing_cloud:
@@ -173,8 +284,12 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         _abort_startup(run_id, status, cfg, store)
         return
 
-    if "hinge" in cfg.enabled_apps:
-        _hinge_adb_preflight(cfg)
+    # Generalised over every enabled Android-kind platform (today, at most one — Hinge, or
+    # Bumble once calibrated), not hardcoded to "hinge": whichever app is actually driving
+    # the phone this run needs the same early "is adb even connected" warning.
+    for app in cfg.enabled_apps:
+        if platforms.get(app).kind == platforms.KIND_ANDROID:
+            _android_adb_preflight(app, cfg)
 
     if _stop_requested(stop_event):
         _abort_startup(run_id, status, cfg, store)
@@ -183,6 +298,12 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     stop_event = stop_event if stop_event is not None else threading.Event()
     _install_signal_handlers(stop_event)
 
+    # Device lock: an advisory, cross-process flock so two Android runs can never overlap on
+    # the one physical Pixel, even from two separate processes (check_runnable above only
+    # guards within THIS run). Acquired before any worker starts; released in the finally
+    # below regardless of how the run ends.
+    device_lock = None
+
     # Launch construction+start lives INSIDE this try so the finally below (which stops,
     # joins, flushes and closes) always covers any worker already started — even if
     # make_driver() raises while building a LATER app (e.g. app #2's driver construction
@@ -190,6 +311,10 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     # worker/browser/ADB session would be orphaned and its buffered rows never flushed.
     workers = []
     try:
+        if android_app is not None:
+            device_lock = _AndroidDeviceLock(_android_lock_path(cfg, android_app))
+            device_lock.acquire()      # raises RuntimeError naming the holder if contended
+
         for app in cfg.enabled_apps:
             app_cfg = (cfg.apps or {}).get(app, {}) or {}
             mode = app_cfg.get("mode", cfg.mode)                          # per-app override
@@ -239,6 +364,12 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                       f"{_WORKER_JOIN_TIMEOUT_S:.0f}s; proceeding to save without it "
                       "(it may still be running in the background).")
         wedged = [w for w in workers if w.is_alive()]
+        if device_lock is not None:
+            # Released once workers are joined (or accepted as wedged, same tradeoff as
+            # above) — placed here, ahead of the store flush/close and any `raise save_err`
+            # below, so it unconditionally runs exactly once whenever this finally block is
+            # reached, however run() exits.
+            device_lock.release()
         for app in cfg.enabled_apps:
             status.set_app(app, state="saving")
         save_err = None
@@ -281,32 +412,36 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             print(f"Run {run_id}: ✅ all data saved to {cfg.storage.backend}{detail}; {tail}")
 
 
-def _hinge_adb_preflight(cfg) -> None:
-    """Warn early if the Hinge phone isn't visible to adb — avoids a confusing mid-run crash."""
+def _android_adb_preflight(app: str, cfg) -> None:
+    """Warn early if the Android phone isn't visible to adb for `app` — avoids a confusing
+    mid-run crash. Generalised over any Android-kind platform (Hinge today, Bumble once
+    calibrated — see platforms.py): both drive the same physical Pixel over host-side ADB,
+    so whichever one is enabled needs the same early connectivity check."""
     import subprocess
 
     from .drivers.adb import parse_devices_output
 
-    hinge_cfg = (cfg.apps or {}).get("hinge", {}) or {}
-    serial = (hinge_cfg.get("serial") or "").strip()
-    adb = (hinge_cfg.get("adb_path") or "adb").strip() or "adb"
+    label = platforms.get(app).label
+    app_cfg = (cfg.apps or {}).get(app, {}) or {}
+    serial = (app_cfg.get("serial") or "").strip()
+    adb = (app_cfg.get("adb_path") or "adb").strip() or "adb"
     try:
         result = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=5)
         visible = parse_devices_output(result.stdout)   # X8: the ONE canonical parser
         if not visible:
-            print("WARNING: Hinge is enabled but `adb devices` shows no connected device. "
+            print(f"WARNING: {label} is enabled but `adb devices` shows no connected device. "
                   "Connect the Pixel 7a via USB and authorize the RSA key before swiping.")
         elif serial and serial not in visible:
-            print(f"WARNING: apps.hinge.serial={serial!r} not in `adb devices` output: {visible}. "
-                  "Check config.yaml → apps.hinge.serial.")
+            print(f"WARNING: apps.{app}.serial={serial!r} not in `adb devices` output: {visible}. "
+                  f"Check config.yaml → apps.{app}.serial.")
         else:
-            label = serial if serial else visible[0]
-            print(f"Hinge ADB preflight OK: {label} (device connected)")
+            dev = serial if serial else visible[0]
+            print(f"{label} ADB preflight OK: {dev} (device connected)")
     except FileNotFoundError:
-        print(f"WARNING: Hinge ADB preflight skipped — `{adb}` not found on PATH. "
-              "Set apps.hinge.adb_path in config.yaml if adb is not on your PATH.")
+        print(f"WARNING: {label} ADB preflight skipped — `{adb}` not found on PATH. "
+              f"Set apps.{app}.adb_path in config.yaml if adb is not on your PATH.")
     except Exception as exc:  # noqa: BLE001
-        print(f"Hinge ADB preflight warning: {type(exc).__name__}: {exc}")
+        print(f"{label} ADB preflight warning: {type(exc).__name__}: {exc}")
 
 
 def _install_signal_handlers(stop_event: threading.Event) -> None:

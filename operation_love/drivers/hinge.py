@@ -1,10 +1,36 @@
-"""Hinge driver — physical Android phone over HOST-SIDE ADB (no on-device helper).
+"""The generic Android driver (+ its Hinge binding) — physical Android phone over HOST-SIDE
+ADB (no on-device helper).
 
-Rewritten off the old uiautomator2/emulator path: that installed an on-device
-server (atx-agent + the uiautomator2 APK) which Play Integrity can flag and which
-ops/HINGE-PIXEL-RUNBOOK.md §5 forbids as the main account-protection guardrail.
-This driver instead talks to a genuine, stock, physical Pixel through the
-host-side `Adb` transport only:
+This module is now home to TWO things:
+
+  AndroidDriver  — the app-agnostic driver: perception (screencap + vision) and action
+                   (humanized taps/swipes) for ANY Android dating app, parameterised by an
+                   AndroidAppSpec (operation_love/drivers/android_spec.py). Nothing in here
+                   is Hinge-specific anymore except the flow branch selected by
+                   `spec.like_flow`.
+  HingeDriver    — a thin subclass binding AndroidDriver to HINGE_SPEC.
+
+Bumble's binding (BumbleAndroidDriver + BUMBLE_SPEC) lives in
+operation_love/drivers/android/ instead of here, because it needs no access to anything
+below — EXCEPT AndroidDriver itself, imported from this module.
+
+Why is the generic driver defined in a file called "hinge.py" instead of its own module?
+Because tests/test_hinge_observe.py, tests/test_hinge_vision.py and tools/hinge_inspect.py
+monkeypatch/call module-level helpers (`_split_diff`, `_downsample`, `_match_glyph`,
+`_load_template`, `Adb`, ...) as attributes of THIS module (`operation_love.drivers.hinge`).
+Python resolves a bare name inside a function/method against the globals of the module it was
+DEFINED in, not the module that imported it — so `monkeypatch.setattr(hinge, "_split_diff",
+fake)` only takes effect on methods whose code actually lives in hinge.py's namespace. Moving
+AndroidDriver's body out to a separate module would silently break every one of those patches
+(the methods would keep calling the ORIGINAL helpers, the test's fake would just sit unused on
+the wrong module) without any test provably failing to construct — a nasty, quiet drift. Rather
+than touch 190+ existing test assertions to route patches through a new module, the generic
+driver stays here and Bumble's binding imports AndroidDriver FROM here instead.
+
+Off the old uiautomator2/emulator path: that installed an on-device server (atx-agent + the
+uiautomator2 APK) which Play Integrity can flag and which ops/HINGE-PIXEL-RUNBOOK.md §5
+forbids as the main account-protection guardrail. This driver instead talks to a genuine,
+stock, physical Pixel through the host-side `Adb` transport only:
 
   * perception  — `adb exec-out screencap` frames, deduped by a downsampled
                   signature (no accessibility tree, no resource-ids)
@@ -14,7 +40,9 @@ host-side `Adb` transport only:
 Hinge lets you like a specific photo/prompt WITH a comment, so the opener is sent
 at like-time (Signals behavior #2). Reading the whole profile slowly before
 deciding (the dwell in `_capture_current`) is Signals behavior #1. We only ever
-send a NORMAL like — never a Rose (Hinge's super-like); Roses/boosts are manual.
+send a NORMAL like — never a Rose (Hinge's super-like) or, generically, any other paid
+upgrade a given app might interstitial-upsell; Roses/boosts/etc are manual, always
+(owner rule — see `_handle_rose_upsell`).
 
 ⚠️ LIVE-VERIFY: the tap COORDINATES (fractions of the screen) and the
 screencap-diff thresholds below are best-effort from a partial UI map and MUST be
@@ -34,7 +62,8 @@ from pathlib import Path
 
 from ..human import human_cooldown, human_delay
 from ..perception.capture import Profile
-from .adb import Adb, AdbError
+from .adb import SCROLL_X_JITTER_PX, Adb, AdbError
+from .android_spec import AndroidAppSpec
 from .base import DatingAppDriver, DriverClosed, open_debug_log, snapshot_failure_frame
 from .uhid import UhidTouch, UhidUnavailable
 
@@ -44,28 +73,76 @@ _ASSETS = Path(__file__).parent / "assets"
 class HingeActionError(RuntimeError):
     """An autonomous action did not produce the expected on-screen change (stuck deck, missed
     tap, or an unknown screen). NOT a DriverClosed (which is a clean, restart-safe stop): this
-    is unexpected, so the worker halts the run and preserves the debug logs."""
+    is unexpected, so the worker halts the run and preserves the debug logs.
+
+    Named for Hinge (the first, and so far only calibrated, Android app) but raised by
+    AndroidDriver generically — any Android app's driver instance can raise it."""
+
+
+class ForbiddenTapError(HingeActionError):
+    """A tap resolved to a point inside one of the spec's forbidden_zones and was refused.
+
+    These zones guard PAID controls (Bumble's SuperSwipe sits between Pass and Like;
+    Hinge's Rose). Tapping one spends the owner's money and breaks a standing rule that
+    super-likes and boosts are manual-only. Refusing is always correct here: a missed
+    like costs one profile, a mis-tap costs money and cannot be undone.
+
+    Deliberately a HingeActionError, so it halts the run and preserves the debug logs like
+    any other unexpected-screen condition rather than being swallowed as routine."""
+
+
+class UnlocatedControlError(HingeActionError):
+    """Vision could not locate a control, so the action was refused rather than guessed.
+
+    This used to fall back to the calibrated fixed coordinate and tap it blind, on the
+    reasoning that acting degraded beat not acting. That reasoning is wrong here. The
+    coordinate is only valid for the app version and screen state it was measured on: Hinge
+    shifts its floating buttons with the "Start sending likes" banner and per-profile photo
+    heights, and the app updates on its own schedule. A blind tap at a stale point does not
+    "probably still work" — it lands on whatever now occupies that pixel, which on these
+    screens can be a paid control (a Rose, a SuperSwipe) or an irreversible one.
+
+    Worse, the trigger is usually not a transient miss but a MISSING CAPABILITY: if OpenCV
+    is not installed, every template match returns nothing and EVERY action silently becomes
+    a blind coordinate tap, indefinitely, with no error. That exact bug shipped once already
+    (a launcher omitted the `hinge` extra, so opencv was never installed).
+
+    Failing here costs one profile. Guessing costs money or the account."""
+
 
 _OBSERVE_POLL_S = 0.35     # internal sampling cadence for your manual tap (not app-facing)
 
-DEFAULTS = {
-    "package": "co.hinge.app",
-    "scroll_captures": 8,          # max screencaps while reading one profile
-    "dwell_s": 1.1,                # per-card read dwell (humanized) — Signals behavior #1
-    "read_scroll_frac": 0.55,      # how far each read-scroll advances the profile
-    # Action points as FRACTIONS of the screen (x, y in 0..1). Calibrated live on the Pixel 7a
-    # (1080x2400) 2026-06-27, config-overridable. like_heart / pass_x are VISION-located at
-    # runtime (template-matched glyph) — these are only the FALLBACK if vision can't find the
-    # glyph. comment_box / send_like are fixed (the like-sheet layout is consistent).
-    "coords": {
-        "like_heart": [0.868, 0.667],   # FALLBACK only — heart vision-located on the first photo
-        "pass_x": [0.116, 0.848],       # FALLBACK only — X vision-located (floating, bottom-left)
-        "comment_box": [0.500, 0.529],  # comment field in the like sheet
-        "send_like": [0.643, 0.576],    # "Send Like" button (kept clear of the 🌷Rose button)
+# Hinge's spec: exactly today's values (formerly the module-level `DEFAULTS` dict + the
+# `apps.hinge` block in config.yaml). calibrated=True — coords/templates verified live on the
+# Pixel 7a (1080x2400) 2026-06-27. Config-overridable (apps.hinge.* in config.yaml).
+HINGE_SPEC = AndroidAppSpec(
+    app="hinge",
+    package="co.hinge.app",
+    calibrated=True,
+    coords={
+        # Action points as FRACTIONS of the screen (x, y in 0..1). like_heart / pass_x are
+        # VISION-located at runtime (template-matched glyph) — these are only the FALLBACK if
+        # vision can't find the glyph. comment_box / send_like are fixed (the like-sheet
+        # layout is consistent).
+        "like_heart": (0.868, 0.667),   # FALLBACK only — heart vision-located on the first photo
+        "pass_x": (0.116, 0.848),       # FALLBACK only — X vision-located (floating, bottom-left)
+        "comment_box": (0.500, 0.529),  # comment field in the like sheet
+        "send_like": (0.643, 0.576),    # "Send Like" button (kept clear of the 🌷Rose button)
     },
-    # Mean abs grayscale delta (0..255) on a 24x24 downsample to call a region "changed".
-    "change_threshold": 9.0,
-}
+    templates={
+        "like": "hinge_heart.png",
+        "pass": "hinge_pass_x.png",
+        "confirm": "hinge_send_like.png",              # the "Send Like" sheet's own glyph
+        "upsell_dismiss": "hinge_send_like_anyway.png",  # "Send Like anyway" — NEVER the Rose button
+    },
+    like_flow="comment_sheet",
+    accepts_opener=True,          # Hinge sends the opener as a comment at like-time
+    think_time_calibrated=True,   # human_motion._THINK was measured on this app
+    change_threshold=9.0,         # mean abs grayscale delta (0..255) on a 24x24 downsample
+    scroll_captures=8,            # max screencaps while reading one profile
+    dwell_s=1.1,                  # per-card read dwell (humanized) — Signals behavior #1
+    read_scroll_frac=0.55,        # how far each read-scroll advances the profile
+)
 
 
 def _downsample(frame: bytes, size: int = 24):
@@ -144,14 +221,17 @@ def _frame_sig(frame: bytes) -> bytes:
     return hashlib.md5(frame).digest()
 
 
-# --- vision: locate the like/pass action BUTTONS by their glyph (not a fixed coord) -----
+# --- vision: locate an action BUTTON by its glyph (not a fixed coord) --------------------
 # Hinge's like-heart sits at the bottom-right of EACH photo and the pass-X floats bottom-left.
 # A fixed fraction is unreliable: the "Start sending likes" banner and per-profile photo
 # aspect ratios shift the heart vertically, and the X's white disc merges into the white
 # background of a prompt card (so a plain white-blob detector loses it). We instead template-
 # match the dark glyph (heart / X), which stays distinct on ANY background. The glyphs are
 # fixed-resolution UI assets (this driver targets one device — the Pixel 7a at 1080x2400),
-# so matches are essentially exact.
+# so matches are essentially exact. Any app's spec can plug its own glyph PNGs into the same
+# roles (see AndroidAppSpec.templates); an app with no template for a role simply skips
+# vision-location for it (AndroidDriver._template returns None, callers fall back to a fixed
+# coordinate, or — for upsell_dismiss, which has no safe fixed-coordinate fallback — no-op).
 
 @functools.lru_cache(maxsize=None)
 def _load_template(name: str):
@@ -218,42 +298,84 @@ def _retry_until(check_fn, tries: int, delay_s: float, *, is_found=bool):
     return None
 
 
-class HingeDriver(DatingAppDriver):
-    accepts_opener = True   # Hinge sends the opener as a comment at like-time
-    think_time_calibrated = True   # human_motion._THINK was measured on this app
+class AndroidDriver(DatingAppDriver):
+    """Drives ANY Android dating app whose UI fits the shape captured by AndroidAppSpec:
+    a scrollable profile card, a like/pass control pair (vision-located with a fixed-coord
+    fallback), and either a comment-sheet or a direct like flow. See HingeDriver (below, in
+    this module) and BumbleAndroidDriver (operation_love/drivers/android/bumble.py) for the
+    two current bindings.
+    """
 
-    def __init__(self, cfg):
-        app_cfg = (getattr(cfg, "apps", {}) or {}).get("hinge", {})
+    def __init__(self, cfg, spec: AndroidAppSpec):
+        self.spec = spec
+        self.accepts_opener = spec.accepts_opener
+        self.think_time_calibrated = spec.think_time_calibrated
+        app_cfg = (getattr(cfg, "apps", {}) or {}).get(spec.app, {})
         self.serial = app_cfg.get("serial") or None
         self.adb_path = app_cfg.get("adb_path", "adb")
-        self.package = app_cfg.get("package", DEFAULTS["package"])
-        self.scroll_captures = max(1, int(app_cfg.get("scroll_captures", DEFAULTS["scroll_captures"])))
-        self.dwell_s = float(app_cfg.get("dwell_s", DEFAULTS["dwell_s"]))
-        self.read_scroll_frac = float(app_cfg.get("read_scroll_frac", DEFAULTS["read_scroll_frac"]))
-        self.change_threshold = float(app_cfg.get("change_threshold", DEFAULTS["change_threshold"]))
-        self.coords = {**DEFAULTS["coords"], **(app_cfg.get("coords") or {})}
+        self.package = app_cfg.get("package", spec.package)
+        self.scroll_captures = max(1, int(app_cfg.get("scroll_captures", spec.scroll_captures)))
+        self.dwell_s = float(app_cfg.get("dwell_s", spec.dwell_s))
+        self.read_scroll_frac = float(app_cfg.get("read_scroll_frac", spec.read_scroll_frac))
+        self.change_threshold = float(app_cfg.get("change_threshold", spec.change_threshold))
+        self.coords = {**spec.coords, **(app_cfg.get("coords") or {})}
         self._adb: Adb | None = None
         self._capture_scrolls = 0     # read-scrolls the last _capture_current did; _scroll_to_top's ceiling
         self._touch = None            # touch transport: UhidTouch (genuine) or Adb (input fallback)
         self.touch_backend = app_cfg.get("touch_backend", "auto")   # auto | uhid | adb
         self._observe_ready = False   # True once open_session validated PIL/numpy + device
         self.debug_log = bool(app_cfg.get("debug_log", False))
-        self.debug_dir = app_cfg.get("debug_dir", "./data/hinge_debug")
+        self.debug_dir = app_cfg.get("debug_dir", f"./data/{spec.app}_debug")
         self.halt_on_error = bool(app_cfg.get("halt_on_error", True))   # auto: STOP on unexpected (preserve logs)
         self._dbg = None              # HingeDebugLog (set in open_session when debug_log is on)
 
+    def _require_vision(self) -> None:
+        """Refuse to open a session if this app's declared glyph templates can't be matched.
+
+        Every template this spec declares must actually load. Checking up front turns the
+        worst failure mode in the driver — OpenCV quietly absent, so every match returns
+        nothing — from "the run continues, blind, indefinitely" into "the run never starts".
+        That is not hypothetical: a launcher shipped without the `hinge` extra once, so
+        opencv was never installed and the vision path was dead for an unknown period.
+
+        A spec declaring NO templates is fine here: it simply has no vision to lose, and
+        _await_button refuses on its behalf if anything ever tries to aim at a control."""
+        missing = [name for role, name in self.spec.templates.items()
+                   if _load_template(name) is None]
+        if missing:
+            raise DriverClosed(
+                f"{self.spec.app}: cannot load glyph template(s) {', '.join(sorted(missing))} "
+                f"from {_ASSETS}. Vision-location would silently find nothing and every "
+                f"action would be refused. OpenCV is the usual cause: "
+                f"pip install -e '.[hinge]'"
+            )
+
     # --- lifecycle ------------------------------------------------------
     def open_session(self) -> None:
+        # The last gate before this driver can touch a real phone with a real account on it.
+        # Constructing an AndroidDriver is inert (no adb, no touch transport until below), so
+        # the registry check lives HERE rather than in the factory — that keeps calibration
+        # tooling able to build an uncalibrated driver, which is how one stops being
+        # uncalibrated, while still making it impossible to open a session with placeholder
+        # coordinates. supervisor.run() and HubState.start() check earlier and more loudly;
+        # this one catches anything that reached a driver by another path.
+        from .. import platforms
+        reason = platforms.unavailable_reason(self.spec.app)
+        if reason:
+            raise DriverClosed(reason)
+
         import importlib.util
         if not (importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL")):
-            raise DriverClosed("Hinge driver requires PIL and numpy. Install them via `pip install -e '.[ml]'` or `pip install pillow numpy`.")
+            raise DriverClosed(f"{self.spec.app} driver requires PIL and numpy. Install them via `pip install -e '.[ml]'` or `pip install pillow numpy`.")
+
+        self._require_vision()
 
         self._adb = Adb(self.serial, adb_path=self.adb_path)
         ready = self._adb.devices()
         if not ready:
-            raise DriverClosed("No ADB device connected for Hinge")
+            raise DriverClosed(f"No ADB device connected for {self.spec.app}")
         if self.serial and self.serial not in ready:
-            raise DriverClosed(f"Hinge device {self.serial} not connected (adb devices: {ready})")
+            raise DriverClosed(f"{self.spec.app} device {self.serial} not connected (adb devices: {ready})")
         self._adb.screen_size()                       # cache geometry for clamping/coords
         self._adb.shell(f"monkey -p {self.package} -c android.intent.category.LAUNCHER 1")
         time.sleep(human_cooldown(1.5))               # let the app come to the foreground
@@ -275,54 +397,220 @@ class HingeDriver(DatingAppDriver):
     @property
     def adb(self) -> Adb:
         if self._adb is None:
-            raise DriverClosed("Hinge session is not open")
+            raise DriverClosed(f"{self.spec.app} session is not open")
         return self._adb
 
     @property
     def touch(self):
         if self._touch is None:
-            raise DriverClosed("Hinge session is not open")
+            raise DriverClosed(f"{self.spec.app} session is not open")
         return self._touch
 
     def _make_touch(self):
-        """Touch transport: prefer the genuine UHID virtual touchscreen; fall back to the
-        adb `input` transport if UHID is unavailable. touch_backend forces a choice."""
+        """Touch transport. `auto` and `uhid` both REQUIRE the genuine UHID virtual
+        touchscreen; only an explicit `adb` accepts the degraded one.
+
+        `auto` used to mean "try UHID, quietly fall back to adb `input`". Both transports
+        are humanized (curved paths, jitter, log-normal timing), but they are not
+        equivalent: UHID delivers genuine kernel-level TOOL_TYPE_FINGER events with a
+        variable pressure ramp at ~180Hz, while `adb shell input motionevent` cannot vary
+        pressure at all — every contact reports the same synthetic value. A silent
+        downgrade meant the run could look identical while emitting a materially less human
+        touch signature, for an unknown length of time, on the account we care about.
+
+        So `auto` now means "prefer UHID and fail loudly if it is unavailable". The
+        degraded path is still reachable, but only by explicitly writing
+        `touch_backend: adb`, which is an operator decision rather than an accident."""
         if self.touch_backend == "adb":
+            print(f"{self.spec.app}: touch_backend='adb' — using the DEGRADED input transport "
+                  f"(humanized paths, but constant pressure). Set 'auto' for genuine UHID touches.")
             return self._adb
         try:
             t = UhidTouch(self._adb)
             t.open()
             return t
-        except (UhidUnavailable, AdbError) as exc:    # probe/geometry error -> fall back, don't escape
-            if self.touch_backend == "uhid":
-                raise DriverClosed(f"UHID touch required but unavailable: {exc}") from exc
-            print(f"Hinge: UHID touch unavailable ({exc}); using adb input transport.")
-            return self._adb
+        except (UhidUnavailable, AdbError) as exc:
+            raise DriverClosed(
+                f"{self.spec.app}: the genuine UHID touchscreen is unavailable ({exc}), and "
+                f"touch_backend={self.touch_backend!r} will not silently downgrade to the "
+                f"constant-pressure adb input transport. Fix the device/UHID path, or set "
+                f"apps.{self.spec.app}.touch_backend: adb to accept the degraded transport "
+                f"deliberately."
+            ) from exc
+
+    # --- tap choke point (forbidden-zone guard) -------------------------
+    # EVERY gesture this driver issues goes through _tap() / _swipe() / _scroll(), never the
+    # transport directly, so the no-go check cannot be bypassed by a new call site forgetting
+    # about it. This originally covered taps ONLY, and the comment claimed more than the code
+    # delivered: read-scrolls and scroll-to-top swipes went straight to the transport, so
+    # their touch-down points were never zone-checked at all — on every profile, every run.
+    def _assert_tap_allowed(self, x: int, y: int) -> None:
+        zones = getattr(self.spec, "forbidden_zones", ())
+        if not zones:
+            return
+        w, h = self.adb.screen_size()
+        fx = x / w if w else 0.0
+        fy = y / h if h else 0.0
+        for zone in zones:
+            x0, y0, x1, y1 = zone
+            if x0 <= fx <= x1 and y0 <= fy <= y1:
+                raise ForbiddenTapError(
+                    f"refused a tap at ({x}, {y}) = ({fx:.3f}, {fy:.3f}) of the screen: it "
+                    f"lands inside {self.spec.app}'s forbidden zone {zone}, which guards a "
+                    f"paid control. Refusing rather than risking a paid action.")
+
+    def _tap(self, x, y) -> None:
+        x, y = int(x), int(y)
+        self._assert_tap_allowed(x, y)
+        self.touch.tap(x, y)
+
+    def _swipe(self, x1, y1, x2, y2) -> None:
+        """Every explicit drag goes through here, for the same reason every tap goes
+        through _tap(). Only the START point is zone-checked: the touch-down claims the
+        gesture, so a drag that merely travels over a control does not press it."""
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        self._assert_tap_allowed(x1, y1)
+        self.touch.swipe(x1, y1, x2, y2)
+
+    def _scroll(self, frac: float, x_frac: float = 0.5) -> None:
+        """touch.scroll_up() with the forbidden-zone guard every other gesture gets.
+
+        scroll_up computes its geometry INSIDE the transport, so the driver cannot see
+        where the touch-down lands without mirroring that math — which _scroll_to_top
+        already does for its undo-swipes. Both transports use the same start point:
+        (scroll_x(w, x_frac), h * (0.5 + frac/2)).
+
+        This guard was missing, and the margin is thinner than it looks: at the default
+        read_scroll_frac=0.55 the touch-down sits at y=0.775, just 2.5% of the screen above
+        Bumble's SuperSwipe zone (which starts at 0.80). Raising read_scroll_frac to 0.65 —
+        an ordinary config-level calibration tweak — would put EVERY read-scroll's
+        touch-down inside the paid control's territory, on every profile, unguarded.
+
+        scroll_x jitters the column by +/-SCROLL_X_JITTER_PX so repeated scrolls aren't
+        pixel-identical, so both extremes are checked rather than the nominal centre — a
+        guard that only the average case passes is not a guard."""
+        w, h = self.adb.screen_size()
+        y = int(h * (0.5 + frac / 2))
+        nominal = int(w * x_frac)
+        for x in (nominal - SCROLL_X_JITTER_PX, nominal + SCROLL_X_JITTER_PX):
+            self._assert_tap_allowed(x, y)
+        self.touch.scroll_up(frac, x_frac)
 
     def _tap_frac(self, frac) -> None:
         w, h = self.adb.screen_size()
-        self.touch.tap(int(frac[0] * w), int(frac[1] * h))
+        self._tap(frac[0] * w, frac[1] * h)
+
+    def _decide_by_card_swipe(self, decision: str) -> None:
+        """Deliver a like/pass by dragging the card sideways instead of tapping a control.
+
+        Bumble places its paid SuperSwipe BETWEEN Pass and Like at the bottom of the card,
+        so a placeholder or drifted coordinate can land on it, and unlike Hinge's Rose
+        there is no confirmation modal afterwards to catch the mistake. A drag begins in
+        the middle of the card and cannot press a button it merely travels over, so the
+        paid control is unreachable by construction rather than by careful aiming.
+
+        The drag goes through the same touch transport as everything else, so it inherits
+        the humanized kinematics (Fitts-law duration, curved path, tremor, pressure ramp).
+        Only the START point is zone-checked: a drag that ends over a button does not
+        press it, since the press was already claimed by whatever was under the start."""
+        w, h = self.adb.screen_size()
+        # self.coords, not self.spec.coords: config.yaml's apps.<app>.coords is layered over
+        # the spec, so these can be calibrated on the device without editing code — which is
+        # the whole workflow for taking Bumble from placeholder to calibrated.
+        start = self.coords["swipe_start"]
+        end = self.coords["swipe_like_end" if decision == "like" else "swipe_pass_end"]
+        x1, y1 = int(start[0] * w), int(start[1] * h)
+        x2, y2 = int(end[0] * w), int(end[1] * h)
+        self._swipe(x1, y1, x2, y2)
+
+    def _template(self, role: str):
+        """Load the template PNG for a logical UI role (AndroidAppSpec.templates), or None if
+        this app's spec declares no template for that role at all — _match_glyph's own
+        None-template guard then makes every caller here treat it as a clean 'not found'."""
+        name = self.spec.templates.get(role)
+        return _load_template(name) if name else None
 
     def _locate_button(self, which: str):
         """Screencap and template-match the like-heart ('like' -> topmost right glyph) or the
-        floating pass-X ('pass' -> left glyph). Returns (x, y) or None when not visible."""
-        template = _load_template("hinge_heart.png" if which == "like" else "hinge_pass_x.png")
-        centers = _match_glyph(self._screencap(), template,
+        floating pass-X ('pass' -> left glyph). Returns (x, y) or None when not visible, OR
+        when this app's spec has no template for that role at all — vision-location is then
+        skipped WITHOUT even capturing a frame; _await_button falls back to the fixed coord."""
+        role = "like" if which == "like" else "pass"
+        if role not in self.spec.templates:
+            return None
+        centers = _match_glyph(self._screencap(), self._template(role),
                                side="right" if which == "like" else "left")
         return centers[0] if centers else None
 
     def _await_button(self, which: str, tries: int = 5):
-        """Locate a button, retrying through short settle waits — Hinge fades the floating
-        like/pass buttons out DURING a scroll and back in once it settles, so a tap fired
-        immediately after a scroll-read can miss. Falls back to the calibrated fixed coord if
-        vision can't find it (degraded, but better than not acting)."""
+        """Locate a button by vision, retrying through short settle waits.
+
+        Retries because Hinge fades the floating like/pass buttons out DURING a scroll and
+        back in once it settles, so a tap fired immediately after a scroll-read can miss a
+        button that is genuinely there.
+
+        RAISES rather than falling back to the calibrated fixed coordinate. See
+        UnlocatedControlError for why guessing is worse than stopping. The fixed coords stay
+        in the spec as a calibration reference and as the anchor for tooling, but nothing
+        taps them on this path."""
         pt = _retry_until(lambda: self._locate_button(which), tries, 0.4)
         if pt is not None:
             return pt
-        frac = self.coords["like_heart" if which == "like" else "pass_x"]
-        w, h = self.adb.screen_size()
-        print(f"Hinge: {which} button not found by vision; using fallback coord {frac}")
-        return (int(frac[0] * w), int(frac[1] * h))
+
+        role = "like" if which == "like" else "pass"
+        if role not in self.spec.templates:
+            why = (f"{self.spec.app} declares no '{role}' glyph template, so this control "
+                   f"cannot be vision-located at all")
+        elif _load_template(self.spec.templates[role]) is None:
+            why = (f"the '{role}' template {self.spec.templates[role]!r} could not be loaded "
+                   f"— OpenCV is very likely missing (install the extra: "
+                   f"pip install -e '.[hinge]')")
+        else:
+            why = (f"the '{role}' glyph was not found on screen after {tries} attempts — the "
+                   f"app UI may have changed, or the screen is not the swipe deck")
+        # .get(), not [] — a spec is allowed to omit these calibration-reference coords, and a
+        # KeyError raised while BUILDING an error message would replace the real diagnosis
+        # with a confusing one.
+        ref = self.coords.get("like_heart" if which == "like" else "pass_x")
+        instead = f" Not falling back to the fixed coordinate {ref} —" if ref else " —"
+        raise UnlocatedControlError(
+            f"refusing to {which}: {why}.{instead} a blind tap at a stale point can hit a "
+            f"paid or irreversible control.")
+
+    def _await_sheet_open(self, tries: int = 5) -> None:
+        """Confirm the comment / "Send Like" sheet really opened, before tapping into it.
+
+        comment_box and send_like are FIXED coordinates rather than vision-located, on the
+        grounds that the sheet's layout is consistent. That is only true WHILE THE SHEET IS
+        UP. If the heart tap missed, or the sheet was slow, or the app changed, those two
+        taps instead land on the profile card underneath — and on Hinge the send_like point
+        sits in the middle of the card, where per-photo and per-prompt like buttons live. A
+        missed heart tap could therefore like the wrong item rather than doing nothing.
+
+        So the fixed taps are gated on the sheet being visibly present. This is the same
+        `confirm` glyph _verify_like_landed already uses to decide the sheet has CLOSED;
+        checking it on the way in as well costs one screencap.
+
+        (When a device is available, consider tapping the matched glyph position instead of
+        the fixed send_like coordinate — strictly more robust to drift. Not done blind:
+        whether this template depicts the button itself or a label beside it needs eyes on
+        the real sheet, and the fixed coordinate is at least live-validated.)"""
+        if "confirm" not in self.spec.templates:
+            raise UnlocatedControlError(
+                f"{self.spec.app} uses the comment_sheet like flow but declares no 'confirm' "
+                f"template, so there is no way to tell the sheet opened. Refusing to tap the "
+                f"fixed comment box / send coordinates on an unverified screen.")
+        found = _retry_until(
+            lambda: _match_glyph(self._screencap(), self._template("confirm"),
+                                 side="any", threshold=0.6) or None,
+            tries, 0.4)
+        if not found:
+            raise UnlocatedControlError(
+                f"refusing to continue the like: the '{self.spec.app}' comment sheet never "
+                f"appeared after tapping the heart ({tries} attempts). Not tapping the fixed "
+                f"comment box {self.coords.get('comment_box')} / send {self.coords.get('send_like')} "
+                f"coordinates — with no sheet up they land on the profile card underneath, "
+                f"where they can hit a per-item like.")
 
     # --- capture (blank-frame guard) -----------------------------------
     def _screencap(self, *, on_blank: str = "raise") -> bytes | None:
@@ -457,20 +745,27 @@ class HingeDriver(DatingAppDriver):
         raise HingeActionError(f"{action} did not change the screen (stuck or unexpected state)")
 
     def _handle_rose_upsell(self, tries: int = 2) -> bool:
-        """Hinge intercepts "Send Like" with a "Send a Rose instead?" modal WHENEVER a Rose is
-        available (free Roses are granted periodically). We NEVER send a Rose (owner rule), so we
-        tap "Send Like anyway" to send the NORMAL like. Vision-matched (the modal's text), so we
-        never risk the "Send a Rose" button sitting just above it. No-op when the modal isn't
-        shown. Returns True if it dismissed the modal.
+        """Dismiss a paid-upgrade interstitial by tapping its "send anyway"/dismiss control —
+        NEVER the paid option itself. Named for Hinge's "Send a Rose instead?" modal (which
+        intercepts "Send Like" WHENEVER a Rose is available, since free Roses are granted
+        periodically) but used generically by every like flow: we never spend a Rose, a
+        SuperSwipe, or any other paid upsell (OWNER RULE — never automated, always manual).
+        This is enforced structurally, not just by convention: the only template role this
+        method (or _verify_like_landed's late-modal handling) EVER matches against or taps is
+        "upsell_dismiss" — there is no coordinate or template anywhere in this driver for a
+        paid button, so there is no code path that could tap one even by accident. No-op when
+        the modal isn't shown (or this app's spec declares no "upsell_dismiss" template at
+        all — _template then returns None and _match_glyph's None-template guard reports no
+        hits). Returns True if it dismissed a modal.
 
         Uses on_blank="none" rather than raising, deliberately: this runs AFTER the
-        "Send Like" tap has already landed. A like sent server-side but aborted here
+        confirming tap has already landed. A like sent server-side but aborted here
         would never reach worker.py's store.record_decision(), which assumes a raising
         like() "never landed" — so we would silently lose the record of a real like.
-        A blank screen here degrades to "no modal seen"; _verify_like_landed is the
-        step that still gets to fail loudly.
+        A blank screen here degrades to "no modal seen"; the flow's own verify step is
+        the one that still gets to fail loudly.
         """
-        template = _load_template("hinge_send_like_anyway.png")
+        template = self._template("upsell_dismiss")
 
         def _probe():
             frame = self._screencap(on_blank="none")
@@ -478,9 +773,9 @@ class HingeDriver(DatingAppDriver):
                 return []                     # can't see -> assume no modal (see docstring)
             return _match_glyph(frame, template, side="any", threshold=0.6)
 
-        hits = _retry_until(_probe, tries, 0.5)   # modal animates in (only when a Rose is available)
+        hits = _retry_until(_probe, tries, 0.5)   # modal animates in (only when an upsell is offered)
         if hits:
-            self.touch.tap(*hits[0])          # "Send Like anyway" — NEVER the Rose button above it
+            self._tap(*hits[0])               # dismiss control — NEVER the paid button above/beside it
             return True
         return False
 
@@ -495,7 +790,7 @@ class HingeDriver(DatingAppDriver):
         _capture_current's read loop and _locate_target_heart's own re-navigation scrolls use
         this — if either called touch.scroll_up() directly instead, _scroll_to_top's ceiling
         would silently under-count again exactly the way the hardcoded-distance bug did."""
-        self.touch.scroll_up(self.read_scroll_frac)
+        self._scroll(self.read_scroll_frac)
         self._capture_scrolls += 1
 
     def _scroll_to_top(self) -> None:
@@ -535,7 +830,7 @@ class HingeDriver(DatingAppDriver):
         y_far = int(h * (0.5 + self.read_scroll_frac / 2))    # scroll_up's START y (near bottom)
         for _ in range(max_swipes):
             before = self._screencap()
-            self.touch.swipe(w // 2, y_near, w // 2, y_far)
+            self._swipe(w // 2, y_near, w // 2, y_far)
             time.sleep(human_delay(0.3))
             if not self._changed(before, self._screencap()):
                 break
@@ -583,7 +878,7 @@ class HingeDriver(DatingAppDriver):
                 "device); refusing to run degraded — it would corrupt training labels")
         if self._dbg is not None and photos:
             self._dbg.action("capture", before=photos[0], photos=len(photos))   # first frame = who was scored
-        return Profile(photos=photos, prompts=[], meta={"app": "hinge"})
+        return Profile(photos=photos, prompts=[], meta={"app": self.spec.app})
 
     def next_profile(self) -> Profile | None:
         if self.out_of_profiles():
@@ -610,14 +905,14 @@ class HingeDriver(DatingAppDriver):
         return False
 
     def _locate_target_heart(self, item_index: int):
-        """Locate the heart of the photo/prompt the opener is about. item_index is the 0-based
-        index (capture order) the opener returned. We re-navigate to that captured frame by
-        matching its downsample signature, then take its heart. Falls back to the topmost heart
-        (first photo) when targeting isn't possible (index 0, no sigs, no match) — so it is never
-        worse than the old 'always first photo' behavior. Every genuine fallback (as opposed to
-        the ordinary index-0 fast path) is recorded via _dbg_action so a bug report can tell
-        "target not found" apart from "no sigs to search at all" (HINGE-05). (LIVE-VERIFY during
-        observe seeding.)"""
+        """comment_sheet flow only. Locate the heart of the photo/prompt the opener is about.
+        item_index is the 0-based index (capture order) the opener returned. We re-navigate to
+        that captured frame by matching its downsample signature, then take its heart. Falls
+        back to the topmost heart (first photo) when targeting isn't possible (index 0, no
+        sigs, no match) — so it is never worse than the old 'always first photo' behavior.
+        Every genuine fallback (as opposed to the ordinary index-0 fast path) is recorded via
+        _dbg_action so a bug report can tell "target not found" apart from "no sigs to search
+        at all" (HINGE-05). (LIVE-VERIFY during observe seeding.)"""
         sigs = getattr(self, "_current_sigs", None)
         if not sigs or item_index <= 0 or item_index >= len(sigs) or sigs[item_index] is None:
             if sigs and item_index > 0:                # a genuine fallback, not the index-0 fast path
@@ -639,7 +934,7 @@ class HingeDriver(DatingAppDriver):
             frame = self._screencap()
             ds = _downsample(frame)
             if ds is not None and float(np.mean(np.abs(ds - target))) < self.change_threshold:
-                hearts = _match_glyph(frame, _load_template("hinge_heart.png"), side="right")
+                hearts = _match_glyph(frame, self._template("like"), side="right")
                 if hearts:
                     return hearts[0]                  # the referenced item's heart, now in view
                 matched_frame_no_heart = True
@@ -654,57 +949,97 @@ class HingeDriver(DatingAppDriver):
         return self._await_button("like")
 
     def _verify_like_landed(self, before) -> None:
-        """A like is COMPLETE only when the comment sheet AND the Rose modal are gone AND the deck
-        has moved off the pre-tap card. If the sheet is still up (missed Send Like tap) or the
-        screen never changed (missed heart tap), raise so the worker HALTS instead of counting a
-        like that never sent. A Rose modal that animates in LATE — after
-        _handle_rose_upsell's own poll window already gave up and returned False — is tolerated
-        here rather than treated as a dead run: we dismiss it ourselves and keep checking
-        (HINGE-07). Only a modal/sheet that genuinely won't clear, or a deck that never advances,
-        still raises — an unsent like must never be mislabelled as sent (it would corrupt the
-        taste model). Only active under halt_on_error. Unlike a bare change-check, the
-        scroll-to-top can't spoof this."""
+        """comment_sheet flow only. A like is COMPLETE only when the comment sheet AND any
+        paid-upsell modal are gone AND the deck has moved off the pre-tap card. If the sheet is
+        still up (missed Send Like tap) or the screen never changed (missed heart tap), raise so
+        the worker HALTS instead of counting a like that never sent. A paid-upsell modal that
+        animates in LATE — after _handle_rose_upsell's own poll window already gave up and
+        returned False — is tolerated here rather than treated as a dead run: we dismiss it
+        ourselves (same rule: never the paid option) and keep checking (HINGE-07). Only a
+        modal/sheet that genuinely won't clear, or a deck that never advances, still raises — an
+        unsent like must never be mislabelled as sent (it would corrupt the taste model). Only
+        active under halt_on_error. Unlike a bare change-check, the scroll-to-top can't spoof
+        this."""
         if not self.halt_on_error:
             return
         sheet_up = modal_up = False
-        for _ in range(3):        # a couple of extra passes tolerate a late-animating Rose modal
+        for _ in range(3):        # a couple of extra passes tolerate a late-animating upsell modal
             frame = self._screencap()
-            sheet_up = bool(_match_glyph(frame, _load_template("hinge_send_like.png"), side="any", threshold=0.6))
-            modal_hits = _match_glyph(frame, _load_template("hinge_send_like_anyway.png"), side="any", threshold=0.6)
+            sheet_up = bool(_match_glyph(frame, self._template("confirm"), side="any", threshold=0.6))
+            modal_hits = _match_glyph(frame, self._template("upsell_dismiss"), side="any", threshold=0.6)
             modal_up = bool(modal_hits)
             if not sheet_up and not modal_up and (before is None or self._changed(before, frame)):
                 return                                # sheet/modal closed AND advanced -> sent
             if modal_up:
-                self.touch.tap(*modal_hits[0])        # late-animating Rose upsell -> dismiss, never a Rose
+                self._tap(*modal_hits[0])             # late-animating upsell -> dismiss, never the paid option
             time.sleep(human_delay(0.6))
         if sheet_up or modal_up:
-            raise HingeActionError("like did not complete — the like sheet / Rose modal is still open")
+            raise HingeActionError("like did not complete — the like sheet / upsell modal is still open")
         raise HingeActionError("like did not change the screen (missed tap or stuck)")
 
-    # --- actions (NORMAL like only — never a Rose) ----------------------
+    # --- actions (NORMAL like only — never a paid upgrade) ----------------------
     def like(self, opener: str | None = None, item_index: int = 0) -> None:
+        if self.spec.like_flow == "comment_sheet":
+            self._like_comment_sheet(opener, item_index)
+        else:
+            self._like_direct(opener, item_index)
+
+    def _like_comment_sheet(self, opener: str | None, item_index: int) -> None:
+        """Hinge's flow: heart -> comment/"Send Like" sheet opens -> optionally type the
+        opener into the comment box (Signals #2: the opener is sent WITH the like) -> tap
+        Send -> handle a paid-upsell interstitial (never tap the paid option) -> verify."""
         self._scroll_to_top()
         time.sleep(human_delay(0.4))
         heart = self._locate_target_heart(item_index)  # heart of the photo the opener is about
         before = self._snap()                         # baseline AFTER navigation: the pre-tap card
-        self.touch.tap(*heart)                        # opens the comment / "Send Like" sheet
+        self._tap(*heart)                             # opens the comment / "Send Like" sheet
         time.sleep(human_cooldown(0.8))               # sheet animates in; you read/think
+        self._await_sheet_open()                      # gate: the fixed taps below are only
+                                                       # valid while the sheet is actually up
         if opener:
             self._tap_frac(self.coords["comment_box"])
             time.sleep(human_delay(0.5))
             self.adb.text(opener)                     # opener sent WITH the like (Signals #2)
             time.sleep(human_delay(0.6))
         self._tap_frac(self.coords["send_like"])
-        time.sleep(human_cooldown(0.6))               # let the send register / Rose modal animate in
-        rose = self._handle_rose_upsell()             # if a Rose is available: "Send Like anyway", never a Rose
+        time.sleep(human_cooldown(0.6))               # let the send register / upsell modal animate in
+        rose = self._handle_rose_upsell()             # paid-upsell interstitial: dismiss, NEVER pay
         self._dbg_action("like", before, heart=list(heart), opener_chars=len(opener or ""), rose_modal=rose)
         self._verify_like_landed(before)
 
+    def _deliver_decision(self, decision: str):
+        """Issue one like/pass, by whichever gesture this app's spec calls for.
+
+        Returns the tapped point, or None when the decision was delivered as a card drag
+        (there is no single point to log in that case). Both paths are equally humanized;
+        they differ only in what the phone receives, and therefore in what can go wrong:
+        a tap can land on a neighbouring control, a drag cannot."""
+        if self.spec.decide_gesture == "card_swipe":
+            self._decide_by_card_swipe(decision)
+            return None
+        point = self._await_button("like" if decision == "like" else "pass")
+        self._tap(*point)
+        return point
+
+    def _like_direct(self, opener: str | None, item_index: int) -> None:
+        """Bumble's flow: one like, no comment sheet, no per-item targeting.
+        `opener`/`item_index` are accepted only for interface parity with the comment_sheet
+        flow and are otherwise unused — accepts_opener is False for every spec using this
+        flow (Bumble is match-first-then-message, so there is no swipe-time opener to attach),
+        so worker.py never actually passes a real `opener` here."""
+        before = self._snap()
+        like_btn = self._deliver_decision("like")
+        time.sleep(human_cooldown(0.6))                # let it register / an upsell modal animate in
+        upsell = self._handle_rose_upsell()             # paid-upsell interstitial: dismiss, NEVER pay
+        self._dbg_action("like", before, like=list(like_btn) if like_btn else None,
+                         gesture=self.spec.decide_gesture, opener_chars=0, upsell_dismissed=upsell)
+        self._verify_progress(before, "like")
+
     def dislike(self) -> None:
-        before = self._snap()                         # snapped immediately before the tap (no scroll between)
-        x = self._await_button("pass")                # vision-located floating X (presence-checked)
-        self.touch.tap(*x)
-        self._dbg_action("dislike", before, x=list(x))
+        before = self._snap()                         # snapped immediately before acting (no scroll between)
+        x = self._deliver_decision("pass")            # vision-located X, or a card drag per spec
+        self._dbg_action("dislike", before, x=list(x) if x else None,
+                         gesture=self.spec.decide_gesture)
         self._verify_progress(before, "dislike")
 
     # --- observe mode (shadow learning) --------------------------------
@@ -826,3 +1161,12 @@ class HingeDriver(DatingAppDriver):
             return False
         import numpy as np
         return min(float(np.mean(np.abs(ds - s))) for s in sigs) < self.change_threshold
+
+
+class HingeDriver(AndroidDriver):
+    """Thin binding: AndroidDriver + HINGE_SPEC. All behavior lives in AndroidDriver above;
+    this class exists so `operation_love.drivers.hinge.HingeDriver(cfg)` keeps working exactly
+    as it always has (driver factory, tools/hinge_inspect.py, the test suite)."""
+
+    def __init__(self, cfg):
+        super().__init__(cfg, HINGE_SPEC)

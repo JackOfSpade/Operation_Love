@@ -6,11 +6,11 @@ app in a backgrounded window, waits for you to reach a profile card, then:
   1. probes every selector and reports how many elements each matched,
   2. watches your manual like/pass and prints what it detected — the exact
      signal observe mode uses (see BumbleDriver.wait_for_decision),
-  3. prints a paste-ready `apps.bumble.selectors` block.
+  3. prints a paste-ready `apps.bumble_web.selectors` block.
 
 It never swipes for you; you stay in control the whole time. If a selector shows
 MISS, open DevTools, find the right CSS, drop it into config.yaml under
-apps.bumble.selectors, and re-run.
+apps.bumble_web.selectors, and re-run.
 
     python -m tools.bumble_inspect                 # uses config.yaml
     python -m tools.bumble_inspect --config x.yaml

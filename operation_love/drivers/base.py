@@ -66,6 +66,25 @@ class DatingAppDriver(ABC):
     # the flat, decision-agnostic pacing anchor instead of a borrowed model.
     think_time_calibrated: bool = False
 
+    # On an UNEXPECTED error, should the worker halt the run instead of restarting the
+    # session and carrying on? Declared here, defaulting to True, so the safe behaviour is
+    # what a driver gets by DEFAULT rather than what it has to remember to ask for.
+    #
+    # It used to live only on the Android driver, and worker.py read it as
+    # `getattr(driver, "halt_on_error", False)` — so a driver that simply never mentioned
+    # the attribute (PlaywrightDriver did not) silently received restart-with-backoff. That
+    # is fail-open: the riskier behaviour was the one you got by forgetting.
+    #
+    # Restarting is not free even in observe mode, where the bot only reads. The worker
+    # re-attaches to whatever is on screen; if the driver was confused about which card it
+    # was looking at, the manual swipes it records afterwards are attributed to the wrong
+    # profile — which corrupts the taste model permanently, long after the session that
+    # caused it. Ending a seeding session early is cheap by comparison.
+    #
+    # Concrete drivers may lower it from config (apps.<app>.halt_on_error), but config
+    # validation refuses `false` for anything running in auto mode.
+    halt_on_error: bool = True
+
     @abstractmethod
     def open_session(self) -> None:
         """Attach to the app (launch browser / connect to emulator) and reach the swipe deck."""

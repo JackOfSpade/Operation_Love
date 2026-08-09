@@ -32,14 +32,21 @@ def _png(value=0, size=(24, 24)):
     return buf.getvalue()
 
 
-def _action_frame(heart_xy=(937, 1600), x_xy=(125, 2035)):
-    """A decodable frame with the like-heart and pass-X glyphs pasted at known spots, so the
-    driver's vision locator finds them — exercises the real action path, not the fallback."""
+def _action_frame(heart_xy=(937, 1600), x_xy=(125, 2035), confirm_xy=(540, 1300)):
+    """A decodable frame with the like-heart, pass-X, and comment-sheet 'confirm' glyphs
+    pasted at known spots, so the driver's vision locator finds them — exercises the real
+    action path, not the fallback. The confirm glyph is what lets _await_sheet_open() (the
+    gate that confirms the comment sheet actually opened before the driver taps the FIXED
+    comment_box / send_like coordinates) succeed from a single scripted frame."""
     import cv2
     import numpy as np
     rng = np.random.default_rng(1)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
-    for name, (cx, cy) in (("hinge_heart.png", heart_xy), ("hinge_pass_x.png", x_xy)):
+    for name, (cx, cy) in (
+        ("hinge_heart.png", heart_xy),
+        ("hinge_pass_x.png", x_xy),
+        ("hinge_send_like.png", confirm_xy),
+    ):
         t = hinge._load_template(name)
         th, tw = t.shape
         canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
@@ -441,11 +448,18 @@ def test_make_touch_prefers_uhid_when_hid_present():
     assert isinstance(drv._make_touch(), UhidTouch)
 
 
-def test_make_touch_falls_back_to_adb_when_hid_missing():
+def test_make_touch_refuses_to_downgrade_when_uhid_unavailable():
+    # UHID is the genuine transport (real kernel TOOL_TYPE_FINGER events, a variable
+    # pressure ramp); adb's `input motionevent` cannot vary pressure at all. touch_backend
+    # defaults to "auto", and "auto" now REFUSES rather than silently trading down to the
+    # weaker transport -- a silent downgrade could run for an unknown length of time with
+    # no error, on the account we actually care about. Only an explicit
+    # touch_backend="adb" (see test_touch_backend_adb_forces_input_transport) accepts it.
     adb = FakeAdb([b"x"])                 # shell returns "" -> no hid -> UhidUnavailable
     drv = HingeDriver(_Cfg())
     drv._adb = adb
-    assert drv._make_touch() is adb       # fell back to the input transport
+    with pytest.raises(DriverClosed):
+        drv._make_touch()
 
 
 def test_touch_backend_adb_forces_input_transport():
@@ -463,8 +477,11 @@ def test_touch_backend_uhid_required_raises_when_unavailable():
         drv._make_touch()
 
 
-def test_make_touch_falls_back_when_probe_raises_adb_error():
-    # A laggy/erroring `test -e hid` probe must FALL BACK to adb, not escape (-> restart loop).
+def test_make_touch_refuses_to_downgrade_when_probe_raises_adb_error():
+    # A laggy/erroring `test -e hid` probe still means "UHID unavailable" -- it must NOT
+    # escape into a silent adb-input downgrade either. The operator needs to see the failure
+    # (device/link issue) and fix it, or explicitly opt into touch_backend: adb, rather than
+    # the run quietly using the weaker, constant-pressure transport indefinitely.
     from operation_love.drivers.adb import AdbError
 
     class ErrAdb(FakeAdb):
@@ -476,7 +493,8 @@ def test_make_touch_falls_back_when_probe_raises_adb_error():
     adb = ErrAdb([b"x"])
     drv = HingeDriver(_Cfg())
     drv._adb = adb
-    assert drv._make_touch() is adb       # AdbError during probe -> fallback
+    with pytest.raises(DriverClosed):
+        drv._make_touch()
 
 
 def _modal_frame():
@@ -508,9 +526,33 @@ def test_handle_rose_upsell_noop_when_no_modal():
     assert adb.taps == []
 
 
+def _like_flow_frame_with_modal(heart_xy=(937, 1600), confirm_xy=(540, 1300), modal_xy=(420, 2197)):
+    """A decodable frame carrying the heart glyph (so the heart tap is vision-located), the
+    comment-sheet 'confirm' glyph (so _await_sheet_open's gate finds the sheet actually up),
+    AND the Rose-upsell 'Send Like anyway' glyph (so the same scripted frame also drives the
+    post-send upsell dismissal) -- lets a single frame exercise the FULL like() path end to
+    end, unlike the old vision-miss-then-fallback shortcut this replaces."""
+    import cv2
+    import numpy as np
+    rng = np.random.default_rng(9)
+    canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
+    for name, (cx, cy) in (
+        ("hinge_heart.png", heart_xy),
+        ("hinge_send_like.png", confirm_xy),
+        ("hinge_send_like_anyway.png", modal_xy),
+    ):
+        t = hinge._load_template(name)
+        th, tw = t.shape
+        canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+    ok, buf = cv2.imencode(".png", canvas)
+    return buf.tobytes()
+
+
 def test_like_dismisses_rose_upsell_modal():
-    # full like() path: heart -> Send Like -> "Send Like anyway" (Rose modal auto-dismissed)
-    adb = FakeAdb([_modal_frame()])           # every screencap shows the modal (heart vision-miss -> fallback)
+    # full like() path: heart -> sheet confirmed open -> Send Like -> "Send Like anyway"
+    # (Rose modal auto-dismissed). The heart is now vision-located for real (no fallback
+    # left to lean on), so the frame must actually carry the glyph.
+    adb = FakeAdb([_like_flow_frame_with_modal()])
     _drv(adb).like()
     assert (420, 2197) in adb.taps            # the normal-like confirmation was tapped
 
@@ -558,7 +600,10 @@ def test_locate_target_heart_logs_fallback_when_target_not_found(monkeypatch, tm
     import numpy as np
     never_matches = np.ones((24, 24)) * 250
     monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: np.zeros((24, 24)))
-    adb = FakeAdb([b"f0"])
+    # The final fallback is _await_button("like"), which now vision-locates for real (no
+    # blind-coordinate fallback left) -- the scripted frame must actually carry the heart
+    # glyph, or the "fallback" this test is pinning would itself raise UnlocatedControlError.
+    adb = FakeAdb([_action_frame()])
     drv = _drv(adb, scroll_captures=8)
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="r")
     drv._current_sigs = [np.zeros((24, 24)), never_matches]
@@ -581,7 +626,8 @@ def test_locate_target_heart_bounds_search_when_target_not_found(monkeypatch):
     import numpy as np
     never_matches = np.ones((24, 24)) * 250
     monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: np.zeros((24, 24)))
-    adb = FakeAdb([b"x"])
+    # As above: the final fallback vision-locates for real, so the frame needs the heart glyph.
+    adb = FakeAdb([_action_frame()])
     drv = _drv(adb, scroll_captures=8)
     drv._current_sigs = [np.zeros((24, 24)), never_matches]
 
@@ -771,27 +817,24 @@ def test_actions_route_through_touch_transport_not_adb():
     assert touch.swipes >= 1 and adb.swipes == 0   # swipes via the touch transport
 
 
-def test_await_button_falls_back_to_config_coord_when_vision_fails(monkeypatch):
-    """When vision can't locate the glyph after all retries, _await_button() must fall
-    back to the configured coordinate fraction (not crash or return None)."""
+def test_await_button_refuses_when_vision_fails(monkeypatch):
+    """When vision can't locate the glyph after all retries, _await_button() must REFUSE
+    (UnlocatedControlError) rather than fall back to the calibrated fixed coordinate. That
+    fallback used to exist on the theory that a degraded action beats no action; it doesn't
+    here, because (a) the stale coordinate can now be occupied by a paid control (Hinge's
+    Rose, Bumble's SuperSwipe) or something irreversible, and (b) a persistent vision miss is
+    usually a missing OpenCV install, not a transient one -- silently tapping blind forever
+    is worse than refusing and surfacing the real problem."""
     adb = FakeAdb([_png()])    # non-action frame: vision finds nothing
     drv = _drv(adb)
     # Force every vision attempt to return None
     monkeypatch.setattr(drv, "_locate_button", lambda _which: None)
 
-    w, h = adb.screen_size()   # 1080 x 2400
-
-    pt_like = drv._await_button("like", tries=2)
-    frac = drv.coords["like_heart"]
-    assert pt_like == (int(frac[0] * w), int(frac[1] * h)), (
-        f"like fallback coord wrong: {pt_like} != ({int(frac[0]*w)}, {int(frac[1]*h)})"
-    )
-
-    pt_pass = drv._await_button("pass", tries=2)
-    frac = drv.coords["pass_x"]
-    assert pt_pass == (int(frac[0] * w), int(frac[1] * h)), (
-        f"pass fallback coord wrong: {pt_pass} != ({int(frac[0]*w)}, {int(frac[1]*h)})"
-    )
+    with pytest.raises(hinge.UnlocatedControlError):
+        drv._await_button("like", tries=2)
+    with pytest.raises(hinge.UnlocatedControlError):
+        drv._await_button("pass", tries=2)
+    assert adb.taps == []      # neither refusal issued a blind tap at the fixed coordinate
 
 
 

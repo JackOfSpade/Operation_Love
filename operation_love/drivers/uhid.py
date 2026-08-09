@@ -40,8 +40,13 @@ from .base import DriverClosed
 
 
 class UhidUnavailable(RuntimeError):
-    """UHID can't be used on this device (e.g. no /system/bin/hid) — caller may fall
-    back to the adb `input` transport. Distinct from DriverClosed (a real device loss)."""
+    """UHID can't be used on this device (e.g. no /system/bin/hid).
+
+    This does NOT authorise a silent downgrade. AndroidDriver._make_touch treats it as
+    fatal under `touch_backend: auto` (the default) and under `uhid`, because the adb
+    `input` transport cannot vary pressure and swapping to it invisibly would weaken the
+    touch signature for an unknown length of time. Only an explicit `touch_backend: adb`
+    accepts that transport. Distinct from DriverClosed (a real device loss)."""
 
 
 def _le16(v: int) -> list[int]:

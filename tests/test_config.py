@@ -6,7 +6,11 @@ import yaml
 from operation_love import config as c
 
 BASE = {
-    "enabled_apps": ["bumble"],
+    # hinge: the one platform the registry ships available/calibrated by default. "bumble"
+    # is now an Android target that starts out uncalibrated (platforms.py) and would fail
+    # the check_runnable() guard validate() now applies -- see test_unavailable_app_* below
+    # for coverage of that rejection path.
+    "enabled_apps": ["hinge"],
     "mode": "observe",
     "storage": {"backend": "sqlite"},
     "opener": {"enabled": True, "model": "claude-opus-4-8"},
@@ -61,12 +65,12 @@ def test_opener_model_needs_pricing():
 
 
 def test_bad_app_mode_override():
-    d = {**BASE, "mode": "observe", "apps": {"bumble": {"mode": "yolo"}}}
+    d = {**BASE, "mode": "observe", "apps": {"hinge": {"mode": "yolo"}}}
     _expect_error(d, "observe")
 
 
 def test_valid_app_mode_override_passes():
-    d = {**BASE, "mode": "observe", "apps": {"bumble": {"mode": "auto"}}}
+    d = {**BASE, "mode": "observe", "apps": {"hinge": {"mode": "auto"}}}
     c.validate(_load(d))   # no raise
 
 
@@ -122,7 +126,9 @@ def test_empty_config_file_loads_with_defaults():
     f = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
     f.close()                          # zero-byte file -> yaml.safe_load returns None
     cfg = c.load(f.name)
-    assert cfg.mode == "observe" and cfg.enabled_apps == ["bumble"]
+    # hinge, not bumble: bumble is now an Android target that starts out uncalibrated
+    # (platforms.py), so a from-scratch config defaulting to it would fail check_runnable().
+    assert cfg.mode == "observe" and cfg.enabled_apps == ["hinge"]
 
 
 def test_non_mapping_config_file_raises_clear_error():
@@ -145,3 +151,86 @@ def test_unknown_key_in_section_raises_clear_error():
         assert "ranker" in str(e)
     else:
         raise AssertionError("expected ValueError for an unknown 'ranker' key")
+
+
+# --- registry-driven validation: validate() defers to platforms.check_selection() ---------
+#
+# Deliberately STRUCTURAL only (unknown ids, two Android platforms contending for the one
+# phone) -- NOT availability. Availability is a property of the world (calibrated? live
+# target?) that changes without the config file changing, and writing Bumble's coordinates
+# into config.yaml is exactly how Bumble gets calibrated -- a config merely NAMING an
+# uncalibrated or web-dead platform must still load cleanly. The availability gate is
+# start-time only: platforms.check_runnable(), asserted at supervisor.run() (see
+# test_supervisor.py) and HubState.start() (see test_hub.py) instead.
+
+def test_bumble_web_is_a_known_app_id_and_loads_fine_despite_being_unrunnable():
+    # bumble_web is a real registry id now (Bumble's web app is discontinued) -- config
+    # validation only cares that it's a KNOWN id; check_runnable (start-time) is what
+    # actually rejects running it.
+    d = {**BASE, "enabled_apps": ["bumble_web"]}
+    c.validate(_load(d))   # no raise
+
+
+def test_uncalibrated_android_app_loads_fine_at_config_time():
+    # bumble is uncalibrated (unavailable) today, but that must not stop a config file that
+    # merely enables it from loading -- see module docstring above.
+    d = {**BASE, "enabled_apps": ["bumble"]}
+    c.validate(_load(d))   # no raise
+
+
+def test_two_android_platforms_together_rejected_at_config_time():
+    # This one IS a config-time (structural) error regardless of either platform's
+    # availability: Android shows one app in the foreground at a time, so two Android
+    # platforms can never coexist in enabled_apps.
+    d = {**BASE, "enabled_apps": ["hinge", "bumble"]}
+    _expect_error(d, "cannot run together")
+
+
+def test_still_unknown_app_uses_configs_own_message_not_registrys():
+    # An app id the registry has never heard of must still fail on config.py's own
+    # "unknown app(s)" check (with ITS message/format) before check_runnable ever runs --
+    # check_runnable's "Unknown app" wording is capitalized differently and is only reached
+    # for ids that ARE registered but not runnable.
+    d = {**BASE, "enabled_apps": ["tinder"]}
+    _expect_error(d, "unknown app(s)")
+
+
+# --- halt_on_error: verification is not silently switchable in auto mode ------
+# This key gates the driver's post-action checks ENTIRELY (_verify_progress /
+# _verify_like_landed), not just what happens after one fails. With it off, a like whose
+# "Send Like" tap missed returns normally, the worker records a decision for it, and
+# nothing raises -- so the halt-on-unexpected path never engages either and the run keeps
+# swiping while its record of what it did drifts from what actually happened. That
+# corrupts the taste model, not merely the run. Until now the key had NO validation at
+# all: no type check, no enum, no warning, so a stale or copy-pasted block could disable
+# verification invisibly.
+
+def test_halt_on_error_false_is_rejected_in_auto_mode():
+    d = dict(BASE, mode="auto", apps={"hinge": {"halt_on_error": False}})
+    _expect_error(d, "halt_on_error=false is not allowed with mode='auto'")
+
+
+def test_halt_on_error_false_is_rejected_via_a_per_app_auto_override():
+    # The global mode is observe, but this app overrides itself into auto -- the guard must
+    # read the EFFECTIVE mode, not just the top-level one.
+    d = dict(BASE, mode="observe", apps={"hinge": {"mode": "auto", "halt_on_error": False}})
+    _expect_error(d, "halt_on_error=false is not allowed with mode='auto'")
+
+
+def test_halt_on_error_false_is_allowed_in_observe_mode():
+    # Observe is human-driven: the checks mostly guard against the bot's own missed taps,
+    # and there is a person watching. Tolerable there, so don't over-restrict it.
+    d = dict(BASE, mode="observe", apps={"hinge": {"halt_on_error": False}})
+    c.validate(_load(d))   # no raise
+
+
+def test_halt_on_error_must_be_a_boolean():
+    # "false" (a string) is truthy in Python, so a quoted value would silently mean the
+    # OPPOSITE of what it reads like in the YAML.
+    d = dict(BASE, apps={"hinge": {"halt_on_error": "false"}})
+    _expect_error(d, "must be true or false")
+
+
+def test_auto_mode_is_fine_when_halt_on_error_is_left_at_its_default():
+    d = dict(BASE, mode="auto", apps={"hinge": {}})
+    c.validate(_load(d))   # no raise -- default is True

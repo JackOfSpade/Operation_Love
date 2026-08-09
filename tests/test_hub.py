@@ -306,7 +306,9 @@ def test_hubstate_forwards_max_per_run(monkeypatch):
 
     monkeypatch.setattr(hub.supervisor, "run", fake_run)
     st = HubState("config.yaml")
-    ok, _ = st.start(mode="auto", apps=["bumble"], max_per_run=8)
+    # hinge, not bumble: bumble is an Android target that starts out uncalibrated
+    # (platforms.py) and HubState.start() now rejects an unrunnable selection up front.
+    ok, _ = st.start(mode="auto", apps=["hinge"], max_per_run=8)
     assert ok is True
     assert done.wait(timeout=5)
     st._thread.join(timeout=5)
@@ -336,6 +338,36 @@ def test_hub_page_reports_browser_tab_lifecycle():
 def test_committed_mac_launcher_matches_template():
     expected = _MAC_UPDATE_RUN.replace("__EXTRAS__", "ml,bq,bumble,hinge")
     assert Path("Operation Love.command").read_text() == expected
+
+
+def test_launcher_default_extras_cover_every_deployable_optional_dependency():
+    # Regression for the bug fixed in commit 640406b1: make_launchers()'s default `extras`
+    # silently dropped `hinge` (opencv never installed -> Hinge's vision degraded to
+    # fixed-coordinate taps with no warning). The committed launcher was hand-patched to
+    # include it, but the GENERATOR's default argument was never fixed, so regenerating the
+    # launcher would silently reintroduce the exact same gap. Guard the default itself
+    # (not a generated file, which is platform-dependent) against every extra pyproject.toml
+    # declares that the SHIPPED APP needs -- `dev` (pytest) is excluded on purpose: it's for
+    # running this repo's test suite, not for using the app the launcher installs.
+    import inspect
+    import tomllib
+
+    from operation_love.hub.launchers import make_launchers
+
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+    declared = set(pyproject["project"]["optional-dependencies"])
+    deployable = declared - {"dev"}
+    assert deployable, "sanity: pyproject.toml declares no deployable optional-dependencies"
+
+    default_extras = inspect.signature(make_launchers).parameters["extras"].default
+    have = set(default_extras.split(","))
+
+    missing = deployable - have
+    assert not missing, (
+        f"make_launchers()'s default extras={default_extras!r} is missing {sorted(missing)} "
+        "from pyproject.toml [project.optional-dependencies] -- a regenerated launcher "
+        "would silently skip installing them."
+    )
 
 
 def test_hub_card_shows_label_gated_refresh_progress():
@@ -662,6 +694,47 @@ def test_hubstate_start_rejects_empty_apps_list():
     assert st.is_running() is False
 
 
+def test_hubstate_start_rejects_unavailable_platform_with_registry_reason_verbatim(monkeypatch):
+    # This is the mechanism behind "select Web-based, press Start, see 'Additional work
+    # needed to get this to run...'" -- no frontend special-casing, the registry's reason
+    # flows straight through to the existing {ok, msg} shape the hub already renders into
+    # #hint. Also asserts no run/thread/driver is ever touched.
+    import operation_love.hub as hub
+    from operation_love import platforms
+
+    called = []
+    monkeypatch.setattr(hub.supervisor, "run", lambda config_path, **kw: called.append(kw))
+
+    st = HubState("config.yaml")
+    ok, msg = st.start(apps=["bumble_web"])
+    assert ok is False
+    assert msg == platforms.unavailable_reason("bumble_web")
+    assert st.is_running() is False
+    assert called == []                     # never reached supervisor.run
+
+
+def test_hubstate_start_rejects_uncalibrated_android_platform(monkeypatch):
+    import operation_love.hub as hub
+    from operation_love import platforms
+
+    monkeypatch.setattr(hub.supervisor, "run", lambda config_path, **kw: None)
+    st = HubState("config.yaml")
+    ok, msg = st.start(apps=["bumble"])
+    assert ok is False
+    assert msg == platforms.unavailable_reason("bumble")
+    assert st.is_running() is False
+
+
+def test_hubstate_start_rejects_two_android_platforms_together(monkeypatch):
+    import operation_love.hub as hub
+
+    monkeypatch.setattr(hub.supervisor, "run", lambda config_path, **kw: None)
+    st = HubState("config.yaml")
+    ok, msg = st.start(apps=["hinge", "bumble"])
+    assert ok is False
+    assert st.is_running() is False
+
+
 def test_hubstate_start_apps_none_is_not_rejected(monkeypatch):
     # apps=None means "no override" (unrelated to the empty-list user-error case above) and
     # must still fall through to supervisor.run/config as before.
@@ -833,3 +906,117 @@ def test_bugreport_uses_hub_config_path_not_default():
         httpd.shutdown()
         httpd.server_close()   # release the listening socket too; shutdown() alone leaves it open
         _join_hub_watch_threads()
+
+
+# --- platform picker (two-tier: kind -> app) ----------------------------------
+# Bumble discontinued its web app in Aug 2026, so "which dating app" and "how we drive
+# it" no longer line up one to one: Bumble became a second ANDROID target beside Hinge,
+# and "web" is a transport with no live target. The picker models that as kind -> app.
+# These evaluate the REAL functions with node rather than substring-matching the page,
+# for the same reason the computeMaxPerRun test does.
+
+_PICKER_CFG = {
+    "kinds": [
+        {
+            "kind": "android",
+            "label": "App-based",
+            "platforms": [
+                {"app": "hinge", "label": "Hinge", "available": True, "reason": None},
+                {"app": "bumble", "label": "Bumble", "available": False, "reason": "not calibrated"},
+            ],
+        },
+        {
+            "kind": "web",
+            "label": "Web-based",
+            "platforms": [
+                {"app": "bumble_web", "label": "Bumble (web)", "available": False,
+                 "reason": "Additional work needed to get this to run."},
+            ],
+        },
+    ],
+    "selected": {"kind": "android", "app": "hinge"},
+}
+
+
+def _picker_script(body: str, *names) -> str:
+    return "\n".join(_extract_js_function(_PAGE, n) for n in names) + "\n" + body
+
+
+def test_picker_expands_only_a_kind_with_more_than_one_target():
+    # App-based has two apps so it must expand to a choice; Web-based has exactly one
+    # (unavailable) target, so expanding it would be a pointless one-item list -- the
+    # kind button IS the selection there.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    script = _picker_script(
+        "const cfg = " + json.dumps(_PICKER_CFG) + ";\n"
+        "console.log(JSON.stringify(["
+        "  shouldExpand(kindEntry(cfg, 'android')),"
+        "  shouldExpand(kindEntry(cfg, 'web')),"
+        "  shouldExpand(kindEntry(cfg, 'nonesuch')),"
+        "]));\n",
+        "kindEntry", "shouldExpand",
+    )
+    assert _run_node(script) == [True, False, False]
+
+
+def test_picker_defaults_to_an_available_target_within_a_kind():
+    # Ordering must not decide this: Hinge is available and Bumble is not, so clicking
+    # "App-based" has to land on Hinge even though both are listed.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    reversed_cfg = {"kinds": [{
+        "kind": "android", "label": "App-based",
+        "platforms": list(reversed(_PICKER_CFG["kinds"][0]["platforms"])),
+    }]}
+    script = _picker_script(
+        "const a = " + json.dumps(_PICKER_CFG) + ";\n"
+        "const b = " + json.dumps(reversed_cfg) + ";\n"
+        "console.log(JSON.stringify(["
+        "  defaultAppForKind(kindEntry(a, 'android')),"
+        "  defaultAppForKind(kindEntry(b, 'android')),"
+        "  defaultAppForKind(kindEntry(a, 'web')),"   # none available -> first anyway
+        "  defaultAppForKind(null),"
+        "]));\n",
+        "kindEntry", "defaultAppForKind",
+    )
+    assert _run_node(script) == ["hinge", "hinge", "bumble_web", None]
+
+
+def test_picker_initial_selection_honours_server_then_falls_back_to_runnable():
+    # The server's `selected` comes from config's enabled_apps and wins when it still
+    # names a registered platform. When it names something the registry dropped, we must
+    # land on a kind that actually has a runnable target rather than on a dead one --
+    # otherwise a stale config silently parks the hub on a platform that cannot start.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    stale = dict(_PICKER_CFG, selected={"kind": "android", "app": "tinder"})
+    web_first = {"kinds": list(reversed(_PICKER_CFG["kinds"])), "selected": None}
+    script = _picker_script(
+        "const cases = " + json.dumps([_PICKER_CFG, stale, web_first, {"kinds": []}]) + ";\n"
+        "console.log(JSON.stringify(cases.map(initialSelection)));\n",
+        "kindEntry", "defaultAppForKind", "initialSelection",
+    )
+    assert _run_node(script) == [
+        {"kind": "android", "app": "hinge"},   # server's choice honoured
+        {"kind": "android", "app": "hinge"},   # unknown app -> first kind with a runnable target
+        {"kind": "android", "app": "hinge"},   # web listed first, but nothing there can run
+        {"kind": None, "app": None},           # empty registry -> select nothing
+    ]
+
+
+def test_picker_selection_is_single_not_multi():
+    # Both dating apps now live on the one physical Pixel, and Android foregrounds a
+    # single app -- screencap captures whatever is on top and the virtual touchscreen
+    # delivers to whatever holds focus -- so the picker must never be able to ask for
+    # two at once. chosenApps() is what the Start button posts.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    script = (
+        _extract_js_function(_PAGE, "chosenApps") + "\n"
+        "let sel = {kind:'android', app:'hinge'};\n"
+        "const one = chosenApps();\n"
+        "sel = {kind:null, app:null};\n"
+        "console.log(JSON.stringify([one, chosenApps()]));\n"
+    )
+    assert _run_node(script) == [["hinge"], []]

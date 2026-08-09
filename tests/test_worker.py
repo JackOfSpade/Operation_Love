@@ -359,11 +359,17 @@ def test_worker_stops_before_writing_auto_decision_after_stop():
     assert driver.closed
 
 
-def test_auto_mode_halts_on_unexpected_for_any_app_even_without_halt_flag():
-    """AUTO mode must STOP on any unexpected error for EVERY app — including a plain driver with
-    no halt_on_error flag (Bumble) — so an autonomous run never keeps swiping blindly. It must
-    halt on the FIRST error (no restart retries) and set the stop so buffered data is saved."""
+def test_auto_mode_halts_on_unexpected_even_when_a_driver_opts_out_of_halting():
+    """AUTO mode must STOP on any unexpected error for EVERY app, EVEN one that explicitly sets
+    halt_on_error=False, so an autonomous run never keeps swiping blindly. It must halt on the
+    FIRST error (no restart retries) and set the stop so buffered data is saved.
+
+    The opt-out is set explicitly here rather than relied on as a default: halt_on_error now
+    defaults to True on DatingAppDriver, so "a driver that never mentions it" no longer means
+    "a driver that restarts". Setting it False makes this the strongest version of the claim —
+    auto mode overrides the opt-out."""
     class BoomDriver(FakeDriver):
+        halt_on_error = False           # explicitly opted out — auto must override it anyway
         def __init__(self, n):
             super().__init__(n)
             self.calls = 0
@@ -372,7 +378,6 @@ def test_auto_mode_halts_on_unexpected_for_any_app_even_without_halt_flag():
             raise RuntimeError("unexpected boom")
 
     driver = BoomDriver(3)
-    assert not hasattr(driver, "halt_on_error") or driver.halt_on_error is False
     store = FakeStore()
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
     stop = threading.Event()
@@ -384,13 +389,19 @@ def test_auto_mode_halts_on_unexpected_for_any_app_even_without_halt_flag():
     assert driver.closed
 
 
-def test_observe_mode_keeps_restart_resilience_for_non_halt_driver(monkeypatch):
-    """Observe mode is user-driven and low-risk, so a driver that doesn't opt into halt (Bumble)
-    keeps restart resilience there: a transient error retries rather than halting the session."""
+def test_observe_mode_restarts_only_when_a_driver_explicitly_opts_out_of_halting(monkeypatch):
+    """Restart resilience in observe mode is now OPT-IN (halt_on_error=False), not the default.
+
+    It used to be what you got by saying nothing: worker.py read `getattr(driver,
+    "halt_on_error", False)`, so PlaywrightDriver — which declared the attribute nowhere —
+    received restart-with-backoff by omission rather than by decision. The capability still
+    exists for a genuinely flaky, human-supervised observe session; it just has to be asked
+    for now."""
     import operation_love.worker as wmod
     monkeypatch.setattr(wmod, "human_cooldown", lambda s: 0)   # no backoff sleep in the test
 
     class FlakyObserve(FakeDriver):
+        halt_on_error = False           # explicit opt-in to restarts
         def __init__(self, n):
             super().__init__(n)
             self.attempts = 0
@@ -558,3 +569,35 @@ def test_auto_defer_cold_start_stops_without_action_or_record():
     assert driver.closed
     # (d) exactly one profile pulled, then the loop broke immediately
     assert driver.i == 1
+
+
+def test_observe_mode_halts_by_default_when_a_driver_says_nothing_about_halting():
+    """The fail-CLOSED default: a driver that never mentions halt_on_error must HALT, not
+    restart. This is the regression guard for the bug this replaced — worker.py read
+    `getattr(driver, "halt_on_error", False)`, so the riskier behaviour was what a driver
+    got by FORGETTING, and PlaywrightDriver (which declared it nowhere) silently had it.
+
+    Restarting is not free even in observe mode, where the bot only reads: the worker
+    re-attaches to whatever is on screen, and a driver that was confused about which card
+    it was looking at then mis-attributes the manual swipes it records afterwards --
+    corrupting the taste model permanently, long after the session that caused it. Ending
+    a seeding session early is cheap by comparison."""
+    class SilentFlaky(FakeDriver):
+        # deliberately declares NO halt_on_error -- inherits DatingAppDriver's True
+        def __init__(self, n):
+            super().__init__(n)
+            self.attempts = 0
+        def open_session(self):
+            self.attempts += 1
+            raise RuntimeError("transient")
+
+    assert SilentFlaky(0).halt_on_error is True, "the ABC must supply the safe default"
+    driver = SilentFlaky(0)
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    stop = threading.Event()
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           stop, mode="observe", max_restarts=5).run()
+
+    assert driver.attempts == 1     # halted on the FIRST error -- no restart-and-retry
+    assert stop.is_set()            # and stopped, so buffered data still gets saved

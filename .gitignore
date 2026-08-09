@@ -6,7 +6,8 @@
 __pycache__/
 *.pyc
 *.egg-info/
-.venv/
+# no trailing slash: .venv may be a symlink, which the dir-only `.venv/` misses
+.venv
 .pytest_cache/
 .mypy_cache/
 
@@ -21,12 +22,11 @@ captures/
 *.pt
 *.onnx
 *.mat
-/.venv
 
 # os / editor
 .DS_Store
 .idea/
 
-# NOTE: the hub launchers ("Operation Love.command" / "Update Operation Love.command",
-# and the .bat/.sh variants) are now PORTABLE (relative paths + project .venv) and
-# ARE committed, so they travel with the repo to other machines.
+# NOTE: the hub launcher ("Operation Love.command") is PORTABLE (resolves the
+# project from its own location, uses the project .venv) and IS committed, so it
+# travels with the repo to other machines.

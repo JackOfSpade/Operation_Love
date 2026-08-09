@@ -17,17 +17,33 @@ from dataclasses import dataclass
 from .device import best_device
 
 # component key -> import name it needs (or "cli:<binary>" for a required CLI tool)
+#
+# Keyed by TRANSPORT (how we drive a platform — see operation_love/platforms.py), not by
+# dating app: since Aug 2026 both Hinge and Bumble drive the same physical Pixel over
+# host-side ADB, so one "android_driver" check covers either app rather than a per-app key
+# that would falsely suggest Bumble needs something different from Hinge. "web_driver"
+# similarly covers whichever web-based platform (if any) is live, not just Bumble.
 _OPTIONAL = {
     "torch": "torch",
     "clip": "open_clip",
     "arcface": "insightface",
     "quality": "pyiqa",
-    "bumble_driver": "playwright",
-    "hinge_driver": "cli:adb",        # host-side ADB only — no uiautomator2/on-device helper
+    "web_driver": "playwright",
+    "android_driver": "cli:adb",      # host-side ADB only — no uiautomator2/on-device helper
+    # Vision. Listed so a preflight/bug report can SAY "opencv is missing" rather than the
+    # operator finding out when a run refuses to start. The Android driver independently
+    # hard-fails open_session() without it (AndroidDriver._require_vision) — this entry is
+    # for visibility, not safety. It earned its place: a launcher once shipped without the
+    # `hinge` extra, so cv2 was absent and every template match quietly returned nothing.
+    "vision_templates": "cv2",
     "anthropic": "anthropic",
     "bigquery": "google.cloud.bigquery",
     "cloud_storage": "google.cloud.storage",
 }
+
+# Pre-rename aliases, kept so any caller still reading the old per-app keys degrades
+# gracefully instead of KeyError-ing. Populated onto `available` in detect() below.
+_LEGACY_ALIASES = {"bumble_driver": "web_driver", "hinge_driver": "android_driver"}
 
 _ACCEL = {"mps": "Apple GPU (MPS)", "cuda": "NVIDIA GPU (CUDA)", "cpu": "CPU"}
 
@@ -54,18 +70,29 @@ class Capabilities:
     available: dict[str, bool]
 
     @classmethod
-    def detect(cls, hinge_adb_path: str | None = None) -> "Capabilities":
-        """hinge_adb_path: optional apps.hinge.adb_path from config.yaml. Config-free
-        callers (bare `python -m operation_love.runtime`, bugreport) can omit it and get
-        today's PATH-only check; a caller that has loaded config should pass it so a
-        machine with adb configured off-PATH doesn't get a false "not installed"."""
-        overrides = {"hinge_driver": hinge_adb_path} if hinge_adb_path else {}
+    def detect(cls, android_adb_path: str | None = None, *,
+               hinge_adb_path: str | None = None) -> "Capabilities":
+        """android_adb_path: optional apps.<app>.adb_path from config.yaml for whichever
+        enabled app is Android-kind (Hinge, or Bumble once calibrated — see platforms.py).
+        Config-free callers (bare `python -m operation_love.runtime`, bugreport) can omit
+        it and get today's PATH-only check; a caller that has loaded config should pass it
+        so a machine with adb configured off-PATH doesn't get a false "not installed".
+
+        hinge_adb_path is the pre-rename kwarg, kept as a backwards-compatible alias for
+        android_adb_path (Hinge was the only Android app when it was named); prefer the
+        new name in new code.
+        """
+        android_adb_path = android_adb_path or hinge_adb_path
+        overrides = {"android_driver": android_adb_path} if android_adb_path else {}
+        available = {k: _have(m, override=overrides.get(k)) for k, m in _OPTIONAL.items()}
+        for old, new in _LEGACY_ALIASES.items():
+            available[old] = available[new]
         return cls(
             os_name=platform.system() or "unknown",
             machine=platform.machine() or "unknown",
             python=platform.python_version(),
             device=best_device(),
-            available={k: _have(m, override=overrides.get(k)) for k, m in _OPTIONAL.items()},
+            available=available,
         )
 
     def banner(self) -> str:

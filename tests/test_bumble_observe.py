@@ -7,13 +7,24 @@ exercised live by tools/bumble_inspect.py).
 from contextlib import contextmanager
 import tempfile
 
-import operation_love.drivers.bumble as bumble
+import pytest
+
+# Imports from the new split location (operation_love/drivers/web/), not the
+# operation_love.drivers.bumble compat shim: several tests below monkeypatch
+# module-level globals (e.g. bumble._PHOTO_READY_TIMEOUT_S, bumble.time.sleep) by
+# reassigning attributes on this exact module object, and that only affects the
+# driver's real behavior if `bumble` here IS the module the driver code actually
+# reads those names from at call time.
+import operation_love.drivers.web.bumble_web as bumble
+from operation_love import platforms
 from operation_love.drivers.base import DriverClosed
-from operation_love.drivers.bumble import BumbleDriver
+from operation_love.drivers.web.bumble_web import BumbleWebDriver as BumbleDriver
+from operation_love.drivers.web.playwright_base import HumanInputUnavailable
 
 
 class _Cfg:
-    apps = {"bumble": {}}
+    # `apps.bumble` is the ANDROID block now; web settings live under `apps.bumble_web`.
+    apps = {"bumble_web": {}}
 
 
 class FakePage:
@@ -252,16 +263,27 @@ class FakeNoElementPage:
 
 
 class FakeStartupPage:
+    """No banners present: every selector lookup misses.
+
+    `clicks` records teleport page.click() calls, which startup cleanup must no longer
+    make — it goes through the human cursor path like every other click now.
+    """
+
     def __init__(self):
         self.default_timeout = None
         self.goto_calls = []
         self.clicks = []
+        self.lookups = []
 
     def set_default_timeout(self, timeout):
         self.default_timeout = timeout
 
     def goto(self, url, wait_until=None):
         self.goto_calls.append((url, wait_until))
+
+    def query_selector(self, selector):
+        self.lookups.append(selector)
+        return None                      # banner not on the page
 
     def click(self, selector, **kwargs):
         self.clicks.append((selector, kwargs))
@@ -615,24 +637,30 @@ def test_like_uses_human_cursor_path_inside_button():
     assert not page.plain_clicks                          # used the mouse path, not the fallback
 
 
-def test_dislike_falls_back_to_plain_click_without_box():
+# These two previously asserted a fallback to page.click(). That fallback is GONE: it
+# dispatches at the element with no cursor travel, and ops/ANTI-BOT-RESEARCH.md §1 lists
+# cursor path ("Bezier vs zero-time teleport") as a HIGH-confidence behavioural detection
+# vector. Silently swapping the human path for a teleport bought one extra swipe in
+# exchange for an invisible, open-ended increase in detectability. Refusing is correct:
+# a control that is still off-screen AFTER scroll-into-view means the page is not in the
+# state we think it is, which is a reason to stop and look, not to click harder.
+def test_dislike_refuses_rather_than_teleport_clicking_without_a_box():
     drv = _driver(FakeNoElementPage())
-    drv.dislike()
-    assert drv.page.plain_clicks == [drv.selectors["pass"]]
+    with pytest.raises(HumanInputUnavailable, match="no bounding box"):
+        drv.dislike()
+    assert drv.page.plain_clicks == [], "no teleport click may be issued"
 
 
-def test_like_falls_back_to_plain_click_when_box_center_off_screen():
-    # Valid box, but its center is far outside the ~1280x900 viewport -> raw-coord
-    # clicking there isn't safe, so we must use page.click (its own actionability +
-    # scroll-into-view), not a mouse.click at the off-screen point.
+def test_like_refuses_rather_than_teleport_clicking_an_off_screen_control():
     box = {"x": 4000, "y": 4000, "width": 56, "height": 56}
     # FakeActionElement has no scroll_into_view_if_needed, so the box stays off-screen.
     assert not hasattr(FakeActionElement(box), "scroll_into_view_if_needed")
     drv = _driver(FakeActionPage(box))
-    drv.like()
+    with pytest.raises(HumanInputUnavailable, match="outside the viewport"):
+        drv.like()
     page = drv.page
-    assert page.plain_clicks == [drv.selectors["like"]]   # plain-click fallback used
-    assert not page.mouse.clicks                          # no raw mouse click off-screen
+    assert page.plain_clicks == [], "no teleport click may be issued"
+    assert not page.mouse.clicks, "and no raw mouse click at the off-screen point either"
 
 
 # --- BUMBLE-7: _verify_swipe_landed actually executes against a real fingerprint ---
@@ -709,7 +737,14 @@ def test_like_tells_apart_distinct_profiles_with_same_bio_and_photo_count():
     drv.like()                       # must not raise -- distinct photo identities prove the change
 
 
-def test_open_session_denies_native_permission_prompts():
+def test_open_session_denies_native_permission_prompts(monkeypatch):
+    # This test is about launch-hardening mechanics (the anti-automation args,
+    # dropping --enable-automation), not about the platform-availability guard
+    # PlaywrightDriver.open_session() now runs first (see test_web_base.py for
+    # that) -- Bumble web has no live target, so the guard would otherwise stop
+    # this test before it ever reaches the fake Playwright launch it's exercising.
+    monkeypatch.setattr(platforms, "unavailable_reason", lambda app: None)
+
     page = FakeStartupPage()
     ctx = FakeContext(page)
     chromium = FakeChromium(ctx)
@@ -722,7 +757,7 @@ def test_open_session_denies_native_permission_prompts():
     BumbleDriver._import_playwright = staticmethod(lambda: (fake_sync_playwright, "fake"))
     try:
         with tempfile.TemporaryDirectory() as user_dir:
-            cfg = type("Cfg", (), {"apps": {"bumble": {"user_data_dir": user_dir}}})()
+            cfg = type("Cfg", (), {"apps": {"bumble_web": {"user_data_dir": user_dir}}})()
             drv = BumbleDriver(cfg)
             try:
                 drv.open_session()
@@ -739,5 +774,18 @@ def test_open_session_denies_native_permission_prompts():
 def test_dismiss_startup_interstitials_is_nonfatal_when_selectors_fail():
     page = FakeStartupPage()
     drv = _driver(page)
+    drv._dismiss_startup_interstitials()          # must not raise
+    # Every banner is still ATTEMPTED — one absent selector must not abort the rest.
+    assert page.lookups == [sel for _label, sel in bumble._STARTUP_INTERSTITIALS]
+
+
+def test_dismiss_startup_interstitials_never_teleport_clicks():
+    # Startup cleanup used to call page.click() directly, which dispatches with no cursor
+    # travel. A session whose first interactions are teleports and whose later ones are
+    # Bezier paths is arguably more distinctive than one that is consistently either, and
+    # consistency costs nothing here — so this path uses the human cursor too. A banner we
+    # cannot click humanly is skipped, never clicked worse.
+    page = FakeStartupPage()
+    drv = _driver(page)
     drv._dismiss_startup_interstitials()
-    assert len(page.clicks) == len(bumble._STARTUP_INTERSTITIALS)
+    assert page.clicks == [], "startup cleanup must not fall back to a teleport click"

@@ -94,7 +94,7 @@ _WIN_UPDATE_RUN = ('@echo off\r\ncd /d "%~dp0"\r\n'
                    '"%PY%" -m operation_love hub\r\n')
 
 
-def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,bumble") -> None:
+def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,bumble,hinge") -> None:
     """Write ONE portable double-click launcher INTO the project folder.
 
     It resolves the project from the script's own location (no absolute paths)

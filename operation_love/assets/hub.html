@@ -29,6 +29,19 @@
          background:#22222b; border:1px solid rgba(255,255,255,.14); border-radius:9px; cursor:pointer; }
   .err { color:#ff8585; font-size:12px; margin-top:8px; }
   .meta { font-size:12px; opacity:.7; }
+  /* Platform picker: tier 1 = how we drive it (App-based / Web-based), tier 2 = which app.
+     Tier 2 only appears when a kind has more than one target, so "Web-based" (one target,
+     unavailable) stays a single button rather than a pointless one-item list. */
+  .seg { display:inline-flex; border:1px solid rgba(255,255,255,.14); border-radius:9px; overflow:hidden; }
+  .seg button { border:0; border-radius:0; background:#22222b; padding:8px 14px; }
+  .seg button + button { border-left:1px solid rgba(255,255,255,.14); }
+  .seg button.on { background:#2f6df0; }
+  .pick { display:inline-flex; flex-wrap:wrap; gap:8px; }
+  .pick button.on { background:#2f6df0; border-color:#2f6df0; }
+  /* Unavailable targets stay clickable on purpose: pressing Start is what surfaces the
+     server's reason, so the UI never has to duplicate (and drift from) that logic. */
+  .pick button.na { opacity:.5; }
+  .dot { width:6px; height:6px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle; }
 </style></head>
 <body><div class="wrap">
   <div class="row"><h1>Operation&nbsp;Love</h1><span id="runpill" class="pill stop">stopped</span></div>
@@ -51,10 +64,18 @@
 
   <div class="card">
     <div class="controls">
+      <span class="muted">platform</span>
+      <span id="kindtabs" class="seg"></span>
+    </div>
+    <div class="controls" id="approw" style="margin-top:10px;display:none">
+      <span class="muted">app</span>
+      <span id="apppicks" class="pick"></span>
+    </div>
+    <div class="meta" id="platnote" style="margin-top:8px"></div>
+    <div class="controls" style="margin-top:12px">
       <span class="muted">mode</span>
       <select id="mode"><option value="observe">observe (you swipe)</option>
         <option value="auto">auto (bot swipes)</option></select>
-      <span id="appchecks"></span>
     </div>
     <div class="controls" id="maxrow" style="margin-top:10px;display:none">
       <span class="muted">max profiles this run</span>
@@ -87,7 +108,10 @@ const $ = s => document.querySelector(s);
 async function getJSON(u){ const r = await fetch(u); return r.json(); }
 async function postJSON(u,b){ const r = await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}); return r.json(); }
 
-let cfg = {all_apps:['bumble'], enabled_apps:['bumble'], mode:'observe'};
+// Empty until /api/config answers -- the platform registry is server-side, so the page
+// must not carry a hardcoded app list that could drift out of sync with it.
+let cfg = {kinds:[], all_apps:[], enabled_apps:[], mode:'observe', selected:null};
+let sel = {kind:null, app:null};
 const hubClientId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '-' + Math.random());
 function hubLifecycle(path){
   const body = JSON.stringify({id: hubClientId});
@@ -244,12 +268,78 @@ async function tickLogs(){
   } catch(e){}
 }
 
-function appChecks(){
-  $('#appchecks').innerHTML = cfg.all_apps.map(a =>
-    `<label class="chk"><input type="checkbox" value="${a}" ${cfg.enabled_apps.includes(a)?'checked':''}>${a}</label>`
-  ).join('');
+// --- platform picker ---------------------------------------------------------
+// Two tiers, because "which dating app" and "how we drive it" stopped lining up one
+// to one when Bumble discontinued its web app (Aug 2026) and became a second ANDROID
+// target alongside Hinge. Tier 1 picks the kind (App-based / Web-based), tier 2 picks
+// the app within it.
+//
+// Selection is SINGLE, not the old multi-checkbox: both dating apps now live on the
+// one physical Pixel, and Android runs a single app in the foreground -- screencap
+// captures whatever is on top and the virtual touchscreen delivers to whatever holds
+// focus -- so two app-based platforms can never run at once. The server enforces this
+// too (platforms.check_runnable); the UI just stops you asking for it.
+//
+// These four are pure and named so the hub test suite can eval the real logic with
+// node rather than asserting a substring that a comment-only revert could dodge.
+function kindEntry(c, kind){ return ((c && c.kinds) || []).find(k => k.kind === kind) || null; }
+function shouldExpand(entry){ return !!entry && ((entry.platforms || []).length > 1); }
+function defaultAppForKind(entry){
+  const ps = (entry && entry.platforms) || [];
+  const pick = ps.find(p => p.available) || ps[0];
+  return pick ? pick.app : null;
 }
-function chosenApps(){ return [...document.querySelectorAll('#appchecks input:checked')].map(i=>i.value); }
+// Honour the server's `selected` (derived from config's enabled_apps) when it still
+// names a registered platform; otherwise fall back to the first kind that has an
+// available target, so a fresh install lands on something runnable rather than on a
+// dead one. Never invent an app id the registry doesn't know.
+function initialSelection(c){
+  const ks = (c && c.kinds) || [];
+  const want = (c && c.selected) || {};
+  const wantKind = kindEntry(c, want.kind);
+  if (wantKind && (wantKind.platforms || []).some(p => p.app === want.app)) {
+    return {kind: want.kind, app: want.app};
+  }
+  const runnable = ks.find(k => (k.platforms || []).some(p => p.available)) || ks[0];
+  return runnable ? {kind: runnable.kind, app: defaultAppForKind(runnable)} : {kind: null, app: null};
+}
+
+function escHtml(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, ch => (
+  {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch])); }
+
+function renderPlatforms(){
+  const ks = cfg.kinds || [];
+  $('#kindtabs').innerHTML = ks.map(k =>
+    `<button data-kind="${escHtml(k.kind)}" class="${k.kind === sel.kind ? 'on' : ''}">${escHtml(k.label)}</button>`
+  ).join('');
+  ks.forEach(k => {
+    const b = document.querySelector(`#kindtabs button[data-kind="${k.kind}"]`);
+    if (b) b.onclick = () => { sel = {kind: k.kind, app: defaultAppForKind(k)}; renderPlatforms(); };
+  });
+
+  const entry = kindEntry(cfg, sel.kind);
+  const plats = (entry && entry.platforms) || [];
+  const expand = shouldExpand(entry);
+  $('#approw').style.display = expand ? '' : 'none';
+  if (expand) {
+    $('#apppicks').innerHTML = plats.map(p =>
+      `<button data-app="${escHtml(p.app)}" class="${p.app === sel.app ? 'on' : ''}${p.available ? '' : ' na'}">`
+      + `${escHtml(p.label)}</button>`
+    ).join('');
+    plats.forEach(p => {
+      const b = document.querySelector(`#apppicks button[data-app="${p.app}"]`);
+      if (b) b.onclick = () => { sel = {kind: sel.kind, app: p.app}; renderPlatforms(); };
+    });
+  }
+
+  // A quiet marker only. The authoritative "why not" comes from the server when you
+  // press Start, so there is exactly one place that decides what can run.
+  const cur = plats.find(p => p.app === sel.app);
+  $('#platnote').innerHTML = (cur && !cur.available)
+    ? `<span class="dot" style="background:#f0b429"></span>${escHtml(cur.label)} is not runnable yet. Press Start for details.`
+    : '';
+}
+function chosenApps(){ return sel.app ? [sel.app] : []; }
 
 function syncModeUI(){                         // the cap only applies in auto mode
   $('#maxrow').style.display = $('#mode').value === 'auto' ? '' : 'none';
@@ -284,7 +374,13 @@ $('#start').onclick = async () => {
   const mode = $('#mode').value;
   const max_per_run = computeMaxPerRun(mode, $('#unlimited').checked, $('#maxrun').value);
   const r = await postJSON('/api/start', {mode, apps: chosenApps(), max_per_run});
-  $('#hint').textContent = r.ok ? '' : (r.msg||'could not start');
+  // The server is the only authority on what can run, so a refusal is shown verbatim
+  // and in full -- these reasons are a sentence or two ("Additional work needed to get
+  // this to run..."), which would be unreadable squeezed into the one-line hint.
+  // Re-selecting a platform re-renders this area, clearing a stale message.
+  $('#hint').textContent = r.ok ? '' : 'not started';
+  $('#platnote').innerHTML = r.ok ? ''
+    : `<span class="dot" style="background:#f0b429"></span>${escHtml(r.msg || 'could not start')}`;
   tick();
 };
 $('#stop').onclick = async () => { $('#hint').textContent='stopping…'; await postJSON('/api/stop',{}); tick(); };
@@ -314,7 +410,8 @@ $('#bugdl').onclick = async () => {
   const c = await getJSON('/api/config');
   if(!c.error){ cfg = Object.assign(cfg, c); $('#mode').value = cfg.mode; $('#sub').textContent = `control hub · storage: ${cfg.backend}`; }
   syncModeUI();
-  appChecks();
+  sel = initialSelection(cfg);
+  renderPlatforms();
   tick(); setInterval(tick, 1000);
   tickEval(); setInterval(tickEval, 5000);    // model quality: poll often for live label progress; the CV itself only recomputes every N new labels (server-gated)
   tickLogs(); setInterval(tickLogs, 1500);    // live log: tail the captured stdout/stderr

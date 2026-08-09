@@ -9,6 +9,7 @@ import threading
 import time
 
 from .. import config as cfg_mod
+from .. import platforms
 from .. import supervisor
 
 # Chrome (and others) throttle setInterval in a hidden tab to ~once/minute after 5min hidden —
@@ -18,6 +19,21 @@ from .. import supervisor
 _BROWSER_CLIENT_STALE_S = 120.0
 _CLOSED_BROWSER_CLIENT_TTL_S = 30.0
 _EVAL_COLD_WAIT_S = 60.0  # bound on a cold-eval waiter so a dead computer thread can't hang it
+
+
+def _selected_platform(enabled_apps: list[str]) -> "platforms.Platform":
+    """Which platform the hub should show pre-selected: the FIRST entry of enabled_apps, if
+    it names a real registry id. If enabled_apps is empty or names something the registry
+    doesn't know (a stale/hand-edited config.yaml), fall back to the first AVAILABLE
+    platform so the hub doesn't default to a selection that would just fail on Start; if
+    nothing is available at all, fall back to the first platform overall."""
+    first = enabled_apps[0] if enabled_apps else None
+    if first in platforms.KNOWN_APPS:
+        return platforms.get(first)
+    available = [p for p in platforms.all_platforms() if p.available]
+    if available:
+        return available[0]
+    return platforms.all_platforms()[0]
 
 
 class HubState:
@@ -56,6 +72,18 @@ class HubState:
                 # just deselected. Refuse instead; apps=None (no override argument at all)
                 # still falls through to config, unchanged.
                 return False, "no apps selected — check at least one app before starting"
+            if apps is not None:
+                # Registry guard, before anything else happens: an unavailable platform
+                # (uncalibrated Android target, or a web target with no live site behind
+                # it) or two Android platforms requested together must never get as far as
+                # a thread/driver. Verbatim reason — the hub renders it straight into
+                # #hint, which is how "Additional work needed to get this to run..." shows
+                # up for the Web-based button with no frontend-side special-casing.
+                # (apps=None means "no override, fall back to config" and is checked at
+                # supervisor.run() instead, same as the empty-list case above.)
+                reason = platforms.check_runnable(apps)
+                if reason:
+                    return False, reason
             self._stop = threading.Event()
             self._status = None
             self._error = None
@@ -193,11 +221,25 @@ class HubState:
     def config_defaults(self) -> dict:
         try:
             cfg = cfg_mod.load(self.config_path)
+            kinds = [
+                {
+                    "kind": kind,
+                    "label": platforms.KIND_LABELS[kind],
+                    "platforms": [
+                        {"app": p.app, "label": p.label, "available": p.available, "reason": p.reason}
+                        for p in platforms.for_kind(kind)
+                    ],
+                }
+                for kind in platforms.kinds()
+            ]
+            selected = _selected_platform(cfg.enabled_apps)
             return {
                 "mode": cfg.mode,
-                "enabled_apps": cfg.enabled_apps,
-                "all_apps": list(cfg.apps.keys()) or cfg.enabled_apps,
                 "backend": cfg.storage.backend,
+                "enabled_apps": cfg.enabled_apps,
+                "all_apps": [p.app for p in platforms.all_platforms()],
+                "kinds": kinds,
+                "selected": {"kind": selected.kind, "app": selected.app},
             }
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)}

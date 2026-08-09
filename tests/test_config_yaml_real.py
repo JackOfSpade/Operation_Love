@@ -1,10 +1,16 @@
 """Smoke tests against the shipped config.yaml — catches typos and dead config keys
 that unit tests with inline YAML strings would miss.
 
-All three tests are offline (no GCP / no phone / no SDK). They intentionally do NOT
-call validate() because that requires a BigQuery project_id + photo_bucket (which the
-shipped yaml has for production but would fail in a clean CI env). They test the
-structure and business-logic invariants that matter even before go-live.
+All tests here are offline (no GCP / no phone / no SDK).
+
+These used to skip validate() entirely, on the stated grounds that it "requires a
+BigQuery project_id + photo_bucket ... would fail in a clean CI env". That premise was
+wrong: validate() only checks those keys are present, non-empty strings — it opens no
+connection and needs no credentials. The consequence was a real hole: every rule
+validate() enforces (the registry's check_selection, halt_on_error-vs-auto coherence,
+the pacing floor, budget.on_exhausted's enum, ranker.retrain_every) was exercised only
+against inline YAML in other test files, never against the file we actually ship. A
+config.yaml that could not start was therefore fully CI-green.
 """
 import pytest
 
@@ -44,3 +50,29 @@ def test_limits_are_positive(cfg):
     if lim.get("target_like_ratio") is not None:
         ratio = lim["target_like_ratio"]
         assert 0 < ratio < 1, f"limits.target_like_ratio must be in (0, 1), got {ratio}"
+
+
+def test_shipped_config_actually_passes_validate():
+    """The file we ship must satisfy every rule validate() enforces — not just parse.
+
+    This is the test whose absence let the shipped config drift: validate() is what the
+    real entry points call before a run, so a config.yaml that fails it cannot start the
+    app at all, yet nothing here checked. It needs no network and no credentials.
+    """
+    from operation_love.config import validate
+    validate(load("config.yaml"))          # must not raise
+
+
+def test_shipped_config_selects_something_the_registry_can_actually_run():
+    """enabled_apps must name a platform that is available right now.
+
+    validate() deliberately allows an UNAVAILABLE platform (you must be able to configure
+    Bumble's coordinates before Bumble is calibrated), so it alone cannot catch a shipped
+    config that parses, validates, and then refuses to start. That gap is what this covers.
+    """
+    from operation_love import platforms
+    cfg = load("config.yaml")
+    assert platforms.check_runnable(cfg.enabled_apps) is None, (
+        f"config.yaml ships enabled_apps={cfg.enabled_apps}, which cannot start: "
+        f"{platforms.check_runnable(cfg.enabled_apps)}"
+    )

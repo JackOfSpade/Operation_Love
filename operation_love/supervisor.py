@@ -131,7 +131,8 @@ def _resolve_run_cap(config_cap: int | None, override: int | None) -> int | None
     override is None -> no override, use the config value.
     override == 0    -> UNLIMITED for this run (no per-run cap).
     override > 0     -> cap this run at that many swipes.
-    (The per-DAY cap still applies regardless — it's the standing safety floor.)
+    No cap is set by default in config.yaml. A positive hub/CLI override can add a
+    temporary per-run cap; zero can explicitly clear a configured per-run cap.
     """
     if override is None:
         return config_cap
@@ -370,6 +371,14 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             # below, so it unconditionally runs exactly once whenever this finally block is
             # reached, however run() exits.
             device_lock.release()
+        # Capture every terminal reason atomically BEFORE the transient "saving" stamp.
+        # Error is not the only durable result: out_of_profiles and rate_limited are exactly
+        # the explanations a person returning to the hub later needs to see.
+        before_save = status.snapshot()["apps"]
+        terminal_states = {
+            app: before_save.get(app, {}).get("state")
+            for app in cfg.enabled_apps
+        }
         for app in cfg.enabled_apps:
             status.set_app(app, state="saving")
         save_err = None
@@ -394,7 +403,10 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                 elif app in wedged_apps:
                     app_state = "wedged"
                 else:
-                    app_state = "stopped"
+                    prior = terminal_states.get(app)
+                    app_state = prior if prior in {
+                        "error", "out_of_profiles", "rate_limited", "stopped"
+                    } else "stopped"
                 status.set_app(app, state=app_state)
         tail = f"openers={tracker.calls} spend=${tracker.run_spend_usd:.4f}"
         if save_err is not None:

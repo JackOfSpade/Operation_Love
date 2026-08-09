@@ -26,7 +26,7 @@ def _extract_js_function(js: str, name: str) -> str:
     brace-matching from the definition to its close. Evaluating the REAL body with node
     (rather than asserting a substring) means a comment-only revert of the guarded logic
     can't fool the test — see the audit note this addresses."""
-    m = re.search(rf"function\s+{re.escape(name)}\s*\([^)]*\)\s*{{", js)
+    m = re.search(rf"(?:async\s+)?function\s+{re.escape(name)}\s*\([^)]*\)\s*{{", js)
     assert m, f"function {name} not found in hub.html"
     start = m.end() - 1                      # index of the opening '{'
     depth = 0
@@ -598,16 +598,14 @@ def test_eval_snapshot_returns_error_dict_when_compute_raises(monkeypatch):
     assert "refresh" in res
 
 
-def test_hub_max_per_run_fails_closed_on_invalid_input():
-    # Clearing/breaking the "max profiles this run" box must fall back to the configured cap
-    # (null on the wire = "use config"), never to 0 (which means UNLIMITED autonomous
-    # swiping) — unlimited must stay reachable ONLY via the explicit "unlimited" checkbox.
+def test_hub_max_per_run_invalid_input_delegates_to_config():
+    # Clearing/breaking the "max profiles this run" box sends null ("use config"), not
+    # the distinct explicit-unlimited override 0. The shipped config is itself uncapped,
+    # but this distinction matters if an operator later configures a standing ceiling.
     #
-    # Evaluated for real with node (not a substring check): a mutation audit proved the old
-    # substring-only version of this test still passed when the guarded fail-closed logic was
-    # fully reverted to fail OPEN, as long as the substring survived in a comment. Extracting
-    # computeMaxPerRun() as a pure named function lets the test feed it real inputs and assert
-    # on the RESULT instead.
+    # Evaluated for real with node (not a substring check): an earlier substring-only test
+    # passed after the input handling was gutted as long as the phrase survived in a comment.
+    # Extracting computeMaxPerRun() lets the test assert the actual result.
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     fn = _extract_js_function(_PAGE, "computeMaxPerRun")
@@ -616,10 +614,10 @@ def test_hub_max_per_run_fails_closed_on_invalid_input():
         ("observe", False, "8"),    # not auto mode -> always null, regardless of the box
         ("auto", True, "8"),        # unlimited checkbox -> 0, regardless of the box
         ("auto", True, ""),
-        ("auto", False, ""),        # empty box -> fail CLOSED (not unlimited)
-        ("auto", False, "abc"),     # non-numeric -> fail CLOSED
-        ("auto", False, "0"),       # typing 0 directly must NOT mean unlimited
-        ("auto", False, "-3"),      # negative -> fail CLOSED
+        ("auto", False, ""),        # empty box -> delegate to config
+        ("auto", False, "abc"),     # non-numeric -> delegate to config
+        ("auto", False, "0"),       # typing 0 directly delegates; checkbox owns explicit 0
+        ("auto", False, "-3"),      # negative -> delegate to config
         ("auto", False, "3.7"),     # parseInt truncates
         ("auto", False, "8"),       # a genuine positive cap is honored
     ]
@@ -755,6 +753,28 @@ def test_hubstate_start_apps_none_is_not_rejected(monkeypatch):
     assert seen["enabled_apps"] is None
 
 
+def test_hubstate_retains_final_status_after_run_thread_exits(monkeypatch):
+    import operation_love.hub as hub
+    from operation_love.status import RunStatus
+
+    def fake_run(config_path, **kwargs):
+        status = RunStatus("finished", ["hinge"], min_labels=40, mode="auto")
+        status.set_app("hinge", mode="auto", state="error", error="unrecognized screen")
+        status.set_global(running=False, phase="stopped")
+        kwargs["on_status"](status)
+
+    monkeypatch.setattr(hub.supervisor, "run", fake_run)
+    st = HubState("config.yaml")
+    ok, _ = st.start(mode="auto", apps=["hinge"])
+    assert ok is True
+    st._thread.join(timeout=5)
+
+    snap = st.snapshot()
+    assert snap["running"] is False               # HubState follows Thread.is_alive()
+    assert snap["status"] is not None             # final RunStatus is still available
+    assert snap["status"]["apps"]["hinge"]["state"] == "error"
+
+
 def test_hubstate_surfaces_systemexit_from_supervisor(monkeypatch):
     # supervisor.run raises SystemExit (a BaseException, not Exception) for a fatal startup
     # failure (e.g. missing cloud deps). It must surface in self._error like any other
@@ -835,6 +855,211 @@ def test_swipe_banner_gates_on_per_app_mode_not_global_mode():
         "console.log(JSON.stringify(selectObserveApps(status).map(a => a.state)));\n"
     )
     assert _run_node(script_b) == []
+
+
+def test_select_auto_apps_filters_to_auto_mode_only():
+    # selectAutoApps is renderAutoStatus's pure gating helper (mirrors selectObserveApps
+    # above for the auto-mode banner): an app's OWN mode decides whether it's included,
+    # not the global run mode, since apps.<app>.mode can override the run's mode per app.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fn = _extract_js_function(_PAGE, "selectAutoApps")
+    status = {
+        "mode": "observe",
+        "apps": {
+            "bumble": {"mode": "auto", "state": "error", "app": "bumble"},
+            "hinge": {"mode": "observe", "state": "waiting", "app": "hinge"},
+        },
+    }
+    script = (
+        fn + "\n"
+        "const status = " + json.dumps(status) + ";\n"
+        "console.log(JSON.stringify(selectAutoApps(status).map(a => a.app)));\n"
+    )
+    assert _run_node(script) == ["bumble"]
+
+    # Inverse: every app individually in 'observe' -> select none, even under a global
+    # 'auto' run mode. A global-mode-gated implementation would wrongly include hinge here.
+    status_b = {"mode": "auto", "apps": {"hinge": {"mode": "observe", "state": "waiting", "app": "hinge"}}}
+    script_b = (
+        fn + "\n"
+        "const status = " + json.dumps(status_b) + ";\n"
+        "console.log(JSON.stringify(selectAutoApps(status).map(a => a.app)));\n"
+    )
+    assert _run_node(script_b) == []
+
+
+def _autostatus_script(snap: dict) -> str:
+    """renderAutoStatus (unlike the pure selector functions above) touches the DOM via
+    `$('#autobanner')` -- shim just enough of that (a single fake element keyed by
+    selector) for node to run the REAL function body, same approach the tab-wake test
+    uses for `document`."""
+    fns = (_extract_js_function(_PAGE, "escHtml") + "\n"
+           + _extract_js_function(_PAGE, "selectAutoApps") + "\n"
+           + _extract_js_function(_PAGE, "renderAutoStatus"))
+    return (
+        "let el = {style:{display:''}, innerHTML:''};\n"
+        "function $(sel){ return sel === '#autobanner' ? el : null; }\n"
+        + fns + "\n"
+        "renderAutoStatus(" + json.dumps(snap) + ");\n"
+        "console.log(JSON.stringify({display: el.style.display, html: el.innerHTML}));\n"
+    )
+
+
+def test_render_auto_status_shows_error_box_with_worker_message():
+    # This is the hub-visible half of the supervisor fix: an auto-mode app that halted via
+    # worker.py's HALT-on-unexpected path (unrecognized screen / any other exception) must
+    # show that reason here, using the app's own `.error` message -- not just a raw log tail.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {
+        "running": True,
+        "status": {
+            "apps": {
+                "hinge": {"app": "hinge", "mode": "auto", "state": "error",
+                          "error": "UnlocatedControlError: unrecognized screen", "swipes_run": 3},
+            },
+        },
+    }
+    result = _run_node(_autostatus_script(snap))
+    assert result["display"] == "block"
+    assert "hinge" in result["html"]
+    assert "UnlocatedControlError: unrecognized screen" in result["html"]
+
+
+def test_render_auto_status_escapes_error_and_app_before_using_inner_html():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {
+        "running": False,
+        "status": {
+            "apps": {
+                "hostile": {"app": '<img src=x onerror="alert(1)">', "mode": "auto",
+                            "state": "error", "error": "bad <script>alert(2)</script>"},
+            },
+        },
+    }
+    result = _run_node(_autostatus_script(snap))
+    assert "<img" not in result["html"] and "<script" not in result["html"]
+    assert "&lt;img" in result["html"] and "&lt;script&gt;" in result["html"]
+
+
+def test_render_auto_status_shows_cold_start_defer_message():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {
+        "running": True,
+        "status": {
+            "apps": {
+                "bumble": {"app": "bumble", "mode": "auto", "state": "stopped",
+                           "last_decision": "defer", "swipes_run": 0},
+            },
+        },
+    }
+    result = _run_node(_autostatus_script(snap))
+    assert result["display"] == "block"
+    assert "cold-start" in result["html"]
+
+
+def test_render_auto_status_hides_without_auto_apps_but_survives_run_completion():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    # No auto-mode apps at all (only observe) -> hide.
+    snap_no_auto = {
+        "running": True,
+        "status": {"apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting"}}},
+    }
+    result_a = _run_node(_autostatus_script(snap_no_auto))
+    assert result_a["display"] == "none"
+
+    # A completed auto run must retain its terminal explanation. HubState.running follows
+    # Thread.is_alive(), so this is the state a person returning after the run sees.
+    snap_not_running = {
+        "running": False,
+        "status": {"apps": {"hinge": {"app": "hinge", "mode": "auto", "state": "error",
+                                           "error": "unrecognized screen"}}},
+    }
+    result_b = _run_node(_autostatus_script(snap_not_running))
+    assert result_b["display"] == "block"
+    assert "unrecognized screen" in result_b["html"]
+
+
+def test_render_auto_status_does_not_claim_running_after_the_run_ended():
+    """The banner deliberately outlives the run (see the test above), which makes the
+    fall-through branch's old assumption -- "not a known terminal state => the worker is
+    live" -- wrong once `running` is false. A run whose shutdown never reached its final
+    status.set_app leaves a non-terminal state like 'capturing' behind; pre-fix that
+    rendered a GREEN "hinge: running" box while the run pill said stopped -- directly
+    contradictory, and it hid the fact that the run ended abnormally."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {
+        "running": False,
+        "status": {
+            "apps": {
+                "hinge": {"app": "hinge", "mode": "auto", "state": "capturing", "swipes_run": 7},
+            },
+        },
+    }
+    result = _run_node(_autostatus_script(snap))
+    assert result["display"] == "block"
+    assert "running" not in result["html"]        # never claim a live worker after the run ended
+    assert "ended" in result["html"]              # ...say the run ended instead
+    assert "capturing" in result["html"]          # ...and surface the abnormal last state
+    assert "7 swipes this run" in result["html"]
+
+    # Same non-terminal state while the run IS live still reads as running.
+    live = {"running": True, "status": {"apps": {"hinge": dict(snap["status"]["apps"]["hinge"])}}}
+    assert "hinge: running" in _run_node(_autostatus_script(live))["html"]
+
+
+def test_tick_drives_real_auto_status_renderer_and_page_owns_banner_element():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    assert re.search(r'<div\s+id="autobanner"(?:\s|>)', _PAGE)
+    tick_fn = _extract_js_function(_PAGE, "tick")
+    script = (
+        "const calls = [];\n"
+        "async function getJSON(){ return {running:false,status:{apps:{}}}; }\n"
+        "function renderGlobal(){ calls.push('global'); }\n"
+        "function renderSwipe(){ calls.push('swipe'); }\n"
+        "function renderAutoStatus(){ calls.push('auto'); }\n"
+        + tick_fn + "\n"
+        "tick().then(() => console.log(JSON.stringify(calls)));\n"
+    )
+    assert _run_node(script) == ["global", "swipe", "auto"]
+
+
+def test_hub_auto_volume_control_defaults_to_unlimited():
+    tag = re.search(r'<input\b[^>]*\bid="unlimited"[^>]*>', _PAGE)
+    assert tag, "unlimited control missing"
+    assert re.search(r'\bchecked(?:\s|=|>)', tag.group(0)), (
+        "the shipped config is uncapped, so a normal hub start must not silently add a cap"
+    )
+
+
+def test_hub_start_handler_posts_explicit_unlimited_override():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    assert re.search(r"\$\('#start'\)\.onclick\s*=\s*startRunFromControls", _PAGE)
+    fns = (_extract_js_function(_PAGE, "escHtml") + "\n"
+           + _extract_js_function(_PAGE, "computeMaxPerRun") + "\n"
+           + _extract_js_function(_PAGE, "startRunFromControls"))
+    script = (
+        "const els = {hint:{textContent:''}, mode:{value:'auto'}, unlimited:{checked:true}, "
+        "maxrun:{value:'8'}, platnote:{innerHTML:''}};\n"
+        "function $(sel){ return els[sel.slice(1)]; }\n"
+        "function chosenApps(){ return ['hinge']; }\n"
+        "let posted = null;\n"
+        "async function postJSON(path, body){ posted={path,body}; return {ok:true,msg:'started'}; }\n"
+        "function tick(){}\n"
+        + fns + "\n"
+        "startRunFromControls().then(() => console.log(JSON.stringify(posted)));\n"
+    )
+    assert _run_node(script) == {
+        "path": "/api/start",
+        "body": {"mode": "auto", "apps": ["hinge"], "max_per_run": 0},
+    }
 
 
 def test_eval_snapshot_cold_start_single_flights_concurrent_pollers(monkeypatch):

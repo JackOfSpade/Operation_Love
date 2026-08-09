@@ -38,18 +38,33 @@ def test_opener_model_has_pricing_entry(cfg):
     )
 
 
-def test_limits_are_positive(cfg):
-    """Auto-mode caps must be positive integers so they actually cap something."""
+def test_shipped_opener_style_keeps_faithful_corey_framework_and_two_sentence_cap(cfg):
+    style = " ".join(cfg.opener.style.lower().split())
+    assert "90/10 framework" in style
+    assert "genuinely curious" in style
+    assert "do not force teasing into every opener" in style
+    assert "one open, easy to answer question" in style
+    assert "positive, fun conversation" in style
+    assert "brief greeting is optional" in style
+    assert "two sentences is the absolute maximum" in style
+    assert "exactly one concrete detail" in style
+    assert "never use an em dash or any hyphen" in style
+    assert "low investment so she chases" not in style
+    assert "tease her like a bratty little sister" not in style
+    assert "no interview questions" not in style
+
+
+def test_limits_are_uncapped_by_default(cfg):
+    """Auto-mode volume is deliberately uncapped by default (see config.yaml's `limits:`
+    block): a fixed numeric ceiling is itself a bot signature (an identical hard step
+    every run), so the shipped config must not set any of these by default. Timing remains
+    paced; the profile queue, real stop conditions, or a manual stop end the run.
+    """
     lim = cfg.limits
-    if lim.get("max_per_run") is not None:
-        assert lim["max_per_run"] > 0, "limits.max_per_run must be > 0"
-    if lim.get("max_per_day") is not None:
-        assert lim["max_per_day"] > 0, "limits.max_per_day must be > 0"
-    if lim.get("max_likes_per_run") is not None:
-        assert lim["max_likes_per_run"] > 0, "limits.max_likes_per_run must be > 0"
-    if lim.get("target_like_ratio") is not None:
-        ratio = lim["target_like_ratio"]
-        assert 0 < ratio < 1, f"limits.target_like_ratio must be in (0, 1), got {ratio}"
+    assert lim.get("max_per_run") is None
+    assert lim.get("max_per_day") is None
+    assert lim.get("max_likes_per_run") is None
+    assert lim.get("target_like_ratio") is None
 
 
 def test_shipped_config_actually_passes_validate():

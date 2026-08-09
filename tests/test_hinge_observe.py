@@ -8,11 +8,14 @@ which is enough for pass/none/stop/timeout; the region-based LIKE path is driven
 monkeypatching _split_diff with scripted (top, bottom) deltas. Real coordinates and
 diff thresholds are confirmed live on a finished profile (see hinge.py header).
 """
+import random
+
 import pytest
 
 from operation_love.drivers import hinge
 from operation_love.drivers.base import DriverClosed
 from operation_love.drivers.hinge import HingeDriver
+from operation_love.interaction import AutoSessionPolicy
 
 
 class _Cfg:
@@ -116,7 +119,10 @@ def test_capture_stops_when_scroll_repeats():
     drv = _drv(adb)
     profile = drv._capture_current()
     assert profile.photos == [b"a", b"b"]
-    assert profile.meta == {"app": "hinge"}
+    assert profile.meta["app"] == "hinge"
+    assert profile.meta["capture_frames"] == 2
+    assert profile.meta["read_scrolls"] == 2
+    assert profile.meta["read_dwell_s_total"] > 0
     assert adb.scrolls == 2
 
 
@@ -125,6 +131,87 @@ def test_capture_respects_scroll_capture_limit():
     drv = _drv(adb, scroll_captures=2)
     profile = drv._capture_current()
     assert profile.photos == [b"a", b"b"]
+
+
+def test_auto_policy_varies_read_geometry_dwell_and_only_raises_capture_ceiling(monkeypatch):
+    class Policy:
+        def __init__(self):
+            self.scroll_calls = []
+            self.dwell_calls = []
+
+        def sample_read_scroll(self, base_frac, depth):
+            self.scroll_calls.append((base_frac, depth))
+            return base_frac + depth * 0.005, 0.40 + depth * 0.01
+
+        def read_dwell(self, base_s, depth, complexity_hint):
+            self.dwell_calls.append((base_s, depth, complexity_hint))
+            return 0.2 + depth * 0.01
+
+    # The policy path may add zero, one, or two captures; pin the upper case and prove it is
+    # upward-only from the configured safety baseline rather than replacing it with a new cap.
+    monkeypatch.setattr(hinge.random, "randint", lambda _a, _b: 2)
+    adb = FakeAdb([f"f{i}".encode() for i in range(10)])
+    drv = _drv(adb, scroll_captures=8)
+    policy = Policy()
+    drv._auto_policy = policy
+
+    profile = drv._capture_current()
+
+    assert len(profile.photos) == 10
+    assert drv._profile_capture_limit == 10
+    assert policy.scroll_calls == [(0.55, i) for i in range(9)]
+    assert [depth for _base, depth, _hint in policy.dwell_calls] == list(range(9))
+    assert drv._capture_scroll_ledger == [
+        (0.55 + i * 0.005, 0.40 + i * 0.01) for i in range(9)
+    ]
+
+
+def test_real_auto_session_policy_drives_capture_geometry_dwell_and_metadata(monkeypatch):
+    adb = FakeAdb([f"frame-{i}".encode() for i in range(12)])
+    drv = _drv(adb, scroll_captures=8)
+    policy = AutoSessionPolicy(rng=random.Random(19), local_hour=lambda: 15)
+    drv.set_auto_session_policy(policy)
+    slept = []
+    monkeypatch.setattr(hinge.time, "sleep", lambda seconds: slept.append(seconds))
+
+    profile = drv._capture_current()
+
+    assert 8 <= len(profile.photos) <= 10
+    assert len(drv._capture_scroll_ledger) == len(profile.photos) - 1
+    assert len({round(frac, 4) for frac, _lane in drv._capture_scroll_ledger}) > 1
+    assert len({round(lane, 4) for _frac, lane in drv._capture_scroll_ledger}) > 1
+    assert len({round(seconds, 4) for seconds in slept}) > 1
+    assert profile.meta["app"] == "hinge"
+    assert profile.meta["capture_frames"] == len(profile.photos)
+    assert profile.meta["read_scrolls"] == len(drv._capture_scroll_ledger)
+    assert profile.meta["read_dwell_s_total"] == pytest.approx(sum(slept))
+
+
+def test_malformed_auto_policy_falls_back_to_existing_read_behavior():
+    class BrokenPolicy:
+        def sample_read_scroll(self, _base, _depth):
+            return float("nan"), 99
+
+        def read_dwell(self, _base, _depth, _hint):
+            raise RuntimeError("sampling failed")
+
+    class RecordingAdb(FakeAdb):
+        def __init__(self):
+            super().__init__([b"x"])
+            self.scroll_args = []
+
+        def scroll_up(self, distance_frac=0.55, x_frac=0.5):
+            self.scroll_args.append((distance_frac, x_frac))
+            super().scroll_up(distance_frac, x_frac)
+
+    adb = RecordingAdb()
+    drv = _drv(adb)
+    drv._auto_policy = BrokenPolicy()
+
+    drv._scroll_down_one()
+
+    assert adb.scroll_args == [(0.55, 0.5)]
+    assert drv._capture_scroll_ledger == [(0.55, 0.5)]
 
 
 # --- actions: NORMAL like only, opener as a comment ---------------------
@@ -407,6 +494,68 @@ def test_scroll_to_top_returns_to_true_top_not_just_matching_swipe_count(monkeyp
         f"scroll-to-top left the profile at position {adb.position:.3f} screens down from the "
         "top -- a like/opener can land on the wrong photo"
     )
+
+
+def test_auto_policy_undo_uses_ledger_but_not_a_one_for_one_reverse_replay(monkeypatch):
+    class Policy:
+        pass
+
+    # Six forward strokes total three screen-heights.  Pin the independent undo sampler at
+    # 1.2x the mean forward distance; screenshot settling therefore reaches the real top in
+    # five strokes, proving this is not a six-item reverse replay of the ledger.
+    monkeypatch.setattr(
+        hinge.random, "uniform", lambda low, _high: 1.20 if low >= 1.0 else 0.44)
+    adb = PositionTrackingAdb([b"x"])
+    drv = _drv(adb, scroll_captures=8, read_scroll_frac=0.55)
+    drv._auto_policy = Policy()
+    drv._capture_scroll_ledger = [
+        (0.46, 0.41), (0.50, 0.57), (0.54, 0.45),
+        (0.48, 0.60), (0.52, 0.39), (0.50, 0.53),
+    ]
+    drv._capture_scrolls = len(drv._capture_scroll_ledger)
+    adb.position = sum(frac for frac, _lane in drv._capture_scroll_ledger)
+    monkeypatch.setattr(HingeDriver, "_changed", lambda self, _a, _b: adb.position > 1e-9)
+
+    drv._scroll_to_top()
+
+    assert adb.swipes == 5
+    assert adb.position <= 1e-9
+    assert drv._capture_scroll_ledger == [] and drv._capture_scrolls == 0
+
+
+def test_auto_policy_undo_has_a_hard_ceiling_on_a_never_settling_screen(monkeypatch):
+    class Policy:
+        pass
+
+    monkeypatch.setattr(HingeDriver, "_changed", lambda self, _a, _b: True)
+    adb = FakeAdb([b"animated"])
+    drv = _drv(adb)
+    drv._auto_policy = Policy()
+    drv._capture_scroll_ledger = [(0.5, 0.5)] * 4
+    drv._capture_scrolls = 4
+
+    drv._scroll_to_top()
+
+    assert adb.swipes == 7                 # four recorded strokes + three safety attempts
+
+
+def test_auto_policy_undo_varies_distance_and_lane_across_profiles(monkeypatch):
+    class Policy:
+        pass
+
+    gestures = []
+    monkeypatch.setattr(HingeDriver, "_changed", lambda self, _a, _b: False)
+    drv = _drv(FakeAdb([b"stable"]))
+    drv._auto_policy = Policy()
+    monkeypatch.setattr(drv, "_swipe", lambda *args: gestures.append(args))
+
+    for _ in range(40):
+        drv._capture_scroll_ledger = [(0.46, 0.43), (0.58, 0.56)]
+        drv._capture_scrolls = 2
+        drv._scroll_to_top()
+
+    assert len({args[0] for args in gestures}) > 15             # x lane varies
+    assert len({args[3] - args[1] for args in gestures}) > 15   # reverse distance varies
 
 
 def test_current_profile_returns_to_top_after_observe_capture(monkeypatch):

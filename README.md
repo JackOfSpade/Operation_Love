@@ -96,13 +96,16 @@ extra installed.
   the ranker live** (transitions itself from `defer` → ready mid-session). No
   autonomous swiping. This is how you seed your taste — from real usage, not
   stock images.
-- **auto** — the bot swipes for you with the learned model, and every swipe is
-  still a label.
+- **auto** — the bot swipes for you with the learned model. Decisions are recorded
+  for stats and optional limits, but are not fed back as training labels.
 
 **Both apps are code-complete** (Bumble via Playwright, Hinge via host-side ADB +
 vision-located taps — no on-device helper, no emulator; see ops/HINGE-PIXEL-RUNBOOK.md),
-with autonomous-mode **rate limits** (`max_per_run` / `max_per_day`), a **stats**
-readout (`python -m operation_love stats`), and human-like pacing.
+with autonomous-mode volume deliberately **uncapped by default** (a fixed swipe quota
+is itself a bot signature; human-like pacing shapes the timing, while the profile queue,
+real stop conditions, or a manual stop end the run; optional `max_per_run` / `max_per_day`
+overrides are available under `limits:` if you ever want a temporary ceiling), a **stats** readout
+(`python -m operation_love stats`), and human-like pacing.
 
 Everything machine-independent is done and unit-tested (run `pytest` for the
 current suite/test count). The only remaining work needs your machine + a

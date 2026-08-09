@@ -93,15 +93,22 @@ from `defer` → ready mid-session.
 
 ```yaml
 mode: auto
-limits: { max_per_run: 60, max_per_day: 100 }   # human-like caps
 budget: { run_budget_usd: 5.00 }                # global opener cap (Claude)
 ```
 ```bash
 python -m operation_love
 ```
+- Volume is deliberately uncapped by default (`limits: {}` in config.yaml) — a fixed
+  swipe quota is itself a bot signature (identical hard stop, run after run). The
+  human-timing model (`pacing:`, session micro-breaks) shapes when actions happen; the
+  run ends when the profile queue runs out, a real stop condition occurs, or you stop it
+  manually. If you genuinely want a temporary ceiling (e.g. a supervised first auto
+  run), add it back under `limits: { max_per_run: 60, max_per_day: 100 }` or per-app
+  under `apps.<app>.limits`.
 - Bumble: swipes only (Bumble is the opener exception — no per-swipe message).
 - Hinge: likes with a Claude-written, profile-specific opener.
-- Every autonomous swipe is still a label, so it keeps improving.
+- Every autonomous swipe is recorded for stats and optional daily limits, but is not fed
+  back as a training label; learning remains grounded in your manual observe-mode swipes.
 
 ---
 
@@ -128,7 +135,7 @@ nohup python -m operation_love >> oplove.log 2>&1 &
 | See progress | `python -m operation_love stats` |
 | Learn from your swipes | `mode: observe`, then swipe |
 | Let it swipe | `mode: auto` |
-| Cap volume | `limits.max_per_run / max_per_day` |
+| Cap volume (optional; uncapped by default) | `limits.max_per_run / max_per_day` |
 | Cap spend | `budget.run_budget_usd` |
 | Force a device | `OPLOVE_DEVICE=cpu|cuda|mps` |
 | Run both apps at once | `enabled_apps: [bumble, hinge]` |

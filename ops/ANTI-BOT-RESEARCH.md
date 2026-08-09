@@ -203,7 +203,39 @@ or a face hash. Budget effort accordingly: account/face/number hygiene ≫ devic
   (no ADB; the only routes — Appium/WebDriverAgent helper or jailbreak — reintroduce the
   footprint/flags we engineered away).
 
+### Addendum 2026-08-09 — fixed caps removed (supersedes the cap decisions above)
+
+The lines above are kept as the historical record; this addendum states what actually ships
+now. The **default volume caps were removed** — `config.yaml` is `limits: {}`, so
+`max_per_run`, `max_per_day`, `max_likes_per_run` and `target_like_ratio` are all unset.
+The `RateLimiter` mechanism is retained (every field optional) for a deliberate temporary
+ceiling, e.g. a supervised run; nothing sets one by default.
+
+**Rationale (owner decision).** A fixed numeric ceiling is *itself* a bot signature: hitting
+the identical wall run after run is a hard step function under distribution analysis, which
+no human session boundary produces. Same reasoning retired the fixed-probability session
+micro-break (a flat 8%/swipe roll yields an exactly geometric gap distribution) in favor of a
+fatigue hazard that ramps with actions-since-break and re-rolls its own rate each stretch.
+Volume is now governed by the ranker's decisions plus the human-timing model; auto mode runs
+until the deck is exhausted, it hits an unrecognized screen state or error, or it is stopped.
+
+**Accepted risk, stated explicitly.** §1's behavioral row rates right-swipe ratio a
+HIGH-confidence signal (">70% bot-like; ~20–40% human"), and `target_like_ratio: 0.35` was
+its mitigation. It was **not** reinstated. The argument for accepting this: the ranker trains
+on the owner's own observe-mode labels, so its natural like rate should converge on the
+owner's real manual like rate — human by construction — whereas an artificial target would
+pull it *away* from that and force passes on profiles the model wants. The residual risk is
+that this holds only while the model is well-calibrated; the like rate is now an emergent
+property, not a governed one.
+
+**Open item:** the ranker's realized like rate is unmeasured. It is the quantity to watch if
+detection behavior ever looks off — see the §5 trigger below.
+
 ## 5. Re-check triggers
+- **Realized auto-mode like rate drifting high** (added 2026-08-09) — with `target_like_ratio`
+  unset, nothing holds the right-swipe ratio down. Measure it from the decision store; if it
+  approaches the ">70% bot-like" band in §1, treat that as a model-calibration problem first,
+  not a reason to reinstate an artificial cap.
 - Chromium/Playwright detection changes (CDP tricks come and go) → re-validate the patchright
   approach.
 - Play Integrity policy changes; and confirm whether Hinge enforces DEVICE vs STRONG.

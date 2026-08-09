@@ -7,7 +7,8 @@ import json
 import pytest
 
 from operation_love.opener.opener import (AnthropicOpener, OpenerError, OpenerParseError,
-                                          _image_media_type, _sanitize)
+                                          _SYSTEM, _image_media_type, _sanitize,
+                                          _sentence_count)
 from operation_love.perception.capture import Profile
 
 
@@ -99,8 +100,10 @@ class _FakeAnthropic:
         self.payload = payload
         self.stop_reason = stop_reason
         self.messages = self
+        self.last_kwargs = None
 
-    def create(self, **_):
+    def create(self, **kwargs):
+        self.last_kwargs = kwargs
         return _Resp(self.payload, self.stop_reason)
 
 
@@ -110,6 +113,50 @@ def test_generate_parses_index_and_sanitizes_dashes():
     res = op.generate(Profile(photos=[b"a", b"b"]), style="be cool")
     assert res.referenced_index == 3
     assert "—" not in res.opener and "-" not in res.opener
+
+
+def test_generate_sends_faithful_corey_opener_policy_and_structured_schema():
+    payload = json.dumps({"opener": "That pottery mug has a story. What happened?",
+                          "referenced": "pottery", "referenced_index": 0})
+    client = _FakeAnthropic(payload)
+    op = AnthropicOpener("claude-test", client=client)
+    op.generate(Profile(photos=[b"a"], bio="Weekend potter"), style="custom style")
+
+    request = client.last_kwargs
+    system = request["system"]
+    lowered = system.lower()
+    assert request["system"] == _SYSTEM
+    assert "90/10 framework" in system
+    assert "genuinely curious" in lowered
+    assert "do not force teasing into every opener" in lowered
+    assert "one open, easy-to-answer question" in lowered
+    assert "positive, fun conversation" in lowered
+    assert "brief greeting is optional" in lowered
+    assert "two sentences is the absolute maximum" in lowered
+    assert "exactly one concrete detail" in lowered
+    assert "never use an em dash or any hyphen" in lowered
+    assert "low investment so she chases" not in lowered
+    assert "tease her like a bratty little sister" not in lowered
+    schema = request["output_config"]["format"]["schema"]
+    assert set(schema["required"]) == {"opener", "referenced", "referenced_index"}
+
+    text_block = request["messages"][0]["content"][-1]["text"]
+    assert "STYLE GUIDE:\ncustom style" in text_block
+    assert "HER PROFILE TEXT:\nWeekend potter" in text_block
+    assert "profile in scroll order" in text_block
+
+
+def test_sentence_counter_and_generate_enforce_absolute_two_sentence_maximum():
+    assert _sentence_count("One profile-specific thought") == 1
+    assert _sentence_count("One thought. One easy question?") == 2
+    assert _sentence_count("Dr. Dolittle energy. What's the story?") == 2
+    assert _sentence_count("One. Two? Three!") == 3
+
+    payload = json.dumps({"opener": "One. Two? Three!",
+                          "referenced": "x", "referenced_index": 0})
+    op = AnthropicOpener("claude-test", client=_FakeAnthropic(payload))
+    with pytest.raises(OpenerParseError, match="two-sentence maximum"):
+        op.generate(Profile(photos=[b"a"]), style="s")
 
 
 def test_generate_defaults_bad_index_to_zero():

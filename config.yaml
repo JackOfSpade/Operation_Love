@@ -129,11 +129,24 @@ opener:
   max_tokens: 400
   request_timeout_s: 30        # seconds before a stalled Claude API call is abandoned
   style: |
-    Voice: Coach Corey Wayne ("How to Be a 3% Man"). Short, playful, teasing, cocky
-    and funny, relaxed and confident. ONE line, two at most. Low investment so SHE
-    chases. Tease her like a bratty little sister (never mean). Reference ONE concrete
-    detail from a specific photo or prompt. NO interview questions, NO long earnest
-    paragraphs, NO compliments on looks, NO greeting ("Hey"/"Hi"), NO pet names.
+    Use the dating and conversational principles associated with Coach Corey Wayne's
+    "How to Be a 3% Man", without copying his wording. Be a charming gentleman first:
+    relaxed, confident, playful, genuinely curious, and direct without pressure. Carry the
+    spirit of his 90/10 framework across the interaction: default to sincere interest and
+    easy confidence, and reserve light teasing or cheeky humor for the occasional profile
+    where it arises naturally. Do not force teasing into every opener. Ground this opener
+    in exactly ONE concrete detail from a specific photo or prompt. Make one clear, positive,
+    profile specific bid, then leave room for her reply. Favor a sincere observation, a direct
+    low pressure invitation, or one open, easy to answer question about that detail. Questions
+    should invite positive, fun conversation, not form an interview. Any teasing must be clearly
+    good natured and never belittling, arrogant, condescending, or mean. Mild innuendo is eligible
+    only when her own profile clearly invites that playful tone; never force it. A brief greeting
+    is optional but cannot substitute for profile specific substance. At most one authentic,
+    specific compliment is allowed; never pile on flattery or seek approval. Do not act as if
+    intimacy or romantic interest already exists. Keep the tone non needy and do not demand that
+    she chase. APPLICATION RULE: ONE short sentence is preferred and TWO sentences is the absolute
+    maximum. A second sentence may be one easy positive question or a direct low pressure invitation.
+    Do not try to build a text relationship in the opener.
     HARD RULE: never use an em dash or any hyphen; use commas or periods instead
     (write "physician assistant", not "PA-C").
 
@@ -152,12 +165,15 @@ budget:
 pacing:
   swipe_delay_s: 3.5      # typical pause between swipes (sometimes shorter/longer, organic tail)
 
-# --- Auto-mode safety caps (observe mode = your manual swipes, never capped) ---
-# Conservative, human-scale defaults (see the Bumble/Hinge anti-bot reviews): high
-# volume + a high right-swipe ratio is the most reliable bot signal. Override per
-# app under apps.<app>.limits.
-limits:
-  max_per_run: 30          # total swipes per app, per run (hub can override per-run in auto mode)
-  max_per_day: 50          # total swipes per app, per day
-  max_likes_per_run: 10    # hard cap: run STOPS when hit (keeps right-swipe count very human)
-  target_like_ratio: 0.35  # soft cap: demotes individual likes to passes to hold the running ratio
+# --- Auto-mode volume (deliberately uncapped) ---
+# A fixed numeric ceiling (e.g. "30 swipes, then stop") is itself a bot signature: run
+# after run hitting the identical wall shows up as a hard step function under
+# distribution analysis, which no human session boundary produces. Volume is instead
+# governed by the ranker's own decisions, and is deliberately not replaced by another
+# fixed stopping rule. Pacing and session micro-breaks shape the
+# timing; a run continues until the profile queue runs out, a real error/deferral occurs,
+# or it's stopped manually. Per-app overrides remain available
+# under apps.<app>.limits (RateLimiter treats every field as optional; None = no cap)
+# for cases where a temporary cap is genuinely wanted (e.g. a supervised test run),
+# but none are set by default.
+limits: {}

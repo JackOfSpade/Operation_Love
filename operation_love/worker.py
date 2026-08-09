@@ -23,6 +23,7 @@ from .config import PacingCfg
 from .drivers.base import DatingAppDriver, DriverClosed
 from .human import human_cooldown, human_delay
 from .human_motion import think_time_s
+from .interaction import AutoSessionPolicy
 from .ranker.decider import Decider, Decision
 
 _OBSERVE_CAPTURE_BUSY = "Capturing profile — please wait before your next swipe"
@@ -108,6 +109,11 @@ class Worker(threading.Thread):
 
     def run(self) -> None:
         backoff, restarts = 2.0, 0
+        # Publish the configured mode without touching the driver. In particular this must
+        # happen before open_session(): if opening an auto session fails, the error banner's
+        # per-app selector must not mistake the still-default AppStatus mode for "observe".
+        if self.status:
+            self.status.set_app(self.app, mode=self.mode)
         while not self.stop_event.is_set():
             try:
                 self._observe_loop() if self.mode == "observe" else self._auto_loop()
@@ -251,7 +257,40 @@ class Worker(threading.Thread):
     def _auto_loop(self) -> None:
         acted = 0
         liked = 0
-        today0 = self.store.count_today(self.app) if self.limiter else 0
+        # This state belongs to one auto session, not to the learned preference
+        # model.  It may only make a marginal model like more conservative; it
+        # never manufactures a like.  Fakes/third-party deciders need not expose
+        # the underlying model, hence the guarded configured-threshold lookup.
+        configured_threshold = getattr(getattr(self.decider, "model", None), "threshold", 0.5)
+        try:
+            configured_threshold = float(configured_threshold)
+        except (TypeError, ValueError):
+            configured_threshold = 0.5
+        if not 0.0 < configured_threshold < 1.0:
+            configured_threshold = 0.5
+        self._auto_policy = AutoSessionPolicy(base_threshold=configured_threshold)
+        # AndroidDriver exposes the policy through a deliberately optional
+        # hook.  Other drivers can ignore it, while lightweight fakes and older
+        # plugins still receive it through a harmless instance attribute.
+        install_policy = getattr(self.driver, "set_auto_session_policy", None)
+        if callable(install_policy):
+            install_policy(self._auto_policy)
+        else:
+            try:
+                setattr(self.driver, "_auto_policy", self._auto_policy)
+            except (AttributeError, TypeError):
+                pass
+        # Session micro-break fatigue model: re-rolled each stretch so a long run's
+        # break pattern isn't governed by one fixed hazard rate for its whole duration
+        # (see _maybe_session_break).
+        self._actions_since_break = 0
+        self._break_hazard = random.uniform(0.04, 0.14)
+        self._break_due_after = random.uniform(12, 35)
+        # A no-op RateLimiter (all fields None, the shipped default) is still truthy.
+        # Daily history is needed only for max_per_day; querying it for an uncapped run
+        # adds startup latency and can turn an irrelevant store read failure into a halt.
+        has_daily_limit = self.limiter is not None and self.limiter.max_per_day is not None
+        today0 = self.store.count_today(self.app) if has_daily_limit else 0
         today_acted = 0            # actions this worker made since today0 was last measured
         today_date = date.today()  # LOCAL day — matches the store's count_today() day boundary
         self.driver.open_session()
@@ -259,7 +298,7 @@ class Worker(threading.Thread):
         terminal_state = "stopped"            # overwritten below when the loop ends for a known reason
         try:
             while not self.stop_event.is_set():
-                if self.limiter:
+                if has_daily_limit:
                     today = date.today()
                     if today != today_date:
                         # Local midnight crossed mid-run — re-baseline against the new day
@@ -294,6 +333,12 @@ class Worker(threading.Thread):
                     print(f"{self.app.title()} ranker not ready (cold-start) — run in observe "
                           f"mode and swipe manually to seed it. Stopping {self.app}.")
                     break
+
+                # A session can decline a marginal model like according to its
+                # bounded fatigue/context state.  This happens before every
+                # limit check so a policy-demoted like neither consumes a like
+                # budget nor trips the running like-ratio guard.
+                d = self._auto_policy.apply_decision(d, profile).decision
 
                 # Per-run like budget: stop the run rather than mislabel a wanted
                 # like as a pass (keeps the right-swipe ratio human; see limits.py).
@@ -341,9 +386,15 @@ class Worker(threading.Thread):
                 acted += 1
                 today_acted += 1
 
+                # no_face still lands as a conservative pass in the pre-existing
+                # worker flow, even though its audit decision stays "no_face".
+                # The policy must count the physical action only after it landed.
+                landed_action = "like" if d.decision == "like" else "dislike"
+                self._auto_policy.record_landed_action(landed_action)
+
                 if self.opener_service.stop_requested:        # global budget/credit stop
                     self.stop_event.set()
-                self._pace(d.decision)                # d.decision is always "like"/"dislike"
+                self._pace(landed_action, profile=profile, score=d.score)
                 self._maybe_session_break()
         except Exception as exc:  # noqa: BLE001
             self._capture_failure_if_unexpected(exc)          # snapshot WHILE the transport is live
@@ -351,7 +402,11 @@ class Worker(threading.Thread):
         finally:
             self._finish_session(terminal_state)
 
-    def _pace(self, decision: str) -> None:
+    def _pace(self, decision: str, *, profile=None, score: float | None = None) -> None:
+        # ``0`` is the documented test/no-pacing setting.  Do not consume the
+        # session policy's random state merely to wait for zero seconds.
+        if self.pacing.swipe_delay_s == 0 and profile is not None:
+            return
         if not getattr(self.driver, "think_time_calibrated", False):
             # No app-specific calibration for this driver -> the flat, decision-agnostic
             # anchor (unchanged pre-existing behavior for e.g. Bumble).
@@ -363,15 +418,37 @@ class Worker(threading.Thread):
         # near-zero value collapse the wait to ~0 (Event.wait treats a negative timeout as
         # "return now"), i.e. machine-speed swiping on a live account.
         scale = self.pacing.swipe_delay_s / _THINK_TIME_BASELINE_S
+        policy = getattr(self, "_auto_policy", None)
+        if policy is not None and profile is not None:
+            # Keep the old direct-call behavior for diagnostics and legacy tests;
+            # actual auto-loop calls carry the real captured profile and score.
+            delay = policy.post_action_delay_s(decision, profile,
+                                                0.5 if score is None else score,
+                                                scale=scale)
+            self.stop_event.wait(delay)
+            return
         self.stop_event.wait(think_time_s("like" if decision == "like" else "pass") * scale)
 
     def _maybe_session_break(self) -> None:
-        """~8% chance of a 20-90 s micro-break between profiles — mimics stepping away."""
+        """Randomized micro-break between profiles — mimics stepping away.
+
+        Break likelihood ramps up the longer it's been since the last break (real
+        attention fatigue isn't memoryless), and both the hazard rate and the typical
+        interval are re-rolled after every break. A constant per-swipe probability
+        would instead produce an exactly geometric gap distribution — a detectable,
+        single-parameter bot signature no real human's break pattern has.
+        """
         if self.pacing.swipe_delay_s == 0:
             return
-        if random.random() < 0.08:
-            pause = random.uniform(20, 90)
+        self._actions_since_break += 1
+        fatigue = self._actions_since_break / self._break_due_after
+        p = self._break_hazard * min(fatigue, 2.5)
+        if random.random() < p:
+            pause = human_delay(45.0, sigma=0.5)
             print(f"{self.app.title()} session micro-break: {pause:.0f}s")
+            self._actions_since_break = 0
+            self._break_hazard = random.uniform(0.04, 0.14)
+            self._break_due_after = random.uniform(12, 35)
             self.stop_event.wait(pause)
 
     @staticmethod

@@ -85,6 +85,8 @@ class _FakeStore:
         self.closed = False
     def load_labels(self):
         return []
+    def count_today(self, app):
+        return 0                      # auto mode's rate limiter reads this before anything else
     def flush(self):
         if self.flush_error:
             raise self.flush_error    # raises here = the save-failure branch under test
@@ -97,6 +99,8 @@ class _FakeStore:
 def _run_with(monkeypatch, tmp_path, store):
     cfg_path = _write_cfg(tmp_path)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
     monkeypatch.setattr(sup, "make_store", lambda cfg: store)
     monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)   # don't touch process signals
@@ -110,7 +114,7 @@ def _run_with(monkeypatch, tmp_path, store):
 def test_clean_shutdown_reports_stopped(monkeypatch, tmp_path):
     snap = _run_with(monkeypatch, tmp_path, _FakeStore())
     assert snap["phase"] == "stopped"
-    assert all(a["state"] == "stopped" for a in snap["apps"].values())
+    assert all(a["state"] == "out_of_profiles" for a in snap["apps"].values())
 
 
 def test_null_per_app_limits_does_not_crash_worker_construction(monkeypatch, tmp_path):
@@ -122,6 +126,8 @@ def test_null_per_app_limits_does_not_crash_worker_construction(monkeypatch, tmp
     cfg_text = _CONFIG.replace("hinge: {}", "hinge:\n    limits:")
     cfg_path = _write_cfg(tmp_path, cfg_text)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
     monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
     monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
@@ -133,7 +139,7 @@ def test_null_per_app_limits_does_not_crash_worker_construction(monkeypatch, tmp
 
     snap = captured["status"].snapshot()
     assert snap["phase"] == "stopped"
-    assert all(a["state"] == "stopped" for a in snap["apps"].values())
+    assert all(a["state"] == "out_of_profiles" for a in snap["apps"].values())
 
 
 def test_flush_failure_reports_save_failed_and_reraises(monkeypatch, tmp_path):
@@ -151,6 +157,127 @@ def test_flush_failure_reports_save_failed_and_reraises(monkeypatch, tmp_path):
     snap = captured["status"].snapshot()
     assert snap["phase"] == "save_failed"                       # NOT a green "stopped"
     assert all(a["state"] == "error" for a in snap["apps"].values())
+
+
+def test_worker_error_state_survives_shutdown_not_overwritten_to_stopped(monkeypatch, tmp_path):
+    """Regression test for the bug this change fixes: worker.py's HALT-on-unexpected path
+    (run()'s `except Exception:` branch, auto mode or halt_on_error) publishes
+    state='error' on the app BEFORE it sets stop_event and returns. Pre-fix, run()'s
+    shutdown `finally` unconditionally stamped every enabled app's state to 'saving' and
+    then (with no wedged worker and no flush error) to a flat 'stopped' — silently erasing
+    the fact this run halted on an unexpected error and making it indistinguishable from a
+    clean end-of-queue stop. The app's FINAL published state after run() returns must still
+    say 'error'."""
+    class _ErrorDriver(DatingAppDriver):
+        def open_session(self):
+            raise RuntimeError("boom: simulated UnlocatedControlError-style halt")
+        def next_profile(self):
+            return None
+        def out_of_profiles(self):
+            return True
+        def like(self, opener=None, item_index=0):
+            pass
+        def dislike(self):
+            pass
+        def close(self):
+            pass
+
+    cfg_text = _CONFIG.replace("mode: observe", "mode: auto")
+    cfg_path = _write_cfg(tmp_path, cfg_text)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _ErrorDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+
+    captured = {}
+    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
+            stop_event=threading.Event())
+
+    snap = captured["status"].snapshot()
+    assert snap["apps"]["hinge"]["state"] == "error"     # NOT overwritten to "stopped"
+    assert snap["apps"]["hinge"]["error"]                # the worker's own message survived too
+    assert snap["apps"]["hinge"]["mode"] == "auto"       # even though open_session failed
+    assert snap["phase"] == "stopped"                    # the save itself still succeeded
+
+
+@pytest.mark.parametrize("terminal_state", ["out_of_profiles", "rate_limited"])
+def test_normal_terminal_reason_survives_successful_save(monkeypatch, tmp_path, terminal_state):
+    class _TerminalWorker:
+        def __init__(self, app, *args, status=None, mode="observe", **kwargs):
+            self.app = app
+            self.status = status
+            self.mode = mode
+        def start(self):
+            self.status.set_app(self.app, mode=self.mode, state=terminal_state)
+        def join(self, timeout=None):
+            pass
+        def is_alive(self):
+            return False
+
+    cfg_path = _write_cfg(tmp_path, _CONFIG.replace("mode: observe", "mode: auto"))
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "Worker", _TerminalWorker)
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+    captured = {}
+    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
+            stop_event=threading.Event())
+    assert captured["status"].snapshot()["apps"]["hinge"]["state"] == terminal_state
+
+
+def test_plain_stop_mid_run_reports_stopped_not_a_stale_non_terminal_state(monkeypatch, tmp_path):
+    """The other side of the rule the two tests above pin. A run the operator simply STOPS
+    mid-swipe has NO distinct terminal reason (no error, no empty queue, no rate limit), so
+    its durable per-app result must be a plain 'stopped'. Since shutdown now restores each
+    app's pre-'saving' state, the risk is the mirror image of the bug those tests cover:
+    a NON-terminal state left behind mid-run ('acting'/'scoring'/'capturing'/'saving') must
+    not be resurrected as the run's final answer — the hub would then show a live-looking
+    state for a run that has already ended."""
+    class _StoppedMidRunWorker:
+        """Publishes the mid-swipe state a real Worker publishes while acting, then exits
+        as soon as Stop lands — without publishing any terminal reason of its own."""
+        def __init__(self, app, driver, decider, openers, store, run_id, pacing, stop_event,
+                     *args, status=None, mode="observe", **kwargs):
+            self.app = app
+            self.status = status
+            self.mode = mode
+            self.stop_event = stop_event
+        def start(self):
+            self.status.set_app(self.app, mode=self.mode, state="acting")
+            # Stop pressed mid-run: armed only now, so it can't land on one of run()'s
+            # startup stop-checkpoints and abort before a worker was ever launched.
+            threading.Timer(0.05, self.stop_event.set).start()
+        def join(self, timeout=None):
+            pass
+        def is_alive(self):
+            return not self.stop_event.is_set()    # responsive: stops cleanly, never wedged
+
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "Worker", _StoppedMidRunWorker)
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+
+    captured = {}
+    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
+            stop_event=threading.Event())
+
+    snap = captured["status"].snapshot()
+    assert snap["phase"] == "stopped" and snap["running"] is False
+    app = snap["apps"]["hinge"]
+    assert app["state"] == "stopped"          # not the stale 'acting', not 'saving'
+    assert app["error"] is None               # a plain stop is not an error outcome
 
 
 class _CapsMlMissing(_Caps):

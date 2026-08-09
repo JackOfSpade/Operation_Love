@@ -1,10 +1,11 @@
-"""Rate limits — autonomous-mode safety caps to look human / avoid bans.
+"""Optional autonomous-mode volume and like-ratio controls.
 
 Applies to AUTO mode only (observe mode = your own manual swipes, never capped).
 Per-app caps on swipes per run and per day, plus a per-run cap on LIKES — the
 right-swipe is the action anti-bot systems weight most, so keeping likes well
 under the total swipe count holds the right-swipe ratio in a human range.
-Checked before each autonomous action.
+Every field is optional; the shipped configuration leaves them unset. When configured,
+they are checked before each autonomous action.
 """
 from __future__ import annotations
 

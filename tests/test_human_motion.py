@@ -56,8 +56,8 @@ def test_swipe_pressure_size_time_envelopes():
     assert all(0.0 <= p.size <= hm._SIZE_PEAK + 1e-9 for p in drag)
     # tip-down boundary samples ramp from/to the digitizer FLOOR, never 0 (real fingers don't
     # register a contact at zero pressure); only the tip=False release (s[-1]) carries 0.
-    assert abs(drag[0].pressure - hm._PRESSURE_FLOOR) < 1e-9
-    assert abs(drag[-1].pressure - hm._PRESSURE_FLOOR) < 1e-9
+    assert drag[0].pressure == drag[-1].pressure              # one sampled contact floor/stroke
+    assert hm._PRESSURE_FLOOR <= drag[0].pressure <= 0.28
     assert max(p.pressure for p in drag) > 0.5                   # peaks mid-stroke
     ts = [p.t for p in s]
     assert all(b > a for a, b in zip(ts, ts[1:]))               # time strictly increasing
@@ -77,8 +77,9 @@ def test_no_tip_down_sample_has_zero_pressure():
 def test_swipe_sample_count_tracks_fitts_duration():
     x1, y1, x2, y2 = 100, 100, 100, 1300
     s = plan_swipe(x1, y1, x2, y2, rng=random.Random(3))
-    n = round(fitts_duration_s(math.hypot(x2 - x1, y2 - y1)) * hm.REPORT_HZ)
-    assert len(s) == n + 2                                       # n+1 drag + 1 release
+    # Fitts is the central tendency; each stroke samples bounded duration and report cadence.
+    median_n = round(fitts_duration_s(math.hypot(x2 - x1, y2 - y1)) * hm.REPORT_HZ)
+    assert median_n * 0.6 < len(s) - 2 < median_n * 1.5          # n+1 drag + release
 
 
 def test_swipe_path_is_curved_not_straight():
@@ -97,9 +98,54 @@ def test_swipe_zero_length_does_not_crash():
 
 def test_tap_lands_near_target_with_release():
     s = plan_tap(540, 1200, rng=random.Random(5))
-    assert all(abs(p.x - 540) < 12 and abs(p.y - 1200) < 12 for p in s)  # micro-slip only
+    assert all(abs(p.x - 540) < 16 and abs(p.y - 1200) < 16 for p in s)  # bounded contact patch
     assert s[-1].tip is False and s[-1].pressure == 0.0
+    assert (s[-1].x, s[-1].y) == (s[-2].x, s[-2].y)              # release stays at contact
     assert max(p.pressure for p in s) > 0.3                     # a real pressure pulse
+
+
+def test_same_nominal_swipes_vary_kinematics_but_keep_safe_endpoints():
+    # Remove curvature/tremor here so velocity-envelope variation cannot be
+    # accidentally supplied by unrelated path noise.
+    plans = [plan_swipe(540, 1700, 540, 700, curve=0.0, jitter_px=0.0,
+                        rng=random.Random(seed)) for seed in range(80)]
+    assert all((p[0].x, p[0].y, p[-2].x, p[-2].y) == (540, 1700, 540, 700)
+               for p in plans)
+    durations = {round(p[-2].t, 4) for p in plans}
+    counts = {len(p) for p in plans}
+    def velocity_shape(plan):
+        speeds = [math.hypot(b.x - a.x, b.y - a.y) / (b.t - a.t)
+                  for a, b in zip(plan[:-2], plan[1:-1])]
+        peak = max(range(len(speeds)), key=speeds.__getitem__)
+        half = [i for i, speed in enumerate(speeds) if speed >= max(speeds) * 0.5]
+        return round(peak / len(speeds), 2), round((half[-1] - half[0]) / len(speeds), 2)
+    shapes = {velocity_shape(p) for p in plans}
+    def pressure_shape(plan):
+        drag = plan[:-1]
+        floor, peak = min(s.pressure for s in drag), max(s.pressure for s in drag)
+        span = peak - floor or 1.0
+        return tuple(round((drag[round(i * (len(drag) - 1) / 10)].pressure - floor) / span, 2)
+                     for i in range(11))
+    pressure_shapes = {pressure_shape(p) for p in plans}
+    assert len(durations) > 20 and len(counts) > 8
+    assert len(shapes) > 8 and len(pressure_shapes) > 20
+
+
+def test_taps_have_varied_bounded_aim_and_pressure_envelopes():
+    plans = [plan_tap(540, 1200, rng=random.Random(seed)) for seed in range(80)]
+    releases = {(round(p[-1].x), round(p[-1].y)) for p in plans}
+    peaks = {round(max(s.pressure for s in p), 3) for p in plans}
+    def pressure_shape(plan):
+        drag = plan[:-1]
+        floor, peak = min(s.pressure for s in drag), max(s.pressure for s in drag)
+        span = peak - floor or 1.0
+        return tuple(round((drag[round(i * (len(drag) - 1) / 10)].pressure - floor) / span, 2)
+                     for i in range(11))
+    shapes = {pressure_shape(p) for p in plans}
+    assert len(releases) > 20 and len(peaks) > 20 and len(shapes) > 12
+    assert all(abs(p[-1].x - 540) < 8 and abs(p[-1].y - 1200) < 8 for p in plans)
+    assert all((p[-1].x, p[-1].y) == (p[-2].x, p[-2].y) and p[-1].pressure == 0.0
+               for p in plans)
 
 
 def test_think_time_like_is_faster_than_pass():

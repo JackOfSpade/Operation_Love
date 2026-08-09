@@ -30,6 +30,8 @@ sample stream is intentionally unused at the report level.
 from __future__ import annotations
 
 import json
+import random
+import secrets
 import shlex
 import threading
 import time
@@ -91,16 +93,19 @@ class UhidTouch:
     def __init__(self, adb: Adb, *, hz: float = REPORT_HZ, rng=None, jitter_px: float = 2.2,
                  width_px: float = 180.0, enumerate_ms: int = 700, flush_ms: int = 150,
                  file_path: str = "/data/local/tmp/og_uhid_g.json",
-                 name: str = "og_touch", vid: int = 0x18D1, pid: int = 0x0C10):
+                 name: str | None = None, vid: int = 0x18D1, pid: int = 0x0C10):
         self.adb = adb
         self.hz = float(hz)
-        self._rng = rng
+        self._rng = rng if rng is not None else random
         self.jitter_px = float(jitter_px)
         self.width_px = float(width_px)
         self.enumerate_ms = int(enumerate_ms)
         self.flush_ms = int(flush_ms)
         self.file_path = file_path
-        self.name, self.vid, self.pid = name, vid, pid
+        # A run keeps one identity, but unrelated sessions do not all register the same
+        # globally fixed virtual-device name. Explicit names remain exact for calibration.
+        self.name = name if name is not None else f"og_touch_{secrets.token_hex(4)}"
+        self.vid, self.pid = vid, pid
         self._lock = threading.Lock()   # serialize gestures: one `hid <file>` run at a time
 
     # --- lifecycle (no persistent device; just geometry/cleanup) --------
@@ -123,17 +128,22 @@ class UhidTouch:
     # --- gesture -> hid file -------------------------------------------
     def _gesture_script(self, samples) -> bytes:
         w, h = self.adb.screen_size()
+        # File-backed hid cannot be made persistent under the stock shell constraints. Keep
+        # the proven baseline delays, but vary them upward in a bounded range per gesture so
+        # the registration/flush cadence is not a single fixed pair.
+        enumerate_ms = self.enumerate_ms + self._rng.randint(0, 180)
+        flush_ms = self.flush_ms + self._rng.randint(0, 90)
         cmds = [
             {"id": 1, "command": "register", "name": self.name, "vid": self.vid,
              "pid": self.pid, "bus": "usb", "descriptor": _build_descriptor(w, h)},
-            {"id": 1, "command": "delay", "duration": self.enumerate_ms},
+            {"id": 1, "command": "delay", "duration": enumerate_ms},
         ]
         for i, s in enumerate(samples):
             cmds.append({"id": 1, "command": "report", "report": _report(s, w, h)})
             if i < len(samples) - 1:
                 dt_ms = max(1, int(round((samples[i + 1].t - s.t) * 1000.0)))
                 cmds.append({"id": 1, "command": "delay", "duration": dt_ms})
-        cmds.append({"id": 1, "command": "delay", "duration": self.flush_ms})   # let the last event flush
+        cmds.append({"id": 1, "command": "delay", "duration": flush_ms})   # let the last event flush
         return ("\n".join(json.dumps(c) for c in cmds) + "\n").encode()
 
     def _run_gesture(self, samples) -> None:

@@ -84,12 +84,36 @@ def test_gesture_script_structure():
     ]
     cmds = _cmds(drv._gesture_script(samples))
     assert cmds[0]["command"] == "register" and cmds[0]["descriptor"]
-    assert cmds[1] == {"id": 1, "command": "delay", "duration": drv.enumerate_ms}
-    assert cmds[-1] == {"id": 1, "command": "delay", "duration": drv.flush_ms}
-    assert all(c["duration"] == 10 for c in cmds if c["command"] == "delay"
-               and c["duration"] not in (drv.enumerate_ms, drv.flush_ms))       # 0.01s -> 10ms
+    assert drv.enumerate_ms <= cmds[1]["duration"] <= drv.enumerate_ms + 180
+    assert drv.flush_ms <= cmds[-1]["duration"] <= drv.flush_ms + 90
+    report_delays = [c["duration"] for c in cmds[2:-1] if c["command"] == "delay"]
+    assert report_delays == [10, 10]                                              # 0.01s -> 10ms
     reports = [c["report"] for c in cmds if c["command"] == "report"]
     assert reports[0][8] == 1 and reports[-1][8] == 0                           # down ... up
+
+
+def test_uhid_delays_vary_per_gesture_but_never_undercut_safe_baselines():
+    drv = UhidTouch(FakeAdb(), rng=random.Random(21), name="explicit_name")
+    samples = [TouchSample(0.0, 100, 200, 0.5, 0.3, True),
+               TouchSample(0.02, 100, 200, 0.0, 0.0, False)]
+    pairs = []
+    for _ in range(30):
+        cmds = _cmds(drv._gesture_script(samples))
+        pairs.append((cmds[1]["duration"], cmds[-1]["duration"]))
+    assert len(set(pairs)) > 5
+    assert all(drv.enumerate_ms <= e <= drv.enumerate_ms + 180 and
+               drv.flush_ms <= f <= drv.flush_ms + 90 for e, f in pairs)
+
+
+def test_default_uhid_name_is_session_stable_and_explicit_name_is_preserved():
+    first, second = UhidTouch(FakeAdb()), UhidTouch(FakeAdb())
+    assert first.name.startswith("og_touch_") and first.name != second.name
+    samples = [TouchSample(0.0, 100, 200, 0.5, 0.3, True),
+               TouchSample(0.02, 100, 200, 0.0, 0.0, False)]
+    names = [_cmds(first._gesture_script(samples))[0]["name"] for _ in range(2)]
+    assert names == [first.name, first.name]  # one session identity, not per-gesture identity
+    explicit = UhidTouch(FakeAdb(), name="calibration_touch", vid=7, pid=9)
+    assert (explicit.name, explicit.vid, explicit.pid) == ("calibration_touch", 7, 9)
 
 
 def test_gesture_script_empty_is_noop():

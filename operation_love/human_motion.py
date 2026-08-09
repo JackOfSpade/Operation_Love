@@ -38,7 +38,9 @@ REPORT_HZ = 180.0                 # match the measured ~183 Hz digitizer rate
 _FITTS_A, _FITTS_B = 0.11, 0.17
 _DEFAULT_WIDTH_PX = 180.0
 
-# Lognormal tangential-velocity profile: peak at ~35% of MT, right-skewed.
+# Lognormal tangential-velocity profile: peak at ~35% of MT, right-skewed.  These
+# are population anchors, not a per-gesture template: plan_swipe samples bounded
+# per-stroke values around them below.
 _VEL_PEAK_FRAC, _VEL_SIGMA = 0.35, 0.18
 
 # Ornstein-Uhlenbeck tremor: mean-reversion rate (1/s) and pixel amplitude. The
@@ -58,6 +60,33 @@ _SIZE_PEAK = 0.55                # normalized; transport maps to raw contact-maj
 # Tap dwell (down->up): lognormal, median ~130 ms.
 _TAP_DWELL_MEDIAN_S, _TAP_DWELL_SIGMA = 0.13, 0.25
 _TAP_MICROSLIP_PX = 2.5          # finger-pad slide on impact
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+
+def _stroke_kinematics(r, hz: float):
+    """Draw bounded, per-stroke motor parameters around Pixel-calibrated anchors.
+
+    Fitts' law remains the *central tendency*, rather than making equal-distance
+    strokes mechanically identical. Bounds deliberately stay narrow enough that the
+    resulting report cadence, pressure and motion remain within the measured Pixel
+    range; this is variation in a person's strokes, not a new device calibration.
+    """
+    duration_scale = _clamp(r.lognormvariate(-0.5 * 0.13 ** 2, 0.13), 0.78, 1.30)
+    report_hz = _clamp(r.gauss(hz, 11.0), hz * 0.84, hz * 1.14)
+    return {
+        "duration_scale": duration_scale,
+        "report_hz": report_hz,
+        "peak_frac": _clamp(r.gauss(_VEL_PEAK_FRAC, 0.045), 0.25, 0.47),
+        "vel_sigma": _clamp(r.gauss(_VEL_SIGMA, 0.028), 0.12, 0.27),
+        "pressure_floor": r.uniform(_PRESSURE_FLOOR, 0.28),
+        "pressure_peak": r.uniform(0.82, _PRESSURE_PEAK),
+        "pressure_alpha": r.uniform(1.00, 1.55),
+        "pressure_beta": r.uniform(0.65, 1.20),
+        "size_peak": r.uniform(0.45, _SIZE_PEAK),
+    }
 
 # Per-decision think time: (shift_s, mu, sigma) for shifted-lognormal.
 _THINK = {
@@ -170,12 +199,13 @@ def plan_swipe(x1, y1, x2, y2, *, width_px=_DEFAULT_WIDTH_PX, curve=0.12,
     (tip=True for the drag, a final tip=False release). Endpoints land on target."""
     r = _rng(rng)
     dist = math.hypot(x2 - x1, y2 - y1)
-    dur = fitts_duration_s(dist, width_px)
-    n = max(2, int(round(dur * hz)))                       # inter-sample steps
+    kin = _stroke_kinematics(r, float(hz))
+    dur = fitts_duration_s(dist, width_px) * kin["duration_scale"]
+    n = max(2, int(round(dur * kin["report_hz"])))          # inter-sample steps
     dt = dur / n
     c1, c2 = _control_points((x1, y1), (x2, y2), curve, r)
     us, cum = _arclen_table((x1, y1), c1, c2, (x2, y2))
-    w = _velocity_weights(n)
+    w = _velocity_weights(n, kin["peak_frac"], kin["vel_sigma"])
     tot = sum(w) or 1.0
     cumw, acc = [], 0.0
     for wi in w:                                           # cumulative arc-length fraction
@@ -193,10 +223,11 @@ def plan_swipe(x1, y1, x2, y2, *, width_px=_DEFAULT_WIDTH_PX, curve=0.12,
             bx, by, nx, ny = x1, y1, 0.0, 0.0              # exact start, no jitter
         elif k == n:
             bx, by, nx, ny = x2, y2, 0.0, 0.0              # exact end, no jitter
-        env = _beta_ramp(k / n, 1.0)
+        env = _beta_ramp(k / n, 1.0, kin["pressure_alpha"], kin["pressure_beta"])
         samples.append(TouchSample(
             t=k * dt, x=bx + nx, y=by + ny,
-            pressure=_down_pressure(env), size=_SIZE_PEAK * env, tip=True))
+            pressure=_down_pressure(env, kin["pressure_peak"], kin["pressure_floor"]),
+            size=kin["size_peak"] * env, tip=True))
     last = samples[-1]
     samples.append(TouchSample(t=last.t + dt, x=last.x, y=last.y,
                                pressure=0.0, size=0.0, tip=False))   # release
@@ -209,21 +240,36 @@ def plan_tap(x, y, *, hz=REPORT_HZ, jitter_px=_TAP_MICROSLIP_PX, rng=None):
     r = _rng(rng)
     dwell = r.lognormvariate(math.log(_TAP_DWELL_MEDIAN_S), _TAP_DWELL_SIGMA)
     dwell = max(0.04, min(0.35, dwell))
-    n = max(2, int(round(dwell * hz)))
+    report_hz = _clamp(r.gauss(float(hz), 12.0), float(hz) * 0.84, float(hz) * 1.14)
+    n = max(2, int(round(dwell * report_hz)))
     dt = dwell / n
-    d0x, d0y = r.uniform(-1, 1) * jitter_px, r.uniform(-1, 1) * jitter_px
+    # Aim and release are allowed to wander inside a small, bounded contact patch.
+    # The transport caller still supplies the calibrated nominal target; drivers that need
+    # a larger landing patch must establish one explicitly rather than widening this blind.
+    aim_radius = max(1.0, float(jitter_px)) * r.uniform(0.7, 1.8)
+    aim_angle = r.uniform(0.0, 2.0 * math.pi)
+    aim_x, aim_y = x + aim_radius * math.cos(aim_angle), y + aim_radius * math.sin(aim_angle)
+    d0x, d0y = r.uniform(-1, 1) * jitter_px * 1.5, r.uniform(-1, 1) * jitter_px * 1.5
+    pressure_floor = r.uniform(_PRESSURE_FLOOR, 0.28)
+    pressure_peak = r.uniform(0.78, _PRESSURE_PEAK)
+    pressure_alpha, pressure_beta = r.uniform(0.85, 1.55), r.uniform(0.65, 1.30)
+    size_peak = r.uniform(0.42, _SIZE_PEAK)
     lam, ftremor = 35.0, 10.0
     samples = []
     for k in range(n + 1):
         tt = k * dt
         decay = math.exp(-lam * tt) * math.cos(2 * math.pi * ftremor * tt)
-        sx = x + d0x * decay + r.gauss(0.0, 0.15)
-        sy = y + d0y * decay + r.gauss(0.0, 0.15)
-        env = _beta_ramp(k / n, 1.0) if 0 < k < n else 0.0
+        sx = aim_x + d0x * decay + r.gauss(0.0, 0.22)
+        sy = aim_y + d0y * decay + r.gauss(0.0, 0.22)
+        env = _beta_ramp(k / n, 1.0, pressure_alpha, pressure_beta) if 0 < k < n else 0.0
         samples.append(TouchSample(t=tt, x=sx, y=sy,
-                                   pressure=_down_pressure(env),
-                                   size=_SIZE_PEAK * env, tip=True))
-    samples.append(TouchSample(t=n * dt + dt, x=x, y=y, pressure=0.0, size=0.0, tip=False))
+                                   pressure=_down_pressure(env, pressure_peak, pressure_floor),
+                                   size=size_peak * env, tip=True))
+    # Release at the last in-contact coordinate: snapping it back to the nominal target made
+    # every tap share an exact terminal point despite a moving contact patch.
+    last = samples[-1]
+    samples.append(TouchSample(t=n * dt + dt, x=last.x, y=last.y,
+                               pressure=0.0, size=0.0, tip=False))
     return samples
 
 

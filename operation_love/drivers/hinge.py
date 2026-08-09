@@ -57,6 +57,8 @@ browser-closed path) so the worker stops cleanly and flushes buffered labels.
 from __future__ import annotations
 
 import functools
+import math
+import random
 import time
 from pathlib import Path
 
@@ -321,6 +323,11 @@ class AndroidDriver(DatingAppDriver):
         self.coords = {**spec.coords, **(app_cfg.get("coords") or {})}
         self._adb: Adb | None = None
         self._capture_scrolls = 0     # read-scrolls the last _capture_current did; _scroll_to_top's ceiling
+        # Exact geometry of every forward scroll since the last confirmed top.  A count alone
+        # was enough while all read-scrolls had one fixed distance; auto-mode can now vary both
+        # distance and lane per gesture, so undo must be based on what actually happened.
+        self._capture_scroll_ledger: list[tuple[float, float]] = []
+        self._profile_capture_limit = self.scroll_captures
         self._touch = None            # touch transport: UhidTouch (genuine) or Adb (input fallback)
         self.touch_backend = app_cfg.get("touch_backend", "auto")   # auto | uhid | adb
         self._observe_ready = False   # True once open_session validated PIL/numpy + device
@@ -783,15 +790,116 @@ class AndroidDriver(DatingAppDriver):
         top, bot = _split_diff(a, b)
         return top >= self.change_threshold or bot >= self.change_threshold
 
-    def _scroll_down_one(self) -> None:
+    def _auto_behavior_policy(self):
+        """The optional auto-mode behavior policy, or None in observe/legacy callers.
+
+        Worker wiring deliberately owns whether this attribute exists.  Keeping the lookup
+        soft preserves the standalone driver and observe paths, including calibration tools
+        that construct AndroidDriver directly.
+        """
+        return getattr(self, "_auto_policy", None)
+
+    def set_auto_session_policy(self, policy) -> None:
+        """Attach Worker-owned behavior state for this autonomous session.
+
+        This redesign is calibrated for Hinge only. AndroidDriver also backs an
+        experimental Bumble path whose paid-control zones and reading geometry are
+        different, so it must retain its legacy plan. Observe mode never calls this
+        method and likewise retains calibrated legacy behavior.
+        """
+        self._auto_policy = policy if self.spec.app == "hinge" else None
+
+    def _sample_read_step(self, depth: int, complexity_hint: float | None):
+        """Return one coherent ``(dwell, distance, lane)`` read step.
+
+        The production policy draws all three dimensions together.  The older
+        split sampler hooks remain as a defensive compatibility fallback for
+        calibration tools and small test doubles.
+        """
+        policy = self._auto_behavior_policy()
+        planner = getattr(policy, "read_step", None) if policy is not None else None
+        if callable(planner):
+            try:
+                step = planner(depth, captured_frames=depth + 1)
+                dwell = float(step.dwell_s)
+                frac = float(step.fraction)
+                x_frac = float(step.x_frac)
+                if (math.isfinite(dwell) and dwell >= 0.0
+                        and math.isfinite(frac) and 0.10 <= frac <= 0.75
+                        and math.isfinite(x_frac) and 0.10 <= x_frac <= 0.90):
+                    return dwell, frac, x_frac
+            except Exception:  # noqa: BLE001 — sampling may degrade, touching may not
+                pass
+        return (self._sample_read_dwell(depth, complexity_hint),
+                *self._sample_read_scroll())
+
+    def _sample_read_scroll(self) -> tuple[float, float]:
+        """Choose one forward-scroll distance/lane, falling back to legacy geometry."""
+        policy = self._auto_behavior_policy()
+        sampler = getattr(policy, "sample_read_scroll", None) if policy is not None else None
+        if callable(sampler):
+            try:
+                frac, x_frac = sampler(self.read_scroll_frac, len(self._capture_scroll_ledger))
+                frac, x_frac = float(frac), float(x_frac)
+                # Reject malformed/extreme policy output before it can create an off-screen or
+                # near-edge gesture.  Paid-control intersections are still owned by _scroll's
+                # forbidden-zone guard; this is only geometry validation.
+                if (math.isfinite(frac) and math.isfinite(x_frac)
+                        and 0.10 <= frac <= 0.75 and 0.10 <= x_frac <= 0.90):
+                    return frac, x_frac
+            except Exception:  # noqa: BLE001 — behavior sampling may degrade, touching may not
+                pass
+        return self.read_scroll_frac, 0.5
+
+    def _sample_read_dwell(self, depth: int, complexity_hint: float | None) -> float:
+        """Choose the pause before a read-scroll; policy failures retain legacy pacing."""
+        policy = self._auto_behavior_policy()
+        sampler = getattr(policy, "read_dwell", None) if policy is not None else None
+        if callable(sampler):
+            try:
+                dwell = float(sampler(self.dwell_s, depth, complexity_hint))
+                if math.isfinite(dwell) and dwell >= 0.0:
+                    return dwell
+            except Exception:  # noqa: BLE001 — behavior sampling may degrade, touching may not
+                pass
+        return human_delay(self.dwell_s)
+
+    def _capture_limit_for_profile(self) -> int:
+        """Per-profile screencap ceiling.
+
+        Observe/legacy behavior remains exactly the configured value.  An auto policy opts
+        into a small upward-only variation, so the shipped safety baseline of eight is never
+        weakened and profile after profile does not terminate at one identical depth.
+        """
+        base = self.scroll_captures
+        policy = self._auto_behavior_policy()
+        if policy is None:
+            return base
+        sampler = getattr(policy, "capture_limit", None)
+        if callable(sampler):
+            try:
+                sampled = int(sampler(base))
+                if base <= sampled <= base + 2:
+                    return sampled
+            except Exception:  # noqa: BLE001 — keep the capture guard if sampling fails
+                pass
+        return base + random.randint(0, 2)
+
+    def _scroll_down_one(self, frac: float | None = None,
+                         x_frac: float | None = None) -> None:
         """One humanized forward read-scroll, ALWAYS going through here (never a bare
         `touch.scroll_up()` call) so self._capture_scrolls stays the single source of truth
         for "how far down from the last confirmed top are we right now". Both
         _capture_current's read loop and _locate_target_heart's own re-navigation scrolls use
         this — if either called touch.scroll_up() directly instead, _scroll_to_top's ceiling
         would silently under-count again exactly the way the hardcoded-distance bug did."""
-        self._scroll(self.read_scroll_frac)
-        self._capture_scrolls += 1
+        if frac is None or x_frac is None:
+            frac, x_frac = self._sample_read_scroll()
+        self._scroll(frac, x_frac)
+        # Append only after the transport accepted the gesture: a forbidden-zone refusal or
+        # transport failure must not leave a fictional scroll for _scroll_to_top to undo.
+        self._capture_scroll_ledger.append((frac, x_frac))
+        self._capture_scrolls = len(self._capture_scroll_ledger)
 
     def _scroll_to_top(self) -> None:
         """Swipe the profile back to the top (content down) until it stops moving.
@@ -811,10 +919,10 @@ class AndroidDriver(DatingAppDriver):
           leaves the profile scrolled down by N * (read_scroll_frac - 0.45) after N swipes,
           which compounds on a long profile (up to ~0.7 screen-heights short at the default
           scroll_captures=8). The two fractions must be tied together, not maintained as
-          separate magic numbers that can drift apart again -- so the undo-swipe's distance is
-          derived from read_scroll_frac, the exact mirror of touch.scroll_up's own geometry
-          (same y-extents, reversed direction), giving it the SAME travel distance as the
-          scroll it is undoing.
+          separate magic numbers that can drift apart again. Observe mode therefore mirrors
+          read_scroll_frac exactly. Auto mode instead derives a bounded mean from the real
+          forward-scroll ledger, then samples broader return strokes and relies on the
+          screenshot settle check below rather than replaying one exact reverse per forward.
 
         _changed() still ends the loop the moment the view settles (its own safety net against
         an animated/video card whose frames never settle); the count is a ceiling, not a
@@ -823,26 +931,57 @@ class AndroidDriver(DatingAppDriver):
         starts counting fresh from a confirmed top.
         """
         w, h = self.adb.screen_size()
-        max_swipes = max(1, self._capture_scrolls)
+        ledger = list(self._capture_scroll_ledger)
+
+        # Compatibility for tests/tools (and an in-flight pre-ledger driver) that only set
+        # _capture_scrolls.  Observe mode also keeps its old exact-mirror behavior when there
+        # is no auto policy, minimizing risk in the manual-label path.
+        if not ledger and self._capture_scrolls:
+            ledger = [(self.read_scroll_frac, 0.5)] * self._capture_scrolls
+        policy_mode = self._auto_behavior_policy() is not None
+        max_swipes = max(1, len(ledger))
+        if policy_mode and ledger:
+            # A few attempts beyond the recorded count are a hard safety margin for physical
+            # under-travel, not a target.  Screenshot settling still ends the loop as soon as
+            # the real top is reached.  The bound prevents animated/video cards from spinning.
+            max_swipes = len(ledger) + 3
         # Mirror of touch.scroll_up(read_scroll_frac): same y-extents, reversed direction, so
         # one undo-swipe travels exactly as far as one forward read-scroll.
-        y_near = int(h * (0.5 - self.read_scroll_frac / 2))   # scroll_up's END y (near top)
-        y_far = int(h * (0.5 + self.read_scroll_frac / 2))    # scroll_up's START y (near bottom)
+        legacy_frac = self.read_scroll_frac
+        mean_forward = (sum(frac for frac, _lane in ledger) / len(ledger)
+                        if ledger else legacy_frac)
         for _ in range(max_swipes):
+            if policy_mode and ledger:
+                # Undo in broader, independently varied strokes.  It intentionally is not a
+                # reverse replay of N forward gestures: real people return to the top with a
+                # different hand motion/count, while the settle check below remains the source
+                # of truth.  Keep enough headroom from screen edges and paid-control zones.
+                undo_frac = max(0.30, min(0.72, mean_forward * random.uniform(1.10, 1.28)))
+                x_frac = random.uniform(0.38, 0.62)
+            else:
+                undo_frac = legacy_frac
+                x_frac = 0.5
+            y_near = int(h * (0.5 - undo_frac / 2))
+            y_far = int(h * (0.5 + undo_frac / 2))
+            x = int(w * x_frac)
             before = self._screencap()
-            self._swipe(w // 2, y_near, w // 2, y_far)
+            self._swipe(x, y_near, x, y_far)
             time.sleep(human_delay(0.3))
             if not self._changed(before, self._screencap()):
                 break
-        self._capture_scrolls = 0     # confirmed (or ceiling-bounded) back at top: nothing outstanding
+        self._capture_scrolls = 0
+        self._capture_scroll_ledger = []   # confirmed (or ceiling-bounded) back at top
 
     # --- capture (Signals #1: read the whole profile, human-paced) ------
     def _capture_current(self) -> Profile | None:
         photos: list[bytes] = []
         self._current_sigs = []
         self._capture_scrolls = 0     # reset: _scroll_to_top must undo THIS capture, not a stale one
+        self._capture_scroll_ledger = []
+        self._profile_capture_limit = self._capture_limit_for_profile()
+        read_dwell_s_total = 0.0
         seen = set()
-        for i in range(self.scroll_captures):
+        for i in range(self._profile_capture_limit):
             frame = self._screencap()
             ds = _downsample(frame)                    # None if PIL/numpy unavailable or undecodable
             sig = _frame_sig(frame)
@@ -864,9 +1003,17 @@ class AndroidDriver(DatingAppDriver):
             # WRONG photo. Consumers below filter/guard the Nones.
             self._current_sigs.append(ds)
 
-            if i < self.scroll_captures - 1:
-                time.sleep(human_delay(self.dwell_s))  # actually read this card before scrolling
-                self._scroll_down_one()
+            if i < self._profile_capture_limit - 1:
+                complexity_hint = None
+                if ds is not None:
+                    try:
+                        complexity_hint = float(ds.std()) / 255.0
+                    except Exception:  # noqa: BLE001 — hint is optional, capture is not
+                        pass
+                dwell, frac, x_frac = self._sample_read_step(i, complexity_hint)
+                time.sleep(dwell)
+                read_dwell_s_total += dwell
+                self._scroll_down_one(frac, x_frac)
         # H1: in a real run (open_session validated PIL/numpy), every frame should
         # downsample. If none did, decode is broken at runtime (PIL/numpy failure OR a wedged
         # device returning empty/truncated screencap) — refuse to continue in a degraded mode
@@ -878,7 +1025,16 @@ class AndroidDriver(DatingAppDriver):
                 "device); refusing to run degraded — it would corrupt training labels")
         if self._dbg is not None and photos:
             self._dbg.action("capture", before=photos[0], photos=len(photos))   # first frame = who was scored
-        return Profile(photos=photos, prompts=[], meta={"app": self.spec.app})
+        return Profile(
+            photos=photos,
+            prompts=[],
+            meta={
+                "app": self.spec.app,
+                "capture_frames": len(photos),
+                "read_scrolls": len(self._capture_scroll_ledger),
+                "read_dwell_s_total": read_dwell_s_total,
+            },
+        )
 
     def next_profile(self) -> Profile | None:
         if self.out_of_profiles():
@@ -928,7 +1084,7 @@ class AndroidDriver(DatingAppDriver):
         # depth: on a real device a scroll can over/undershoot the intended frame, and without a
         # cap a target we've scrolled past costs a full wasted sweep before the fallback below
         # even starts (HINGE-05).
-        tries = min(self.scroll_captures + 1, item_index + 3)
+        tries = min(self._profile_capture_limit + 1, item_index + 3)
         matched_frame_no_heart = False
         for _ in range(tries):
             frame = self._screencap()

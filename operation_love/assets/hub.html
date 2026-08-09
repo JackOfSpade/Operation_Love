@@ -47,6 +47,7 @@
   <div class="row"><h1>Operation&nbsp;Love</h1><span id="runpill" class="pill stop">stopped</span></div>
   <div class="sub" id="sub">control hub · live status</div>
   <div id="swipebanner" style="display:none"></div>
+  <div id="autobanner" style="display:none"></div>
 
   <div class="card">
     <div class="row"><span class="muted">budget</span><span id="budget" class="b">—</span></div>
@@ -81,8 +82,8 @@
       <span class="muted">max profiles this run</span>
       <input type="text" inputmode="numeric" id="maxrun" value="8"
         style="width:72px;text-align:center;background:#22222b;color:#e8e8ea;border:1px solid rgba(255,255,255,.14);border-radius:7px;padding:5px 7px;font:inherit">
-      <label class="chk"><input type="checkbox" id="unlimited"> unlimited</label>
-      <span class="meta">(the per-day cap still applies)</span>
+      <label class="chk"><input type="checkbox" id="unlimited" checked> unlimited</label>
+      <span class="meta">(uncheck to set a temporary ceiling)</span>
     </div>
     <div class="controls" style="margin-top:12px">
       <button id="start" class="primary">▶ Start</button>
@@ -192,7 +193,49 @@ function renderSwipe(snap){
   el.style.display = 'block';
 }
 
-async function tick(){ try { const snap = await getJSON('/api/status'); renderGlobal(snap); renderSwipe(snap); } catch(e){} }
+function selectAutoApps(status){
+  if (!status || !status.apps) return [];
+  return Object.values(status.apps).filter(a => a.mode === 'auto');
+}
+// Keep auto-mode progress and terminal outcomes visible here instead of forcing the operator
+// to reconstruct them from the raw log tail. Per-app states distinguish unexpected errors,
+// deck exhaustion, rate limits, cold-start deferral, manual stops, and a live worker.
+function renderAutoStatus(snap){
+  const el = $('#autobanner'); if(!el) return;
+  const s = snap && snap.status;
+  // Unlike the live-only observe cue, this is also the durable result of a completed
+  // autonomous run. HubState.running follows Thread.is_alive(), so gating on it would
+  // hide the stop reason at exactly the moment a returning operator needs to see it.
+  if(!snap || !s){ el.style.display='none'; return; }
+  const autoApps = selectAutoApps(s);
+  if(!autoApps.length){ el.style.display='none'; return; }
+  const css = {err:'background:#3a1414;border:1px solid #ff6b6b;color:#ff8585',
+               idle:'background:#22222b;border:1px solid rgba(255,255,255,.14);color:#9a9aa2',
+               go:'background:#123a23;border:1px solid #39d98a;color:#39d98a'};
+  // Error messages may contain traceback text such as "<...>". Every dynamic field is
+  // escaped before it enters innerHTML; escHtml is a hoisted function declaration below.
+  const box = (k,t,sub) => `<div style="${css[k]};border-radius:10px;padding:12px 14px;margin-top:8px;font-weight:700;font-size:15px">${escHtml(t)}${sub?`<div style="font-weight:400;font-size:12px;opacity:.85;margin-top:3px">${escHtml(sub)}</div>`:''}</div>`;
+  el.innerHTML = autoApps.map(a => {
+    const st = a.state || '';
+    const swipes = a.swipes_run != null ? `${a.swipes_run} swipes this run` : '';
+    if(st==='error')    return box('err', `🔴 ${a.app} stopped — error`, a.error || 'unexpected error (see logs)');
+    if(st==='wedged')   return box('err', `🔴 ${a.app} stopped — worker did not exit cleanly`, a.error || swipes);
+    if(st==='out_of_profiles') return box('idle', `${a.app}: no more profiles`, swipes);
+    if(st==='rate_limited')    return box('idle', `${a.app}: stopped — rate limit reached`, swipes);
+    if(st==='stopped' && a.last_decision==='defer')
+      return box('idle', `${a.app}: stopped — ranker not ready (cold-start)`, 'run observe mode first');
+    if(st==='stopped') return box('idle', `${a.app}: stopped`, swipes);
+    // Fall-through = a non-terminal state (saving/capturing/scoring/acting). That only means
+    // "the worker is live" while the run actually IS live; since this banner now persists
+    // past the end of a run, a run that ended without reaching its final status.set_app would
+    // otherwise render a green "running" box next to a `stopped` run pill.
+    if(!snap.running) return box('idle', `${a.app}: ended — last state ${st||'unknown'}`, swipes);
+    return box('go', `${a.app}: running`, swipes);
+  }).join('');
+  el.style.display = 'block';
+}
+
+async function tick(){ try { const snap = await getJSON('/api/status'); renderGlobal(snap); renderSwipe(snap); renderAutoStatus(snap); } catch(e){} }
 
 function renderEval(e){
   if(!e) return;
@@ -358,18 +401,17 @@ function syncModeUI(){                         // the cap only applies in auto m
 $('#mode').onchange = syncModeUI;
 $('#unlimited').onchange = syncModeUI;
 // Pure + named (not inlined into the click handler) so the hub test suite can eval the real
-// fail-closed logic with node instead of asserting a substring a comment-only revert could
-// dodge. null = use config; 0 = unlimited; N = cap. Unlimited is ONLY reachable via the
-// explicit checkbox — an empty/non-numeric box must fail CLOSED to "use the configured cap"
-// (null), never to 0 (unlimited), or clearing a safety field would silently authorise
-// unlimited autonomous swiping.
+// input handling with node instead of asserting a substring a comment-only revert could
+// dodge. null = use config; 0 = unlimited; N = cap. The shipped UI defaults the explicit
+// checkbox to unlimited, matching config.yaml; if a configured cap is later restored, an
+// empty/non-numeric number box falls back to that config rather than overriding it.
 function computeMaxPerRun(mode, unlimitedChecked, rawValue){
   if (mode !== 'auto') return null;
   if (unlimitedChecked) return 0;
   const n = parseInt(rawValue, 10);
   return (Number.isFinite(n) && n > 0) ? n : null;
 }
-$('#start').onclick = async () => {
+async function startRunFromControls(){
   $('#hint').textContent='starting…';
   const mode = $('#mode').value;
   const max_per_run = computeMaxPerRun(mode, $('#unlimited').checked, $('#maxrun').value);
@@ -382,7 +424,8 @@ $('#start').onclick = async () => {
   $('#platnote').innerHTML = r.ok ? ''
     : `<span class="dot" style="background:#f0b429"></span>${escHtml(r.msg || 'could not start')}`;
   tick();
-};
+}
+$('#start').onclick = startRunFromControls;
 $('#stop').onclick = async () => { $('#hint').textContent='stopping…'; await postJSON('/api/stop',{}); tick(); };
 
 async function getReport(){          // generate fresh each time (Copy/Download do this implicitly)

@@ -221,6 +221,223 @@ def test_pace_maps_dislike_to_the_pass_think_time_bucket(monkeypatch):
     assert seen == ["pass"]
 
 
+def test_pace_uses_session_context_when_the_auto_loop_supplies_profile():
+    class _Policy:
+        def __init__(self):
+            self.calls = []
+
+        def post_action_delay_s(self, decision, profile, score, *, scale):
+            self.calls.append((decision, profile, score, scale))
+            return 8.25
+
+    class _Pacing2:
+        swipe_delay_s = 7.0
+
+    class _Stop:
+        def __init__(self): self.waits = []
+        def wait(self, seconds): self.waits.append(seconds)
+
+    w = Worker.__new__(Worker)
+    w.driver = _CalibratedDriver(0)
+    w.pacing = _Pacing2()
+    w.stop_event = _Stop()
+    w._auto_policy = policy = _Policy()
+    profile = Profile(photos=[b"x"], bio="hello")
+
+    w._pace("like", profile=profile, score=0.73)
+
+    assert policy.calls == [("like", profile, 0.73, 2.0)]
+    assert w.stop_event.waits == [8.25]
+
+
+def test_auto_session_policy_is_installed_and_counts_only_landed_final_action(monkeypatch):
+    """Worker owns session-policy lifecycle; the driver only receives its optional hook."""
+    from operation_love import worker as worker_mod
+
+    made = []
+
+    class _Adjusted:
+        def __init__(self, decision): self.decision = decision
+
+    class _Policy:
+        def __init__(self, *, base_threshold):
+            self.base_threshold = base_threshold
+            self.applied, self.landed = [], []
+            made.append(self)
+
+        def apply_decision(self, decision, profile):
+            self.applied.append((decision, profile))
+            # Simulate the real policy's only permitted decision change: a marginal
+            # model like becomes a pass before the action and rate-limit checks.
+            return _Adjusted(Decision("dislike", decision.score, decision.embedding,
+                                      "ranker_contextual"))
+
+        def record_landed_action(self, decision):
+            self.landed.append(decision)
+
+    class _PolicyDriver(FakeDriver):
+        def set_auto_session_policy(self, policy):
+            self.installed_policy = policy
+
+    monkeypatch.setattr(worker_mod, "AutoSessionPolicy", _Policy)
+    driver = _PolicyDriver(1)
+    decider = FakeDecider("like")
+    decider.model = type("Model", (), {"threshold": 0.61})()
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+
+    Worker("bumble", driver, decider, svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto").run()
+
+    policy = made[0]
+    assert policy.base_threshold == 0.61
+    assert driver.installed_policy is policy
+    assert len(policy.applied) == 1
+    assert policy.landed == ["dislike"]
+    assert driver.likes == [] and driver.dislikes == 1
+    assert store.decisions == [("bumble", "dislike", "auto")]
+
+
+# --- Session micro-break: fatigue-hazard model --------------------------
+class _NonZeroPacing:
+    swipe_delay_s = 3.5
+
+
+def _break_worker():
+    """A worker with nonzero pacing (breaks are a no-op at swipe_delay_s == 0) and
+    hand-set fatigue state, so each test controls fatigue directly rather than
+    depending on how many swipes happened to run first."""
+    w = _worker(FakeDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
+    w.pacing = _NonZeroPacing()
+    w._actions_since_break = 0
+    w._break_hazard = 0.08
+    w._break_due_after = 20.0
+    return w
+
+
+def test_session_break_low_fatigue_effectively_never_fires(monkeypatch):
+    """Right after a reset (fatigue ~ 1/20 = 0.05 -> p = 0.08*0.05 = 0.004), even a
+    fairly low random() draw must not trigger a break -- a fixed 8%-per-swipe roll
+    (the old behavior) would have fired here."""
+    from operation_love import worker as worker_mod
+    w = _break_worker()
+    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.01)
+    waited = []
+    monkeypatch.setattr(w.stop_event, "wait", lambda s: waited.append(s))
+    w._maybe_session_break()
+    assert waited == []                    # no break fired
+    assert w._actions_since_break == 1      # fatigue counter still advances
+
+
+def test_session_break_fires_once_fatigue_builds(monkeypatch):
+    """The SAME random() draw that doesn't fire at low fatigue must fire once
+    actions-since-break has run well past _break_due_after (fatigue capped at 2.5x
+    -> p = 0.08*2.0 = 0.16 here) -- proving the hazard actually ramps with fatigue
+    rather than staying at one constant rate."""
+    from operation_love import worker as worker_mod
+    w = _break_worker()
+    w._actions_since_break = 39            # -> 40 after increment; fatigue = 40/20 = 2.0
+    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.1)   # between 0.004 and 0.16
+    monkeypatch.setattr(worker_mod, "human_delay", lambda anchor, sigma=None: 42.0)
+    waited = []
+    monkeypatch.setattr(w.stop_event, "wait", lambda s: waited.append(s))
+    w._maybe_session_break()
+    assert waited == [42.0]
+    assert w._actions_since_break == 0      # reset after firing
+
+
+def test_session_break_hazard_is_capped_after_extreme_fatigue(monkeypatch):
+    from operation_love import worker as worker_mod
+    w = _break_worker()
+    w._actions_since_break = 999
+    # Capped p = .08 * 2.5 = .20, so .21 must not fire. Without the cap the raw
+    # fatigue multiplier makes p > 1 and every sufficiently old stretch breaks.
+    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.21)
+    waited = []
+    monkeypatch.setattr(w.stop_event, "wait", lambda s: waited.append(s))
+    w._maybe_session_break()
+    assert waited == []
+    assert w._actions_since_break == 1000
+    # The ceiling is still a fatigue hazard, not the old flat 8% roll: a draw between
+    # .08 and the capped .20 must fire once this stretch is extremely old.
+    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.15)
+    monkeypatch.setattr(worker_mod, "human_delay", lambda anchor, sigma=None: 42.0)
+    w._maybe_session_break()
+    assert waited == [42.0]
+
+
+def test_session_break_rerolls_hazard_and_interval_after_firing(monkeypatch):
+    """After a break fires, both _break_hazard and _break_due_after must be redrawn
+    (not left at the same value for the whole run) -- distinguishable sentinels from
+    random.uniform prove the specific new attrs get the specific new draws, in the
+    hazard-then-interval order the implementation calls them."""
+    from operation_love import worker as worker_mod
+    w = _break_worker()
+    w._actions_since_break = 39
+    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.0)   # always fires
+    monkeypatch.setattr(worker_mod, "human_delay", lambda anchor, sigma=None: 1.0)
+    monkeypatch.setattr(w.stop_event, "wait", lambda s: None)
+    draws = iter([0.1234, 27.5])           # first call -> hazard, second -> due_after
+    monkeypatch.setattr(worker_mod.random, "uniform", lambda a, b: next(draws))
+    w._maybe_session_break()
+    assert w._break_hazard == 0.1234
+    assert w._break_due_after == 27.5
+
+
+def test_session_break_pause_is_lognormal_not_flat_uniform(monkeypatch):
+    """The pause duration comes from human_delay(45.0, sigma=0.5) -- a log-normal
+    draw -- not the old flat random.uniform(20, 90)."""
+    from operation_love import worker as worker_mod
+    w = _break_worker()
+    w._actions_since_break = 39
+    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.0)   # always fires
+    seen = {}
+
+    def _fake_human_delay(anchor, sigma=None):
+        seen["args"] = (anchor, sigma)
+        return 7.0
+
+    monkeypatch.setattr(worker_mod, "human_delay", _fake_human_delay)
+    monkeypatch.setattr(worker_mod.random, "uniform", lambda a, b: 0.09)
+    waited = []
+    monkeypatch.setattr(w.stop_event, "wait", lambda s: waited.append(s))
+    w._maybe_session_break()
+    assert seen["args"] == (45.0, 0.5)
+    assert waited == [7.0]
+
+
+def test_auto_loop_initializes_session_break_fatigue_state(monkeypatch):
+    """_auto_loop must set up the fatigue instance state (not just _maybe_session_break
+    assuming it exists) so a fresh run's first micro-break check doesn't crash on a
+    missing attribute."""
+    driver = FakeDriver(2)
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    stop_event = threading.Event()
+    monkeypatch.setattr(stop_event, "wait", lambda s=None: None)   # keep the test instant
+    w = Worker("bumble", driver, FakeDecider("dislike"), svc, store, "run1", _NonZeroPacing(),
+               stop_event, mode="auto")
+    w.run()
+    assert w._actions_since_break >= 0
+    assert 0.04 <= w._break_hazard <= 0.14
+    assert 12 <= w._break_due_after <= 35
+    assert driver.dislikes == 2
+    assert stop_event.is_set() is False
+
+
+def test_unlimited_limiter_does_not_query_irrelevant_daily_history():
+    class _NoDailyReadStore(FakeStore):
+        def count_today(self, app):
+            raise AssertionError("count_today must not run without max_per_day")
+
+    driver = FakeDriver(2)
+    store = _NoDailyReadStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    Worker("bumble", driver, FakeDecider("dislike"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", limiter=RateLimiter()).run()
+    assert driver.dislikes == 2
+
+
 # --- Worker loop ---------------------------------------------------------
 def test_worker_dislikes_whole_deck():
     driver = FakeDriver(3)

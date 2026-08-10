@@ -122,12 +122,85 @@ quality_filter:
   metric: clipiqa              # pyiqa metric; drops blurry/low-quality photos
   min_score: 0.30
 
-# --- Opener (Claude) ---
+# --- Opener (Gemini free tier, with ordered fallback) ---
 opener:
   enabled: true
-  model: claude-opus-4-8       # best quality; swap to claude-sonnet-4-6 for ~1.7x lower cost, or claude-haiku-4-5 for ~5x lower cost
-  max_tokens: 400
-  request_timeout_s: 30        # seconds before a stalled Claude API call is abandoned
+  provider: gemini
+  # `model` remains supported for legacy single-model configurations. New Gemini runs
+  # try `models` in order when a free-tier model has no capacity.
+  model: gemini-3.6-flash
+  # QUALITY-DESCENDING cascade, EMPIRICALLY VERIFIED live against the real Gemini API with
+  # this project's exact request shape (inline image + responseJsonSchema + thinkingConfig)
+  # -- every one of these seven returned a valid opener when probed directly. Free-tier
+  # daily capacity (RPD = requests/day) is roughly: 20 RPD each for the three Flash models
+  # (gemini-3.6-flash, gemini-3.5-flash, gemini-3-flash-preview), 500 RPD each for the two
+  # Flash Lite models, and 14,400 RPD each for the two Gemma models below -- about
+  # 29,900 requests/day of TOTAL capacity across the cascade, vastly more than a
+  # human-paced bot can burn through in a session. An entry is dropped for the REST OF THIS
+  # RUN ONLY the first time it either (a) returns a per-DAY quota 429 (RPD resets at
+  # midnight Pacific), or (b) returns HTTP 404 NOT_FOUND, meaning the model id has been
+  # retired / is no longer available to this account -- MEASURED directly: gemini-2.5-flash
+  # and gemini-2.5-flash-lite were both still listed by ListModels with generateContent
+  # support, yet 404d on every real generateContent call, which is why they were removed
+  # from this list entirely rather than kept as a hopeful fallback. A per-MINUTE 429 is
+  # transient and does NOT drop the model (see GeminiOpener.generate). gemini-3-flash-preview
+  # is a preview id, which Google can retire without notice -- that risk is now acceptable
+  # to take because a 404 on any ONE model only retires that model from the cascade for the
+  # rest of the run; it no longer takes the other six down with it (see opener/opener.py's
+  # generate() 404 handling and opener/service.py's _permanent_reason docstring). The two
+  # Gemma models sit last because they are smaller open models rather than Gemini proper,
+  # and their free-tier 16K tokens-per-minute cap is low enough that a full 8-screenshot
+  # request can hit a per-minute limit on its own -- that is fine, since a per-minute 429
+  # just cascades to the next model without retiring anything.
+  models: [gemini-3.6-flash, gemini-3.5-flash, gemini-3-flash-preview, gemini-3.5-flash-lite,
+           gemini-3.1-flash-lite, gemma-4-31b-it, gemma-4-26b-a4b-it]
+  # Per-model generationConfig.thinkingConfig, passed through verbatim (see
+  # GeminiOpener._payload). Thinking is ON BY DEFAULT for every model above, and thought
+  # tokens are billed against max_tokens below -- an entry is REQUIRED for every model in
+  # `models` (config.py's validate() enforces this) so nobody ships a model silently running
+  # at its default (often "high") thinking level, which can burn the whole token budget and
+  # return no opener text at all. All seven models below are on the family that uses
+  # thinkingLevel (minimal/low/medium/high) rather than the older thinkingBudget (int; 0
+  # disables) -- EMPIRICALLY VERIFIED: all seven accepted {"thinkingLevel": "minimal"} in a
+  # live probe. Sending the wrong field name for a model's family is a guaranteed 400.
+  thinking:
+    gemini-3.6-flash:       { thinkingLevel: minimal }
+    gemini-3.5-flash:       { thinkingLevel: minimal }
+    gemini-3-flash-preview: { thinkingLevel: minimal }
+    gemini-3.5-flash-lite:  { thinkingLevel: minimal }
+    gemini-3.1-flash-lite:  { thinkingLevel: minimal }
+    gemma-4-31b-it:         { thinkingLevel: minimal }
+    gemma-4-26b-a4b-it:     { thinkingLevel: minimal }
+  # Raised from 400: thought tokens share this same budget (see `thinking` above), and at
+  # 400 a model can burn the entire budget thinking and return finishReason=MAX_TOKENS with
+  # NO text at all -- a billed call and no opener, on every profile. Output tokens are free
+  # on the Google free tier, so this headroom is nearly costless; the real constraint on
+  # this tier is requests/day, not tokens/request.
+  max_tokens: 2048
+  # Owner rule (2026-08-10): no commentless likes, ever. A rejected AI response (bad/empty
+  # opener, fails the style rules, etc.) is re-asked with a correction hint instead of being
+  # sent as-is or swapped for a bare like. Free-tier REQUESTS/day are the scarce resource
+  # here, not tokens (see max_tokens above), so spending up to 5 requests re-asking is cheap
+  # insurance against wasting an entire profile on one bad draw. If all max_attempts fail,
+  # something is systemically wrong (a broken prompt, a misbehaving model, ...) rather than
+  # one unlucky generation, so the run stops instead of ever sending a like with no opener.
+  # Accepted range is 1-15 (config.py's validate(), _MAX_ATTEMPTS_CEILING): each attempt is a
+  # real, billed, quota-consuming call, and a rejected-content retry does NOT advance the
+  # model cascade above -- it re-hits the SAME model -- so an uncapped value could burn a
+  # whole day's 20-request quota of one of this cascade's best models on a single stubborn
+  # profile. 15 already triples this reference point; see config.py for the full arithmetic.
+  max_attempts: 5
+  # Seconds before a stalled provider API call is abandoned. MEASURED, not guessed: a real
+  # 8 screenshot Hinge profile uploads several MB of inline image data and then waits on
+  # generation, and 30s was not enough (a live test timed out mid request). A timeout is the
+  # worst failure mode here because the call is abandoned rather than cascaded, so the
+  # profile gets no opener at all; the bot is human paced anyway, so a generous ceiling costs
+  # nothing on the happy path and only ever applies when something is genuinely stuck.
+  # Accepted range is (0, 180] seconds (config.py's validate(), _MAX_REQUEST_TIMEOUT_S): this
+  # is the only bound on how long ONE call can run, so an unbounded value here would defeat
+  # opener.max_attempts' own ceiling above by letting a single stalled call hang a profile
+  # indefinitely. 180s is 2x this measured 90s worst case.
+  request_timeout_s: 90
   style: |
     Use the dating and conversational principles associated with Coach Corey Wayne's
     "How to Be a 3% Man", without copying his wording. Be a charming gentleman first:
@@ -154,12 +227,22 @@ opener:
 budget:
   run_budget_usd: 5.00         # stop spending on openers past this, per run
   # day_budget_usd: 10.00      # optional: hard daily ceiling across all runs (queries store at startup)
-  on_exhausted: stop           # stop | swipe_without_opener
-  # $ per 1,000,000 tokens, per model (used for client-side spend tracking)
+  # There used to be an on_exhausted: stop | swipe_without_opener setting here. The owner
+  # ruled out commentless likes entirely (2026-08-10), so swipe_without_opener no longer
+  # exists as an option -- stopping is the run's only response once openers are exhausted
+  # or budget.run_budget_usd is reached. See opener.max_attempts above for the setting that
+  # replaced it: how many times a rejected AI response is re-asked before the run stops.
+  # $ per 1,000,000 tokens, per model (used for client-side spend tracking).
+  # These zero prices are ONLY for the explicitly selected Google free tier. Update every
+  # Gemini row to the current paid prices before enabling Google Cloud billing.
   pricing:
-    claude-opus-4-8:   { input: 5.0, output: 25.0, cache_read: 0.50, cache_write: 6.25 }
-    claude-sonnet-4-6: { input: 3.0, output: 15.0, cache_read: 0.30, cache_write: 3.75 }
-    claude-haiku-4-5:  { input: 1.0, output: 5.0,  cache_read: 0.10, cache_write: 1.25 }
+    gemini-3.6-flash:       { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
+    gemini-3.5-flash:       { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
+    gemini-3-flash-preview: { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
+    gemini-3.5-flash-lite:  { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
+    gemini-3.1-flash-lite:  { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
+    gemma-4-31b-it:         { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
+    gemma-4-26b-a4b-it:     { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
 
 # --- Human-like pacing (log-normal spread around the anchor; see human.py) ---
 pacing:

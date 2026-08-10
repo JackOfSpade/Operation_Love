@@ -22,7 +22,7 @@ from . import config as cfg_mod
 from . import platforms
 from .costing import CostTracker
 from .drivers import make_driver
-from .opener.opener import AnthropicOpener
+from .opener.opener import GeminiOpener
 from .limits import RateLimiter
 from .opener.service import OpenerService
 from .ranker import make_store
@@ -35,7 +35,46 @@ from .vision.quality import QualityFilter
 from .worker import Worker
 
 _STATUS_POLL_INTERVAL_S = 0.5
-_WORKER_JOIN_TIMEOUT_S = 30.0   # module constant so tests can shrink it instead of sleeping 30s
+
+# The join timeout below run()'s shutdown `finally` gives each worker to notice stop_event and
+# return on its own, before it's reported (and treated) as WEDGED -- see that block's own
+# comments for what "wedged" costs (the store gets flushed/closed while a wedged worker may
+# still be about to write to it).
+#
+# A worker can legitimately be blocked inside ONE already-in-flight opener HTTP request when
+# Stop lands: every should_stop check in the opener call chain (OpenerService.maybe_opener,
+# GeminiOpener.generate) runs BETWEEN attempts/models, never while a request is actually on the
+# wire, so the worst case is bounded by cfg.opener.request_timeout_s, not by max_attempts or the
+# model cascade length (see opener.py's/service.py's own should_stop docstrings for why that
+# bound holds). The old flat _WORKER_JOIN_TIMEOUT_S = 30.0 predates that cancellation work and
+# is now too short whenever openers are enabled with the shipped 90s request_timeout_s: a
+# perfectly healthy worker riding out that one call gets misreported as wedged.
+#
+# _WORKER_JOIN_TIMEOUT_MARGIN_S is headroom for the REST of a worker's own shutdown path after
+# that one call returns -- closing the driver, capturing a failure snapshot, the loop's own
+# finally -- so a worker that finishes at (or a moment after) the request timeout doesn't get
+# flagged wedged by its own ordinary cleanup work.
+#
+# Arithmetic at the shipped default (opener.request_timeout_s=90s):
+#   90.0 (one in-flight opener call) + 15.0 (shutdown-path margin) = 105.0s
+# -- comfortably more than the stale 30.0s constant, and still a bounded wait, not "forever".
+#
+# When openers are disabled (cfg.opener.enabled=False -> OpenerService(client=None, ...), or no
+# client configured), no opener HTTP call can ever be in flight, so there's nothing analogous to
+# ride out -- _WORKER_JOIN_TIMEOUT_FLOOR_S (the ORIGINAL flat constant, unchanged) applies
+# instead, keeping those runs exactly as responsive to a genuinely wedged worker as before.
+_WORKER_JOIN_TIMEOUT_FLOOR_S = 30.0
+_WORKER_JOIN_TIMEOUT_MARGIN_S = 15.0
+
+
+def _worker_join_timeout_s(cfg) -> float:
+    """How long run()'s shutdown gives each worker to notice stop_event before it's reported
+    wedged -- see the constants above for the arithmetic. A function of cfg (not a module
+    constant) because the right bound depends on whether THIS run's openers are enabled and, if
+    so, how long a single opener call is allowed to run -- both are per-config, not fixed."""
+    if cfg.opener.enabled:
+        return cfg.opener.request_timeout_s + _WORKER_JOIN_TIMEOUT_MARGIN_S
+    return _WORKER_JOIN_TIMEOUT_FLOOR_S
 
 
 def _android_app(enabled_apps: list[str]) -> str | None:
@@ -185,6 +224,36 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         raise ValueError(unrunnable)   # same exception type cfg_mod.validate() raises for this
 
     cfg_mod.validate(cfg)
+    # Gemini uses the stdlib REST transport, so there is no SDK capability gate. Check
+    # credentials here, before status/store/model setup, to avoid an expensive startup
+    # followed by an inevitable provider failure.
+    if (cfg.opener.enabled and cfg.opener.provider == "gemini"
+            and not os.environ.get("GEMINI_API_KEY")):
+        raise RuntimeError("GEMINI_API_KEY is required when opener.provider is 'gemini'")
+
+    # Constructed here -- right after the key-presence check above, before make_store()'s
+    # slow BigQuery/embedder warmup and before any device/ADB setup -- and preflighted
+    # against the real ListModels endpoint (unless opener.preflight is off). Without this,
+    # a valid-looking-but-wrong key or a typo'd model id used to survive all the way past a
+    # full slow startup before failing. Note preflight narrows but does not eliminate this:
+    # ListModels can list a model that still 404s the instant generateContent is actually
+    # called (see GeminiOpener.preflight's docstring) -- but that residual case is no longer
+    # fatal to the whole run either way, since GeminiOpener.generate() retires just the
+    # offending model and cascades to the next configured one instead of failing identically
+    # on every remaining profile. Reused unchanged below; never constructed twice.
+    opener_client = None
+    if cfg.opener.enabled and cfg.opener.provider == "gemini":
+        opener_client = GeminiOpener(cfg.opener.effective_models, cfg.opener.max_tokens,
+                                     cfg.opener.request_timeout_s,
+                                     api_key=os.environ.get("GEMINI_API_KEY"),
+                                     thinking=cfg.opener.thinking)
+        if cfg.opener.preflight:
+            opener_client.preflight()   # RuntimeError propagates as-is, aborting the run
+        else:
+            print("Gemini opener: opener.preflight is false -- configured model ids are "
+                  "UNVALIDATED; a typo or an invalid key will only surface as a failure "
+                  "once a real profile is processed.")
+
     run_id = uuid.uuid4().hex[:12]
 
     # Create + publish status up front (before the slow store/model setup) so the
@@ -245,14 +314,14 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             effective_budget = min(effective_budget, remaining_today)
     status.set_global(budget_cap=effective_budget)   # hub must show the EFFECTIVE cap, not the raw config value
     tracker = CostTracker(cfg.budget.pricing, effective_budget)
-    opener_client = None
-    if cfg.opener.enabled and not caps.missing("anthropic"):
-        opener_client = AnthropicOpener(cfg.opener.model, cfg.opener.max_tokens,
-                                        cfg.opener.request_timeout_s)
-    elif cfg.opener.enabled:
-        print("Degrade: anthropic SDK not installed -> swiping without openers")
+    # opener_client for provider=="gemini" was already constructed (and preflighted) in the
+    # early startup section above, before make_store() -- not rebuilt here. The legacy
+    # Anthropic opener path has been removed entirely, and config.validate() rejects any
+    # opener.provider other than "gemini", so by this point opener_client is either a
+    # working GeminiOpener or None (opener.enabled=false) -- there is no other branch to
+    # decide here.
     opener_service = OpenerService(opener_client, tracker, store, cfg.opener.style,
-                                   cfg.budget.on_exhausted)
+                                   max_attempts=cfg.opener.max_attempts)
 
     if _stop_requested(stop_event):
         _abort_startup(run_id, status, cfg, store)
@@ -353,8 +422,13 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         # to the store DURING or AFTER the flush/close below, so a clean flush here is not
         # an unqualified success. Detect it (without waiting any longer — a wedged worker
         # must not block quit) so the summary and status can say so honestly.
+        #
+        # Computed from cfg (see _worker_join_timeout_s) rather than a flat constant: a worker
+        # can legitimately still be riding out ONE in-flight opener request when stop_event was
+        # set, bounded by cfg.opener.request_timeout_s, not by some fixed guess.
+        join_timeout_s = _worker_join_timeout_s(cfg)
         for w in workers:
-            w.join(timeout=_WORKER_JOIN_TIMEOUT_S)
+            w.join(timeout=join_timeout_s)
             if w.is_alive():
                 # Proceeding anyway (below) rather than blocking forever: the worker's
                 # own stop_event is set, but it's still stuck mid-capture/embed/API-call.
@@ -362,7 +436,7 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                 # runs — a store write racing a closed store is the tradeoff for not
                 # hanging shutdown indefinitely on one wedged app.
                 print(f"Supervisor: worker '{w.app}' did not stop within "
-                      f"{_WORKER_JOIN_TIMEOUT_S:.0f}s; proceeding to save without it "
+                      f"{join_timeout_s:.0f}s; proceeding to save without it "
                       "(it may still be running in the background).")
         wedged = [w for w in workers if w.is_alive()]
         if device_lock is not None:

@@ -119,6 +119,7 @@ def test_hinge_driver_binds_hinge_spec():
     drv = HingeDriver(_Cfg())
     assert drv.spec is HINGE_SPEC
     assert drv.accepts_opener is True
+    assert drv.supports_observe_like_intent is True
     assert drv.think_time_calibrated is True
 
 
@@ -126,6 +127,7 @@ def test_bumble_android_driver_binds_bumble_spec():
     drv = BumbleAndroidDriver(_Cfg())
     assert drv.spec is BUMBLE_SPEC
     assert drv.accepts_opener is False
+    assert drv.supports_observe_like_intent is False
     assert drv.think_time_calibrated is False
 
 

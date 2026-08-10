@@ -9,7 +9,7 @@ from operation_love.perception.capture import Profile
 from operation_love.ranker.decider import Decision
 from operation_love.worker import Worker
 
-PRICING = {"claude-opus-4-8": ModelPricing(input=5.0, output=25.0)}
+PRICING = {"gemini-test-model": ModelPricing(input=5.0, output=25.0)}
 
 
 def test_per_run_cap():

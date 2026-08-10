@@ -1,14 +1,28 @@
-"""AnthropicOpener: the no-dash sanitizer (Corey-Wayne rules) + referenced_index parsing.
+"""Provider-independent opener logic: the no-dash sanitizer (Corey-Wayne rules),
+sentence-count enforcement, image-media-type sniffing, and the shared system prompt.
 
-No SDK/network: a fake Anthropic client returns a canned structured-output payload.
+Gemini is the only opener client this project ships (the legacy Anthropic/Claude path
+has been removed from operation_love/opener/opener.py entirely -- see
+operation_love/opener/service.py and config.py for the corresponding provider-level
+enforcement). Most tests below call the module-level helpers directly since they're
+pure functions with no provider dependency; a few OpenerParseError edge cases
+(missing "opener" key, a non-int referenced_index, an opener over the two-sentence
+cap) are exercised through GeminiOpener with an injected fake transport, the same
+technique tests/test_gemini_opener.py uses for its own (much larger) REST/quota/
+thinking-config coverage. No SDK/network either way.
 """
 import json
 
 import pytest
 
-from operation_love.opener.opener import (AnthropicOpener, OpenerError, OpenerParseError,
-                                          _SYSTEM, _image_media_type, _sanitize,
-                                          _sentence_count)
+from operation_love.opener.opener import (
+    GeminiOpener,
+    OpenerParseError,
+    _SYSTEM,
+    _image_media_type,
+    _sanitize,
+    _sentence_count,
+)
 from operation_love.perception.capture import Profile
 
 
@@ -75,58 +89,19 @@ def test_sanitize_strips_every_dash_codepoint():
         assert ch not in out, f"dash codepoint U+{ord(ch):04X} survived sanitize: {out!r}"
 
 
-class _Usage:
-    input_tokens = output_tokens = cache_read_input_tokens = cache_creation_input_tokens = 0
+def test_sentence_count_basic_cases():
+    assert _sentence_count("One profile-specific thought") == 1
+    assert _sentence_count("One thought. One easy question?") == 2
+    assert _sentence_count("Dr. Dolittle energy. What's the story?") == 2   # abbreviation guard
+    assert _sentence_count("One. Two? Three!") == 3
 
 
-class _Block:
-    type = "text"
-
-    def __init__(self, text):
-        self.text = text
-
-
-class _Resp:
-    model = "claude-test"
-
-    def __init__(self, text, stop_reason="end_turn"):
-        self.content = [_Block(text)] if text is not None else []
-        self.usage = _Usage()
-        self.stop_reason = stop_reason
-
-
-class _FakeAnthropic:
-    def __init__(self, payload, stop_reason="end_turn"):
-        self.payload = payload
-        self.stop_reason = stop_reason
-        self.messages = self
-        self.last_kwargs = None
-
-    def create(self, **kwargs):
-        self.last_kwargs = kwargs
-        return _Resp(self.payload, self.stop_reason)
-
-
-def test_generate_parses_index_and_sanitizes_dashes():
-    payload = json.dumps({"opener": "Matcha and yoga — noted", "referenced": "matcha", "referenced_index": 3})
-    op = AnthropicOpener("claude-test", client=_FakeAnthropic(payload))
-    res = op.generate(Profile(photos=[b"a", b"b"]), style="be cool")
-    assert res.referenced_index == 3
-    assert "—" not in res.opener and "-" not in res.opener
-
-
-def test_generate_sends_faithful_corey_opener_policy_and_structured_schema():
-    payload = json.dumps({"opener": "That pottery mug has a story. What happened?",
-                          "referenced": "pottery", "referenced_index": 0})
-    client = _FakeAnthropic(payload)
-    op = AnthropicOpener("claude-test", client=client)
-    op.generate(Profile(photos=[b"a"], bio="Weekend potter"), style="custom style")
-
-    request = client.last_kwargs
-    system = request["system"]
-    lowered = system.lower()
-    assert request["system"] == _SYSTEM
-    assert "90/10 framework" in system
+def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap():
+    """_SYSTEM is sent verbatim by GeminiOpener (see test_gemini_opener.py's request-shape
+    assertions); its actual wording is checked here directly, once, independent of any
+    provider's request format."""
+    lowered = _SYSTEM.lower()
+    assert "90/10 framework" in _SYSTEM
     assert "genuinely curious" in lowered
     assert "do not force teasing into every opener" in lowered
     assert "one open, easy-to-answer question" in lowered
@@ -137,102 +112,48 @@ def test_generate_sends_faithful_corey_opener_policy_and_structured_schema():
     assert "never use an em dash or any hyphen" in lowered
     assert "low investment so she chases" not in lowered
     assert "tease her like a bratty little sister" not in lowered
-    schema = request["output_config"]["format"]["schema"]
-    assert set(schema["required"]) == {"opener", "referenced", "referenced_index"}
-
-    text_block = request["messages"][0]["content"][-1]["text"]
-    assert "STYLE GUIDE:\ncustom style" in text_block
-    assert "HER PROFILE TEXT:\nWeekend potter" in text_block
-    assert "profile in scroll order" in text_block
 
 
-def test_sentence_counter_and_generate_enforce_absolute_two_sentence_maximum():
-    assert _sentence_count("One profile-specific thought") == 1
-    assert _sentence_count("One thought. One easy question?") == 2
-    assert _sentence_count("Dr. Dolittle energy. What's the story?") == 2
-    assert _sentence_count("One. Two? Three!") == 3
+# ---------------------------------------------------------------------------------------
+# OpenerParseError edge cases, exercised through GeminiOpener + an injected fake transport
+# (GeminiOpener is the only opener client shipped; these parsing rules live in
+# GeminiOpener._parse but are provider-independent in spirit -- referenced_index coercion,
+# a required "opener" key, and the two-sentence cap all trace back to the shared _SYSTEM
+# contract and _sentence_count/_sanitize above).
+# ---------------------------------------------------------------------------------------
 
-    payload = json.dumps({"opener": "One. Two? Three!",
-                          "referenced": "x", "referenced_index": 0})
-    op = AnthropicOpener("claude-test", client=_FakeAnthropic(payload))
-    with pytest.raises(OpenerParseError, match="two-sentence maximum"):
-        op.generate(Profile(photos=[b"a"]), style="s")
+class _Transport:
+    def __init__(self, responses):
+        self.responses = iter(responses)
 
-
-def test_generate_defaults_bad_index_to_zero():
-    payload = json.dumps({"opener": "hi", "referenced": "x", "referenced_index": "notanint"})
-    op = AnthropicOpener("claude-test", client=_FakeAnthropic(payload))
-    res = op.generate(Profile(photos=[b"a"]), style="s")
-    assert res.referenced_index == 0
+    def __call__(self, url, payload, headers, timeout, *, method="POST"):
+        return next(self.responses)
 
 
-def test_content_declares_png_media_type_for_real_png_bytes():
-    # regression guard: every real capture path (Playwright screenshot, adb screencap) is PNG,
-    # but the code used to hardcode "image/jpeg" — the API 400s on a mismatched media_type.
-    png_bytes = b"\x89PNG\r\n\x1a\n" + b"rest of a fake png"
-    op = AnthropicOpener("claude-test", client=_FakeAnthropic("{}"))
-    blocks = op._content(Profile(photos=[png_bytes]), style="be cool")
-    image_blocks = [b for b in blocks if b["type"] == "image"]
-    assert len(image_blocks) == 1
-    assert image_blocks[0]["source"]["media_type"] == "image/png"
+def _gemini_response(structured: dict) -> dict:
+    return {
+        "candidates": [{"content": {"parts": [{"text": json.dumps(structured)}]}}],
+        "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 3},
+    }
 
 
-# regression: a call that returns 200 with real billed usage but a body that doesn't parse
-# into a usable opener must raise OpenerParseError carrying usage/model (not swallow the
-# spend) -- the caller (OpenerService) uses that to still record what Anthropic billed.
+def _opener(transport) -> GeminiOpener:
+    return GeminiOpener(["gemini-test"], api_key="test-key", transport=transport)
 
-def test_generate_raises_parse_error_on_invalid_json_and_preserves_usage():
-    op = AnthropicOpener("claude-test", client=_FakeAnthropic("not json at all"))
-    with pytest.raises(OpenerParseError) as exc_info:
-        op.generate(Profile(photos=[b"a"]), style="s")
-    assert exc_info.value.usage is not None
-    assert exc_info.value.model == "claude-test"
+
+def test_generate_defaults_bad_referenced_index_to_zero():
+    payload = _gemini_response({"opener": "hi", "referenced": "x", "referenced_index": "notanint"})
+    result = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    assert result.referenced_index == 0
 
 
 def test_generate_raises_parse_error_on_missing_opener_key():
-    payload = json.dumps({"referenced": "x", "referenced_index": 0})  # no "opener" key
-    op = AnthropicOpener("claude-test", client=_FakeAnthropic(payload))
+    payload = _gemini_response({"referenced": "x", "referenced_index": 0})   # no "opener" key
     with pytest.raises(OpenerParseError):
-        op.generate(Profile(photos=[b"a"]), style="s")
+        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
 
 
-class _EmptyContentResp:
-    model = "claude-test"
-
-    def __init__(self):
-        self.content = []   # no text block at all
-        self.usage = _Usage()
-
-
-class _FakeAnthropicNoText:
-    def __init__(self):
-        self.messages = self
-
-    def create(self, **_):
-        return _EmptyContentResp()
-
-
-def test_generate_raises_parse_error_when_no_text_block():
-    op = AnthropicOpener("claude-test", client=_FakeAnthropicNoText())
-    with pytest.raises(OpenerParseError):
-        op.generate(Profile(photos=[b"a"]), style="s")
-
-
-def test_generate_raises_opener_error_on_refusal():
-    op = AnthropicOpener("claude-test", client=_FakeAnthropic("", stop_reason="refusal"))
-    with pytest.raises(OpenerError):
-        op.generate(Profile(photos=[b"a"]), style="s")
-
-
-def test_generate_raises_opener_error_when_no_text_block():
-    client = _FakeAnthropic(None)
-    with pytest.raises(OpenerError):
-        op = AnthropicOpener("claude-test", client=client)
-        op.generate(Profile(photos=[b"a"]), style="s")
-
-
-def test_generate_raises_opener_error_on_truncated_json():
-    # max_tokens hit mid-JSON -> not parseable
-    op = AnthropicOpener("claude-test", client=_FakeAnthropic('{"opener": "hi"', stop_reason="max_tokens"))
-    with pytest.raises(OpenerError, match="truncated"):
-        op.generate(Profile(photos=[b"a"]), style="s")
+def test_generate_raises_parse_error_when_opener_exceeds_two_sentence_maximum():
+    payload = _gemini_response({"opener": "One. Two? Three!", "referenced": "x", "referenced_index": 0})
+    with pytest.raises(OpenerParseError, match="two-sentence maximum"):
+        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")

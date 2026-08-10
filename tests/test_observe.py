@@ -154,8 +154,8 @@ def test_observe_logs_profile_text_separators(capsys):
 
     out = capsys.readouterr().out
     assert f"\n{'-' * 72}\n" in out
-    assert "✅ READY — swipe this profile" in out
-    assert "Got LIKE — processing" in out
+    assert "✅ READY — use the app's pass/like controls for this profile." in out
+    assert "Got LIKE — processing, don't decide again yet…" in out
     assert "[worker-bumble]" not in out
     assert "profile #1" not in out
 

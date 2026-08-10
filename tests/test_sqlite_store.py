@@ -125,8 +125,8 @@ def test_sqlite_spend_today_sums_only_local_today(tmp_path):
     try:
         usage = Usage(input_tokens=1, output_tokens=1, cache_read_input_tokens=0,
                       cache_creation_input_tokens=0)
-        store.record_spend("r", "claude-x", usage, 0.05)
-        store.record_spend("r", "claude-x", usage, 0.02)
+        store.record_spend("r", "gemini-x", usage, 0.05)
+        store.record_spend("r", "gemini-x", usage, 0.02)
         # Backdate one row well outside any local day (25h) so it must be excluded.
         store.con.execute(
             "UPDATE spend SET created_at = ? WHERE id = (SELECT MIN(id) FROM spend)",

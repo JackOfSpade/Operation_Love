@@ -75,8 +75,8 @@
     <div class="meta" id="platnote" style="margin-top:8px"></div>
     <div class="controls" style="margin-top:12px">
       <span class="muted">mode</span>
-      <select id="mode"><option value="observe">observe (you swipe)</option>
-        <option value="auto">auto (bot swipes)</option></select>
+      <select id="mode"><option value="observe">observe (you decide)</option>
+        <option value="auto">auto (bot decides)</option></select>
     </div>
     <div class="controls" id="maxrow" style="margin-top:10px;display:none">
       <span class="muted">max profiles this run</span>
@@ -157,7 +157,7 @@ function renderGlobal(snap){
 }
 
 // Observe mode has NO on-phone cue (an overlay would corrupt the screencaps), so this big
-// banner tells you when to SWIPE vs WAIT per app, driven by the worker's per-app state.
+// banner tells you when to make a decision vs wait per app, driven by the worker's per-app state.
 // Mode is gated PER APP (not the global run mode): apps.<app>.mode can override the run's
 // mode, so a global auto run with one app on observe (or vice versa) must still show the
 // banner only for the apps actually in observe — not all-or-nothing on snap.status.mode.
@@ -177,18 +177,33 @@ function renderSwipe(snap){
                wait:'background:#3a2f12;border:1px solid #f0b429;color:#f0b429',
                idle:'background:#22222b;border:1px solid rgba(255,255,255,.14);color:#9a9aa2'};
   const box = (k,t,sub) => `<div style="${css[k]};border-radius:10px;padding:12px 14px;margin-top:8px;font-weight:700;font-size:18px">${t}${sub?` <span style="font-weight:400;font-size:12px;opacity:.8">${sub}</span>`:''}</div>`;
-  // Same per-app worker states drive this for EVERY observe-mode app, so Bumble and Hinge
-  // show identical SWIPE/WAIT guidance when both are observing. WAIT covers both phases you
-  // must not swipe in: reading the card (capturing) and learning the swipe you just made (acting).
+  // The worker may publish an opener while Hinge's comment sheet is open.  The suggested text
+  // replaces the ordinary instruction in this same banner; it never goes to terminal output.
+  // Every dynamic value is escaped before it enters innerHTML.
   el.innerHTML = observeApps.map(a => {
     const st = a.state || '';
     const last = a.last_decision ? ('last '+a.last_decision) : '';
-    if(st==='waiting')   return box('go',   `🟢 SWIPE ${a.app} now`, 'like or pass');
-    if(st==='capturing') return box('wait', `🔴 wait — reading ${a.app} profile…`);
-    if(st==='acting')    return box('wait', `🔴 wait — processing your ${a.app} swipe…`);
-    if(st==='starting')  return box('wait', `🔴 wait — starting ${a.app}…`);
-    if(st==='out_of_profiles') return box('idle', `${a.app}: no more profiles`, last);
-    return box('idle', `${a.app}: ${st||'…'}`, last);
+    const app = escHtml(a.app || 'app');
+    const opener = typeof a.opener_suggestion === 'string' ? a.opener_suggestion.trim() : '';
+    if(opener) return box('go', `💬 ${escHtml(opener)}`, 'type this in Hinge, then tap Send Like');
+    if(st==='waiting_for_send') return box('go', '💬 No suggestion available',
+                                            'type your own opener, then tap Send Like');
+    if(st==='waiting') {
+      const controls = a.app === 'hinge' ? 'click pass X or heart'
+                                          : "use the app's pass or like control";
+      return box('go', `🟢 ${app}: ${controls}`, 'make your choice in the app');
+    }
+    // The worker is blocked inside the (up to opener.request_timeout_s) advisory suggestion
+    // call -- without this the banner would keep showing the stale "click pass X or heart"
+    // GO cue from before the heart tap, with no sign anything is happening. WAIT cue (🔴,
+    // matching the capturing/acting/starting states below), plus 💬 to stay visually tied to
+    // the same suggestion feature the GO-state message above uses.
+    if(st==='suggesting') return box('wait', `🔴 wait — 💬 writing a suggestion for ${app}…`);
+    if(st==='capturing') return box('wait', `🔴 wait — reading ${app} profile…`);
+    if(st==='acting')    return box('wait', `🔴 wait — recording your ${app} decision…`);
+    if(st==='starting')  return box('wait', `🔴 wait — starting ${app}…`);
+    if(st==='out_of_profiles') return box('idle', `${app}: no more profiles`, escHtml(last));
+    return box('idle', `${app}: ${escHtml(st||'…')}`, escHtml(last));
   }).join('');
   el.style.display = 'block';
 }
@@ -224,6 +239,14 @@ function renderAutoStatus(snap){
     if(st==='rate_limited')    return box('idle', `${a.app}: stopped — rate limit reached`, swipes);
     if(st==='stopped' && a.last_decision==='defer')
       return box('idle', `${a.app}: stopped — ranker not ready (cold-start)`, 'run observe mode first');
+    // OpenerService exhausted its capacity (run budget / provider credit / a permanent
+    // provider failure) and asked every worker to stop. Without this, an opener-exhaustion
+    // stop rendered identically to the bare 'stopped' case below -- the operator could not
+    // tell "I clicked Stop" from "every Gemini free-tier model is out of quota" without
+    // digging through the raw log panel. stop_reason is only ever set for this cause (see
+    // Worker._opener_stop_reason), so its mere presence is the trigger.
+    if(st==='stopped' && a.stop_reason)
+      return box('idle', `${a.app}: stopped — opener capacity exhausted`, a.stop_reason);
     if(st==='stopped') return box('idle', `${a.app}: stopped`, swipes);
     // Fall-through = a non-terminal state (saving/capturing/scoring/acting). That only means
     // "the worker is live" while the run actually IS live; since this banner now persists

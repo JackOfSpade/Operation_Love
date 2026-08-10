@@ -6,6 +6,8 @@ call without doing real work (no browser, no ADB, no network).
 """
 import sys
 
+import pytest
+
 from operation_love import __main__ as main_mod
 
 
@@ -60,3 +62,40 @@ def test_no_command_defaults_to_run(monkeypatch):
     monkeypatch.setattr("operation_love.supervisor.run", lambda config: calls.append(config))
     _run(monkeypatch, ["--config", "v.yaml"])
     assert calls == ["v.yaml"]
+
+
+# ---------------------------------------------------------------------------------------
+# .env loading -- python-dotenv missing (broken install) vs. .env file missing (fine)
+#
+# Regression coverage for the bug that hid the owner's real GEMINI_API_KEY: python-dotenv
+# was not installed, main()'s old `except ImportError: pass` swallowed that silently, .env
+# was never read, and the run failed several layers downstream with a misleading
+# "GEMINI_API_KEY is required" instead of pointing at the actual cause. This project's rule
+# is fail loud, never silently degrade -- a missing hard dependency must say so plainly.
+# ---------------------------------------------------------------------------------------
+
+def test_missing_python_dotenv_raises_actionable_error(monkeypatch):
+    """python-dotenv is a hard dependency (pyproject.toml), not an optional extra -- its
+    absence means the install is broken. Setting sys.modules['dotenv'] = None forces the
+    next `import dotenv` / `from dotenv import ...` to raise ImportError, the standard way
+    to simulate "package not installed" without actually uninstalling it."""
+    monkeypatch.setitem(sys.modules, "dotenv", None)
+    monkeypatch.setattr(sys, "argv", ["operation_love", "stats"])
+
+    with pytest.raises(RuntimeError) as exc_info:
+        main_mod.main()
+    message = str(exc_info.value)
+    assert "python-dotenv" in message
+    assert "pip install python-dotenv" in message
+
+
+def test_missing_dotenv_file_is_not_an_error(monkeypatch, tmp_path):
+    """A missing .env FILE (as opposed to a missing python-dotenv PACKAGE) is legitimate --
+    env vars may come from the real environment instead -- and must not raise. python-dotenv
+    itself already treats a missing file as a silent no-op; this pins that main() doesn't
+    add its own error on top of that."""
+    calls = []
+    monkeypatch.chdir(tmp_path)   # cwd here has no .env file
+    monkeypatch.setattr("operation_love.stats.show", lambda config: calls.append(config))
+    _run(monkeypatch, ["stats"])
+    assert calls == ["config.yaml"]   # ran to completion; no exception from the missing file

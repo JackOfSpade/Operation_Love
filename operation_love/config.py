@@ -28,17 +28,51 @@ class QualityCfg:
 @dataclass
 class OpenerCfg:
     enabled: bool = True
-    model: str = "claude-opus-4-8"
+    # gemini is the ONLY supported provider -- the legacy Anthropic/Claude opener path has
+    # been removed entirely (not merely defaulted off; see validate()'s provider check).
+    # `models` is Gemini's ordered fallback chain; `model` remains the legacy single-model
+    # key, retained only as effective_models' fallback when `models` is empty.
+    provider: str = "gemini"
+    model: str = "gemini-3.6-flash"
+    models: list[str] = field(default_factory=list)
     max_tokens: int = 400
     request_timeout_s: float = 30
     style: str = ""
+    # Gemini only: model id -> its generationConfig.thinkingConfig dict, passed through
+    # verbatim (see GeminiOpener._payload). validate() requires an entry for every model
+    # in `models` when provider is gemini -- see _validate_gemini_thinking below for why.
+    thinking: dict[str, dict] = field(default_factory=dict)
+    # Gemini only: GETs the ListModels endpoint at startup (before make_store()'s slow
+    # BigQuery/embedder warmup) to catch a typo'd model id or an invalid key before they
+    # cost a full slow startup, or worse, a mid-run permanent 404. True by default; set
+    # false for offline development or tests that must never touch the network.
+    preflight: bool = True
+    # Owner rule (2026-08-10): "I do not want commentless likes. If the response from the
+    # AI is bad, redo the prompt... If after 5 attempts it's still a bad response, stop the
+    # automation." This is how many times OpenerService re-asks for a rejected AI response
+    # (with a correction hint) before giving up and stopping the run -- there is no fallback
+    # to a bare/commentless like on an opener-capable app (see BudgetCfg's removed
+    # on_exhausted for the option this replaced). validate() caps this at
+    # _MAX_ATTEMPTS_CEILING (1-15): every attempt is a real, billed, quota-consuming API call,
+    # so this can't be left unbounded -- see that constant's docstring for the arithmetic.
+    max_attempts: int = 5
+
+    @property
+    def effective_models(self) -> list[str]:
+        """Configured model fallback order, retaining the original singular key."""
+        return list(self.models) if self.models else [self.model]
 
 
 @dataclass
 class BudgetCfg:
     run_budget_usd: float | None = 5.00
     day_budget_usd: float | None = None  # optional daily ceiling across all runs
-    on_exhausted: str = "stop"  # stop | swipe_without_opener
+    # `on_exhausted` (stop | swipe_without_opener) lived here until 2026-08-10. The owner
+    # ruled out commentless likes entirely -- "If after 5 attempts it's still a bad
+    # response, stop the automation" -- so swipe_without_opener is no longer a supported
+    # behavior at all, not merely a non-default option: stopping is now the ONLY outcome
+    # when an opener cannot be produced. Do not re-add this field; load() below fails
+    # loudly if a config still sets it (see the `on_exhausted` check next to _BUDGET_KEYS).
     pricing: dict[str, ModelPricing] = field(default_factory=dict)
 
 
@@ -72,7 +106,7 @@ class Config:
     storage: StorageCfg
 
 
-_BUDGET_KEYS = {"run_budget_usd", "day_budget_usd", "on_exhausted", "pricing"}
+_BUDGET_KEYS = {"run_budget_usd", "day_budget_usd", "pricing"}
 
 
 def _section(cls, name: str, raw_section):
@@ -108,6 +142,26 @@ def load(path: str | Path = "config.yaml") -> Config:
     # lines below — a raw TypeError instead of the clean ValueError this module owes.
     paths = raw.get("paths", {}) or {}
     b = raw.get("budget", {}) or {}
+    if "on_exhausted" in b:
+        # Dedicated, actionable guard -- ahead of the generic unknown-key check below, which
+        # would otherwise just say "unknown key(s) under budget: ['on_exhausted']" and leave
+        # the reader to guess why. budget.on_exhausted was removed 2026-08-10: the owner
+        # ruled out commentless likes entirely ("if after 5 attempts it's still a bad
+        # response, stop the automation"), so swipe_without_opener is no longer a supported
+        # behavior, and stopping is now the run's only response to an opener that can't be
+        # produced. This fires even for `on_exhausted: stop` -- not because that value ever
+        # did anything wrong, but so nobody keeps a dead key around believing it still
+        # controls something; deleting the line changes nothing about how the run behaves.
+        raise ValueError(
+            "Config: budget.on_exhausted was removed and must be deleted from config.yaml. "
+            "Openerless (\"commentless\") likes are no longer supported on an "
+            "opener-capable app: the run now always stops when an opener cannot be "
+            "produced, instead of falling back to a bare like. If your config had "
+            "'on_exhausted: stop', nothing about your run's behavior changes -- that was "
+            "already the only real outcome; just remove the line. If it had "
+            "'on_exhausted: swipe_without_opener', that mode has been removed entirely: "
+            "delete the line, and see opener.max_attempts for how many times a rejected "
+            "AI response is re-asked before the run stops instead.")
     unknown = set(b) - _BUDGET_KEYS
     if unknown:
         # budget: is a money control, and it's hand-built with .get() rather than through
@@ -137,7 +191,6 @@ def load(path: str | Path = "config.yaml") -> Config:
         budget=BudgetCfg(
             run_budget_usd=b.get("run_budget_usd"),
             day_budget_usd=b.get("day_budget_usd"),
-            on_exhausted=b.get("on_exhausted", "stop"),
             pricing=pricing,
         ),
         pacing=_section(PacingCfg, "pacing", raw.get("pacing", {})),
@@ -177,6 +230,81 @@ def _validate_limits(label: str, lim: dict) -> None:
         raise ValueError(f"Config: {label}.target_like_ratio must be in (0, 1) (got {ratio})")
 
 
+# Gemini's generationConfig.thinkingConfig recognizes exactly these two keys -- the field
+# name differs by model family (thinkingLevel on the 3.x line, thinkingBudget on 2.5), and
+# sending the wrong one, or an unrecognized key, is a guaranteed 400 on every opener call.
+_THINKING_KEYS = {"thinkingLevel", "thinkingBudget"}
+_THINKING_LEVELS = {"minimal", "low", "medium", "high"}
+
+
+def _validate_gemini_thinking(opener: OpenerCfg) -> None:
+    """Gemini-only: every model in opener.models needs an explicit opener.thinking entry.
+
+    Thinking is ON BY DEFAULT for nearly every free-tier model in this project's cascade
+    (all but gemini-2.5-flash-lite), and thought tokens are billed against opener.max_tokens
+    -- a model silently running at its (often "high") default thinking level can burn the
+    whole token budget and return no opener text at all (see GeminiOpener._parse's
+    MAX_TOKENS diagnostic). Requiring an entry means that risk is always a deliberate choice,
+    never an oversight. An explicit empty dict {} is the sanctioned way to say "use this
+    model's server default" and must pass.
+
+    Also validates each entry's shape here rather than letting it fail live: an unrecognized
+    key, a bad thinkingLevel value, or a non-int thinkingBudget is a guaranteed 400 on every
+    single opener call once a run starts, so it's worth catching at config-load time instead.
+    """
+    # `thinking:` left bare in YAML parses to None, and OpenerCfg is built generically via
+    # cls(**raw_section) so nothing coerces it first. Normalize locally (rather than mutating
+    # the config) and reject any non-mapping outright: without this, a blanked-out thinking
+    # block crashed validate() with a raw TypeError instead of the actionable ValueError
+    # every other optional block in this file degrades to. Note a None/empty mapping still
+    # fails the `missing` check below whenever any model is configured, so an enabled opener
+    # can never reach the API with thinking unset.
+    thinking = opener.thinking or {}
+    if not isinstance(thinking, dict):
+        raise ValueError(
+            f"Config: opener.thinking must be a mapping of model id -> thinkingConfig "
+            f"(got {type(opener.thinking).__name__})")
+    missing = [m for m in opener.effective_models if m not in thinking]
+    if missing:
+        raise ValueError(
+            f"Config: opener.thinking is missing an entry for {missing!r}. Every Gemini "
+            "model in opener.models needs an explicit opener.thinking entry -- pass {} to "
+            "deliberately use that model's server-default thinking level, or a "
+            "{thinkingLevel: ...} / {thinkingBudget: ...} mapping to override it. Thinking "
+            "is on by default for nearly every free-tier model and is billed against "
+            "opener.max_tokens, so an unset entry risks silently truncating every opener.")
+    for model, entry in thinking.items():
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"Config: opener.thinking[{model!r}] must be a mapping (got "
+                f"{type(entry).__name__})")
+        unknown = set(entry) - _THINKING_KEYS
+        if unknown:
+            raise ValueError(
+                f"Config: opener.thinking[{model!r}] has unknown key(s) {sorted(unknown)}; "
+                f"Gemini's generationConfig.thinkingConfig only recognizes "
+                f"{sorted(_THINKING_KEYS)} -- a typo here is a 400 on every opener call.")
+        if "thinkingLevel" in entry and entry["thinkingLevel"] not in _THINKING_LEVELS:
+            raise ValueError(
+                f"Config: opener.thinking[{model!r}].thinkingLevel must be one of "
+                f"{sorted(_THINKING_LEVELS)} (got {entry['thinkingLevel']!r})")
+        if "thinkingBudget" in entry:
+            budget = entry["thinkingBudget"]
+            # bool is a subclass of int in Python, so a bare `isinstance(budget, int)` would
+            # wave `thinkingBudget: true` straight through to the API as JSON `true` -- a 400
+            # on every opener call, which is exactly what this validator exists to prevent.
+            # Negative budgets are rejected for the same reason: 0 disables thinking and
+            # positive values cap it, so anything below 0 is meaningless to the API.
+            if isinstance(budget, bool) or not isinstance(budget, int):
+                raise ValueError(
+                    f"Config: opener.thinking[{model!r}].thinkingBudget must be an integer "
+                    f"(got {budget!r})")
+            if budget < 0:
+                raise ValueError(
+                    f"Config: opener.thinking[{model!r}].thinkingBudget must be >= 0 "
+                    f"(0 disables thinking; got {budget!r})")
+
+
 def _validate_verification(cfg: Config) -> None:
     """`halt_on_error: false` is not permitted for an app running in AUTO mode.
 
@@ -211,6 +339,59 @@ def _validate_verification(cfg: Config) -> None:
                 f"keep swiping. Set it true, or run this app in observe mode.")
 
 
+# opener.max_attempts and opener.request_timeout_s sanity ceilings. Both bound the SAME
+# underlying risk -- an opener misconfig turning into a real-money, real-quota, real-time
+# runaway on a single profile -- so they're derived together and cross-referenced below.
+#
+# Every opener.max_attempts retry, and every model GeminiOpener.generate() tries within a
+# single attempt, is a real, billed, quota-consuming API call (see OpenerService.get_opener's
+# docstring: "EVERY attempt is a real billed call, retries included"). Two independent damage
+# vectors follow, and the ceiling has to cover both:
+#
+#   1. QUOTA: generate() returns as soon as ANY model answers with HTTP 2xx (opener.py's
+#      `return self._parse(response, model)`), even when that response then fails to parse
+#      into a usable opener. A rejected-content retry is therefore NOT a capacity signal and
+#      does NOT advance the cascade -- the SAME model (ordinarily the first configured, and
+#      in the shipped config.yaml cascade one of the three 20-requests/day Flash models) gets
+#      re-hit on every retry for a stubborn profile. An uncapped max_attempts can burn an
+#      entire day's quota of that one 20-RPD model -- the scarcest resource in a cascade that
+#      otherwise has two models at 500 RPD and two Gemma models at 14,400 RPD -- on a SINGLE
+#      profile, starving every other profile that needs that model for the rest of the day.
+#
+#   2. WALL CLOCK: request_timeout_s is the only thing bounding one already-in-flight HTTP
+#      call (opener.py's should_stop comment spells out the existing worst-case formula for
+#      the shipped 7-model cascade: max_attempts x len(models) x request_timeout_s = 5 x 7 x
+#      90s = 3,150s, ~52 minutes, at today's default). Raising max_attempts without a ceiling
+#      raises that product without limit: max_attempts=10000 (the value an audit found
+#      `validate()` accepted) is 10000 x 7 x 90s = 6,300,000s, ~1,750 hours -- weeks, not
+#      "hours," of a single profile silently wedging the worker. request_timeout_s itself was
+#      equally unbounded before this change: a huge value here defeats any max_attempts cap on
+#      its own, since ONE call could then hang indefinitely regardless of how few retries are
+#      allowed.
+#
+# _MAX_ATTEMPTS_CEILING = 15: triples the owner's own stated reference point ("if after 5
+# attempts it's still a bad response, stop the automation") while keeping the QUOTA worst
+# case (vector 1 above) to at most 15 of a 20-RPD model's daily 20 requests -- 75% of one
+# model's entire day, still leaving 5 requests of headroom for whatever other profiles queue
+# up that same day, and never so large that one stubborn profile could exhaust it alone
+# without the run itself first noticing and stopping (a real Gemini day-quota 429 on that
+# model blacklists it for the run well before 15 further retries could occur against it).
+# 10-20 was the expected range for this ceiling; 15 sits in the upper half so genuine
+# resilience gains (3x today's default) are still available without approaching the point
+# where a single profile's retries alone could exhaust a model's whole day.
+#
+# _MAX_REQUEST_TIMEOUT_S = 180.0: exactly 2x the MEASURED (not guessed) 90s worst case for a
+# real 8-screenshot Hinge profile (see OpenerCfg's request_timeout_s comment in config.yaml --
+# 30s was observed to time out mid-request live). Doubling the measured worst case is generous
+# headroom for a slower network or a larger future payload while still keeping any ONE stuck
+# call bounded to a human-scale 3 minutes rather than an unbounded stall. Paired with the
+# ceiling above, the documented worst-case formula for the shipped 7-model cascade becomes 15
+# x 7 x 180s = 18,900s, ~5.25 hours -- still bounded and firmly worse-than-typical, but no
+# longer capable of the multi-day stalls an unbounded request_timeout_s previously allowed.
+_MAX_ATTEMPTS_CEILING = 15
+_MAX_REQUEST_TIMEOUT_S = 180.0
+
+
 def validate(cfg: Config) -> None:
     """Fail fast with a clear message on misconfig (called by the entry points)."""
     if not cfg.enabled_apps:
@@ -241,14 +422,110 @@ def validate(cfg: Config) -> None:
         raise ValueError("Config: storage.backend=bigquery requires storage.bigquery.project_id")
     if cfg.storage.backend == "bigquery" and not (cfg.storage.bigquery or {}).get("photo_bucket"):
         raise ValueError("Config: storage.backend=bigquery requires storage.bigquery.photo_bucket")
-    if cfg.opener.enabled and cfg.opener.model not in cfg.budget.pricing:
-        raise ValueError(f"Config: opener.model '{cfg.opener.model}' has no entry in budget.pricing")
-    if cfg.budget.on_exhausted not in {"stop", "swipe_without_opener"}:
-        # Closed enum, like mode/storage.backend above: a typo here would silently fall
-        # through to "keep swiping without openers" (OpenerService treats any non-"stop"
-        # value that way), quietly disabling the opt-in safety stop. Fail fast instead.
-        raise ValueError("Config: budget.on_exhausted must be 'stop' or "
-                         f"'swipe_without_opener' (got {cfg.budget.on_exhausted!r})")
+    if cfg.opener.provider != "gemini":
+        # Not merely "unsupported" -- the Anthropic/Claude opener path was deleted from the
+        # codebase outright (operation_love/opener/opener.py no longer defines
+        # AnthropicOpener at all), so any other value here can never be a live fallback.
+        # This must fail loudly rather than silently degrade: a stray/typo'd/legacy
+        # `provider: anthropic` in a config file is exactly the kind of dead-code
+        # reactivation the project's fail-loud philosophy exists to catch at load time,
+        # not mid-run.
+        raise ValueError(
+            "Config: opener.provider must be 'gemini' -- the Anthropic/Claude opener path "
+            "has been removed entirely; openers run on Gemini or the run fails loudly "
+            f"(got {cfg.opener.provider!r})")
+    if not isinstance(cfg.opener.models, list):
+        raise ValueError("Config: opener.models must be a YAML list of model ids")
+    if not cfg.opener.effective_models or any(not isinstance(m, str) or not m for m in cfg.opener.effective_models):
+        raise ValueError("Config: opener.models must contain one or more non-empty model ids")
+    if cfg.opener.enabled:
+        missing_pricing = [m for m in cfg.opener.effective_models if m not in cfg.budget.pricing]
+        if missing_pricing:
+            # Mention the original field too: callers with legacy single-model configs
+            # receive the same useful diagnostic they did before the fallback chain.
+            label = "opener.model" if not cfg.opener.models else "opener.models"
+            raise ValueError(f"Config: {label} {missing_pricing!r} has no entry in budget.pricing")
+    if cfg.opener.enabled:
+        # provider is unconditionally "gemini" by this point -- the check above already
+        # raised for any other value -- so this is Gemini's thinking-config validation,
+        # not a branch on provider.
+        _validate_gemini_thinking(cfg.opener)
+    # opener.max_attempts: how many times OpenerService re-asks for a rejected AI response
+    # (owner rule, 2026-08-10) before giving up and stopping the run. bool is a subclass of
+    # int in Python, so a bare isinstance(x, int) check would wave `max_attempts: true`
+    # through as 1 attempt with no warning -- the same trap opener.thinking's thinkingBudget
+    # guards against above. Must be >= 1: a 0-or-negative value would mean "never even try",
+    # silently skipping the opener on every profile without ever asking Gemini once.
+    if isinstance(cfg.opener.max_attempts, bool) or not isinstance(cfg.opener.max_attempts, int):
+        raise ValueError(
+            f"Config: opener.max_attempts must be an integer (got {cfg.opener.max_attempts!r}). "
+            "This is how many times a rejected AI response is re-asked (with a correction "
+            "hint) before the run stops rather than send a commentless like.")
+    if cfg.opener.max_attempts < 1:
+        raise ValueError(
+            f"Config: opener.max_attempts must be >= 1 (got {cfg.opener.max_attempts}). "
+            "It must allow at least one real attempt at generating an opener before the "
+            "run can decide the response is unusable and stop.")
+    if cfg.opener.max_attempts > _MAX_ATTEMPTS_CEILING:
+        # An audit found max_attempts had NO upper bound: `max_attempts: 10000` passed this
+        # function cleanly. Every attempt is a real, billed API call, and a rejected-content
+        # retry does not advance GeminiOpener's model cascade (it lands on the same model
+        # again -- see _MAX_ATTEMPTS_CEILING's docstring above), so an uncapped value can burn
+        # an entire day's 20-request quota of this project's best models on ONE stubborn
+        # profile, and/or (combined with request_timeout_s) hang that profile for hundreds of
+        # hours. See _MAX_ATTEMPTS_CEILING above for the exact arithmetic behind this number.
+        raise ValueError(
+            f"Config: opener.max_attempts must be between 1 and {_MAX_ATTEMPTS_CEILING} "
+            f"(got {cfg.opener.max_attempts}). Each attempt is a real, billed API call "
+            "against a small daily quota (as few as 20 requests/day for the best models in "
+            "this project's cascade), and consecutive retries for one profile ordinarily hit "
+            "the SAME model rather than advancing through the fallback chain, so an uncapped "
+            f"value can exhaust a whole model's day on a single stubborn profile. "
+            f"{_MAX_ATTEMPTS_CEILING} already triples the owner's own reference point of 5 "
+            "(\"if after 5 attempts it's still a bad response, stop the automation\"). If you "
+            "genuinely need more resilience than that, raising this further just re-asks a "
+            "setup that has already shown it's systemically broken -- instead, find out WHY "
+            "so many consecutive attempts are being rejected (check the run's debug log for "
+            "the rejection reasons, and reconsider opener.style or the model's opener.thinking "
+            "level) rather than spend more of the daily quota re-asking the same broken setup.")
+    # opener.request_timeout_s: the only bound on how long a single opener API call can run
+    # (see GeminiOpener.generate()'s transport call). bool-before-numeric for the same reason
+    # as max_attempts above (bool is an int subclass; `request_timeout_s: true` must not
+    # silently become 1.0 second). Must be > 0: 0 or a negative value is not a meaningful
+    # timeout (Python's socket layer treats them as "non-blocking" / raises outright, not as
+    # "wait longer"), so this is a real misconfiguration to catch at load time rather than let
+    # crash unpredictably mid-run. See _MAX_REQUEST_TIMEOUT_S above for the ceiling's arithmetic
+    # -- an unbounded request_timeout_s would undo opener.max_attempts' own ceiling, since a
+    # single stuck call could still hang a profile indefinitely regardless of how few retries
+    # are allowed.
+    if isinstance(cfg.opener.request_timeout_s, bool) or not isinstance(cfg.opener.request_timeout_s, (int, float)):
+        raise ValueError(
+            f"Config: opener.request_timeout_s must be a number of seconds (got "
+            f"{cfg.opener.request_timeout_s!r}).")
+    if not (0 < cfg.opener.request_timeout_s <= _MAX_REQUEST_TIMEOUT_S):
+        raise ValueError(
+            f"Config: opener.request_timeout_s must be > 0 and <= {_MAX_REQUEST_TIMEOUT_S} "
+            f"(got {cfg.opener.request_timeout_s}). This is the only thing bounding how long a "
+            "single opener API call can run, and an unbounded value here would defeat "
+            "opener.max_attempts' own ceiling by letting one stalled call hang a profile "
+            f"indefinitely no matter how few retries are allowed. {_MAX_REQUEST_TIMEOUT_S} is "
+            "2x the MEASURED (not guessed) 90s worst case for a real request -- generous "
+            "headroom for a slow network or a large payload, without allowing an effectively "
+            "unbounded stall.")
+    # opener.max_tokens deliberately has NO ceiling here, unlike the two settings above.
+    # Checked and rejected as a candidate during the same audit that added the bounds above:
+    # (1) output tokens (which this budgets, including thought tokens -- see
+    # _validate_gemini_thinking) are FREE on the Google free tier this project is pinned to
+    # (see config.yaml's budget.pricing comment), so a large value has no cost vector distinct
+    # from what's already guarded; (2) a real dollar cost, if paid pricing is ever enabled, is
+    # already bounded by budget.run_budget_usd, which OpenerService re-checks after EVERY
+    # attempt's spend is recorded -- max_tokens does not let spend evade that check; (3) wall
+    # clock is already bounded by request_timeout_s above regardless of max_tokens' value, a
+    # slow/huge generation just times out and cascades like any other stall. A too-LOW value
+    # (e.g. 1) is real misconfiguration, but it fails loud and fast, not silently: every attempt
+    # hits GeminiOpener._parse's MAX_TOKENS diagnostic (a normal OpenerParseError), which is
+    # already bounded by opener.max_attempts above, so it stops the run within the same
+    # already-enforced ceiling rather than opening a new unbounded harm vector.
     if cfg.ranker.retrain_every < 1:
         raise ValueError(f"Config: ranker.retrain_every must be >= 1 (got {cfg.ranker.retrain_every})")
     if cfg.pacing.swipe_delay_s != 0 and cfg.pacing.swipe_delay_s < _MIN_SWIPE_DELAY_S:

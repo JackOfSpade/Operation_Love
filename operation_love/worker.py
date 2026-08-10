@@ -1,12 +1,25 @@
 """Per-app worker thread, in one of two modes.
 
-observe  — SHADOW LEARNING. You swipe manually on real profiles in the live app;
+observe  — SHADOW LEARNING. You use the app's own controls on real profiles;
            the worker captures each profile, watches your like/pass, embeds it,
            stores it as a label, and retrains the ranker live. No autonomous
-           swiping, no openers. This is how the model learns your taste — from
+           input. On Hinge, it can surface an opener after you open the like
+           sheet; you still type it and tap Send Like yourself. This is how the
+           model learns your taste — from
            your real usage, not stock images.
 auto     — AUTONOMOUS. The worker captures, scores with the trained ranker,
            and likes/dislikes itself (sending openers where the app allows).
+           On an opener-capable app (Hinge), a like is either sent WITH its
+           opener or not sent at all — if OpenerService cannot produce one for
+           a profile (global exhaustion — including every retry attempt for
+           that profile failing, see OpenerService.maybe_opener — a
+           per-profile OpenerError, or a single sub-latch 400/transient
+           failure) the loop stops rather than substitute a bare like, since
+           the opener is also what drives Hinge's "commented like" behavior
+           signal. There is no configuration that changes this: a commentless
+           like is never sent, full stop. See _auto_loop's opener guards.
+           Apps that don't accept openers (Bumble) are unaffected — they
+           never call the opener service in auto mode.
 
 Multiple workers run concurrently in one process, sharing the ranker, store, and
 global budget. Failures are isolated and auto-restarted with backoff.
@@ -26,8 +39,8 @@ from .human_motion import think_time_s
 from .interaction import AutoSessionPolicy
 from .ranker.decider import Decider, Decision
 
-_OBSERVE_CAPTURE_BUSY = "Capturing profile — please wait before your next swipe"
-_OBSERVE_PROCESSING_BUSY = "Processing — please wait before your next swipe"
+_OBSERVE_CAPTURE_BUSY = "Capturing profile — please wait before your next decision"
+_OBSERVE_PROCESSING_BUSY = "Processing — please wait before your next decision"
 _NO_PHOTO_RETRY_S = 0.5
 _PROFILE_LOG_WIDTH = 72
 # think_time_s() is calibrated to real measured Hinge dwell data around this many
@@ -84,12 +97,30 @@ class Worker(threading.Thread):
         if not isinstance(exc, DriverClosed):
             self._capture_failure(exc)
 
-    def _finish_session(self, state: str = "stopped") -> None:
+    def _finish_session(self, state: str = "stopped", *, stop_reason: str | None = None) -> None:
         """Shared unconditional cleanup for _observe_loop/_auto_loop's finally: publish the
         loop's TERMINAL state (rate_limited / out_of_profiles / stopped — not a blanket
-        "stopped", which would hide why the run ended) and release the driver."""
-        self._stat(state=state)
+        "stopped", which would hide why the run ended) and release the driver.
+
+        stop_reason carries a human-readable explanation for a "stopped" outcome that has
+        no exception behind it -- state="error" already has AppStatus.error for that; this
+        is the equivalent for a clean stop caused by OpenerService exhausting its opener
+        capacity (see _opener_stop_reason). Optional: every other terminal path (a manual
+        Stop click, out_of_profiles, rate_limited) passes nothing, so the hub still shows a
+        bare "stopped" for those exactly as before.
+        """
+        fields = {"state": state}
+        if stop_reason:
+            fields["stop_reason"] = stop_reason
+        self._stat(**fields)
         self.driver.close()
+
+    def _opener_stop_reason(self) -> str | None:
+        """Human-readable cause of an OpenerService-triggered stop, or None if the service
+        hasn't recorded one. OpenerService.exhausted_reason is first-writer-wins and shared
+        by every worker, so whichever worker reads it here always sees the SAME original
+        cause -- not whichever symptom that particular worker's own opener call hit."""
+        return getattr(self.opener_service, "exhausted_reason", None)
 
     def _profile_separator(self) -> None:
         print("-" * _PROFILE_LOG_WIDTH)
@@ -100,10 +131,10 @@ class Worker(threading.Thread):
 
     def _block_observe_processing(self) -> None:
         # Same "don't swipe yet" signal as capture, but for the embed/store window after a
-        # manual swipe. Drives BOTH channels identically for every app: the in-page busy
+        # manual decision. Drives BOTH channels identically for every app: the in-page busy
         # modal (Bumble, when enabled) AND the shared status state the hub banner reads —
         # so apps with no on-screen overlay (Hinge) still show WAIT during the slow embed
-        # instead of a stale SWIPE prompt that would mis-attribute the next swipe.
+        # instead of a stale decision prompt that would mis-attribute the next action.
         self.driver.render_busy(_OBSERVE_PROCESSING_BUSY)
         self._stat(state="acting")
 
@@ -159,15 +190,17 @@ class Worker(threading.Thread):
                 self.stop_event.wait(human_cooldown(min(backoff, 60)))
                 backoff *= 2
 
-    # --- shadow learning: you swipe, the bot learns ---------------------
+    # --- shadow learning: you decide, the bot learns --------------------
     def _observe_loop(self) -> None:
-        print(f"{self.app.title()} observe mode — swipe manually; I'll learn from each swipe.")
+        print(f"{self.app.title()} observe mode — use the app's pass/like controls; "
+              "I'll learn from each decision.")
         self.driver.open_session()
         self._stat(mode="observe")             # set mode for the hub; the loop owns per-card WAIT/SWIPE
         added = 0
         last_retrained = 0
         pending_error = False
         terminal_state = "stopped"            # overwritten below when the loop ends for a known reason
+        stop_reason = None                    # set only for an OpenerService-triggered stop; see _finish_session
         try:
             while not self.stop_event.is_set():
                 if self.driver.out_of_profiles():
@@ -186,18 +219,17 @@ class Worker(threading.Thread):
                     self._stat(last_decision="no_photos")     # stays WAIT (busy still up from this iteration)
                     self.stop_event.wait(_NO_PHOTO_RETRY_S)
                     continue
-                self.driver.render_busy(None)                 # processing done -> OK to swipe now
-                self._stat(state="waiting")                   # overlay: "swipe — learning your taste"
-                print("✅ READY — swipe this profile (like or pass).")
-                liked = self.driver.wait_for_decision(timeout=None,
-                                                      should_stop=self.stop_event.is_set)
+                self.driver.render_busy(None)                 # processing done -> OK to decide now
+                self._stat(state="waiting", opener_suggestion=None)
+                print("✅ READY — use the app's pass/like controls for this profile.")
+                liked = self._wait_for_observed_decision(profile)
                 if liked is None:                             # card changed / deck empty / stop -> recapture
                     continue                                  # next iteration re-blocks + recaptures the card
                 if self.stop_event.is_set():
                     break
-                # block the next swipe while this one embeds (avoids mis-attribution)
+                # block the next decision while this one embeds (avoids mis-attribution)
                 decision = "LIKE" if liked else "PASS"
-                print(f"Got {decision} — processing, don't swipe yet…")
+                print(f"Got {decision} — processing, don't decide again yet…")
                 self._block_observe_processing()
                 profile_id = uuid.uuid4().hex
                 metadata = self._label_metadata(profile)
@@ -223,6 +255,13 @@ class Worker(threading.Thread):
                     self.status.record_swipe(self.app, "like" if liked else "pass")
                     self.status.inc_labels(1)
                 self._render()
+                # A budget/credit stop can be discovered while generating the Hinge
+                # suggestion. This human decision is already durably recorded above,
+                # so honour the stop only now rather than interrupting the open sheet.
+                if getattr(self.opener_service, "stop_requested", False):
+                    stop_reason = self._opener_stop_reason()
+                    self._stat(state="stopped", stop_reason=stop_reason)
+                    self.stop_event.set()
                 added += 1
                 if added % self.retrain_every == 0:
                     self._retrain_after_observe_labels(added)
@@ -243,8 +282,76 @@ class Worker(threading.Thread):
                         print(f"{self.app.title()} final retrain skipped after shutdown error:")
                         traceback.print_exc()
             finally:
+                self._stat(opener_suggestion=None)
                 self.driver.render_busy(None)
-                self._finish_session(terminal_state)
+                self._finish_session(terminal_state, stop_reason=stop_reason)
+
+    def _wait_for_observed_decision(self, profile):
+        """Wait for one human decision and surface Hinge's post-heart suggestion.
+
+        Hinge is the only current driver that exposes its intermediate comment
+        sheet. The callback only publishes shared status and calls the opener
+        service; it never calls a tap, swipe, or text method. Other drivers and
+        older fakes retain their existing ``wait_for_decision`` signature.
+
+        The opener call below passes advisory=True. In observe mode the opener is only a
+        SUGGESTION shown next to Hinge's own comment sheet -- the human retypes and sends it
+        (or their own words) themselves; there is no autonomous send for a bad AI response to
+        threaten. Before this fix, this callback called maybe_opener() exactly like AUTO mode
+        does: up to max_attempts retries, and on exhaustion OpenerService.stop_requested got
+        set, which the observe loop honours (see _observe_loop's stop_requested check right
+        after a label is saved) -- ENDING THE WHOLE LABELLING SESSION over what was always a
+        cosmetic display failure. An audit demonstrated exactly this: the human's own like was
+        recorded, and the observe run then terminated anyway. advisory=True makes maybe_opener()
+        use exactly ONE attempt (no retry storm while a human is sitting there waiting) and
+        route any exhaustion through OpenerService._exhaust(request_stop=False) -- spend is
+        still protected (disabled/exhausted_reason are set exactly as before), but
+        stop_requested is left alone, so this callback's own failures can never end the
+        session. The observe loop's stop_requested check is NOT removed: it must still honour a
+        stop that a DIFFERENT worker (an auto-mode app sharing this same OpenerService)
+        legitimately requested -- see _observe_loop's comment at that check.
+        """
+        if not getattr(self.driver, "supports_observe_like_intent", False):
+            return self.driver.wait_for_decision(timeout=None,
+                                                 should_stop=self.stop_event.is_set)
+
+        suggestion_active = False
+
+        def on_like_intent(active: bool) -> None:
+            nonlocal suggestion_active
+            if not active:
+                suggestion_active = False
+                self._stat(state="waiting", opener_suggestion=None)
+                return
+            if suggestion_active:
+                return
+            suggestion_active = True
+            suggestion = None
+            if self.opener_service is not None and getattr(self.driver, "accepts_opener", False):
+                # Publish an interim WAIT-style state before this blocking call (up to
+                # opener.request_timeout_s) so the hub stops rendering the stale "click pass X
+                # or heart" banner while a suggestion is actually being generated -- otherwise
+                # the operator has no way to tell anything is happening at all. The `state=`
+                # transition below (success or exception -- the try/except always falls
+                # through to it) is what clears this marker again, so it is a strict before/
+                # after bracket around the call rather than something that could be left
+                # dangling on an error path.
+                self._stat(state="suggesting")
+                try:
+                    pick = self.opener_service.maybe_opener(
+                        self.run_id, self.app, profile, should_stop=self.stop_event.is_set,
+                        advisory=True)
+                    suggestion = pick if isinstance(pick, str) else getattr(pick, "text", None)
+                except Exception:  # noqa: BLE001 — a suggestion must not block a human send
+                    suggestion = None
+            # The hub renders this state as its existing instruction panel. It is
+            # set atomically with the text so the operator never sees stale advice. This also
+            # unconditionally clears the interim "suggesting" marker published above -- this
+            # line runs whether the try block above succeeded, raised, or was never entered.
+            self._stat(state="waiting_for_send", opener_suggestion=suggestion)
+
+        return self.driver.wait_for_decision(timeout=None, should_stop=self.stop_event.is_set,
+                                             on_like_intent=on_like_intent)
 
     def _retrain_after_observe_labels(self, added: int) -> None:
         ready = self.decider.retrain(self.store)
@@ -296,6 +403,7 @@ class Worker(threading.Thread):
         self.driver.open_session()
         self._stat(mode="auto", state="scoring")
         terminal_state = "stopped"            # overwritten below when the loop ends for a known reason
+        stop_reason = None                    # set only for an OpenerService-triggered stop; see _finish_session
         try:
             while not self.stop_event.is_set():
                 if has_daily_limit:
@@ -331,7 +439,7 @@ class Worker(threading.Thread):
                 if d.decision == "defer":
                     self._stat(last_decision="defer", state="stopped")
                     print(f"{self.app.title()} ranker not ready (cold-start) — run in observe "
-                          f"mode and swipe manually to seed it. Stopping {self.app}.")
+                          f"mode and make decisions manually to seed it. Stopping {self.app}.")
                     break
 
                 # A session can decline a marginal model like according to its
@@ -351,8 +459,15 @@ class Worker(threading.Thread):
 
                 # Ratio shape: demote this like to a pass when the running like-rate
                 # is at the ceiling (soft cap — does NOT halt the run).
-                if d.decision == "like" and self.limiter and not self.limiter.allow_like_ratio(liked, acted):
-                    assert acted > 0  # allow_like_ratio returns True when acted==0, so we can't be here
+                # `acted > 0` is duplicated deliberately: allow_like_ratio() already
+                # returns True when acted==0 (so this branch can't actually run with
+                # acted==0), but that safety lives inside a DIFFERENT function, which is
+                # exactly why a static analyzer flags `liked / acted` below as a possible
+                # division by zero, and an `assert` alone would vanish under `python -O`.
+                # Repeating the guard here, in the condition itself, makes the division
+                # provably safe at its own call site regardless of either of those.
+                if d.decision == "like" and self.limiter and acted > 0 \
+                        and not self.limiter.allow_like_ratio(liked, acted):
                     ratio_pct = f"{liked / acted:.0%}"
                     print(f"{self.app.title()} like-ratio ceiling "
                           f"({ratio_pct} ≥ {self.limiter.target_like_ratio:.0%}) — demoting to pass")
@@ -362,10 +477,67 @@ class Worker(threading.Thread):
                     break
 
                 if d.decision == "like":
-                    # Only generate a Claude opener for apps that can actually send one
+                    # Only generate a provider-backed opener for apps that can actually send one
                     # at swipe time (Hinge). On Bumble we'd just discard it — wasted credits.
-                    pick = (self.opener_service.maybe_opener(self.run_id, self.app, profile)
-                            if getattr(self.driver, "accepts_opener", True) else None)
+                    accepts_opener = getattr(self.driver, "accepts_opener", True)
+                    # `self.opener_service is not None` guard: not reachable via supervisor.run()
+                    # today (it always constructs a real OpenerService, even with openers
+                    # disabled -- see OpenerService(client=None, ...) for that case), but this
+                    # Worker is a public class any other caller can construct directly, and an
+                    # audit proved the unguarded call raises a confusing
+                    # `AttributeError: 'NoneType' object has no attribute 'maybe_opener'`
+                    # instead of this codebase's usual clear, actionable message. The observe
+                    # path already guards the equivalent call the same way (see
+                    # _wait_for_observed_decision's `self.opener_service is not None` check).
+                    pick = (self.opener_service.maybe_opener(
+                                self.run_id, self.app, profile,
+                                should_stop=self.stop_event.is_set)
+                            if accepts_opener and self.opener_service is not None else None)
+                    # An opener call can discover that every configured provider/model is
+                    # exhausted. In AUTO mode, honour its global stop BEFORE calling
+                    # like(): a bare like is not an acceptable substitute for the opener
+                    # the worker decided to send. OBSERVE deliberately handles this only
+                    # after the human's already-completed action has been persisted.
+                    if getattr(self.opener_service, "stop_requested", False):
+                        stop_reason = self._opener_stop_reason()
+                        self._stat(state="stopped", stop_reason=stop_reason)
+                        self.stop_event.set()
+                        break
+                    # COMPLETED RULE: on an opener-capable app, an AUTO like is either sent
+                    # WITH its opener or not sent at all -- never bare, and there is no
+                    # configuration that changes that (the old budget.on_exhausted=
+                    # "swipe_without_opener" mode was removed outright; see service.py's
+                    # module docstring). The guard above only catches GLOBAL exhaustion
+                    # (stop_requested, which _exhaust() now sets unconditionally); maybe_opener()
+                    # can also return None for reasons that are narrow to THIS profile and leave
+                    # the service otherwise healthy -- a per-profile OpenerError, a single
+                    # sub-latch HTTP 400, or a single sub-latch transient failure (an unparseable
+                    # response, OpenerParseError, is no longer one of these: it is now retried by
+                    # maybe_opener() itself, and either produces an opener or exhausts the
+                    # service, so it never reaches here as a narrow, still-enabled failure -- see
+                    # service.py's maybe_opener docstring). Falling straight through to a bare
+                    # driver.like(None, ...) here would silently drop the opener the worker just
+                    # decided this profile deserved -- and, on Hinge, silently drop the
+                    # "commented like" behavior signal that opener is also there to produce.
+                    # `disabled` is what tells this case apart from the ONE case it must NOT
+                    # fire for: opener.enabled=false in config (self.opener_service.disabled is
+                    # True from construction, client is None) -- there was never an opener to
+                    # send here, so auto mode must run exactly as if openers didn't exist, not
+                    # halt on the very first like. There, self.opener_service.disabled is True,
+                    # so `not disabled` is False and this guard is a no-op -- only a live,
+                    # still-enabled service that just failed on THIS call reaches here. Apps
+                    # that do not accept openers (Bumble) are untouched: accepts_opener is False
+                    # for them, so pick is always None by construction and this condition never
+                    # evaluates true.
+                    if accepts_opener and pick is None and self.opener_service is not None \
+                            and not getattr(self.opener_service, "disabled", True):
+                        stop_reason = getattr(self.opener_service, "last_skip_reason", None) or (
+                            "opener service returned no opener for this profile and no "
+                            "specific reason was recorded"
+                        )
+                        self._stat(state="stopped", stop_reason=stop_reason)
+                        self.stop_event.set()
+                        break
                     # item_index lets the driver attach the comment to the photo/prompt the
                     # opener is actually about, not blindly the first one.
                     self.driver.like(pick.text if pick else None,
@@ -392,7 +564,18 @@ class Worker(threading.Thread):
                 landed_action = "like" if d.decision == "like" else "dislike"
                 self._auto_policy.record_landed_action(landed_action)
 
-                if self.opener_service.stop_requested:        # global budget/credit stop
+                # getattr(..., False): runs after EVERY action, including a dislike-only run
+                # that never once called maybe_opener() above -- so, unlike that call site,
+                # self.opener_service being None must not even be a conditional branch here, it
+                # must never be dereferenced unguarded at all. An audit proved the unguarded
+                # `self.opener_service.stop_requested` raised `AttributeError: 'NoneType' object
+                # has no attribute 'stop_requested'` on the very first dislike of a run
+                # constructed with opener_service=None -- see the maybe_opener guard above for
+                # the matching fix on the like path, and the observe loop's equivalent check
+                # (_observe_loop, after a label is saved) for the pattern this mirrors.
+                if getattr(self.opener_service, "stop_requested", False):
+                    stop_reason = self._opener_stop_reason()
+                    self._stat(state="stopped", stop_reason=stop_reason)
                     self.stop_event.set()
                 self._pace(landed_action, profile=profile, score=d.score)
                 self._maybe_session_break()
@@ -400,7 +583,7 @@ class Worker(threading.Thread):
             self._capture_failure_if_unexpected(exc)          # snapshot WHILE the transport is live
             raise                                             # (the finally below closes it)
         finally:
-            self._finish_session(terminal_state)
+            self._finish_session(terminal_state, stop_reason=stop_reason)
 
     def _pace(self, decision: str, *, profile=None, score: float | None = None) -> None:
         # ``0`` is the documented test/no-pacing setting.  Do not consume the

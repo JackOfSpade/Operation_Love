@@ -13,9 +13,14 @@ BASE = {
     "enabled_apps": ["hinge"],
     "mode": "observe",
     "storage": {"backend": "sqlite"},
-    "opener": {"enabled": True, "model": "claude-opus-4-8"},
+    # Model id deliberately matches OpenerCfg's own class default (see config.py) so that
+    # a test overriding "opener" to None -- which falls back to those class defaults --
+    # still resolves to a model with a budget.pricing entry below (see
+    # test_null_opener_block_loads_cleanly_but_still_requires_gemini_thinking).
+    "opener": {"enabled": True, "model": "gemini-3.6-flash",
+               "thinking": {"gemini-3.6-flash": {}}},
     "budget": {"run_budget_usd": 5.0,
-               "pricing": {"claude-opus-4-8": {"input": 5, "output": 25}}},
+               "pricing": {"gemini-3.6-flash": {"input": 5, "output": 25}}},
 }
 
 
@@ -60,8 +65,150 @@ def test_bigquery_requires_photo_bucket():
 
 
 def test_opener_model_needs_pricing():
-    d = {**BASE, "opener": {"enabled": True, "model": "claude-unknown-9"}}
+    d = {**BASE, "opener": {"enabled": True, "model": "gemini-unknown-9"}}
     _expect_error(d, "budget.pricing")
+
+
+def test_gemini_models_are_an_ordered_fallback_chain_and_each_needs_pricing():
+    d = {**BASE,
+         "opener": {"enabled": True, "provider": "gemini", "model": "legacy",
+                    "models": ["gemini-primary", "gemini-fallback"],
+                    "thinking": {"gemini-primary": {}, "gemini-fallback": {}}},
+         "budget": {**BASE["budget"], "pricing": {
+             "gemini-primary": {"input": 0, "output": 0},
+             "gemini-fallback": {"input": 0, "output": 0},
+         }}}
+    cfg = _load(d)
+    assert cfg.opener.effective_models == ["gemini-primary", "gemini-fallback"]
+    c.validate(cfg)
+    d["budget"]["pricing"].pop("gemini-fallback")
+    _expect_error(d, "budget.pricing")
+
+
+# --- opener.thinking: required per Gemini model, shape-validated -----------------------
+# Thinking is ON BY DEFAULT for nearly every free-tier model in this project's cascade and
+# is billed against opener.max_tokens (see config.py's _validate_gemini_thinking and
+# GeminiOpener._parse's MAX_TOKENS diagnostic) -- an unset entry risks silently truncating
+# every opener, so it's required rather than optional.
+
+def _gemini_opener(models, thinking, **extra):
+    return {"enabled": True, "provider": "gemini", "model": models[0],
+            "models": models, "thinking": thinking, **extra}
+
+
+def _gemini_budget(models):
+    return {**BASE["budget"], "pricing": {m: {"input": 0, "output": 0} for m in models}}
+
+
+def test_gemini_model_with_no_thinking_entry_fails_naming_the_model():
+    d = {**BASE,
+         "opener": _gemini_opener(["gemini-primary", "gemini-fallback"],
+                                  {"gemini-primary": {}}),  # gemini-fallback missing
+         "budget": _gemini_budget(["gemini-primary", "gemini-fallback"])}
+    _expect_error(d, "gemini-fallback")
+
+
+def test_gemini_explicit_empty_thinking_dict_passes():
+    # {} is the sanctioned way to say "use this model's server-default thinking level".
+    d = {**BASE,
+         "opener": _gemini_opener(["gemini-primary"], {"gemini-primary": {}}),
+         "budget": _gemini_budget(["gemini-primary"])}
+    c.validate(_load(d))   # no raise
+
+
+def test_gemini_bad_thinking_level_value_fails_clearly():
+    d = {**BASE,
+         "opener": _gemini_opener(["gemini-primary"],
+                                  {"gemini-primary": {"thinkingLevel": "extreme"}}),
+         "budget": _gemini_budget(["gemini-primary"])}
+    _expect_error(d, "thinkingLevel")
+
+
+def test_gemini_unknown_thinking_key_fails_clearly():
+    d = {**BASE,
+         "opener": _gemini_opener(["gemini-primary"],
+                                  {"gemini-primary": {"thinkingLevel": "minimal",
+                                                      "thinkingDepth": 3}}),
+         "budget": _gemini_budget(["gemini-primary"])}
+    _expect_error(d, "unknown key")
+
+
+def test_gemini_thinking_budget_must_be_an_int():
+    d = {**BASE,
+         "opener": _gemini_opener(["gemini-primary"],
+                                  {"gemini-primary": {"thinkingBudget": "zero"}}),
+         "budget": _gemini_budget(["gemini-primary"])}
+    _expect_error(d, "thinkingBudget")
+
+
+def test_gemini_thinking_budget_rejects_a_bool():
+    """`bool` is a subclass of `int` in Python, so a bare isinstance(x, int) check waves
+    `thinkingBudget: true` through -- and YAML's `true` is very easy to type where a 0 was
+    meant. It would reach the API as JSON `true` and 400 every single opener call, which is
+    precisely what this validator exists to prevent."""
+    d = {**BASE,
+         "opener": _gemini_opener(["gemini-primary"],
+                                  {"gemini-primary": {"thinkingBudget": True}}),
+         "budget": _gemini_budget(["gemini-primary"])}
+    _expect_error(d, "thinkingBudget")
+
+
+def test_gemini_thinking_budget_rejects_a_negative_int():
+    """0 disables thinking and positive values cap it, so a negative budget is meaningless
+    to the API and is only ever a mistake -- catch it here rather than as a live 400."""
+    d = {**BASE,
+         "opener": _gemini_opener(["gemini-primary"],
+                                  {"gemini-primary": {"thinkingBudget": -50}}),
+         "budget": _gemini_budget(["gemini-primary"])}
+    _expect_error(d, ">= 0")
+
+
+def test_null_thinking_block_fails_cleanly_instead_of_crashing():
+    """A bare `thinking:` key in YAML parses to None, and OpenerCfg is built generically via
+    cls(**raw_section) so nothing coerces it first. This used to escape validate() as a raw
+    TypeError ("argument of type 'NoneType' is not a container") instead of the actionable
+    ValueError every other optional block in this file degrades to -- see the null-block
+    tests further down for the convention this restores."""
+    d = {**BASE,
+         "opener": _gemini_opener(["gemini-primary"], None),
+         "budget": _gemini_budget(["gemini-primary"])}
+    _expect_error(d, "gemini-primary")     # reported as a missing entry, not a crash
+
+
+def test_non_mapping_thinking_block_fails_cleanly():
+    d = {**BASE,
+         "opener": _gemini_opener(["gemini-primary"], ["gemini-primary"]),
+         "budget": _gemini_budget(["gemini-primary"])}
+    _expect_error(d, "must be a mapping")
+
+
+def test_legacy_single_opener_model_remains_effective():
+    # effective_models' fallback to the legacy singular `model:` key (when `models` is
+    # empty) is deliberately retained -- see config.py's OpenerCfg docstring -- even though
+    # gemini is now the only provider.
+    cfg = _load(BASE)
+    assert cfg.opener.provider == "gemini"
+    assert cfg.opener.effective_models == ["gemini-3.6-flash"]
+
+
+def test_unknown_opener_provider_is_rejected():
+    d = {**BASE, "opener": {"enabled": True, "provider": "unknown", "model": "gemini-3.6-flash"}}
+    _expect_error(d, "opener.provider")
+
+
+def test_anthropic_opener_provider_is_rejected_as_removed():
+    # The owner's explicit decision: the legacy Anthropic/Claude opener path was excised
+    # from the codebase entirely (operation_love/opener/opener.py no longer defines
+    # AnthropicOpener at all), not merely defaulted off. A config still naming it must fail
+    # loudly at load time with a message that says so -- a stray/legacy `provider:
+    # anthropic` must never be reachable as a silent fallback.
+    d = {**BASE, "opener": {"enabled": True, "provider": "anthropic", "model": "claude-opus-4-8"}}
+    _expect_error(d, "removed")
+
+
+def test_opener_models_must_be_a_yaml_list():
+    d = {**BASE, "opener": {"enabled": True, "model": "gemini-3.6-flash", "models": "gemini-3.6-flash"}}
+    _expect_error(d, "opener.models must be a YAML list")
 
 
 def test_bad_app_mode_override():
@@ -74,15 +221,190 @@ def test_valid_app_mode_override_passes():
     c.validate(_load(d))   # no raise
 
 
-def test_bad_on_exhausted():
-    d = {**BASE, "budget": {**BASE["budget"], "on_exhausted": "stp"}}
-    _expect_error(d, "on_exhausted")
+# --- budget.on_exhausted: removed 2026-08-10 (owner ruled out commentless likes) -----------
+# A config still setting it -- 'stop' or 'swipe_without_opener' -- must fail loudly at load()
+# time (before validate() even runs) rather than silently ignore a dead key or crash with a
+# confusing TypeError from BudgetCfg's generic **raw_section construction.
+
+def test_stale_on_exhausted_stop_fails_loudly_with_actionable_message():
+    """Fires even for the value that used to be the default and "did nothing wrong" --
+    otherwise someone who had `on_exhausted: stop` has no way to learn the key is dead and
+    keeps believing it still controls something."""
+    d = {**BASE, "budget": {**BASE["budget"], "on_exhausted": "stop"}}
+    try:
+        _load(d)
+    except ValueError as e:
+        msg = str(e)
+        assert "on_exhausted" in msg
+        assert "removed" in msg
+        assert "commentless" in msg.lower() or "openerless" in msg.lower()
+        # Must reassure a former `stop` user that nothing about their run's behavior changed.
+        assert "nothing about your run's behavior changes" in msg
+    else:
+        raise AssertionError("expected ValueError for stale budget.on_exhausted: stop")
 
 
-def test_valid_on_exhausted_passes():
-    for v in ("stop", "swipe_without_opener"):
-        d = {**BASE, "budget": {**BASE["budget"], "on_exhausted": v}}
-        c.validate(_load(d))   # no raise
+def test_stale_on_exhausted_swipe_without_opener_fails_loudly():
+    d = {**BASE, "budget": {**BASE["budget"], "on_exhausted": "swipe_without_opener"}}
+    try:
+        _load(d)
+    except ValueError as e:
+        msg = str(e)
+        assert "on_exhausted" in msg
+        assert "removed" in msg
+        assert "max_attempts" in msg   # points at the setting that replaced it
+    else:
+        raise AssertionError("expected ValueError for stale budget.on_exhausted: "
+                             "swipe_without_opener")
+
+
+def test_stale_on_exhausted_is_not_a_confusing_generic_typeerror():
+    """BudgetCfg is built generically via cls(**raw_section) elsewhere in this file, and an
+    unexpected key there normally surfaces as a TypeError wrapped into a generic ValueError.
+    budget.on_exhausted must produce OUR dedicated, actionable message instead -- not that
+    generic 'invalid budget section' wrapper."""
+    d = {**BASE, "budget": {**BASE["budget"], "on_exhausted": "stop"}}
+    try:
+        _load(d)
+    except ValueError as e:
+        assert "invalid 'budget' section" not in str(e)
+    else:
+        raise AssertionError("expected ValueError for stale budget.on_exhausted")
+
+
+# --- opener.max_attempts: owner rule, "stop after 5 bad AI responses" ----------------------
+
+def test_max_attempts_default_is_five():
+    cfg = _load(BASE)
+    assert cfg.opener.max_attempts == 5
+
+
+def test_max_attempts_accepts_a_valid_int():
+    d = {**BASE, "opener": {**BASE["opener"], "max_attempts": 3}}
+    cfg = _load(d)
+    assert cfg.opener.max_attempts == 3
+    c.validate(cfg)   # no raise
+
+
+def test_max_attempts_rejects_zero():
+    d = {**BASE, "opener": {**BASE["opener"], "max_attempts": 0}}
+    _expect_error(d, "max_attempts")
+
+
+def test_max_attempts_rejects_negative():
+    d = {**BASE, "opener": {**BASE["opener"], "max_attempts": -1}}
+    _expect_error(d, "max_attempts")
+
+
+def test_max_attempts_rejects_bool():
+    # bool is a subclass of int in Python -- the same trap opener.thinking's thinkingBudget
+    # guards against elsewhere in config.py. `max_attempts: true` must not silently pass as 1.
+    d = {**BASE, "opener": {**BASE["opener"], "max_attempts": True}}
+    _expect_error(d, "max_attempts")
+
+
+def test_max_attempts_rejects_non_int():
+    d = {**BASE, "opener": {**BASE["opener"], "max_attempts": "5"}}
+    _expect_error(d, "max_attempts")
+
+
+# --- opener.max_attempts: upper bound. An audit found max_attempts had NO ceiling -- a
+# `max_attempts: 10000` config passed validate() cleanly, and since every attempt is a real,
+# billed, quota-consuming API call that (on a rejected-content retry) ordinarily re-hits the
+# SAME model rather than advancing the fallback cascade, that could burn a whole day's quota
+# of one of this project's 20-requests/day models on a single stubborn profile, or hang a
+# profile for hundreds of hours bounded only by request_timeout_s. See config.py's
+# _MAX_ATTEMPTS_CEILING docstring for the full arithmetic behind the chosen ceiling of 15. ---
+
+def test_max_attempts_ceiling_value_is_accepted():
+    # Boundary: the ceiling itself (15) must still be a legal, usable value.
+    d = {**BASE, "opener": {**BASE["opener"], "max_attempts": 15}}
+    cfg = _load(d)
+    assert cfg.opener.max_attempts == 15
+    c.validate(cfg)   # no raise
+
+
+def test_max_attempts_one_above_ceiling_is_rejected():
+    # Boundary: one past the ceiling (16) must fail -- proves the check is `>`, not `>=`.
+    d = {**BASE, "opener": {**BASE["opener"], "max_attempts": 16}}
+    _expect_error(d, "max_attempts")
+
+
+def test_max_attempts_above_ceiling_message_is_actionable():
+    """The error must do three things per the spec this bound was added to satisfy: state
+    the accepted range, explain why a ceiling exists at all (billed calls against a small
+    daily quota), and say what to do instead of just cranking the number up."""
+    d = {**BASE, "opener": {**BASE["opener"], "max_attempts": 10000}}
+    try:
+        c.validate(_load(d))
+    except ValueError as e:
+        msg = str(e)
+        assert "1 and 15" in msg                      # accepted range, stated explicitly
+        assert "10000" in msg                          # echoes the offending value
+        assert "billed" in msg.lower()                 # why a ceiling exists at all
+        assert "quota" in msg.lower()
+        # what to do instead of raising the ceiling further
+        assert "debug log" in msg.lower() or "opener.style" in msg.lower()
+    else:
+        raise AssertionError("expected ValueError for max_attempts=10000")
+
+
+def test_max_attempts_way_above_ceiling_rejected_same_as_just_above():
+    # Regression test for the exact value an audit found `validate()` accepting.
+    d = {**BASE, "opener": {**BASE["opener"], "max_attempts": 10000}}
+    _expect_error(d, "max_attempts")
+
+
+# --- opener.request_timeout_s: the only bound on how long a single opener API call can run.
+# Previously unvalidated entirely (no type check, no floor, no ceiling). An unbounded value
+# here would silently undo opener.max_attempts' own new ceiling, since one stalled call could
+# still hang a profile indefinitely regardless of how few retries are allowed. See config.py's
+# _MAX_REQUEST_TIMEOUT_S docstring for the arithmetic (2x the measured 90s worst case). -------
+
+def test_request_timeout_s_default_passes():
+    cfg = _load(BASE)   # BASE sets no request_timeout_s -> OpenerCfg's class default
+    c.validate(cfg)     # no raise
+
+
+def test_request_timeout_s_accepts_ceiling_value():
+    d = {**BASE, "opener": {**BASE["opener"], "request_timeout_s": 180}}
+    cfg = _load(d)
+    assert cfg.opener.request_timeout_s == 180
+    c.validate(cfg)   # no raise
+
+
+def test_request_timeout_s_rejects_above_ceiling():
+    d = {**BASE, "opener": {**BASE["opener"], "request_timeout_s": 181}}
+    _expect_error(d, "request_timeout_s")
+
+
+def test_request_timeout_s_rejects_zero():
+    d = {**BASE, "opener": {**BASE["opener"], "request_timeout_s": 0}}
+    _expect_error(d, "request_timeout_s")
+
+
+def test_request_timeout_s_rejects_negative():
+    d = {**BASE, "opener": {**BASE["opener"], "request_timeout_s": -1}}
+    _expect_error(d, "request_timeout_s")
+
+
+def test_request_timeout_s_rejects_bool():
+    # Same bool-is-an-int-subclass trap guarded against elsewhere in config.py.
+    d = {**BASE, "opener": {**BASE["opener"], "request_timeout_s": True}}
+    _expect_error(d, "request_timeout_s")
+
+
+def test_request_timeout_s_rejects_non_numeric():
+    d = {**BASE, "opener": {**BASE["opener"], "request_timeout_s": "90"}}
+    _expect_error(d, "request_timeout_s")
+
+
+def test_request_timeout_s_accepts_a_float():
+    # request_timeout_s is typed `float` on OpenerCfg -- a non-integer value must stay legal.
+    d = {**BASE, "opener": {**BASE["opener"], "request_timeout_s": 45.5}}
+    cfg = _load(d)
+    assert cfg.opener.request_timeout_s == 45.5
+    c.validate(cfg)   # no raise
 
 
 # --- pacing.swipe_delay_s: live scale on worker._pace, must be bounded ---------------
@@ -111,10 +433,25 @@ def test_null_top_level_limits_does_not_crash_validate():
 def test_null_optional_blocks_are_treated_as_omitted():
     """Sweep: the same 'YAML null slips past a dict .get(..., {}) default' gap that broke
     `limits:` also affects every other optional block that gets spread (**) or further
-    indexed after load() reads it -- fixed at the source in config.load()."""
-    for key in ("ranker", "quality_filter", "opener", "pacing", "paths", "apps"):
+    indexed after load() reads it -- fixed at the source in config.load(). `opener` is
+    swept separately below: it loads to clean defaults the same as every key here, but
+    since Gemini is the only opener provider now, its default model still has no
+    `opener.thinking` entry, so validate() legitimately (and cleanly) rejects it -- see
+    test_null_opener_block_loads_cleanly_but_still_requires_gemini_thinking."""
+    for key in ("ranker", "quality_filter", "pacing", "paths", "apps"):
         d = {**BASE, key: None}
         c.validate(_load(d))   # no raise
+
+
+def test_null_opener_block_loads_cleanly_but_still_requires_gemini_thinking():
+    # `opener: null` must not crash with a raw TypeError (the same **None-spread bug the
+    # sweep above guards for every other optional block) -- config.load() resolves it to
+    # OpenerCfg's plain defaults without error. But those defaults carry no opener.thinking
+    # entry, and there is no safe universal default for a field that can silently truncate
+    # every opener (see config.py's _validate_gemini_thinking), so validate() must still
+    # raise -- cleanly, naming the model -- rather than silently accept it.
+    d = {**BASE, "opener": None}
+    _expect_error(d, "opener.thinking")
 
 
 def test_null_storage_bigquery_reports_clean_error_not_crash():

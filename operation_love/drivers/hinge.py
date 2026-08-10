@@ -311,6 +311,11 @@ class AndroidDriver(DatingAppDriver):
     def __init__(self, cfg, spec: AndroidAppSpec):
         self.spec = spec
         self.accepts_opener = spec.accepts_opener
+        # Only comment-sheet apps have an intermediate human like intent. A direct-flow
+        # Android driver (Bumble) must keep its ordinary pass/like observer contract.
+        self.supports_observe_like_intent = (
+            spec.like_flow == "comment_sheet" and spec.accepts_opener
+        )
         self.think_time_calibrated = spec.think_time_calibrated
         app_cfg = (getattr(cfg, "apps", {}) or {}).get(spec.app, {})
         self.serial = app_cfg.get("serial") or None
@@ -983,6 +988,13 @@ class AndroidDriver(DatingAppDriver):
         seen = set()
         for i in range(self._profile_capture_limit):
             frame = self._screencap()
+            # A comment sheet is not profile content.  In observe mode it can be left open
+            # while Hinge is still composing/sending a like; treating its changing pixels as
+            # a card and then read-scrolling would move the sheet underneath the operator.
+            # Stop before recording this frame or issuing another scroll.  In particular this
+            # makes a capture that STARTS on a sheet completely input-free.
+            if self._observe_like_sheet_visible(frame):
+                return None
             ds = _downsample(frame)                    # None if PIL/numpy unavailable or undecodable
             sig = _frame_sig(frame)
             if sig in seen:
@@ -1199,20 +1211,22 @@ class AndroidDriver(DatingAppDriver):
         self._verify_progress(before, "dislike")
 
     # --- observe mode (shadow learning) --------------------------------
-    def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None) -> bool | None:
+    def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None,
+                          on_like_intent=None) -> bool | None:
         """Block until you manually like/pass the current card, inferred from
         screencap deltas (no accessibility tree):
 
           LIKE — tapping a heart slides the comment / "Send Like" sheet up over the
-                 BOTTOM while the photo stays up top (bottom changes, top doesn't);
-                 we then wait for it to resolve to a new card -> True.
+                 BOTTOM while the photo stays up top (bottom changes, top doesn't).
+                 We surface an opener through the callback, then PASSIVELY wait
+                 for the human to type and tap Send Like. Only a new card -> True.
           PASS — the whole card advances to a new profile (top changes) -> False.
           none — stop requested, deck empty, or timeout -> None.
 
         ⚠️ LIVE-VERIFY: the like-sheet geometry is gated until the profile is
         finished, so the top/bottom thresholds must be confirmed on-device before
-        trusting observe labels. After "READY", swipe (don't keep scrolling) — a
-        manual scroll changes the top region and reads as a pass.
+        trusting observe labels. After "READY", tap Hinge's X or heart (don't
+        keep scrolling) — a manual scroll changes the top region and reads as a pass.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         base = self._await_live_frame(deadline, should_stop)
@@ -1225,6 +1239,29 @@ class AndroidDriver(DatingAppDriver):
             if cur is None:                           # screen asleep: the owner stepped away.
                 time.sleep(_OBSERVE_POLL_S)           # keep watching — do NOT diff a black frame
                 continue                              # against `base` (that reads as a phantom pass)
+
+            # Check the actual compose sheet BEFORE interpreting aggregate screen deltas.
+            # Opening the keyboard can change both halves at once, which the generic branch
+            # below would otherwise call a card advance/PASS.  A visible sheet is instead an
+            # in-progress human like until it is dismissed or a ready next deck card appears.
+            if self._observe_like_sheet_visible(cur):
+                self._notify_observe_like_intent(on_like_intent, True)
+                sent, intent_notified = self._await_like_resolved(
+                    base, deadline, should_stop, on_like_intent=on_like_intent,
+                    intent_notified=True,
+                )
+                if sent is None:
+                    return None
+                if sent:
+                    if intent_notified:
+                        self._notify_observe_like_intent(on_like_intent, False)
+                    return True
+                if intent_notified:
+                    self._notify_observe_like_intent(on_like_intent, False)
+                base = self._await_live_frame(deadline, should_stop)
+                if base is None:
+                    return None
+                continue
             top, bot = _split_diff(base, cur)
             if top < self.change_threshold and bot < self.change_threshold:
                 time.sleep(_OBSERVE_POLL_S)
@@ -1235,11 +1272,27 @@ class AndroidDriver(DatingAppDriver):
             # light/gray profile, a like-sheet frame can match a stored full-frame signature
             # and be mis-read as a scroll, silently dropping the LIKE (bug C1).
             if bot >= self.change_threshold and top < self.change_threshold:
-                sent = self._await_like_resolved(base, deadline, should_stop)
+                # A bottom-only delta starts a *candidate* sheet flow. Do not spend
+                # opener budget or replace the hub instructions until the actual
+                # Send Like glyph corroborates it; a bottom animation/scroll alone
+                # is not a human intent to like.
+                sheet_visible = self._observe_like_sheet_visible(cur)
+                if sheet_visible:
+                    self._notify_observe_like_intent(on_like_intent, True)
+                sent, intent_notified = self._await_like_resolved(
+                    base, deadline, should_stop, on_like_intent=on_like_intent,
+                    intent_notified=sheet_visible,
+                )
                 if sent is None:
                     return None
                 if sent:
+                    if intent_notified:
+                        self._notify_observe_like_intent(on_like_intent, False)
                     return True                       # like sheet resolved to a new card
+                # Dismissal is not a pass. Clear the suggestion and continue waiting on
+                # the same profile for the operator's next X/heart decision.
+                if intent_notified:
+                    self._notify_observe_like_intent(on_like_intent, False)
                 base = self._await_live_frame(deadline, should_stop)   # cancelled -> resync
                 if base is None:
                     return None
@@ -1259,43 +1312,131 @@ class AndroidDriver(DatingAppDriver):
             return False                              # whole card changed -> pass
         return None
 
-    def _await_like_resolved(self, base: bytes, deadline, should_stop) -> bool | None:
-        """After the like sheet appears, wait for it to close: a NEW card means the
-        like was sent (True); reverting to `base` means it was cancelled (False)."""
+    @staticmethod
+    def _notify_observe_like_intent(callback, active: bool) -> None:
+        """Best-effort notification for the passive Hinge observe flow.
+
+        This helper intentionally performs no ADB input. If displaying or generating
+        a suggestion fails, the human can still write their own message or dismiss
+        the sheet, so observation must continue normally.
+        """
+        if callback is None:
+            return
+        try:
+            callback(active)
+        except Exception:  # noqa: BLE001 — non-input side channel must not break observation
+            pass
+
+    def _observe_like_sheet_visible(self, frame: bytes) -> bool:
+        """Whether Hinge's ``Send Like`` confirmation is still on screen.
+
+        A keyboard can move enough of the profile to create a large top-region
+        diff while the comment sheet remains open. The confirmation glyph is the
+        authoritative guard against calling that an already-sent like.
+        """
+        if self.spec.like_flow != "comment_sheet":
+            return False
+        try:
+            hits = _match_glyph(frame, self._template("confirm"), side="any", threshold=0.6)
+            if not hits:
+                return False
+            # cv2's normalized matcher can report a mathematically-perfect hit on a tiny
+            # flat synthetic/degraded frame (where the template cannot physically fit).  The
+            # real Hinge control is in the central/lower compose sheet, so reject impossible
+            # or top-bar positions before allowing this guard to block capture/decision flow.
+            import cv2
+            import numpy as np
+            image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+            if image is None:
+                return False
+            height = image.shape[0]
+            return any(height * 0.25 <= y <= height * 0.85 for _x, y in hits)
+        except Exception:  # noqa: BLE001 — retain delta fallback if visual matching is unavailable
+            return False
+
+    def _observe_deck_ready(self, frame: bytes) -> bool:
+        """Whether ``frame`` is visibly a swipe deck ready for the next decision.
+
+        A closed comment sheet is not, by itself, evidence that Hinge has advanced: its
+        network/animation "sending" state also closes the Send Like control and can stay
+        visually stable for seconds.  Require the existing independent pass-X and like-heart
+        glyphs instead.  This method is observe-only perception; it never uses the matched
+        positions as input targets.
+        """
+        try:
+            like = self._observe_glyph_visible(frame, "like", side="right")
+            passed = self._observe_glyph_visible(frame, "pass", side="left")
+            return bool(like and passed)
+        except Exception:  # noqa: BLE001 — inability to prove a ready deck must fail closed
+            return False
+
+    def _observe_glyph_visible(self, frame: bytes, role: str, *, side: str) -> bool:
+        """Passive control detection, accepting either UI contrast polarity.
+
+        The stored heart template is a dark glyph, while the live Hinge deck can render the
+        same outline white inside a black circle.  Autonomous actions intentionally retain
+        `_match_glyph`'s calibrated, single-polarity matcher: broadening it would turn this
+        perception-only readiness check into a new tap target.  Here we only need evidence
+        that a future deck has loaded, so testing the contrast-inverted template is safe.
+        """
+        template = self._template(role)
+        if _match_glyph(frame, template, side=side, threshold=0.6):
+            return True
+        try:
+            import numpy as np
+            inverted = np.bitwise_not(template)
+        except Exception:  # noqa: BLE001 — no usable template means no proof of a deck
+            return False
+        return bool(_match_glyph(frame, inverted, side=side, threshold=0.6))
+
+    def _await_like_resolved(self, base: bytes, deadline, should_stop,
+                             *, on_like_intent=None,
+                             intent_notified: bool = False) -> tuple[bool | None, bool]:
+        """After the like sheet appears, wait for a human send or dismissal.
+
+        Do not use a top-region change alone as evidence of sending: focusing the
+        text field can shift the profile behind an otherwise-still-open sheet.
+        Once the sheet glyph is gone, a *stable, visibly ready* new deck card is a sent
+        like; closing the sheet onto Hinge's transient sending UI is deliberately neither.
+        The base card (or another captured frame of the current profile) is a dismissal.
+        """
         while deadline is None or time.monotonic() < deadline:
             if should_stop and should_stop():
-                return None
+                return None, intent_notified
             cur = self._screencap(on_blank="none")
             if cur is None:                           # screen asleep mid-wait: keep watching
                 time.sleep(_OBSERVE_POLL_S)           # (never diff a black frame against base)
                 continue
-            top, bot = _split_diff(base, cur)
-            if top >= self.change_threshold:
-                # Wait 0.5s to verify the transition has stabilized
+            if self._observe_like_sheet_visible(cur):
+                if not intent_notified:
+                    self._notify_observe_like_intent(on_like_intent, True)
+                    intent_notified = True
+                # The keyboard/sheet may radically alter the top half. It is still
+                # an unsent human draft while the Send Like control is visible.
+                time.sleep(_OBSERVE_POLL_S)
+                continue
+            current = cur == base or self._is_current_profile_frame(cur)
+            ready = not current and self._observe_deck_ready(cur)
+            if current or ready:
+                # Both a dismissal and a ready deck must settle.  This rejects a single
+                # transition frame and, for the ready case, proves the deck controls remain
+                # present after Hinge's sending animation has completed.
                 time.sleep(0.5)
                 confirm = self._screencap(on_blank="none")
                 if confirm is None:
                     continue                          # can't confirm blind -> re-poll
-                c_top, c_bot = _split_diff(base, confirm)
-                if c_top >= self.change_threshold:
-                    if self._is_current_profile_frame(confirm):
-                        return False                  # same profile, scrolled (uniform top) -> not a like (#6)
-                    return True                       # advanced to a NEW profile -> like sent
-            if bot < self.change_threshold:
-                # Wait 0.5s to verify if it's a temporary transition or a genuine cancellation
-                time.sleep(0.5)
-                confirm = self._screencap(on_blank="none")
-                if confirm is None:
-                    continue                          # can't confirm blind -> re-poll
-                c_top, c_bot = _split_diff(base, confirm)
-                if c_top >= self.change_threshold:
-                    if self._is_current_profile_frame(confirm):
-                        return False                  # same profile, scrolled -> not a like (#6)
-                    return True                       # actually advanced to a NEW profile
-                if c_bot < self.change_threshold:
-                    return False                      # back to the original card -> cancelled
-            time.sleep(_OBSERVE_POLL_S)               # sheet still up (bottom busy, top calm)
-        return False
+                if self._observe_like_sheet_visible(confirm):
+                    continue                          # sheet reappeared / animation still resolving
+                confirm_current = confirm == base or self._is_current_profile_frame(confirm)
+                if current and confirm_current:
+                    return False, intent_notified     # genuinely back on the current profile
+                if (ready and not confirm_current and self._observe_deck_ready(confirm)
+                        and not self._changed(cur, confirm)):
+                    return True, intent_notified      # stable, non-current, ready next deck card
+            # Closed sheet but no current card and no ready deck = Hinge is still processing.
+            # Keep observing; a timeout is unresolved, never a false cancellation/label.
+            time.sleep(_OBSERVE_POLL_S)
+        return None, intent_notified
 
     def _is_current_profile_frame(self, frame: bytes) -> bool:
         """True if `frame` matches a captured frame of the CURRENT profile — i.e. an

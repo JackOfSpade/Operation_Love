@@ -8,7 +8,7 @@ BigQuery project_id + photo_bucket ... would fail in a clean CI env". That premi
 wrong: validate() only checks those keys are present, non-empty strings — it opens no
 connection and needs no credentials. The consequence was a real hole: every rule
 validate() enforces (the registry's check_selection, halt_on_error-vs-auto coherence,
-the pacing floor, budget.on_exhausted's enum, ranker.retrain_every) was exercised only
+the pacing floor, opener.max_attempts' bounds, ranker.retrain_every) was exercised only
 against inline YAML in other test files, never against the file we actually ship. A
 config.yaml that could not start was therefore fully CI-green.
 """

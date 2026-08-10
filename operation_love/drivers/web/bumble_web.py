@@ -121,7 +121,7 @@ async (node) => {
 
 
 class BumbleWebDriver(PlaywrightDriver):
-    accepts_opener = False          # Bumble: match first, then message — no swipe-time opener (don't spend Claude credits)
+    accepts_opener = False          # Bumble: match first, then message — no swipe-time opener (don't spend Gemini quota/spend)
     platform_app = "bumble_web"     # registry id checked by PlaywrightDriver.open_session()
     hud_label = "bumble"
 

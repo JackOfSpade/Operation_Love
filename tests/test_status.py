@@ -62,6 +62,55 @@ def test_set_app_autocreates_unknown_app():
     assert s.snapshot()["apps"]["newapp"]["state"] == "scoring"
 
 
+def test_observe_opener_suggestion_is_published_in_app_snapshot():
+    s = _mk()
+    s.set_app("hinge", state="waiting_for_send", opener_suggestion="A curious question?")
+    app = s.snapshot()["apps"]["hinge"]
+    assert app["state"] == "waiting_for_send"
+    assert app["opener_suggestion"] == "A curious question?"
+
+    # A dismissal/decision/new card clears it with its state transition, even when a worker
+    # need not remember to include a redundant opener_suggestion=None field.
+    s.set_app("hinge", state="waiting")
+    app = s.snapshot()["apps"]["hinge"]
+    assert app["state"] == "waiting" and app["opener_suggestion"] is None
+
+    s.set_app("hinge", state="waiting_for_send", opener_suggestion="Another opener")
+    s.record_swipe("hinge", "like")
+    assert s.snapshot()["apps"]["hinge"]["opener_suggestion"] is None
+
+
+def test_suggesting_state_clears_a_stale_opener_suggestion():
+    """The interim 'suggesting' state (published while the advisory suggestion call is in
+    flight -- see worker.py's on_like_intent) must clear any stale opener_suggestion left
+    over from a PRIOR card automatically, exactly like the other WAIT-style transitions --
+    otherwise a re-render between the state flip and the real suggestion landing could
+    momentarily show the previous card's text next to the new one."""
+    s = _mk()
+    s.set_app("hinge", state="waiting_for_send", opener_suggestion="stale suggestion")
+    s.set_app("hinge", state="suggesting")
+    app = s.snapshot()["apps"]["hinge"]
+    assert app["state"] == "suggesting" and app["opener_suggestion"] is None
+
+
+def test_stop_reason_defaults_to_none_and_survives_serialization():
+    # WS-opener-reason: an opener-exhaustion stop must be distinguishable from a plain
+    # operator Stop in the SAME snapshot dict the hub's /api/status endpoint serves --
+    # asdict(AppStatus) is the only path there (see status.snapshot()/app_view()), so
+    # pinning it here catches any future field-list drift that would silently drop it.
+    s = _mk()
+    assert s.snapshot()["apps"]["bumble"]["stop_reason"] is None   # untouched app
+
+    s.set_app("bumble", state="stopped", stop_reason="run budget reached")
+    snap = s.snapshot()
+    assert snap["apps"]["bumble"]["state"] == "stopped"
+    assert snap["apps"]["bumble"]["stop_reason"] == "run budget reached"
+
+    # app_view() (the per-app overlay/hub read) goes through the same asdict() call.
+    view = s.app_view("bumble")
+    assert view["app"]["stop_reason"] == "run budget reached"
+
+
 def test_app_view_includes_app_slice_and_global():
     s = _mk(labels=7)
     s.record_swipe("bumble", "like", 0.91)

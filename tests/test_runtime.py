@@ -26,7 +26,7 @@ def test_capabilities_detect():
     assert caps.os_name
     assert caps.device in {"cpu", "cuda", "mps"}
     # every optional component is reported as a bool
-    for key in ("torch", "clip", "arcface", "quality", "anthropic"):
+    for key in ("torch", "clip", "arcface", "quality"):
         assert isinstance(caps.available[key], bool)
 
 

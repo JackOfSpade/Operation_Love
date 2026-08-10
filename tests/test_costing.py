@@ -4,7 +4,6 @@ from operation_love.costing import (
     ModelPricing,
     Usage,
     cost_usd,
-    is_out_of_credit,
 )
 
 
@@ -34,20 +33,6 @@ def test_tracker_no_budget():
     assert not t.budget_reached()
 
 
-def test_out_of_credit_detection():
-    class Err400(Exception):
-        type = "invalid_request_error"
-        message = "Your credit balance is too low to access the Anthropic API"
-
-    class Err403(Exception):
-        type = "billing_error"
-        message = "billing problem"
-
-    assert is_out_of_credit(Err400())
-    assert is_out_of_credit(Err403())
-    assert not is_out_of_credit(ValueError("some unrelated error"))
-
-
 def test_record_returns_call_cost():
     pricing = {"m": ModelPricing(input=10.0, output=10.0)}
     t = CostTracker(pricing, run_budget_usd=None)
@@ -56,14 +41,31 @@ def test_record_returns_call_cost():
     assert t.run_spend_usd == c  # accumulation == returned delta
 
 
-def test_record_tolerates_dated_model_id():
-    pricing = {"claude-haiku-4-5": ModelPricing(input=10.0, output=10.0)}
+def test_record_raises_keyerror_for_a_model_with_no_pricing_entry():
+    # record() prices against the EXACT configured model id -- GeminiOpener._parse always
+    # passes the model it was asked for (requested_model), never a provider-echoed serving
+    # revision (see GeminiOpener._parse's docstring / CostTracker.record's docstring), so
+    # there is no dated/aliased id to normalize here, unlike the old Anthropic-shaped
+    # dated-id (e.g. "-20251001" suffix) tolerance this replaced.
+    pricing = {"gemini-3.6-flash": ModelPricing(input=10.0, output=10.0)}
     t = CostTracker(pricing, run_budget_usd=None)
-    c = t.record("claude-haiku-4-5-20251001", Usage(input_tokens=1_000_000))  # dated id -> alias
-    assert c == 10.0
+    t.record("gemini-3.6-flash", Usage(input_tokens=1_000_000))  # exact match: fine
     try:
-        t.record("gpt-9", Usage(input_tokens=1_000_000))  # unknown, no date suffix
+        t.record("gemini-3.6-flash-20251001", Usage(input_tokens=1_000_000))  # no stripping
     except KeyError:
         pass
     else:
-        raise AssertionError("expected KeyError for unknown model")
+        raise AssertionError("expected KeyError for a model id with no exact pricing entry")
+
+
+def test_usage_from_gemini_separates_cached_prompt_and_thought_tokens():
+    class Metadata:
+        prompt_token_count = 1_000
+        cached_content_token_count = 250
+        candidates_token_count = 80
+        thoughts_token_count = 120
+
+    usage = Usage.from_gemini(Metadata())
+    assert usage.input_tokens == 750
+    assert usage.cache_read_input_tokens == 250
+    assert usage.output_tokens == 200

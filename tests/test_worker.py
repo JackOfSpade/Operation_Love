@@ -4,14 +4,14 @@ import time
 
 from operation_love.costing import CostTracker, ModelPricing, Usage
 from operation_love.drivers.base import DatingAppDriver, DriverClosed
-from operation_love.opener.opener import OpenerResult
-from operation_love.opener.service import OpenerService
+from operation_love.opener.opener import GeminiAPIError, OpenerError, OpenerParseError, OpenerResult
+from operation_love.opener.service import OpenerPick, OpenerService
 from operation_love.limits import RateLimiter
 from operation_love.perception.capture import Profile
 from operation_love.ranker.decider import Decision
 from operation_love.worker import Worker
 
-PRICING = {"claude-opus-4-8": ModelPricing(input=5.0, output=25.0)}
+PRICING = {"gemini-test-model": ModelPricing(input=5.0, output=25.0)}
 
 
 # --- fakes ---------------------------------------------------------------
@@ -76,21 +76,75 @@ class StopAfterDecide(FakeDecider):
 class FakeOpenerClient:
     def __init__(self, cost_tokens=400):
         self.calls = 0; self.cost_tokens = cost_tokens
-    def generate(self, profile, style):
+        self.should_stops = []   # records should_stop from every call -- see BUG 1's tests
+    def generate(self, profile, style, retry_hint="", *, should_stop=None,
+                 skip_models=frozenset()):
         self.calls += 1
+        self.should_stops.append(should_stop)
         return OpenerResult(opener=f"hi {self.calls}", referenced="r",
-                            usage=Usage(input_tokens=self.cost_tokens), model="claude-opus-4-8")
+                            usage=Usage(input_tokens=self.cost_tokens), model="gemini-test-model")
 
 
 class SlowOpenerClient(FakeOpenerClient):
-    def generate(self, profile, style):
+    def generate(self, profile, style, retry_hint="", *, should_stop=None,
+                 skip_models=frozenset()):
         time.sleep(0.05)
-        return super().generate(profile, style)
+        return super().generate(profile, style, retry_hint, should_stop=should_stop)
 
 
-class BillingErrClient:
-    def generate(self, profile, style):
-        raise Exception("Your credit balance is too low to access the Anthropic API")
+# --- opener clients that fail in the PER-CALL (not global-exhaustion) ways
+# maybe_opener() can return None -- see service.py's maybe_opener docstring. OpenerError,
+# a single sub-latch 400, and a single sub-latch transient failure each leave
+# OpenerService.disabled False (a lone occurrence is below every latch threshold), which
+# is exactly the case the worker's no-bare-like guard exists for. ParseErrorOpenerClient
+# is different: OpenerParseError is now RETRIED internally by maybe_opener() (see its
+# docstring), so a client that keeps failing every call, like this one, drives the retry
+# loop all the way to exhaustion (disabled True) rather than leaving the service enabled.
+class ParseErrorOpenerClient:
+    """Model returned a billed response that didn't parse into a usable opener, every
+    single attempt -- exercises maybe_opener()'s retry-until-exhausted path."""
+    def __init__(self):
+        self.calls = 0
+        self.retry_hints = []
+    def generate(self, profile, style, retry_hint="", *, should_stop=None,
+                 skip_models=frozenset()):
+        self.calls += 1
+        self.retry_hints.append(retry_hint)
+        raise OpenerParseError("bad JSON in response body", Usage(input_tokens=10),
+                               "gemini-test-model")
+
+
+class OpenerErrorOpenerClient:
+    """Per-profile content problem raised before/without a billed round trip (e.g. a
+    corrupt captured photo that couldn't be decoded). NOT retried by maybe_opener()."""
+    def __init__(self):
+        self.calls = 0
+    def generate(self, profile, style, retry_hint="", *, should_stop=None,
+                 skip_models=frozenset()):
+        self.calls += 1
+        raise OpenerError("Gemini opener: photo index 0 could not be decoded")
+
+
+class BadRequestOpenerClient:
+    """A single HTTP 400 -- below _BAD_REQUEST_LATCH_THRESHOLD, so this alone must not
+    disable the service, only skip this one profile's opener."""
+    def __init__(self):
+        self.calls = 0
+    def generate(self, profile, style, retry_hint="", *, should_stop=None,
+                 skip_models=frozenset()):
+        self.calls += 1
+        raise GeminiAPIError(400, "INVALID_ARGUMENT", "bad image or request")
+
+
+class TransientOpenerClient:
+    """An unclassified exception (timeout/connection blip) -- below
+    _TRANSIENT_LATCH_THRESHOLD, so this alone must not disable the service."""
+    def __init__(self):
+        self.calls = 0
+    def generate(self, profile, style, retry_hint="", *, should_stop=None,
+                 skip_models=frozenset()):
+        self.calls += 1
+        raise RuntimeError("connection reset")
 
 
 class FakeStore:
@@ -125,7 +179,7 @@ def _worker(driver, decider, service, store):
 def test_budget_caps_openers_globally():
     tracker = CostTracker(PRICING, run_budget_usd=0.001)   # 400 input tok = $0.002 > cap
     client = FakeOpenerClient(cost_tokens=400)
-    svc = OpenerService(client, tracker, FakeStore(), "style", on_exhausted="stop")
+    svc = OpenerService(client, tracker, FakeStore(), "style")
     assert svc.maybe_opener("r", "bumble", Profile()).text == "hi 1"   # first allowed
     assert svc.maybe_opener("r", "hinge", Profile()) is None           # second over budget
     assert client.calls == 1 and svc.stop_requested is True
@@ -135,7 +189,7 @@ def test_budget_caps_openers_across_concurrent_workers():
     tracker = CostTracker(PRICING, run_budget_usd=0.001)   # first call spends past cap
     client = SlowOpenerClient(cost_tokens=400)
     store = FakeStore()
-    svc = OpenerService(client, tracker, store, "style", on_exhausted="stop")
+    svc = OpenerService(client, tracker, store, "style")
     results = []
 
     def call(app):
@@ -153,20 +207,6 @@ def test_budget_caps_openers_across_concurrent_workers():
     assert sorted(results, key=lambda x: x or "") == [None, "hi 1"]
     assert len(store.spend) == 1 and len(store.openers) == 1
     assert svc.stop_requested is True
-
-
-def test_out_of_credit_disables_service():
-    svc = OpenerService(BillingErrClient(), CostTracker(PRICING, None), FakeStore(), "s", "stop")
-    assert svc.maybe_opener("r", "bumble", Profile()) is None
-    assert svc.disabled is True and svc.stop_requested is True
-
-
-def test_swipe_without_opener_mode():
-    tracker = CostTracker(PRICING, run_budget_usd=0.001)
-    svc = OpenerService(FakeOpenerClient(400), tracker, FakeStore(), "s", on_exhausted="swipe_without_opener")
-    svc.maybe_opener("r", "bumble", Profile())          # first spends
-    assert svc.maybe_opener("r", "bumble", Profile()) is None
-    assert svc.disabled is True and svc.stop_requested is False   # keep swiping, no stop
 
 
 class _CalibratedDriver(FakeDriver):
@@ -463,7 +503,7 @@ def test_worker_likes_with_openers():
 
 
 def test_worker_skips_openers_when_driver_declines():
-    # Bumble-style driver: no swipe-time opener -> never call Claude (no wasted credits).
+    # Bumble-style driver: no swipe-time opener -> never call Gemini (no wasted spend).
     driver = FakeDriver(3)
     driver.accepts_opener = False
     store = FakeStore()
@@ -474,17 +514,220 @@ def test_worker_skips_openers_when_driver_declines():
     assert client.calls == 0 and store.openers == [] and store.spend == []
 
 
-def test_worker_stops_when_budget_exhausted():
+def test_worker_stops_before_bare_like_when_opener_budget_exhausts():
     driver = FakeDriver(5)
     store = FakeStore()
     client = FakeOpenerClient(cost_tokens=400)  # $0.002/call
-    svc = OpenerService(client, CostTracker(PRICING, run_budget_usd=0.001), store, "s", on_exhausted="stop")
+    svc = OpenerService(client, CostTracker(PRICING, run_budget_usd=0.001), store, "s")
     _worker(driver, FakeDecider("like"), svc, store).run()
-    # The first opener is allowed, then the over-cap spend stops the run before
-    # a second profile is swiped.
+    # The call itself can push the global cap over budget. AUTO must stop before
+    # sending a bare like for that same profile, rather than substituting a like
+    # with no opener after the provider service requested a stop.
     assert client.calls == 1
-    assert driver.likes == ["hi 1"]
+    assert driver.likes == []
+    assert store.decisions == []
     assert driver.closed
+
+
+def test_auto_mode_stop_reason_is_visible_in_status_when_opener_budget_exhausts():
+    """WS-opener-reason: the owner rule is that the hub must show WHY an auto run stopped,
+    not just that it did. An opener-exhaustion stop used to leave AppStatus at the default
+    state='stopped' with no reason anywhere -- rendering identically to an operator clicking
+    Stop. This pins the whole path: OpenerService records the cause (see
+    test_opener_service.py) and the worker publishes it into the shared status the hub
+    reads, on the SAME budget-exhaustion trigger as
+    test_worker_stops_before_bare_like_when_opener_budget_exhausts above."""
+    from operation_love.status import RunStatus
+
+    driver = FakeDriver(5)
+    store = FakeStore()
+    client = FakeOpenerClient(cost_tokens=400)  # $0.002/call
+    svc = OpenerService(client, CostTracker(PRICING, run_budget_usd=0.001), store, "s")
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] == "stopped"
+    assert app["stop_reason"] == "run budget reached"
+
+
+# ---------------------------------------------------------------------------------------
+# COMPLETED RULE: in AUTO mode on an opener-capable app, a like is either sent WITH its
+# opener or not sent at all -- and there is no configuration that changes that (the old
+# budget.on_exhausted="swipe_without_opener" mode was removed outright; see service.py's
+# module docstring). The tests above cover the pre-existing GLOBAL-exhaustion guard
+# (stop_requested); these cover every other way maybe_opener() can return None -- a
+# per-call failure that leaves OpenerService still enabled (see service.py's maybe_opener
+# docstring and last_skip_reason), plus the case where a bad AI response keeps failing
+# through every retry attempt and the SERVICE itself ends up exhausted. Each must halt
+# before driver.like(), record no decision for the abandoned profile, and publish a
+# stop_reason naming the actual cause (not a generic line).
+# ---------------------------------------------------------------------------------------
+
+def test_worker_halts_before_bare_like_when_the_opener_ultimately_fails_every_retry():
+    """THE OWNER'S RULE: a bad AI response is retried, never sent bare, and if it is STILL
+    bad after max_attempts (5, the OpenerService default) that means something is wrong and
+    the whole run stops. ParseErrorOpenerClient fails every single call, so the worker's one
+    maybe_opener() call drives OpenerService's retry loop out to full exhaustion -- this is
+    the "ultimately fails" case, distinct from the single-failure-but-still-enabled cases
+    below (OpenerError / a single sub-latch 400 / a single sub-latch transient failure)."""
+    driver = FakeDriver(3)
+    store = FakeStore()
+    client = ParseErrorOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert client.calls == svc.max_attempts == 5   # every retry attempt was actually made
+    assert driver.likes == []                       # no bare like sent
+    assert store.decisions == []                     # no decision recorded for the abandoned profile
+    assert svc.disabled is True and svc.stop_requested is True   # the service gave up for the run
+    assert svc.exhausted_reason and "bad JSON in response body" in svc.exhausted_reason
+    assert driver.closed
+
+
+def test_worker_stops_before_bare_like_on_opener_error():
+    driver = FakeDriver(3)
+    store = FakeStore()
+    client = OpenerErrorOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert client.calls == 1
+    assert driver.likes == []
+    assert store.decisions == []
+    assert svc.disabled is False and svc.stop_requested is False
+    assert svc.last_skip_reason and "could not be decoded" in svc.last_skip_reason
+    assert driver.closed
+
+
+def test_worker_stops_before_bare_like_on_single_bad_request():
+    driver = FakeDriver(3)
+    store = FakeStore()
+    client = BadRequestOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert client.calls == 1                       # below _BAD_REQUEST_LATCH_THRESHOLD -- didn't latch
+    assert driver.likes == []
+    assert store.decisions == []
+    assert svc.disabled is False and svc.stop_requested is False
+    assert svc.last_skip_reason and "HTTP 400" in svc.last_skip_reason
+    assert driver.closed
+
+
+def test_worker_stops_before_bare_like_on_single_transient_failure():
+    driver = FakeDriver(3)
+    store = FakeStore()
+    client = TransientOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert client.calls == 1                       # below _TRANSIENT_LATCH_THRESHOLD -- didn't latch
+    assert driver.likes == []
+    assert store.decisions == []
+    assert svc.disabled is False and svc.stop_requested is False
+    assert svc.last_skip_reason and "connection reset" in svc.last_skip_reason
+    assert driver.closed
+
+
+def test_auto_mode_stop_reason_names_the_cause_when_every_retry_attempt_fails():
+    """Companion to test_auto_mode_stop_reason_is_visible_in_status_when_opener_budget_exhausts
+    above: when OpenerService's retry loop exhausts (see
+    test_worker_halts_before_bare_like_when_the_opener_ultimately_fails_every_retry), the hub
+    must show the actual cause -- the last attempt's real failure message -- not a generic
+    'stopped'."""
+    from operation_love.status import RunStatus
+
+    driver = FakeDriver(3)
+    store = FakeStore()
+    client = ParseErrorOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] == "stopped"
+    assert "bad JSON in response body" in app["stop_reason"]
+
+
+def test_worker_skips_openers_when_driver_declines_even_through_opener_failures():
+    """A non-opener-capable app (Bumble-style) must be COMPLETELY unaffected by the new
+    per-call guard -- it never calls the opener service at all in auto mode, so a failing
+    opener client (that would halt an opener-capable app) must not even be reached."""
+    driver = FakeDriver(3)
+    driver.accepts_opener = False
+    store = FakeStore()
+    client = ParseErrorOpenerClient()          # would halt an opener-capable app every time
+    svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert driver.likes == [None, None, None]  # liked all 3, normally, with no opener
+    assert client.calls == 0                   # opener service never even called
+    assert len(store.decisions) == 3
+    assert svc.last_skip_reason is None         # never touched
+
+
+def test_worker_with_opener_disabled_by_config_still_likes_normally_in_auto_mode():
+    """opener.enabled=false in config produces an OpenerService(client=None, ...), which is
+    `disabled` from construction (see OpenerService.__init__). That is a DELIBERATE
+    "openers don't exist this run" choice, not a per-call failure of an otherwise-live
+    service -- the no-bare-like guard must not mistake it for one and halt the very first
+    like of every run. `disabled` is exactly what tells the two apart (see the guard's
+    comment in worker.py's _auto_loop)."""
+    driver = FakeDriver(3)
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    assert svc.disabled is True                # opener.enabled=false -- no client configured
+
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert driver.likes == [None, None, None]   # liked all 3, normally, with no opener
+    assert len(store.decisions) == 3
+    assert svc.stop_requested is False           # never asked anyone to stop
+
+
+def test_observe_mode_stop_reason_is_visible_in_status_when_opener_exhausts():
+    """Mirrors the auto-mode pin above for observe mode: a budget/credit stop discovered
+    only after a human decision is already recorded (see the "honour the stop only now"
+    comment in _observe_loop) must still land in AppStatus.stop_reason, not just silently
+    flip the shared stop_event with no visible trace."""
+    from operation_love.status import RunStatus
+
+    class ObserveDriver(FakeDriver):
+        def __init__(self):
+            super().__init__(1)
+            self._served = False
+        def out_of_profiles(self):
+            return self._served
+        def current_profile(self):
+            self._served = True
+            return self.cards[0]
+        def wait_for_decision(self, timeout=None, should_stop=None):
+            return True                        # user LIKEs
+        def render_busy(self, message=None):
+            pass
+
+    class ObserveDecider(FakeDecider):
+        def embed(self, profile):
+            return [0.1, 0.2]
+        def retrain(self, store):
+            return True
+
+    driver = ObserveDriver()
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    reason = ("all configured Gemini models exhausted their free-tier quota; "
+              "no opener capacity remains")
+    svc._exhaust(reason)                        # simulates exhaustion discovered mid-run
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    Worker("bumble", driver, ObserveDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] == "stopped"
+    assert app["stop_reason"] == reason
 
 
 def test_worker_stops_at_per_run_like_budget():
@@ -520,6 +763,50 @@ def test_like_ratio_ceiling_demotes_not_halts():
     likes = sum(1 for _, d, _ in store.decisions if d == "like")
     passes = sum(1 for _, d, _ in store.decisions if d == "dislike")
     assert likes == 2 and passes == 2
+
+
+class _RatioNoZeroGuardLimiter:
+    """HOLE 3 (mutation audit): a DELIBERATELY minimal RateLimiter double. The real
+    RateLimiter.allow_like_ratio (limits.py) already returns True whenever acted == 0, so
+    _auto_loop's OWN `acted > 0` clause (right before the ratio check) is redundant against
+    today's real limiter -- nothing breaks if that clause is deleted, and no test built
+    against the real RateLimiter would notice. The clause is deliberate defense in depth
+    (see _auto_loop's comment above it): it only matters if RateLimiter's internal guard is
+    ever removed, or -- exactly what this double is for -- a limiter implementation is used
+    that never had the guard in the first place. This double's allow_like_ratio divides
+    liked/acted with NO acted == 0 check of its own, so calling it with acted == 0 raises
+    ZeroDivisionError; only the worker's own `acted > 0` short-circuit can prevent that
+    call from ever happening on the very first 'like' decision of a run (acted is still 0
+    at the moment of that check -- see _auto_loop, `acted` only increments AFTER it)."""
+    max_per_day = None
+    target_like_ratio = 0.5
+
+    def allow(self, acted_this_run, acted_today):
+        return True
+
+    def allow_like(self, liked_this_run):
+        return True
+
+    def allow_like_ratio(self, liked, acted):
+        return liked / acted < self.target_like_ratio   # no acted == 0 guard, unlike limits.py
+
+    def describe(self):
+        return "test double (no internal zero guard)"
+
+
+def test_first_like_survives_a_limiter_double_with_no_internal_zero_guard():
+    """Confirms _auto_loop's `acted > 0` clause is load-bearing against a limiter double
+    that (unlike the real RateLimiter) does not itself guard acted == 0: the very first
+    'like' decision of the run must land normally, with no ZeroDivisionError, because the
+    worker's own guard keeps allow_like_ratio(liked=0, acted=0) from ever being called."""
+    driver = FakeDriver(1)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", limiter=_RatioNoZeroGuardLimiter()).run()
+
+    assert driver.likes == ["hi 1"]                         # the like landed, not swallowed
+    assert store.decisions == [("bumble", "like", "auto")]
 
 
 def test_worker_daily_limit_ignores_manual_decisions():
@@ -818,3 +1105,331 @@ def test_observe_mode_halts_by_default_when_a_driver_says_nothing_about_halting(
 
     assert driver.attempts == 1     # halted on the FIRST error -- no restart-and-retry
     assert stop.is_set()            # and stopped, so buffered data still gets saved
+
+
+# ---------------------------------------------------------------------------------------
+# should_stop -- BUG 1 (adversarial audit): OpenerService.maybe_opener() (and, through it,
+# GeminiOpener.generate()) can now abort an in-flight retry/cascade sequence as soon as a
+# Stop click is observed, instead of running the full sequence to completion (up to ~52
+# minutes against the shipped config -- see opener.py's and service.py's should_stop
+# docstrings). That only helps if worker.py actually PASSES its stop signal through at
+# every maybe_opener() call site. There are exactly two: the AUTO-loop like path, and the
+# OBSERVE-mode on_like_intent suggestion path (Hinge's post-heart comment sheet).
+# ---------------------------------------------------------------------------------------
+
+def test_auto_loop_passes_stop_event_is_set_as_should_stop_to_maybe_opener():
+    """Pins the AUTO-loop call site: worker.py must forward self.stop_event.is_set (not some
+    other callable, and not omit it) so a Stop click can abort an in-flight opener call."""
+    driver = FakeDriver(1)
+    store = FakeStore()
+    client = FakeOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
+    w = _worker(driver, FakeDecider("like"), svc, store)
+    w.run()
+
+    assert client.calls == 1
+    assert client.should_stops == [w.stop_event.is_set]
+
+
+class _ObserveLikeIntentDriver(FakeDriver):
+    """A Hinge-style observe driver: exposes the post-heart comment-sheet suggestion hook
+    (supports_observe_like_intent) and calls it exactly like the real driver does, so
+    _wait_for_observed_decision's on_like_intent callback (the one that calls
+    maybe_opener()) actually runs."""
+    supports_observe_like_intent = True
+    accepts_opener = True
+
+    def __init__(self):
+        super().__init__(1)
+        self._served = False
+
+    def out_of_profiles(self):
+        return self._served
+
+    def current_profile(self):
+        self._served = True
+        return self.cards[0]
+
+    def render_busy(self, message=None):
+        pass
+
+    def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
+        if on_like_intent is not None:
+            on_like_intent(True)     # simulate opening Hinge's like/comment sheet
+        return True                  # then LIKE
+
+
+def test_observe_mode_on_like_intent_passes_stop_event_is_set_to_maybe_opener():
+    """Pins the OTHER call site: the observe-mode opener suggestion surfaced after the
+    operator opens Hinge's like sheet must ALSO thread should_stop=self.stop_event.is_set,
+    not just the auto-loop path pinned above."""
+    class ObserveDecider(FakeDecider):
+        def embed(self, profile):
+            return [0.1, 0.2]
+        def retrain(self, store):
+            return True
+
+    driver = _ObserveLikeIntentDriver()
+    store = FakeStore()
+    client = FakeOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
+    w = Worker("bumble", driver, ObserveDecider(), svc, store, "run1", _Pacing(),
+              threading.Event(), mode="observe")
+    w.run()
+
+    assert client.calls == 1
+    assert client.should_stops == [w.stop_event.is_set]
+
+
+# ---------------------------------------------------------------------------------------
+# A: an advisory suggestion failure must NEVER end the observe session; advisory=True must
+# be the kwarg the observe on_like_intent call site actually passes; the AUTO-loop like path
+# must be completely unaffected (advisory stays False there, exactly today's behavior).
+#
+# B: the hub must show something while the blocking suggestion call is in flight -- an
+# interim "suggesting" status published before the call, cleared unconditionally right
+# after (success or exception).
+# ---------------------------------------------------------------------------------------
+
+class _ObserveDecider(FakeDecider):
+    def __init__(self):
+        super().__init__("dislike")   # decision value is irrelevant -- observe never uses it
+    def embed(self, profile):
+        return [0.1, 0.2]
+    def retrain(self, store):
+        return True
+
+
+class _RecordingOpenerService:
+    """Records every maybe_opener() call's kwargs (advisory, should_stop) and, if `status`
+    is supplied, the app's live state AT THE MOMENT of the call -- this is what change B's
+    tests use to prove the interim 'suggesting' state is actually up while the call is
+    happening, not just before/after it. `raise_exc`, if set, makes the call raise instead
+    of returning a pick -- exercising the exception path of the try/except in
+    _wait_for_observed_decision's on_like_intent."""
+    stop_requested = False
+    disabled = False
+
+    def __init__(self, *, status=None, app=None, raise_exc=None, suggestion="hi"):
+        self.status = status
+        self.app = app
+        self.raise_exc = raise_exc
+        self.suggestion = suggestion
+        self.calls = []
+        self.state_during_call = None
+
+    def maybe_opener(self, run_id, app, profile, *, should_stop=None, advisory=False):
+        self.calls.append({"run_id": run_id, "app": app, "should_stop": should_stop,
+                           "advisory": advisory})
+        if self.status is not None:
+            self.state_during_call = self.status.app_view(self.app)["app"]["state"]
+        if self.raise_exc is not None:
+            raise self.raise_exc
+        return OpenerPick(self.suggestion, index=0)
+
+
+def test_observe_on_like_intent_passes_advisory_true():
+    """The observe suggestion call site must pass advisory=True -- this is what makes
+    maybe_opener() use exactly one attempt and route any exhaustion through
+    request_stop=False instead of ending the session."""
+    driver = _ObserveLikeIntentDriver()
+    store = FakeStore()
+    svc = _RecordingOpenerService()
+    Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe").run()
+
+    assert svc.calls and svc.calls[0]["advisory"] is True
+
+
+def test_auto_loop_like_call_does_not_pass_advisory():
+    """Companion to the pin above: the AUTO-loop like path must be completely unchanged --
+    it must NOT pass advisory=True (the default, False, keeps today's max_attempts-retries-
+    then-halt behavior)."""
+    driver = FakeDriver(1)
+    store = FakeStore()
+    svc = _RecordingOpenerService()
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto").run()
+
+    assert svc.calls and svc.calls[0]["advisory"] is False
+
+
+def test_observe_suggestion_publishes_interim_suggesting_state_during_the_call():
+    """The hub must show SOMETHING while the blocking suggestion call is in flight, instead
+    of the stale 'click pass X or heart' banner from before the heart tap. Captured from
+    INSIDE the fake service's maybe_opener() -- i.e. at the exact moment the real, slow call
+    would be blocking -- so this actually proves the state was live during the call, not
+    merely bracketing it."""
+    from operation_love.status import RunStatus
+
+    driver = _ObserveLikeIntentDriver()
+    store = FakeStore()
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    svc = _RecordingOpenerService(status=status, app="bumble")
+    Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    assert svc.state_during_call == "suggesting"
+
+
+def _record_state_transitions(status):
+    """Wrap status.set_app to record every (fields) call while still applying it normally --
+    lets a test see the STATE SEQUENCE over time, not just the observe loop's FINAL state.
+    The final state is the wrong thing to assert on for an interim marker like 'suggesting':
+    the loop's LATER stages (e.g. _block_observe_processing's 'acting') overwrite it again
+    well before the run ends, which would make a 'cleared' assertion pass for the wrong
+    reason (loop progress, not the specific transition this call site is responsible for)."""
+    calls = []
+    original = status.set_app
+    def recording(app, **fields):
+        calls.append(dict(fields))
+        original(app, **fields)
+    status.set_app = recording
+    return calls
+
+
+def test_observe_suggestion_clears_interim_state_after_success():
+    from operation_love.status import RunStatus
+
+    driver = _ObserveLikeIntentDriver()
+    store = FakeStore()
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService(status=status, app="bumble", suggestion="loved your trail photo")
+    Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    states = [c["state"] for c in calls if "state" in c]
+    suggesting_idx = states.index("suggesting")
+    waiting_for_send_idx = states.index("waiting_for_send")
+    assert waiting_for_send_idx == suggesting_idx + 1   # published, then cleared by the VERY NEXT
+                                                          # state transition -- nothing else runs
+                                                          # between them
+    waiting_for_send_call = next(c for c in calls if c.get("state") == "waiting_for_send")
+    assert waiting_for_send_call.get("opener_suggestion") == "loved your trail photo"
+
+
+def test_observe_suggestion_clears_interim_state_after_an_exception():
+    """The interim marker must be cleared even when the call raises -- worker.py's on_like_
+    intent already wraps the call in try/except (a suggestion must never block a human
+    send), and the unconditional state transition right after it is what clears
+    'suggesting' on every path, not only the happy one."""
+    from operation_love.status import RunStatus
+
+    driver = _ObserveLikeIntentDriver()
+    store = FakeStore()
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService(status=status, app="bumble",
+                                  raise_exc=RuntimeError("boom"))
+    Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    assert svc.state_during_call == "suggesting"    # it WAS published before the call
+    states = [c["state"] for c in calls if "state" in c]
+    suggesting_idx = states.index("suggesting")
+    waiting_for_send_idx = states.index("waiting_for_send")
+    assert waiting_for_send_idx == suggesting_idx + 1   # cleared right after, even on a raise
+    waiting_for_send_call = next(c for c in calls if c.get("state") == "waiting_for_send")
+    assert waiting_for_send_call.get("opener_suggestion") is None   # the raise produced no suggestion
+
+
+class _TwoCardObserveLikeIntentDriver(FakeDriver):
+    """Like _ObserveLikeIntentDriver, but serves TWO cards, each with a LIKE outcome that
+    opens (and closes) Hinge's comment sheet -- lets a test drive maybe_opener() twice, once
+    per profile, to prove a failure on card 1 doesn't poison card 2."""
+    supports_observe_like_intent = True
+    accepts_opener = True
+
+    def __init__(self):
+        super().__init__(2)
+        self.served = 0
+
+    def out_of_profiles(self):
+        return self.served >= 2
+
+    def current_profile(self):
+        card = self.cards[self.served]
+        self.served += 1
+        return card
+
+    def render_busy(self, message=None):
+        pass
+
+    def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
+        if on_like_intent is not None:
+            on_like_intent(True)
+            on_like_intent(False)
+        return True   # LIKE both cards
+
+
+def test_advisory_suggestion_failure_never_stops_the_observe_run_end_to_end():
+    """The headline contract for change A, driven through the REAL OpenerService (not a
+    fake) with a client that fails to parse on EVERY call: today's max_attempts (5) would
+    burn 5 real calls and, on exhaustion, set stop_requested -- which _observe_loop honours,
+    ENDING the whole labelling session over a display-only failure. advisory=True must
+    instead use exactly ONE attempt per card and leave stop_requested False, so BOTH cards'
+    human decisions get processed and persisted -- the entire point of observe mode."""
+    driver = _TwoCardObserveLikeIntentDriver()
+    store = FakeStore()
+    client = ParseErrorOpenerClient()          # every attempt fails to parse, forever
+    svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
+    w = Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+              threading.Event(), mode="observe")
+    w.run()
+
+    # Card 1's single advisory attempt already exhausts the service (disabled=True), so
+    # card 2's call short-circuits on `disabled` at the very top of maybe_opener() without
+    # ever reaching the client again -- exactly one real call total, not two, and nowhere
+    # near the 5 a full AUTO-style retry storm would have burned on card 1 alone.
+    assert client.calls == 1
+    assert svc.disabled is True                 # spend still protected
+    assert svc.stop_requested is False           # but the run itself was never asked to stop
+    assert not w.stop_event.is_set()
+    assert len(store.labels) == 2                # BOTH human decisions persisted
+    assert [row[2] for row in store.labels] == [True, True]
+    assert driver.closed
+
+
+# ---------------------------------------------------------------------------------------
+# C: opener_service=None must never crash the AUTO loop. Not reachable via supervisor.run()
+# today (it always constructs a real OpenerService, even with openers disabled), but Worker
+# is a public class any other caller can construct directly, and an audit proved BOTH the
+# maybe_opener() call on a like AND the post-action stop_requested check (which runs after
+# EVERY action, so even a dislike-only run hit it) raised a bare
+# `AttributeError: 'NoneType' object has no attribute ...` instead of this codebase's usual
+# clear, actionable failure.
+# ---------------------------------------------------------------------------------------
+
+def test_auto_like_with_opener_service_none_does_not_crash():
+    from operation_love.status import RunStatus
+
+    driver = FakeDriver(1)
+    store = FakeStore()
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    Worker("bumble", driver, FakeDecider("like"), None, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] != "error"          # not the HALT-on-unexpected path (an AttributeError)
+    assert app.get("error") is None
+    assert driver.likes == [None]           # no opener service -> liked, but with no opener
+    assert driver.closed
+
+
+def test_auto_dislike_with_opener_service_none_does_not_crash():
+    """The post-action stop_requested check runs after EVERY action -- a dislike-only run
+    (which never calls maybe_opener() at all) must not crash on it either."""
+    from operation_love.status import RunStatus
+
+    driver = FakeDriver(2)
+    store = FakeStore()
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    Worker("bumble", driver, FakeDecider("dislike"), None, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] != "error"
+    assert app.get("error") is None
+    assert driver.dislikes == 2
+    assert driver.closed

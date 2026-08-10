@@ -105,8 +105,8 @@ class AndroidAppSpec:
     accepts_opener: bool = False
     # Can a written opener be attached AT SWIPE TIME? True only for comment_sheet-style
     # flows. Mirrors DatingAppDriver.accepts_opener (worker.py skips generating an opener
-    # entirely when this is False, to avoid spending Claude credits on text that can never
-    # be sent).
+    # entirely when this is False, to avoid spending Gemini quota/spend on text that can
+    # never be sent).
 
     think_time_calibrated: bool = False
     # Is human_motion.think_time_s()'s like-vs-pass dwell asymmetry actually measured for

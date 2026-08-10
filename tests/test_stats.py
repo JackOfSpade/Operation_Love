@@ -44,4 +44,4 @@ def test_show_reports_labels_needed_when_not_ready(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Labels  : 0  (liked 0 / passed 0)" in out
     assert "Ranker  : ready=False" in out
-    assert "Seed ~40 more swipes in observe mode" in out
+    assert "Seed ~40 more decisions in observe mode" in out

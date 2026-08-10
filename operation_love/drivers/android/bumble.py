@@ -49,7 +49,7 @@ BUMBLE_SPEC = AndroidAppSpec(
                                    # press the paid SuperSwipe sitting between Pass and Like,
                                    # so the rule holds by construction, not by careful aiming
     accepts_opener=False,         # Bumble: match first, then message — no swipe-time opener
-                                   # (don't spend Claude credits on text that can never be
+                                   # (don't spend Gemini quota/spend on text that can never be
                                    # sent at like-time; same reason BumbleDriver.accepts_opener
                                    # is already False on the web driver)
     think_time_calibrated=False,  # human_motion's dwell asymmetry was only ever measured on

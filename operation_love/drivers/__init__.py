@@ -4,7 +4,10 @@ The mapping is keyed by the ids in operation_love/platforms.py, so "which platfo
 is stated once (the registry) rather than duplicated here and drifting. Note `bumble` and
 `bumble_web` are DIFFERENT platforms driving the same dating app: `bumble` is the Android
 app on the physical Pixel, `bumble_web` is the preserved Playwright driver for the web app
-Bumble discontinued in August 2026. They pool their labels via the registry's `store_key`.
+Bumble discontinued in August 2026. Being different platform ids, they do NOT share label
+history: the raw registry id is what reaches the store (supervisor.run() passes `app` into
+Worker, which passes self.app into add_label/record_decision/...). An earlier `store_key`
+that would have pooled them was removed as dead code -- see the note in platforms.py.
 
 Imports stay lazy inside each branch: the Android drivers pull in cv2/PIL/numpy and the web
 driver pulls in Playwright, and a run that uses one should not have to have the other's

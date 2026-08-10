@@ -857,6 +857,112 @@ def test_swipe_banner_gates_on_per_app_mode_not_global_mode():
     assert _run_node(script_b) == []
 
 
+def _observe_status_script(snap: dict) -> str:
+    """Run the real observe banner renderer with the minimal DOM it needs."""
+    fns = (_extract_js_function(_PAGE, "escHtml") + "\n"
+           + _extract_js_function(_PAGE, "selectObserveApps") + "\n"
+           + _extract_js_function(_PAGE, "renderSwipe"))
+    return (
+        "let el = {style:{display:''}, innerHTML:''};\n"
+        "function $(sel){ return sel === '#swipebanner' ? el : null; }\n"
+        + fns + "\n"
+        "renderSwipe(" + json.dumps(snap) + ");\n"
+        "console.log(JSON.stringify({display: el.style.display, html: el.innerHTML}));\n"
+    )
+
+
+def test_observe_banner_uses_click_language_and_replaces_it_with_hinge_opener():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    waiting = {
+        "running": True,
+        "status": {"apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting"}}},
+    }
+    ordinary = _run_node(_observe_status_script(waiting))
+    assert ordinary["display"] == "block"
+    assert "click pass X or heart" in ordinary["html"]
+    assert "swipe" not in ordinary["html"].lower()
+
+    # Hinge uses the physically labelled X/heart controls; other platforms may not.
+    other_app = {
+        "running": True,
+        "status": {"apps": {"bumble": {"app": "bumble", "mode": "observe", "state": "waiting"}}},
+    }
+    generic = _run_node(_observe_status_script(other_app))
+    assert "use the app's pass or like control" in generic["html"]
+    assert "click pass X or heart" not in generic["html"]
+    assert "swipe" not in generic["html"].lower()
+
+    # Text comes from an AI response and must remain text, never markup in the hub.
+    with_sheet = {
+        "running": True,
+        "status": {"apps": {"hinge": {
+            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
+            "opener_suggestion": 'I like <your prompt> & "this"',
+        }}},
+    }
+    suggestion = _run_node(_observe_status_script(with_sheet))
+    assert "type this in Hinge, then tap Send Like" in suggestion["html"]
+    assert "I like &lt;your prompt&gt; &amp; &quot;this&quot;" in suggestion["html"]
+    assert "click pass X or heart" not in suggestion["html"]
+    assert "<your prompt>" not in suggestion["html"]
+
+    # An unavailable opener provider must not expose the internal waiting_for_send state
+    # or leave the person without a next action; they can write their own opener instead.
+    no_suggestion = {
+        "running": True,
+        "status": {"apps": {"hinge": {
+            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
+            "opener_suggestion": None,
+        }}},
+    }
+    fallback = _run_node(_observe_status_script(no_suggestion))
+    assert "No suggestion available" in fallback["html"]
+    assert "type your own opener, then tap Send Like" in fallback["html"]
+    assert "waiting_for_send" not in fallback["html"]
+
+    # The card uses innerHTML, so app names are escaped on non-opener branches too.
+    capturing = {
+        "running": True,
+        "status": {"apps": {"hostile": {
+            "app": '<img src=x onerror="alert(1)">', "mode": "observe", "state": "capturing",
+        }}},
+    }
+    escaped_app = _run_node(_observe_status_script(capturing))
+    assert "<img" not in escaped_app["html"] and "&lt;img" in escaped_app["html"]
+
+
+def test_observe_banner_shows_wait_cue_while_a_suggestion_is_being_generated():
+    """B: while the worker is blocked inside the (up to opener.request_timeout_s) advisory
+    maybe_opener() call, the hub must show SOMETHING instead of the stale 'click pass X or
+    heart' GO banner from before the heart tap -- otherwise the operator has no way to tell
+    anything is happening. OWNER UI RULE: GO/WAIT cues use only 🟢/🔴 circles, so this must
+    render as the same WAIT (🔴) style as capturing/acting/starting, not a new indicator."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    suggesting = {
+        "running": True,
+        "status": {"apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "suggesting"}}},
+    }
+    out = _run_node(_observe_status_script(suggesting))
+    assert out["display"] == "block"
+    assert "🔴" in out["html"]                     # WAIT cue -- the owner's circle-only rule
+    assert "🟢" not in out["html"]                  # not the GO cue this state replaces
+    assert "💬" in out["html"]                      # stays visually tied to the suggestion feature
+    assert "click pass X or heart" not in out["html"]   # the stale GO instruction must be gone
+    assert "hinge" in out["html"]
+
+    # The card uses innerHTML -- the app name must still be escaped on this branch too.
+    hostile = {
+        "running": True,
+        "status": {"apps": {"hostile": {
+            "app": '<img src=x onerror="alert(1)">', "mode": "observe", "state": "suggesting",
+        }}},
+    }
+    escaped = _run_node(_observe_status_script(hostile))
+    assert "<img" not in escaped["html"] and "&lt;img" in escaped["html"]
+
+
 def test_select_auto_apps_filters_to_auto_mode_only():
     # selectAutoApps is renderAutoStatus's pure gating helper (mirrors selectObserveApps
     # above for the auto-mode banner): an app's OWN mode decides whether it's included,
@@ -959,6 +1065,64 @@ def test_render_auto_status_shows_cold_start_defer_message():
     result = _run_node(_autostatus_script(snap))
     assert result["display"] == "block"
     assert "cold-start" in result["html"]
+
+
+def test_render_auto_status_shows_opener_exhaustion_stop_reason():
+    # WS-opener-reason: an auto-mode app halted because OpenerService ran out of opener
+    # capacity (budget/credit/provider failure) used to render IDENTICALLY to a plain
+    # operator-clicked Stop -- both were just state='stopped' with no reason field. The
+    # banner must show the specific cause (AppStatus.stop_reason), the same way it already
+    # shows `.error` for the exception path above.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {
+        "running": True,
+        "status": {
+            "apps": {
+                "hinge": {"app": "hinge", "mode": "auto", "state": "stopped",
+                          "stop_reason": "run budget reached", "swipes_run": 4},
+            },
+        },
+    }
+    result = _run_node(_autostatus_script(snap))
+    assert result["display"] == "block"
+    assert "run budget reached" in result["html"]
+    assert "opener capacity exhausted" in result["html"]
+    # The reason takes over the box's sub-line instead of the ordinary swipe count.
+    assert "4 swipes this run" not in result["html"]
+
+
+def test_render_auto_status_escapes_stop_reason_before_using_inner_html():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {
+        "running": False,
+        "status": {
+            "apps": {
+                "hinge": {"app": "hinge", "mode": "auto", "state": "stopped",
+                          "stop_reason": "bad <script>alert(3)</script>"},
+            },
+        },
+    }
+    result = _run_node(_autostatus_script(snap))
+    assert "<script" not in result["html"]
+    assert "&lt;script&gt;" in result["html"]
+
+
+def test_render_auto_status_bare_stop_still_shown_without_a_reason():
+    # A plain operator-clicked Stop (no OpenerService involvement) must keep rendering
+    # exactly as before -- stop_reason absent, not an empty string standing in for one.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {
+        "running": True,
+        "status": {
+            "apps": {"bumble": {"app": "bumble", "mode": "auto", "state": "stopped"}},
+        },
+    }
+    result = _run_node(_autostatus_script(snap))
+    assert result["display"] == "block"
+    assert "bumble: stopped</div>" in result["html"]
 
 
 def test_render_auto_status_hides_without_auto_apps_but_survives_run_completion():

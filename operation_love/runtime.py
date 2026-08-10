@@ -36,7 +36,6 @@ _OPTIONAL = {
     # for visibility, not safety. It earned its place: a launcher once shipped without the
     # `hinge` extra, so cv2 was absent and every template match quietly returned nothing.
     "vision_templates": "cv2",
-    "anthropic": "anthropic",
     "bigquery": "google.cloud.bigquery",
     "cloud_storage": "google.cloud.storage",
 }

@@ -186,11 +186,45 @@ def test_quality_disabled_keeps_all():
     assert qf.filter([b"a", b"b"]) == [b"a", b"b"]
 
 
-def test_quality_never_drops_on_scorer_error():
+def test_quality_fails_loud_on_scorer_error():
+    """Old contract: keep() caught scorer exceptions and returned True, i.e. "fail open --
+    never drop a photo because scoring broke". That is exactly backwards for a pipeline
+    that trains on the photos it keeps: a scorer that has started raising isn't gracefully
+    degrading the quality bar, it's OFF, and fail-open means every junk/blurry photo from
+    then on silently passes the filter and corrupts the training labels the run exists to
+    produce -- with no visible signal that quality gating stopped happening at all.
+    keep() (and filter(), which calls it per photo) now deliberately let the scorer's
+    exception propagate instead, so the worker's halt_on_error machinery stops the run
+    immediately rather than continuing to silently mislabel photos through a broken
+    filter."""
+    import pytest
+
     def boom(_):
         raise ValueError("scorer failed")
+
     qf = QualityFilter(enabled=True, min_score=0.3, scorer=boom)
-    assert qf.keep(b"x") is True   # fail-open: never drop a photo because scoring broke
+
+    with pytest.raises(ValueError, match="scorer failed"):
+        qf.keep(b"x")
+
+    with pytest.raises(ValueError, match="scorer failed"):
+        qf.filter([b"good", b"x"])
+
+
+def test_quality_warmup_reraises_init_failure():
+    """warmup() is meant to be called once, eagerly, on the main thread before workers
+    start (see its docstring in quality.py), precisely so a broken quality model is caught
+    before any worker thread ever comes to depend on it. _ensure() latches an init failure
+    onto self._init_error so it isn't retried on every single photo, but warmup() must
+    still re-raise that failure so the supervisor aborts the run cleanly instead of
+    silently degrading to no filtering."""
+    import pytest
+
+    qf = QualityFilter(enabled=True, min_score=0.3)
+    qf._init_error = RuntimeError("model load failed")
+
+    with pytest.raises(RuntimeError, match="model load failed"):
+        qf.warmup()
 
 
 def test_faceless_photo_clip_vector_excluded_from_profile_pool(monkeypatch):

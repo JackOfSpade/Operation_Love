@@ -2,12 +2,12 @@
 
 Modeled on infinite-canvas's bug-report feature, adapted to this app. Captures
 system + device info, the running build (git commit + a stale-code check), key
-dependency versions, the config (secrets stripped — only presence + a short
-prefix), the live run status (phase, labels, ranker, per-app decisions, budget,
-last error), and recent log lines. Output is markdown the owner can paste to a
-developer to debug. The report includes an instruction to improve this
-collector when it lacks enough context, and it caps output at 50k lines by
-dropping the oldest captured lines first.
+dependency versions, the config (secrets stripped — presence only, never a
+value or even a derived prefix), the live run status (phase, labels, ranker,
+per-app decisions, budget, last error), and recent log lines. Output is
+markdown the owner can paste to a developer to debug. The report includes an
+instruction to improve this collector when it lacks enough context, and it
+caps output at 50k lines by dropping the oldest captured lines first.
 
 The hub serves it at GET /api/bugreport; install_log_capture() (called by the
 hub at startup) tees stdout/stderr into a ring buffer so "recent logs" has
@@ -117,7 +117,7 @@ def _device() -> str:
 
 def _dep_versions() -> dict[str, str]:
     deps = ["playwright", "torch", "insightface", "open_clip", "onnxruntime",
-            "google.cloud.bigquery", "anthropic", "PIL", "sklearn", "yaml"]
+            "google.cloud.bigquery", "dotenv", "PIL", "sklearn", "yaml"]
     out: dict[str, str] = {}
     for d in deps:
         try:
@@ -152,9 +152,11 @@ def _deps_md() -> str:
 
 
 def _secrets_md() -> str:
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
-    shown = f"present ({key[:7]}…)" if key else "unset (needed only for openers / auto mode)"
-    return f"- ANTHROPIC_API_KEY: {shown}"      # never the raw value
+    def shown(name: str) -> str:
+        key = os.environ.get(name, "")
+        return "present" if key else "unset (needed only for openers / auto mode)"
+    # Never include credentials or even a credential-derived prefix.
+    return f"- GEMINI_API_KEY: {shown('GEMINI_API_KEY')}"
 
 
 def _diagnostic_improvement_md() -> str:
@@ -180,12 +182,51 @@ def _config_md(config_path: str) -> str:
                 f"threshold={c.ranker.like_threshold}, retrain_every={c.ranker.retrain_every}\n"
                 f"- quality_filter: enabled={c.quality_filter.enabled}, "
                 f"metric={c.quality_filter.metric}, min_score={c.quality_filter.min_score}\n"
-                f"- opener: enabled={c.opener.enabled}, model={c.opener.model}, "
+                f"- opener: enabled={c.opener.enabled}, provider={c.opener.provider}, "
+                f"models={c.opener.effective_models}, "
                 f"max_tokens={c.opener.max_tokens}\n"
                 f"- budget: run_budget_usd={c.budget.run_budget_usd}, "
-                f"on_exhausted={c.budget.on_exhausted}")
+                f"opener.max_attempts={c.opener.max_attempts}")
     except Exception as exc:  # noqa: BLE001
         return f"- ⚠️ could not load `{config_path}`: {exc}"
+
+
+def _sanitize_inline(text: str) -> str:
+    """Make free text that we did NOT author (provider error strings, opener-retry-exhaustion
+    summaries, HALT-on-unexpected exception text) safe to embed as a single markdown line.
+    Two hazards: an embedded newline could start what reads as a new bullet/heading and
+    restructure the report around it, and an embedded backtick could prematurely close the
+    inline-code span this text is rendered inside (letting the rest of the string escape into
+    literal markdown). ``" ".join(text.split())`` collapses every whitespace run — including
+    newlines/tabs — to a single space, and the backtick swap neutralises the other hazard. A
+    stray `|` is left untouched: it's harmless prose once rendered outside a table cell (see
+    _app_diagnostics_md), which is exactly why that section exists instead of a wide table
+    column."""
+    return " ".join(text.split()).replace("`", "'")
+
+
+def _app_diagnostics_md(apps: dict) -> str:
+    """Per-app stop_reason / error, one bullet each, rendered BELOW the run-status table rather
+    than as extra table columns. Both fields are free text (see AppStatus.stop_reason/.error in
+    status.py) sourced from provider messages and tracebacks — not guaranteed to be short,
+    single-line, or free of `|`. Cramming that into a 6-column table would either wrap
+    illegibly or, worse, a literal `|` inside the text would be indistinguishable from a column
+    separator and silently corrupt the table's column count. A labelled bullet list has no such
+    ambiguity and reads as clearly as the table itself.
+
+    Returns "" (no heading, no bullets) when no app has anything to report — the common healthy
+    run must render nothing extra here, not an empty section."""
+    lines: list[str] = []
+    for name, a in apps.items():
+        reason = a.get("stop_reason")
+        if reason:
+            lines.append(f"- ⚠️ **{name}** stop reason: `{_sanitize_inline(str(reason))}`")
+        err = a.get("error")
+        if err:
+            lines.append(f"- ⚠️ **{name}** error: `{_sanitize_inline(str(err))}`")
+    if not lines:
+        return ""
+    return "\n".join(["", "**Stop reasons / errors:**", *lines])
 
 
 def _status_md(hub_state) -> str:
@@ -206,13 +247,17 @@ def _status_md(hub_state) -> str:
         f"- labels: {st['labels']} / {st['min_labels']} ({ready})",
         f"- budget: ${st['budget_spent']:.2f}{cap} · openers: {st.get('openers', 0)}",
         "",
-        "| app | mode | state | last | score | swipes |",
+        "| app | mode | state | last | score | decisions |",
         "|---|---|---|---|---|---|",
     ]
-    for name, a in (st.get("apps") or {}).items():
+    apps = st.get("apps") or {}
+    for name, a in apps.items():
         score = "" if a.get("last_score") is None else f"{a['last_score']:.2f}"
         lines.append(f"| {name} | {a.get('mode','')} | {a.get('state','')} "
                      f"| {a.get('last_decision') or '—'} | {score or '—'} | {a.get('swipes_run',0)} |")
+    diag = _app_diagnostics_md(apps)
+    if diag:
+        lines.append(diag)
     return "\n".join(lines)
 
 

@@ -1,23 +1,14 @@
-"""Client-side spend tracking and per-run budget enforcement for opener calls.
+"""Provider-neutral client-side spend tracking and opener budget enforcement.
 
-Anthropic exposes NO public endpoint to read your remaining prepaid credit
-balance, so we compute exact cost from the ``usage`` returned on every Messages
-API response and enforce a per-run cap from config. We also detect the
-out-of-credit/billing error so the bot degrades gracefully instead of crashing.
+Providers return token usage but do not offer a portable remaining-credit API, so
+we calculate configured prices locally and enforce a per-run cap.
 """
 from __future__ import annotations
 
-import re
 import threading
 from dataclasses import dataclass
 
 MILLION = 1_000_000
-
-# The Messages API echoes back the model id it actually served, which for some models is
-# the dated full id (e.g. "claude-haiku-4-5-20251001") while config.yaml's pricing table
-# is keyed by the bare alias ("claude-haiku-4-5"). Strip a trailing -YYYYMMDD so a dated
-# id still resolves to its alias's pricing instead of crashing the worker on a KeyError.
-_MODEL_DATE_SUFFIX = re.compile(r"-\d{8}$")
 
 
 @dataclass(frozen=True)
@@ -46,15 +37,22 @@ class Usage:
     cache_creation_input_tokens: int = 0
 
     @classmethod
-    def from_response(cls, usage) -> "Usage":
-        """Build from an Anthropic response.usage object (or any with these attrs)."""
+    def from_gemini(cls, usage) -> "Usage":
+        """Normalize Gemini ``usage_metadata`` into the persistent cost schema.
+
+        Gemini reports cached prompt tokens as a subset of ``prompt_token_count``.
+        The normal input bucket therefore excludes cached tokens, while candidates and
+        thoughts are both output/billed-generation tokens.  The latter is essential for
+        thinking-capable Gemini models: omitting it would understate the run budget.
+        """
         def g(name: str) -> int:
             return int(getattr(usage, name, 0) or 0)
+        cached = g("cached_content_token_count")
+        prompt = g("prompt_token_count")
         return cls(
-            input_tokens=g("input_tokens"),
-            output_tokens=g("output_tokens"),
-            cache_read_input_tokens=g("cache_read_input_tokens"),
-            cache_creation_input_tokens=g("cache_creation_input_tokens"),
+            input_tokens=max(0, prompt - cached),
+            output_tokens=g("candidates_token_count") + g("thoughts_token_count"),
+            cache_read_input_tokens=cached,
         )
 
 
@@ -88,8 +86,15 @@ class CostTracker:
             return self.run_spend_usd >= self.run_budget_usd
 
     def record(self, model: str, usage: Usage) -> float:
-        """Add a call's cost to the running total and return that cost."""
-        p = self.pricing.get(model) or self.pricing.get(_MODEL_DATE_SUFFIX.sub("", model))
+        """Add a call's cost to the running total and return that cost.
+
+        ``model`` is always the exact configured model id here, never a provider-echoed
+        serving revision: GeminiOpener._parse deliberately prices against the model it was
+        asked for (``requested_model``), not Gemini's optional ``modelVersion`` field, which
+        can be an opaque revision string with no entry in budget.pricing. So a plain lookup
+        is enough -- there is no dated/aliased id to normalize here.
+        """
+        p = self.pricing.get(model)
         if p is None:
             raise KeyError(f"No pricing configured for model {model!r}")
         c = cost_usd(usage, p)
@@ -97,15 +102,3 @@ class CostTracker:
             self.run_spend_usd += c
             self.calls += 1
         return c
-
-
-def is_out_of_credit(exc: Exception) -> bool:
-    """True if ``exc`` is Anthropic's out-of-credit / billing error.
-
-    It surfaces as a 400 invalid_request_error whose message contains
-    "credit balance is too low", and/or a 403 with error type "billing_error".
-    """
-    if getattr(exc, "type", None) == "billing_error":
-        return True
-    msg = (getattr(exc, "message", "") or str(exc) or "").lower()
-    return "credit balance is too low" in msg

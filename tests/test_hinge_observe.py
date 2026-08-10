@@ -126,6 +126,18 @@ def test_capture_stops_when_scroll_repeats():
     assert adb.scrolls == 2
 
 
+def test_current_profile_starting_on_visible_like_sheet_returns_none_without_input():
+    """A pending manual Send Like sheet is never profile input for read-scroll capture."""
+    adb = FakeAdb([_action_frame()])
+    drv = _drv(adb)
+
+    assert drv.current_profile() is None
+    assert adb.scrolls == 0
+    assert adb.swipes == 0
+    assert adb.taps == []
+    assert adb.texts == []
+
+
 def test_capture_respects_scroll_capture_limit():
     adb = FakeAdb([b"a", b"b", b"c", b"d"])
     drv = _drv(adb, scroll_captures=2)
@@ -278,10 +290,12 @@ class _ScriptedDiff:
 
 
 def test_like_detected_sheet_then_advance(monkeypatch):
-    # bottom-only change (sheet up), then a whole-frame change (advanced) -> like sent
+    # bottom-only change (sheet up), then a stable ready deck -> like sent
     monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
-    adb = FakeAdb([b"a", b"sheet", b"b"])
-    assert _drv(adb).wait_for_decision(timeout=5.0) is True
+    adb = FakeAdb([b"a", b"sheet", b"b"], advance_on_screencap=True)
+    drv = _drv(adb)
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"b")
+    assert drv.wait_for_decision(timeout=5.0) is True
 
 
 def test_cancelled_like_then_pass(monkeypatch):
@@ -396,6 +410,7 @@ def test_like_sheet_not_misread_as_scroll(monkeypatch):
     adb = FakeAdb([b"a", b"sheet", b"b"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._current_sigs = [sig]            # advance frame b"b" doesn't match -> genuine new profile
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"b")
     assert drv.wait_for_decision(timeout=5.0) is True   # LIKE
 
 

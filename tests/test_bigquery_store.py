@@ -316,7 +316,7 @@ def test_load_labels_includes_unflushed_labels_before_initial_load():
 def test_flush_on_close():
     client = _FakeBQ()
     s = _store(client, flush_every=100)
-    s.record_spend("r", "claude-opus-4-8", Usage(input_tokens=10, output_tokens=5), 0.0001)
+    s.record_spend("r", "gemini-test-model", Usage(input_tokens=10, output_tokens=5), 0.0001)
     assert "proj.ds.spend" not in client.inserted
     s.close()
     assert len(client.inserted["proj.ds.spend"]) == 1
@@ -329,7 +329,7 @@ def test_record_spend_stores_none_cost_as_null_not_zero():
     # stored as NULL, distinct from a genuinely free $0.00 call.
     client = _FakeBQ()
     s = _store(client, flush_every=100)
-    s.record_spend("r", "claude-unknown", Usage(input_tokens=10, output_tokens=5), None)
+    s.record_spend("r", "gemini-unknown", Usage(input_tokens=10, output_tokens=5), None)
     s.close()
     row = client.inserted["proj.ds.spend"][0]
     assert row["cost_usd"] is None

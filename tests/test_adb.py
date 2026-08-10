@@ -87,7 +87,7 @@ def test_clean_text_collapses_double_space_artifacts():
     assert out == "choice love"
 
 
-def test_clean_text_realistic_claude_opener_reads_naturally():
+def test_clean_text_realistic_gemini_opener_reads_naturally():
     opener = "that’s a bold choice — I love it… truly “unique”"
     out = _clean_text_for_input(opener)
     assert "  " not in out
@@ -103,8 +103,8 @@ def test_clean_text_ascii_passthrough_unchanged():
     assert _clean_text_for_input("hi there&you") == "hi there&you"
 
 
-def test_text_folds_claude_opener_typography_then_escapes_for_shell(monkeypatch):
-    # Full-pipeline regression: fold -> escape -> shell argv, for typography Claude actually
+def test_text_folds_gemini_opener_typography_then_escapes_for_shell(monkeypatch):
+    # Full-pipeline regression: fold -> escape -> shell argv, for typography Gemini actually
     # produces. Shell-escaping (%s for spaces, backslash for shell metacharacters) must still
     # work on the FOLDED string.
     run = FakeRun(_ok())

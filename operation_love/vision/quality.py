@@ -26,26 +26,21 @@ class QualityFilter:
         self._lock = threading.Lock()  # guards double-checked init in _ensure()
         self._init_error: Exception | None = None  # latches a failed init so _ensure() doesn't
                                                      # re-attempt the heavy model load on every photo
-        self._reported_failure = False  # surface the first failure once, not once per photo
 
     def warmup(self) -> None:
-        """Load the IQA model eagerly (call once from the main thread before workers start)."""
+        """Load the IQA model eagerly (call once from the main thread before workers start).
+
+        Raises on failure — any init error (missing deps, SSL, bad model, etc.) is surfaced
+        here so the supervisor aborts cleanly rather than silently degrading to no filtering.
+        """
         if not self.enabled:
             return
         try:
             self._ensure()
-        except Exception as exc:  # noqa: BLE001
-            self._report_failure(exc)
-
-    def _report_failure(self, exc: Exception) -> None:
-        # Match embed.py's "surface the first failure, don't spam" convention: keep() runs per
-        # photo, per profile, so a bare except here would otherwise print nothing (silently
-        # disabling the filter, per the bug report) or spam one line per photo forever.
-        if self._reported_failure:
-            return
-        self._reported_failure = True
-        print(f"Quality filter error (further errors this run are not logged): "
-              f"{type(exc).__name__}: {exc}")
+        except Exception as exc:
+            print(f"Quality filter FAILED to initialise ({type(exc).__name__}: {exc}); "
+                  "aborting run — fix the error or set quality_filter.enabled: false.")
+            raise
 
     def _ensure(self) -> None:
         if self._scorer is not None:               # fast path: no lock needed
@@ -87,11 +82,9 @@ class QualityFilter:
     def keep(self, img_bytes: bytes) -> bool:
         if not self.enabled:
             return True
-        try:
-            return self.score(img_bytes) >= self.min_score
-        except Exception as exc:  # noqa: BLE001 - never drop a photo because scoring failed
-            self._report_failure(exc)
-            return True
+        # Let scoring errors propagate: the worker's halt_on_error machinery will stop the
+        # run immediately rather than silently passing every photo through a broken filter.
+        return self.score(img_bytes) >= self.min_score
 
     def filter(self, photos: list[bytes]) -> list[bytes]:
         if not self.enabled:

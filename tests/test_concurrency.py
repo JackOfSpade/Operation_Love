@@ -10,9 +10,10 @@ from operation_love.opener.opener import OpenerResult
 from operation_love.opener.service import OpenerService
 from operation_love.perception.capture import Profile
 from operation_love.ranker.decider import Decision
+from operation_love.status import RunStatus
 from operation_love.worker import Worker
 
-PRICING = {"claude-opus-4-8": ModelPricing(input=5.0, output=25.0)}
+PRICING = {"gemini-test-model": ModelPricing(input=5.0, output=25.0)}
 
 
 class _Driver(DatingAppDriver):
@@ -68,9 +69,10 @@ def test_two_workers_run_concurrently_and_share_store():
 
 class _OpenerClient:
     """One opener costs $0.002 at the PRICING below (400 input tok * $5/MTok)."""
-    def generate(self, profile, style):
+    def generate(self, profile, style, retry_hint="", *, should_stop=None,
+                 skip_models=frozenset()):
         return OpenerResult(opener="hi", referenced="r",
-                            usage=Usage(input_tokens=400), model="claude-opus-4-8")
+                            usage=Usage(input_tokens=400), model="gemini-test-model")
 
 
 class _LikeDecider:
@@ -90,11 +92,21 @@ class _SpendStore(_Store):
     def record_spend(self, *a, **k): pass
 
 
-def test_one_worker_budget_exhaustion_stops_the_other_worker():
+def test_one_worker_budget_exhaustion_stops_the_other_worker_before_it_likes():
     """Headline multi-worker safety contract: one shared stop_event + one shared OpenerService.
-    When worker A exhausts the GLOBAL budget (on_exhausted='stop'), it sets stop_requested ->
-    the shared stop_event; worker B, parked in its loop, then halts WITHOUT swiping (and without
-    spending more), because the supervisor hands every worker the SAME stop_event."""
+    When worker A exhausts the GLOBAL budget, _exhaust() sets stop_requested (unconditionally --
+    see service.py) -> the shared stop_event; worker B, parked in its loop, then halts WITHOUT
+    swiping (and without
+    spending more), because the supervisor hands every worker the SAME stop_event.
+
+    A itself must ALSO stop before swiping. The opener call that discovers the budget is
+    exhausted happens before the like it was generated for is ever sent, and the worker's
+    auto loop deliberately checks opener_service.stop_requested and breaks BEFORE calling
+    driver.like() -- a bare like with no opener is not an acceptable substitute for the
+    opener the worker decided to send (see the comment in worker.py's auto loop, around the
+    maybe_opener() call). So neither worker records a like, and neither worker's decision is
+    persisted to the store: the store only records a decision AFTER the corresponding
+    like()/dislike() call has actually landed, and A's like() never landed."""
     class _Spender(DatingAppDriver):
         def __init__(self, b_parked):
             self.b_parked = b_parked
@@ -126,9 +138,10 @@ def test_one_worker_budget_exhaustion_stops_the_other_worker():
 
     stop = threading.Event()
     store = _SpendStore()
-    # budget 0.001 < one opener's $0.002 -> A's first like exhausts the shared budget.
+    # budget 0.001 < one opener's $0.002 -> generating the opener for A's first like
+    # exhausts the shared budget before that like is ever sent.
     svc = OpenerService(_OpenerClient(), CostTracker(PRICING, run_budget_usd=0.001), store,
-                        "s", on_exhausted="stop")
+                        "s")
     b = _Gated(stop)
     a = _Spender(b.parked)
     wa = Worker("hinge", a, _LikeDecider(), svc, store, "r", _Pacing(), stop, mode="auto")
@@ -141,10 +154,107 @@ def test_one_worker_budget_exhaustion_stops_the_other_worker():
 
     assert not wa.is_alive() and not wb.is_alive()
     assert stop.is_set()                           # A's exhaustion propagated to the shared event
-    assert len(a.likes) == 1                       # A liked exactly once, then the budget blew
+    assert a.likes == [] and a.dislikes == 0       # A's opener call exhausted the budget, so A
+                                                    # broke out of the loop BEFORE calling like()
     assert b.likes == [] and b.dislikes == 0       # B halted WITHOUT swiping
     assert a.closed and b.closed
-    assert store.rows == [("hinge", "like")]       # only A's single decision recorded
+    assert store.rows == []                        # neither worker's like()/dislike() landed,
+                                                     # so neither decision was ever recorded
+
+
+class _DislikeDecider:
+    def decide(self, profile):
+        return Decision("dislike", 0.1, [0.1], "ranker")
+
+
+def test_second_workers_own_stop_reason_is_published_even_though_it_never_calls_the_opener():
+    """Pins worker.py's SECOND opener_service.stop_requested check in _auto_loop (~line
+    471-475, right after record_decision()/record_landed_action(), before _pace()) --
+    distinct from the FIRST check a few lines above it, which only ever fires for a worker
+    whose OWN decision was "like" and which therefore just called maybe_opener() itself.
+
+    This second check is NOT what stops the swiping -- the shared stop_event plus the
+    loop-top `while not self.stop_event.is_set()` check already guarantee that on their own,
+    with or without this line, so a test that only asserts "both workers stopped" cannot
+    tell the two apart. Its unique, load-bearing effect is publishing the CURRENT worker's
+    own AppStatus.stop_reason -- for a worker whose decisions are all "dislike" and that
+    therefore NEVER calls maybe_opener(), this is the ONLY place it can ever learn the
+    shared service was exhausted. Delete it and worker B still stops (via the shared
+    stop_event), but reaches _finish_session with its local stop_reason still None, so the
+    hub renders a bare "stopped" for B while A's AppStatus correctly explains why.
+
+    Made deterministic with a real threading.Event, not sleeps: worker B's driver blocks
+    INSIDE dislike() -- i.e. only after B has already passed every earlier stop_event check
+    for this profile (the loop-top check, the post-next_profile() check, the post-decide()
+    check), so B is genuinely "mid-profile", not merely about to start one -- until worker A
+    has fully finished exhausting the shared OpenerService and set the shared stop_event.
+    """
+    a_exhausted = threading.Event()
+    stop = threading.Event()
+    store = _SpendStore()
+    status = RunStatus("r", ["hinge", "bumble"], min_labels=0, mode="auto")
+    # budget 0.001 < one opener's $0.002 -> A's first (only) opener call exhausts the
+    # shared budget, exactly like test_one_worker_budget_exhaustion_stops_the_other_worker_
+    # before_it_likes above.
+    svc = OpenerService(_OpenerClient(), CostTracker(PRICING, run_budget_usd=0.001), store,
+                        "s")
+
+    class _ADriver(DatingAppDriver):
+        """Worker A: one profile, a plain "like" -- its opener call is what exhausts the
+        shared service and sets the shared stop_event (via the FIRST check, not the one
+        under test here)."""
+        def __init__(self):
+            self.i = 0; self.closed = False
+        def open_session(self): pass
+        def next_profile(self):
+            if self.i >= 1:
+                return None
+            self.i += 1; return Profile(photos=[b"x"])
+        def out_of_profiles(self): return False
+        def like(self, opener=None, item_index=0): pass
+        def dislike(self): pass
+        def close(self): self.closed = True
+
+    class _BDriver(DatingAppDriver):
+        """Worker B: one profile, a plain "dislike" -- never calls maybe_opener(). dislike()
+        blocks until A has definitely already exhausted the shared service, pinning B
+        "mid-profile" (past every earlier stop_event check) at the moment the exhaustion
+        becomes visible -- exactly the window the deleted check exists to catch."""
+        def __init__(self):
+            self.i = 0; self.closed = False
+        def open_session(self): pass
+        def next_profile(self):
+            if self.i >= 1:
+                return None
+            self.i += 1; return Profile(photos=[b"x"])
+        def out_of_profiles(self): return False
+        def like(self, opener=None, item_index=0): pass
+        def dislike(self):
+            assert a_exhausted.wait(timeout=5), "A never signalled exhaustion -- test is broken"
+        def close(self): self.closed = True
+
+    a_driver, b_driver = _ADriver(), _BDriver()
+    wa = Worker("hinge", a_driver, _LikeDecider(), svc, store, "r", _Pacing(), stop,
+               mode="auto", status=status)
+    wb = Worker("bumble", b_driver, _DislikeDecider(), svc, store, "r", _Pacing(), stop,
+               mode="auto", status=status)
+
+    wb.start()                             # enters its loop and blocks inside dislike()
+    wa.start()
+    wa.join(timeout=10)                    # A fully exhausts the service and sets `stop`
+    assert stop.is_set()
+    assert svc.exhausted_reason is not None
+    a_exhausted.set()                      # release B's blocked dislike() now that it's real
+    wb.join(timeout=10)
+
+    assert not wa.is_alive() and not wb.is_alive()
+    assert a_driver.closed and b_driver.closed
+    a_reason = status.snapshot()["apps"]["hinge"]["stop_reason"]
+    b_reason = status.snapshot()["apps"]["bumble"]["stop_reason"]
+    assert a_reason == svc.exhausted_reason
+    # The bug: without the second check, b_reason stays None here even though the shared
+    # service (and A's own status) both know exactly why the run stopped.
+    assert b_reason == svc.exhausted_reason
 
 
 # --- Embedder._ensure() concurrency -------------------------------------------------

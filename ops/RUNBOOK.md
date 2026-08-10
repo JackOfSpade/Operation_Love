@@ -12,10 +12,41 @@ the device (`python -m operation_love.runtime`).
 ```bash
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -e ".[ml,bq,bumble,hinge,dev]"
-python -m playwright install chromium                   # Bumble browser
-cp .env.example .env                                    # add ANTHROPIC_API_KEY
+python -m playwright install chromium                   # only for the dead Bumble-web reference driver/tests; not needed to run Hinge
+cp .env.example .env                                    # add GEMINI_API_KEY
+chmod 600 .env                                           # recommended on macOS/Linux
 pytest -q                                               # sanity: all green
 ```
+
+Get a key from [Google AI Studio](https://aistudio.google.com/apikey). It MUST
+be created in the SAME Google Cloud project whose free-tier quota you intend to
+use — Gemini's free-tier rate limits are enforced per PROJECT, not per key,
+so a key minted in a different project draws from a different (likely empty)
+quota pool; view the project's active limits in AI Studio. Open the
+repository-local `.env` and replace the placeholder with your real
+`GEMINI_API_KEY`. The app loads this gitignored file at startup. Never put the
+key in `config.yaml`, commit it, or paste it into logs/screenshots. Restart the
+app after adding or rotating the key so the process receives the new value.
+
+Openers are **Gemini-only** — the legacy Anthropic/Claude opener path has been
+removed from the codebase entirely, not merely defaulted off. `opener.provider`
+accepts nothing but `"gemini"`; `config.validate()` raises immediately at
+startup for any other value. There is no fallback: a missing/invalid
+`GEMINI_API_KEY`, or a configured model id Gemini doesn't recognize, aborts the
+run rather than degrading to swiping without an opener.
+
+At startup (before the slower store/model warmup), the supervisor calls
+Gemini's ListModels endpoint to confirm every id in `opener.models` exists and
+supports content generation, and that the key itself is valid — this turns a
+typo'd model id or a bad/revoked key into an immediate, clear startup failure
+instead of a confusing mid-run one. Set `opener.preflight: false` in
+`config.yaml` to skip this network call (offline development only); model ids
+then go unvalidated until the first real profile is processed.
+
+Privacy: opener generation uploads the captured profile images and text to
+Google. Google's [Gemini API pricing page](https://ai.google.dev/gemini-api/docs/pricing)
+states that free-tier content may be used to improve Google products. Use a paid
+tier if that free-tier data use is unsuitable.
 
 GCP / BigQuery (storage of record):
 - Put your **project_id** in `config.yaml` → `storage.bigquery.project_id`.
@@ -37,17 +68,16 @@ runbook: **[ops/HINGE-PIXEL-RUNBOOK.md](HINGE-PIXEL-RUNBOOK.md)**. Once
 
 Both are config-overridable — **no code edits needed**, just fill `config.yaml`.
 
-**Bumble (web)** — one command does it:
-```bash
-python -m tools.bumble_inspect          # opens Bumble headful; log in, reach a card, press ENTER
-```
-- It probes every **selector** (photo / bio / prompt / like / pass / empty) and
-  prints OK/MISS for each. Any MISS → open DevTools, find the right CSS, drop it
-  under `apps.bumble.selectors`, re-run.
-- It then asks you to like/pass a few cards and prints what it **detected** —
-  observe like/pass detection rides on the *same* like/pass selectors (a DOM
-  click listener), so there's **no network reverse-engineering**. If detection
-  prints the right LIKE/PASS, observe mode is wired.
+**Bumble (web) — no longer applicable.** Bumble discontinued its web app in
+August 2026 (see `operation_love/platforms.py`), so there is no live target
+left to run `tools/bumble_inspect.py` against; `apps.bumble_web` stays in
+`config.yaml` and the tool stays in the repo only as reference for a possible
+future web-based platform. Bumble itself is now a second Android target on
+the same physical Pixel as Hinge below, but it isn't calibrated yet
+(placeholder coordinates in `operation_love/drivers/android/bumble.py`,
+`calibrated=False`) and there is no live-calibration runbook step for it yet
+— do not flip that flag until it has actually been verified against the
+device.
 
 **Hinge (Android)** — one command does it (no `uiautomator2`/on-device inspector;
 that's the exact automation footprint ops/HINGE-PIXEL-RUNBOOK.md §5 forbids):
@@ -62,10 +92,13 @@ python -m tools.hinge_inspect            # screencaps your phone; reports vision
   glyph templates need recapturing for your device, or `apps.hinge.coords` needs
   a live tweak.
 - **Observe tap detection** (`wait_for_decision()`) is implemented and unit-tested:
-  a like is detected when the comment / "Send Like" sheet opens over the bottom
-  half of the screen (screencap diff) and is then sent; a pass is detected when
-  the whole card advances to the next profile. Dry-run `mode: observe` and check
-  it logs your manual like/pass correctly.
+  click the pass **X** to reject a profile, or click its **heart** to open the
+  comment / "Send Like" sheet. The hub then replaces its normal instruction with
+  an opener suggestion; type it manually and tap **Send Like** yourself. A like
+  is persisted only after that final send advances the profile; a pass is
+  persisted only after the card advances. Dismissing the comment sheet does not
+  record a decision — the same profile remains awaiting your choice. Dry-run
+  `mode: observe` and check it logs your manual decisions correctly.
 
 > These are the items deferred to "do live, at the end." Everything they plug
 > into (capture, embed, store, ranker, openers, supervisor) already works and is
@@ -73,18 +106,22 @@ python -m tools.hinge_inspect            # screencaps your phone; reports vision
 
 ---
 
-## 3. Seed your taste — observe mode (you swipe, it learns)
+## 3. Seed your taste — observe mode (you decide, it learns)
 
 ```yaml
 # config.yaml
-enabled_apps: [bumble]     # or [bumble, hinge]
+enabled_apps: [hinge]      # the only platform the registry accepts today —
+                            # Bumble isn't calibrated yet and can never run
+                            # alongside Hinge anyway (one physical Android phone)
 mode: observe
 ```
 ```bash
-python -m operation_love            # swipe manually on real profiles
+python -m operation_love            # make decisions manually on real profiles
 python -m operation_love stats      # watch labels climb; "ranker ready" flips at ~min_labels
 ```
-Swipe ~50–100 profiles (research sweet spot). The ranker retrains live and goes
+Make decisions on ~50–100 profiles (research sweet spot). For Hinge likes,
+click the heart, manually type the opener shown in the hub, and tap **Send Like**;
+only that final send/advance persists the like. The ranker retrains live and goes
 from `defer` → ready mid-session.
 
 ---
@@ -93,7 +130,7 @@ from `defer` → ready mid-session.
 
 ```yaml
 mode: auto
-budget: { run_budget_usd: 5.00 }                # global opener cap (Claude)
+budget: { run_budget_usd: 5.00 }                # global opener cap
 ```
 ```bash
 python -m operation_love
@@ -106,9 +143,23 @@ python -m operation_love
   run), add it back under `limits: { max_per_run: 60, max_per_day: 100 }` or per-app
   under `apps.<app>.limits`.
 - Bumble: swipes only (Bumble is the opener exception — no per-swipe message).
-- Hinge: likes with a Claude-written, profile-specific opener.
+- Hinge: likes with a Gemini-written, profile-specific opener. `opener.models`
+  is a quality-descending cascade, tried strongest-first. A model that hits its
+  per-DAY quota is skipped for the rest of that run (per-day quotas reset at
+  midnight Pacific); a per-minute 429 is transient and is simply retried on the
+  next profile without dropping the model. The bot never sends a commentless
+  like: a rejected AI response is re-asked (with a correction hint) up to
+  `opener.max_attempts` times (default 5) before giving up on that profile. If
+  it's still bad after that, or every configured model's opener capacity is
+  exhausted, the run stops entirely — the reason is shown in the hub — and it
+  will NOT fall back to sending a bare like with no opener.
+- Gemini quotas are applied per Google Cloud project, not per API key. Creating
+  another key in the same project does not create another quota pool; view the
+  project's active limits in Google AI Studio. A key must be created in the
+  SAME project whose quota you intend to use (see step 1) or it draws from an
+  unrelated pool.
 - Every autonomous swipe is recorded for stats and optional daily limits, but is not fed
-  back as a training label; learning remains grounded in your manual observe-mode swipes.
+  back as a training label; learning remains grounded in your manual observe-mode decisions.
 
 ---
 
@@ -121,9 +172,11 @@ Because state lives in BigQuery, the **same code runs on any always-on box**
 # Linux (systemd) or just a screen/tmux session:
 nohup python -m operation_love >> oplove.log 2>&1 &
 ```
-- Bumble runs headless anywhere. Hinge needs a physical Android phone reachable
-  over ADB (USB, or wireless ADB on the same network) from wherever the process
-  runs — no emulator, no special host virtualization support required.
+- Hinge needs a physical Android phone reachable over ADB (USB, or wireless ADB
+  on the same network) from wherever the process runs — no emulator, no special
+  host virtualization support required. Bumble will need that same physical
+  phone once it's calibrated; it can no longer run headless the way the old
+  Bumble-web driver did, since it's now an Android target like Hinge.
 - Ctrl-C / SIGTERM shuts down cleanly and flushes the store.
 
 ---
@@ -133,9 +186,9 @@ nohup python -m operation_love >> oplove.log 2>&1 &
 | Want | Do |
 |---|---|
 | See progress | `python -m operation_love stats` |
-| Learn from your swipes | `mode: observe`, then swipe |
+| Learn from your decisions | `mode: observe`, then make decisions manually |
 | Let it swipe | `mode: auto` |
 | Cap volume (optional; uncapped by default) | `limits.max_per_run / max_per_day` |
 | Cap spend | `budget.run_budget_usd` |
 | Force a device | `OPLOVE_DEVICE=cpu|cuda|mps` |
-| Run both apps at once | `enabled_apps: [bumble, hinge]` |
+| Run both apps at once | Not possible — Android shows one app in the foreground at a time, and Bumble/Hinge share the one physical phone; run one, then the other |

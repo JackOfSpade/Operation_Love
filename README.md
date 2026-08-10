@@ -1,9 +1,12 @@
 # Operation Love v2
 
 Personal dating-app assistant. A **local, private** preference ranker decides
-who *you'd* swipe right on (learned from your own swipes), and **Claude** writes
-a natural, profile-specific opener. Targets **Bumble** (web) and **Hinge**
-(physical Android over host-side ADB + vision template-match) — no AirDroid, no fixed pixel coordinates.
+who *you'd* swipe right on (learned from your own swipes), and **Gemini** writes
+a natural, profile-specific opener. Targets **Hinge** (physical Android over
+host-side ADB + vision template-match) — no AirDroid, no fixed pixel
+coordinates — currently the only runnable platform. **Bumble** is a second
+target on that same physical phone (its web app was discontinued in August
+2026), but it isn't calibrated yet, so it can't run until that work is done.
 
 > The original AHK 2.0 project is archived in [`legacy/`](./legacy) for reference
 > to the *vision*, not the implementation. See the analysis that motivated this
@@ -12,19 +15,24 @@ a natural, profile-specific opener. Targets **Bumble** (web) and **Hinge**
 ## Architecture
 
 ```
-drivers/      element-based control: Bumble (Playwright), Hinge (host-side ADB + vision)
+drivers/      element-based control: Hinge (host-side ADB + vision) — the only
+              runnable platform; Bumble uses the same approach on the same
+              phone but isn't calibrated yet
 perception/   capture all photos + profile text -> Profile
 vision/       local pyiqa quality filter + ArcFace/CLIP embeddings   [Phase 2]
 ranker/       logistic-regression on YOUR swipe labels (BigQuery/SQLite)  [Phase 3]
-opener/       Claude writes the opener, enforced JSON output         [Phase 4]
+opener/       Gemini writes the opener, enforced JSON output         [Phase 4]
 costing.py    client-side spend tracking + per-run budget guard
 supervisor    one worker per enabled app; owns shutdown + flush
 worker.py     the per-app loop, observe or auto (replaces main.ahk)
 hub/          local control panel (state, server, page, launchers)
 ```
 
-**Decision = local & private** (photos never leave your machine).
-**Opener = Claude** (the one cloud call; minimal data; only for likes).
+**Decision = local & private.** **Opener = Gemini** (the one cloud call, only
+for likes). Opener generation sends the captured profile images and text to
+Google. Google states that free-tier content may be used to improve its products;
+see [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing). Use a paid
+tier instead if that free-tier data use is unsuitable.
 
 ## Hardware & OS — cross-platform
 
@@ -48,33 +56,70 @@ OS-specific notes:
 | Piece | macOS | Windows | Linux |
 |---|---|---|---|
 | Local ML (torch, insightface, CLIP, pyiqa) | MPS | CUDA / CPU | CUDA / CPU |
-| Bumble (Playwright web) | ✅ | ✅ | ✅ |
+| Bumble (same physical Android phone as Hinge — not yet calibrated) | ❌ | ❌ | ❌ |
 | Hinge (physical Android phone, host-side ADB only) | ✅ (USB or wireless ADB) | ✅ | ✅ |
-| Claude opener | cloud — any OS | cloud | cloud |
+| Gemini opener | cloud — any OS | cloud | cloud |
 
 ## Cost control
 
-Anthropic has no API to read your remaining credit, so spend is tracked
-client-side from each response's token `usage` against `budget.run_budget_usd`
-in `config.yaml`. On reaching the cap — or on the actual out-of-credit error —
-the bot either stops or keeps swiping without openers (`budget.on_exhausted`).
+`opener.models` is a QUALITY-DESCENDING cascade (strongest/newest first). Gemini
+free-tier rate limits are enforced per Google Cloud project, not per API key, so
+a model that returns a per-DAY quota 429 is dropped for the rest of THIS run
+only (per-day quotas reset at midnight Pacific) and the next configured model is
+tried; a per-minute 429 is transient and does not drop the model.
+
+On an opener-capable app the bot never sends a commentless like. If the AI
+returns a bad response (empty, breaks the style rules, ...), it's re-asked with
+a correction hint, up to `opener.max_attempts` times (default 5). If it's still
+bad after that, or opener capacity is exhausted (every configured model out of
+free-tier quota, or the client-side `budget.run_budget_usd` cap is reached), the
+run stops entirely — with the reason shown in the hub — instead of ever falling
+back to a bare like with no opener.
+
+Before a run starts, the supervisor calls Gemini's ListModels endpoint to
+confirm every configured model id exists and supports content generation (and
+that the key itself is valid) — this catches a typo'd model id or a bad/revoked
+key immediately, before the slower store/model warmup runs, rather than as a
+mid-run failure. Set `opener.preflight: false` to skip this network call (e.g.
+offline development); model ids then go unvalidated until the first real call.
 
 ## Setup
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[ml,bq,bumble,hinge,dev]"
-cp .env.example .env   # add ANTHROPIC_API_KEY
+cp .env.example .env   # add GEMINI_API_KEY
+chmod 600 .env         # recommended on macOS/Linux
 pytest                 # cost-control tests run without a GPU or the SDK
 ```
 
+Get a key from [Google AI Studio](https://aistudio.google.com/apikey). It MUST
+be created in the SAME Google Cloud project whose free-tier quota you intend to
+use — free-tier limits are enforced per PROJECT, not per key, so a key minted in
+a different project draws from a different (likely empty) quota pool. Set
+`GEMINI_API_KEY` in the repository-local `.env`; the app loads that file at
+startup and `.gitignore` excludes it. Never put the key in `config.yaml`, source
+control, logs, or screenshots. Restart the app after adding or rotating the key.
+Openers are Gemini-only — the legacy Anthropic/Claude opener path has been
+removed entirely, not merely defaulted off. `opener.provider` accepts nothing
+but `"gemini"`; any other value (including the old `anthropic`) fails
+`config.validate()` at load time. A missing/invalid `GEMINI_API_KEY`, or a
+configured model id Gemini's ListModels endpoint doesn't recognize, aborts the
+run instead of silently falling back to swiping without openers.
+
 ## Concurrency & deployment
 
-**One process runs all enabled apps at once.** A supervisor launches one worker
-per app (`enabled_apps: [bumble, hinge]`), all sharing the taste model, the
-BigQuery store, and a single **global** opener budget. Because the drivers are
-element-based (CDP / ADB) rather than mouse-based, they don't fight over your
-cursor, don't stop you using the machine, and several can run in parallel.
+**The supervisor architecture is per-app** — it launches one worker per enabled
+app (`enabled_apps: [hinge]`), all sharing the taste model, the BigQuery store,
+and a single **global** opener budget; that design genuinely scales to more
+than one app. What it does not do today is run two apps at once: Bumble and
+Hinge are both Android targets sharing the one physical phone, Android
+foregrounds a single app at a time, and the platform registry
+(`operation_love/platforms.py`) refuses any selection that pairs two Android
+platforms together. Right now Hinge is the only calibrated, runnable platform
+— Bumble is a second Android target on the same phone but isn't calibrated
+yet, and its old web path is dead (Bumble discontinued its web app in August
+2026).
 
 Run it with `python -m operation_love`. It's OS-agnostic (macOS/Windows/Linux,
 GPU or CPU) and host-agnostic — since state lives in BigQuery, you can develop
@@ -83,7 +128,7 @@ on one machine and deploy the same code to an always-on box with no migration.
 ## Status
 
 Done: scaffold, config, storage (BigQuery + SQLite), runtime auto-detect,
-cost-control/global-budget, the Claude opener, the **supervisor + per-app
+cost-control/global-budget, the Gemini opener, the **supervisor + per-app
 worker** loop, and **the vision + personal-ranker core** — quality pre-filter,
 ArcFace+CLIP embeddings, and a logistic-regression `PreferenceModel` that learns
 your taste with cold-start gating (`defer` until enough labels). All pure logic
@@ -91,21 +136,30 @@ is covered by offline tests; model *inference* runs on a machine with the `ml`
 extra installed.
 
 **Two modes** (`mode: observe | auto`):
-- **observe** — shadow learning: you swipe manually on real profiles, the bot
-  captures each, watches your like/pass, stores it as a label, and **retrains
-  the ranker live** (transitions itself from `defer` → ready mid-session). No
-  autonomous swiping. This is how you seed your taste — from real usage, not
-  stock images.
+- **observe** — shadow learning: you make each decision manually on real
+  profiles, while the bot captures the card, watches for your final like/pass,
+  stores it as a label, and **retrains the ranker live** (transitions itself
+  from `defer` → ready mid-session). No autonomous actions. On Hinge, click the
+  pass **X** or a **heart**; when the heart opens its comment sheet, the hub
+  shows an opener suggestion. Type that text yourself, then tap **Send Like**.
+  A Hinge like is persisted only after that final send advances the profile;
+  dismissing the sheet leaves the same profile awaiting your decision. This is
+  how you seed your taste — from real usage, not stock images.
 - **auto** — the bot swipes for you with the learned model. Decisions are recorded
   for stats and optional limits, but are not fed back as training labels.
 
-**Both apps are code-complete** (Bumble via Playwright, Hinge via host-side ADB +
-vision-located taps — no on-device helper, no emulator; see ops/HINGE-PIXEL-RUNBOOK.md),
-with autonomous-mode volume deliberately **uncapped by default** (a fixed swipe quota
-is itself a bot signature; human-like pacing shapes the timing, while the profile queue,
-real stop conditions, or a manual stop end the run; optional `max_per_run` / `max_per_day`
-overrides are available under `limits:` if you ever want a temporary ceiling), a **stats** readout
-(`python -m operation_love stats`), and human-like pacing.
+**Hinge is code-complete** (host-side ADB + vision-located taps — no on-device
+helper, no emulator; see ops/HINGE-PIXEL-RUNBOOK.md) and is the only currently
+runnable platform, with autonomous-mode volume deliberately **uncapped by
+default** (a fixed swipe quota is itself a bot signature; human-like pacing
+shapes the timing, while the profile queue, real stop conditions, or a manual
+stop end the run; optional `max_per_run` / `max_per_day` overrides are
+available under `limits:` if you ever want a temporary ceiling), a **stats**
+readout (`python -m operation_love stats`), and human-like pacing. Bumble is
+ported to the same Android + vision approach on the same physical phone, but
+still needs live calibration before it can run (see "Concurrency &
+deployment" above); its old Playwright/web driver is kept only as reference
+now that Bumble's web app is dead.
 
 Everything machine-independent is done and unit-tested (run `pytest` for the
 current suite/test count). The only remaining work needs your machine + a

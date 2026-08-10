@@ -56,9 +56,14 @@ def snapshot_failure_frame(dbg, exc: BaseException, capture_frame) -> None:
 class DatingAppDriver(ABC):
     # Whether this app lets you attach a written opener AT SWIPE TIME (Hinge's
     # "send a like with a comment" model). When False, the worker must NOT call
-    # the opener service in auto mode — generating a Claude opener we can't send
-    # just wastes credits. Bumble is False (you match first, then message).
+    # the opener service in auto mode — generating a Gemini opener we can't send
+    # just wastes spend. Bumble is False (you match first, then message).
     accepts_opener: bool = True
+
+    # Hinge can observe the intermediate "Send Like" sheet. It is opt-in so
+    # existing drivers and lightweight test doubles retain their current
+    # two-outcome observe API.
+    supports_observe_like_intent: bool = False
 
     # Whether human_motion.think_time_s()'s per-decision "think time" (measured
     # like-vs-pass dwell asymmetry) is calibrated for THIS app's real behavior.
@@ -112,7 +117,8 @@ class DatingAppDriver(ABC):
         """Capture the card currently shown WITHOUT acting (you swipe manually)."""
         raise NotImplementedError("observe mode is not supported by this driver")
 
-    def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None) -> bool | None:
+    def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None,
+                          on_like_intent=None) -> bool | None:
         """Block until the user manually likes/passes the current card.
 
         Returns True (liked), False (passed), or None (card changed, timeout,
@@ -120,6 +126,12 @@ class DatingAppDriver(ABC):
         `should_stop` is an optional callable polled in the wait loop; when it
         returns True the driver returns None promptly so a Stop request isn't
         blocked behind your next manual swipe.
+
+        Drivers that opt in with ``supports_observe_like_intent`` may call
+        ``on_like_intent(True)`` once a human opens an intermediate like sheet,
+        then ``on_like_intent(False)`` when that sheet closes, whether it is
+        sent or dismissed. This is only a UI-notification hook; it must not
+        cause device input.
         """
         raise NotImplementedError("observe mode is not supported by this driver")
 

@@ -15,6 +15,7 @@ each spec's flag into that registry.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 _LIKE_FLOWS = frozenset({"comment_sheet", "direct"})
@@ -168,3 +169,38 @@ class AndroidAppSpec:
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).forbidden_zones entry {zone} is not a "
                     f"normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
+        # coords / read_scroll_frac range check. This is the SPEC-level half of a two-part
+        # fix (the other half is config.py's _validate_android_fractions, which covers an
+        # OPERATOR's config.yaml override of these same values): an out-of-range coordinate
+        # here was previously caught nowhere until hinge.py's _assert_tap_allowed ran it
+        # against a live screen -- and even then, only because that function now also checks
+        # the RAW value before clamping (see its docstring). A bad literal baked into a spec
+        # (a pixel value typo'd where a fraction was meant, e.g. 868 instead of 0.868) is a
+        # code-review-time mistake, not a runtime one, so it belongs here: fail at import,
+        # not at the first live tap. Every `coords` entry is a FRACTION of the screen (x, y
+        # in 0..1), never a pixel -- an out-of-range value is never legitimate, because the
+        # real touch transport clamps rather than refuses it, which can silently land inside
+        # a forbidden_zones rect (see hinge.py's _assert_tap_allowed for the full mechanism
+        # this guards against).
+        for key, value in self.coords.items():
+            if (not isinstance(value, tuple) or len(value) != 2
+                    or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in value)):
+                raise ValueError(
+                    f"AndroidAppSpec({self.app!r}).coords[{key!r}] must be an (x, y) tuple "
+                    f"of numbers (got {value!r})")
+            for axis, v in zip("xy", value):
+                if not (math.isfinite(v) and 0.0 <= v <= 1.0):
+                    raise ValueError(
+                        f"AndroidAppSpec({self.app!r}).coords[{key!r}].{axis} = {v!r} is not "
+                        f"a fraction in 0..1. coords are fractions of the SCREEN, never "
+                        f"pixels -- a value outside 0..1 would pass this rect-based check "
+                        f"cleanly and then be silently clamped onto a screen edge by the real "
+                        f"touch transport, which can land inside a forbidden zone.")
+        # read_scroll_frac: same reasoning, for the one non-coords fraction field this spec
+        # declares today. Named generically ("*_frac") in config.py's sibling check because
+        # a future field could add another; this one is checked by name since it is the only
+        # dataclass field of this shape.
+        if not (math.isfinite(self.read_scroll_frac) and 0.0 <= self.read_scroll_frac <= 1.0):
+            raise ValueError(
+                f"AndroidAppSpec({self.app!r}).read_scroll_frac must be a fraction in 0..1 "
+                f"(got {self.read_scroll_frac!r})")

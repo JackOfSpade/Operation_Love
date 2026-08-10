@@ -130,6 +130,45 @@ def test_bumble_inspect_help_exits_cleanly_without_touching_browser(monkeypatch)
         raise AssertionError("--help should have raised SystemExit")
 
 
+def test_bumble_inspect_exits_cleanly_on_platform_unavailable(monkeypatch):
+    """tools/bumble_inspect.py targets the removed Playwright web driver (bumble_web --
+    permanently unavailable since Bumble discontinued its web app in Aug 2026, see
+    operation_love/platforms.py). BumbleDriver (a compatibility shim for BumbleWebDriver)
+    correctly raises PlatformUnavailable from open_session() -- the registry's
+    availability gate is NOT bypassed -- but pre-fix main() had no handler for it, so the
+    user got a raw traceback instead of the clean explanation the registry already
+    computed. main() must catch it, print that reason, and exit non-zero -- and must never
+    prompt input() for a browser session that was never opened."""
+    mod = importlib.import_module("tools.bumble_inspect")
+    from operation_love.drivers.web import PlatformUnavailable
+
+    monkeypatch.setattr(sys, "argv", ["bumble_inspect.py", "--config", "config.yaml"])
+    monkeypatch.setattr(mod.cfg_mod, "load", lambda path: object())
+
+    class _RefusingDriver:
+        def __init__(self, cfg):
+            pass
+
+        def open_session(self):
+            raise PlatformUnavailable(
+                "Additional work needed to get this to run. Bumble discontinued its web "
+                "app in August 2026."
+            )
+
+    monkeypatch.setattr(mod, "BumbleDriver", _RefusingDriver)
+
+    def _no_input(*a, **k):
+        raise AssertionError("input() must not be called -- no browser was ever opened")
+    monkeypatch.setattr("builtins.input", _no_input)
+
+    try:
+        mod.main()
+    except SystemExit as exc:
+        assert exc.code != 0
+    else:
+        raise AssertionError("main() should have exited non-zero on PlatformUnavailable")
+
+
 def test_eval_aggregation_help_exits_cleanly_without_touching_bigquery(monkeypatch):
     mod = importlib.import_module("tools.eval_aggregation")
     monkeypatch.setattr(sys, "argv", ["eval_aggregation.py", "--help"])

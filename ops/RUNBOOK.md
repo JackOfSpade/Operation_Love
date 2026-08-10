@@ -79,6 +79,32 @@ the same physical Pixel as Hinge below, but it isn't calibrated yet
 — do not flip that flag until it has actually been verified against the
 device.
 
+**Bumble calibration checklist — BLOCKING, before `calibrated` is ever flipped
+to `True`:**
+- [ ] Real coordinates measured live on the device (not the placeholder
+      guesses shipped in `BUMBLE_SPEC`/`config.yaml`'s `apps.bumble.coords`).
+- [ ] `forbidden_zones` re-measured against the real SuperSwipe control, not
+      left at its generously-oversized placeholder rect.
+- [ ] `upsell_dismiss` glyph template captured (required before `calibrated`
+      can even be set — see `AndroidAppSpec.__post_init__`).
+- [ ] **The swipe-direction assumption, verified live, on a disposable
+      profile:** `AndroidDriver._swipe` (`operation_love/drivers/hinge.py`)
+      only zone-checks a drag's touch-DOWN point, on the reasoning that a
+      gesture is locked to whatever View captured `ACTION_DOWN` (standard
+      Android dispatch) — a drag that merely travels over or ends on a
+      control shouldn't press it. That reasoning is correct for ordinary
+      Android views but has **never been verified against Bumble's actual
+      UI**, and `AndroidDriver._scroll_to_top`'s undo-swipes routinely END
+      with the finger sitting over Bumble's SuperSwipe location (the undo
+      drag returns the card to the top, i.e. travels downward, ending low on
+      the screen — exactly where the SuperSwipe zone lives). Before Bumble is
+      ever run unattended: deliberately drag a card so the gesture passes
+      over and ends on the SuperSwipe control on a disposable/burner Bumble
+      profile, and confirm nothing is purchased. If Bumble's button turns out
+      to react on release (or via some other non-standard touch handling)
+      rather than only on capture, `_swipe`'s touch-down-only check does not
+      protect against it and the guard needs to change before this ships.
+
 **Hinge (Android)** — one command does it (no `uiautomator2`/on-device inspector;
 that's the exact automation footprint ops/HINGE-PIXEL-RUNBOOK.md §5 forbids):
 ```bash

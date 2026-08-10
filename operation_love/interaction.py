@@ -122,8 +122,16 @@ class AutoSessionPolicy:
         The caller supplies the existing pacing scale (and bypasses this method
         entirely for the documented ``swipe_delay_s == 0`` no-pacing mode).
         """
-        if scale < 0:
-            raise ValueError("scale must be non-negative")
+        # `scale <= 0` (not just `< 0`): an exact-zero scale would silently clamp
+        # every modifier away and return a bare `0.0` wait -- an instant, zero-jitter
+        # action is itself a bot signature if this method were ever reached with one.
+        # The documented way to skip pacing entirely is worker.py's own
+        # `swipe_delay_s == 0` bypass BEFORE calling this method at all (see _pace),
+        # not a zero scale reaching this far in; the caller re-derives an equally
+        # loud failure for a negative pacing.swipe_delay_s from this same check,
+        # since scale is computed directly from it.
+        if scale <= 0:
+            raise ValueError("scale must be positive")
         bucket = "like" if decision == "like" else "pass"
         base = think_time_s(bucket, rng=self.rng)
         complexity = self._profile_complexity(profile)
@@ -201,12 +209,44 @@ class AutoSessionPolicy:
                       self.base_threshold + self.max_threshold_lift)
 
     @staticmethod
-    def _profile_complexity(profile: Profile) -> float:
+    def _safe_meta_int(meta: dict, key: str, default: int) -> int:
+        """Read one int-like pacing-metadata field, tolerating whatever a driver's
+        capture layer hands back instead of raising.
+
+        ``meta`` is observational context for HUMAN-REALISM PACING ONLY (see this
+        module's docstring); it is never a model feature and a driver bug in it must
+        never be able to reach past this policy. Before this guard, a non-numeric
+        ``meta["capture_frames"]`` (or any other value ``int()`` rejects) raised a bare
+        ValueError straight out of here, and worker.py's auto loop has no try/except
+        around apply_decision()/post_action_delay_s() — it would fall through to the
+        loop's blanket exception handler and HALT THE WHOLE RUN, exactly the outcome
+        the owner's rule reserves for an unrecognized screen or a genuine error, not a
+        pacing-metadata glitch. This degrades SILENTLY to `default` rather than
+        logging: this module is deliberately pure/side-effect-free (see the module
+        docstring — "deterministic when supplied a seeded random.Random and a
+        local-hour callable"), the call happens on every single landed action so a
+        per-swipe log line would be noise on the hot path, and the field is presently
+        unreachable in practice (Profile.meta defaults to {} and the one real
+        producer already supplies real ints) — a silent, bounded fallback is the
+        right trade for a currently-theoretical input, not a printed warning.
+        ``OverflowError`` covers `int(float('inf'))`; a merely huge (but finite)
+        value already can't raise here and is bounded by the `min(..., N)` clamps
+        below, same as it always was.
+        """
+        raw = meta.get(key, default)
+        try:
+            value = int(raw) if raw else default   # falsy (0/""/None) -> "not provided"
+        except (TypeError, ValueError, OverflowError):
+            return default
+        return max(0, value)   # a negative count is never sane pacing context
+
+    @classmethod
+    def _profile_complexity(cls, profile: Profile) -> float:
         photos = len(getattr(profile, "photos", []) or [])
         text = len(profile.text_blob()) if hasattr(profile, "text_blob") else 0
         meta = getattr(profile, "meta", {}) or {}
-        capture_frames = int(meta.get("capture_frames", photos) or photos)
-        read_scrolls = int(meta.get("read_scrolls", max(0, capture_frames - 1)) or 0)
+        capture_frames = cls._safe_meta_int(meta, "capture_frames", photos)
+        read_scrolls = cls._safe_meta_int(meta, "read_scrolls", max(0, capture_frames - 1))
         # Cap every observed dimension so a malformed meta value cannot generate
         # excessive pacing.  Hinge's present capture path supplies photos; these
         # metadata fields let a driver add reading context without model coupling.

@@ -1,6 +1,7 @@
 """Load and validate config.yaml into typed objects."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -176,7 +177,25 @@ def load(path: str | Path = "config.yaml") -> Config:
     # to it would make a from-scratch config.yaml fail check_runnable() on the very first run.
     # Hinge is the one platform the registry ships available by default, so it's the sensible
     # out-of-the-box default now.
-    enabled_apps = raw.get("enabled_apps") or ([raw["app"]] if "app" in raw else ["hinge"])
+    #
+    # This used to be a single `raw.get("enabled_apps") or (...)` expression -- and that `or`
+    # is exactly the bug an audit found: `[] or default` evaluates to `default`, because an
+    # empty list is falsy in Python. An operator who deliberately writes `enabled_apps: []`
+    # (or a config-generation bug that emits one) means "run nothing," and got Hinge started
+    # against the real phone instead -- silently, because validate()'s own
+    # `if not cfg.enabled_apps: raise ValueError(...)` guard (below) never got a chance to
+    # fire: load() had already thrown the empty list away and substituted the default before
+    # validate() ever saw it. The fix checks PRESENCE (`"enabled_apps" in raw`) rather than
+    # truthiness, so an explicit `[]` -- and a bare `enabled_apps:` (YAML null), which is
+    # "the key is present but nothing was written," not "the key was never mentioned" -- both
+    # pass straight through as `[]` and hit that already-existing, already-actionable guard.
+    # Only a genuinely ABSENT key still falls back to today's default.
+    if "enabled_apps" in raw:
+        enabled_apps = list(raw["enabled_apps"] or [])
+    elif "app" in raw:
+        enabled_apps = [raw["app"]]
+    else:
+        enabled_apps = ["hinge"]
     storage_raw = raw.get("storage", {}) or {}
     return Config(
         enabled_apps=list(enabled_apps),
@@ -339,6 +358,61 @@ def _validate_verification(cfg: Config) -> None:
                 f"keep swiping. Set it true, or run this app in observe mode.")
 
 
+# Every Android app's config block (apps.<app>) may set a `coords` mapping (each entry an
+# [x, y] pair, FRACTIONS of the screen, 0..1) and assorted `*_frac` knobs (read_scroll_frac
+# today; matched by suffix, not by name, so a future one is covered for free). Neither was
+# validated anywhere before this: an out-of-range value -- a typo like 1.30 for 0.130, or a
+# raw pixel written where a fraction was meant -- used to reach hinge.py's
+# _assert_tap_allowed as the only backstop, and only AFTER a driver session was already open
+# on a real phone. This is the config-load-time half of a two-part fix; the other half is
+# AndroidAppSpec.__post_init__ (android_spec.py), which validates the same shapes for a
+# spec's own hardcoded defaults. Both are needed because they catch different authors' typos
+# at different times: a bad literal baked into HINGE_SPEC/BUMBLE_SPEC is a code-review-time
+# mistake (android_spec.py's job), while a bad value under `apps.<app>.coords` in config.yaml
+# is an OPERATOR's mistake made after the code shipped -- exactly Bumble's current state,
+# where every coordinate is an explicit placeholder awaiting a human typing real numbers in
+# (see BUMBLE_SPEC's module docstring). Scoped to KIND_ANDROID platforms only: a web app's
+# config (e.g. bumble_web's CSS `selectors`) has no coords/*_frac concept, and validating it
+# here would be a category error, not a safety net.
+def _validate_android_fractions(cfg: Config) -> None:
+    for app, app_cfg in (cfg.apps or {}).items():
+        if app not in platforms.KNOWN_APPS or platforms.get(app).kind != platforms.KIND_ANDROID:
+            continue          # not a known Android app -- nothing here to validate
+        app_cfg = app_cfg or {}
+        coords = app_cfg.get("coords") or {}
+        if not isinstance(coords, dict):
+            raise ValueError(
+                f"Config: apps.{app}.coords must be a mapping of name -> [x, y] "
+                f"(got {type(coords).__name__})")
+        for key, value in coords.items():
+            if (not isinstance(value, (list, tuple)) or len(value) != 2
+                    or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in value)):
+                raise ValueError(
+                    f"Config: apps.{app}.coords.{key} must be a [x, y] pair of numbers "
+                    f"(got {value!r})")
+            for axis, v in zip("xy", value):
+                if not (math.isfinite(v) and 0.0 <= v <= 1.0):
+                    raise ValueError(
+                        f"Config: apps.{app}.coords.{key} {axis}={v!r} must be in 0..1 -- "
+                        f"coords are FRACTIONS of the screen, never pixels. An out-of-range "
+                        f"value is never a legitimate tap target: the real touch transport "
+                        f"clamps it onto a screen edge instead of failing, which can land "
+                        f"inside a forbidden zone undetected (see hinge.py's "
+                        f"_assert_tap_allowed).")
+        for key, value in app_cfg.items():
+            if not key.endswith("_frac"):
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"Config: apps.{app}.{key} must be a number (got {value!r})")
+            if not (math.isfinite(value) and 0.0 <= value <= 1.0):
+                raise ValueError(
+                    f"Config: apps.{app}.{key} must be in 0..1 (a fraction of the screen) -- "
+                    f"got {value!r}. This knob feeds a touch-down coordinate computation "
+                    f"(operation_love/drivers/hinge.py's AndroidDriver); an out-of-range "
+                    f"value clamps onto a screen edge on a real device instead of failing, "
+                    f"which can land inside a forbidden zone undetected.")
+
+
 # opener.max_attempts and opener.request_timeout_s sanity ceilings. Both bound the SAME
 # underlying risk -- an opener misconfig turning into a real-money, real-quota, real-time
 # runaway on a single profile -- so they're derived together and cross-referenced below.
@@ -416,6 +490,7 @@ def validate(cfg: Config) -> None:
     if bad_modes:
         raise ValueError(f"Config: mode must be 'observe' or 'auto' (got {bad_modes})")
     _validate_verification(cfg)
+    _validate_android_fractions(cfg)
     if cfg.storage.backend not in {"bigquery", "sqlite"}:
         raise ValueError(f"Config: storage.backend must be 'bigquery' or 'sqlite' (got {cfg.storage.backend})")
     if cfg.storage.backend == "bigquery" and not (cfg.storage.bigquery or {}).get("project_id"):

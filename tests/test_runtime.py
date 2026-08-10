@@ -72,6 +72,44 @@ def test_capabilities_detect_still_accepts_legacy_hinge_adb_path_kwarg(tmp_path,
     assert caps.available["android_driver"] is True
 
 
+def test_capabilities_detect_does_not_import_torch():
+    """detect()'s .device field used to call best_device(), which does a real `import
+    torch` (~600 submodules, ~0.48s, measured) on EVERY call -- including a bare
+    diagnostic/bugreport run that only wants capability flags. The device probe must be
+    lazy: detect() alone (no .device / banner() access) must never cause torch to be
+    imported.
+
+    ML extras are installed in dev, so torch may already sit in sys.modules from an
+    earlier test in this same process -- that would make a plain "torch not in
+    sys.modules" assertion pass or fail depending on test order, not on what THIS call
+    does. Simulate the "not yet imported" case by removing torch (and every torch.*
+    submodule) from sys.modules first, and restore afterward so this can't affect any
+    other test's state."""
+    import sys
+
+    saved = {name: mod for name, mod in sys.modules.items()
+              if name == "torch" or name.startswith("torch.")}
+    for name in saved:
+        del sys.modules[name]
+    try:
+        caps = Capabilities.detect()
+        assert "torch" not in sys.modules
+        # available/os_name/etc. must still be fully populated -- laziness must not
+        # change what a caller who never touches .device observes.
+        assert caps.os_name
+        assert isinstance(caps.available["arcface"], bool)
+    finally:
+        sys.modules.update(saved)
+
+
+def test_capabilities_device_still_resolves_correctly_when_accessed():
+    # Laziness must not change what callers observe once they DO ask for .device --
+    # only WHEN best_device() runs, not what it returns or how many times.
+    caps = Capabilities.detect()
+    assert caps.device in {"cpu", "cuda", "mps"}
+    assert caps.device == caps.device      # cached, not re-derived differently per read
+
+
 def test_capabilities_available_exposes_transport_shaped_keys():
     # web_driver/android_driver are the current names (platforms.py's kind vocabulary);
     # bumble_driver/hinge_driver are kept only as aliases for old callers.

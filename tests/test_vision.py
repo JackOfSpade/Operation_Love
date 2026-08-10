@@ -173,6 +173,28 @@ def test_ensure_leaves_embedder_retryable_if_clip_load_fails(monkeypatch):
     assert calls["n"] == 1
 
 
+def test_embedder_warmup_reraises_init_failure(monkeypatch):
+    """warmup() is meant to be called once, eagerly, on the main thread before workers
+    start (see its docstring), precisely so a broken embedder is caught before any worker
+    thread ever comes to depend on it. Old contract: warmup() caught any _ensure() failure
+    and just printed "will retry per-profile" -- but that "retry" runs unguarded inside a
+    worker thread, only after supervisor.run() has already finished the rest of startup,
+    taken the Android device lock, and opened a live session, so the failure actually
+    surfaced after a real profile had already been captured off the phone. warmup() must
+    now re-raise instead, matching QualityFilter.warmup()'s fail-loud contract, so the
+    supervisor aborts cleanly during startup."""
+    import pytest
+
+    def boom():
+        raise RuntimeError("onnxruntime install is corrupt")
+
+    e = Embedder()
+    monkeypatch.setattr(e, "_ensure", boom)
+
+    with pytest.raises(RuntimeError, match="onnxruntime install is corrupt"):
+        e.warmup()
+
+
 def test_quality_gating_with_injected_scorer():
     scores = {b"good": 0.8, b"bad": 0.1}
     qf = QualityFilter(enabled=True, min_score=0.3, scorer=lambda b: scores[b])

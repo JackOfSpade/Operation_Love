@@ -362,8 +362,14 @@ class Worker(threading.Thread):
 
     # --- autonomous: the bot swipes ------------------------------------
     def _auto_loop(self) -> None:
-        acted = 0
-        liked = 0
+        # Annotated `int` rather than left to inference on purpose. Bare `= 0` makes a type
+        # checker infer the literal type Literal[0], and a `> 0` test does not widen a literal
+        # back to int -- so the guarded `liked / acted` below still got reported as a
+        # division by a literal zero even though the guard makes it unreachable. Declaring
+        # the counters as plain ints states what they actually are (running tallies, not the
+        # constant 0) and removes the false positive without weakening any runtime guard.
+        acted: int = 0
+        liked: int = 0
         # This state belongs to one auto session, not to the learned preference
         # model.  It may only make a marginal model like more conservative; it
         # never manufactures a like.  Fakes/third-party deciders need not expose
@@ -458,7 +464,17 @@ class Worker(threading.Thread):
                     break
 
                 # Ratio shape: demote this like to a pass when the running like-rate
-                # is at the ceiling (soft cap — does NOT halt the run).
+                # is at the ceiling (soft cap — does NOT halt the run) AND this like is
+                # only marginally over the ranker's own threshold. A clearly strong
+                # like (score well above configured_threshold) survives the ceiling
+                # instead — see limits.py's module docstring and allow_like_ratio's
+                # docstring for the worked numbers and the score-blind bug this
+                # replaced (an earlier version of this shaper demoted the STRONGEST of
+                # four real scores purely because of arrival order). configured_threshold
+                # (the plain model threshold, not AutoSessionPolicy's per-card *lifted*
+                # effective_threshold from apply_decision above) is deliberately what is
+                # passed here — see _STRONG_LIKE_MARGIN's comment in limits.py for why
+                # that avoids double-counting AutoSessionPolicy's own separate demotion.
                 # `acted > 0` is duplicated deliberately: allow_like_ratio() already
                 # returns True when acted==0 (so this branch can't actually run with
                 # acted==0), but that safety lives inside a DIFFERENT function, which is
@@ -467,11 +483,21 @@ class Worker(threading.Thread):
                 # Repeating the guard here, in the condition itself, makes the division
                 # provably safe at its own call site regardless of either of those.
                 if d.decision == "like" and self.limiter and acted > 0 \
-                        and not self.limiter.allow_like_ratio(liked, acted):
+                        and not self.limiter.allow_like_ratio(
+                            liked, acted, score=d.score, like_threshold=configured_threshold):
                     ratio_pct = f"{liked / acted:.0%}"
                     print(f"{self.app.title()} like-ratio ceiling "
-                          f"({ratio_pct} ≥ {self.limiter.target_like_ratio:.0%}) — demoting to pass")
-                    d = Decision("dislike", d.score, d.embedding, d.source)
+                          f"({ratio_pct} ≥ {self.limiter.target_like_ratio:.0%}, score "
+                          f"{d.score:.3f} marginal vs threshold {configured_threshold:.3f}) "
+                          f"— demoting to pass")
+                    # Tagged like interaction.py's own contextual demotion
+                    # (f"{source}_contextual") rather than left as the raw ranker source,
+                    # so a future consumer of Decision.source can tell a shaped decision
+                    # apart from a raw model one. No functional effect today:
+                    # Decision.source isn't read anywhere downstream and the stored row
+                    # hardcodes source="auto" (see record_decision below) — this is
+                    # forward-looking consistency, not a behavior change.
+                    d = Decision("dislike", d.score, d.embedding, f"{d.source}_ratio_ceiling")
 
                 if self.stop_event.is_set():
                     break
@@ -586,6 +612,19 @@ class Worker(threading.Thread):
             self._finish_session(terminal_state, stop_reason=stop_reason)
 
     def _pace(self, decision: str, *, profile=None, score: float | None = None) -> None:
+        # config.validate() already rejects a negative pacing.swipe_delay_s on every
+        # path that goes through it (see config.py), but Worker is a public class any
+        # caller can construct directly with a pacing object that skipped validation
+        # (the same class of gap an audit already found for opener_service=None — see
+        # the maybe_opener guards above). Event.wait() on a negative timeout returns
+        # immediately, so an unguarded negative anchor here would silently produce
+        # machine-speed swiping — a stronger bot signature than any jittered delay —
+        # instead of the loud failure the calibrated branch below already gets for
+        # free (post_action_delay_s's own `scale < 0` check, since scale is derived
+        # from this same swipe_delay_s). Raise here too so BOTH branches fail exactly
+        # the same way, not just the one that happens to route through that function.
+        if self.pacing.swipe_delay_s < 0:
+            raise ValueError("pacing.swipe_delay_s must be non-negative")
         # ``0`` is the documented test/no-pacing setting.  Do not consume the
         # session policy's random state merely to wait for zero seconds.
         if self.pacing.swipe_delay_s == 0 and profile is not None:

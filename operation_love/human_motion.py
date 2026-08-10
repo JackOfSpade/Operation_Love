@@ -60,6 +60,9 @@ _SIZE_PEAK = 0.55                # normalized; transport maps to raw contact-maj
 # Tap dwell (down->up): lognormal, median ~130 ms.
 _TAP_DWELL_MEDIAN_S, _TAP_DWELL_SIGMA = 0.13, 0.25
 _TAP_MICROSLIP_PX = 2.5          # finger-pad slide on impact
+_TAP_NOISE_SIGMA_PX = 0.22       # per-sample Gaussian noise std (plan_tap); named so
+                                  # tap_jitter_margin_px's bound can't drift from the actual
+                                  # draw it is bounding
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
@@ -259,8 +262,8 @@ def plan_tap(x, y, *, hz=REPORT_HZ, jitter_px=_TAP_MICROSLIP_PX, rng=None):
     for k in range(n + 1):
         tt = k * dt
         decay = math.exp(-lam * tt) * math.cos(2 * math.pi * ftremor * tt)
-        sx = aim_x + d0x * decay + r.gauss(0.0, 0.22)
-        sy = aim_y + d0y * decay + r.gauss(0.0, 0.22)
+        sx = aim_x + d0x * decay + r.gauss(0.0, _TAP_NOISE_SIGMA_PX)
+        sy = aim_y + d0y * decay + r.gauss(0.0, _TAP_NOISE_SIGMA_PX)
         env = _beta_ramp(k / n, 1.0, pressure_alpha, pressure_beta) if 0 < k < n else 0.0
         samples.append(TouchSample(t=tt, x=sx, y=sy,
                                    pressure=_down_pressure(env, pressure_peak, pressure_floor),
@@ -271,6 +274,45 @@ def plan_tap(x, y, *, hz=REPORT_HZ, jitter_px=_TAP_MICROSLIP_PX, rng=None):
     samples.append(TouchSample(t=n * dt + dt, x=last.x, y=last.y,
                                pressure=0.0, size=0.0, tip=False))
     return samples
+
+
+def tap_jitter_margin_px(jitter_px: float = _TAP_MICROSLIP_PX, *, sigma_mult: float = 6.0) -> float:
+    """Worst-case single-axis distance a plan_tap() sample can land from the NOMINAL (x, y)
+    it was asked to hit -- i.e. how far the touch-down a real tap actually DELIVERS can drift
+    from the point a caller zone-checked before ever calling touch.tap(). A forbidden-zone
+    check that only tests the nominal point is checking a point nobody's finger lands on;
+    this margin is what lets a caller (hinge.py's _assert_tap_allowed) require the whole
+    plausible landing patch, not just its centre, to clear a zone.
+
+    Three independent drift sources in plan_tap above, summed as their per-axis maxima -- a
+    conservative SQUARE (Chebyshev) envelope, not a tighter circular one, so it never
+    under-covers the real drift on either axis:
+
+      1. aim jitter    -- `aim_radius = max(1.0, jitter_px) * r.uniform(0.7, 1.8)`, applied
+                          via cos/sin, so |aim_x - x| and |aim_y - y| are each bounded by the
+                          full radius: max(1.0, jitter_px) * 1.8.
+      2. micro-slip     -- `d0x, d0y = r.uniform(-1, 1) * jitter_px * 1.5` (each axis),
+                          damped by `decay = exp(-lam*tt) * cos(2*pi*ftremor*tt)`, whose
+                          magnitude is <= 1 everywhere (both factors are individually <= 1,
+                          jointly maximal at tt=0). So |d0x * decay| <= jitter_px * 1.5.
+      3. per-sample noise -- `r.gauss(0.0, _TAP_NOISE_SIGMA_PX)`, unbounded in principle.
+                          `sigma_mult` (default 6) caps it at a six-sigma tail (~1e-9 per
+                          sample) -- the same "treat this as impossible past N sigma"
+                          judgment call any finite envelope over a Gaussian has to make; six
+                          is a standard, conservative choice for exactly that.
+
+    Summed rather than combined in quadrature (sqrt(a^2+b^2+c^2)): the margin this feeds
+    exists to make a forbidden zone UNREACHABLE, not merely unlikely, so the bound stays
+    the (rarer, larger) worst case rather than a typical one.
+
+    At this module's own default jitter_px (2.5px), the margin is 2.5*1.8 + 2.5*1.5 +
+    6*0.22 = 9.57px -- consistent with the "roughly 5-10px of unchecked drift" this was
+    written to close.
+    """
+    aim = max(1.0, float(jitter_px)) * 1.8
+    slip = float(jitter_px) * 1.5
+    noise = float(sigma_mult) * _TAP_NOISE_SIGMA_PX
+    return aim + slip + noise
 
 
 def think_time_s(decision: str, rng=None) -> float:

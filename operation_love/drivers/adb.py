@@ -69,6 +69,24 @@ def _bezier(s: tuple[float, float], c: tuple[float, float],
     return x, y
 
 
+def clamp_xy(x: float, y: float, w: int, h: int) -> tuple[int, int]:
+    """Clamp a coordinate onto the live `w`x`h` screen: the exact arithmetic BOTH real touch
+    transports apply to the point they actually deliver -- Adb._clamp (below) and uhid.py's
+    _report. Factored out here (adb.py, which uhid.py already imports from) so the two
+    transports and hinge.py's forbidden-zone check (_assert_tap_allowed) can never drift
+    apart on what "the point that will actually reach the phone" means; before this, each
+    of the three call sites re-derived the same `max(0, min(dim-1, round(v)))` arithmetic by
+    hand, which is exactly the kind of duplication that lets a checked point silently stop
+    matching the delivered one.
+
+    Rounds before clamping (not the reverse): a fraction just past 1.0 must clamp to the
+    last valid pixel, not `int()`-truncate to a value that then falls just short of it.
+    """
+    cx = max(0, min(w - 1, int(round(x))))
+    cy = max(0, min(h - 1, int(round(y))))
+    return cx, cy
+
+
 SCROLL_X_JITTER_PX = 25   # scroll_up column jitter, shared by Adb and UhidTouch (HINGE-04)
 
 
@@ -208,9 +226,7 @@ class Adb:
     # --- helpers -------------------------------------------------------
     def _clamp(self, x: int, y: int) -> tuple[int, int]:
         w, h = self._size if self._size else (1080, 2400)
-        x = max(0, min(w - 1, x))
-        y = max(0, min(h - 1, y))
-        return int(x), int(y)
+        return clamp_xy(x, y, w, h)
 
     def _jit(self, v: float) -> int:
         return int(round(v + random.uniform(-self.jitter_px, self.jitter_px)))

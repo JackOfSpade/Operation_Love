@@ -140,11 +140,25 @@ class Embedder:
         self._arc_on_cpu = self._arc_providers == ["CPUExecutionProvider"]
 
     def warmup(self) -> None:
-        """Load ML models eagerly (call once from the main thread before workers start)."""
-        try:
-            self._ensure()
-        except Exception as exc:  # noqa: BLE001
-            print(f"Embedder warmup failed (will retry per-profile): {type(exc).__name__}: {exc}")
+        """Load ML models eagerly (call once from the main thread before workers start).
+
+        Raises on failure -- matches QualityFilter.warmup()'s contract (vision/quality.py),
+        which this project's fail-loud rule requires: never silently degrade. This used to
+        catch-and-print any init error (missing weights, a network hiccup downloading them,
+        OOM, a corrupt onnxruntime install, ...) and let the run continue, on the theory
+        that embed_profile()'s own _ensure() call would "retry per-profile" -- but that
+        retry runs unguarded, inside a worker thread, only after supervisor.run() has
+        already finished the rest of its (possibly slow) startup, taken the Android device
+        lock, and opened a live session. So a broken embedder wasn't actually retried
+        gracefully: it sailed straight through, captured a REAL profile off the phone, and
+        only then failed on that profile's embed. Letting the exception propagate here
+        means supervisor.run() aborts cleanly during startup instead, before any of that.
+        (A missing ML extra specifically -- arcface/clip literally not installed -- is
+        caught earlier and separately, by supervisor.run()'s own
+        `caps.missing("arcface", "clip")` gate; this covers every OTHER init failure that
+        gate can't see, since the libraries can be installed and still fail to load.)
+        """
+        self._ensure()
 
     def _ensure(self) -> None:
         if self._arc is not None:                  # fast path: already init, no lock needed

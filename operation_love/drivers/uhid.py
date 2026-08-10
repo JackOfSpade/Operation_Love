@@ -37,7 +37,7 @@ import threading
 import time
 
 from ..human_motion import REPORT_HZ, plan_swipe, plan_tap
-from .adb import Adb, AdbError, scroll_x
+from .adb import Adb, AdbError, clamp_xy, scroll_x
 from .base import DriverClosed
 
 
@@ -76,9 +76,9 @@ def _build_descriptor(w: int, h: int) -> list[int]:
 
 def _report(sample, w: int, h: int) -> list[int]:
     """A 9-byte HID input report (incl. report id) for one TouchSample, clamped to the
-    screen, pressure scaled from normalized 0..1 to raw 0..255 (contact-size dropped)."""
-    x = max(0, min(w - 1, int(round(sample.x))))
-    y = max(0, min(h - 1, int(round(sample.y))))
+    screen (clamp_xy, shared with Adb._clamp -- see that function's docstring for why),
+    pressure scaled from normalized 0..1 to raw 0..255 (contact-size dropped)."""
+    x, y = clamp_xy(sample.x, sample.y, w, h)
     p = max(0, min(255, int(round(sample.pressure * 255))))
     flags = 0x03 if sample.tip else 0x00          # bit0 Tip, bit1 Confidence
     count = 1 if sample.tip else 0

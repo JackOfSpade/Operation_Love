@@ -23,6 +23,20 @@ ml = [
     "onnxruntime>=1.17",     # insightface backend (CoreML/CPU on macOS)
     "pyiqa>=0.1.10",         # photo-quality pre-filter
     "pillow>=10.0",
+    # pyiqa's "clipiqa" metric (the quality_filter.metric configured in config.yaml) hard-
+    # requires the legacy `openai-clip` PyPI package (import name `clip`), whose clip/clip.py
+    # does `from pkg_resources import packaging` at module import time -- not lazily -- when
+    # pyiqa.create_metric("clipiqa", ...) is called from vision/quality.py's _ensure(). That
+    # path is deliberately FAIL LOUD (warmup()/keep() re-raise; see quality.py), so once
+    # pkg_resources is unimportable this aborts every real run instead of degrading quietly.
+    # Verified empirically against PyPI's setuptools release history (2026-08-10): pkg_resources
+    # still imports (with a deprecation warning) through setuptools 81.0.0, the LAST version
+    # that has it, and is permanently gone starting 82.0.0 (released 2026-02-08, two days after
+    # 81.0.0; still gone as of 84.0.0, the newest release at verification time). Pin below that
+    # boundary so a real `pip install -e '.[ml,...]'` can never silently resolve a setuptools
+    # that drops it out from under the quality filter. Do not remove this as unused cruft --
+    # removing it reopens the crash the moment a bare/newer resolver is used.
+    "setuptools<82",
 ]
 # App drivers
 bumble = ["playwright>=1.44", "patchright>=1.44"]   # patchright = stealth-patched Playwright (no Runtime.enable CDP leak)

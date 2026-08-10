@@ -19,9 +19,11 @@ apps.bumble_web.selectors, and re-run.
 from __future__ import annotations
 
 import argparse
+import sys
 
 from operation_love import config as cfg_mod
 from operation_love.drivers.bumble import BumbleDriver
+from operation_love.drivers.web import PlatformUnavailable
 
 _CARD_SELECTORS = {"photo", "like", "pass"}     # expected to match while a card is shown
 
@@ -129,7 +131,19 @@ def main() -> None:
     driver = BumbleDriver(cfg)
     driver.headless = False                      # always headful for inspection
     print("Opening Bumble… sign in if needed, then navigate to a profile card (Encounters).")
-    driver.open_session()
+    try:
+        driver.open_session()
+    except PlatformUnavailable as exc:
+        # Bumble's web app is permanently gone (discontinued Aug 2026): the registry
+        # (operation_love/platforms.py) marks "bumble_web" unavailable, and
+        # PlaywrightDriver.open_session() correctly refuses to start for it -- that
+        # availability gate is not bypassed. This tool is a dead-legacy inspector kept
+        # only as a reference (see the module docstring); without this handler, that
+        # correct refusal surfaced as a raw traceback instead of the clean explanation
+        # the registry already computed. No browser was ever opened, so there's nothing
+        # to close -- just report why and exit non-zero.
+        print(f"\nCan't run: {exc}")
+        sys.exit(1)
     try:
         input("\nPress ENTER once a profile card is on screen ➜ ")
         if _probe(driver):                 # a card selector MISSed -> show raw DOM signals

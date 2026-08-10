@@ -571,3 +571,141 @@ def test_halt_on_error_must_be_a_boolean():
 def test_auto_mode_is_fine_when_halt_on_error_is_left_at_its_default():
     d = dict(BASE, mode="auto", apps={"hinge": {}})
     c.validate(_load(d))   # no raise -- default is True
+
+
+# --- enabled_apps: [] must not be silently rewritten to the default -------------------
+# `raw.get("enabled_apps") or (...)` used to be the whole expression in load(): `[] or
+# default` evaluates to `default`, because an empty list is falsy in Python. An operator who
+# deliberately writes `enabled_apps: []` (or a config-generation bug that emits one) means
+# "run nothing," and got Hinge started against the real phone instead -- silently, because
+# validate()'s own `if not cfg.enabled_apps: raise ValueError(...)` guard never got a chance
+# to fire: load() had already thrown the empty list away before validate() ever saw it.
+
+def test_enabled_apps_explicit_empty_list_fails_loudly():
+    d = {**BASE, "enabled_apps": []}
+    cfg = _load(d)
+    # Proves the bug is actually fixed at load() -- not merely that validate() has a guard
+    # that was already unreachable before this fix.
+    assert cfg.enabled_apps == []
+    try:
+        c.validate(cfg)
+    except ValueError as e:
+        assert "enabled_apps is empty" in str(e)
+    else:
+        raise AssertionError("expected ValueError for enabled_apps: []")
+
+
+def test_enabled_apps_absent_key_still_defaults_to_hinge():
+    d = {k: v for k, v in BASE.items() if k != "enabled_apps"}
+    cfg = _load(d)
+    assert cfg.enabled_apps == ["hinge"]
+    c.validate(cfg)   # no raise
+
+
+def test_enabled_apps_bare_null_is_treated_the_same_as_explicit_empty():
+    # A bare `enabled_apps:` (YAML null) means "the key is present but nothing was written,"
+    # not "the key was never mentioned" -- pinned to the same actionable failure as an
+    # explicit [] rather than silently falling back to the default. This mirrors how a
+    # present-but-null scalar behaves elsewhere in this file (e.g. `mode: null` does not
+    # quietly become the "observe" default either -- it surfaces as a validation failure
+    # downstream); it is only the {}-shaped OPTIONAL SECTIONS (budget, ranker, ...) that
+    # deliberately fold null into "omitted; use defaults", because a null section changes
+    # nothing about behavior, unlike a null enabled_apps.
+    d = {**BASE, "enabled_apps": None}
+    cfg = _load(d)
+    assert cfg.enabled_apps == []
+    try:
+        c.validate(cfg)
+    except ValueError as e:
+        assert "enabled_apps is empty" in str(e)
+    else:
+        raise AssertionError("expected ValueError for enabled_apps: null")
+
+
+def test_legacy_singular_app_key_still_works():
+    d = {k: v for k, v in BASE.items() if k != "enabled_apps"}
+    d["app"] = "hinge"
+    cfg = _load(d)
+    assert cfg.enabled_apps == ["hinge"]
+    c.validate(cfg)   # no raise
+
+
+def test_enabled_apps_present_and_non_empty_is_unaffected():
+    # Regression: the ordinary, common case must behave exactly as before.
+    d = {**BASE, "enabled_apps": ["hinge"]}
+    cfg = _load(d)
+    assert cfg.enabled_apps == ["hinge"]
+    c.validate(cfg)   # no raise
+
+
+# --- Android apps: coords entries and *_frac knobs must be real fractions in 0..1 -----
+# Neither was validated anywhere before this: an out-of-range value -- a typo like 1.30 for
+# 0.130, or a raw pixel written where a fraction was meant -- used to reach hinge.py's
+# _assert_tap_allowed as the only backstop, and only after a driver session was already open
+# on a real phone. This is the config-load-time half of a two-part fix; the sibling check,
+# for a spec's own hardcoded defaults, is AndroidAppSpec.__post_init__ (see
+# tests/test_android_spec.py). Bumble is used here (not Hinge) because it is the app whose
+# coordinates are explicitly placeholder guesses awaiting a human typing real numbers in --
+# exactly the population most likely to typo one.
+
+def test_android_app_coords_entry_out_of_range_is_rejected():
+    d = {**BASE, "enabled_apps": ["bumble"],
+         "apps": {"bumble": {"coords": {"like_heart": [1.05, 0.5]}}}}
+    _expect_error(d, "apps.bumble.coords.like_heart")
+
+
+def test_android_app_coords_entry_negative_is_rejected():
+    d = {**BASE, "enabled_apps": ["bumble"],
+         "apps": {"bumble": {"coords": {"pass_x": [0.5, -0.2]}}}}
+    _expect_error(d, "apps.bumble.coords.pass_x")
+
+
+def test_android_app_coords_entry_must_be_an_xy_pair():
+    d = {**BASE, "enabled_apps": ["bumble"],
+         "apps": {"bumble": {"coords": {"like_heart": [0.5, 0.5, 0.5]}}}}
+    _expect_error(d, "apps.bumble.coords.like_heart")
+
+
+def test_android_app_frac_setting_out_of_range_is_rejected():
+    # The other demonstrated exploit path: apps.bumble.read_scroll_frac=1.30 alone (no
+    # coords entry at all) pushes an ordinary read-scroll's touch-down off-screen.
+    d = {**BASE, "enabled_apps": ["bumble"], "apps": {"bumble": {"read_scroll_frac": 1.30}}}
+    _expect_error(d, "apps.bumble.read_scroll_frac")
+
+
+def test_android_app_frac_setting_rejects_a_bool():
+    # bool is an int subclass in Python -- the same trap this file already guards against
+    # for opener.max_attempts / opener.thinking[...].thinkingBudget.
+    d = {**BASE, "enabled_apps": ["bumble"], "apps": {"bumble": {"read_scroll_frac": True}}}
+    _expect_error(d, "apps.bumble.read_scroll_frac")
+
+
+def test_android_app_frac_and_coords_within_range_pass():
+    d = {**BASE, "enabled_apps": ["bumble"],
+         "apps": {"bumble": {"read_scroll_frac": 0.6,
+                             "coords": {"like_heart": [0.85, 0.9]}}}}
+    c.validate(_load(d))   # no raise
+
+
+def test_web_app_config_is_not_subject_to_android_fraction_validation():
+    # bumble_web is a web (Playwright) platform with no coords/*_frac concept -- CSS
+    # `selectors` instead. This must not misfire on it even if a numeric-looking key there
+    # happened to end in `_frac`.
+    d = {**BASE, "enabled_apps": ["hinge"],
+         "apps": {"bumble_web": {"lookalike_frac": 5.0}}}
+    c.validate(_load(d))   # no raise -- bumble_web is not an Android app
+
+
+def test_shipped_hinge_and_bumble_app_blocks_pass_fraction_validation():
+    # Regression pin: the real config.yaml's apps.hinge/apps.bumble coords and
+    # read_scroll_frac must stay valid under this check (also exercised end-to-end by
+    # tests/test_config_yaml_real.py against the actual shipped file).
+    d = {**BASE, "enabled_apps": ["hinge"],
+         "apps": {
+             "hinge": {"read_scroll_frac": 0.55,
+                       "coords": {"like_heart": [0.868, 0.667], "pass_x": [0.116, 0.848]}},
+             "bumble": {"coords": {"swipe_start": [0.50, 0.55],
+                                   "swipe_like_end": [0.92, 0.52],
+                                   "swipe_pass_end": [0.08, 0.52]}},
+         }}
+    c.validate(_load(d))   # no raise

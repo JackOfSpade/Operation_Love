@@ -278,12 +278,37 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                          f"({', '.join(missing_cloud)}). Install `pip install -e '.[bq]'`, "
                          "or set storage.backend: sqlite.")
 
-    if caps.missing("arcface", "clip"):
-        print("Degrade: ml extra not installed -> ranking unavailable "
-              "(`pip install -e '.[ml]'`). There is no defer path: every profile embed will "
-              "fail — auto-mode workers halt on the first one, observe-mode workers keep "
-              "retrying (with backoff) until they exhaust their restart budget and give up. "
-              "Install the extra before starting a real run.")
+    missing_ml = caps.missing("arcface", "clip")
+    if missing_ml:
+        # Equally, deterministically fatal as missing_cloud above -- there's no defer path:
+        # every profile embed calls Embedder._ensure(), which needs both libraries, so the
+        # very first profile embed would fail regardless of mode. Pre-fix this only printed
+        # a "Degrade" warning and let the run continue past make_store()'s BigQuery/label-
+        # load work, past the ADB check, past the device lock, and into a live
+        # driver.open_session() -- capturing a REAL profile off the live phone before dying
+        # on that very first embed. (Embedder.warmup() used to independently swallow the
+        # same class of failure too -- see its docstring in vision/embed.py, now fixed to
+        # match QualityFilter.warmup()'s fail-loud contract.) Hard-gate it here, before any
+        # of that, exactly like missing_cloud.
+        raise SystemExit(
+            f"ML extra not installed ({', '.join(missing_ml)} missing) -> ranking unavailable. "
+            "There is no defer path: every profile embed would fail immediately. Install it "
+            "with `pip install -e '.[ml]'` before starting a run."
+        )
+
+    # Cheapest possible "can this Android run even work" check, moved here -- BEFORE
+    # make_store()'s BigQuery/label-load work and the ML warmup below, and BEFORE the
+    # device lock is ever taken -- and turned into a hard, actionable failure instead of a
+    # warning. Measured on a real supervisor.run(): pre-fix this ran AFTER both of those
+    # (paying their combined cost) and only printed a WARNING, so a disconnected or
+    # unauthorized phone cost a full BigQuery + ML warmup cycle before the operator found
+    # out, and the device got marked in-use for a run that could never work -- the actual
+    # hard gate lived deep inside AndroidDriver.open_session(), in the worker thread, AFTER
+    # the lock was already held. See _android_adb_preflight's docstring for the
+    # binary-missing vs no-device-connected distinction. android_app is None for a web-kind
+    # selection, so a web platform is never touched by this check.
+    if android_app is not None:
+        _android_adb_preflight(android_app, cfg)
 
     if _stop_requested(stop_event):
         _abort_startup(run_id, status, cfg)
@@ -349,17 +374,6 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     print("Warming up embedder and quality filter (avoids first-profile delay and init races)…")
     embedder.warmup()
     quality.warmup()
-
-    if _stop_requested(stop_event):
-        _abort_startup(run_id, status, cfg, store)
-        return
-
-    # Generalised over every enabled Android-kind platform (today, at most one — Hinge, or
-    # Bumble once calibrated), not hardcoded to "hinge": whichever app is actually driving
-    # the phone this run needs the same early "is adb even connected" warning.
-    for app in cfg.enabled_apps:
-        if platforms.get(app).kind == platforms.KIND_ANDROID:
-            _android_adb_preflight(app, cfg)
 
     if _stop_requested(stop_event):
         _abort_startup(run_id, status, cfg, store)
@@ -458,30 +472,40 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         save_err = None
         try:
             store.flush()                 # raises if any buffered insert was rejected
-            store.close()
         except Exception as exc:  # noqa: BLE001 — report a clear save outcome, then re-raise
             save_err = exc
-        finally:
+        # close() must run whether or not flush() raised above -- pre-fix, close() sat
+        # inside the same try as flush(), so a flush() failure skipped it entirely and
+        # (for SQLiteStore) left its sqlite3.Connection open. Benign -- GC reclaims it
+        # eventually -- but sloppy in a shutdown path this file otherwise treats carefully.
+        # A close() failure here is reported but must never be allowed to shadow save_err:
+        # flush() is what determines whether buffered data actually made it out, and that's
+        # the error this function reports/re-raises below, unchanged either way.
+        try:
+            store.close()
+        except Exception as close_exc:  # noqa: BLE001 — logged, never replaces save_err
+            print(f"Run {run_id}: warning closing store during shutdown: "
+                  f"{type(close_exc).__name__}: {close_exc}")
+        if save_err is not None:
+            phase = "save_failed"
+        elif wedged:
+            phase = "wedged"
+        else:
+            phase = "stopped"
+        status.set_global(running=False, phase=phase,
+                          budget_spent=tracker.run_spend_usd, openers=tracker.calls)
+        wedged_apps = {w.app for w in wedged}
+        for app in cfg.enabled_apps:
             if save_err is not None:
-                phase = "save_failed"
-            elif wedged:
-                phase = "wedged"
+                app_state = "error"
+            elif app in wedged_apps:
+                app_state = "wedged"
             else:
-                phase = "stopped"
-            status.set_global(running=False, phase=phase,
-                              budget_spent=tracker.run_spend_usd, openers=tracker.calls)
-            wedged_apps = {w.app for w in wedged}
-            for app in cfg.enabled_apps:
-                if save_err is not None:
-                    app_state = "error"
-                elif app in wedged_apps:
-                    app_state = "wedged"
-                else:
-                    prior = terminal_states.get(app)
-                    app_state = prior if prior in {
-                        "error", "out_of_profiles", "rate_limited", "stopped"
-                    } else "stopped"
-                status.set_app(app, state=app_state)
+                prior = terminal_states.get(app)
+                app_state = prior if prior in {
+                    "error", "out_of_profiles", "rate_limited", "stopped"
+                } else "stopped"
+            status.set_app(app, state=app_state)
         tail = f"openers={tracker.calls} spend=${tracker.run_spend_usd:.4f}"
         if save_err is not None:
             print(f"Run {run_id}: ❌ SAVE FAILED to {cfg.storage.backend} "
@@ -499,10 +523,31 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
 
 
 def _android_adb_preflight(app: str, cfg) -> None:
-    """Warn early if the Android phone isn't visible to adb for `app` — avoids a confusing
-    mid-run crash. Generalised over any Android-kind platform (Hinge today, Bumble once
-    calibrated — see platforms.py): both drive the same physical Pixel over host-side ADB,
-    so whichever one is enabled needs the same early connectivity check."""
+    """Hard-gate early if the Android phone isn't visible to adb for `app`, before any of
+    the expensive startup work (make_store()'s BigQuery ensure-tables + label load, the
+    ArcFace/CLIP/quality-filter warmup) runs and before the device lock is ever taken.
+    Generalised over any Android-kind platform (Hinge today, Bumble once calibrated — see
+    platforms.py): both drive the same physical Pixel over host-side ADB, so whichever one
+    is enabled needs the same early connectivity check. Never called for a web-kind
+    platform (the caller only invokes this when android_app is not None), so a web
+    selection is never blocked by an ADB check.
+
+    Deliberately two DIFFERENT fatal outcomes, not one:
+
+      * the adb BINARY itself is missing (FileNotFoundError) -- nothing can even be asked
+        whether a phone is connected, so the fix is install-adb-or-set-adb_path, not
+        connect-the-phone.
+      * the binary runs fine but reports no device (or the configured serial isn't among
+        what it reports) -- adb itself works, so the fix is a physical one: plug in the
+        Pixel and authorize the RSA key (or fix apps.<app>.serial).
+
+    Both are equally fatal -- an Android run cannot work in either case, exactly like the
+    caps.missing("arcface", "clip") / missing_cloud gates above -- but they're worth
+    telling apart because the operator's next action differs. This used to only print a
+    WARNING and let the run continue regardless (the real hard gate lived deep inside
+    AndroidDriver.open_session(), in the worker thread, after the device lock was already
+    held) -- see supervisor.run()'s call site for the measured cost that let through.
+    """
     import subprocess
 
     from .drivers.adb import parse_devices_output
@@ -513,21 +558,29 @@ def _android_adb_preflight(app: str, cfg) -> None:
     adb = (app_cfg.get("adb_path") or "adb").strip() or "adb"
     try:
         result = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=5)
-        visible = parse_devices_output(result.stdout)   # X8: the ONE canonical parser
-        if not visible:
-            print(f"WARNING: {label} is enabled but `adb devices` shows no connected device. "
-                  "Connect the Pixel 7a via USB and authorize the RSA key before swiping.")
-        elif serial and serial not in visible:
-            print(f"WARNING: apps.{app}.serial={serial!r} not in `adb devices` output: {visible}. "
-                  f"Check config.yaml → apps.{app}.serial.")
-        else:
-            dev = serial if serial else visible[0]
-            print(f"{label} ADB preflight OK: {dev} (device connected)")
     except FileNotFoundError:
-        print(f"WARNING: {label} ADB preflight skipped — `{adb}` not found on PATH. "
-              f"Set apps.{app}.adb_path in config.yaml if adb is not on your PATH.")
-    except Exception as exc:  # noqa: BLE001
-        print(f"{label} ADB preflight warning: {type(exc).__name__}: {exc}")
+        raise SystemExit(
+            f"{label} is enabled but `{adb}` was not found. Install Android platform-tools "
+            f"(adb) and put it on PATH, or set apps.{app}.adb_path in config.yaml."
+        ) from None
+    except Exception as exc:  # noqa: BLE001 — e.g. a hung/misbehaving adb server; still fatal,
+        # since there's no way to confirm a phone is reachable, and re-running this 5s
+        # check is cheap next to the BigQuery/ML startup it would otherwise gate.
+        raise SystemExit(f"{label} ADB preflight failed: {type(exc).__name__}: {exc}") from exc
+
+    visible = parse_devices_output(result.stdout)   # X8: the ONE canonical parser
+    if not visible:
+        raise SystemExit(
+            f"{label} is enabled but `adb devices` shows no connected device. Connect the "
+            "Pixel 7a via USB and authorize the RSA key before starting a run."
+        )
+    if serial and serial not in visible:
+        raise SystemExit(
+            f"apps.{app}.serial={serial!r} not in `adb devices` output: {visible}. "
+            f"Check config.yaml → apps.{app}.serial."
+        )
+    dev = serial if serial else visible[0]
+    print(f"{label} ADB preflight OK: {dev} (device connected)")
 
 
 def _install_signal_handlers(stop_event: threading.Event) -> None:

@@ -6,11 +6,37 @@ right-swipe is the action anti-bot systems weight most, so keeping likes well
 under the total swipe count holds the right-swipe ratio in a human range.
 Every field is optional; the shipped configuration leaves them unset. When configured,
 they are checked before each autonomous action.
+
+``target_like_ratio`` semantics (read this before enabling it): it is a SOFT,
+score-aware shaper, not a hard cap — the hard cap on like volume is the separate
+``max_likes_per_run``, which this never touches. Once the running like-rate reaches
+the target, ``allow_like_ratio`` only vetoes a like that is MARGINAL against the
+ranker's own like threshold (see its docstring for the worked numbers); a like the
+ranker is clearly confident about is let through even though that means the ratio
+briefly overshoots. An audit of an earlier, score-blind version of this shaper ran it
+against real scores [0.80, 0.99, 0.81, 0.82] at target_like_ratio=0.5 and found it threw
+away the model's *strongest* call (0.99) purely because of arrival order, while keeping
+a weaker 0.80 — the most anti-"purely model-driven" outcome the shaper could produce.
+This module intentionally cannot look ahead at future cards' scores to fix that in
+general (a real run cannot un-swipe an earlier profile); the score-aware rule below
+instead makes sure THIS call, on its own, never sacrifices a clearly strong like to
+chase the ratio.
 """
 from __future__ import annotations
 
 
 class RateLimiter:
+    # A like scoring at least this many probability points above the ranker's own
+    # like_threshold is "clearly strong" and always survives the ratio ceiling (see
+    # allow_like_ratio). Chosen well above AutoSessionPolicy.max_threshold_lift's cap
+    # (0.045, interaction.py) so the two score-aware shapers never double-count: any
+    # like that only survived AutoSessionPolicy's contextual demotion because of ITS
+    # lift is still, at most, base_threshold + 0.045 -- comfortably inside this 0.15
+    # "marginal" band -- so it stays eligible for the ratio ceiling exactly as if
+    # AutoSessionPolicy hadn't touched it, and only a like that is strong independent
+    # of that lift is ever exempted here.
+    _STRONG_LIKE_MARGIN = 0.15
+
     def __init__(self, max_per_run: int | None = None, max_per_day: int | None = None,
                  max_likes_per_run: int | None = None,
                  target_like_ratio: float | None = None):
@@ -34,15 +60,32 @@ class RateLimiter:
             return False
         return True
 
-    def allow_like_ratio(self, liked: int, acted: int) -> bool:
-        """False when the running like-rate is at or above target_like_ratio.
+    def allow_like_ratio(self, liked: int, acted: int, *, score: float | None = None,
+                          like_threshold: float | None = None) -> bool:
+        """False when the running like-rate is at/above target_like_ratio AND this
+        specific like is only marginally over the ranker's own like threshold.
 
-        The worker demotes this specific like to a pass instead of halting the
-        run — so the ratio stays human-scale without cutting the session short.
+        The worker demotes a vetoed like to a pass instead of halting the run — so the
+        ratio stays human-scale without cutting the session short. Below the ceiling
+        this is always True regardless of score, exactly like the original shaper.
+
+        ``score``/``like_threshold`` are keyword-only and optional: a caller with no
+        per-decision score context gets the old score-blind ceiling (every like is
+        vetoed once the ceiling is hit) rather than an exception. When both are
+        supplied, a like scoring at least ``_STRONG_LIKE_MARGIN`` above
+        ``like_threshold`` is judged "clearly strong" and is let through — worked
+        example at like_threshold=0.5: a score of 0.51 is only 0.01 over the line
+        (marginal, stays vetoable), while 0.90 is 0.40 over — comfortably past the
+        0.15 margin — and always survives the ceiling. See the module docstring for
+        why this can only ever look at the score in hand, never at other cards'.
         """
         if self.target_like_ratio is None or acted == 0:
             return True
-        return liked / acted < self.target_like_ratio
+        if liked / acted < self.target_like_ratio:
+            return True
+        if score is None or like_threshold is None:
+            return False
+        return (score - like_threshold) >= self._STRONG_LIKE_MARGIN
 
     def describe(self) -> str:
         parts = []

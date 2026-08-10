@@ -90,6 +90,61 @@ def test_android_app_spec_rejects_an_unknown_like_flow():
         AndroidAppSpec(app="x", package="x.y", calibrated=False, like_flow="swipe_left_right")
 
 
+# --- coords / read_scroll_frac must be real fractions in 0..1 ---------------------------
+# A coordinate here is a FRACTION of the screen, never a pixel. Before this check existed,
+# an out-of-range value (a typo like 868 for 0.868, or 1.30 for 0.130) wasn't caught until
+# hinge.py's _assert_tap_allowed ran it against a live screen -- by which point a driver
+# session was already open on a real phone. This is the spec-level half of a two-part fix
+# (the sibling check, for a config.yaml override of the same values, lives in
+# config.py's _validate_android_fractions) -- it catches a bad literal baked into a spec
+# itself, at import time, not the first live tap.
+
+def test_coords_entry_out_of_range_fraction_is_rejected():
+    with pytest.raises(ValueError, match=r"0\.\.1"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       coords={"like_heart": (1.05, 0.5)})
+
+
+def test_coords_entry_negative_fraction_is_rejected():
+    with pytest.raises(ValueError, match=r"0\.\.1"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       coords={"pass_x": (0.5, -0.01)})
+
+
+def test_coords_entry_must_be_an_xy_pair_of_numbers():
+    with pytest.raises(ValueError, match="coords"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       coords={"like_heart": (0.5,)})       # wrong arity
+    with pytest.raises(ValueError, match="coords"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       coords={"like_heart": ("half", 0.5)})  # not numbers
+
+
+def test_coords_entry_rejects_nan():
+    # Same reasoning as hinge.py's runtime check keeping NaN safe: math.isfinite(nan) is
+    # False, so this must be caught here too rather than waved through as "0 <= nan <= 1"
+    # (which Python evaluates as False anyway, but explicit isfinite() makes the intent --
+    # and the failure mode for inf -- unambiguous).
+    with pytest.raises(ValueError, match=r"0\.\.1"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       coords={"like_heart": (float("nan"), 0.5)})
+
+
+def test_read_scroll_frac_out_of_range_is_rejected():
+    with pytest.raises(ValueError, match="read_scroll_frac"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False, read_scroll_frac=1.30)
+
+
+def test_read_scroll_frac_negative_is_rejected():
+    with pytest.raises(ValueError, match="read_scroll_frac"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False, read_scroll_frac=-0.1)
+
+
+def test_read_scroll_frac_default_and_boundary_values_pass():
+    AndroidAppSpec(app="x", package="x.y", calibrated=False, read_scroll_frac=0.0)
+    AndroidAppSpec(app="x", package="x.y", calibrated=False, read_scroll_frac=1.0)
+
+
 def test_hinge_spec_matches_the_original_hardcoded_defaults():
     assert HINGE_SPEC.app == "hinge"
     assert HINGE_SPEC.package == "co.hinge.app"

@@ -16,10 +16,21 @@ Two independent mechanisms answer that, and these tests pin both:
 
 Mechanism 2 exists because mechanism 1 is a choice a future edit could reverse; the zone
 check is the backstop that makes reversing it fail loudly instead of silently.
+
+A later audit found mechanism 2 itself could be evaded: `_assert_tap_allowed` checked the
+RAW, unclamped coordinate, but both real transports CLAMP the coordinate they actually
+deliver -- so a coordinate whose fraction fell OUTSIDE 0..1 (impossible for a legitimate
+value, since forbidden_zones rects are themselves constrained to 0..1) matched no zone,
+passed the old check cleanly, and then got clamped onto a screen edge that CAN be inside a
+zone. The "--- out-of-range coordinates" section below pins the fix: the checked point is
+now the delivered point (clamp_xy, shared with both transports), an out-of-range value
+raises loudly instead of silently clamping, and a zone check accounts for the jitter a real
+tap can still add AFTER the check runs.
 """
 import pytest
 
 from operation_love.drivers import hinge
+from operation_love.drivers.adb import clamp_xy
 from operation_love.drivers.android.bumble import BUMBLE_SPEC
 from operation_love.drivers.android_spec import AndroidAppSpec
 from operation_love.drivers.base import DriverClosed
@@ -28,6 +39,7 @@ from operation_love.drivers.hinge import (
     AndroidDriver,
     ForbiddenTapError,
     HingeActionError,
+    OutOfRangeTapError,
     UnlocatedControlError,
 )
 
@@ -189,6 +201,151 @@ def test_forbidden_tap_halts_the_run_rather_than_being_routine():
     # Subclassing HingeActionError is what makes the worker halt and preserve debug logs;
     # if this were a bare RuntimeError the run would treat it as an ordinary hiccup.
     assert issubclass(ForbiddenTapError, hinge.HingeActionError)
+
+
+# --- out-of-range coordinates: checked point == delivered point -----------------------------
+# The core of the fix: _assert_tap_allowed used to compute the zone-check fraction from the
+# RAW, unclamped coordinate, while both real transports CLAMP the coordinate they actually
+# deliver. A fraction outside 0..1 can never match a zone (forbidden_zones rects are
+# themselves constrained to 0..1), so it sailed through the old check and then landed wherever
+# the transport's clamp put it -- which can be inside a zone. These tests reproduce the
+# demonstrated exploit against BUMBLE_SPEC's real zone (0.34, 0.80, 0.66, 1.00).
+
+def test_clamp_xy_is_the_exact_arithmetic_both_transports_apply():
+    # adb.py's Adb._clamp and uhid.py's _report both delegate to this now; pin its own
+    # behaviour directly so the two transports and the zone check can never drift apart on
+    # what "the point that will actually be delivered" means.
+    assert clamp_xy(-5, -5, 1080, 2400) == (0, 0)
+    assert clamp_xy(2000, 3000, 1080, 2400) == (1079, 2399)
+    assert clamp_xy(540.4, 1200.6, 1080, 2400) == (540, 1201)
+
+
+def test_out_of_range_fraction_raises_instead_of_silently_clamping_into_the_zone():
+    # The demonstrated exploit: (540, 2520) = fraction (0.50, 1.05) of the 1080x2400 screen.
+    # The OLD _assert_tap_allowed let this straight through (1.05 matches no zone whose own
+    # range is <= 1.0) and the real transport then clamped y to 2399 -- fraction 0.9996,
+    # INSIDE Bumble's zone (0.34, 0.80, 0.66, 1.00). It must now raise before either transport
+    # is ever called.
+    adb = FakeAdb()
+    drv = _drv(BUMBLE_SPEC, adb)
+    x, y = int(0.50 * 1080), int(1.05 * 2400)
+    with pytest.raises(OutOfRangeTapError, match=r"outside 0\.\.1"):
+        drv._tap(x, y)
+    assert adb.taps == [] and adb.swipes == [], "nothing may reach the phone"
+
+
+def test_out_of_range_error_names_the_offending_value_and_app():
+    # "raise a clear, actionable error naming the offending value and where it came from" --
+    # an operator staring at this message needs to know WHAT was wrong and WHERE to look.
+    adb = FakeAdb()
+    drv = _drv(BUMBLE_SPEC, adb)
+    x, y = int(0.50 * 1080), int(1.05 * 2400)
+    with pytest.raises(OutOfRangeTapError) as exc:
+        drv._tap(x, y)
+    msg = str(exc.value)
+    assert str(x) in msg and str(y) in msg
+    assert "bumble" in msg
+    assert "coords" in msg or "frac" in msg   # points at the likely config culprit
+
+
+def test_out_of_range_tap_error_is_a_hinge_action_error():
+    # Same reasoning as ForbiddenTapError above: must halt the run and preserve debug logs,
+    # not be swallowed as a routine, retryable miss.
+    assert issubclass(OutOfRangeTapError, hinge.HingeActionError)
+
+
+def test_out_of_range_check_fires_even_when_the_spec_declares_no_zones():
+    # This is always a config/logic error regardless of whether forbidden_zones exists --
+    # Hinge declares none, but an out-of-range tap on Hinge is exactly as nonsensical.
+    assert HINGE_SPEC.forbidden_zones == ()
+    adb = FakeAdb()
+    drv = _drv(HINGE_SPEC, adb)
+    with pytest.raises(OutOfRangeTapError):
+        drv._tap(540, int(1.2 * 2400))
+    assert adb.taps == []
+
+
+def test_negative_fraction_also_raises_out_of_range():
+    adb = FakeAdb()
+    drv = _drv(BUMBLE_SPEC, adb)
+    with pytest.raises(OutOfRangeTapError):
+        drv._tap(-10, 1000)
+    assert adb.taps == []
+
+
+def test_read_scroll_frac_out_of_range_raises_the_same_way_at_runtime():
+    # The other demonstrated exploit path: no `coords` tuple involved at all --
+    # apps.bumble.read_scroll_frac=1.30 alone pushes an ordinary read-scroll's touch-down to
+    # fraction 1.15. This bypasses AndroidAppSpec's own read_scroll_frac validation
+    # deliberately (via an app-config override, exactly how config.yaml's
+    # apps.bumble.read_scroll_frac reaches the driver -- see AndroidDriver.__init__) to prove
+    # the RUNTIME check still catches it even if config.validate() were somehow skipped.
+    adb = FakeAdb()
+    drv = _drv(BUMBLE_SPEC, adb, read_scroll_frac=1.30)
+    with pytest.raises(OutOfRangeTapError):
+        drv._scroll_down_one()
+    assert adb.taps == [] and adb.swipes == [] and adb.scrolls == 0
+
+
+def test_nan_coordinate_still_raises_before_any_touch_call():
+    # Regression: NaN must still raise via int(nan) inside _tap -- BEFORE
+    # _assert_tap_allowed's checks ever run, exactly as before this fix.
+    adb = FakeAdb()
+    drv = _drv(BUMBLE_SPEC, adb)
+    with pytest.raises(ValueError, match="NaN"):
+        drv._tap(float("nan"), 100)
+    assert adb.taps == []
+
+
+# --- jitter envelope: the checked point must cover plan_tap's plausible drift ---------------
+# plan_tap's aim-radius/micro-slip jitter is applied INSIDE touch.tap(), AFTER
+# _assert_tap_allowed returns -- so a nominal point that itself clears a zone can still have
+# its REAL, delivered touch-down land inside one. _tap() closes this by widening the
+# zone check by _TAP_ZONE_MARGIN_PX (human_motion.tap_jitter_margin_px()) on every side.
+
+def test_tap_margin_rejects_an_aim_point_whose_jitter_could_enter_the_zone():
+    adb = FakeAdb()
+    drv = _drv(BUMBLE_SPEC, adb)
+    x0, y0, x1, y1 = BUMBLE_SPEC.forbidden_zones[0]
+    w, h = 1080, 2400
+    margin = drv._TAP_ZONE_MARGIN_PX
+    assert margin > 0
+    x_mid = int(((x0 + x1) / 2) * w)
+    y_edge = int(y0 * h) - int(margin) + 2   # just inside the margin, just outside the zone
+    # Sanity: the NOMINAL point itself must be outside the raw zone -- otherwise this is just
+    # re-testing the plain zone check above, not the margin.
+    assert not (y0 <= y_edge / h <= y1), "test setup must aim outside the raw zone"
+    with pytest.raises(ForbiddenTapError):
+        drv._tap(x_mid, y_edge)
+    assert adb.taps == [], "the refused tap must not have been issued anyway"
+
+
+def test_tap_margin_still_allows_a_point_clearly_outside_any_plausible_jitter():
+    adb = FakeAdb()
+    drv = _drv(BUMBLE_SPEC, adb)
+    x0, y0, x1, y1 = BUMBLE_SPEC.forbidden_zones[0]
+    w, h = 1080, 2400
+    margin = drv._TAP_ZONE_MARGIN_PX
+    x_mid = int(((x0 + x1) / 2) * w)
+    y_clear = int(y0 * h) - int(margin) - 20   # comfortably clear of the widened zone
+    drv._tap(x_mid, y_clear)
+    assert adb.taps == [(x_mid, y_clear)]
+
+
+def test_swipe_and_scroll_are_not_widened_by_the_tap_margin():
+    # _swipe()/_scroll() pass margin_px=0: plan_swipe's very first sample is pinned exactly
+    # to the start coordinate with zero jitter (see plan_swipe in human_motion.py), so a
+    # point that clears the raw zone by less than the tap margin must still be ALLOWED for a
+    # drag start -- widening it there would be over-cautious, not more correct.
+    adb = FakeAdb()
+    drv = _drv(BUMBLE_SPEC, adb)
+    x0, y0, x1, y1 = BUMBLE_SPEC.forbidden_zones[0]
+    w, h = 1080, 2400
+    margin = drv._TAP_ZONE_MARGIN_PX
+    x_mid = int(((x0 + x1) / 2) * w)
+    y_edge = int(y0 * h) - int(margin) + 2   # inside the TAP margin, outside the raw zone
+    drv._swipe(x_mid, y_edge, x_mid, y_edge - 200)   # must not raise
+    assert adb.swipes == [(x_mid, y_edge, x_mid, y_edge - 200)]
 
 
 # --- fail loud, not fallback: _await_button never taps a control it could not locate --------

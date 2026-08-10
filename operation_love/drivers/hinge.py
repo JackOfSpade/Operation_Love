@@ -63,8 +63,9 @@ import time
 from pathlib import Path
 
 from ..human import human_cooldown, human_delay
+from ..human_motion import tap_jitter_margin_px
 from ..perception.capture import Profile
-from .adb import SCROLL_X_JITTER_PX, Adb, AdbError
+from .adb import SCROLL_X_JITTER_PX, Adb, AdbError, clamp_xy
 from .android_spec import AndroidAppSpec
 from .base import DatingAppDriver, DriverClosed, open_debug_log, snapshot_failure_frame
 from .uhid import UhidTouch, UhidUnavailable
@@ -91,6 +92,29 @@ class ForbiddenTapError(HingeActionError):
 
     Deliberately a HingeActionError, so it halts the run and preserves the debug logs like
     any other unexpected-screen condition rather than being swallowed as routine."""
+
+
+class OutOfRangeTapError(HingeActionError):
+    """A touch-down coordinate resolved to a fraction of the screen outside 0..1 -- always a
+    configuration or logic error (a bad coords/*_frac value in config.yaml or an
+    AndroidAppSpec, or a computed offset that pushed a touch off-screen), never a
+    legitimate touch.
+
+    This exists because BOTH real touch transports CLAMP whatever coordinate they are
+    handed onto the live screen instead of raising (uhid.py's _report, Adb._clamp -- see
+    clamp_xy in adb.py, which both now share). An out-of-range value therefore doesn't fail
+    on a real device: it silently lands on a screen EDGE -- and that edge can be INSIDE a
+    forbidden zone despite the raw value never having fallen inside one, because
+    forbidden_zones' own 0..1 range check has nothing to compare an out-of-range fraction
+    against. Demonstrated live: Bumble's SuperSwipe zone (0.34, 0.80, 0.66, 1.00) -- an aim
+    fraction of (0.50, 1.05) clamps to pixel (538.9, 2399.0) = fraction (0.4989, 0.9996),
+    inside the zone. Also reachable with no coords tuple at all: apps.bumble.read_scroll_frac
+    set to 1.30 puts an ordinary read-scroll's touch-down at fraction 1.15, which clamps the
+    same way.
+
+    Deliberately a HingeActionError (not a bare RuntimeError): this must halt the run and
+    preserve the debug logs like any other unexpected-safety condition, never be treated as
+    a routine, retryable miss."""
 
 
 class UnlocatedControlError(HingeActionError):
@@ -456,30 +480,95 @@ class AndroidDriver(DatingAppDriver):
     # about it. This originally covered taps ONLY, and the comment claimed more than the code
     # delivered: read-scrolls and scroll-to-top swipes went straight to the transport, so
     # their touch-down points were never zone-checked at all — on every profile, every run.
-    def _assert_tap_allowed(self, x: int, y: int) -> None:
+    #
+    # A later audit found the check itself could be evaded even where it WAS wired up: it
+    # computed the zone-check fraction from the RAW, UNCLAMPED (x, y), but both real
+    # transports CLAMP the coordinate they actually deliver AFTER this check runs (uhid.py's
+    # _report, Adb._clamp — see clamp_xy in adb.py, which both now share). forbidden_zones
+    # rects are constrained to 0.0..1.0, so any coordinate whose fraction fell OUTSIDE that
+    # range matched no zone and passed cleanly — then the transport clamped it onto the
+    # screen edge, which can be INSIDE a zone. The point that was CHECKED was not the point
+    # that got DELIVERED. See OutOfRangeTapError for the demonstrated exploit.
+    _TAP_ZONE_MARGIN_PX = tap_jitter_margin_px()
+    # The zone-check margin _tap() applies (see its call below): the worst-case single-axis
+    # drift EITHER real touch transport's tap can add to the delivered touch-down AFTER this
+    # check runs, so a zone can't be evaded by jitter the checked point never accounted for.
+    # UhidTouch.tap() calls human_motion.plan_tap() at plan_tap's own default jitter_px (it
+    # overrides jitter_px for swipes only, not taps), so tap_jitter_margin_px()'s default
+    # argument is the correct bound for the transport this project requires by default.
+    # Adb.tap()'s simpler transport (its `input tap` fallback, reachable only via an explicit
+    # touch_backend: adb) jitters with a plain uniform(-jitter_px, jitter_px) of at most its
+    # own jitter_px (default 2.0px) — comfortably smaller — so this one constant safely
+    # covers both without needing to know which backend is actually wired up.
+
+    def _assert_tap_allowed(self, x: int, y: int, margin_px: float = 0.0) -> None:
+        """The choke point itself. Two checks, in this order:
+
+        1. RANGE — (x, y) must already resolve to a fraction inside 0..1 of the live screen,
+           checked on the RAW value before any clamping. An out-of-range value is always a
+           configuration or logic error (never a legitimate touch — see OutOfRangeTapError),
+           and letting the transport silently clamp it instead of refusing it here is exactly
+           the gap this whole check exists to close, so it fires even for a spec that
+           declares no forbidden_zones at all.
+
+        2. ZONE — clamp (x, y) the SAME way the real transports do (clamp_xy — see the class
+           comment above), then require that point, widened by `margin_px` on every side, to
+           clear every forbidden zone. `margin_px` covers jitter the transport adds AFTER
+           this check returns (see _tap()/_TAP_ZONE_MARGIN_PX above); callers whose delivered
+           point has no such jitter (_swipe(), _scroll() below) pass 0.
+        """
+        w, h = self.adb.screen_size()
+        fx_raw = x / w if w else 0.0
+        fy_raw = y / h if h else 0.0
+        if not (0.0 <= fx_raw <= 1.0 and 0.0 <= fy_raw <= 1.0):
+            raise OutOfRangeTapError(
+                f"{self.spec.app}: refusing a touch at raw pixel ({x}, {y}) = fraction "
+                f"({fx_raw:.3f}, {fy_raw:.3f}) of the {w}x{h} screen — outside 0..1. This is "
+                f"always a configuration or logic error: check apps.{self.spec.app}.coords, "
+                f"read_scroll_frac, or any other *_frac knob for this app for a typo, or a "
+                f"pixel value written where a fraction was expected. Refusing rather than "
+                f"letting the transport silently clamp it onto a screen edge, which can land "
+                f"inside a forbidden zone undetected.")
         zones = getattr(self.spec, "forbidden_zones", ())
         if not zones:
             return
-        w, h = self.adb.screen_size()
-        fx = x / w if w else 0.0
-        fy = y / h if h else 0.0
+        cx, cy = clamp_xy(x, y, w, h)      # the point that will ACTUALLY be delivered
+        mfx = margin_px / w if w else 0.0
+        mfy = margin_px / h if h else 0.0
+        fx, fy = (cx / w if w else 0.0), (cy / h if h else 0.0)
         for zone in zones:
             x0, y0, x1, y1 = zone
-            if x0 <= fx <= x1 and y0 <= fy <= y1:
+            if x0 - mfx <= fx <= x1 + mfx and y0 - mfy <= fy <= y1 + mfy:
+                margin_note = f" (+/-{margin_px:.1f}px jitter envelope)" if margin_px else ""
                 raise ForbiddenTapError(
-                    f"refused a tap at ({x}, {y}) = ({fx:.3f}, {fy:.3f}) of the screen: it "
-                    f"lands inside {self.spec.app}'s forbidden zone {zone}, which guards a "
-                    f"paid control. Refusing rather than risking a paid action.")
+                    f"refused a tap at ({cx}, {cy}) = ({fx:.3f}, {fy:.3f}) of the "
+                    f"screen{margin_note}: it lands inside, or could jitter into, "
+                    f"{self.spec.app}'s forbidden zone {zone}, which guards a paid control. "
+                    f"Refusing rather than risking a paid action.")
 
     def _tap(self, x, y) -> None:
         x, y = int(x), int(y)
-        self._assert_tap_allowed(x, y)
+        self._assert_tap_allowed(x, y, margin_px=self._TAP_ZONE_MARGIN_PX)
         self.touch.tap(x, y)
 
     def _swipe(self, x1, y1, x2, y2) -> None:
         """Every explicit drag goes through here, for the same reason every tap goes
-        through _tap(). Only the START point is zone-checked: the touch-down claims the
-        gesture, so a drag that merely travels over a control does not press it."""
+        through _tap(). Only the START point is zone-checked (margin_px=0: plan_swipe's
+        first sample is pinned exactly to (x1, y1) with no jitter, so there is no drift to
+        cover here — see plan_swipe in human_motion.py): the touch-down claims the gesture,
+        so a drag that merely travels over a control does not press it.
+
+        That "touch-down claims the gesture" model is correct for STANDARD Android touch
+        dispatch (a MotionEvent stream goes to whichever View captured ACTION_DOWN,
+        regardless of where ACTION_MOVE/ACTION_UP later land) — but it is UNVERIFIED against
+        Bumble's actual UI, and the stakes of being wrong are real money. _scroll_to_top's
+        undo-swipes travel DOWNWARD (returning the card to the top) and routinely END with
+        the finger sitting over Bumble's SuperSwipe location. If Bumble's real button turns
+        out to react to where a drag ENDS — a custom touch listener, a drop target, anything
+        other than plain View dispatch — this check as written would not catch it. See
+        ops/RUNBOOK.md's Bumble calibration checklist: before Bumble is ever run unattended,
+        deliberately drag over the SuperSwipe control on a disposable profile and confirm
+        nothing is purchased."""
         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
         self._assert_tap_allowed(x1, y1)
         self.touch.swipe(x1, y1, x2, y2)

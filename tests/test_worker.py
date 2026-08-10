@@ -2,6 +2,8 @@
 import threading
 import time
 
+import pytest
+
 from operation_love.costing import CostTracker, ModelPricing, Usage
 from operation_love.drivers.base import DatingAppDriver, DriverClosed
 from operation_love.opener.opener import GeminiAPIError, OpenerError, OpenerParseError, OpenerResult
@@ -243,6 +245,30 @@ def test_pace_uses_flat_anchor_for_a_driver_without_calibrated_pacing(monkeypatc
     monkeypatch.setattr(w.stop_event, "wait", lambda s: waited.append(s))
     w._pace("like")
     assert waited == [w.pacing.swipe_delay_s * 2]
+
+
+def test_pace_rejects_negative_swipe_delay_for_both_calibrated_and_flat_branches(monkeypatch):
+    """config.validate() already rejects a negative pacing.swipe_delay_s on every path
+    that goes through it, but Worker is a public class any caller can construct
+    directly with a pacing object that skipped validation. Event.wait() on a negative
+    timeout returns immediately, so an unguarded negative anchor would silently
+    produce machine-speed swiping -- fail loudly instead, the same way the calibrated
+    branch already does today via post_action_delay_s's own `scale < 0` check. Pin
+    BOTH branches (flat/non-calibrated and calibrated) since the guard is meant to
+    cover _pace as a whole, before either branch-specific code path runs."""
+    class _NegativePacing:
+        swipe_delay_s = -1.0
+
+    flat_worker = _worker(FakeDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
+    flat_worker.pacing = _NegativePacing()
+    with pytest.raises(ValueError, match="non-negative"):
+        flat_worker._pace("like")
+
+    calibrated_worker = _worker(_CalibratedDriver(0), FakeDecider("like"),
+                                FakeOpenerClient(), FakeStore())
+    calibrated_worker.pacing = _NegativePacing()
+    with pytest.raises(ValueError, match="non-negative"):
+        calibrated_worker._pace("like")
 
 
 def test_pace_maps_dislike_to_the_pass_think_time_bucket(monkeypatch):
@@ -744,25 +770,108 @@ def test_worker_stops_at_per_run_like_budget():
     assert driver.closed
 
 
-def test_like_ratio_ceiling_demotes_not_halts():
-    """Ratio ceiling demotes 'like' to 'pass' — the run continues, not halts."""
-    # With target_like_ratio=0.5 and all "like" decisions on 4 cards:
-    # card 1: acted=0 → allow (no history) → like.  liked=1, acted=1
-    # card 2: 1/1=100% >= 50% → demote → dislike.   liked=1, acted=2
-    # card 3: 1/2=50%  >= 50% → demote → dislike.   liked=1, acted=3
-    # card 4: 1/3=33%  <  50% → allow → like.       liked=2, acted=4
+class ScriptedScoreDecider:
+    """Always returns 'like', with a scripted per-call score in order -- lets a test
+    drive the ratio-ceiling shaper (worker.py's _auto_loop, via RateLimiter.
+    allow_like_ratio in limits.py) through a specific marginal/strong score sequence,
+    which the old constant-score FakeDecider can't do."""
+    def __init__(self, scores):
+        self.scores = list(scores)
+        self.calls = 0
+
+    def decide(self, profile):
+        score = self.scores[self.calls]
+        self.calls += 1
+        return Decision(decision="like", score=score, embedding=[0.1, 0.2], source="ranker")
+
+
+def test_like_ratio_ceiling_demotes_marginal_likes_but_lets_strong_ones_through():
+    """The ratio ceiling is now SCORE-AWARE (see limits.py's allow_like_ratio
+    docstring): once the running rate is at/above target_like_ratio, only a MARGINAL
+    like (within 0.15 of the ranker's own threshold) is demoted to a pass -- a
+    clearly strong like (>= threshold + 0.15) is let through even though that briefly
+    overshoots the ratio. This replaces the earlier score-blind version: an audit ran
+    the OLD shaper against real scores [0.80, 0.99, 0.81, 0.82] at
+    target_like_ratio=0.5 and found it demoted the model's SINGLE MOST CONFIDENT call
+    (0.99) purely because of arrival order, while keeping a weaker 0.80 liked -- the
+    most anti-"purely model-driven" outcome the shaper could produce. It still
+    demotes rather than halts (a soft shaper, not a hard cap -- max_likes_per_run is
+    the separate hard cap, see test_worker_stops_at_per_run_like_budget above, which
+    this change does not touch).
+
+    With target_like_ratio=0.5 and threshold=0.5 (FakeDecider/ScriptedScoreDecider's
+    implicit default, since neither exposes .model.threshold):
+    card 1: score=0.55 (marginal), acted=0 -> no history yet    -> like.  liked=1 acted=1
+    card 2: score=0.55 (marginal), 1/1=100% >= 50% -> MARGINAL  -> demoted to pass.
+    card 3: score=0.95 (strong),   1/2=50%  >= 50% -> STRONG    -> survives, stays like.
+    card 4: score=0.55 (marginal), 2/3=67%  >= 50% -> MARGINAL  -> demoted to pass.
+
+    0.55 (not e.g. 0.51) is deliberately chosen so this test exercises ONLY the
+    ratio-ceiling logic under test, not AutoSessionPolicy's own separate, independent
+    contextual-threshold demotion that runs earlier in _auto_loop (d =
+    self._auto_policy.apply_decision(d, profile).decision, BEFORE the ratio check):
+    that policy can itself lift the effective bar up to base_threshold +
+    max_threshold_lift = 0.5 + 0.045 = 0.545 (interaction.py's _THRESHOLD_MAX_LIFT),
+    so a score of 0.51 could occasionally get demoted right there by pure chance
+    (Worker doesn't inject a seeded rng into AutoSessionPolicy), producing a flaky
+    test that has nothing to do with the ratio ceiling. 0.55 is always >= 0.545, so
+    it always survives AutoSessionPolicy unconditionally, while still being < 0.65
+    (threshold + _STRONG_LIKE_MARGIN) so the ratio ceiling itself still calls it
+    marginal.
+    """
     driver = FakeDriver(4)
     store = FakeStore()
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
     limiter = RateLimiter(target_like_ratio=0.5)
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+    decider = ScriptedScoreDecider([0.55, 0.55, 0.95, 0.55])
+    Worker("bumble", driver, decider, svc, store, "run1", _Pacing(),
            threading.Event(), mode="auto", limiter=limiter).run()
-    # All 4 cards processed — NOT halted
+
+    # All 4 cards processed — NOT halted.
     assert len(store.decisions) == 4
     assert driver.closed
-    likes = sum(1 for _, d, _ in store.decisions if d == "like")
-    passes = sum(1 for _, d, _ in store.decisions if d == "dislike")
-    assert likes == 2 and passes == 2
+    assert [d for _, d, _ in store.decisions] == ["like", "dislike", "like", "dislike"]
+    # The strong 0.95 actually landed as a driver.like() call (with its opener), not
+    # silently swallowed by the ceiling the way a marginal one is.
+    assert driver.likes == ["hi 1", "hi 2"]
+
+
+def test_ratio_ceiling_demotion_tags_a_distinguishable_source(monkeypatch):
+    """Consistency with interaction.py's own contextual demotion (which tags
+    f"{source}_contextual", see AutoSessionPolicy.apply_decision): the ratio-ceiling
+    demotion must also retag .source instead of leaving it as the raw ranker source,
+    so a future consumer of Decision.source can tell a shaped decision apart from a
+    raw model one. No functional effect today -- Decision.source isn't read anywhere
+    downstream and the stored row hardcodes source="auto" (see FakeStore.
+    record_decision / the real store.record_decision call in worker.py) -- so this
+    spies on the Decision objects the loop actually constructs rather than on the
+    store, which cannot see .source at all."""
+    from operation_love import worker as worker_mod
+    from operation_love.ranker.decider import Decision as RealDecision
+
+    created = []
+
+    def spying_decision(decision, score, embedding, source):
+        d = RealDecision(decision, score, embedding, source)
+        created.append(d)
+        return d
+
+    monkeypatch.setattr(worker_mod, "Decision", spying_decision)
+
+    driver = FakeDriver(2)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    limiter = RateLimiter(target_like_ratio=0.5)
+    # 0.55, not 0.51: stays clear of AutoSessionPolicy's own independent demotion --
+    # see the worked-numbers comment in
+    # test_like_ratio_ceiling_demotes_marginal_likes_but_lets_strong_ones_through above.
+    decider = ScriptedScoreDecider([0.55, 0.55])   # card 2: marginal, ratio at ceiling -> demoted
+    Worker("bumble", driver, decider, svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", limiter=limiter).run()
+
+    demoted = [d for d in created if d.decision == "dislike"]
+    assert len(demoted) == 1
+    assert demoted[0].source == "ranker_ratio_ceiling"
 
 
 class _RatioNoZeroGuardLimiter:

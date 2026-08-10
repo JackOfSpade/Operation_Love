@@ -12,7 +12,7 @@ from __future__ import annotations
 import importlib.util
 import platform
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .device import best_device
 
@@ -65,8 +65,12 @@ class Capabilities:
     os_name: str
     machine: str
     python: str
-    device: str
     available: dict[str, bool]
+    # Backing field for the `device` property below -- deliberately NOT populated by
+    # detect() (see that method's docstring for why). repr=False/compare=False so an
+    # unresolved Capabilities still prints and compares the way it always has, with no
+    # "_device=None" noise leaking into a banner or a test failure diff.
+    _device: str | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def detect(cls, android_adb_path: str | None = None, *,
@@ -80,6 +84,14 @@ class Capabilities:
         hinge_adb_path is the pre-rename kwarg, kept as a backwards-compatible alias for
         android_adb_path (Hinge was the only Android app when it was named); prefer the
         new name in new code.
+
+        Deliberately does NOT resolve `.device` here (see the `device` property) -- every
+        _OPTIONAL probe above is a cheap importlib.util.find_spec/shutil.which check, but
+        best_device() does a real `import torch` (~600 submodules, ~0.48s measured) to
+        decide mps/cuda/cpu, every single time, even for a caller that only wants capability
+        flags (a bare diagnostic run, bugreport). That sat badly against this module's
+        "quick check on any machine" framing, so the torch import is now deferred to
+        whichever caller actually reads `.device` (chiefly `banner()`).
         """
         android_adb_path = android_adb_path or hinge_adb_path
         overrides = {"android_driver": android_adb_path} if android_adb_path else {}
@@ -90,9 +102,19 @@ class Capabilities:
             os_name=platform.system() or "unknown",
             machine=platform.machine() or "unknown",
             python=platform.python_version(),
-            device=best_device(),
             available=available,
         )
+
+    @property
+    def device(self) -> str:
+        """Best available accelerator (mps/cuda/cpu) -- resolved lazily on first access,
+        not by detect() (see detect()'s docstring for why), and cached after that so a
+        second read (e.g. a second banner() call) doesn't re-pay the torch import. Callers
+        still observe exactly the plain string they always did; only WHEN it's computed
+        changed."""
+        if self._device is None:
+            self._device = best_device()
+        return self._device
 
     def banner(self) -> str:
         accel = _ACCEL.get(self.device, self.device)

@@ -6,12 +6,14 @@ flush reports 'stopped'; a flush that RAISES must flip phase->'save_failed' + ev
 state->'error' AND re-raise, so a run that lost buffered labels never reports success.
 """
 import os
+import subprocess
 import threading
 import time
 
 import pytest
 
 import operation_love.supervisor as sup
+from operation_love import platforms
 from operation_love.config import OpenerCfg
 from operation_love.drivers.base import DatingAppDriver
 
@@ -157,6 +159,42 @@ def test_flush_failure_reports_save_failed_and_reraises(monkeypatch, tmp_path):
     snap = captured["status"].snapshot()
     assert snap["phase"] == "save_failed"                       # NOT a green "stopped"
     assert all(a["state"] == "error" for a in snap["apps"].values())
+    # A flush() failure must not skip close(): pre-fix, close() sat inside the same try as
+    # flush(), so a raising flush() left store.close() unreached and (for SQLiteStore) its
+    # sqlite3.Connection open.
+    assert store.closed is True
+
+
+class _CloseAlsoFailsStore(_FakeStore):
+    """A store whose close() ALSO raises, on top of flush() -- proves close()'s own
+    failure is reported but never allowed to replace the flush() error that's actually
+    reraised (flush() is what determines whether buffered data made it out)."""
+    def __init__(self, flush_error, close_error):
+        super().__init__(flush_error=flush_error)
+        self.close_error = close_error
+
+    def close(self):
+        super().close()          # still marks .closed -- close() was at least ATTEMPTED
+        raise self.close_error
+
+
+def test_close_failure_after_flush_failure_does_not_mask_the_flush_error(monkeypatch, tmp_path, capsys):
+    store = _CloseAlsoFailsStore(
+        flush_error=RuntimeError("BigQuery insert rejected"),
+        close_error=OSError("connection already gone"),
+    )
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: store)
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="BigQuery insert rejected"):   # NOT the OSError
+        sup.run(str(cfg_path), stop_event=threading.Event())
+
+    assert store.closed is True                    # close() was attempted despite flush() failing
+    assert "connection already gone" in capsys.readouterr().out   # reported, not silently dropped
 
 
 def test_worker_error_state_survives_shutdown_not_overwritten_to_stopped(monkeypatch, tmp_path):
@@ -341,25 +379,157 @@ class _CapsMlMissing(_Caps):
         return ["arcface", "clip"] if set(names) == {"arcface", "clip"} else []
 
 
-def test_ml_missing_degrade_message_is_honest_about_no_defer_path(monkeypatch, tmp_path, capsys):
-    """VIS-4: caps is never consulted again after this print, and there's no defer path keyed
-    on the missing ml extra -- workers just attempt to embed and fail per profile. The message
-    must say that, not promise a defer that doesn't exist."""
+def test_missing_ml_extra_hard_gates_with_no_defer_path_message(monkeypatch, tmp_path):
+    """Sibling of the storage.backend=bigquery gate just above it in supervisor.py: both
+    are equally, deterministically fatal -- there is no defer path, every profile embed
+    would fail immediately -- so both must hard-gate the run instead of just one of them.
+
+    Old contract (VIS-4): this only printed a 'Degrade: ml extra not installed' warning
+    and let the run continue past make_store(), the ML warmup, the device lock, and into
+    a live driver.open_session() before dying on the first real embed -- see
+    test_missing_ml_extra_aborts_before_store_and_device_lock below for what that let
+    through. The message content this test used to check for ('no defer path', not
+    promising a fulfilled 'Workers will defer until it's present') is preserved, just now
+    inside the SystemExit that actually stops the run rather than a print that let it
+    continue."""
     cfg_path = _write_cfg(tmp_path)
     monkeypatch.setattr(sup, "Capabilities", _CapsMlMissing)
-    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)     # message content doesn't need real ML
-    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
     monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
     monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
     _patch_no_adb(monkeypatch)
 
-    sup.run(str(cfg_path), on_status=lambda s: None, stop_event=threading.Event())
+    with pytest.raises(SystemExit) as excinfo:
+        sup.run(str(cfg_path), on_status=lambda s: None, stop_event=threading.Event())
 
-    out = capsys.readouterr().out
-    assert "Degrade: ml extra not installed" in out
-    assert "Workers will defer until it's present" not in out   # the unfulfilled old promise
-    assert "no defer path" in out                                # honest about what happens instead
+    msg = str(excinfo.value)
+    assert "ML extra not installed" in msg
+    assert "no defer path" in msg
+
+
+def test_missing_ml_extra_aborts_before_store_and_device_lock(monkeypatch, tmp_path):
+    """Mirrors test_gemini_missing_key_fails_before_store_startup: a missing ML extra must
+    abort BEFORE make_store()'s BigQuery/label-load work, and before the Android device
+    lock is ever constructed -- not just eventually, or after a worker is already running.
+    Pre-fix, the missing-extra case was only a warning, so a real run would sail through
+    make_store(), the ML warmup, the device lock, and driver.open_session(), capturing a
+    REAL profile off the live phone before dying on the very first embed."""
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _CapsMlMissing)
+    touched = []
+    monkeypatch.setattr(sup, "make_store", lambda cfg: touched.append(True))
+
+    lock_instances: list = []
+
+    class _SpyDeviceLock:
+        def __init__(self, path):
+            lock_instances.append(self)
+
+        def acquire(self):
+            raise AssertionError("device lock must never be acquired")
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(sup, "_AndroidDeviceLock", _SpyDeviceLock)
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+
+    with pytest.raises(SystemExit, match="ML extra not installed"):
+        sup.run(str(cfg_path), stop_event=threading.Event())
+
+    assert touched == []             # make_store() never reached
+    assert lock_instances == []      # device lock never even constructed
+
+
+def test_absent_adb_device_fails_early_and_actionably(monkeypatch, tmp_path):
+    """The cheap 'is the phone connected' check must be a hard, actionable gate now, not a
+    warning -- and it must run BEFORE make_store()'s BigQuery/label-load work, not after it
+    and the ML warmup (that was the pre-fix ordering: a disconnected phone used to cost a
+    full BigQuery + ML warmup cycle before the operator found out). Simulates `adb devices`
+    reporting no connected device -- deliberately does NOT use _patch_no_adb, since this
+    test needs the REAL _android_adb_preflight to run against a stubbed subprocess.run."""
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    touched = []
+    monkeypatch.setattr(sup, "make_store", lambda cfg: touched.append(True))
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+
+    class _NoDevices:
+        stdout = "List of devices attached\n\n"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _NoDevices())
+
+    with pytest.raises(SystemExit, match="no connected device"):
+        sup.run(str(cfg_path), stop_event=threading.Event())
+
+    assert touched == []                # make_store() never reached
+
+
+def test_adb_binary_missing_fails_early_with_install_guidance(monkeypatch, tmp_path):
+    """Distinct from 'binary works, no device' above: when `adb` itself can't even be
+    invoked, there's no way to ask whether a phone is connected, so the actionable next
+    step is different (install adb / set apps.<app>.adb_path, not plug in the phone) --
+    but it must be equally fatal, and equally early (before make_store())."""
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    touched = []
+    monkeypatch.setattr(sup, "make_store", lambda cfg: touched.append(True))
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+
+    def _missing_binary(*a, **k):
+        raise FileNotFoundError("adb")
+
+    monkeypatch.setattr(subprocess, "run", _missing_binary)
+
+    with pytest.raises(SystemExit, match="was not found"):
+        sup.run(str(cfg_path), stop_event=threading.Event())
+
+    assert touched == []
+
+
+def test_web_only_selection_is_unaffected_by_the_adb_check(monkeypatch, tmp_path):
+    """The ADB hard gate exists only for Android-kind platforms (android_app is None for a
+    web-kind selection) -- a web selection must never even ATTEMPT `adb devices`, let
+    alone be blocked by one. Bumble's web app has no live target today (see
+    platforms.py), so it's flipped available=True here for this test only, restored
+    after -- same pattern tests/test_platforms.py uses to isolate registry mutation."""
+    saved_platforms, saved_by_app = platforms._PLATFORMS, platforms._BY_APP
+    try:
+        platforms._PLATFORMS = tuple(
+            platforms.Platform(app=p.app, label=p.label, kind=p.kind, available=True, reason=None)
+            if p.app == "bumble_web" else p
+            for p in platforms._PLATFORMS
+        )
+        platforms._BY_APP = {p.app: p for p in platforms._PLATFORMS}
+
+        cfg_text = (_CONFIG.replace("enabled_apps: [hinge]", "enabled_apps: [bumble_web]")
+                            .replace("apps:\n  hinge: {}", "apps:\n  bumble_web: {}"))
+        cfg_path = _write_cfg(tmp_path, cfg_text)
+
+        preflight_calls = []
+        monkeypatch.setattr(sup, "_android_adb_preflight",
+                            lambda app, cfg: preflight_calls.append(app))
+        monkeypatch.setattr(sup, "Capabilities", _Caps)
+        monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+        monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+        monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
+        monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+        monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+
+        captured = {}
+        sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
+                stop_event=threading.Event())
+
+        assert preflight_calls == []    # never invoked for a web-kind platform
+        snap = captured["status"].snapshot()
+        assert snap["phase"] == "stopped"
+    finally:
+        platforms._PLATFORMS = saved_platforms
+        platforms._BY_APP = saved_by_app
 
 
 class _SpyWorker:

@@ -54,8 +54,67 @@ def test_post_action_delay_has_session_correlated_variation_and_validates_scale(
     delays = [policy.post_action_delay_s("dislike", p, 0.5) for _ in range(8)]
     assert all(0.35 <= d <= 45.0 for d in delays)
     assert len({round(d, 5) for d in delays}) > 1
-    with pytest.raises(ValueError, match="non-negative"):
+    with pytest.raises(ValueError, match="positive"):
         policy.post_action_delay_s("like", p, 0.5, scale=-1)
+
+
+def test_post_action_delay_rejects_zero_scale_too():
+    """A `scale <= 0` guard, not just `scale < 0`: worker.py's documented no-pacing
+    bypass is skipping the call to this method entirely (see _pace's `swipe_delay_s
+    == 0` early return), never calling in with scale=0. If this method were ever
+    reached with an exact-zero scale anyway, every modifier collapses and it would
+    silently return a bare `0.0` wait -- an instant, zero-jitter action -- instead of
+    failing loudly the way the existing negative-scale case already does."""
+    policy = AutoSessionPolicy(rng=random.Random(1), local_hour=lambda: 12)
+    p = _profile()
+    with pytest.raises(ValueError, match="positive"):
+        policy.post_action_delay_s("like", p, 0.5, scale=0)
+
+
+@pytest.mark.parametrize("bad_value", [
+    "not-a-number",     # non-numeric string
+    None,                # explicit None (present but unset -- distinct from key absent)
+    -7,                  # negative
+    float("inf"),        # huge / unbounded
+    float("nan"),        # not-a-number float
+    object(),             # arbitrary non-numeric type
+])
+def test_post_action_delay_tolerates_malformed_capture_frames_metadata(bad_value):
+    """Confirmed-live bug from the audit: a non-numeric meta['capture_frames'] raised a
+    bare ValueError out of _profile_complexity, and worker.py's auto loop has no
+    try/except around apply_decision()/post_action_delay_s() -- it would propagate to
+    the loop's blanket exception handler and HALT THE WHOLE RUN over pacing metadata,
+    not a real navigation/screen error. Every one of these malformed shapes must now
+    degrade to sane, bounded pacing instead of raising."""
+    p = Profile(photos=[b"x"] * 3, bio="", meta={"capture_frames": bad_value})
+    policy = AutoSessionPolicy(rng=random.Random(5), local_hour=lambda: 12)
+    delay = policy.post_action_delay_s("like", p, 0.6)   # must not raise
+    assert 0.35 <= delay <= 45.0
+
+
+@pytest.mark.parametrize("bad_value", ["nope", None, -3, float("inf"), float("nan")])
+def test_post_action_delay_tolerates_malformed_read_scrolls_metadata(bad_value):
+    """Same guard, the other malformed pacing field -- meta['read_scrolls']."""
+    p = Profile(photos=[b"x"] * 2, bio="", meta={"capture_frames": 2, "read_scrolls": bad_value})
+    policy = AutoSessionPolicy(rng=random.Random(6), local_hour=lambda: 12)
+    delay = policy.post_action_delay_s("dislike", p, 0.4)   # must not raise
+    assert 0.35 <= delay <= 45.0
+
+
+def test_safe_meta_int_falls_back_on_malformed_values_and_clamps_negative():
+    """Direct unit coverage of the actual coercion helper (_profile_complexity's fix),
+    not just the fact that the larger call doesn't raise -- pins the exact fallback
+    value for each malformed shape."""
+    meta_int = AutoSessionPolicy._safe_meta_int
+    assert meta_int({"k": "garbage"}, "k", 9) == 9      # non-numeric string -> default
+    assert meta_int({"k": None}, "k", 9) == 9            # explicit None -> default
+    assert meta_int({"k": float("inf")}, "k", 9) == 9    # OverflowError -> default
+    assert meta_int({"k": float("nan")}, "k", 9) == 9    # ValueError -> default
+    assert meta_int({"k": -5}, "k", 9) == 0               # negative -> clamped to 0, not default
+    assert meta_int({"k": "4"}, "k", 9) == 4              # numeric string still parses normally
+    assert meta_int({}, "k", 9) == 9                      # key absent -> default
+    assert meta_int({"k": 0}, "k", 9) == 9                # explicit 0 -> "not provided", matches
+    # the pre-existing `or default` semantics this replaced.
 
 
 def test_contextual_threshold_only_demotes_borderline_likes():

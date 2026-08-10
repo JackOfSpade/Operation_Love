@@ -231,6 +231,68 @@ property, not a governed one.
 **Open item:** the ranker's realized like rate is unmeasured. It is the quantity to watch if
 detection behavior ever looks off — see the §5 trigger below.
 
+### Addendum 2026-08-10 — Bumble SuperSwipe measured live: no confirmation sheet is a safety net
+
+A prior pass (see `operation_love/drivers/hinge.py`'s `_decide_by_card_swipe` and
+`operation_love/drivers/android/bumble.py`'s old `forbidden_zones` comment) claimed there is
+"no confirmation modal" after a Bumble SuperSwipe. That claim was wrong, but the corrected
+version is more interesting than "actually there is one" — the ground truth, measured on the
+real Pixel 7a (1080x2400) 2026-08-10 via a read-only screencap + uiautomator dump (no `adb`
+write command issued), is a two-state model:
+
+- **Balance == 0** — attempting a SuperSwipe opens
+  `com.badoo.mobile.payments.flow.bumble.BumblePaymentFlowActivity`, a purchase/confirmation
+  sheet. Its "Get 30 SuperSwipes for $39.99" CTA occupies x 0.049-0.950, y 0.899-0.951 —
+  nearly full width, and (measured against `BUMBLE_SPEC.forbidden_zones`,
+  `(0.34, 0.80, 0.66, 1.00)`) both `like_heart` (0.850, 0.900) and `pass_x` (0.150, 0.900)
+  land ON that CTA while sitting OUTSIDE the forbidden zone. A "Close sheet" dimmed overlay
+  covers x 0.000-1.000, y 0.000-0.394.
+- **Balance > 0** (5, on the owner's account at measurement time) — the SuperSwipe is spent
+  SILENTLY. No sheet, no prompt, nothing on screen to catch it.
+
+So "there's a confirmation sheet" is true only on the zero-balance path, and even there the
+sheet is a **hazard** (its CTA overlaps the deck's own like/pass coordinates), not a
+safeguard. On the non-zero-balance path there is no safety net of any kind — the only thing
+standing between a mistaken tap and an actual, irreversible, paid action is code that never
+aims at the SuperSwipe control in the first place, and code that refuses to act at all unless
+the ordinary swipe deck is positively confirmed on screen.
+
+**What shipped in response** (`operation_love/drivers/hinge.py`,
+`operation_love/drivers/android_spec.py`, `operation_love/drivers/android/bumble.py`):
+
+1. `AndroidDriver._require_deck_confirmed()` — a new PRE-CONDITION on every autonomous decide
+   gesture (tap or card_swipe), not just Bumble's: before issuing a like/pass, the driver must
+   positively confirm the deck's own like+pass glyphs are visible, or it refuses
+   (`UnconfirmedScreenError`) and the run halts with the screen untouched. This is what
+   actually generalises where a static `forbidden_zones` rect cannot — the rect is
+   screen-agnostic (it forbids a coordinate no matter what's on screen), while the CTA danger
+   above is screen-dependent (the identical point is a harmless like on the deck and a $39.99
+   purchase on the sheet). Widening `forbidden_zones` to also cover the CTA was rejected: it
+   would forbid `like_heart`/`pass_x` on the ordinary deck too, since on the purchase sheet
+   those are literally the same pixels.
+2. `AndroidAppSpec.upsell_dismiss_zone` + `AndroidDriver._dismiss_via_zone()` — for a
+   paid-upgrade sheet whose real dismiss control is a large "tap outside the sheet" overlay
+   rather than a single button (Bumble's case), the driver detects the sheet via the existing
+   `upsell_dismiss` template first (no detection, no tap, ever), then taps a FRESH RANDOM
+   point inside a declared safe rect on each attempt (never a fixed coordinate — a repeated
+   exact point is itself a bot signature), verifies the sheet actually cleared, and HALTS
+   (`PaidUpsellStuckError`) rather than tapping again indefinitely if it's still up after 3
+   attempts. `BUMBLE_SPEC` declares `upsell_dismiss_zone=(0.15, 0.10, 0.85, 0.34)`, derived
+   from the measured overlay with margin for tap jitter, the status bar, and Android's edge
+   back-gesture strips — see that field's comment for the arithmetic. It stays inert
+   (`templates` has no `upsell_dismiss` entry yet) until a real template is captured live —
+   see `ops/RUNBOOK.md`'s Bumble calibration checklist, which was rewritten to test both
+   balance states explicitly instead of the old single "confirm nothing is purchased" step.
+
+**Risk accepted going forward:** `_require_deck_confirmed` only fires for a spec that declares
+BOTH a `like` and a `pass` glyph template — `BUMBLE_SPEC` currently declares neither (real,
+placeholder state), so today this guard is a no-op for Bumble specifically, exactly like every
+other vision-gated action in this driver with no template to check. It becomes load-bearing
+the moment Bumble's `like`/`pass` templates are captured, which the calibration checklist
+already requires before `calibrated` can be set at all. Until then, Bumble's only live
+protections remain `decide_gesture="card_swipe"` + `forbidden_zones`, which is why
+`calibrated=False` still gates the platform closed regardless.
+
 ## 5. Re-check triggers
 - **Realized auto-mode like rate drifting high** (added 2026-08-09) — with `target_like_ratio`
   unset, nothing holds the right-swipe ratio down. Measure it from the decision store; if it
@@ -242,5 +304,11 @@ detection behavior ever looks off — see the §5 trigger below.
 - **Device Recall leaving beta / becoming default-on** (§2.1) — would harden the "wipe and
   start over" dead end into a permanent one. Re-check before any burner-rotation plan.
 - Bumble's actual vendor stack (only confirmable via authenticated-app inspection).
+- **Bumble SuperSwipe geometry drifting** (added 2026-08-10) — the measured CTA/overlay/zone
+  coordinates in `BUMBLE_SPEC` (§4's 2026-08-10 addendum) are pinned to one app build on one
+  device. Re-measure before ever flipping `calibrated=True`, and again after any Bumble app
+  update once it's running live — a layout change could silently move the purchase CTA into
+  `upsell_dismiss_zone`, or move `upsell_dismiss_zone` into range of a control it isn't meant
+  to touch.
 - Hinge's true enforcement aggressiveness (report 2's open question) — resolvable only
   empirically, and only via shadowban-aware testing on a disposable account.

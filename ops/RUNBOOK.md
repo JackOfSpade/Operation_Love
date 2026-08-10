@@ -81,12 +81,51 @@ device.
 
 **Bumble calibration checklist — BLOCKING, before `calibrated` is ever flipped
 to `True`:**
+
+⚠️ A previous version of this checklist said to "drag over SuperSwipe and
+confirm nothing is purchased," as if a confirmation step protects every
+mistake. It doesn't. Measured live on the device 2026-08-10 (read-only
+screencap + uiautomator dump — see `BUMBLE_SPEC` in
+`operation_love/drivers/android/bumble.py` for the full geometry):
+Bumble's SuperSwipe has **two different outcomes** depending on the
+account's SuperSwipe balance, and only one of them shows a confirmation
+sheet at all.
+
 - [ ] Real coordinates measured live on the device (not the placeholder
       guesses shipped in `BUMBLE_SPEC`/`config.yaml`'s `apps.bumble.coords`).
 - [ ] `forbidden_zones` re-measured against the real SuperSwipe control, not
-      left at its generously-oversized placeholder rect.
+      left at its generously-oversized placeholder rect. (Do not "fix" the
+      purchase-sheet hazard below by widening this rect instead of doing the
+      two checks below — see the note next to `forbidden_zones` in
+      `BUMBLE_SPEC` for why a screen-agnostic rectangle can't do that job.)
+- [ ] **Non-zero balance: confirm the silent-spend path, live.** With the
+      account holding at least one SuperSwipe, deliberately trigger a
+      SuperSwipe on a disposable/burner profile and confirm it is spent with
+      **no** confirmation prompt of any kind. If that's what happens (expected,
+      per the 2026-08-10 measurement — the owner's account showed a balance of
+      5 and no prompt), then the never-super-like guarantee for this path
+      comes **entirely from the code** — `decide_gesture="card_swipe"` +
+      `forbidden_zones` + `AndroidDriver._require_deck_confirmed`
+      (`UnconfirmedScreenError`) — never from the app prompting first. There is
+      nothing to dismiss and nothing to catch a mistake here; treat every one
+      of those three mechanisms as load-bearing before trusting this path
+      unattended.
+- [ ] **Zero balance: confirm the purchase-sheet path, live.** Spend down to a
+      zero SuperSwipe balance on the same disposable/burner profile, trigger
+      another SuperSwipe, and confirm the purchase sheet appears (CTA "Get 30
+      SuperSwipes for $39.99", measured at x 0.049-0.950, y 0.899-0.951).
+      Verify the bot **never taps while that sheet is up** — no decide gesture
+      should fire against it (`_require_deck_confirmed` should refuse, since
+      the deck's like/pass glyphs won't be visible), and if
+      `_handle_rose_upsell`/`_dismiss_via_zone` runs, confirm every dismiss tap
+      lands inside `upsell_dismiss_zone` and never anywhere near the CTA.
 - [ ] `upsell_dismiss` glyph template captured (required before `calibrated`
-      can even be set — see `AndroidAppSpec.__post_init__`).
+      can even be set — see `AndroidAppSpec.__post_init__`). Capture it against
+      the sheet from the zero-balance check above (its heading or another
+      sheet-identifying glyph — NOT the purchase CTA). `BUMBLE_SPEC` already
+      declares `upsell_dismiss_zone` (the safe band to tap to dismiss it, with
+      the measurement and margin arithmetic behind it); it stays inert until
+      this template exists.
 - [ ] **The swipe-direction assumption, verified live, on a disposable
       profile:** `AndroidDriver._swipe` (`operation_love/drivers/hinge.py`)
       only zone-checks a drag's touch-DOWN point, on the reasoning that a
@@ -100,8 +139,12 @@ to `True`:**
       the screen — exactly where the SuperSwipe zone lives). Before Bumble is
       ever run unattended: deliberately drag a card so the gesture passes
       over and ends on the SuperSwipe control on a disposable/burner Bumble
-      profile, and confirm nothing is purchased. If Bumble's button turns out
-      to react on release (or via some other non-standard touch handling)
+      profile, at BOTH a zero and a non-zero SuperSwipe balance (see the two
+      checks above — a non-zero balance won't show a purchase screen even if
+      this reproduces the bug, it will just silently consume a SuperSwipe),
+      and confirm no SuperSwipe was spent and no purchase sheet appeared. If
+      Bumble's button turns out to react on release (or via some other
+      non-standard touch handling)
       rather than only on capture, `_swipe`'s touch-down-only check does not
       protect against it and the guard needs to change before this ships.
 

@@ -39,9 +39,13 @@ apps:
     halt_on_error: true
     coords:                     # PLACEHOLDER GUESSES ONLY — see BUMBLE_SPEC's module docstring
       # Bumble decides by DRAGGING the card, not by tapping the button row: its paid
-      # SuperSwipe sits between Pass and Like with no confirmation modal, so a drifted tap
-      # could spend money. These three are the drag path (start mid-card, well above the
-      # button row) and are what actually gets used. Calibrate these first.
+      # SuperSwipe sits between Pass and Like, and a drifted tap could spend money. MEASURED
+      # live on the device 2026-08-10 (see BUMBLE_SPEC in
+      # operation_love/drivers/android/bumble.py for the full writeup): whether that mistake
+      # is caught by anything depends on the account's SuperSwipe balance. With a non-zero
+      # balance it is spent SILENTLY, no modal at all; only a zero balance shows a purchase
+      # confirmation sheet first. These three are the drag path (start mid-card, well above
+      # the button row) and are what actually gets used. Calibrate these first.
       swipe_start: [0.50, 0.55]
       swipe_like_end: [0.92, 0.52]
       swipe_pass_end: [0.08, 0.52]

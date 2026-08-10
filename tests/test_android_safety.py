@@ -3,9 +3,14 @@
 The owner rule is that super-likes and boosts are manual only: the bot does normal
 like/pass and nothing else. On Hinge that was easy — the Rose upsell is a modal that
 appears AFTER the action, and we dismiss it. Bumble is structurally worse: its paid
-SuperSwipe control sits in the bottom action row physically BETWEEN Pass and Like, with
-no confirmation step afterwards, so a placeholder or drifted coordinate can spend money
-with nothing to catch it.
+SuperSwipe control sits in the bottom action row physically BETWEEN Pass and Like, and
+whether a placeholder or drifted coordinate lands on it is caught by anything downstream
+depends on the account's SuperSwipe balance — measured live on the device 2026-08-10 (see
+BUMBLE_SPEC in operation_love/drivers/android/bumble.py), a non-zero balance spends the
+SuperSwipe SILENTLY with no modal at all; only a zero balance shows a purchase/confirmation
+sheet first, and even that sheet's CTA sits almost exactly where the deck's own like/pass
+coordinates do (see tests/test_android_upsell_protection.py). Either way, nothing
+downstream of the tap can be relied on to catch a mistake here.
 
 Two independent mechanisms answer that, and these tests pin both:
 

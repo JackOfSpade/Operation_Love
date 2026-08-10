@@ -91,6 +91,33 @@ class AndroidAppSpec:
     # coordinate is a guess by definition. Declaring the paid control's territory turns the
     # owner's never-super-like rule into something the code refuses to violate.
 
+    upsell_dismiss_zone: tuple[float, float, float, float] | None = None
+    # Normalised (x0, y0, x1, y1) rect: a safe region to tap to dismiss a paid-upgrade
+    # interstitial whose real dismiss control is not a single button but a large "tap
+    # anywhere outside the sheet" overlay. Bumble's SuperSwipe purchase sheet is exactly
+    # this shape (MEASURED live on the device 2026-08-10: the dimmed area above the sheet,
+    # x 0.000-1.000, y 0.000-0.394, closes it on tap — see BUMBLE_SPEC in
+    # operation_love/drivers/android/bumble.py for the full measurement and the narrower,
+    # jitter-safe band actually declared there).
+    #
+    # When set, AndroidDriver._handle_rose_upsell (hinge.py) taps a FRESH RANDOM point
+    # inside this rect on every dismiss attempt, instead of a fixed coordinate or a
+    # vision-matched glyph location: a fixed point here would be exactly the kind of bot
+    # signature the owner's no-fixed-constants rule forbids, and there is no single button
+    # glyph to match a tap target against in the first place — the whole dimmed area IS the
+    # control. Detecting that the sheet is actually up STILL requires the 'upsell_dismiss'
+    # template (see `templates` above); with a zone declared but no template, this is inert,
+    # matching every other vision-gated action in this driver: no detection, no tap, ever.
+    # After each tap, the driver re-checks for the template and, if the sheet is still up
+    # after a bounded number of attempts, HALTS rather than tapping again (see
+    # AndroidDriver._dismiss_via_zone / PaidUpsellStuckError) — repeated blind taps near a
+    # modal like this one are how a purchase gets confirmed, not how one gets avoided.
+    #
+    # None (the default) keeps the original behaviour: tap the vision-matched
+    # 'upsell_dismiss' glyph location directly. That is correct for Hinge, where the glyph
+    # names a real, single, well-defined "Send Like anyway" button — there is nothing to
+    # randomise a search over.
+
     has_paid_upsell: bool = True
     # Does this app interrupt a like with a paid-upgrade interstitial (Hinge's "Send a Rose
     # instead?", Bumble's SuperSwipe purchase)? When True, the spec MUST declare an
@@ -169,6 +196,16 @@ class AndroidAppSpec:
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).forbidden_zones entry {zone} is not a "
                     f"normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
+        if self.upsell_dismiss_zone is not None:
+            # Same normalised-rect shape as forbidden_zones above -- a malformed zone here
+            # would be silently unusable (or worse, an inverted/degenerate rect that
+            # random.uniform can't sample sensibly), so catch it at import rather than at the
+            # first dismiss attempt on a real device.
+            x0, y0, x1, y1 = self.upsell_dismiss_zone
+            if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+                raise ValueError(
+                    f"AndroidAppSpec({self.app!r}).upsell_dismiss_zone {self.upsell_dismiss_zone} "
+                    f"is not a normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
         # coords / read_scroll_frac range check. This is the SPEC-level half of a two-part
         # fix (the other half is config.py's _validate_android_fractions, which covers an
         # OPERATOR's config.yaml override of these same values): an out-of-range coordinate

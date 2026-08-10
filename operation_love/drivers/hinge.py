@@ -136,7 +136,70 @@ class UnlocatedControlError(HingeActionError):
     Failing here costs one profile. Guessing costs money or the account."""
 
 
+class UnconfirmedScreenError(HingeActionError):
+    """A decide gesture (like/pass) was refused because the expected swipe-deck screen could
+    not be positively confirmed before acting.
+
+    Why this exists, distinct from ForbiddenTapError: forbidden_zones is a SCREEN-AGNOSTIC
+    rectangle — it forbids a coordinate no matter what is actually on screen. But the danger
+    some apps pose is SCREEN-DEPENDENT, and a static rectangle cannot express that. Measured
+    live on the device 2026-08-10: Bumble's like_heart (0.850, 0.900) and pass_x (0.150,
+    0.900) fallback coordinates are ordinary, harmless points on the swipe deck — and BOTH
+    sit ON the "Get 30 SuperSwipes for $39.99" purchase button when the SuperSwipe purchase
+    sheet is up instead (that sheet's CTA spans x 0.049-0.950, y 0.899-0.951 — see
+    BUMBLE_SPEC's comment block for the full measurement). Both coordinates are also OUTSIDE
+    BUMBLE_SPEC.forbidden_zones (0.34, 0.80, 0.66, 1.00), which only ever covers the middle
+    third: no rectangle drawn to guard the deck's paid button can also cover the deck's own
+    like/pass controls, because on the purchase sheet those are the SAME pixels. Widening
+    forbidden_zones to also catch (0.850, 0.900) would make an ordinary like impossible on
+    the very deck it exists to protect — see this module's HINGE_SPEC/BUMBLE_SPEC comments
+    and ops/RUNBOOK.md for why that path was rejected.
+
+    The guard that actually generalises asks a different question before every decide
+    gesture: not "is this point forbidden" but "am I actually looking at the deck". A spec
+    that declares BOTH a 'like' and a 'pass' glyph template can answer that — the same
+    perception _observe_deck_ready already uses PASSIVELY for human-driven observe mode is
+    reused here as an autonomous PRE-CONDITION on every decide gesture (see
+    AndroidDriver._require_deck_confirmed). If either glyph is not visible — because a
+    purchase sheet, an ad, a permissions dialog, or literally anything else has come between
+    the bot and the deck — this refuses instead of firing a gesture blind, the same "fail
+    loud, never guess" rule UnlocatedControlError already applies to a single missing button.
+
+    A spec declaring no 'like'/'pass' templates at all (Bumble's current, real, uncalibrated
+    state) has no way to answer the question, and the check is skipped entirely — the same
+    "no template -> no vision path, no fixed-coord fallback" precedent _locate_button already
+    sets. That is not a loophole: such a spec cannot be marked calibrated (see
+    AndroidAppSpec.__post_init__'s has_paid_upsell check) and a TAP-gesture app in that state
+    already can't decide at all (_await_button refuses with UnlocatedControlError for the
+    same missing-template reason). The gap this class closes is for a CALIBRATED app whose
+    deck glyphs are momentarily hidden, not for a spec that was never wired up to prove
+    anything in the first place.
+
+    Ground truth from the owner (measured 2026-08-10): this guard is the ONLY protection that
+    covers Bumble's non-zero-SuperSwipe-balance case. When the account holds a balance (5, at
+    measurement time), a stray SuperSwipe spends SILENTLY — no sheet, nothing for
+    _handle_rose_upsell to dismiss, nothing at all downstream to catch it. Refusing to act
+    unless the deck is positively confirmed is what stands between a drifted/blocked screen
+    and a real, irreversible, paid action in that state — the confirmation sheet itself is
+    not a safety net there; it does not even exist."""
+
+
+class PaidUpsellStuckError(HingeActionError):
+    """A paid-upgrade sheet was positively detected (its 'upsell_dismiss' template matched)
+    and remained on screen after AndroidDriver._dismiss_via_zone's bounded retry budget.
+
+    Raised instead of retrying forever, deliberately: a dismiss tap that keeps landing just
+    outside the sheet (drift, a device rotation, an app update that moved the layout) must
+    not turn into an indefinite sequence of blind taps near a screen whose bottom third can
+    be a purchase button (MEASURED 2026-08-10 on Bumble's real SuperSwipe sheet: the CTA
+    sits at y 0.899-0.951 — see BUMBLE_SPEC). Halting and preserving the on-screen state for
+    debugging is always safer than one more guess at the same modal."""
+
+
 _OBSERVE_POLL_S = 0.35     # internal sampling cadence for your manual tap (not app-facing)
+_UPSELL_DISMISS_MAX_ATTEMPTS = 3
+# Bounded retries for AndroidDriver._dismiss_via_zone before it gives up (PaidUpsellStuckError)
+# rather than tapping an already-detected modal again and again. See that error's docstring.
 
 # Hinge's spec: exactly today's values (formerly the module-level `DEFAULTS` dict + the
 # `apps.hinge` block in config.yaml). calibrated=True — coords/templates verified live on the
@@ -604,11 +667,17 @@ class AndroidDriver(DatingAppDriver):
     def _decide_by_card_swipe(self, decision: str) -> None:
         """Deliver a like/pass by dragging the card sideways instead of tapping a control.
 
-        Bumble places its paid SuperSwipe BETWEEN Pass and Like at the bottom of the card,
-        so a placeholder or drifted coordinate can land on it, and unlike Hinge's Rose
-        there is no confirmation modal afterwards to catch the mistake. A drag begins in
-        the middle of the card and cannot press a button it merely travels over, so the
-        paid control is unreachable by construction rather than by careful aiming.
+        Bumble places its paid SuperSwipe BETWEEN Pass and Like at the bottom of the card, so
+        a placeholder or drifted coordinate can land on it. Whether that lands harmlessly or
+        expensively is NOT governed by a confirmation step the way Hinge's Rose is — measured
+        live on the device 2026-08-10, a SuperSwipe has two distinct outcomes depending on the
+        account's SuperSwipe balance: with a non-zero balance (5, at measurement time) it is
+        spent SILENTLY, no modal at all; only with a zero balance does a purchase/confirmation
+        sheet appear first (see BUMBLE_SPEC's comment block and _handle_rose_upsell for the
+        full two-state writeup). A drag begins in the middle of the card and cannot press a
+        button it merely travels over, so the paid control is unreachable by construction
+        rather than by careful aiming — this is the mechanism that actually protects the
+        balance>0 case, since there is nothing downstream of the tap to catch a mistake there.
 
         The drag goes through the same touch transport as everything else, so it inherits
         the humanized kinematics (Fitts-law duration, curved path, tremor, pressure ramp).
@@ -846,18 +915,49 @@ class AndroidDriver(DatingAppDriver):
         raise HingeActionError(f"{action} did not change the screen (stuck or unexpected state)")
 
     def _handle_rose_upsell(self, tries: int = 2) -> bool:
-        """Dismiss a paid-upgrade interstitial by tapping its "send anyway"/dismiss control —
-        NEVER the paid option itself. Named for Hinge's "Send a Rose instead?" modal (which
-        intercepts "Send Like" WHENEVER a Rose is available, since free Roses are granted
-        periodically) but used generically by every like flow: we never spend a Rose, a
-        SuperSwipe, or any other paid upsell (OWNER RULE — never automated, always manual).
-        This is enforced structurally, not just by convention: the only template role this
-        method (or _verify_like_landed's late-modal handling) EVER matches against or taps is
-        "upsell_dismiss" — there is no coordinate or template anywhere in this driver for a
-        paid button, so there is no code path that could tap one even by accident. No-op when
-        the modal isn't shown (or this app's spec declares no "upsell_dismiss" template at
-        all — _template then returns None and _match_glyph's None-template guard reports no
-        hits). Returns True if it dismissed a modal.
+        """Dismiss a paid-upgrade interstitial — NEVER the paid option itself. Named for
+        Hinge's "Send a Rose instead?" modal (which intercepts "Send Like" WHENEVER a Rose is
+        available, since free Roses are granted periodically) but used generically by every
+        like flow: we never spend a Rose, a SuperSwipe, or any other paid upsell (OWNER RULE —
+        never automated, always manual). No-op when the modal isn't shown (or this app's spec
+        declares no "upsell_dismiss" template at all — _template then returns None and
+        _match_glyph's None-template guard reports no hits). Returns True if it dismissed a
+        modal.
+
+        Detection is ALWAYS the same: the "upsell_dismiss" template must match before this
+        method taps anything at all. What happens after a match differs by app, selected by
+        AndroidAppSpec.upsell_dismiss_zone:
+
+          * zone is None (Hinge) — the template names a real, single, well-defined button
+            ("Send Like anyway"); tap exactly its matched location. There is no coordinate or
+            template anywhere in this driver for the PAID button beside/above it, so there is
+            no code path that could tap one even by accident.
+
+          * zone is set (Bumble, once calibrated) — there is no discrete dismiss BUTTON to
+            match. Measured live on the device 2026-08-10: Bumble's SuperSwipe purchase sheet
+            dismisses on a tap ANYWHERE in the dimmed area above it (x 0.000-1.000,
+            y 0.000-0.394 — see BUMBLE_SPEC's comment block for the full measurement and the
+            narrower, jitter-safe band actually declared). The template here identifies the
+            SHEET (e.g. its heading), not a tap target; the actual dismiss tap goes through
+            _dismiss_via_zone, which picks a FRESH random point inside the declared zone on
+            every attempt, verifies the sheet actually cleared, and HALTS (PaidUpsellStuckError)
+            rather than retrying forever if it doesn't.
+
+        Ground truth from the owner, measured live on the device 2026-08-10: this whole
+        method — and the confirmation sheet it dismisses — is NOT a general SuperSwipe safety
+        net. It only ever runs AFTER a decide gesture has already landed, and Bumble's
+        SuperSwipe has two distinct outcomes depending on the account's balance:
+
+          * balance == 0 — the purchase sheet described above appears. No money has been
+            spent yet; this method's job is to close that sheet without ever touching its
+            "Get 30 SuperSwipes for $39.99" CTA (measured at x 0.049-0.950, y 0.899-0.951).
+
+          * balance > 0 (5, at measurement time) — the SuperSwipe is spent SILENTLY. No
+            sheet, nothing here to dismiss, nothing at all downstream to catch it. The real
+            protections for THIS case are upstream of this method entirely: never aiming at
+            the SuperSwipe control (decide_gesture="card_swipe" + forbidden_zones) and never
+            firing a decide gesture without positively confirming the deck first
+            (_require_deck_confirmed / UnconfirmedScreenError).
 
         Uses on_blank="none" rather than raising, deliberately: this runs AFTER the
         confirming tap has already landed. A like sent server-side but aborted here
@@ -875,10 +975,73 @@ class AndroidDriver(DatingAppDriver):
             return _match_glyph(frame, template, side="any", threshold=0.6)
 
         hits = _retry_until(_probe, tries, 0.5)   # modal animates in (only when an upsell is offered)
-        if hits:
+        if not hits:
+            return False
+        if self.spec.upsell_dismiss_zone is not None:
+            self._dismiss_via_zone()          # random point in the safe band, verified, bounded
+        else:
             self._tap(*hits[0])               # dismiss control — NEVER the paid button above/beside it
-            return True
-        return False
+        return True
+
+    def _dismiss_via_zone(self) -> None:
+        """Dismiss an ALREADY-DETECTED paid-upgrade sheet by tapping a fresh random point
+        inside spec.upsell_dismiss_zone, re-verifying after each attempt, and halting rather
+        than retrying forever. Only ever called from _handle_rose_upsell, after ITS OWN
+        template match already confirmed the sheet is up — this method never probes for the
+        modal itself, so it structurally cannot fire against the ordinary deck.
+
+        Why a FRESH random point every attempt, not the zone's centre or a fixed offset: a
+        repeated exact coordinate is exactly the kind of bot signature the owner's
+        no-fixed-constants rule forbids (see memory/auto-mode-uncapped-volume.md). Why a
+        bounded retry-then-halt instead of looping until success: a dismiss tap that keeps
+        landing just outside the sheet (drift, a device rotation, an app update that moved
+        the layout) must not turn into an indefinite sequence of blind taps near a screen
+        whose bottom third can be a purchase button (MEASURED 2026-08-10: Bumble's SuperSwipe
+        CTA sits at y 0.899-0.951 — see BUMBLE_SPEC). Stopping and preserving the on-screen
+        state for debugging is always safer than one more guess.
+        """
+        x0, y0, x1, y1 = self.spec.upsell_dismiss_zone
+        w, h = self.adb.screen_size()
+        template = self._template("upsell_dismiss")
+        for _attempt in range(_UPSELL_DISMISS_MAX_ATTEMPTS):
+            fx = random.uniform(x0, x1)       # fresh draw every attempt -- never a fixed point
+            fy = random.uniform(y0, y1)
+            self._tap(fx * w, fy * h)         # still runs through _assert_tap_allowed's guard
+            time.sleep(human_cooldown(0.6))   # let the dismiss animation resolve
+            frame = self._screencap(on_blank="none")
+            if frame is not None and not _match_glyph(frame, template, side="any", threshold=0.6):
+                return                        # sheet glyph is gone -> dismissed
+        raise PaidUpsellStuckError(
+            f"{self.spec.app}: a paid-upgrade sheet is still on screen after "
+            f"{_UPSELL_DISMISS_MAX_ATTEMPTS} dismiss attempts inside its safe zone "
+            f"{self.spec.upsell_dismiss_zone} — halting rather than tapping again blindly. "
+            f"Repeated taps near a modal like this one are how a purchase gets confirmed.")
+
+    def _require_deck_confirmed(self) -> None:
+        """Refuse to issue a decide gesture (like/pass) unless the swipe deck is positively
+        confirmed on screen. See UnconfirmedScreenError for the full reasoning: in short,
+        forbidden_zones is screen-agnostic and cannot by itself tell a safe deck coordinate
+        from the identical point on a paid-upgrade sheet, so this asks a different question
+        first — "is this actually the deck" — using the same glyph-based readiness check
+        _observe_deck_ready already uses passively for human-driven observe mode.
+
+        A no-op when this app's spec declares no 'like' or no 'pass' template: there is
+        nothing to prove readiness against yet (see UnconfirmedScreenError's docstring for
+        why that's not a loophole — such a spec cannot be calibrated or run unattended
+        anyway). Called from _deliver_decision, the single chokepoint both decide gestures
+        (tap and card_swipe) go through, so this covers Bumble's card-drag path — which,
+        unlike Hinge's vision-located tap, had NO perceptual check at all before this."""
+        if "like" not in self.spec.templates or "pass" not in self.spec.templates:
+            return
+        frame = self._screencap()
+        if self._observe_deck_ready(frame):
+            return
+        raise UnconfirmedScreenError(
+            f"{self.spec.app}: refusing to decide — the swipe deck (like heart + pass X) is "
+            f"not positively confirmed on screen. Something else may be up (a paid-upgrade "
+            f"sheet, an ad, a dialog); firing a decide gesture at deck coordinates against an "
+            f"unconfirmed screen is exactly how a like/pass tap lands on a different control "
+            f"instead.")
 
     def _changed(self, a: bytes, b: bytes) -> bool:
         top, bot = _split_diff(a, b)
@@ -1270,7 +1433,14 @@ class AndroidDriver(DatingAppDriver):
         Returns the tapped point, or None when the decision was delivered as a card drag
         (there is no single point to log in that case). Both paths are equally humanized;
         they differ only in what the phone receives, and therefore in what can go wrong:
-        a tap can land on a neighbouring control, a drag cannot."""
+        a tap can land on a neighbouring control, a drag cannot.
+
+        _require_deck_confirmed() runs FIRST, unconditionally, for both gestures — this is
+        the single chokepoint every autonomous decide passes through (see
+        UnconfirmedScreenError), so a card_swipe app (Bumble) gets the same "prove this is
+        the deck before acting" guarantee a tap app gets implicitly from vision-locating its
+        button."""
+        self._require_deck_confirmed()
         if self.spec.decide_gesture == "card_swipe":
             self._decide_by_card_swipe(decision)
             return None

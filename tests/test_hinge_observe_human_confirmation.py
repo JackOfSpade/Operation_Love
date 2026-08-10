@@ -128,6 +128,22 @@ def test_hinge_observe_reports_sheet_intent_before_manual_send_without_touching_
     entering the suggested text manually, and tapping Hinge's Send Like.  The
     observe driver may inspect frames and invoke the callback, but may not emit
     any input command itself.
+
+    Deliberately ``timeout=None`` plus a should_stop() poll BUDGET rather than a
+    real wall-clock timeout. Every poll here runs genuine cv2 template matching
+    against full 1080x2400 frames, and the scripted ``_split_diff`` sequence below
+    needs an exact, fixed NUMBER of polls to exhaust (3 "changed" pairs, then the
+    scripted default "unchanged") before the driver concludes the like sent. With
+    a real timeout, that fixed amount of real CPU work races the wall clock: this
+    test measured ~1.06-1.3s of actual matching against a `timeout=1.0`, so it
+    already ran past its own deadline and only "passed" because the deadline is
+    checked between polls, not against total elapsed time -- a machine/run just
+    slightly slower (a colder cache, a busier CI runner, a different cv2 build)
+    tips the LAST deadline check over 1.0s one poll early and the same, correct
+    driver behavior reads back as `None` instead of `True`. That is exactly what
+    happened in CI (this test has never passed there). The budget below removes
+    the clock from the equation while still catching a genuine regression (the
+    driver failing to ever resolve) as a `None` result instead of hanging CI.
     """
     monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(
@@ -135,9 +151,21 @@ def test_hinge_observe_reports_sheet_intent_before_manual_send_without_touching_
     next_card = _deck_frame()
     adb = _Adb([b"card", _sheet_frame(), next_card])
     callbacks = []
+    polls = 0
+
+    def stop_after_budget():
+        nonlocal polls
+        polls += 1
+        # The success path needs exactly 6 should_stop() checks (1 in
+        # _await_live_frame for `base`, 1 in the outer poll that sees the sheet,
+        # then 4 in _await_like_resolved to exhaust the 3 scripted diffs). 200 is
+        # a generous ceiling that only trips if the driver regresses to never
+        # resolving.
+        return polls > 200
 
     result = _hinge(adb).wait_for_decision(
-        timeout=1.0, on_like_intent=lambda active: callbacks.append(active))
+        timeout=None, should_stop=stop_after_budget,
+        on_like_intent=lambda active: callbacks.append(active))
 
     assert result is True
     assert callbacks == [True, False]
@@ -147,7 +175,13 @@ def test_hinge_observe_reports_sheet_intent_before_manual_send_without_touching_
 
 
 def test_hinge_observe_waits_through_closed_sending_state_until_ready_deck(monkeypatch):
-    """A closed sheet's processing screen is not a completed LIKE or a capture target."""
+    """A closed sheet's processing screen is not a completed LIKE or a capture target.
+
+    Same fix as the intent-publishing regression above and for the same reason:
+    this loop does real cv2 matching on full-size frames, so a real wall-clock
+    timeout races that (machine-speed-dependent) work against the clock instead
+    of testing the driver's actual logic. Bound the polls instead.
+    """
     monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
     sheet = _sheet_frame()
     next_card = _deck_frame()
@@ -155,9 +189,18 @@ def test_hinge_observe_waits_through_closed_sending_state_until_ready_deck(monke
     # The observer must keep polling it until both ordinary deck controls are stable.
     adb = _Adb([b"card", sheet, b"sending", next_card])
     callbacks = []
+    polls = 0
+
+    def stop_after_budget():
+        nonlocal polls
+        polls += 1
+        # The success path needs 4 should_stop() checks; 200 is a generous
+        # ceiling that only trips on a genuine "never resolves" regression.
+        return polls > 200
 
     assert _hinge(adb).wait_for_decision(
-        timeout=1.0, on_like_intent=lambda active: callbacks.append(active)) is True
+        timeout=None, should_stop=stop_after_budget,
+        on_like_intent=lambda active: callbacks.append(active)) is True
     assert callbacks == [True, False]
     assert adb.taps == []
     assert adb.swipes == []

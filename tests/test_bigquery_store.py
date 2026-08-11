@@ -255,6 +255,39 @@ def test_record_profile_rolls_back_partial_upload_failure():
     assert next(blob for name, blob in bucket.blobs.items() if "/00-" in name).deleted is True
 
 
+def test_record_profile_persists_capture_truncated():
+    """capture_truncated marks a label as coming from an INCOMPLETE profile read (the
+    driver hit its scroll ceiling before reaching the true bottom) -- this is the
+    column that lets a later BigQuery query separate truncated-read labels out, e.g.
+    to check whether they're noisier than complete reads."""
+    client = _FakeBQ()
+    s = _store(client, flush_every=100)
+    s.record_profile("r", "hinge", "profile-2", True, photos=[b"\x89PNG\r\n\x1a\nx"],
+                     photo_count=1, capture_truncated=True)
+    s.flush()
+
+    profile = client.inserted["proj.ds.profiles"][0]
+    assert profile["capture_truncated"] is True
+
+
+def test_record_profile_defaults_capture_truncated_to_false():
+    client = _FakeBQ()
+    s = _store(client, flush_every=100)
+    s.record_profile("r", "hinge", "profile-3", True, photos=[b"\x89PNG\r\n\x1a\nx"], photo_count=1)
+    s.flush()
+
+    profile = client.inserted["proj.ds.profiles"][0]
+    assert profile["capture_truncated"] is False
+
+
+def test_ensure_tables_runs_capture_truncated_migration():
+    client = _FakeBQ()
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+    ddl = "\n".join(client.queries)
+    assert "ALTER TABLE `proj.ds.profiles` ADD COLUMN IF NOT EXISTS capture_truncated BOOL" in ddl
+
+
 def test_create_bucket_enforces_private_access():
     client = _FakeBQ()
     storage = _FakeStorage(bucket_exists=False)

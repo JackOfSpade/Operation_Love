@@ -116,6 +116,27 @@ def _is_onnx_provider_failure(error: BaseException | str) -> bool:
     )
 
 
+def _synthetic_probe_image() -> bytes:
+    """A tiny (128x128) PNG generated entirely in memory -- never read from disk or the
+    network -- used only to warm up a REAL inference call (see Embedder._probe_inference).
+    Fixed seed: the probe's job is to exercise the provider, not to test face detection,
+    so deterministic content (identical across every run/machine) is preferable to random
+    content that would make a probe failure harder to reproduce. Structured noise rather
+    than a flat fill, so the image isn't degenerate enough for some detector graph to
+    short-circuit before reaching the same conv/reshape ops a real profile photo would.
+    Pure (numpy+PIL, no I/O); unit-tested.
+    """
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    arr = np.random.default_rng(0).integers(0, 256, size=(128, 128, 3), dtype=np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(arr, mode="RGB").save(buf, format="PNG")
+    return buf.getvalue()
+
+
 class Embedder:
     def __init__(self):
         self._arc = None
@@ -157,8 +178,20 @@ class Embedder:
         caught earlier and separately, by supervisor.run()'s own
         `caps.missing("arcface", "clip")` gate; this covers every OTHER init failure that
         gate can't see, since the libraries can be installed and still fail to load.)
+
+        _ensure() above only BUILDS the ONNX session (ort.InferenceSession(...) /
+        insightface's arc.prepare(...)) -- neither call actually runs the model, so a
+        provider that builds cleanly can still be unable to INFER. Observed on this
+        project's dev Mac (Apple Silicon): CoreMLExecutionProvider built buffalo_l's
+        session with no error, but the compiled graph had a static-shape incompatibility
+        that only threw on the first real `.get()` call, well after warmup had already
+        reported success -- see _probe_inference()'s docstring for the exact error and
+        why running one real synthetic inference here, through the SAME fallback
+        embed_profile() already has, is what catches it during startup instead of on the
+        operator's first real profile.
         """
         self._ensure()
+        self._probe_inference()
 
     def _ensure(self) -> None:
         if self._arc is not None:                  # fast path: already init, no lock needed
@@ -187,6 +220,37 @@ class Embedder:
 
             providers = _select_onnx_providers(self._device, ort.get_available_providers())
             self._set_arc_providers(providers)     # sets self._arc — LAST, after CLIP succeeded
+
+    def _probe_inference(self) -> None:
+        """Run ONE real inference through embed_profile()'s exact code path, on a tiny
+        synthetic image, so a provider that BUILT successfully but cannot actually INFER
+        is caught here during startup instead of on the operator's first real profile.
+
+        Concrete motivating case (a real observe-mode run on this project's dev Mac,
+        Apple Silicon, verified against this code): CoreMLExecutionProvider's
+        ort.InferenceSession(...) for buffalo_l builds without error -- the eager
+        _ensure() call warmup() makes above sees a clean success -- but the compiled
+        graph has a static-shape incompatibility that only throws on the first real
+        `.get()` call:
+            Photo embedding error: Fail: [ONNXRuntimeError] : 1 : FAIL : ...
+            CoreMLExecutionProvider ... Status Message: Exception: ...
+            GetStaticOutputShape ... CoreML static output shape ({1,1,1,128,1}) and
+            inferred shape ({3200,1}) have different ranks.
+        Previously that was invisible until the operator's first real profile: it burned
+        ~55s embedding all 8 of that profile's photos, errored on every one, and only
+        THEN rebuilt the whole FaceAnalysis stack and re-embedded on CPU -- mid-run,
+        after supervisor.run() had already taken the Android device lock and opened a
+        live session (see warmup()'s docstring above for why that ordering matters).
+
+        Routed through embed_profile() itself, not a parallel check: a provider-shaped
+        failure here hits the SAME CPU-fallback branch, under the SAME lock, with the
+        SAME loud prints, that a real profile's failure would -- one fallback path to
+        keep correct, not two. embed_profile() never raises on a photo's embedding
+        error (it counts it, prints it, and continues), so a non-provider-shaped hiccup
+        on this synthetic image cannot turn into a hard startup failure here either --
+        only a genuine _ensure() failure above (unchanged) does that.
+        """
+        self.embed_profile(Profile(photos=[_synthetic_probe_image()]))
 
     # --- per-photo -----------------------------------------------------
     def _embed_image(self, img_bytes: bytes) -> tuple[list[float] | None, list[float]]:
@@ -229,6 +293,8 @@ class Embedder:
     def embed_profile(self, profile: Profile) -> list[float] | None:
         self._ensure()
         retried_on_cpu = False
+        prior_errors = 0             # errors from a failed pass BEFORE a CPU retry, if any
+        prior_provider: str | None = None
         while True:
             face_vecs: list[list[float]] = []
             clip_vecs: list[list[float]] = []
@@ -254,13 +320,29 @@ class Embedder:
                     # faces at all still returns None below, so no photo signal is silently lost).
                     clip_vecs.append(cv)
 
+            # A provider-shaped error on ANY photo (not just every photo) means the
+            # embedder itself is broken for this provider, not that a few photos happen
+            # to be bad: CoreMLExecutionProvider's static-shape graph on this machine
+            # (see _probe_inference's docstring for the exact rank-mismatch error) throws
+            # the SAME exception on every call it's given, so errors < len(photos) here
+            # just means the run got lucky about which photos ran before the first
+            # failure, not that the provider is partly working. Gating the fallback on
+            # errors == len(photos) let a 7-of-8 CoreML failure stay on the broken
+            # provider and silently pool a "full strength" profile embedding out of the
+            # ONE surviving photo -- fail loud instead: retry the WHOLE profile on CPU.
             provider_failed = (
                 bool(profile.photos)
-                and errors == len(profile.photos)
+                and errors > 0
                 and first_error is not None
                 and _is_onnx_provider_failure(first_error)
             )
             if provider_failed and not self._arc_on_cpu and not retried_on_cpu:
+                # Capture what this pass actually ran on and how many photos it lost,
+                # BEFORE the swap below overwrites _arc_providers, so the summary line
+                # after the loop can report the failed first pass even after a
+                # successful CPU retry (see the retry_note below).
+                prior_errors = errors
+                prior_provider = (self._arc_providers or ["unknown provider"])[0]
                 # Guard the provider swap with the same lock _ensure() uses: two Workers can
                 # hit this concurrently, and without the lock both would observe
                 # not self._arc_on_cpu and both rebuild the full FaceAnalysis model (duplicated
@@ -276,16 +358,39 @@ class Embedder:
                 continue
             break
 
-        # One line per profile so "no_face" is never a silent mystery: how many
-        # photos came in, how many had a detectable face, how many errored.
+        # One line per profile so "no_face" is never a silent mystery: how many photos
+        # came in, how many had a detectable face, how many errored on THIS (possibly
+        # CPU-retried) pass -- plus, if an earlier pass on a different provider failed
+        # before the retry kicked in, how many that pass lost too. Without carrying
+        # prior_errors/prior_provider across the retry, a profile whose first pass
+        # errored 8/8 on CoreML and then succeeded 8/8 on CPU read as a perfectly clean
+        # "8 photo(s) -> 8 with a face", with zero record that the first pass had failed
+        # outright.
+        retry_note = (
+            f" ({prior_errors} errored on {prior_provider}, re-run on CPU)" if prior_errors else ""
+        )
         print(f"Profile: {len(profile.photos)} photo(s) -> "
               f"{len(face_vecs)} with a face"
-              f"{f', {errors} errored' if errors else ''}")
-        # A profile where EVERY photo threw is an operator problem (broken embedder: bad
-        # weights, OOM, corrupt install), not a profile property -- left alone it returns
-        # None exactly like a genuine no-face profile and silently vanishes into the same
-        # "skip" path, with zero signal that the embedder itself is broken. Say so loudly,
-        # once per run (same convention as quality.py's _report_failure).
+              f"{f', {errors} errored' if errors else ''}"
+              f"{retry_note}")
+        # Any photo that fails to embed and STAYS failed (no further fallback recovered
+        # it) means the pooled embedding below is built from fewer photos than the
+        # profile actually has -- a partially-embedded profile must never look
+        # indistinguishable from a clean one in the run's output, whether it's every
+        # photo (a fully broken embedder) or just some of them (a provider already on
+        # CPU with nowhere left to fall back to, or a handful of corrupt/undecodable
+        # images unrelated to the provider).
+        if errors:
+            print(f"WARNING: {errors}/{len(profile.photos)} photo(s) failed to embed in "
+                  f"this profile ({type(first_error).__name__}: {first_error}) -- the "
+                  "pooled embedding below is built from fewer photos than the profile "
+                  "actually has.")
+        # A profile where EVERY photo threw (on the final pass) is an operator problem
+        # (broken embedder: bad weights, OOM, corrupt install), not a profile property --
+        # left alone it returns None exactly like a genuine no-face profile and silently
+        # vanishes into the same "skip" path, with zero signal that the embedder itself
+        # is broken. Say so loudly, once per run (same convention as quality.py's
+        # _report_failure).
         if bool(profile.photos) and errors == len(profile.photos) and not self._reported_total_failure:
             self._reported_total_failure = True
             print(f"WARNING: total embedding failure ({errors}/{len(profile.photos)} photos "

@@ -99,8 +99,16 @@ def test_hub_endpoints():
         snap = json.loads(raw)
         assert snap["running"] is False and snap["status"] is None
 
-        code, body = _post(base, "/api/stop")
-        assert body["ok"] is True
+        # No run is active in this offline smoke test -- HubState.stop() must refuse
+        # honestly (ok=False, 409) rather than the old unconditional "stopping" success.
+        try:
+            _post(base, "/api/stop")
+            assert False, "expected 409 (no run active)"
+        except urllib.error.HTTPError as e:
+            assert e.code == 409
+            body = json.loads(e.read())
+            assert body["ok"] is False
+            assert "no run is active" in body["msg"]
 
         try:
             _get(base, "/nope")
@@ -110,6 +118,28 @@ def test_hub_endpoints():
     finally:
         httpd.shutdown()
         httpd.server_close()   # release the listening socket too; shutdown() alone leaves it open
+        _join_hub_watch_threads()
+
+
+def test_api_stop_returns_200_with_ok_true_when_a_run_is_active():
+    # Mirrors /api/start's existing status-code convention (200 on success, 409 on refusal)
+    # -- the handler must apply the same rule to HubState.stop()'s new (ok, msg) contract.
+    _Handler.state = HubState("config.yaml")
+    _Handler.state._stop = threading.Event()
+    _Handler.state._thread = threading.Thread(target=lambda: time.sleep(0.3), daemon=True)
+    _Handler.state._thread.start()
+    httpd = _bind("127.0.0.1", 8799)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        code, body = _post(base, "/api/stop")
+        assert code == 200 and body["ok"] is True
+        assert _Handler.state._stop.is_set() is True
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        _Handler.state._thread.join(timeout=2)
         _join_hub_watch_threads()
 
 
@@ -176,6 +206,92 @@ def test_hubstate_double_start_blocked():
     ok, msg = st.start()
     assert ok is False and "active" in msg
     st._thread.join()
+
+
+# --- audit fix: Stop must be honest -- both about whether it did anything, and (on the
+# terminal/hub live-log panel, since bugreport.install_log_capture tees stdout) that a swipe
+# made after this point won't be recorded. -------------------------------------------------
+
+def test_hubstate_stop_without_active_run_returns_false_with_reason():
+    # Pre-fix this always returned (True, "stopping") even with nothing to stop -- a stray
+    # /api/stop (double-click, stale tab) looked like it had worked.
+    st = HubState("config.yaml")
+    ok, msg = st.stop()
+    assert ok is False
+    assert msg == "no run is active"
+
+
+def _live_hubstate():
+    """A HubState that looks like it has a run in progress: stop() gates on LIVENESS, not on
+    the mere existence of an Event (self._stop is set by start() and never reset, so a gate on
+    the object alone would keep reporting success long after a run ended)."""
+    st = HubState("config.yaml")
+    st._stop = threading.Event()          # stand-in for what start() would have set up
+    done = threading.Event()
+    st._thread = threading.Thread(target=done.wait, daemon=True)
+    st._thread.start()
+    return st, done
+
+
+def test_hubstate_stop_after_a_run_already_finished_reports_no_active_run():
+    """The Event outlives the run: without a liveness check, a stray /api/stop against a hub
+    whose run ended (deck exhausted, rate limit, an error halt) claimed a stop had worked."""
+    st, done = _live_hubstate()
+    done.set()
+    st._thread.join(timeout=5)
+
+    ok, msg = st.stop()
+    assert ok is False and msg == "no run is active"
+    assert st._stop.is_set() is False     # and it did not quietly set a dead run's event
+
+
+def test_hubstate_stop_sets_the_event_and_prints_an_operator_line(capsys):
+    st, done = _live_hubstate()
+    ok, msg = st.stop()
+    done.set()
+    assert ok is True and msg == "stopping"
+    assert st._stop.is_set() is True
+    out = capsys.readouterr().out
+    # Every OTHER shutdown trigger (tab-close, SIGINT, startup-abort) already prints a line;
+    # Stop via the hub button was the one silent path, on both the terminal and the hub's
+    # own live-log panel (which reads the same tee'd stdout).
+    assert "Hub: stop requested" in out
+    assert "will NOT be recorded" in out
+
+
+def test_hubstate_snapshot_forwards_the_stopping_field_from_run_status():
+    # HubState.snapshot() must not need a redundant field of its own -- RunStatus.snapshot()
+    # (embedded verbatim as snap["status"]) already carries `stopping`, so nothing extra is
+    # needed here as long as nothing strips it back out.
+    from operation_love.status import RunStatus
+
+    st = HubState("config.yaml")
+    status = RunStatus("r1", ["hinge"], min_labels=1, mode="observe")
+    status.set_global(stopping=True, phase="stopping")
+    with st._lock:
+        st._status = status
+    snap = st.snapshot()
+    assert snap["status"]["stopping"] is True
+    assert snap["status"]["phase"] == "stopping"
+
+
+def test_snapshot_reports_stopping_for_a_stop_pressed_during_startup():
+    """RunStatus.stopping is written by supervisor.run()'s shutdown finally, which a Stop
+    pressed DURING STARTUP never reaches (_abort_startup handles that path). The page would
+    then show running=true / stopping=false with the Stop button still live for the whole
+    model warmup -- the exact "did my click register?" gap this state exists to close."""
+    from operation_love.status import RunStatus
+
+    st, done = _live_hubstate()
+    status = RunStatus("r1", ["hinge"], min_labels=1, mode="observe")
+    status.set_global(phase="loading ML models")     # still starting up; stopping stays False
+    with st._lock:
+        st._status = status
+    assert st.snapshot()["status"]["stopping"] is False
+
+    st.stop()
+    assert st.snapshot()["status"]["stopping"] is True
+    done.set()
 
 
 def test_wait_for_run_returns_true_when_thread_finishes_in_time():
@@ -630,6 +746,109 @@ def test_hub_max_per_run_invalid_input_delegates_to_config():
     assert _run_node(script) == expected
 
 
+# --- audit fix: an honest "stopping" tail, driven by status.stopping ------------------------
+
+def test_stop_button_state_reflects_stopping_and_disables_a_second_press():
+    # Once status.stopping is true the button must relabel AND disable, in the same call --
+    # a second press is impossible-by-design, not merely a no-op HubState.stop() tolerates.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fn = _extract_js_function(_PAGE, "stopButtonState")
+    cases = [(True, False), (True, True), (False, False), (False, True)]
+    script = (
+        fn + "\n"
+        "const cases = " + json.dumps(cases) + ";\n"
+        "console.log(JSON.stringify(cases.map(c => stopButtonState(c[0], c[1]))));\n"
+    )
+    assert _run_node(script) == [
+        {"label": "■ Stop", "disabled": False},        # running, not stopping -> normal
+        {"label": "■ Stopping…", "disabled": True},    # running AND stopping -> the shutdown tail
+        {"label": "■ Stop", "disabled": True},          # not running -> disabled regardless
+        {"label": "■ Stopping…", "disabled": True},    # not running but stopping (brief overlap)
+    ]
+
+
+def test_should_clear_hint_only_fires_on_the_running_to_stopped_transition():
+    # A blanket "clear whenever !running" would also wipe a legitimate persistent message
+    # like 'not started' (set while running is ALREADY false) on the very next poll.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fn = _extract_js_function(_PAGE, "shouldClearHint")
+    # (running, wasRunning)
+    cases = [(True, True), (False, True), (False, False), (True, False)]
+    script = (
+        fn + "\n"
+        "const cases = " + json.dumps(cases) + ";\n"
+        "console.log(JSON.stringify(cases.map(c => shouldClearHint(c[0], c[1]))));\n"
+    )
+    assert _run_node(script) == [
+        False,  # still running -> nothing to clear yet
+        True,   # WAS running, just stopped -> the real transition -> clear
+        False,  # already not running (e.g. a failed Start) -> leave it alone
+        False,  # just started running -> nothing to clear
+    ]
+
+
+def _render_global_script(calls: list) -> str:
+    """Run the real renderGlobal against a minimal DOM, once per entry in `calls`, in the
+    SAME node process/script and in order -- renderGlobal is stateful across polls (the
+    module-level `_wasRunning` shouldClearHint reads), so a fresh eval per call would miss
+    exactly the transition this is testing."""
+    fns = (_extract_js_function(_PAGE, "stopButtonState") + "\n"
+           + _extract_js_function(_PAGE, "shouldClearHint") + "\n"
+           + _extract_js_function(_PAGE, "renderGlobal"))
+    return (
+        "let _wasRunning = false;\n"
+        "let els = {runpill:{textContent:'',className:''}, start:{disabled:false}, "
+        "stop:{disabled:false,textContent:''}, hint:{textContent:''}, budget:{textContent:''}, "
+        "err:{textContent:''}};\n"
+        "function $(sel){ return els[sel.slice(1)]; }\n"
+        + fns + "\n"
+        "const calls = " + json.dumps(calls) + ";\n"
+        "const results = [];\n"
+        "for (const c of calls) {\n"
+        "  if (c.presetHint != null) els.hint.textContent = c.presetHint;\n"
+        "  renderGlobal(c.snap);\n"
+        "  results.push({hint: els.hint.textContent, pill: els.runpill.textContent, "
+        "stopDisabled: els.stop.disabled, stopLabel: els.stop.textContent});\n"
+        "}\n"
+        "console.log(JSON.stringify(results));\n"
+    )
+
+
+def test_render_global_clears_a_stuck_stopping_hint_only_on_the_running_transition():
+    # The exact audit bug: a Stop pressed during startup jumps straight from a starting-
+    # phase to phase='stopped' (supervisor.py's _abort_startup), with no 'saving data'
+    # phase ever published in between -- so the old code, which only cleared the literal
+    # string 'saving data…', left 'stopping…' stuck next to a 'stopped' pill forever.
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    calls = [
+        {"presetHint": "stopping…", "snap": {"running": True, "status": {"phase": "starting"}}},
+        {"snap": {"running": False, "status": None}},   # startup-abort: straight to stopped
+    ]
+    results = _run_node(_render_global_script(calls))
+    assert results[0]["hint"] == "stopping…"    # still running -> not cleared yet
+    assert results[1]["hint"] == ""              # the transition -> cleared (was stuck before)
+
+    # A FAILED Start (running already false, no transition ever happens) must not have its
+    # explanation wiped out from under it.
+    calls_b = [{"presetHint": "not started", "snap": {"running": False, "status": None}}]
+    results_b = _run_node(_render_global_script(calls_b))
+    assert results_b[0]["hint"] == "not started"
+
+
+def test_render_global_shows_stopping_on_the_pill_and_disables_the_stop_button():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    calls = [{"snap": {"running": True, "status": {
+        "phase": "stopping", "stopping": True, "budget_spent": 0}}}]
+    results = _run_node(_render_global_script(calls))
+    assert results[0]["pill"] == "stopping"
+    assert results[0]["stopDisabled"] is True
+    assert results[0]["stopLabel"] == "■ Stopping…"
+
+
 def test_hub_page_rereigsters_on_tab_wake_events():
     # Chrome throttles a hidden tab's setInterval ping to ~once/minute; the page must also
     # re-register the instant the tab visibly wakes (these fire un-throttled), same as pageshow.
@@ -792,6 +1011,45 @@ def test_hubstate_surfaces_systemexit_from_supervisor(monkeypatch):
     assert st._error is not None
     assert st._error.startswith("SystemExit:")
     assert "missing" in st._error
+
+
+def test_hubstate_recent_openers_returns_empty_list_with_no_active_run():
+    """No run has ever started -- there is no OpenerService to read from. The bug report
+    calls this unconditionally, so it must degrade to a plain [] rather than raising
+    (AttributeError on self._opener_service being None, or similar)."""
+    st = HubState("config.yaml")
+    assert st.recent_openers() == []
+
+
+def test_hubstate_recent_openers_forwards_to_the_captured_opener_service():
+    """Once a run has captured an OpenerService (via on_opener_service -> _capture_opener_service),
+    recent_openers() must hand back exactly what that service's own recent_openers_snapshot()
+    returns -- this is the real data route the bug report's 'Recent openers' section relies on."""
+    class FakeOpenerService:
+        def recent_openers_snapshot(self):
+            return [{"ts": "t0", "app": "hinge", "model": "gemini-2.5-flash", "anchored": True,
+                     "advisory": False, "index": 0, "referenced": "the beach photo",
+                     "opener": "love the beach shot"}]
+
+    st = HubState("config.yaml")
+    with st._lock:
+        st._opener_service = FakeOpenerService()
+    assert st.recent_openers() == FakeOpenerService().recent_openers_snapshot()
+
+
+def test_hubstate_recent_openers_swallows_a_raising_service():
+    """A service mid-teardown (run just ended, supervisor is tearing down objects) could have
+    its recent_openers_snapshot() raise instead of returning cleanly -- e.g. a lock object
+    already released/replaced. recent_openers() must never propagate that into the bug report;
+    it degrades to []."""
+    class ExplodingOpenerService:
+        def recent_openers_snapshot(self):
+            raise RuntimeError("torn down mid-read")
+
+    st = HubState("config.yaml")
+    with st._lock:
+        st._opener_service = ExplodingOpenerService()
+    assert st.recent_openers() == []
 
 
 def test_wait_for_run_honors_timeout():
@@ -961,6 +1219,53 @@ def test_observe_banner_shows_wait_cue_while_a_suggestion_is_being_generated():
     }
     escaped = _run_node(_observe_status_script(hostile))
     assert "<img" not in escaped["html"] and "&lt;img" in escaped["html"]
+
+
+def test_observe_banner_replaces_every_go_cue_with_a_stop_box_while_stopping():
+    """Audit fix: worker.py discards any decision recorded once stop_event lands (see the
+    stop_event re-checks around the observe loop's decision point), so telling the operator
+    to act -- plain 'waiting', the no-suggestion 'waiting_for_send' fallback, or a live
+    opener suggestion -- would be actively misleading during the shutdown tail
+    (status.stopping, set for the whole join+save window -- see status.py's docstring).
+    Same WAIT (🔴) style as the existing suggesting/capturing cues, never 🟢, per the
+    owner's circle-only status convention."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    waiting_while_stopping = {
+        "running": True,
+        "status": {"stopping": True,
+                   "apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting"}}},
+    }
+    out = _run_node(_observe_status_script(waiting_while_stopping))
+    assert out["display"] == "block"
+    assert "stopping — do not swipe" in out["html"]
+    assert "this decision will not be recorded" in out["html"]
+    assert "click pass X or heart" not in out["html"]
+    assert "🔴" in out["html"] and "🟢" not in out["html"]
+
+    # The live opener-suggestion GO box must be overridden too, and the suggestion text
+    # itself suppressed (there is nothing useful to type into a decision that gets thrown
+    # away).
+    opener_while_stopping = {
+        "running": True,
+        "status": {"stopping": True, "apps": {"hinge": {
+            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
+            "opener_suggestion": "love the beach shot",
+        }}},
+    }
+    out2 = _run_node(_observe_status_script(opener_while_stopping))
+    assert "stopping — do not swipe" in out2["html"]
+    assert "love the beach shot" not in out2["html"]
+
+    # Regression guard: while NOT stopping, the ordinary GO cue is untouched.
+    not_stopping = {
+        "running": True,
+        "status": {"stopping": False,
+                   "apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting"}}},
+    }
+    out3 = _run_node(_observe_status_script(not_stopping))
+    assert "click pass X or heart" in out3["html"]
+    assert "stopping — do not swipe" not in out3["html"]
 
 
 def test_select_auto_apps_filters_to_auto_mode_only():
@@ -1175,6 +1480,36 @@ def test_render_auto_status_does_not_claim_running_after_the_run_ended():
     # Same non-terminal state while the run IS live still reads as running.
     live = {"running": True, "status": {"apps": {"hinge": dict(snap["status"]["apps"]["hinge"])}}}
     assert "hinge: running" in _run_node(_autostatus_script(live))["html"]
+
+
+def test_render_auto_status_shows_stopping_instead_of_running_during_the_shutdown_tail():
+    """Sibling of the test above: the run is STILL alive (thread not yet exited, so
+    snap.running is True) but status.stopping is True -- supervisor.run()'s shutdown tail
+    covers every non-terminal per-app state this fall-through renders (acting/capturing/
+    scoring/saving), and a live worker in that window is about to have its current decision
+    discarded (worker.py re-checks stop_event and drops it), so a green "running" box would
+    tell the operator the opposite of what's actually happening."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {
+        "running": True,
+        "status": {"stopping": True, "apps": {
+            "hinge": {"app": "hinge", "mode": "auto", "state": "acting", "swipes_run": 5},
+        }},
+    }
+    result = _run_node(_autostatus_script(snap))
+    assert result["display"] == "block"
+    assert "stopping — finishing the current profile" in result["html"]
+    assert "hinge: running" not in result["html"]
+
+    # Regression guard: same non-terminal state, NOT stopping, still reads as running.
+    not_stopping = {
+        "running": True,
+        "status": {"stopping": False, "apps": {
+            "hinge": {"app": "hinge", "mode": "auto", "state": "acting", "swipes_run": 5},
+        }},
+    }
+    assert "hinge: running" in _run_node(_autostatus_script(not_stopping))["html"]
 
 
 def test_tick_drives_real_auto_status_renderer_and_page_owns_banner_element():

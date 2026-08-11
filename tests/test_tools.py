@@ -25,6 +25,7 @@ import importlib
 import runpy
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 _TOOL_MODULES = ["tools.hinge_inspect", "tools.bumble_inspect", "tools.eval_aggregation"]
 
@@ -190,3 +191,89 @@ def test_eval_aggregation_shares_ranker_evaluate_entry_point():
 
     assert tool_mod.evaluate is real_mod.evaluate
     assert tool_mod.format_report is real_mod.format_report
+
+
+class _FakeWatchDriver:
+    """Duck-types the slice of HingeDriver _watch() touches: current_profile() +
+    wait_for_decision() plus the identity/content instance attributes _capture_current
+    would have populated. Not a real HingeDriver -- no ADB, no cv2 -- exactly like the
+    other fakes in this file avoid touching a device/browser."""
+
+    def __init__(self, *, observe_touch_watch=True, decisions=(True,)):
+        self.observe_touch_watch = observe_touch_watch
+        self._identity_sig = b"anchor-band"
+        self._identity_top_sig = b"top-chrome-band"
+        self._identity_name = "Alex"
+        self._current_sigs = [object(), None, object()]   # 2 non-None, like a real capture
+        self.capture_calls = 0
+        self._decisions = list(decisions)
+        self.decision_calls = 0
+
+    def current_profile(self):
+        self.capture_calls += 1
+        return SimpleNamespace(photos=[b"p1", b"p2"])
+
+    def wait_for_decision(self, timeout=None):
+        self.decision_calls += 1
+        return self._decisions.pop(0)
+
+
+def test_hinge_inspect_watch_captures_profile_before_waiting_for_decision(capsys):
+    """FINDING 10 regression: _watch() must call driver.current_profile() -- observe
+    mode's ONLY capture path (hinge.py's own docstring on that method) -- before every
+    driver.wait_for_decision() poll. current_profile() is what populates the
+    identity-anchor signatures (_identity_sig / _identity_top_sig) and the content-match
+    signatures (_current_sigs) that wait_for_decision's Layers 1/2 compare every later
+    frame against; skipping it (the original bug) left both at their __init__ defaults
+    for the whole --watch session, so identity stayed permanently 'unknown' and
+    content-match had nothing to compare against -- the tool could then only ever
+    exercise Layer 3 (gesture corroboration), silently reproducing the exact
+    scroll-recorded-as-decision bug the redesign exists to close, inside the one tool
+    meant to verify the fix. Before the fix, current_profile() was never called at all."""
+    from tools import hinge_inspect
+
+    driver = _FakeWatchDriver(decisions=[True, False])
+    hinge_inspect._watch(driver, 2)
+
+    # one capture per round, and each capture happens BEFORE that round's decision poll
+    assert driver.capture_calls == 2
+    assert driver.decision_calls == 2
+
+    out = capsys.readouterr().out
+    assert "identity anchor: revealed ('Alex')" in out
+    assert "2 content signature(s)" in out
+    assert "gesture corroboration (Layer 3): ON" in out
+    assert "LIKE" in out and "PASS" in out
+
+
+def test_hinge_inspect_watch_reports_gesture_corroboration_off():
+    """observe_touch_watch: false is a real, documented, supported config (hinge.py's own
+    fail-loud open_session error tells operators to set it on purpose) -- under it, Layers
+    1/2 alone carry every verdict, and the operator watching --watch must be told that,
+    not left to assume the same 3-layer proof always ran."""
+    from tools import hinge_inspect
+
+    driver = _FakeWatchDriver(observe_touch_watch=False, decisions=[True])
+    hinge_inspect._watch(driver, 1)
+
+
+def test_hinge_inspect_watch_stops_cleanly_when_capture_fails(capsys):
+    """A capture failure (deck empty / the comment sheet was open) must stop the watch
+    with a clear message rather than calling wait_for_decision() on a card that was never
+    actually captured -- that call site would poll against a stale/absent identity anchor
+    from whatever card came before, exactly the class of bug this fix closes."""
+    from tools import hinge_inspect
+
+    class _FailToCaptureDriver:
+        observe_touch_watch = False
+
+        def current_profile(self):
+            return None
+
+        def wait_for_decision(self, timeout=None):
+            raise AssertionError("wait_for_decision must not run without a capture first")
+
+    hinge_inspect._watch(_FailToCaptureDriver(), 3)
+
+    out = capsys.readouterr().out
+    assert "Could not capture a profile card" in out

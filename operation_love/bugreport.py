@@ -2,22 +2,28 @@
 
 Modeled on infinite-canvas's bug-report feature, adapted to this app. Captures
 system + device info, the running build (git commit + a stale-code check), key
-dependency versions, the config (secrets stripped — presence only, never a
-value or even a derived prefix), the live run status (phase, labels, ranker,
-per-app decisions, budget, last error), and recent log lines. Output is
-markdown the owner can paste to a developer to debug. The report includes an
-instruction to improve this collector when it lacks enough context, and it
+dependency versions, runtime CAPABILITY presence (the tesseract OCR binary,
+opencv, and which /dev/input/event* device the touch watcher would attach
+to — see _capabilities_md), the config (secrets stripped — presence only,
+never a value or even a derived prefix), the live run status (phase, labels,
+ranker, per-app decisions, budget, last error), and recent log lines. Output
+is markdown the owner can paste to a developer to debug. The report includes
+an instruction to improve this collector when it lacks enough context, and it
 caps output at 50k lines by dropping the oldest captured lines first.
 
 The hub serves it at GET /api/bugreport; install_log_capture() (called by the
 hub at startup) tees stdout/stderr into a ring buffer so "recent logs" has
-content. Pure stdlib so it imports anywhere.
+content. Pure stdlib so it imports anywhere — the capability probes below
+import cv2/touchwatch lazily and swallow their own absence rather than making
+that a hard dependency of this module.
 """
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import threading
@@ -27,7 +33,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 _MAX_REPORT_LINES = 50_000
-_DEBUG_ACTION_TAIL = 30          # actions.jsonl lines to inline from the latest debug run
+_DEBUG_ACTION_TAIL = 30          # actions.jsonl DISPLAY entries to inline from the latest run
+# ^ Used to be "raw lines", and the comment here claimed a profile logs at most 2 of those, so
+# 30 always reached back ~15 profiles. That broke the day wait_for_decision grew the
+# observe_waiting heartbeat (_note_observe_waiting, hinge.py): it fires roughly every 15s of
+# human deliberation even while reason="no_change" proves nothing moved, so ONE profile's wait
+# alone can burn the entire raw-line budget (a real audited 3-minute decision logged 12 of
+# them — data/hinge_debug/run_20260810_203956) and push its own "capture" record — the thing a
+# developer needs sitting right next to the decision — out of the tail entirely.
+# The real invariant now: _collapse_action_tail groups ADJACENT actions.jsonl lines that share
+# the same "action" AND "reason" (i.e. repeats of the same heartbeat) into ONE display entry
+# before this budget is ever applied, so 30 means "the last 30 GENUINE events", not "the last
+# 30 raw lines, however many of them are the same heartbeat repeated". Every action that isn't
+# a repeated action+reason pair (capture, observe_decision, observe_resync, locate_target_heart,
+# like, ...) still costs exactly one raw JSON line, unchanged. The very first and last entries
+# shown are always kept as literal, uncollapsed records — even when they'd otherwise be part of
+# a run — specifically so a live stall's most recent state (its own screenshot filename
+# included) is never hidden behind a "repeated: N" summary with no filename in it.
+_RECENT_OPENERS_SHOWN = 10        # cap on _recent_openers_md rows -- see its docstring
+_RECENT_OPENER_TEXT_CHARS = 240   # per-opener cap so one runaway response can't blow up the report
 _LOG_RING: deque[str] = deque(maxlen=_MAX_REPORT_LINES)
 _LOG_LOCK = threading.Lock()
 _PROCESS_START = time.time()
@@ -151,6 +175,107 @@ def _deps_md() -> str:
     return "\n".join(f"- {k}: {v}" for k, v in _dep_versions().items())
 
 
+# ── capability probes ──────────────────────────────────────────────────────
+# The three things the observe-mode redesign (see ops/ANTI-BOT-RESEARCH.md, 2026-08-10) leans
+# on that are otherwise invisible anywhere else in this report: none of them show up in
+# _dep_versions (tesseract is a system binary, not a Python import; cv2 is deliberately NOT in
+# that list because a missing opencv install is not a soft degradation for this project — see
+# _opencv_md) or in _config_md (the config can declare observe_touch_watch=true while the
+# actual device probe silently fails or picks a surprising node). This is the bug report's
+# owner-filed self-improvement in action: the original report gave no way to tell "OCR is off
+# because tesseract isn't installed" apart from "OCR is off because nothing scrolled the
+# profile far enough yet", nor whether a gesture-corroboration failure traced back to the
+# wrong /dev/input node. Presence-only, same redaction contract as _secrets_md: a path or a
+# device NAME is not a secret, but this never becomes a place to grow raw device output.
+def _tesseract_md() -> str:
+    path = shutil.which("tesseract")
+    return (f"- tesseract: {path or 'absent'} — best-effort profile-name OCR (identity "
+            f"corroboration only, see hinge.py's _ocr_band) degrades silently to the "
+            f"pixel-signature-only identity anchor when absent; never load-bearing")
+
+
+def _opencv_md() -> str:
+    try:
+        import cv2
+        return f"- opencv (cv2): present ({getattr(cv2, '__version__', '(installed)')})"
+    except Exception as exc:  # noqa: BLE001 — absence itself IS the diagnostic, not a crash
+        return (f"- opencv (cv2): absent ({type(exc).__name__}: {exc}) — every Android "
+                f"driver refuses to open a session without it (AndroidDriver._require_vision "
+                f"in drivers/hinge.py); a launcher shipped without the `hinge` extra has left "
+                f"this silently missing before, so this line exists to make that visible "
+                f"without waiting for every glyph-match call to fail")
+
+
+def _first_android_app_cfg(apps: dict, enabled_apps: list) -> tuple[str, str | None] | None:
+    """(adb_path, serial) for the ADB target a live run would actually probe.
+
+    Only Android-driven apps declare `adb_path` at all (bumble_web is a Playwright browser
+    and has none), so its presence is what distinguishes an Android app entry from a web one
+    without hardcoding app names here. Prefers the first ENABLED app that declares one — that
+    is the device a real run would actually talk to — and falls back to ANY app with
+    `adb_path` so a report generated with a stale/mismatched `enabled_apps` (or none at all)
+    can still say something concrete about the phone this project talks to, rather than
+    reporting "not configured" when it plainly is.
+    """
+    candidates = [apps.get(name) for name in (enabled_apps or [])]
+    candidates += list(apps.values())
+    for opts in candidates:
+        if isinstance(opts, dict) and "adb_path" in opts:
+            return opts.get("adb_path", "adb"), (opts.get("serial") or None)
+    return None
+
+
+def _touch_watcher_probe_md(config_path: str) -> str:
+    """Which /dev/input/event* device layer 3's gesture corroboration (touchwatch.py) would
+    attach to, or why none qualified — WITHOUT ever leaving anything attached.
+
+    Runs the SAME read-only `adb shell getevent -p` device-selection TouchWatcher.start()
+    itself runs first, through the real class rather than a reimplementation, so this can
+    never drift from what a live session actually selects. It deliberately goes through
+    start()/close() rather than reaching into TouchWatcher's private probe helper: start() is
+    the one place that owns "pick a device, then decide whether to keep going", and using the
+    public method means a future change to that decision can't silently stop being reflected
+    here. The stream it briefly attaches (`getevent -lt`, read-only — see touchwatch.py's
+    module docstring; this never writes to /dev/input) is torn down in the `finally` before
+    this function returns, so a bug report can never leave a background reader thread/process
+    attached to the phone. Safe with no device connected or `adb` itself missing:
+    TouchWatchUnavailable is exactly the "reason none qualified" case this reports as a plain
+    line, not a crash — the same contract AndroidDriver.open_session relies on.
+    """
+    try:
+        from . import config as cfg_mod
+        c = cfg_mod.load(config_path)
+    except Exception as exc:  # noqa: BLE001
+        return (f"- touch watcher: could not load `{config_path}` to find the ADB target "
+                f"({_sanitize_inline(str(exc))})")
+    apps = c.apps if isinstance(c.apps, dict) else {}
+    target = _first_android_app_cfg(apps, getattr(c, "enabled_apps", None) or [])
+    if target is None:
+        return "- touch watcher: no Android app configured (no `apps.*.adb_path` in config)"
+    adb_path, serial = target
+
+    from .drivers.touchwatch import TouchWatcher, TouchWatchUnavailable
+    # screen_size only scales GESTURE coordinates after a device has already been selected
+    # (TouchWatcher.start()); device selection itself never reads it, so a placeholder is
+    # fine — this probe never reaches the point that would need a real one.
+    watcher = TouchWatcher(adb_path, serial, (0, 0), probe_timeout=4.0)
+    try:
+        watcher.start()
+    except TouchWatchUnavailable as exc:
+        return f"- touch watcher: unavailable — `{_sanitize_inline(str(exc))}`"
+    finally:
+        # Best-effort teardown on EITHER path: on success this stops the live stream start()
+        # just attached; on failure close() is a documented no-op (nothing was ever attached,
+        # since the device-selection probe runs before the Popen it would need to stop).
+        watcher.close()
+    return (f"- touch watcher: would select `{watcher.device_path}` "
+            f"(name: `{_sanitize_inline(watcher.device_name or '')}`)")
+
+
+def _capabilities_md(config_path: str) -> str:
+    return "\n".join([_tesseract_md(), _opencv_md(), _touch_watcher_probe_md(config_path)])
+
+
 def _secrets_md() -> str:
     def shown(name: str) -> str:
         key = os.environ.get(name, "")
@@ -246,6 +371,16 @@ def _status_md(hub_state) -> str:
         f"- phase: {st.get('phase')} · mode: {st.get('mode')}",
         f"- labels: {st['labels']} / {st['min_labels']} ({ready})",
         f"- budget: ${st['budget_spent']:.2f}{cap} · openers: {st.get('openers', 0)}",
+    ]
+    # `stopping` (RunStatus.snapshot(), status.py) marks a stop that's been requested but hasn't
+    # unwound yet -- distinct from `phase == "stopped"`, which only appears once it actually has.
+    # Read with .get() rather than st["stopping"]: this field is landing in a concurrent change,
+    # so an older/mismatched snapshot dict must still render every other line here instead of
+    # KeyError-ing the whole section, and once it lands this needs no further change to pick it
+    # up. 🔴 per the owner's GO/WAIT status-circle convention -- never a hand emoji.
+    if st.get("stopping"):
+        lines.append("- 🔴 stopping: stop requested, winding down (not halted yet)")
+    lines += [
         "",
         "| app | mode | state | last | score | decisions |",
         "|---|---|---|---|---|---|",
@@ -259,6 +394,189 @@ def _status_md(hub_state) -> str:
     if diag:
         lines.append(diag)
     return "\n".join(lines)
+
+
+def _recent_openers_md(hub_state) -> str:
+    """WHAT the opener said, and whether it was anchored to the like screen it will actually
+    hang under -- the diagnostic this report was missing. The bug this collector improvement
+    was filed against showed only `openers: 1` in `## Run status`: that count proves a call
+    happened, but says nothing about what the model wrote or whether it was told which photo
+    the comment attaches to (the anchor mechanism this whole feature is about -- see
+    worker.py's _wait_for_observed_decision and opener/service.py's OpenerPick.referenced).
+
+    DATA ROUTE: PRIMARY source is hub_state.recent_openers() -- HubState now captures a live
+    reference to the running OpenerService (supervisor.run()'s on_opener_service callback,
+    plumbed through hub/state.py's HubState.start()) and this reads its real ring buffer of
+    the last several SUCCESSFUL generations (see opener/service.py's `recent_openers` deque
+    and OpenerService.recent_openers_snapshot), each with a timestamp, model id, anchored
+    flag, the model's own `referenced` claim, which profile item it attaches to (`index`),
+    and the opener text itself. That answers the question that broke diagnosis before in
+    full: what did the model say, was it anchored to what you actually hearted, and which
+    model produced it -- not just a guess from whatever suggestion happens to still be live
+    on the hub right now.
+
+    Dropped the old fallback (reading each app's CURRENT live suggestion off
+    AppStatus.opener_suggestion / opener_referenced / opener_anchored) rather than keeping it
+    as a secondary line: worker.py sets those three fields from the exact same successful
+    generate() call that appends to OpenerService's ring buffer (see worker.py's
+    `_stat(state="waiting_for_send", opener_suggestion=..., opener_referenced=...,
+    opener_anchored=...)`), so the live-status fields are always either identical to the
+    newest ring-buffer entry for that app or already stale/cleared -- never something extra.
+    Keeping both would just show the same generation twice.
+
+    Best-effort, returns markdown -- may raise (hub_state.recent_openers() is documented
+    never to, but this function does not re-guard that promise); wrapped by _safe_section
+    like every other section in this file, so a raise here degrades to a warning line, not a
+    broken report."""
+    if hub_state is None:
+        return "- (no hub — run via `python -m operation_love hub` for live run status)"
+    entries = hub_state.recent_openers()
+    if not entries:
+        return "- (no openers generated yet this run, or no run is active)"
+    newest_first = list(reversed(entries))[:_RECENT_OPENERS_SHOWN]   # ring buffer is newest-LAST
+    lines = []
+    for e in newest_first:
+        if not isinstance(e, dict):
+            continue
+        ts = _sanitize_inline(str(e.get("ts") or "unknown time"))
+        app = _sanitize_inline(str(e.get("app") or "?"))
+        model = _sanitize_inline(str(e.get("model") or "?"))
+        anchored = bool(e.get("anchored"))
+        advisory = bool(e.get("advisory"))
+        index = e.get("index")
+        referenced = e.get("referenced")
+        referenced = referenced.strip() if isinstance(referenced, str) else ""
+        opener = str(e.get("opener") or "")
+        if len(opener) > _RECENT_OPENER_TEXT_CHARS:
+            opener = opener[:_RECENT_OPENER_TEXT_CHARS] + "…"
+        mode_note = "advisory" if advisory else "auto"
+        # 🟢/🔴 circles per the owner's status-indicator convention -- never a hand emoji
+        # (👍/👎 etc.), which the owner has flagged before as hard to tell apart at a glance.
+        anchor_note = ("🟢 anchored to the live like screen" if anchored
+                       else "🔴 blind — no like-screen anchor")
+        about = f" · about: {_sanitize_inline(referenced)}" if referenced else ""
+        lines.append(
+            f"- `{ts}` · **{app}** · model: `{model}` · {mode_note} · {anchor_note} · "
+            f"index: {index}{about}\n"
+            f"  > {_sanitize_inline(opener)}"
+        )
+    if not lines:
+        return "- (no openers generated yet this run, or no run is active)"
+    return "\n".join(lines)
+
+
+def _action_reason_key(raw: str) -> tuple[str, str] | None:
+    """(action, reason) for a raw actions.jsonl line, or None if it can't merge with a
+    neighbour: invalid JSON, or a record with no "reason" field at all (capture,
+    observe_decision, observe_resync, locate_target_heart, like, ... — every action that isn't
+    the observe_waiting heartbeat). Only records that match on BOTH fields ever collapse
+    together; returning None here is what keeps everything else exactly as raw, individual
+    JSON lines. Deliberately swallows every parse failure — a malformed or older-format line
+    must pass through untouched rather than raise, same contract as the rest of this best-effort
+    collector."""
+    try:
+        rec = json.loads(raw)
+        return (str(rec["action"]), str(rec["reason"]))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _rec_ts(raw: str) -> str:
+    try:
+        return str(json.loads(raw).get("ts", "?"))
+    except Exception:  # noqa: BLE001
+        return "?"
+
+
+def _render_run(run: list[str], key: tuple[str, str] | None) -> str:
+    """A run of >=1 raw lines that all share the same (action, reason) -> one display line.
+    A singleton (or a line that never had a key to begin with) renders as its own untouched raw
+    JSON line; a genuine run of repeats collapses into one summary object carrying the count and
+    the timestamp span, e.g. {"ts": "20:46:13-20:49:02", "action": "observe_waiting",
+    "reason": "no_change", "repeated": 12} — real numbers from the audited run this fix is for."""
+    if len(run) == 1 or key is None:
+        return run[0]
+    action, reason = key
+    return json.dumps({"ts": f"{_rec_ts(run[0])}-{_rec_ts(run[-1])}",
+                        "action": action, "reason": reason, "repeated": len(run)})
+
+
+def _group_action_reason_runs(lines: list[str]) -> tuple[list[list[str]], list[tuple[str, str] | None]]:
+    """Group FILE-ORDER-ADJACENT lines that share an `_action_reason_key` into runs. A line
+    with no key (None) never merges with anything, even another None-keyed line right next to
+    it — each such line stays its own run of 1, i.e. exactly today's raw output."""
+    runs: list[list[str]] = []
+    keys: list[tuple[str, str] | None] = []
+    for raw in lines:
+        key = _action_reason_key(raw)
+        if key is not None and keys and keys[-1] == key:
+            runs[-1].append(raw)
+        else:
+            runs.append([raw])
+            keys.append(key)
+    return runs, keys
+
+
+def _collapse_action_tail(lines: list[str], limit: int) -> list[str]:
+    """The actions.jsonl tail, collapsed: group the WHOLE file into (action, reason) runs
+    first, THEN take the last `limit` runs — collapsing before windowing (rather than windowing
+    first, as the old raw-line slice did) is what lets a fixed display budget reach back past a
+    single oversized observe_waiting run instead of being entirely consumed by it.
+
+    The first and last runs actually selected are never displayed as a single collapsed summary
+    even if they qualify — their own boundary raw line is peeled back out (see the loop below)
+    so the very edge of what's shown is always a literal record: the newest one in particular,
+    so a live stall's current state (its own "after" screenshot filename) stays visible instead
+    of being flattened into a "repeated: N" count that names no file at all.
+
+    Never reorders, never drops a non-adjacent record, and a line that fails to parse (or has no
+    action/reason key) simply can't join a run — see `_action_reason_key`."""
+    if limit <= 0 or not lines:
+        return []
+    runs, keys = _group_action_reason_runs(lines)
+    tail_runs, tail_keys = runs[-limit:], keys[-limit:]
+    last_i = len(tail_runs) - 1
+    out: list[str] = []
+    for i, (run, key) in enumerate(zip(tail_runs, tail_keys)):
+        peel_first = i == 0
+        peel_last = i == last_i
+        if len(run) == 1 or key is None or not (peel_first or peel_last):
+            out.append(_render_run(run, key))
+            continue
+        start = 1 if peel_first else 0
+        end = len(run) - 1 if peel_last else len(run)
+        mid = run[start:end]
+        if peel_first:
+            out.append(run[0])
+        if mid:
+            out.append(_render_run(mid, key))
+        if peel_last:
+            out.append(run[-1])
+    return out
+
+
+def _action_counts_line(lines: list[str]) -> str | None:
+    """One-line action-type histogram for the latest run's WHOLE actions.jsonl (not just the
+    displayed tail below it) — e.g. "capture 4 · observe_waiting 18 · observe_decision 2".
+    That instantly answers the question the tail alone makes a developer eyeball-count for:
+    was this run stalling (observe_waiting dominates), deciding normally (capture and
+    observe_decision roughly track each other), or erroring out — without reading a single
+    JSON line. Ordered by first appearance in the file, i.e. capture-then-wait-then-decide,
+    the same per-profile order this driver's own comments already describe (see
+    wait_for_decision's docstring in hinge.py). Returns None (render nothing) when there's
+    nothing to count — same "no extra section when there's nothing to say" contract as
+    `_app_diagnostics_md`. A line that fails to parse or has no "action" key is silently
+    skipped, never raises."""
+    counts: dict[str, int] = {}
+    for raw in lines:
+        try:
+            action = str(json.loads(raw)["action"])
+        except Exception:  # noqa: BLE001
+            continue
+        counts[action] = counts.get(action, 0) + 1
+    if not counts:
+        return None
+    return "action counts: " + " · ".join(f"{k} {v}" for k, v in counts.items())
 
 
 def _debug_log_md(config_path: str) -> str:
@@ -297,9 +615,13 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
         log = run / "actions.jsonl"
         if log.exists():
             try:
-                tail = log.read_text().splitlines()[-_DEBUG_ACTION_TAIL:]
+                raw_lines = log.read_text().splitlines()
             except Exception:  # noqa: BLE001
-                tail = []
+                raw_lines = []
+            counts_line = _action_counts_line(raw_lines)
+            if counts_line:
+                out.append(f"  - {counts_line}")
+            tail = _collapse_action_tail(raw_lines, _DEBUG_ACTION_TAIL)
             if tail:
                 out.append("  - actions.jsonl (tail):\n```\n" + "\n".join(tail) + "\n```")
         else:
@@ -374,10 +696,12 @@ def build_report(hub_state=None, description: str = "", config_path: str = "conf
         f"## Build\n{_safe_section(_build_md)}\n\n"
         f"## System\n{_safe_section(_system_md)}\n\n"
         f"## Dependencies\n{_safe_section(_deps_md)}\n\n"
+        f"## Capabilities\n{_safe_section(_capabilities_md, config_path)}\n\n"
         f"## Config (config.yaml)\n{_safe_section(_config_md, config_path)}\n\n"
         f"## Secrets (presence only — never raw values)\n{_safe_section(_secrets_md)}\n\n"
         f"## Diagnostic improvement\n{_safe_section(_diagnostic_improvement_md)}\n\n"
         f"## Run status\n{_safe_section(_status_md, hub_state)}\n\n"
+        f"## Recent openers\n{_safe_section(_recent_openers_md, hub_state)}\n\n"
         f"## Debug log (on-disk actions + screenshots)\n{_safe_section(_debug_log_md, config_path)}\n\n"
         f"## Recent logs\n"
     )

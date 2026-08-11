@@ -12,9 +12,14 @@ class Store(Protocol):
 
     def load_labels(self) -> list[tuple[bool, list[float]]]: ...
     def load_labels_ordered(self) -> list[tuple[bool, list[float]]]: ...   # chronological (created_at)
+    # capture_truncated: the bot hit its per-profile screencap ceiling without ever reaching
+    # the profile's true bottom, i.e. this label was made from an INCOMPLETE read. Carried
+    # all the way to the store (rather than left in the local, rotating debug log) so the
+    # system of record can answer "which labels came from a partial read?" later — the exact
+    # query you want if truncated-read labels turn out to be noisier than complete ones.
     def record_profile(self, run_id: str, app: str, profile_id: str, liked: bool,
                        source: str = "manual", photos: list[bytes] | None = None,
-                       photo_count: int = 0) -> bool: ...
+                       photo_count: int = 0, capture_truncated: bool = False) -> bool: ...
     def add_label(self, run_id: str, app: str, liked: bool, embedding: list[float],
                   source: str = "manual", photo_count: int = 0,
                   profile_id: str = "") -> None: ...

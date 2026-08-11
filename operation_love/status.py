@@ -32,6 +32,19 @@ class AppStatus:
     # it publishes the generated text while the human is deciding whether to send it, and
     # clears it as soon as the sheet/card is no longer current.  The hub is the only display.
     opener_suggestion: str | None = None
+    # The model's own one-line statement of which profile detail opener_suggestion is about
+    # (OpenerPick.referenced, echoed here verbatim) -- shown by the hub under the suggestion
+    # text so the operator can instantly see whether the suggestion matches the photo they
+    # actually hearted, rather than trusting it blind.
+    opener_referenced: str | None = None
+    # Whether opener_suggestion was generated with the live like-screen anchor image (True) or
+    # blind from the profile alone (False) -- see OpenerService.maybe_opener's anchor
+    # parameter. A False here on Hinge means the suggestion was NOT told which item the
+    # comment attaches to and is therefore the exact configuration that produced the reported
+    # out-of-place openers (a caption about her beach photo landing under a dining table
+    # photo): the model had no way to know which item Hinge would actually attach the comment
+    # to, so it guessed from the whole profile instead.
+    opener_anchored: bool = False
     error: str | None = None
     # Human-readable cause of a "stopped" outcome that did NOT come from an exception --
     # today, exclusively OpenerService exhausting its opener capacity (run budget reached,
@@ -57,12 +70,25 @@ class RunStatus:
         self.min_labels = int(min_labels)
         self.budget_cap = budget_cap
         # global slice
-        self.phase = "starting"             # starting | loading saved data | training ranker | launching app | live | saving data | stopped
+        self.phase = "starting"             # starting | loading saved data | training ranker | loading ML models | live | stopping | saving data | stopped | wedged | save_failed
         self.labels = int(labels)
         self.ranker_ready = bool(ranker_ready)
         self.budget_spent = 0.0
         self.openers = 0
         self.running = True
+        # True from the moment run()'s shutdown `finally` sets stop_event until the run
+        # reaches its terminal phase (stopped/wedged/save_failed) -- strictly between
+        # running and stopped. Exists because "saving data" used to be published for the
+        # WHOLE worker-join window (up to join_timeout_s -- 105s with the shipped opener
+        # config) while a worker could still be mid-profile-read: the hub could not tell
+        # "everything is already flushed" from "still waiting on a worker to notice
+        # stop_event", and kept rendering a live-looking GO cue the entire time even though
+        # any decision made in that window is discarded (worker.py's observe loop re-checks
+        # stop_event and drops the in-flight card rather than recording it). Set True at the
+        # same moment stop_event.set() runs (supervisor.py), set False only once the terminal
+        # phase is published -- so it covers the join-wait AND the flush/save tail, the whole
+        # span during which nothing the operator does on screen will be recorded.
+        self.stopping = False
         self._apps: dict[str, AppStatus] = {a: AppStatus(app=a) for a in apps}
 
     # --- per-app updates (workers) -------------------------------------
@@ -75,11 +101,18 @@ class RunStatus:
             # with a normal state transition makes the safe default "never show it for the
             # next card", even if a worker's dismissal path does not mention the field.
             # The transition that opens the sheet supplies opener_suggestion explicitly.
+            # opener_referenced and opener_anchored describe THAT suggestion and must be
+            # cleared in the same place, under the same condition: a stale "about her beach
+            # photo" caption outliving its suggestion (or a stale anchored=True badge
+            # surviving onto whatever gets shown for the next card) is worse than showing
+            # nothing at all.
             if (fields.get("state") in {"waiting", "capturing", "suggesting", "acting",
                                         "out_of_profiles", "rate_limited", "saving", "stopped",
                                         "error", "wedged"}
                     and "opener_suggestion" not in fields):
                 s.opener_suggestion = None
+                s.opener_referenced = None
+                s.opener_anchored = False
             s.updated_at = time.time()
 
     def record_swipe(self, app: str, decision: str, score: float | None = None) -> None:
@@ -90,6 +123,8 @@ class RunStatus:
             s.swipes_run += 1
             s.state = "acting"
             s.opener_suggestion = None       # a completed manual decision consumes the sheet
+            s.opener_referenced = None       # same rationale -- describes the consumed suggestion
+            s.opener_anchored = False        # same rationale -- describes the consumed suggestion
             s.updated_at = time.time()
 
     # --- global updates (supervisor / decider) -------------------------
@@ -112,6 +147,7 @@ class RunStatus:
                 "mode": self.mode,
                 "phase": self.phase,
                 "running": self.running,
+                "stopping": self.stopping,
                 "labels": self.labels,
                 "min_labels": self.min_labels,
                 "ranker_ready": self.ranker_ready,

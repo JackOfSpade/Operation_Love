@@ -22,6 +22,8 @@ from operation_love.opener.opener import (
     OpenerAborted,
     OpenerError,
     OpenerParseError,
+    _ANCHOR_LABEL,
+    _ANCHOR_SYSTEM,
     _SCHEMA,
     _SYSTEM,
 )
@@ -935,7 +937,7 @@ def test_oversized_photos_are_compressed_to_fit_the_budget(monkeypatch, capsys):
         assert p["inlineData"]["mimeType"] == "image/jpeg"   # recompressed from PNG
 
     output = capsys.readouterr().out
-    assert "compressed 3 photo" in output
+    assert "compressed 3 image" in output
 
 
 def test_photos_already_under_budget_are_sent_untouched():
@@ -959,7 +961,7 @@ def test_photos_still_over_budget_after_full_compression_raise_opener_error(monk
     with pytest.raises(OpenerError) as exc_info:
         opener.generate(Profile(photos=photos), style="s")
     message = str(exc_info.value)
-    assert "2 photo" in message
+    assert "2 image" in message
 
 
 def test_photos_still_over_budget_error_names_the_actual_byte_composition(monkeypatch):
@@ -975,11 +977,11 @@ def test_photos_still_over_budget_error_names_the_actual_byte_composition(monkey
     with pytest.raises(OpenerError) as exc_info:
         _opener(_Transport([])).generate(Profile(photos=photos), style="s")
     message = str(exc_info.value)
-    assert "2 photo" in message
-    assert "bytes of photos" in message and "bytes of text" in message
+    assert "2 image" in message
+    assert "bytes of images" in message and "bytes of text" in message
     # Conditional guidance, not a blanket assumption -- the operator is told to look at
-    # whichever side actually dominates, not always at the photos.
-    assert "if photos dominate" in message and "if text does" in message
+    # whichever side actually dominates, not always at the images.
+    assert "if images dominate" in message and "if text does" in message
 
 
 # ---------------------------------------------------------------------------------------
@@ -1019,7 +1021,7 @@ def test_fit_to_budget_measures_the_hinted_text_part_not_a_hintless_baseline(mon
     # measured against the budget -- the hint-less version of this same request (comfortably
     # under 12,000 bytes, per the baseline above) would never have needed to fit at all.
     assert image_part["inlineData"]["mimeType"] == "image/jpeg"
-    assert "compressed 1 photo" in capsys.readouterr().out
+    assert "compressed 1 image" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------------------
@@ -1268,3 +1270,226 @@ def test_skip_models_combines_with_a_capacity_cascade():
     assert "gemini-first" in reason and "gemini-second" in reason
     assert "per-day" in reason and "midnight Pacific" in reason
     assert "gemini-third" not in reason             # skipped, never tried -- has nothing to report
+
+
+# ---------------------------------------------------------------------------------------
+# Anchor image -- a live screenshot of Hinge's own like/comment screen, appended after her
+# profile photos, that visually shows the ONE photo or prompt the opener will actually be
+# attached to and displayed underneath once she sees it. Without it, generate() has no way to
+# know which item that is: the model picks whichever photo or prompt it personally finds most
+# interesting to write about, and on a real like/comment screen that is frequently NOT the item
+# the comment lands under -- the message reads as if it were written for a different photo
+# entirely. See generate()'s own docstring for the full rationale; these tests only pin the
+# request SHAPE anchoring produces (parts order, system instruction, main text, budget fit,
+# cascade behavior, and the corrupt-image error message).
+# ---------------------------------------------------------------------------------------
+
+def test_no_anchor_request_is_byte_identical_to_before_anchoring_existed():
+    """Compatibility guarantee: a call with no anchor argument at all must build EXACTLY the
+    request anchoring never existed for -- the flat systemInstruction text (byte-identical to
+    _SYSTEM) and the flat [img, img, text] parts list, no standalone label part anywhere."""
+    png_a = b"\x89PNG\r\n\x1a\nfirst"
+    png_b = b"\x89PNG\r\n\x1a\nsecond"
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(Profile(photos=[png_a, png_b]), style="s")
+
+    payload = transport.calls[0][1]
+    assert payload["systemInstruction"]["parts"][0]["text"] == _SYSTEM
+    parts = payload["contents"][0]["parts"]
+    assert len(parts) == 3
+    assert parts[0]["inlineData"]["data"] == base64.standard_b64encode(png_a).decode("ascii")
+    assert parts[1]["inlineData"]["data"] == base64.standard_b64encode(png_b).decode("ascii")
+    assert "text" in parts[2]
+    assert _ANCHOR_LABEL not in parts[2]["text"]
+
+
+def test_anchored_request_parts_are_profile_photos_then_label_then_anchor_then_text():
+    """The defining shape of an anchored request: her profile photos in scroll order, then the
+    standalone _ANCHOR_LABEL text part, then the anchor image itself (LAST among the images),
+    then the trailing instructions. The label sits immediately before the anchor image rather
+    than only being described in the trailing text several parts away -- adjacency is what
+    makes "the next image" unambiguous to a model reading one flat sequence of parts (see
+    _assemble_parts's own docstring)."""
+    png_a = b"\x89PNG\r\n\x1a\nfirst"
+    png_b = b"\x89PNG\r\n\x1a\nsecond"
+    jpeg_c = b"\xff\xd8\xffanchor"
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(Profile(photos=[png_a, png_b]), style="s", anchor=jpeg_c)
+
+    parts = transport.calls[0][1]["contents"][0]["parts"]
+    assert len(parts) == 5
+    assert parts[0]["inlineData"] == {
+        "mimeType": "image/png", "data": base64.standard_b64encode(png_a).decode("ascii"),
+    }
+    assert parts[1]["inlineData"] == {
+        "mimeType": "image/png", "data": base64.standard_b64encode(png_b).decode("ascii"),
+    }
+    assert parts[2] == {"text": _ANCHOR_LABEL}
+    assert parts[3]["inlineData"] == {
+        "mimeType": "image/jpeg", "data": base64.standard_b64encode(jpeg_c).decode("ascii"),
+    }
+    assert "text" in parts[4] and parts[4]["text"] != _ANCHOR_LABEL
+
+
+def test_anchored_system_instruction_is_system_plus_anchor_system():
+    """Once an anchor is present, the systemInstruction must be _SYSTEM with _ANCHOR_SYSTEM
+    appended (never a different combined string), and it must tell the model the extra image
+    is not one more thing from her profile."""
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(Profile(photos=[b"\x89PNG\r\n\x1a\nfirst"]), style="s",
+                                anchor=b"\xff\xd8\xffanchor")
+    system_text = transport.calls[0][1]["systemInstruction"]["parts"][0]["text"]
+    assert system_text == _SYSTEM + _ANCHOR_SYSTEM
+    assert system_text.startswith(_SYSTEM)
+    assert "is NOT part of her profile" in system_text
+
+
+def test_anchored_main_text_names_the_like_screen_and_forbids_app_chrome():
+    """The trailing text part of an anchored request must tell the model plainly that the
+    LAST image is the like screen, that the message attaches to whatever item is shown there,
+    and that the app's own interface elements (comment box, Send Like button, keyboard) are
+    not hers and must never be described. Asserted on distinctive substrings rather than the
+    whole block, since the exact wording is free to be tuned."""
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(Profile(photos=[b"\x89PNG\r\n\x1a\nfirst"]), style="s",
+                                anchor=b"\xff\xd8\xffanchor")
+    text = transport.calls[0][1]["contents"][0]["parts"][-1]["text"]
+    lower = text.lower()
+    assert "the last image is the like screen" in lower
+    assert "your message attaches to the photo or prompt in that last image" in lower
+    assert "comment box" in lower and "send like button" in lower and "keyboard" in lower
+
+
+def test_anchor_with_no_profile_photos_avoids_the_nonsensical_first_0_images_phrasing():
+    """A profile whose scroll capture produced zero photos still has an anchor to write
+    about: the wording must not fall through to the generic "The first {photo_count}
+    image(s)..." branch, which would render as the nonsensical "The first 0 image(s) are her
+    profile in scroll order" and send the model hunting through images that were never sent.
+    It must instead say the anchor is the only image in the request, and the parts list must
+    only be [label, anchor, text] -- no empty profile-photo parts anywhere."""
+    transport = _Transport([(200, _success())])
+    anchor = b"\xff\xd8\xffanchor"
+    _opener(transport).generate(Profile(photos=[]), style="s", anchor=anchor)
+
+    parts = transport.calls[0][1]["contents"][0]["parts"]
+    assert len(parts) == 3
+    assert parts[0] == {"text": _ANCHOR_LABEL}
+    assert parts[1]["inlineData"]["data"] == base64.standard_b64encode(anchor).decode("ascii")
+    text = parts[2]["text"]
+    lower = text.lower()
+    assert "first 0 image" not in lower
+    assert "the like screen image below is the only image in this request" in lower
+    assert "your message attaches to the photo or prompt shown in that image" in lower
+
+
+def test_retry_hint_on_an_anchored_request_keeps_the_reanchoring_sentence():
+    """_text_part's anchored branch appends an extra corrective sentence re-anchoring a retry
+    ("...still attached to the photo or prompt in the final image...") on top of the ordinary
+    HARD REJECTION block -- and the anchor image itself must still be present in the retried
+    payload, not dropped by the retry path."""
+    jpeg_c = b"\xff\xd8\xffanchor"
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(Profile(photos=[b"\x89PNG\r\n\x1a\nfirst"]), style="s",
+                                anchor=jpeg_c, retry_hint="opener drifted to a different photo")
+
+    parts = transport.calls[0][1]["contents"][0]["parts"]
+    text = parts[-1]["text"]
+    assert "opener drifted to a different photo" in text
+    assert "still attached to the photo or prompt in the final image" in text
+    anchor_part = parts[-2]      # [photo, label, anchor, text] -- anchor is second-to-last
+    assert anchor_part["inlineData"]["data"] == base64.standard_b64encode(jpeg_c).decode("ascii")
+
+
+def test_anchor_image_part_is_identical_across_a_model_cascade():
+    """The anchor, exactly like her profile photos, is encoded once and reused across every
+    model tried in a capacity cascade (see generate()'s "encode once, reuse across the
+    cascade" note) -- a 429 on the first model must not cause the anchor to be dropped or
+    re-encoded differently for the second model's payload."""
+    jpeg_c = b"\xff\xd8\xffanchor"
+    transport = _Transport([_quota_exhausted(quota_metric="generate_content_requests_per_minute"),
+                            (200, _success())])
+    opener = _opener(transport, models=("gemini-first", "gemini-second"))
+
+    result = opener.generate(Profile(photos=[b"\x89PNG\r\n\x1a\nfirst"]), style="s", anchor=jpeg_c)
+
+    assert result.model == "gemini-second"
+    assert len(transport.calls) == 2
+    for _, payload, *_ in transport.calls:
+        anchor_part = payload["contents"][0]["parts"][-2]
+        assert anchor_part["inlineData"]["mimeType"] == "image/jpeg"
+        assert anchor_part["inlineData"]["data"] == base64.standard_b64encode(jpeg_c).decode("ascii")
+
+
+def test_request_size_bytes_counts_the_anchor_label_and_the_anchor_image():
+    """_request_size_bytes must total the standalone _ANCHOR_LABEL text part and the anchor
+    image's own encoded bytes, not just her profile photos and the trailing text -- otherwise
+    an anchored request could sail past Gemini's real 20MB inline cap while the size estimate
+    stayed blind to two of the parts actually sent on the wire (see _assemble_parts)."""
+    png = b"\x89PNG\r\n\x1a\nfirst"
+    jpeg = b"\xff\xd8\xffanchor"
+    opener = _opener(_Transport([]))
+    image_parts = opener._image_parts([png, jpeg])
+    text_part = {"text": "trailing instructions"}
+
+    unanchored_parts = opener._assemble_parts(image_parts, text_part, anchored=False)
+    anchored_parts = opener._assemble_parts(image_parts, text_part, anchored=True)
+    unanchored_size = opener._request_size_bytes(unanchored_parts, _SYSTEM)
+    anchored_size = opener._request_size_bytes(anchored_parts, _SYSTEM)
+
+    # Both share the exact same two images and trailing text; the only structural difference
+    # in the anchored layout is the standalone {"text": _ANCHOR_LABEL} part -- so the size
+    # delta must equal exactly the label's own encoded length.
+    assert anchored_size - unanchored_size == len(_ANCHOR_LABEL.encode("utf-8"))
+    # And the anchor image's own bytes (the second image) are counted in both totals -- proving
+    # the method never quietly drops the last image once it's playing the anchor role.
+    expected_total = (len(_SYSTEM.encode("utf-8"))
+                       + len(image_parts[0]["inlineData"]["data"])
+                       + len(image_parts[1]["inlineData"]["data"])
+                       + len(text_part["text"].encode("utf-8"))
+                       + len(_ANCHOR_LABEL.encode("utf-8")))
+    assert anchored_size == expected_total
+
+
+def test_oversized_anchored_request_recompresses_the_anchor_too_and_keeps_part_order(
+        monkeypatch, capsys):
+    """_fit_images_to_budget recompresses from the FULL images list generate() builds -- her
+    profile photos plus the anchor appended at the end -- so the anchor (a full-resolution
+    phone screenshot exactly like a profile photo) is not silently exempt from the same size
+    pressure that would otherwise shrink only her photos. After recompression the final parts
+    list must still end in the correct anchored ORDER: photos, label, (now-compressed) anchor,
+    text."""
+    photos = [_noise_png(seed) for seed in range(2)]
+    anchor = _noise_png(seed=99)
+    monkeypatch.setattr(opener_module, "_MAX_INLINE_REQUEST_BYTES", 30_000)
+    transport = _Transport([(200, _success())])
+    opener = _opener(transport)
+    opener.generate(Profile(photos=photos), style="s", anchor=anchor)
+
+    parts = transport.calls[0][1]["contents"][0]["parts"]
+    assert len(parts) == 5                      # photo, photo, label, anchor, text
+    assert parts[2] == {"text": _ANCHOR_LABEL}
+    for image_part in (parts[0], parts[1], parts[3]):
+        assert image_part["inlineData"]["mimeType"] == "image/jpeg"   # recompressed, anchor too
+    assert "text" in parts[4]
+    sent_image_bytes = sum(len(p["inlineData"]["data"]) for p in (parts[0], parts[1], parts[3]))
+    assert sent_image_bytes <= 30_000
+    assert "compressed 3 image" in capsys.readouterr().out
+
+
+def test_anchor_decode_failure_names_it_as_the_anchor_not_a_photo_index(monkeypatch):
+    """A corrupt anchor screenshot must be named as the like screen anchor image in the raised
+    OpenerError, not as "photo index N" -- reporting it as a profile photo index would send
+    the operator hunting through her profile photos for a capture bug that is actually in the
+    anchor capture path (see _fit_images_to_budget's own comment on this)."""
+    good = _noise_png(seed=0)
+    corrupt_anchor = b"not a real image, just garbage bytes PIL cannot decode" * 200
+    monkeypatch.setattr(opener_module, "_MAX_INLINE_REQUEST_BYTES", 1)   # force the fit path
+    opener = _opener(_Transport([]))
+
+    with pytest.raises(OpenerError) as exc_info:
+        opener.generate(Profile(photos=[good]), style="s", anchor=corrupt_anchor)
+
+    message = str(exc_info.value)
+    assert "the like screen anchor image" in message
+    assert "photo index" not in message
+    assert str(len(corrupt_anchor)) in message

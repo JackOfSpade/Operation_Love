@@ -72,7 +72,9 @@ streak does.
 from __future__ import annotations
 
 import threading
+from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable
 
 from ..costing import CostTracker
@@ -90,9 +92,17 @@ from .opener import (
 @dataclass
 class OpenerPick:
     """An opener plus which profile item (0-based index, capture order) it is about, so the
-    driver can attach the comment to the RIGHT photo/prompt instead of always the first."""
+    driver can attach the comment to the RIGHT photo/prompt instead of always the first.
+
+    `referenced` is the model's own one-line statement of WHICH profile detail the opener is
+    about (OpenerResult.referenced, echoed here verbatim). It is not used for targeting --
+    that's what `index` is for -- it exists so the hub can show the operator what the
+    suggestion is supposed to be about, which is precisely how a mismatch between the opener
+    and the item the comment actually hangs under becomes visible instead of silent -- the
+    failure this whole anchor mechanism exists to prevent."""
     text: str
     index: int = 0
+    referenced: str = ""
 
 
 # How many consecutive provider HTTP 400s to require before treating the failure
@@ -117,6 +127,12 @@ _BAD_REQUEST_LATCH_THRESHOLD = 3
 # essentially every subsequent call, exactly like the 400 case) while still absorbing an
 # occasional real blip.
 _TRANSIENT_LATCH_THRESHOLD = 3
+
+# How many of the most recent SUCCESSFUL opener generations OpenerService.recent_openers keeps
+# (see its docstring in __init__) for a bug report to inspect after the fact. Small and fixed:
+# this is a live debugging aid, not the permanent record (that's self.store.record_opener), so
+# it only needs to cover roughly the last screenful of activity, not the whole run.
+_RECENT_OPENERS = 12
 
 
 def _is_invalid_gemini_api_key(exc: Exception) -> bool:
@@ -256,6 +272,18 @@ class OpenerService:
         # and _TRANSIENT_LATCH_THRESHOLD for why); reset on any outcome that proves the
         # opener pipeline actually works.
         self._consecutive_transient_failures = 0
+        # Ring buffer of the most recent SUCCESSFUL opener generations (see
+        # recent_openers_snapshot), independent of self.store.record_opener's permanent
+        # per-run record. WHY THIS EXISTS: a bug report that says only "openers=1" cannot
+        # tell you whether that opener was about the right photo. Recording the model's own
+        # `referenced` string alongside whether the call was anchored (see maybe_opener's
+        # anchor parameter) is exactly the evidence needed to diagnose an out-of-place opener
+        # after the fact -- this is the anchor mechanism's own paper trail. Guarded by
+        # self._lock like every other piece of mutable state on this instance; maybe_opener
+        # already runs its whole body under that lock, so the append there needs no extra
+        # locking -- only recent_openers_snapshot (a reader that may run on a different
+        # thread, e.g. while building a bug report) takes the lock itself.
+        self.recent_openers: deque[dict] = deque(maxlen=_RECENT_OPENERS)
         self._lock = threading.RLock()
 
     def _register_transient_failure(self, exc: Exception, *, request_stop: bool = True) -> bool:
@@ -294,6 +322,7 @@ class OpenerService:
         return False
 
     def maybe_opener(self, run_id: str, app: str, profile: Profile, *,
+                      anchor: bytes | None = None,
                       should_stop: Callable[[], bool] | None = None,
                       advisory: bool = False) -> "OpenerPick | None":
         """Return an OpenerPick (text + referenced item index), or None (disabled / budget
@@ -319,6 +348,24 @@ class OpenerService:
              (collecting real training labels) for something that was never going to touch
              automation. See worker.py's _wait_for_observed_decision for the call site and
              this class's own _exhaust() for the matching request_stop plumbing.
+
+        anchor (default None): a live screenshot of the app's own open like/comment screen --
+        the exact frame on the phone right now, which visually shows WHICH ONE profile item (a
+        specific photo, or a specific prompt) the comment about to be written will actually be
+        attached to and displayed underneath. Without it, the model sees only the ordinary
+        profile capture, where every photo and prompt look equally eligible, so it may ground
+        the opener in, say, a beach photo while Hinge itself attaches the resulting comment to
+        a completely different item (a dining table photo) -- producing a message that reads
+        as generated because it visibly does not match what she actually sees it under. That
+        mismatch, invisible until now, is exactly the bug this parameter exists to fix.
+        Forwarded to self.client.generate(...) UNCONDITIONALLY below, not only when it is not
+        None: a client that cannot accept this kwarg must fail LOUDLY (a TypeError out of the
+        call itself) rather than this service silently dropping the anchor and going back to
+        producing out-of-place openers -- see the call site's own comment. anchor changes
+        NOTHING about retries, budget, latches, or the model cascade: the same anchor bytes are
+        reused verbatim on every retry attempt for this profile, because what the message
+        attaches to does not change just because the previous attempt was malformed -- only
+        retry_hint (what was wrong with the previous text) varies between attempts.
 
         should_stop (BUG 1, adversarial audit): a cheap, non-blocking "is the run stopping?"
         check -- in practice worker.py's threading.Event.is_set for the shared stop flag.
@@ -421,7 +468,16 @@ class OpenerService:
                     )
                     return None
                 try:
+                    # anchor is forwarded UNCONDITIONALLY here, not only when it is not None:
+                    # an OpenerClient implementation that cannot accept this kwarg must fail
+                    # LOUDLY (a TypeError straight out of this call) rather than this service
+                    # quietly swallowing the anchor and falling back to producing an opener
+                    # with no idea which item the comment attaches to -- the exact silent
+                    # degradation the anchor mechanism exists to prevent. See this method's
+                    # anchor docstring paragraph for what it is and why it never varies across
+                    # retries for the same profile.
                     result = self.client.generate(profile, self.style, retry_hint=retry_hint,
+                                                  anchor=anchor,
                                                   should_stop=should_stop,
                                                   skip_models=frozenset(failed_models))
                 except OpenerAborted as e:
@@ -651,7 +707,31 @@ class OpenerService:
                           f"({_display_cost(cost)}): {e}")
                 if self.tracker.budget_reached():
                     self._exhaust("run budget reached", request_stop=not advisory)
-                return OpenerPick(result.opener, getattr(result, "referenced_index", 0))
+                # getattr defaults here for the same defensive reason as the pre-existing
+                # getattr on referenced_index above (this line used to read only that field):
+                # a simple/fake OpenerClient used by a test, or some future call site, need not
+                # populate every field on the OpenerResult it constructs, and a bare
+                # AttributeError from a call that otherwise fully succeeded would be a strange
+                # way for this method to fail.
+                referenced_index = getattr(result, "referenced_index", 0)
+                referenced = str(getattr(result, "referenced", "") or "")
+                # Append to the ring buffer for EVERY successful call, advisory or AUTO alike
+                # -- see recent_openers' docstring in __init__ for why: this is the paper trail
+                # that lets a bug report tell an anchored generation (told which item the
+                # comment attaches to) apart from a blind one (guessing from the whole profile
+                # alone, the exact configuration that produced the reported out-of-place
+                # openers), and shows the model's own `referenced` claim alongside it.
+                self.recent_openers.append({
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "app": app,
+                    "model": result.model,
+                    "anchored": anchor is not None,
+                    "advisory": bool(advisory),
+                    "index": referenced_index,
+                    "referenced": referenced,
+                    "opener": result.opener,
+                })
+                return OpenerPick(result.opener, referenced_index, referenced)
             # Unreachable in practice: __init__ now rejects any max_attempts that isn't an
             # int >= 1 (see BUG 2), so range(1, effective_max_attempts + 1) -- 1 for an advisory
             # call, self.max_attempts otherwise -- always yields at least one iteration, and
@@ -664,6 +744,21 @@ class OpenerService:
             # defensive fallback so this method's return type stays honest even if that invariant
             # is ever broken by a future edit.
             return None  # pragma: no cover
+
+    def recent_openers_snapshot(self) -> list[dict]:
+        """A copy of the most recent successful opener generations -- see recent_openers'
+        docstring in __init__ for exactly what each entry records and why (whether the call
+        was anchored, and the model's own `referenced` claim, are the two fields that actually
+        diagnose an out-of-place opener after the fact).
+
+        Returns list(self.recent_openers) under self._lock rather than handing back
+        self.recent_openers itself: a bug-report reader running on another thread must never
+        iterate a deque that a live worker thread is concurrently appending to (maybe_opener
+        holds this same lock across its whole body, including the append), and a plain list is
+        also a stable, JSON-serializable snapshot rather than a live view that keeps changing
+        under the reader's feet."""
+        with self._lock:
+            return list(self.recent_openers)
 
     def _exhaust(self, reason: str, *, request_stop: bool = True) -> None:
         """Flip the service permanently disabled and record WHY (exhausted_reason), so an

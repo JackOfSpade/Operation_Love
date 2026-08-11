@@ -188,6 +188,14 @@ class BumbleWebDriver(PlaywrightDriver):
             pass
 
     # --- capture --------------------------------------------------------
+    # NOT stop-aware, deliberately: this driver leaves DatingAppDriver's
+    # supports_interruptible_capture at its inherited False, so the worker keeps calling both
+    # capture entry points below with no arguments and Stop is honoured between profiles, as it
+    # always was here. Declaring the flag without threading the callable would be worse than
+    # leaving it off — the worker would believe Stop is handled during a capture while it
+    # silently is not. The two waits a future implementation would need to reach are the album
+    # readiness wait (_wait_for_profile_album_ready) and the per-photo advance settle; the
+    # priority is low while Bumble web has no live target (see platforms.py).
     def _capture_current(self) -> Profile:
         return Profile(
             photos=self._capture_photos(),
@@ -505,8 +513,13 @@ class BumbleWebDriver(PlaywrightDriver):
         return out
 
     # --- actions --------------------------------------------------------
-    def like(self, opener: str | None = None, item_index: int = 0) -> None:
+    def like(self, opener: str | None = None, item_index: int = 0, *,
+             anchored_opener=None) -> None:
         # item_index is ignored: Bumble likes the whole profile (no per-photo comment).
+        # anchored_opener is ignored for the same reason: it exists so a driver that missed
+        # its per-item target can re-ground the opener in a screenshot of the item the
+        # comment actually attaches to, and Bumble likes the whole profile, so there is no
+        # per-item comment -- and therefore no per-item screenshot -- to anchor one against.
         # NORMAL like only — never the super-swipe. Super-likes/boosts are the
         # owner's manual call (see DEFAULT_SELECTORS["superlike"]).
         before = self._card_fingerprint()

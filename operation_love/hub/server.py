@@ -117,8 +117,12 @@ class _Handler(BaseHTTPRequestHandler):
             ok, msg = self.state.start(body.get("mode"), body.get("apps"), mpr)
             self._json({"ok": ok, "msg": msg}, 200 if ok else 409)
         elif self.path == "/api/stop":
+            # HubState.stop() now returns (False, "no run is active") instead of an
+            # unconditional (True, "stopping") -- mirror /api/start's existing convention
+            # (200 on success, 409 on a refusal) instead of a bare 200 that told the caller
+            # a stop it never performed had "worked".
             ok, msg = self.state.stop()
-            self._json({"ok": ok, "msg": msg})
+            self._json({"ok": ok, "msg": msg}, 200 if ok else 409)
         elif self.path == "/api/hub/open":
             start_watch = self.state.browser_client_opened(body.get("id"))
             self._json({"ok": True})

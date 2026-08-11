@@ -66,6 +66,45 @@ _SYSTEM = (
     "your opener is about. Follow the style guide. Output only the structured result."
 )
 
+# Appended to _SYSTEM (never mutated in place -- see _system_text) only when generate() was
+# given an anchor screenshot. Without this, the model treats every image identically and
+# picks whichever photo or prompt it personally finds most interesting to write about; the
+# comment then gets attached, by Hinge itself, to a completely different item than the one
+# the opener describes -- the exact bug this whole anchor feature exists to fix. Kept as a
+# separate constant rather than folded into _SYSTEM directly so the un-anchored request stays
+# byte-identical to what it was before this feature existed (see _system_text).
+_ANCHOR_SYSTEM = (
+    " ANCHORED REQUEST: this request ends with one extra image that is NOT part of her "
+    "profile. It is the app's like screen exactly as it looks on the phone right now, and the "
+    "single photo or prompt visible in it is the item your message is attached to: she reads "
+    "your words directly beneath that item. When that image is present it decides what you "
+    "write about. Ground the opener in that item so it reads as a natural remark on it, never "
+    "on a different photo or prompt, and never mention the app's own interface."
+)
+
+# Placed immediately before the anchor image in _assemble_parts, not just referenced from the
+# trailing text block -- adjacency is what makes "the next image" unambiguous to a model
+# reading a flat list of parts (see _assemble_parts for the full rationale).
+_ANCHOR_LABEL = (
+    "=== THE NEXT IMAGE IS THE LIKE SCREEN, NOT A PROFILE PHOTO ===\n"
+    "It is a live screenshot of the phone with her like screen open. The one photo or prompt "
+    "shown in it is the exact item your message will be attached to and displayed underneath. "
+    "Look at it closely: it, and only it, is what your opener must be about."
+)
+
+
+def _system_text(anchored: bool) -> str:
+    """The full systemInstruction text for one request: _SYSTEM alone for an ordinary
+    profile-only request, or _SYSTEM + _ANCHOR_SYSTEM once an anchor screenshot is in play.
+
+    Kept as string concatenation rather than a single combined constant so the un-anchored
+    path stays byte-for-byte what it was before anchoring existed -- existing tests assert
+    payload["systemInstruction"]["parts"][0]["text"] == _SYSTEM, and that must keep holding
+    for every request that has no anchor image.
+    """
+    return _SYSTEM + _ANCHOR_SYSTEM if anchored else _SYSTEM
+
+
 _COMMON_ABBREVIATION_RE = re.compile(
     r"\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|etc)\.", re.IGNORECASE)
 _SENTENCE_END_RE = re.compile(r"(?:[!?]+|\.+)(?=(?:[\"'”’)]*)?(?:\s+|$))")
@@ -177,6 +216,7 @@ class OpenerAborted(OpenerError):
 
 class OpenerClient(Protocol):
     def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
+                 anchor: bytes | None = None,
                  should_stop: Callable[[], bool] | None = None,
                  skip_models: frozenset[str] = frozenset()) -> OpenerResult: ...
 
@@ -449,19 +489,26 @@ class GeminiOpener:
         # lock can't deadlock this instance against itself.
         self._lock = threading.RLock()
 
-    def _image_parts(self, photos: list[bytes]) -> list[dict[str, Any]]:
-        """Base64-encode every photo. This is the expensive step in building a request --
+    def _image_parts(self, images: list[bytes]) -> list[dict[str, Any]]:
+        """Base64-encode every image. This is the expensive step in building a request --
         full-resolution phone screenshots, then inflated ~33% by base64 -- so generate()
         computes it once per profile and reuses the result across every model tried during
-        a capacity cascade instead of re-encoding the same screenshots per model."""
+        a capacity cascade instead of re-encoding the same screenshots per model.
+
+        ``images`` is renamed from the old ``photos`` because it now carries her profile
+        photos plus, when generate() was given one, the anchor screenshot appended at the
+        end (see generate()'s docstring) -- both are encoded identically here, the anchoring
+        itself only happens later, in _assemble_parts and _text_part.
+        """
         return [{
             "inlineData": {
                 "mimeType": _image_media_type(image),
                 "data": base64.standard_b64encode(image).decode("ascii"),
             },
-        } for image in photos]
+        } for image in images]
 
-    def _text_part(self, profile: Profile, style: str, retry_hint: str = "") -> dict[str, Any]:
+    def _text_part(self, profile: Profile, style: str, retry_hint: str = "", *,
+                   anchored: bool = False) -> dict[str, Any]:
         """Build the one part of the request that varies per attempt (see generate()'s "encode
         once, reuse across the cascade" note -- the image parts never depend on this).
 
@@ -472,13 +519,60 @@ class GeminiOpener:
         attempt was rejected for; that gets appended as its own clearly delimited block AFTER
         the profile content, so it is the most recent instruction the model reads before
         writing the corrected opener -- a corrected re-ask rather than an identical dice roll.
+
+        ``anchored`` mirrors generate()'s own flag: True once an anchor screenshot has been
+        appended after her profile photos (see generate()'s docstring for what the anchor is
+        and why it exists). When False the closing paragraph below is BYTE-IDENTICAL to what
+        this method produced before anchoring existed -- existing tests depend on that -- and
+        when True it is replaced with wording that tells the model the last image is not one
+        more profile photo but the live like screen her comment attaches under.
         """
+        photo_count = len(profile.photos)
+        if not anchored:
+            closing = (
+                f"The {photo_count} image(s) above are her profile in scroll order "
+                "(index 0 first). Set referenced_index to the index of the one your opener is about. "
+                "Write the opener now."
+            )
+        elif photo_count > 0:
+            closing = (
+                f"The first {photo_count} image(s) are her profile in scroll order (index 0 "
+                "first). The LAST image is the like screen described above.\n"
+                "YOUR MESSAGE ATTACHES TO THE PHOTO OR PROMPT IN THAT LAST IMAGE. She sees it "
+                "captioned under that item, so an opener about anything else reads as if it "
+                "were written for someone else. Write about that item only, even if another "
+                "photo or prompt seems more interesting.\n"
+                "If that item is a written prompt, respond to what she actually wrote. If it "
+                "is a photo, use one concrete thing you can genuinely see in it.\n"
+                "Ignore the app's own interface in that screenshot: the comment box, the Send "
+                "Like button, the keyboard, the icons, the name header, and any other chrome "
+                "are not hers and must never be mentioned or described.\n"
+                "Set referenced_index to the index of the profile image, from the scroll order "
+                "above, that shows that same photo or prompt; if none of them does, use 0.\n"
+                "Write the opener now."
+            )
+        else:
+            # photo_count == 0: no profile scroll images were captured for this profile (a
+            # capture-path failure, or simply a run that never scrolled), so the anchor is the
+            # ONLY image in the request. This needs its own wording rather than falling through
+            # to the photo_count > 0 branch above, which would render as "The first 0 image(s)
+            # are her profile in scroll order" -- nonsensical, and it would send the model
+            # hunting through scroll-order images that were never sent.
+            closing = (
+                "No profile scroll images were captured for her; the like screen image below "
+                "is the only image in this request.\n"
+                "YOUR MESSAGE ATTACHES TO THE PHOTO OR PROMPT SHOWN IN THAT IMAGE. Write about "
+                "that item only.\n"
+                "Ignore the app's own interface in that screenshot: the comment box, the Send "
+                "Like button, the keyboard, the icons, the name header, and any other chrome "
+                "are not hers and must never be mentioned or described.\n"
+                "Set referenced_index to 0.\n"
+                "Write the opener now."
+            )
         text = (
             f"STYLE GUIDE:\n{style}\n\n"
             f"HER PROFILE TEXT:\n{profile.text_blob() or '(none)'}\n\n"
-            f"The {len(profile.photos)} image(s) above are her profile in scroll order "
-            "(index 0 first). Set referenced_index to the index of the one your opener is about. "
-            "Write the opener now."
+            f"{closing}"
         )
         if retry_hint:
             text += (
@@ -499,19 +593,68 @@ class GeminiOpener:
                 "concrete detail from her profile text or photos. Write the corrected opener "
                 "now."
             )
+            if anchored:
+                # Without this, a retry's corrective block talks only about the general HARD
+                # REJECTION rules and the style guide, and the model can drift back onto
+                # whichever photo it originally preferred -- re-anchoring it here costs one
+                # sentence and closes that gap on every retry, not just the first attempt.
+                text += (
+                    " Your message is still attached to the photo or prompt in the final image "
+                    "(the like screen); keep the corrected opener about that item."
+                )
         return {"text": text}
+
+    @staticmethod
+    def _assemble_parts(image_parts: list[dict[str, Any]], text_part: dict[str, Any], *,
+                        anchored: bool) -> list[dict[str, Any]]:
+        """Arrange the encoded image parts, the anchor label (when present), and the text
+        part into the final ``contents[0].parts`` list Gemini receives, in the order the
+        model reads them.
+
+        Unanchored (or no images at all -- profile.photos == [] with no anchor either):
+        exactly today's shape, image parts followed by the text part, so a request with no
+        anchor is unaffected by any of this.
+
+        Anchored: the anchor is, by construction, the LAST entry of ``image_parts`` (see
+        generate(), which appends it to ``images`` after profile.photos before encoding). A
+        standalone ``{"text": _ANCHOR_LABEL}`` part is inserted immediately BEFORE that final
+        image, so the sequence reads profile photos, then the label, then the like-screen
+        image, then the trailing instructions in ``text_part``. The label is placed adjacent
+        to the image it describes rather than left to the trailing text block alone: Gemini
+        reads parts as one ordered sequence, and "the next image" is only unambiguous to the
+        model when the pointer text sits immediately next to the image it points at -- naming
+        it only in a paragraph several parts away (after profile photos, before the label
+        never existed) is exactly the ambiguity this whole feature exists to remove.
+        """
+        if not anchored or not image_parts:
+            return [*image_parts, text_part]
+        profile_parts, anchor_part = image_parts[:-1], image_parts[-1]
+        return [*profile_parts, {"text": _ANCHOR_LABEL}, anchor_part, text_part]
 
     def _payload(self, profile: Profile, style: str, model: str, *,
                  image_parts: list[dict[str, Any]] | None = None,
-                 retry_hint: str = "") -> dict[str, Any]:
+                 retry_hint: str = "", anchored: bool = False) -> dict[str, Any]:
         """Build one model's GenerateContent request. ``image_parts`` lets generate() pass
-        in already-encoded photos so a cascade across N models doesn't re-encode the same
-        screenshots N times; when omitted it's computed fresh from ``profile``. ``retry_hint``
-        is forwarded to _text_part unchanged -- it must reach EVERY model tried in this
-        attempt's cascade, because it describes what the previous attempt got wrong, which
-        stays true no matter which model ends up serving the retry."""
-        parts = list(image_parts) if image_parts is not None else self._image_parts(profile.photos)
-        parts.append(self._text_part(profile, style, retry_hint))
+        in already-encoded photos (and, when anchored, the anchor screenshot appended after
+        them) so a cascade across N models doesn't re-encode the same screenshots N times;
+        when omitted it can only be computed fresh from ``profile.photos``, which never
+        includes an anchor -- so ``anchored`` is forced False in that path below regardless
+        of what the caller passed, rather than claiming an anchor is present when there is no
+        anchor image actually in ``image_parts`` to point at. generate() always passes
+        ``image_parts`` explicitly, so this fallback only matters for a caller that doesn't
+        (there is none in this codebase today, but the method must not silently lie about
+        anchoring if one appears later). ``retry_hint`` is forwarded to _text_part unchanged
+        -- it must reach EVERY model tried in this attempt's cascade, because it describes
+        what the previous attempt got wrong, which stays true no matter which model ends up
+        serving the retry."""
+        if image_parts is not None:
+            resolved_image_parts = list(image_parts)
+            resolved_anchored = anchored
+        else:
+            resolved_image_parts = self._image_parts(profile.photos)
+            resolved_anchored = False
+        text_part = self._text_part(profile, style, retry_hint, anchored=resolved_anchored)
+        parts = self._assemble_parts(resolved_image_parts, text_part, anchored=resolved_anchored)
         generation_config: dict[str, Any] = {
             "maxOutputTokens": self.max_tokens,
             "responseMimeType": "application/json",
@@ -527,25 +670,38 @@ class GeminiOpener:
         if thinking_config is not None:
             generation_config["thinkingConfig"] = dict(thinking_config)
         return {
-            "systemInstruction": {"parts": [{"text": _SYSTEM}]},
+            "systemInstruction": {"parts": [{"text": _system_text(resolved_anchored)}]},
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": generation_config,
         }
 
     @staticmethod
-    def _request_size_bytes(image_parts: list[dict[str, Any]], text_part: dict[str, Any]) -> int:
+    def _request_size_bytes(parts: list[dict[str, Any]], system_text: str) -> int:
         """Approximate the wire size of one request against Gemini's 20MB inline-data cap:
-        the base64 image payloads dominate, plus the system instruction and the per-request
-        text block (style guide + profile text). generationConfig/schema JSON is a few
-        hundred fixed bytes that don't scale with photo count, so it's left out of the
-        estimate -- see _MAX_INLINE_REQUEST_BYTES for the headroom that covers it."""
-        total = len(_SYSTEM.encode("utf-8")) + len(text_part["text"].encode("utf-8"))
-        for part in image_parts:
-            total += len(part["inlineData"]["data"])
+        the base64 image payloads dominate, plus the system instruction and every text part
+        (the per-request style guide/profile text block, and, once anchoring is in play, the
+        standalone _ANCHOR_LABEL part -- see _assemble_parts). generationConfig/schema JSON
+        is a few hundred fixed bytes that don't scale with photo count, so it's left out of
+        the estimate -- see _MAX_INLINE_REQUEST_BYTES for the headroom that covers it.
+
+        Takes the FULLY ASSEMBLED ``parts`` list (image parts, the anchor label text part when
+        present, and the trailing text part all together) rather than images and text
+        separately, so a caller can never accidentally size a request without also sizing the
+        anchor label -- it is small, but it is still bytes actually sent on the wire, and this
+        method's whole job is to be the one place that can't drift from what generate() puts
+        in the request.
+        """
+        total = len(system_text.encode("utf-8"))
+        for part in parts:
+            if "text" in part:
+                total += len(part["text"].encode("utf-8"))
+            else:
+                total += len(part["inlineData"]["data"])
         return total
 
-    def _fit_images_to_budget(self, profile: Profile, image_parts: list[dict[str, Any]],
-                              text_part: dict[str, Any]) -> list[dict[str, Any]]:
+    def _fit_images_to_budget(self, images: list[bytes], image_parts: list[dict[str, Any]],
+                              text_part: dict[str, Any], system_text: str, *,
+                              anchored: bool) -> list[dict[str, Any]]:
         """Guarantee the request fits Gemini's 20MB inline-image cap, compressing only if
         it doesn't.
 
@@ -554,8 +710,24 @@ class GeminiOpener:
         full-resolution phone screenshots pays the recompression cost, and it's never
         silent -- we print exactly what was done so a systematically oversized capture
         pipeline is visible rather than a mysteriously smaller/blurrier opener input.
+
+        ``images`` is the same list generate() built for _image_parts: her profile photos,
+        plus the anchor screenshot appended at the end when ``anchored`` is True (no
+        ``profile`` argument is needed here -- this list is already everything there is to
+        recompress). Recompressing from THIS list rather than only her profile photos is what
+        lets the anchor image itself be shrunk under the same size pressure as everything
+        else: an anchor screenshot is a full-resolution phone capture exactly like a profile
+        photo, so leaving it out of recompression would silently exempt the single largest
+        image in an anchored request from the very budget this method exists to enforce.
+
+        Sizing uses the FULLY ASSEMBLED parts list (image parts, the standalone
+        _ANCHOR_LABEL text part when anchored, and the trailing text part -- see
+        _assemble_parts), not the image parts alone, so the label part's few dozen bytes
+        count against the budget too rather than being a free rider that _request_size_bytes
+        never sees.
         """
-        original_size = self._request_size_bytes(image_parts, text_part)
+        assembled = self._assemble_parts(image_parts, text_part, anchored=anchored)
+        original_size = self._request_size_bytes(assembled, system_text)
         if original_size <= _MAX_INLINE_REQUEST_BYTES:
             return image_parts
 
@@ -567,11 +739,13 @@ class GeminiOpener:
         # for PNG phone screenshots, which carry a lot of lossless overhead. If that's still
         # over budget, progressively shrink the longest side until the request fits.
         new_size = original_size
+        fitted_parts: list[dict[str, Any]] = image_parts
+        fitted_assembled: list[dict[str, Any]] = assembled
         for max_side in (None, 1568, 1280, 1024, 768):
             recompressed: list[bytes] = []
-            for index, photo in enumerate(profile.photos):
+            for index, image in enumerate(images):
                 try:
-                    img = Image.open(io.BytesIO(photo)).convert("RGB")
+                    img = Image.open(io.BytesIO(image)).convert("RGB")
                     if max_side is not None and max(img.size) > max_side:
                         scale = max_side / max(img.size)
                         img = img.resize(
@@ -591,20 +765,32 @@ class GeminiOpener:
                     # it to OpenerError instead: the established "this profile's own content is
                     # bad, skip just this profile" signal, naming which photo and how big it was
                     # so the operator can tell a systemic capture bug from one bad frame.
+                    #
+                    # The anchor -- when present, always the LAST entry of ``images`` (see
+                    # generate()) -- gets its own name here instead of "photo index N": it did
+                    # not come from her profile's scroll capture, it came from screenshotting
+                    # the live like screen, so reporting it as a photo index sends the operator
+                    # hunting through her profile photos for a capture bug ("photo index 9" on a
+                    # profile with 6 photos) that is actually in the anchor capture path.
+                    if anchored and index == len(images) - 1:
+                        label = "the like screen anchor image"
+                    else:
+                        label = f"photo index {index}"
                     raise OpenerError(
-                        f"Gemini opener: photo index {index} ({len(photo)} bytes) could not be "
+                        f"Gemini opener: {label} ({len(image)} bytes) could not be "
                         f"decoded/recompressed while fitting the request to the inline size "
                         f"budget: {type(exc).__name__}: {exc}") from exc
                 recompressed.append(buf.getvalue())
             fitted_parts = [{
                 "inlineData": {
                     "mimeType": "image/jpeg",
-                    "data": base64.standard_b64encode(photo).decode("ascii"),
+                    "data": base64.standard_b64encode(image).decode("ascii"),
                 },
-            } for photo in recompressed]
-            new_size = self._request_size_bytes(fitted_parts, text_part)
+            } for image in recompressed]
+            fitted_assembled = self._assemble_parts(fitted_parts, text_part, anchored=anchored)
+            new_size = self._request_size_bytes(fitted_assembled, system_text)
             if new_size <= _MAX_INLINE_REQUEST_BYTES:
-                print(f"Gemini opener: compressed {len(profile.photos)} photo(s) to fit the "
+                print(f"Gemini opener: compressed {len(images)} image(s) to fit the "
                       f"inline request budget ({original_size} -> {new_size} bytes, cap "
                       f"{_MAX_INLINE_REQUEST_BYTES}).")
                 return fitted_parts
@@ -615,15 +801,25 @@ class GeminiOpener:
         # images do. A large retry_hint can push an otherwise-fine profile over budget with
         # the photos barely contributing, and telling the operator to trim photos in that case
         # is actively misleading. Report the actual composition instead of assuming.
+        #
+        # image_bytes/text_bytes are derived from the SAME fitted_assembled total (new_size)
+        # rather than recomputed independently, so the breakdown can never drift out of sync
+        # with the number actually being compared to the budget above.
         image_bytes = sum(len(part["inlineData"]["data"]) for part in fitted_parts)
-        text_bytes = len(_SYSTEM.encode("utf-8")) + len(text_part["text"].encode("utf-8"))
+        text_bytes = new_size - image_bytes
+        anchor_note = (
+            " (one of these is the like screen anchor image, itself a full-resolution phone "
+            "screenshot subject to the same compression as her profile photos)"
+            if anchored else ""
+        )
         raise OpenerError(
-            f"Gemini opener: profile has {len(profile.photos)} photo(s); the request still "
-            f"totals {new_size} bytes encoded even at the smallest compression step "
-            f"({image_bytes} bytes of photos, {text_bytes} bytes of text -- style guide, "
-            f"profile content, and system instruction, including any retry hint), over the "
-            f"{_MAX_INLINE_REQUEST_BYTES} byte budget; refusing to silently drop photos. "
-            "Reduce photo count or resolution upstream if photos dominate the total, or "
+            f"Gemini opener: request has {len(images)} image(s){anchor_note}; the request "
+            f"still totals {new_size} bytes encoded even at the smallest compression step "
+            f"({image_bytes} bytes of images, {text_bytes} bytes of text -- style guide, "
+            f"profile content, system instruction, and the anchor label when present, "
+            f"including any retry hint), over the "
+            f"{_MAX_INLINE_REQUEST_BYTES} byte budget; refusing to silently drop images. "
+            "Reduce image count or resolution upstream if images dominate the total, or "
             "shorten the profile text/retry hint if text does.")
 
     @staticmethod
@@ -761,8 +957,24 @@ class GeminiOpener:
         )
 
     def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
+                 anchor: bytes | None = None,
                  should_stop: Callable[[], bool] | None = None,
                  skip_models: frozenset[str] = frozenset()) -> OpenerResult:
+        # anchor is a screenshot of the app's like/comment screen exactly as it is open on the
+        # phone at this instant -- captured live, right before this call, not one of her
+        # profile photos -- showing the single photo or prompt her comment will actually be
+        # attached to and displayed underneath. Without it, this method has no idea which item
+        # that will be: it picks whichever photo or prompt the model itself finds most
+        # interesting to write about, and on a Hinge like/comment screen that is frequently NOT
+        # the item the comment lands under, so the message reads as if it were written for a
+        # different photo entirely -- a stranger's compliment about a beach sunset captioned
+        # under her dining table photo. Passing anchor fixes that by grounding the opener in the
+        # one item that is provably correct, verified visually rather than guessed from scroll
+        # order. It is appended AFTER her profile photos in the image list built below, and
+        # deliberately kept OUT of the profile scroll-order indexing referenced_index uses (see
+        # _text_part's anchored wording) -- it is not one more thing to reference by index, it
+        # is the fixed target every opener must be about whenever it's present.
+        #
         # retry_hint defaults to "" (falsy): an ordinary first attempt, no correction to make.
         # When OpenerService is re-asking after a rejected attempt, it passes the specific
         # reason here; _text_part appends it as a corrective instruction, and it must reach
@@ -812,9 +1024,18 @@ class GeminiOpener:
             # (when a profile needs it) recompression are the expensive parts of building a
             # request, and neither depends on which model ends up serving it (nor on
             # retry_hint, which only ever varies the text part).
-            image_parts = self._image_parts(profile.photos)
-            text_part = self._text_part(profile, style, retry_hint)
-            image_parts = self._fit_images_to_budget(profile, image_parts, text_part)
+            #
+            # anchored is derived once, here, from whether a caller actually passed an anchor
+            # image -- everything downstream (the text, the system instruction, part assembly,
+            # and the budget fit) keys off this one boolean rather than re-deriving it, so the
+            # request is anchored, consistently, top to bottom, or not at all.
+            anchored = anchor is not None
+            images = list(profile.photos) + ([anchor] if anchored else [])
+            image_parts = self._image_parts(images)
+            text_part = self._text_part(profile, style, retry_hint, anchored=anchored)
+            system_text = _system_text(anchored)
+            image_parts = self._fit_images_to_budget(images, image_parts, text_part, system_text,
+                                                      anchored=anchored)
             # SAFETY VALVE (see this method's skip_models docstring paragraph above): if the
             # caller's skip set would leave literally nothing eligible, ignore it entirely
             # rather than raising GeminiCapacityExhausted without ever trying a single model.
@@ -853,7 +1074,7 @@ class GeminiOpener:
                     scopes[model] = self._unavailable_models[model]
                     continue
                 payload = self._payload(profile, style, model, image_parts=image_parts,
-                                        retry_hint=retry_hint)
+                                        retry_hint=retry_hint, anchored=anchored)
                 url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                        f"{quote(model, safe='-_.')}:generateContent")
                 try:

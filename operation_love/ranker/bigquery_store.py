@@ -39,7 +39,7 @@ _MAX_INSERT_ATTEMPTS = 5    # bounded retry so a row BigQuery keeps rejecting as
 _TABLES = {
     "profiles": (
         "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, liked BOOL, "
-        "source STRING, photo_count INT64"
+        "source STRING, photo_count INT64, capture_truncated BOOL"
     ),
     "profile_photos": (
         "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, "
@@ -63,6 +63,7 @@ _TABLES = {
 _MIGRATIONS = (
     "ALTER TABLE `{labels}` ADD COLUMN IF NOT EXISTS profile_id STRING;",
     "ALTER TABLE `{decisions}` ADD COLUMN IF NOT EXISTS source STRING;",
+    "ALTER TABLE `{profiles}` ADD COLUMN IF NOT EXISTS capture_truncated BOOL;",
 )
 
 
@@ -246,7 +247,7 @@ class BigQueryStore:
 
     # --- writes (buffered, thread-safe) --------------------------------
     def record_profile(self, run_id, app, profile_id, liked, source="manual",
-                       photos=None, photo_count=0) -> bool:
+                       photos=None, photo_count=0, capture_truncated: bool = False) -> bool:
         """Archive the profile's images + manifest row. Returns True if recorded.
 
         Image archiving is the system of record, so it is mandatory but non-fatal
@@ -254,6 +255,15 @@ class BigQueryStore:
         raises. If any photo cannot be stored after retries, we record no manifest
         and return False so the worker skips that swipe's label instead of keeping
         a label without the complete profile image set.
+
+        `capture_truncated` records whether the driver hit its scroll ceiling
+        (e.g. Hinge's scroll_captures) before reaching the profile's real bottom,
+        i.e. the label attached to this profile was made from an INCOMPLETE read.
+        That's already in the local debug log and Profile.meta, but this column is
+        what lets a later BigQuery query actually ask "which labels came from a
+        truncated read?" (useful if those turn out noisier) instead of the answer
+        being dropped on the way into the system of record. Additive/nullable (see
+        _MIGRATIONS) so it defaults to False for callers that don't pass it.
         """
         photos = list(photos or [])
         if not photos:
@@ -272,6 +282,7 @@ class BigQueryStore:
             self._buf["profiles"].append({
                 "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": created_at,
                 "liked": bool(liked), "source": source, "photo_count": len(photo_rows),
+                "capture_truncated": bool(capture_truncated),
             })
             self._buf["profile_photos"].extend(photo_rows)
             self._maybe_flush("profiles")

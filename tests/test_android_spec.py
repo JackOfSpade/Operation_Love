@@ -145,6 +145,140 @@ def test_read_scroll_frac_default_and_boundary_values_pass():
     AndroidAppSpec(app="x", package="x.y", calibrated=False, read_scroll_frac=1.0)
 
 
+# --- observe-mode fields: identity_band / content_band / observe_ignore_zones / -----------
+# --- observe_touch_watch, and their __post_init__ validation --------------------------------
+
+def test_malformed_identity_band_is_rejected():
+    # Same normalised-rect shape as forbidden_zones / upsell_dismiss_zone -- a bad rect here
+    # would silently defeat the identity anchor rather than raise.
+    with pytest.raises(ValueError, match="identity_band"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       identity_band=(0.8, 0.1, 0.2, 0.9))    # x0 > x1
+    with pytest.raises(ValueError, match="identity_band"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       identity_band=(0.1, 0.1, 1.5, 0.9))    # outside 0..1
+
+
+# --- identity_top_name_band: OCR-only refinement of identity_band's "top" verdict ---------
+# See android_spec.py's identity_top_name_band docstring for the bug this exists to fix: a
+# pass that advanced Alina -> jessica got recorded as a scroll of Alina because identity_band
+# alone cannot name a card at scroll-top (it shows Hinge's profile-independent filter chips
+# there instead), so the loose pixel content-match mistook jessica's card for a scroll.
+
+def test_identity_top_name_band_is_accepted_alongside_identity_band():
+    """A valid identity_top_name_band, declared together with identity_band (its prerequisite,
+    since the name check only ever runs when identity_band's own verdict is "top"), must
+    construct cleanly -- this is the exact shape the real Hinge fix needs."""
+    spec = AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                          identity_band=(0.10, 0.048, 0.80, 0.094),
+                          identity_top_name_band=(0.03, 0.130, 0.75, 0.250))
+    assert spec.identity_top_name_band == (0.03, 0.130, 0.75, 0.250)
+
+
+def test_identity_top_name_band_defaults_to_none_and_existing_specs_still_construct():
+    """No app declared this band before it existed. A spec that doesn't opt in -- including
+    every spec that predates this field -- must still construct exactly as before."""
+    spec = AndroidAppSpec(app="x", package="x.y", calibrated=False)
+    assert spec.identity_top_name_band is None
+    # BUMBLE_SPEC has no scroll-top name-header mechanism of its own (this fix is Hinge-
+    # specific); its default must be unaffected by this field's addition, same precedent as
+    # BUMBLE_SPEC.identity_band being None in test_observe_mode_fields_default_such_that_
+    # bumble_spec_is_unaffected above.
+    assert BUMBLE_SPEC.identity_top_name_band is None
+
+
+def test_malformed_identity_top_name_band_is_rejected():
+    """Same normalised-rect shape and error-message shape as identity_band's own check above --
+    a malformed rect here would silently defeat the scroll-top name check (OCR run over the
+    wrong region, or over garbage) rather than raise, which is worse than declaring no band at
+    all."""
+    with pytest.raises(ValueError, match="identity_top_name_band"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       identity_band=(0.10, 0.048, 0.80, 0.094),
+                       identity_top_name_band=(0.8, 0.1, 0.2, 0.9))    # x0 > x1
+    with pytest.raises(ValueError, match="identity_top_name_band"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       identity_band=(0.10, 0.048, 0.80, 0.094),
+                       identity_top_name_band=(0.1, 0.9, 0.5, 0.1))    # y0 > y1
+    with pytest.raises(ValueError, match="identity_top_name_band"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       identity_band=(0.10, 0.048, 0.80, 0.094),
+                       identity_top_name_band=(0.1, 0.1, 1.5, 0.9))    # outside 0..1
+    # Wrong arity: __post_init__ mirrors identity_band's check exactly, which unpacks the rect
+    # into 4 names rather than validating its length up front (identity_band's own test above
+    # doesn't cover arity either, for the same reason) -- so this still raises ValueError, just
+    # from the unpack itself rather than a message naming the field.
+    with pytest.raises(ValueError):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       identity_band=(0.10, 0.048, 0.80, 0.094),
+                       identity_top_name_band=(0.1, 0.1, 0.5))
+
+
+def test_identity_top_name_band_without_identity_band_is_rejected():
+    """The name check is a REFINEMENT of the pixel identity verdict (it only runs when that
+    verdict is exactly "top"), not a standalone source -- and "top" cannot be produced without
+    identity_band declared. Declaring identity_top_name_band alone is therefore a configuration
+    error, refused at construction the same way observe_touch_watch=True without identity_band
+    is refused (test_observe_touch_watch_without_identity_band_is_rejected above)."""
+    with pytest.raises(ValueError, match="identity_top_name_band"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       identity_top_name_band=(0.03, 0.130, 0.75, 0.250))
+
+
+def test_malformed_observe_ignore_zones_entry_is_rejected():
+    with pytest.raises(ValueError, match="observe_ignore_zones"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       observe_ignore_zones=((0.7, 0.1, 0.3, 0.9),))   # x0 > x1
+    with pytest.raises(ValueError, match="observe_ignore_zones"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       observe_ignore_zones=((0.1, 0.1, 1.5, 0.9),))   # outside 0..1
+
+
+def test_malformed_content_band_is_rejected():
+    with pytest.raises(ValueError, match="content_band"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       content_band=(0.9, 0.1))               # y0 > y1
+    with pytest.raises(ValueError, match="content_band"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       content_band=(0.1, 1.5))                # outside 0..1
+
+
+def test_observe_touch_watch_without_identity_band_is_rejected():
+    # The touch stream corroborates an identity-proven advance -- it is not a standalone
+    # decision source, so declaring it without an identity anchor is refused at construction.
+    with pytest.raises(ValueError, match="identity_band"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False, observe_touch_watch=True)
+
+
+def test_observe_touch_watch_with_identity_band_is_accepted():
+    spec = AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                          observe_touch_watch=True, identity_band=(0.1, 0.05, 0.8, 0.1))
+    assert spec.observe_touch_watch is True
+    assert spec.identity_band == (0.1, 0.05, 0.8, 0.1)
+
+
+def test_observe_mode_fields_default_such_that_bumble_spec_is_unaffected():
+    # These fields are new. HINGE_SPEC now declares them (the observe-mode redesign --
+    # see hinge.py's module docstring and HINGE_SPEC's own identity_band/content_band/
+    # observe_ignore_zones/observe_touch_watch comments for the measured ground truth), but
+    # BUMBLE_SPEC doesn't (that binding is untouched by this change), so ITS defaults must
+    # still construct the spec exactly as before.
+    assert HINGE_SPEC.identity_band == (0.10, 0.048, 0.80, 0.094)
+    assert HINGE_SPEC.content_band == (0.125, 0.875)
+    assert HINGE_SPEC.observe_ignore_zones == (
+        (0.75, 0.030, 1.00, 0.115), (0.00, 0.900, 1.00, 1.000))
+    # False deliberately, and this assertion is the guard against it being flipped back
+    # without a measurement: gesture corroboration reads the phone's own touch stream, and on
+    # the Pixel 7a / Android 17 that stream delivers NOTHING to the adb shell user (30s of
+    # real tapping produced zero raw lines -- see HINGE_SPEC's comment and ops/ANTI-BOT-
+    # RESEARCH.md's 2026-08-10 (c) addendum). Turning it on there would attach a watcher that
+    # can only ever report "no evidence". Re-enable only alongside a passing
+    # `python -m tools.touch_selftest` on the target device.
+    assert HINGE_SPEC.observe_touch_watch is False
+    assert BUMBLE_SPEC.identity_band is None
+    assert BUMBLE_SPEC.observe_touch_watch is False
+
+
 def test_hinge_spec_matches_the_original_hardcoded_defaults():
     assert HINGE_SPEC.app == "hinge"
     assert HINGE_SPEC.package == "co.hinge.app"

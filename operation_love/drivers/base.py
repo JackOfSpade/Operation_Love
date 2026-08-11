@@ -65,6 +65,27 @@ class DatingAppDriver(ABC):
     # two-outcome observe API.
     supports_observe_like_intent: bool = False
 
+    # Whether next_profile()/current_profile() honour a `should_stop` callable, i.e.
+    # whether a Stop pressed WHILE a profile is being captured is noticed during the
+    # capture instead of only after it finishes.
+    #
+    # This matters because capture is by far the longest uninterruptible stretch in a
+    # run. On Hinge, reading one profile is 12 screencaps + 11 humanized read-scrolls,
+    # and observe mode then scrolls the whole card back to the top again — measured at
+    # ~85s end to end, during which the worker's only stop check (the one right after
+    # current_profile() returns) cannot run. The operator's report was exactly that:
+    # "when I hit stop, it doesn't stop while it's reading a profile, it completes the
+    # read (by scrolling a bunch) then stops."
+    #
+    # Opt-in, for the same reason supports_observe_like_intent is (see above): drivers
+    # and lightweight test doubles that declare a zero-argument capture keep working
+    # untouched. Unlike halt_on_error's original default (see its comment below), False
+    # here is the SAFE value, not the risky one — it means "Stop is honoured between
+    # profiles, exactly as it always was", never a new failure mode. Worker only passes
+    # should_stop to a driver that declares True, so a flag that lies (True on a driver
+    # that ignores the callable) is worse than no flag at all.
+    supports_interruptible_capture: bool = False
+
     # Whether human_motion.think_time_s()'s per-decision "think time" (measured
     # like-vs-pass dwell asymmetry) is calibrated for THIS app's real behavior.
     # True only for Hinge, which it was actually measured on; other drivers get
@@ -95,14 +116,39 @@ class DatingAppDriver(ABC):
         """Attach to the app (launch browser / connect to emulator) and reach the swipe deck."""
 
     @abstractmethod
-    def next_profile(self) -> Profile | None:
-        """Capture the current profile (all photos + text). None when the deck is empty."""
+    def next_profile(self, *, should_stop=None) -> Profile | None:
+        """Capture the current profile (all photos + text). None when the deck is empty.
+
+        `should_stop` is an optional zero-argument callable polled BETWEEN the individual
+        screencaps/scrolls a capture is made of; when it returns True the driver abandons
+        the capture and returns None promptly. It is only ever passed to drivers that
+        declare ``supports_interruptible_capture`` (see that attribute), so implementations
+        that ignore it — and test doubles that don't declare it at all — are unaffected.
+
+        A None returned because should_stop fired is deliberately indistinguishable from
+        None for any other reason: both worker loops already treat None as "nothing usable
+        here, look again", and both re-check the stop event immediately after this call, so
+        no new return value or exception is needed to carry the difference."""
 
     @abstractmethod
-    def like(self, opener: str | None = None, item_index: int = 0) -> None:
+    def like(self, opener: str | None = None, item_index: int = 0, *,
+             anchored_opener=None) -> None:
         """Like the current profile, optionally sending an opener message. item_index is the
         0-based index (capture order) of the photo/prompt the opener is about, so drivers that
-        comment per-item (Hinge) can target it; drivers without that notion ignore it."""
+        comment per-item (Hinge) can target it; drivers without that notion ignore it.
+
+        `anchored_opener` is a callback the driver MAY invoke, once its like/comment screen is
+        actually open, with a screenshot (bytes) of that screen — which visually shows the
+        item the comment is about to attach to — and which returns replacement opener text
+        grounded in what that screenshot shows (or None/empty if it can't produce one).
+
+        It exists for the case where the driver could not land the comment on the item
+        `item_index` names (per-item targeting is best-effort, not guaranteed) and the sheet
+        that just opened is now anchored to a DIFFERENT item than the one `opener` was written
+        about — an out-of-place message (an opener about one photo landing under an unrelated
+        one) that a driver able to detect the mismatch should repair via this callback rather
+        than ship blind. Drivers that cannot land a comment on a specific item at all (e.g.
+        Bumble, which likes the whole profile) accept and ignore this parameter."""
 
     @abstractmethod
     def dislike(self) -> None:
@@ -113,8 +159,14 @@ class DatingAppDriver(ABC):
         """True if there are no more profiles to swipe right now."""
 
     # --- observe mode (shadow learning); only needed when mode="observe" ---
-    def current_profile(self) -> Profile | None:
-        """Capture the card currently shown WITHOUT acting (you swipe manually)."""
+    def current_profile(self, *, should_stop=None) -> Profile | None:
+        """Capture the card currently shown WITHOUT acting (you swipe manually).
+
+        `should_stop` behaves exactly as documented on next_profile above, including the
+        rule that a driver only receives it if it declares supports_interruptible_capture.
+        `should_stop=None` must reproduce the pre-existing behaviour exactly — tools that
+        drive observe-mode perception by hand (tools/hinge_inspect.py) call this with no
+        arguments at all."""
         raise NotImplementedError("observe mode is not supported by this driver")
 
     def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None,
@@ -128,10 +180,13 @@ class DatingAppDriver(ABC):
         blocked behind your next manual swipe.
 
         Drivers that opt in with ``supports_observe_like_intent`` may call
-        ``on_like_intent(True)`` once a human opens an intermediate like sheet,
-        then ``on_like_intent(False)`` when that sheet closes, whether it is
-        sent or dismissed. This is only a UI-notification hook; it must not
-        cause device input.
+        ``on_like_intent(active, anchor)`` — both positional, always — once a human opens
+        an intermediate like sheet (``active=True``) and again when that sheet closes,
+        whether it is sent or dismissed (``active=False``). ``anchor`` is a screenshot
+        (bytes) of the like sheet as it is open on screen — showing the specific item
+        the pending comment will attach to — or ``None`` when clearing (``active=False``;
+        there is nothing left on screen to show a picture of once the sheet has closed).
+        This is only a UI-notification hook; it must not cause device input.
         """
         raise NotImplementedError("observe mode is not supported by this driver")
 

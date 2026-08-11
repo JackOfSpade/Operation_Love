@@ -941,6 +941,32 @@ def test_opener_max_attempts_default_reaches_the_constructed_opener_service(monk
     assert _SpyOpenerService.instances[0].max_attempts == 5
 
 
+def test_on_opener_service_callback_receives_the_live_opener_service(monkeypatch, tmp_path):
+    """The hub's bug report needs the OpenerService this run actually built: only its own
+    ring buffer (OpenerService.recent_openers_snapshot) records what each opener said and
+    whether it was anchored to the live like screen -- RunStatus's raw `openers` counter
+    can't show either. Mirrors the existing on_status/on_store callback contract: invoked
+    once, right after construction, with the SAME instance (not a copy) that gets handed to
+    Worker."""
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+    _SpyOpenerService.instances = []
+    monkeypatch.setattr(sup, "OpenerService", _SpyOpenerService)
+    captured = {}
+
+    sup.run(str(cfg_path), on_opener_service=lambda svc: captured.__setitem__("svc", svc),
+            stop_event=threading.Event())
+
+    assert len(_SpyOpenerService.instances) == 1
+    assert captured["svc"] is _SpyOpenerService.instances[0]
+
+
 # --- device lock: advisory, cross-process flock so two Android runs can't overlap ----------
 
 def test_android_device_lock_blocks_concurrent_acquire_and_releases_cleanly(tmp_path):
@@ -1087,3 +1113,190 @@ def test_join_timeout_falls_back_to_the_sane_floor_when_openers_disabled():
     run with openers off stays exactly as responsive to a genuinely wedged worker as before."""
     cfg = _JoinTimeoutCfg(OpenerCfg(enabled=False, request_timeout_s=90))
     assert sup._worker_join_timeout_s(cfg) == sup._WORKER_JOIN_TIMEOUT_FLOOR_S == 30.0
+
+
+# --- audit fix: an honest "stopping" tail between running and stopped ----------------------
+# supervisor.py's shutdown `finally` used to publish phase="saving data" (and nothing for
+# `stopping`) the INSTANT shutdown began -- before stop_event.set(), before any worker was
+# even asked to notice it -- so the hub showed "saving data…" (and kept its green observe
+# GO cue up) for the whole worker-join window, while a worker could still be mid-swipe and
+# any decision it recorded there would be silently discarded (worker.py re-checks
+# stop_event around every decision point). These tests pin the fixed ordering.
+
+def test_stopping_is_true_and_phase_is_stopping_before_saving_data_begins(monkeypatch, tmp_path):
+    """Core ordering fix: while a still-live worker is inside the join wait (not yet
+    joined/declared wedged), status must read phase='stopping' with stopping=True -- NOT
+    'saving data'. Uses a worker driver that blocks in open_session() until released, so the
+    finally block is provably still stuck in its join loop when this samples status."""
+    release = threading.Event()
+
+    class _BlockedUntilReleased(DatingAppDriver):
+        def open_session(self):
+            release.wait(timeout=5)
+        def next_profile(self):
+            return None
+        def out_of_profiles(self):
+            return True
+        def like(self, opener=None, item_index=0):
+            pass
+        def dislike(self):
+            pass
+        def close(self):
+            pass
+
+    monkeypatch.setattr(sup, "_worker_join_timeout_s", lambda cfg: 5.0)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    store = _FakeStore()
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: store)
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _BlockedUntilReleased())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+
+    captured = {}
+    stop_event = threading.Event()
+    threading.Timer(0.15, stop_event.set).start()   # give startup time to reach 'live' first
+
+    run_thread = threading.Thread(
+        target=lambda: sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
+                               stop_event=stop_event))
+    run_thread.start()
+
+    # stop_event fired at ~0.15s; the worker is still blocked in open_session() (release not
+    # set yet), so the finally block must still be stuck inside its join loop right now.
+    time.sleep(0.35)
+    mid = captured["status"].snapshot()
+    release.set()                            # let the worker (and thus the join loop) finish
+    run_thread.join(timeout=5)
+
+    assert mid["phase"] == "stopping"
+    assert mid["stopping"] is True
+    final = captured["status"].snapshot()
+    assert final["phase"] == "stopped"
+    assert final["stopping"] is False        # cleared once the terminal phase lands
+
+
+def test_saving_data_phase_and_flush_see_stopping_still_true(monkeypatch, tmp_path):
+    """The other end of the same fix: by the time store.flush() actually runs, every worker
+    has already been joined/declared wedged (phase has moved on to 'saving data'), but
+    `stopping` itself must still read True -- it only clears at the very end, once the
+    terminal phase (stopped/wedged/save_failed) is published."""
+    captured = {}
+
+    class _RecordingStore(_FakeStore):
+        def flush(self):
+            captured["phase_at_flush"] = captured["status"].snapshot()["phase"]
+            captured["stopping_at_flush"] = captured["status"].snapshot()["stopping"]
+            return super().flush()
+
+    store = _RecordingStore()
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: store)
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+
+    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
+            stop_event=threading.Event())
+
+    assert captured["phase_at_flush"] == "saving data"
+    assert captured["stopping_at_flush"] is True
+    final = captured["status"].snapshot()
+    assert final["phase"] == "stopped"
+    assert final["stopping"] is False
+
+
+def test_stopping_print_names_the_real_join_timeout_and_worker_count(monkeypatch, tmp_path, capsys):
+    """The new operator-facing line printed before the join loop must name the ACTUAL
+    computed bound (join_timeout_s), not a guess -- and how many workers it's waiting on."""
+    monkeypatch.setattr(sup, "_worker_join_timeout_s", lambda cfg: 42.0)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    store = _FakeStore()
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: store)
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+
+    sup.run(str(cfg_path), stop_event=threading.Event())
+
+    out = capsys.readouterr().out
+    assert ("Supervisor: stopping — waiting up to 42s for 1 worker(s) to finish what they "
+            "are doing") in out
+
+
+def test_stopping_print_omitted_when_no_worker_was_ever_launched(monkeypatch, tmp_path, capsys):
+    """The device-lock-contention path (and anything else that fails between `workers = []`
+    and the launch loop) reaches this finally block with an empty worker list -- 'waiting
+    for 0 worker(s)' would be nonsensical, so the print is skipped entirely."""
+    class _AlwaysBusyLock:
+        def __init__(self, path):
+            pass
+        def acquire(self):
+            raise RuntimeError("Android device is already in use by another run")
+        def release(self):
+            pass
+
+    monkeypatch.setattr(sup, "_AndroidDeviceLock", _AlwaysBusyLock)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+    cfg_path = _write_cfg(tmp_path)
+
+    with pytest.raises(RuntimeError, match="already in use"):
+        sup.run(str(cfg_path), stop_event=threading.Event())
+
+    out = capsys.readouterr().out
+    assert "Supervisor: stopping — waiting up to" not in out
+
+
+def test_wedged_summary_uses_the_real_join_timeout_not_a_hardcoded_30s(monkeypatch, tmp_path, capsys):
+    """Audit fix: the printed save summary used to hardcode 'did not stop within 30s'
+    regardless of the run's ACTUAL bound (105s with the shipped opener config) -- a stale,
+    wrong number in an operator-facing message. It must use join_timeout_s like the
+    per-worker line just above it already did."""
+    class _WedgedDriver(DatingAppDriver):
+        def open_session(self):
+            time.sleep(2.0)          # ignores stop_event -- simulates a wedged worker;
+                                      # must outlast the 1.0s join timeout below to actually wedge
+        def next_profile(self):
+            return None
+        def out_of_profiles(self):
+            return True
+        def like(self, opener=None, item_index=0):
+            pass
+        def dislike(self):
+            pass
+        def close(self):
+            pass
+
+    monkeypatch.setattr(sup, "_worker_join_timeout_s", lambda cfg: 1.0)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    store = _FakeStore()
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: store)
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _WedgedDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+
+    stop_event = threading.Event()
+    threading.Timer(0.1, stop_event.set).start()
+
+    sup.run(str(cfg_path), stop_event=stop_event)
+
+    out = capsys.readouterr().out
+    assert "did not stop within 1s" in out
+    assert "30s" not in out

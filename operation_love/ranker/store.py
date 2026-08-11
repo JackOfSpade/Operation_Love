@@ -80,9 +80,13 @@ class SQLiteStore:
         return [(bool(liked), json.loads(emb)) for liked, emb in rows]
 
     def record_profile(self, run_id, app, profile_id, liked, source="manual",
-                       photos=None, photo_count=0) -> bool:
+                       photos=None, photo_count=0, capture_truncated: bool = False) -> bool:
         # SQLite is the offline, labels-only fallback: it doesn't archive images,
-        # so there's nothing that can fail here — always "recorded".
+        # so there's nothing that can fail here — always "recorded". capture_truncated
+        # is accepted-and-ignored for the same reason: there's no profiles manifest
+        # row here to hang it off of (see BigQueryStore.record_profile, the system of
+        # record, for where "was this label made from an incomplete profile read?"
+        # is actually kept queryable).
         return True
 
     def add_label(self, run_id, app, liked, embedding, source="manual", photo_count=0,

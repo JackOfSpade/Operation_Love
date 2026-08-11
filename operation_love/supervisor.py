@@ -201,8 +201,21 @@ def _abort_startup(run_id: str, status: RunStatus, cfg, store=None) -> None:
 
 
 def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None = None,
-        on_status=None, on_store=None, mode: str | None = None, enabled_apps=None,
-        max_per_run: int | None = None) -> None:
+        on_status=None, on_store=None, on_opener_service=None, mode: str | None = None,
+        enabled_apps=None, max_per_run: int | None = None) -> None:
+    """Run every enabled app until stop_event is set (or the queue/rate-limit/error runs out
+    the run on its own), then flush + close the store.
+
+    on_status/on_store/on_opener_service are hub-only callbacks (unused by the plain CLI
+    path): each is invoked exactly once, immediately after the object it hands over is
+    constructed, so HubState can capture a live reference for the running hub page and the
+    one-click bug report to read from a different thread while the run is in progress —
+    on_status gets the RunStatus (phase/labels/per-app state), on_store gets the live label
+    store (so the hub's model-quality card reads in-memory labels, not a lagging committed
+    read), and on_opener_service gets the OpenerService (so a bug report can show what each
+    opener actually said this run, not just RunStatus's raw `openers` call count — see the
+    call site below for why that distinction matters).
+    """
     from ._warnings import configure_warnings
     configure_warnings()
 
@@ -347,6 +360,19 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     # decide here.
     opener_service = OpenerService(opener_client, tracker, store, cfg.opener.style,
                                    max_attempts=cfg.opener.max_attempts)
+    if on_opener_service:
+        # The hub's bug report needs the openers actually GENERATED this run -- their text,
+        # the detail each one claims to reference, and crucially whether each was anchored to
+        # the live like/comment screen -- to diagnose the exact "comment attached to the
+        # wrong photo" bug the anchor mechanism (see worker.py's _wait_for_observed_decision,
+        # opener/service.py's OpenerPick.referenced) exists to fix. A report that says only
+        # `openers: 1` (RunStatus's raw call count, set below via status.set_global) cannot
+        # show any of that -- only OpenerService's own ring buffer
+        # (OpenerService.recent_openers_snapshot) can. Published the same way `store` is
+        # above: handed to the caller right after construction, not routed through
+        # RunStatus/AppStatus (which would mean growing those with per-opener history they
+        # have no other use for).
+        on_opener_service(opener_service)
 
     if _stop_requested(stop_event):
         _abort_startup(run_id, status, cfg, store)
@@ -430,7 +456,18 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             status.set_global(budget_spent=tracker.run_spend_usd, openers=tracker.calls)
             stop_event.wait(_STATUS_POLL_INTERVAL_S)
     finally:
-        status.set_global(phase="saving data", budget_spent=tracker.run_spend_usd, openers=tracker.calls)
+        # Publish the "stopping" tail -- not "saving data" -- the instant shutdown begins,
+        # at the same moment stop_event.set() runs (right before it, same statement group,
+        # so no reader can observe stop_event set while status still claims "live"). Audit
+        # fix: this used to stamp phase="saving data" here, ~40 lines before the actual
+        # store.flush() call below, so the hub showed "saving data…" for the ENTIRE
+        # worker-join window (up to join_timeout_s -- 105s with the shipped opener config)
+        # while a worker could still be mid-profile-read -- and kept rendering its green
+        # observe-mode GO cue that whole time even though a decision made after stop_event
+        # is set gets discarded, never recorded (worker.py's observe loop re-checks
+        # stop_event and drops the in-flight card). See status.py's `stopping` docstring.
+        status.set_global(stopping=True, phase="stopping",
+                          budget_spent=tracker.run_spend_usd, openers=tracker.calls)
         stop_event.set()
         # A worker still alive after its join timeout is WEDGED, not stopped: it may write
         # to the store DURING or AFTER the flush/close below, so a clean flush here is not
@@ -441,6 +478,13 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         # can legitimately still be riding out ONE in-flight opener request when stop_event was
         # set, bounded by cfg.opener.request_timeout_s, not by some fixed guess.
         join_timeout_s = _worker_join_timeout_s(cfg)
+        if workers:
+            # Named + bounded up front, before any worker has had a chance to report back,
+            # so an operator watching the terminal or the hub's live-log panel (which tees
+            # this same stdout -- see bugreport.install_log_capture) sees WHY nothing else
+            # happens for a while, instead of the silent gap this whole fix addresses.
+            print(f"Supervisor: stopping — waiting up to {join_timeout_s:.0f}s for "
+                  f"{len(workers)} worker(s) to finish what they are doing…")
         for w in workers:
             w.join(timeout=join_timeout_s)
             if w.is_alive():
@@ -469,6 +513,11 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         }
         for app in cfg.enabled_apps:
             status.set_app(app, state="saving")
+        # Only NOW is "saving data" true: every worker has been joined or accepted as
+        # wedged (both branches above have already run), so nothing still mid-swipe can
+        # surprise the flush below. This replaces the old stamp at the top of this block --
+        # see this function's "stopping" comment above for what was wrong with that.
+        status.set_global(phase="saving data")
         save_err = None
         try:
             store.flush()                 # raises if any buffered insert was rejected
@@ -492,7 +541,7 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             phase = "wedged"
         else:
             phase = "stopped"
-        status.set_global(running=False, phase=phase,
+        status.set_global(running=False, phase=phase, stopping=False,
                           budget_spent=tracker.run_spend_usd, openers=tracker.calls)
         wedged_apps = {w.app for w in wedged}
         for app in cfg.enabled_apps:
@@ -515,9 +564,13 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         detail = f" [{saved}]" if saved else ""
         if wedged:
             names = ", ".join(w.app for w in wedged)
+            # join_timeout_s, not a hardcoded "30s": that flat number predates
+            # _worker_join_timeout_s (see its own comment) and is wrong -- confusingly so --
+            # on every run with openers enabled, where the real bound is 105s by default.
             print(f"Run {run_id}: saved to {cfg.storage.backend}{detail}, but {len(wedged)} "
-                  f"worker(s) did not stop within 30s ({names}) — NOT an unqualified success, "
-                  f"a late write from a wedged worker could still land after this save; {tail}")
+                  f"worker(s) did not stop within {join_timeout_s:.0f}s ({names}) — NOT an "
+                  f"unqualified success, a late write from a wedged worker could still land "
+                  f"after this save; {tail}")
         else:
             print(f"Run {run_id}: ✅ all data saved to {cfg.storage.backend}{detail}; {tail}")
 

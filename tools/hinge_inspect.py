@@ -102,10 +102,44 @@ def _probe_sheet_templates(driver: HingeDriver, out_dir: Path) -> None:
 
 def _watch(driver: HingeDriver, rounds: int) -> None:
     print(f"\n--- Observe detection: manually like/pass {rounds} cards ---")
+    print("  gesture corroboration (Layer 3): "
+          + ("ON — touch watcher live" if driver.observe_touch_watch else
+             "OFF (observe_touch_watch: false) — Layers 1/2 alone must carry every verdict "
+             "this run"))
     for i in range(1, rounds + 1):
+        # current_profile() is observe mode's ONLY capture path (hinge.py's own docstring
+        # on that method) -- it is what populates the identity-anchor signatures
+        # (_identity_sig / _identity_top_sig) and the content-match signatures
+        # (_current_sigs) that wait_for_decision's Layers 1/2 compare every later frame
+        # against. Calling wait_for_decision() straight off, without this call (the
+        # original bug here), left both at their __init__ defaults for the whole --watch
+        # session: identity stayed permanently 'unknown' and content-match had nothing to
+        # compare against, so this tool could only ever exercise Layer 3 (gesture
+        # corroboration -- corroboration-only by design, never authoritative on its own)
+        # -- silently reproducing, inside the one tool meant to verify the fix, the exact
+        # scroll-recorded-as-decision bug the redesign exists to close.
+        profile = driver.current_profile()
+        if profile is None:
+            print(f"  {i}. Could not capture a profile card (deck empty, or the comment "
+                  "sheet was open) — stopping watch.")
+            return
+        # Report what Layers 1/2 actually have to work with for this round, so a bare
+        # LIKE/PASS print below never LOOKS like full 3-layer proof when it wasn't --
+        # exactly the gap the reported bug hid ("Observe detection works" printed after a
+        # run where identity/content had nothing seeded).
+        n_sigs = sum(1 for s in getattr(driver, "_current_sigs", None) or [] if s is not None)
+        if driver._identity_sig is not None:
+            anchor = f"revealed ({driver._identity_name!r})" if driver._identity_name else "revealed"
+        elif driver._identity_top_sig is not None:
+            anchor = "not yet revealed this capture (never scrolled past the top chrome)"
+        else:
+            anchor = "none (no identity_band configured, or the frame didn't decode)"
+        print(f"  {i}. Captured {len(profile.photos)} photo(s) — identity anchor: {anchor}; "
+              f"{n_sigs} content signature(s) for the scroll-match fallback")
         liked = driver.wait_for_decision(timeout=120.0)
         if liked is None:
-            print(f"  {i}. No decision (timeout / deck empty) — stopping watch.")
+            print(f"  {i}. No decision (timeout / deck empty / resync — card changed "
+                  "without a corroborated decision) — stopping watch.")
             return
         print(f"  {i}. Detected: {'LIKE  👍' if liked else 'PASS  👎'}")
     print("  Observe detection works ✔  (this is exactly what mode:observe records)")

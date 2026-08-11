@@ -139,6 +139,18 @@ def test_sqlite_spend_today_sums_only_local_today(tmp_path):
         store.close()
 
 
+def test_sqlite_record_profile_accepts_capture_truncated(tmp_path):
+    """SQLiteStore doesn't archive images (see record_profile's own comment) so there's
+    no profiles manifest row here to persist capture_truncated on -- this just proves
+    the keyword (which the worker now always passes) doesn't blow up with a TypeError
+    against this backend."""
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        assert store.record_profile("r", "hinge", "profile-1", True, capture_truncated=True) is True
+    finally:
+        store.close()
+
+
 def test_stats_show_uses_read_only_store(tmp_path, monkeypatch):
     """stats.show() only reads; it must ask make_store() for ensure=False so it doesn't
     run BigQuery table DDL / bucket IAM patching just to print a readout (hub.py and

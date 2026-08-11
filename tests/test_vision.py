@@ -4,8 +4,8 @@ import types
 
 from operation_love.perception.capture import Profile
 from operation_love.vision.embed import (
-    Embedder, _is_onnx_provider_failure, _select_onnx_providers, aggregate, concat,
-    dedup_by_cosine, gem_pool, l2_normalize, square_crop_around_bbox,
+    Embedder, _is_onnx_provider_failure, _select_onnx_providers, _synthetic_probe_image,
+    aggregate, concat, dedup_by_cosine, gem_pool, l2_normalize, square_crop_around_bbox,
 )
 from operation_love.vision.quality import QualityFilter
 
@@ -307,3 +307,168 @@ def test_embed_profile_returns_none_on_nan_in_final_vector(monkeypatch):
     profile = Profile(photos=[b"fake_photo"])
     result = embedder.embed_profile(profile)
     assert result is None, "expected None when final vector contains NaN"
+
+
+def test_synthetic_probe_image_is_a_valid_deterministic_in_memory_image():
+    """_probe_inference()'s warmup probe must never touch disk or the network, and must
+    be reproducible (same content every run) so a probe failure is easy to reason about
+    instead of depending on random content that happened to trip a provider bug."""
+    import io
+
+    from PIL import Image
+
+    b1 = _synthetic_probe_image()
+    b2 = _synthetic_probe_image()
+    assert isinstance(b1, bytes) and len(b1) > 0
+    assert b1 == b2                                       # fixed seed -> reproducible probe
+    img = Image.open(io.BytesIO(b1)).convert("RGB")
+    assert img.size == (128, 128)
+
+
+def test_warmup_probe_catches_coreml_failure_invisible_to_build_only_warmup(monkeypatch, capsys):
+    """The real bug this project hit: CoreMLExecutionProvider's ort.InferenceSession(...)
+    for buffalo_l BUILDS without error -- the plain _ensure() gate that existed before
+    this fix saw a clean success -- but the compiled graph's static-shape incompatibility
+    only threw on the first real .get() call, which used to mean the operator's first
+    live profile. warmup() must now catch this itself, via a synthetic probe inference
+    routed through embed_profile()'s existing CPU-fallback machinery, landing the
+    embedder on CPU before any worker ever touches it -- and it must NOT raise, since a
+    provider hiccup the existing fallback can recover from is not a fatal startup error
+    (only a genuine _ensure() failure is)."""
+    embedder = Embedder()
+    monkeypatch.setattr(embedder, "_ensure", lambda: None)
+    embedder._arc_providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    embedder._arc_on_cpu = False
+    rebuilds = []
+
+    def fake_build_arc(self, providers):
+        rebuilds.append(list(providers))
+        return _FakeArc(providers)
+
+    def fake_embed_image(self, _img):
+        # BUILD already "succeeded" (that's the whole bug); only real INFERENCE fails,
+        # and only while still on the CoreML provider.
+        if not self._arc_on_cpu:
+            raise RuntimeError(COREML_RUNTIME_ERROR)
+        return [1.0, 0.0], [0.5, 0.5]
+
+    embedder._build_arc = types.MethodType(fake_build_arc, embedder)
+    embedder._embed_image = types.MethodType(fake_embed_image, embedder)
+
+    embedder.warmup()  # must not raise
+
+    assert rebuilds == [["CPUExecutionProvider"]]
+    assert embedder._arc_on_cpu is True
+    out = capsys.readouterr().out
+    assert "CoreML/ONNX provider failed; retrying this profile on CPU" in out
+
+
+def test_warmup_probe_does_not_hard_fail_on_non_provider_shaped_error(monkeypatch):
+    """A synthetic-probe failure that ISN'T provider-shaped (e.g. some unrelated bug in
+    the tiny generated image itself) must not turn into a hard startup failure -- only a
+    genuine _ensure() failure gates startup. embed_profile() already swallows any single
+    photo's embedding error (counts it, prints it, never raises), so this falls out of
+    reusing that path rather than needing a separate try/except in warmup()."""
+    embedder = Embedder()
+    monkeypatch.setattr(embedder, "_ensure", lambda: None)
+
+    def fake_embed_image(_img):
+        raise ValueError("PIL cannot identify image file")   # deliberately not provider-shaped
+
+    monkeypatch.setattr(embedder, "_embed_image", fake_embed_image)
+
+    embedder.warmup()  # must not raise despite every probe photo erroring
+
+
+def test_embed_profile_falls_back_to_cpu_on_partial_not_total_coreml_failure():
+    """Old contract: the CPU fallback only fired when EVERY photo errored
+    (errors == len(photos)). A provider-shaped failure is deterministic per call in
+    reality (see the module's motivating case), so errors < len(photos) here just means
+    the run got lucky about which photos ran before the exception, not that the provider
+    is partly healthy. 2-of-3 photos erroring on CoreML must still retry the WHOLE
+    profile on CPU rather than silently pooling from the 1 survivor."""
+    embedder = Embedder()
+    embedder._device = "mps"
+    embedder._arc_providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    embedder._arc_on_cpu = False
+    embedder._arc = _FakeArc(embedder._arc_providers)
+    rebuilds = []
+    calls = {"n": 0}
+
+    def fake_build_arc(self, providers):
+        rebuilds.append(list(providers))
+        return _FakeArc(providers)
+
+    def fake_embed_image(self, _img):
+        calls["n"] += 1
+        if self._arc_on_cpu:
+            return [1.0, 0.0], [0.6, 0.8]
+        if calls["n"] in (1, 2):                  # 2 of 3 photos fail on CoreML this pass
+            raise RuntimeError(COREML_RUNTIME_ERROR)
+        return [9.0, 0.0], [1.0, 0.0]              # the 1 "survivor" a pre-fix run would pool alone
+
+    embedder._build_arc = types.MethodType(fake_build_arc, embedder)
+    embedder._embed_image = types.MethodType(fake_embed_image, embedder)
+
+    vec = embedder.embed_profile(Profile(photos=[b"a", b"b", b"c"]))
+
+    assert rebuilds == [["CPUExecutionProvider"]]   # fallback DID trigger on a 2-of-3 failure
+    assert embedder._arc_on_cpu is True
+    assert vec is not None
+
+
+def test_embed_profile_warns_on_partial_failure_with_no_fallback_left(monkeypatch, capsys):
+    """Even when there's nowhere left to fall back to (already on CPU) -- or the errors
+    aren't provider-shaped at all -- a partially-embedded profile must never look
+    indistinguishable from a clean one: whenever ANY photo errors, a clear WARNING states
+    how many, since the pooled embedding is quietly built from fewer photos than the
+    profile actually has."""
+    embedder = Embedder()
+    monkeypatch.setattr(embedder, "_ensure", lambda: None)
+    embedder._arc_on_cpu = True  # already on CPU -- nowhere left to fall back to
+
+    results = iter([([1.0, 0.0], [0.6, 0.8])])   # only the 1st of 3 photos succeeds
+
+    def fake_embed_image(_img):
+        try:
+            return next(results)
+        except StopIteration:
+            raise RuntimeError("corrupt JPEG")
+
+    monkeypatch.setattr(embedder, "_embed_image", fake_embed_image)
+
+    vec = embedder.embed_profile(Profile(photos=[b"a", b"b", b"c"]))
+
+    out = capsys.readouterr().out
+    assert "WARNING: 2/3 photo(s) failed to embed in this profile" in out
+    assert vec is not None    # fail loud (warn), not fail closed (the 1 survivor still pools)
+
+
+def test_embed_profile_summary_carries_failed_first_pass_after_cpu_recovery(capsys):
+    """Old contract: `errors` was reset at the top of each retry iteration, so once the
+    CPU retry succeeded the per-profile summary read a perfectly clean
+    "N photo(s) -> N with a face" with zero hint that the first pass had failed
+    outright -- from a line that exists precisely so 'no_face is never a silent
+    mystery'. The summary must carry the failed first pass's count and provider name
+    forward across the retry."""
+    embedder = Embedder()
+    embedder._arc_providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    embedder._arc_on_cpu = False
+    embedder._arc = _FakeArc(embedder._arc_providers)
+
+    def fake_build_arc(self, providers):
+        return _FakeArc(providers)
+
+    def fake_embed_image(self, _img):
+        faces = self._arc.get(None)
+        return list(faces[0].embedding), [0.6, 0.8]
+
+    embedder._build_arc = types.MethodType(fake_build_arc, embedder)
+    embedder._embed_image = types.MethodType(fake_embed_image, embedder)
+
+    photos = [f"photo{i}".encode() for i in range(8)]
+    embedder.embed_profile(Profile(photos=photos))
+
+    out = capsys.readouterr().out
+    assert ("Profile: 8 photo(s) -> 8 with a face "
+            "(8 errored on CoreMLExecutionProvider, re-run on CPU)") in out

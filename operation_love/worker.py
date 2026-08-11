@@ -125,6 +125,35 @@ class Worker(threading.Thread):
     def _profile_separator(self) -> None:
         print("-" * _PROFILE_LOG_WIDTH)
 
+    def _capture_profile(self, method: str):
+        """Call the driver's capture (`current_profile` for observe, `next_profile` for auto),
+        handing it this run's stop signal when — and only when — the driver says it honours one.
+
+        Capture is the longest stop-deaf stretch of a run: on Hinge it is 12 screencaps plus 11
+        humanized read-scrolls, and observe mode then scrolls the card back to the top, measured
+        at ~85s in which this worker's own stop checks (the loop condition, and the one on the
+        very next line of both loops) simply do not run. That is the reported bug — Stop pressed
+        mid-read visibly kept scrolling to the end of the profile before anything stopped.
+
+        Gated on the capability flag rather than passed unconditionally, following
+        `on_like_intent`'s precedent a few methods down (and unlike `should_stop` on
+        wait_for_decision, which IS unconditional and is exactly why every observe test double
+        in the suite had to grow that keyword). A driver or fake that never declares
+        `supports_interruptible_capture` keeps its zero-argument capture and its existing
+        between-profiles Stop behaviour, so this cannot break third-party drivers or the
+        hand-driven calibration tools that call current_profile() with no arguments at all.
+
+        Nothing here needs to distinguish "returned None because Stop fired" from any other
+        None: both loops re-check stop_event on the line right after this call, and both already
+        treat None as "recapture" — so an interrupted capture is silent, records nothing, and
+        falls straight out of the loop, which is precisely the wanted behaviour for a read that
+        was abandoned before any decision existed to save.
+        """
+        capture = getattr(self.driver, method)
+        if getattr(self.driver, "supports_interruptible_capture", False):
+            return capture(should_stop=self.stop_event.is_set)
+        return capture()
+
     def _block_observe_capture(self, **status_fields) -> None:
         self.driver.render_busy(_OBSERVE_CAPTURE_BUSY)
         self._stat(state="capturing", **status_fields)
@@ -209,7 +238,7 @@ class Worker(threading.Thread):
                     break
                 self._profile_separator()
                 self._block_observe_capture()                # WAIT cue for every card (capturing state)
-                profile = self.driver.current_profile()      # capture the card you're viewing
+                profile = self._capture_profile("current_profile")   # capture the card you're viewing
                 if self.stop_event.is_set():
                     break
                 if profile is None:
@@ -220,10 +249,49 @@ class Worker(threading.Thread):
                     self.stop_event.wait(_NO_PHOTO_RETRY_S)
                     continue
                 self.driver.render_busy(None)                 # processing done -> OK to decide now
-                self._stat(state="waiting", opener_suggestion=None)
+                # All three opener fields are cleared together, always. RunStatus.set_app's own
+                # auto-clear only fires when opener_suggestion is ABSENT from the update, so
+                # naming it here (as this call has always done) opts this site out of that
+                # safety net -- and clearing the text while leaving opener_referenced /
+                # opener_anchored behind would let the PREVIOUS card's "about: her dog 🟢
+                # anchored" caption sit next to the next card's suggestion. See status.py,
+                # which documents these three as a set that must never be cleared apart.
+                self._stat(state="waiting", opener_suggestion=None, opener_referenced=None,
+                           opener_anchored=False)
                 print("✅ READY — use the app's pass/like controls for this profile.")
+                self._warn_if_capture_truncated(profile)
                 liked = self._wait_for_observed_decision(profile)
                 if liked is None:                             # card changed / deck empty / stop -> recapture
+                    # wait_for_decision's None return covers SEVERAL different situations, not
+                    # just one (see base.py's docstring): stop requested, deck emptied, timeout,
+                    # or a card that genuinely changed with nothing corroborating it as a human
+                    # decision (a RESYNC -- a drag-only touch, a tap outside the tap-radius
+                    # tolerance; see hinge.py's _observe_gesture_verdict and its observe_resync
+                    # debug record). Exactly one of those is something this worker itself
+                    # cheaply knows, rather than has to guess at: `should_stop` passed into
+                    # wait_for_decision above is self.stop_event.is_set, so if self.stop_event
+                    # is set here, THIS None is the operator's own Stop (or a supervisor
+                    # shutdown) firing mid-wait -- not anything the driver observed on screen.
+                    # That case used to be labelled "resync" along with everything else, and it
+                    # actively misled a real investigation: a bug report's run ended on a plain
+                    # manual Stop, and the last console line still read "Card changed without a
+                    # corroborated decision (resync)" -- a developer reading that log reasonably
+                    # went looking for a perception bug that had never happened at that moment.
+                    # A Stop is the operator's own action, not evidence about the screen, so it
+                    # is split out below and reported as nothing more than what it is.
+                    #
+                    # The REMAINING cases -- deck emptied, timeout, a genuine uncorroborated
+                    # advance -- are still deliberately reported together as "resync", because
+                    # telling THEM apart would need the driver to report WHY through a signature
+                    # two other drivers and two tools also call with fewer arguments. In the
+                    # deck-emptied/timeout cases this label is only momentarily stale anyway:
+                    # the loop's own out_of_profiles handling overwrites `state` on the very
+                    # next check, right above.
+                    if self.stop_event.is_set():
+                        continue                              # operator's own Stop -- not a resync; nothing to report
+                    print("Card changed without a corroborated decision (resync) — "
+                          "recapturing, nothing recorded.")
+                    self._stat(last_decision="resync")
                     continue                                  # next iteration re-blocks + recaptures the card
                 if self.stop_event.is_set():
                     break
@@ -282,7 +350,12 @@ class Worker(threading.Thread):
                         print(f"{self.app.title()} final retrain skipped after shutdown error:")
                         traceback.print_exc()
             finally:
-                self._stat(opener_suggestion=None)
+                # Same set-clearing rule as the per-card reset above (see status.py): naming
+                # opener_suggestion opts this call out of set_app's auto-clear, so the other
+                # two must be named explicitly or a finished run leaves the hub showing what
+                # the last suggestion was supposedly about with no suggestion under it.
+                self._stat(opener_suggestion=None, opener_referenced=None,
+                           opener_anchored=False)
                 self.driver.render_busy(None)
                 self._finish_session(terminal_state, stop_reason=stop_reason)
 
@@ -293,6 +366,19 @@ class Worker(threading.Thread):
         sheet. The callback only publishes shared status and calls the opener
         service; it never calls a tap, swipe, or text method. Other drivers and
         older fakes retain their existing ``wait_for_decision`` signature.
+
+        THE ANCHOR: the driver hands over the like screen exactly as it is open on the
+        phone (a screenshot of Hinge's post-heart comment sheet) as `anchor` below, so the
+        opener is written about the photo or prompt the human actually hearted, not
+        whichever item the model happens to like best. This is the fix for openers arriving
+        out of place -- e.g. a suggestion about a lake photo shown while the comment is
+        actually going to land under a dining-table photo, because the model was never told
+        which item the human's tap opened a comment sheet for. `anchor=None` stays a valid
+        value: it simply means the driver could not supply the frame this time, so the
+        suggestion is written blind, exactly as it always was before this fix -- which is
+        why `opener_anchored` is published to the hub below, so the operator can tell a
+        blind suggestion apart from an anchored one at a glance rather than trusting it
+        unconditionally.
 
         The opener call below passes advisory=True. In observe mode the opener is only a
         SUGGESTION shown next to Hinge's own comment sheet -- the human retypes and sends it
@@ -317,16 +403,24 @@ class Worker(threading.Thread):
 
         suggestion_active = False
 
-        def on_like_intent(active: bool) -> None:
+        # `anchor: bytes | None = None` keeps this callback callable by any driver that has
+        # not adopted the two-argument hook yet -- an old-style `on_like_intent(active)` call
+        # (a single positional bool) still binds fine, rather than raising a TypeError that
+        # the driver's own notifier would swallow (see _notify_observe_like_intent's
+        # best-effort contract) and thereby kill suggestions silently, with nothing on the
+        # hub to say why.
+        def on_like_intent(active: bool, anchor: bytes | None = None) -> None:
             nonlocal suggestion_active
             if not active:
                 suggestion_active = False
-                self._stat(state="waiting", opener_suggestion=None)
+                self._stat(state="waiting", opener_suggestion=None, opener_referenced=None,
+                          opener_anchored=False)
                 return
             if suggestion_active:
                 return
             suggestion_active = True
             suggestion = None
+            referenced = None
             if self.opener_service is not None and getattr(self.driver, "accepts_opener", False):
                 # Publish an interim WAIT-style state before this blocking call (up to
                 # opener.request_timeout_s) so the hub stops rendering the stale "click pass X
@@ -339,19 +433,50 @@ class Worker(threading.Thread):
                 self._stat(state="suggesting")
                 try:
                     pick = self.opener_service.maybe_opener(
-                        self.run_id, self.app, profile, should_stop=self.stop_event.is_set,
-                        advisory=True)
+                        self.run_id, self.app, profile, anchor=anchor,
+                        should_stop=self.stop_event.is_set, advisory=True)
                     suggestion = pick if isinstance(pick, str) else getattr(pick, "text", None)
+                    referenced = getattr(pick, "referenced", None) or None
                 except Exception:  # noqa: BLE001 — a suggestion must not block a human send
                     suggestion = None
+                    referenced = None
             # The hub renders this state as its existing instruction panel. It is
             # set atomically with the text so the operator never sees stale advice. This also
             # unconditionally clears the interim "suggesting" marker published above -- this
             # line runs whether the try block above succeeded, raised, or was never entered.
-            self._stat(state="waiting_for_send", opener_suggestion=suggestion)
+            # opener_anchored records whether THIS call actually had a captured like-screen
+            # frame to write against (anchor is not None) -- see this method's docstring for
+            # why the hub needs to know that rather than just trusting every suggestion.
+            self._stat(state="waiting_for_send", opener_suggestion=suggestion,
+                      opener_referenced=referenced, opener_anchored=anchor is not None)
 
         return self.driver.wait_for_decision(timeout=None, should_stop=self.stop_event.is_set,
                                              on_like_intent=on_like_intent)
+
+    @staticmethod
+    def _warn_if_capture_truncated(profile) -> None:
+        """Tell the operator when THIS card was only partially read, right at the moment they
+        are about to decide on it.
+
+        A truncated capture does not corrupt the label — every frame captured is genuinely this
+        person. What it degrades is the driver's ability to tell a manual SCROLL apart from a
+        PASS for the rest of this card's wait: the scroll matcher can only recognise territory
+        the bot already captured, so if you scroll below where the read stopped, the identity
+        band is the only signal left. Silence here is what made that invisible; a line at READY
+        costs nothing and tells the operator the one thing they can act on — that scrolling far
+        down THIS card is the case most likely to need a re-decision.
+        """
+        meta = getattr(profile, "meta", None) or {}
+        if not meta.get("capture_truncated"):
+            return
+        # "screencaps", not "screens": each read-scroll advances a FRACTION of a screen height
+        # (Hinge's read_scroll_frac is 0.55), so 12 screencaps is roughly 7 screen-heights of
+        # profile, not 12. Naming the unit the config and the driver already use ("max
+        # screencaps while reading one profile") keeps the operator from over-estimating how
+        # much of the card was actually covered.
+        frames = meta.get("capture_frames", len(profile.photos))
+        print(f"   ⚠️  only the first {frames} screencaps of this profile were read (it is "
+              f"longer than the configured ceiling), so scroll detection is weaker for this card.")
 
     def _retrain_after_observe_labels(self, added: int) -> None:
         ready = self.decider.retrain(self.store)
@@ -432,7 +557,7 @@ class Worker(threading.Thread):
                     print(f"{self.app.title()} rate limit reached ({self.limiter.describe()}); "
                           f"stopping {self.app}.")
                     break
-                profile = self.driver.next_profile()
+                profile = self._capture_profile("next_profile")
                 if self.stop_event.is_set():
                     break
                 if profile is None:
@@ -566,8 +691,43 @@ class Worker(threading.Thread):
                         break
                     # item_index lets the driver attach the comment to the photo/prompt the
                     # opener is actually about, not blindly the first one.
-                    self.driver.like(pick.text if pick else None,
-                                     item_index=pick.index if pick else 0)
+                    #
+                    # anchored_opener is the driver's repair hatch for when item_index turns
+                    # out to be wrong AT SWIPE TIME: the deck can have scrolled or reordered
+                    # between when the opener was written and when the driver actually goes to
+                    # tap the heart, so the item the driver lands on may not be the one the
+                    # opener text is about. Defined as a local closure (not a method) because
+                    # it closes over `profile` -- the same profile maybe_opener() was already
+                    # called against above, so a repair re-ask asks about the SAME profile, not
+                    # whatever the deck shows by the time the driver calls back.
+                    def _anchored_opener(anchor: bytes) -> str | None:
+                        """Re-write the opener against the item the like screen is actually anchored to.
+
+                        Called by the driver only when it could not land the heart on the item the
+                        opener was written about (see item_index above) -- e.g. the deck scrolled or
+                        reordered between the initial decision and the actual tap, so the captured
+                        `anchor` (a screenshot of the like screen as it is now open) shows a
+                        different item than the one item_index pointed at. Shipping the original
+                        opener text as-is would attach a message about photo N to photo 0 (or
+                        whichever item the tap actually landed on) -- the exact out-of-place
+                        mismatch this whole anchor mechanism exists to prevent (see
+                        _wait_for_observed_decision's docstring for the observe-mode half of the
+                        same fix). Returning None here makes the driver refuse to send: under the
+                        owner's rule a like is never sent without its comment, and a comment written
+                        about the wrong item is not a comment that can be sent either, so refusing to
+                        send is the correct fail-loud outcome, not a bare like as a fallback.
+                        """
+                        repick = self.opener_service.maybe_opener(
+                            self.run_id, self.app, profile, anchor=anchor,
+                            should_stop=self.stop_event.is_set)
+                        return repick.text if repick else None
+
+                    self.driver.like(
+                        pick.text if pick else None,
+                        item_index=pick.index if pick else 0,
+                        anchored_opener=(_anchored_opener
+                                         if (accepts_opener and pick is not None
+                                             and self.opener_service is not None) else None))
                     liked += 1
                 else:
                     self.driver.dislike()
@@ -675,4 +835,20 @@ class Worker(threading.Thread):
 
     @staticmethod
     def _label_metadata(profile) -> dict:
-        return {"photo_count": len(profile.photos)}
+        """Per-label provenance, passed to BOTH record_profile and add_label.
+
+        capture_truncated says the driver hit its per-profile screencap ceiling without ever
+        reaching the profile's bottom — the label is real, but it was made from an incomplete
+        read of the person. It already reached the local debug log and Profile.meta; it stops
+        here otherwise, and the local debug dir rotates and is not the system of record, so
+        "which labels came from a partial read?" was unanswerable a week later. That is not a
+        hypothetical: in the audited run of 2026-08-10 one of three profiles (12 photos, the
+        configured ceiling exactly) was truncated.
+
+        .get with a default rather than an index: `meta` is driver-authored, and the only
+        other capture path (Bumble web) populates a different key set entirely — a missing key
+        must mean "not truncated as far as anyone knows", never a KeyError in the label path.
+        """
+        meta = getattr(profile, "meta", None) or {}
+        return {"photo_count": len(profile.photos),
+                "capture_truncated": bool(meta.get("capture_truncated", False))}

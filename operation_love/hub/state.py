@@ -52,6 +52,7 @@ class HubState:
         self._eval_refreshing = False
         self._eval_cold_event: threading.Event | None = None  # cold-start single-flight
         self._live_store = None             # the running supervisor's store (live in-memory labels)
+        self._opener_service = None         # the running supervisor's OpenerService (recent_openers_snapshot for the bug report)
         self._browser_clients: dict[str, float] = {}
         self._closed_browser_clients: dict[str, float] = {}
         self._browser_shutdown_requested = False
@@ -88,6 +89,7 @@ class HubState:
             self._status = None
             self._error = None
             self._live_store = None
+            self._opener_service = None
             stop = self._stop
 
             def _capture(st):
@@ -98,10 +100,15 @@ class HubState:
                 with self._lock:
                     self._live_store = store
 
+            def _capture_opener_service(svc):
+                with self._lock:
+                    self._opener_service = svc
+
             def _target():
                 try:
                     supervisor.run(self.config_path, stop_event=stop, on_status=_capture,
                                    on_store=_capture_store,
+                                   on_opener_service=_capture_opener_service,
                                    mode=mode, enabled_apps=apps, max_per_run=max_per_run)
                 except (Exception, SystemExit) as exc:  # noqa: BLE001
                     # supervisor.run raises SystemExit (a BaseException, not Exception) for a
@@ -115,6 +122,7 @@ class HubState:
                 finally:
                     with self._lock:
                         self._live_store = None   # supervisor closed it on exit; don't read a dead store
+                        self._opener_service = None   # same reason: don't read a torn-down object after the supervisor tore the run down
 
             self._thread = threading.Thread(target=_target, name="hub-run", daemon=True)
             self._thread.start()
@@ -122,8 +130,31 @@ class HubState:
 
     def stop(self) -> tuple[bool, str]:
         with self._lock:
-            if self._stop:
-                self._stop.set()
+            stop = self._stop
+            # Liveness, not merely "an Event object exists": self._stop is assigned in start()
+            # and never reset, so after a run ends on its own (deck exhausted, rate limit, an
+            # error halt) a gate on `stop is None` alone would keep answering (True,
+            # "stopping") forever, i.e. reporting that a stop it never performed had worked.
+            if stop is None or not self.is_running():
+                # No run has ever started (or the last one already finished and cleared
+                # self._stop -- start() only replaces it, never resets it to None itself,
+                # but a fresh HubState/never-started hub has it unset). Pre-fix this always
+                # returned (True, "stopping") here too, so a stray /api/stop with nothing
+                # active looked like it worked.
+                return False, "no run is active"
+            stop.set()
+        # Printed (not just returned in the API response) so Stop lands in the SAME place
+        # every OTHER shutdown trigger already announces itself: the tab-close path
+        # (server.py's _schedule_shutdown_if_tab_stayed_closed), SIGINT
+        # (supervisor.py's _install_signal_handlers), and a Stop-during-startup abort
+        # (supervisor.py's _abort_startup) all print a line. Stop via the hub button was the
+        # one silent path -- on the terminal AND on the hub's own live-log panel, since
+        # bugreport.install_log_capture tees stdout into the ring /api/logs reads, so an
+        # operator watching only the browser tab (not a terminal) saw nothing happen for the
+        # whole worker-join tail. The decision to actually discard an in-flight swipe is
+        # worker.py's, not this line's (see its stop_event re-checks) -- this just says so.
+        print("Hub: stop requested -- waiting for the active run to finish what it's doing. "
+              "A swipe made from now on will NOT be recorded.")
         return True, "stopping"
 
     def wait_for_run(self, timeout: float | None = None) -> bool:
@@ -212,11 +243,39 @@ class HubState:
             running = self.is_running()
             status = self._status
             error = self._error
+            stop_pending = self._stop is not None and self._stop.is_set()
+        snap = status.snapshot() if status else None
+        if snap is not None and running and stop_pending:
+            # RunStatus.stopping is written by supervisor.run()'s shutdown finally, which is
+            # only reached once the run has fully STARTED. A Stop pressed during startup
+            # (loading labels, training the ranker, warming the ML models) is handled by
+            # _abort_startup instead and never passes through that finally — so the page saw
+            # running=true / stopping=false and kept the Stop button live and the pill on
+            # "loading ML models" for the whole warmup, exactly the "did my click do anything?"
+            # gap the stopping state exists to close. Derived here, at read time, rather than
+            # adding a second writer: the stop Event IS the authority on "a stop is pending",
+            # and this needs no clearing logic (running goes false when the thread ends).
+            snap["stopping"] = True
         return {
             "running": running,
             "error": error,
-            "status": status.snapshot() if status else None,
+            "status": snap,
         }
+
+    def recent_openers(self) -> list[dict]:
+        """The openers generated this run, newest LAST, or [] when no run is/was active."""
+        with self._lock:
+            svc = self._opener_service
+        # getattr, not a plain attribute access: a duck-typed/older OpenerService (or a test
+        # double that doesn't bother implementing this) must degrade to "no data" rather than
+        # crash a bug report — the one caller of this method — over a missing method.
+        snapshot_fn = getattr(svc, "recent_openers_snapshot", None)
+        if snapshot_fn is None:
+            return []
+        try:
+            return snapshot_fn()
+        except Exception:  # noqa: BLE001 — never raise into a bug report; see this method's docstring
+            return []
 
     def config_defaults(self) -> dict:
         try:

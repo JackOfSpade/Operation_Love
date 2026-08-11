@@ -1,9 +1,14 @@
 """bugreport — redacted markdown diagnostic. Offline."""
 import io
+import json
 import os
+import re
+import sys
 import threading
+import types
 
-from operation_love import bugreport
+from operation_love import bugreport, config as oplove_config
+from operation_love.drivers import touchwatch
 
 
 def _ring_bodies():
@@ -13,8 +18,8 @@ def _ring_bodies():
 def test_report_has_core_sections():
     md = bugreport.build_report(None, description="it broke")
     for h in ["# Operation Love — Bug Report", "## What happened", "it broke",
-              "## Build", "## System", "## Dependencies", "## Config",
-              "## Secrets", "## Diagnostic improvement", "## Run status",
+              "## Build", "## System", "## Dependencies", "## Capabilities", "## Config",
+              "## Secrets", "## Diagnostic improvement", "## Run status", "## Recent openers",
               "## Debug log (on-disk actions + screenshots)", "## Recent logs"]:
         assert h in md, f"missing section: {h}"
     assert "improve `operation_love/bugreport.py`" in md
@@ -335,3 +340,443 @@ def test_omitted_log_count_is_exact():
     shown = [ln for ln in md.splitlines() if re.fullmatch(r"L\d\d", ln)]
     assert shown == ["L16", "L17", "L18", "L19"]  # exactly the 4 newest real lines
     assert len(md.splitlines()) <= 7
+
+
+# ── Capabilities section (§3.12: tesseract / opencv / touch-watcher presence) ───────────────
+def test_capabilities_section_reports_tesseract_path(monkeypatch):
+    monkeypatch.setattr(bugreport.shutil, "which",
+                         lambda name: "/opt/homebrew/bin/tesseract" if name == "tesseract" else None)
+    assert "tesseract: /opt/homebrew/bin/tesseract" in bugreport.build_report(None)
+
+
+def test_capabilities_section_reports_tesseract_absent(monkeypatch):
+    monkeypatch.setattr(bugreport.shutil, "which", lambda name: None)
+    assert "tesseract: absent" in bugreport.build_report(None)
+
+
+def test_capabilities_section_reports_opencv_present(monkeypatch):
+    # A fake module in sys.modules, not a real (un)install -- deterministic regardless of
+    # whether this environment actually has the `hinge` extra, and reverted automatically by
+    # monkeypatch after the test (see test_capabilities_section_reports_opencv_absent below,
+    # which relies on that same revert to not permanently break cv2 for later tests).
+    fake_cv2 = types.ModuleType("cv2")
+    fake_cv2.__version__ = "9.9.9-test"
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+    assert "opencv (cv2): present (9.9.9-test)" in bugreport.build_report(None)
+
+
+def test_capabilities_section_reports_opencv_absent(monkeypatch):
+    # sys.modules[name] = None is the documented way to make `import cv2` raise without
+    # touching whatever is actually installed (see importlib docs on the import system).
+    monkeypatch.setitem(sys.modules, "cv2", None)
+    md = bugreport.build_report(None)
+    assert "opencv (cv2): absent" in md
+    assert "_require_vision" in md                # points a developer at WHERE this gates
+
+
+def test_first_android_app_cfg_prefers_the_enabled_app():
+    apps = {"bumble": {"adb_path": "adb", "serial": "BUMBLE-SERIAL"},
+            "hinge": {"adb_path": "adb", "serial": "HINGE-SERIAL"}}
+    assert bugreport._first_android_app_cfg(apps, ["hinge"]) == ("adb", "HINGE-SERIAL")
+
+
+def test_first_android_app_cfg_falls_back_past_a_web_only_enabled_app():
+    # bumble_web has no adb_path (it's a browser) -- the fallback must still find hinge's.
+    apps = {"bumble_web": {"url": "https://bumble.com/app"},
+            "hinge": {"adb_path": "adb", "serial": "HINGE-SERIAL"}}
+    assert bugreport._first_android_app_cfg(apps, ["bumble_web"]) == ("adb", "HINGE-SERIAL")
+
+
+def test_first_android_app_cfg_none_when_nothing_declares_adb_path():
+    assert bugreport._first_android_app_cfg({"bumble_web": {"url": "x"}}, ["bumble_web"]) is None
+
+
+class _FakeTouchWatcherSelects:
+    """Stands in for touchwatch.TouchWatcher: start() 'finds' a device instantly (no real adb
+    call), close() just records it ran. Tracks the last instance so tests can assert close()
+    was actually reached -- the whole point of §3.12's probe is that it never leaves the
+    stream attached, on EITHER outcome."""
+    last_instance = None
+
+    def __init__(self, adb_path, serial, screen_size, *, probe_timeout=10.0, **kw):
+        self.adb_path = adb_path
+        self.serial = serial
+        self.device_path = None
+        self.device_name = None
+        self.closed = False
+        _FakeTouchWatcherSelects.last_instance = self
+
+    def start(self):
+        self.device_path = "/dev/input/event3"
+        self.device_name = "goodix_ts0"
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeTouchWatcherUnavailable:
+    last_instance = None
+    REASON = "no ABS_MT_POSITION_X/Y touch device found | pipe\nand a newline `backtick`"
+
+    def __init__(self, adb_path, serial, screen_size, *, probe_timeout=10.0, **kw):
+        self.closed = False
+        _FakeTouchWatcherUnavailable.last_instance = self
+
+    def start(self):
+        raise touchwatch.TouchWatchUnavailable(_FakeTouchWatcherUnavailable.REASON)
+
+    def close(self):
+        self.closed = True
+
+
+def test_touch_watcher_probe_reports_the_selected_device(monkeypatch):
+    monkeypatch.setattr(oplove_config, "load", lambda path: types.SimpleNamespace(
+        apps={"hinge": {"adb_path": "adb", "serial": "ABC123"}}, enabled_apps=["hinge"]))
+    monkeypatch.setattr(touchwatch, "TouchWatcher", _FakeTouchWatcherSelects)
+    md = bugreport.build_report(None)
+    assert "touch watcher: would select `/dev/input/event3`" in md
+    assert "goodix_ts0" in md
+    assert _FakeTouchWatcherSelects.last_instance.closed is True   # never left attached
+
+
+def test_touch_watcher_probe_reports_the_reason_when_unavailable(monkeypatch):
+    monkeypatch.setattr(oplove_config, "load", lambda path: types.SimpleNamespace(
+        apps={"hinge": {"adb_path": "adb"}}, enabled_apps=["hinge"]))
+    monkeypatch.setattr(touchwatch, "TouchWatcher", _FakeTouchWatcherUnavailable)
+    md = bugreport.build_report(None)
+    assert "touch watcher: unavailable" in md
+    # sanitized onto one line: newline collapsed, backtick swapped, pipe left alone (see
+    # _sanitize_inline) -- a missing device is a reported line here, never a raised exception.
+    assert "no ABS_MT_POSITION_X/Y touch device found | pipe and a newline 'backtick'" in md
+    assert _FakeTouchWatcherUnavailable.last_instance.closed is True   # close() ran in `finally`
+
+
+def test_touch_watcher_probe_when_no_android_app_is_configured(monkeypatch):
+    monkeypatch.setattr(oplove_config, "load", lambda path: types.SimpleNamespace(
+        apps={"bumble_web": {"url": "https://bumble.com/app"}}, enabled_apps=["bumble_web"]))
+    assert "touch watcher: no Android app configured" in bugreport.build_report(None)
+
+
+def test_touch_watcher_probe_when_config_cannot_load(monkeypatch):
+    def _boom(path):
+        raise ValueError("bad yaml")
+    monkeypatch.setattr(oplove_config, "load", _boom)
+    md = bugreport.build_report(None)
+    assert "touch watcher: could not load" in md
+    assert "bad yaml" in md
+
+
+# ── Debug-log tail: new observe_decision/observe_resync fields (§3.12) ──────────────────────
+def test_debug_log_tail_surfaces_observe_decision_fields(tmp_path):
+    """hinge.py's wait_for_decision writes exactly these fields on a resolved PASS (see its
+    `fields = dict(...)` block) -- lock that the raw tail keeps every one of them intact,
+    since a developer reading a report needs identity/identity_dist/profile_name/gesture/
+    watcher to tell a real advance apart from a false one."""
+    run = tmp_path / "run_20260810_120000"
+    run.mkdir(parents=True)
+    capture = {"ts": "t0", "action": "capture", "photos": 6,
+               "capture_truncated": False, "identity_seen": True, "profile_name": "Jessica"}
+    decision = {"ts": "t1", "action": "observe_decision", "decision": "pass",
+                "top": 12.3, "bot": 1.1, "min_sig_dist": None, "shift_matched": False,
+                "capture_truncated": False, "identity": "new", "identity_dist": 22.4,
+                "profile_name": "Amanda", "gesture": "tap_pass", "watcher": True}
+    (run / "actions.jsonl").write_text(json.dumps(capture) + "\n" + json.dumps(decision) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+    assert '"action": "capture"' in md and '"action": "observe_decision"' in md
+    for field in ('"identity": "new"', '"identity_dist": 22.4', '"profile_name": "Amanda"',
+                  '"gesture": "tap_pass"', '"watcher": true'):
+        assert field in md, f"missing {field}"
+
+
+def test_debug_log_tail_surfaces_observe_resync_fields(tmp_path):
+    """A resync (worker.py treats the returned None as 'recapture, record nothing') is its own
+    record, distinct from observe_decision -- must survive the tail the same way."""
+    run = tmp_path / "run_20260810_121000"
+    run.mkdir(parents=True)
+    resync = {"ts": "t1", "action": "observe_resync", "identity": "new", "identity_dist": 30.1,
+              "profile_name": None, "gesture": "resync", "watcher": True}
+    (run / "actions.jsonl").write_text(json.dumps(resync) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+    assert '"action": "observe_resync"' in md
+    assert '"gesture": "resync"' in md
+    assert '"watcher": true' in md
+
+
+def test_debug_log_tail_shows_a_decision_and_its_preceding_capture_despite_older_filler(tmp_path):
+    """Regression for the tail-length half of §3.12: even after _DEBUG_ACTION_TAIL's worth of
+    unrelated older history, the most recent decision AND the capture immediately before it
+    (the pairing a developer actually needs -- see the _DEBUG_ACTION_TAIL comment in
+    bugreport.py) both survive being tailed, while genuinely old filler is dropped."""
+    run = tmp_path / "run_20260810_130000"
+    run.mkdir(parents=True)
+    lines = [json.dumps({"ts": "t", "action": "capture", "photos": 1, "n": i}) for i in range(40)]
+    lines.append(json.dumps({"ts": "t", "action": "capture", "photos": 6,
+                              "identity_seen": True, "profile_name": "Priya"}))
+    lines.append(json.dumps({"ts": "t", "action": "observe_decision", "decision": "pass",
+                              "identity": "new", "identity_dist": 19.0, "profile_name": "Priya",
+                              "gesture": "tap_pass", "watcher": True}))
+    (run / "actions.jsonl").write_text("\n".join(lines) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+    assert '"action": "observe_decision"' in md
+    assert md.count('"profile_name": "Priya"') == 2       # both the decision AND its capture
+    assert '"n": 39' in md                                 # newest filler line still in range
+    assert '"n": 0' not in md                              # oldest filler genuinely dropped
+
+
+# ── Debug-log tail: collapsing the observe_waiting heartbeat (audited run_20260810_203956) ──
+# The heartbeat (_note_observe_waiting, hinge.py) fires every ~15s of human deliberation even
+# on reason="no_change", which PROVES the screen hasn't moved. A single 3-minute decision logs
+# 12 of these -- enough, pre-fix, to swamp the whole raw-line tail budget and push the
+# "capture" record for that same profile out of the report entirely.
+def test_debug_log_tail_collapses_repeated_observe_waiting_heartbeats(tmp_path):
+    run = tmp_path / "run_20260810_203956"
+    run.mkdir(parents=True)
+    lines = [json.dumps({"ts": "capture0", "action": "capture", "photos": 9,
+                          "profile_name": "Victoria"})]
+    # 12 identical no_change heartbeats, ~15s apart -- exactly the audited-run shape.
+    for i in range(12):
+        lines.append(json.dumps({"ts": f"20:46:{13 + i * 15:02d}", "action": "observe_waiting",
+                                  "reason": "no_change"}))
+    lines.append(json.dumps({"ts": "decision0", "action": "observe_decision", "decision": "pass",
+                              "profile_name": "Victoria"}))
+    (run / "actions.jsonl").write_text("\n".join(lines) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+    # The 12 raw heartbeat lines collapse into exactly one summary line...
+    assert md.count('"reason": "no_change"') == 1
+    assert '"repeated": 12' in md
+    # ...spanning the first and last heartbeat timestamps...
+    assert '"ts": "20:46:13-20:46:' in md
+    # ...while the capture and decision either side of the run are untouched raw JSON, still
+    # visibly paired (the whole point of the fix).
+    assert '"action": "capture"' in md and '"profile_name": "Victoria"' in md
+    assert '"action": "observe_decision"' in md
+
+
+def test_debug_log_tail_keeps_first_and_last_record_of_a_run_that_spans_the_whole_tail(tmp_path):
+    """When collapsing would otherwise swallow the ENTIRE displayed tail into one summary line
+    (e.g. a stall that has been going on since before the window even starts), the very first
+    and last raw records must still be peeled back out as literal JSON -- so the newest state
+    (with its own screenshot filename) is never hidden behind a bare "repeated: N" count."""
+    run = tmp_path / "run_stalled"
+    run.mkdir(parents=True)
+    lines = [json.dumps({"ts": f"t{i}", "action": "observe_waiting", "reason": "no_change",
+                          "after": f"shot_{i}.png"}) for i in range(20)]
+    (run / "actions.jsonl").write_text("\n".join(lines) + "\n")
+
+    tail = bugreport._collapse_action_tail(lines, 30)
+    assert json.loads(tail[0]) == json.loads(lines[0])        # first record: untouched, literal
+    assert json.loads(tail[-1]) == json.loads(lines[-1])       # last record: untouched, literal
+    assert tail[-1] != tail[0]
+    # exactly one middle summary line covers everything strictly between the two boundaries
+    middle = [t for t in tail if '"repeated"' in t]
+    assert len(middle) == 1
+    assert json.loads(middle[0])["repeated"] == 18
+
+
+def test_debug_log_tail_only_merges_matching_action_and_reason(tmp_path):
+    """Two different reasons for the SAME action must never merge -- only an exact
+    (action, reason) match collapses (see hinge.py's _note_observe_waiting vocabulary: same,
+    scroll, no_change, not_deck_ready, not_settled are all distinct signals)."""
+    lines = [json.dumps({"ts": "t0", "action": "observe_waiting", "reason": "no_change"}),
+             json.dumps({"ts": "t1", "action": "observe_waiting", "reason": "same"}),
+             json.dumps({"ts": "t2", "action": "observe_waiting", "reason": "no_change"})]
+    out = bugreport._collapse_action_tail(lines, 30)
+    assert out == lines                                        # nothing adjacent actually matched
+
+
+def test_debug_log_tail_never_reorders_or_merges_non_adjacent_repeats(tmp_path):
+    """Two identical (action, reason) records separated by something else must stay as two
+    separate raw lines, in their original order -- collapsing is adjacency-only."""
+    lines = [json.dumps({"ts": "t0", "action": "observe_waiting", "reason": "no_change"}),
+             json.dumps({"ts": "t1", "action": "capture", "photos": 1}),
+             json.dumps({"ts": "t2", "action": "observe_waiting", "reason": "no_change"})]
+    out = bugreport._collapse_action_tail(lines, 30)
+    assert out == lines
+
+
+def test_debug_log_tail_malformed_lines_pass_through_untouched(tmp_path):
+    """A line that isn't valid JSON, or is JSON but has no "action"/"reason" key, must pass
+    through as-is rather than raise -- this collector is best-effort, not a strict parser."""
+    lines = ["not valid json {{{",
+             json.dumps({"no_action_key": True}),
+             json.dumps({"action": "capture"}),          # has "action", no "reason" -- fine
+             json.dumps({"action": "observe_waiting", "reason": "no_change"})]
+    out = bugreport._collapse_action_tail(lines, 30)
+    assert out == lines                                        # nothing here can legally merge
+
+
+def test_debug_log_section_shows_action_counts_histogram_above_the_tail(tmp_path):
+    run = tmp_path / "run_counts"
+    run.mkdir(parents=True)
+    lines = ([json.dumps({"action": "capture", "n": i}) for i in range(4)]
+             + [json.dumps({"action": "observe_waiting", "reason": "no_change"}) for _ in range(18)]
+             + [json.dumps({"action": "observe_decision"}) for _ in range(2)])
+    (run / "actions.jsonl").write_text("\n".join(lines) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+    assert "action counts: capture 4 · observe_waiting 18 · observe_decision 2" in md
+    # the histogram is a summary of the WHOLE file, not just what made it into the tail
+    counts_pos = md.index("action counts:")
+    tail_pos = md.index("actions.jsonl (tail):")
+    assert counts_pos < tail_pos                               # directly above the inlined tail
+
+
+# ── Run status: defensive `stopping` flag (landing concurrently in status.py) ───────────────
+class _StoppingHub:
+    def snapshot(self):
+        return {"running": True, "error": None, "status": {
+            "phase": "stopping", "mode": "auto", "running": True, "labels": 40, "min_labels": 40,
+            "ranker_ready": True, "labels_needed": 0, "budget_spent": 1.2, "budget_cap": 5.0,
+            "openers": 12, "stopping": True,
+            "apps": {"hinge": {"app": "hinge", "mode": "auto", "state": "live",
+                                "last_decision": "pass", "last_score": None, "swipes_run": 12,
+                                "error": None, "stop_reason": None}}}}
+
+
+def test_status_section_surfaces_stopping_flag_when_present():
+    md = bugreport.build_report(_StoppingHub())
+    assert "stopping: stop requested, winding down" in md
+
+
+class _NoStoppingKeyHub:
+    """A status dict shaped like BEFORE the `stopping` field landed -- must render fine with no
+    KeyError, and simply omit the stopping line (falsy via .get(), not missing-key crash)."""
+    def snapshot(self):
+        return {"running": True, "error": None, "status": {
+            "phase": "live", "mode": "auto", "running": True, "labels": 40, "min_labels": 40,
+            "ranker_ready": True, "labels_needed": 0, "budget_spent": 1.2, "budget_cap": 5.0,
+            "openers": 12,
+            "apps": {"hinge": {"app": "hinge", "mode": "auto", "state": "live",
+                                "last_decision": "pass", "last_score": None, "swipes_run": 12,
+                                "error": None, "stop_reason": None}}}}
+
+
+def test_status_section_handles_missing_stopping_key_gracefully():
+    md = bugreport.build_report(_NoStoppingKeyHub())
+    assert "stopping:" not in md
+    assert "| hinge |" in md                                    # rest of the section still renders
+
+
+# ── Recent openers: the real OpenerService ring buffer, plumbed via HubState.recent_openers ─
+# This is the section that used to fall back to each app's live opener_suggestion/
+# opener_referenced/opener_anchored status fields (at most one row per app, no model name)
+# because HubState never captured a reference to the running OpenerService. supervisor.py now
+# takes on_opener_service and hub/state.py captures it, so hub_state.recent_openers() is the
+# real thing: a snapshot of OpenerService.recent_openers_snapshot(), newest entry LAST.
+def _opener_entry(ts="2026-08-10T12:00:00", app="hinge", model="gemini-2.5-flash",
+                   anchored=True, advisory=False, index=0, referenced="the beach photo",
+                   opener="hey, love the beach shot"):
+    return {"ts": ts, "app": app, "model": model, "anchored": anchored, "advisory": advisory,
+            "index": index, "referenced": referenced, "opener": opener}
+
+
+class _FakeHubOpeners:
+    """Stands in for HubState: build_report/_recent_openers_md only ever call
+    .recent_openers() on it, never .snapshot() -- this section no longer reads the live
+    per-app status fields at all."""
+    def __init__(self, entries):
+        self._entries = entries
+
+    def recent_openers(self):
+        return self._entries
+
+
+def test_recent_openers_section_handles_no_hub_gracefully():
+    """No hub at all (bugreport used outside the hub process) must render a plain
+    explanatory line, not raise -- matching every other section's `hub_state is None`
+    handling in this file."""
+    md = bugreport._recent_openers_md(None)
+    assert "no hub" in md
+
+
+def test_recent_openers_section_handles_empty_list_gracefully():
+    """Either no run has ever started, or one is live but hasn't generated an opener yet --
+    either way [] is not an error and must render a graceful explanatory line."""
+    md = bugreport._recent_openers_md(_FakeHubOpeners([]))
+    assert "no openers generated" in md
+
+
+def test_recent_openers_section_renders_newest_first_and_caps_at_the_shown_limit():
+    """recent_openers_snapshot() is a ring buffer that appends newest LAST -- a human reading
+    a bug report needs the most recent generation first. Also must not dump the whole
+    history: capped at _RECENT_OPENERS_SHOWN so one long run can't blow up the report."""
+    total = bugreport._RECENT_OPENERS_SHOWN + 4
+    entries = [_opener_entry(index=i, opener=f"opener-body-{i}") for i in range(total)]
+
+    md = bugreport._recent_openers_md(_FakeHubOpeners(entries))
+
+    order = [int(tok.rsplit("-", 1)[1]) for tok in re.findall(r"opener-body-\d+", md)]
+    assert len(order) == bugreport._RECENT_OPENERS_SHOWN                # capped, not the full history
+    assert order == list(range(total - 1, total - 1 - bugreport._RECENT_OPENERS_SHOWN, -1))  # newest first
+
+
+def test_recent_openers_section_marks_anchored_and_blind_with_status_circles():
+    """Anchored state is the whole point of this section -- it must be unmissable and use the
+    owner's 🟢/🔴 status-circle convention, never a hand emoji (owner rule: hard to tell
+    thumbs-up/down apart at a glance)."""
+    entries = [
+        _opener_entry(index=0, anchored=True, opener="alpha"),
+        _opener_entry(index=1, anchored=False, opener="beta"),
+    ]
+
+    md = bugreport._recent_openers_md(_FakeHubOpeners(entries))
+
+    lines = md.splitlines()
+    alpha_header = next(ln for ln in lines if "index: 0" in ln)
+    beta_header = next(ln for ln in lines if "index: 1" in ln)
+    assert "🟢 anchored to the live like screen" in alpha_header
+    assert "🔴 blind" in beta_header
+    assert "👍" not in md and "👎" not in md          # never the banned hand-emoji convention
+
+
+def test_recent_opener_text_is_truncated_at_the_configured_character_cap():
+    """One runaway response must not blow up the report -- opener text is capped at
+    _RECENT_OPENER_TEXT_CHARS, same contract the old per-app fallback enforced."""
+    long_opener = "x" * (bugreport._RECENT_OPENER_TEXT_CHARS + 50)
+    entries = [_opener_entry(opener=long_opener)]
+
+    md = bugreport._recent_openers_md(_FakeHubOpeners(entries))
+
+    assert long_opener not in md
+    assert ("x" * bugreport._RECENT_OPENER_TEXT_CHARS) + "…" in md
+
+
+def test_recent_openers_section_sanitizes_model_and_referenced_free_text():
+    """model/referenced/opener are free text the model itself produced -- none of it is
+    trusted. It must not be able to inject a fake heading, break out of the blockquote it's
+    rendered inside, or smuggle a raw backtick past the inline-code spans (see
+    _sanitize_inline, and the equivalent stop_reason test for ## Run status)."""
+    entries = [_opener_entry(
+        model="gemini-2.5-flash`\n# fake heading",
+        referenced="the `beach` shot\nwith a newline",
+        opener="hey! loved the beach\nkeep swimming `champ`",
+    )]
+
+    md = bugreport._recent_openers_md(_FakeHubOpeners(entries))
+
+    assert not any(ln.strip().startswith("# fake heading") for ln in md.splitlines())
+    assert "gemini-2.5-flash' # fake heading" in md
+    assert "the 'beach' shot with a newline" in md
+    assert "hey! loved the beach keep swimming 'champ'" in md
+
+
+class _RaisingHubOpeners:
+    """recent_openers() itself blows up -- e.g. a torn-down service the caller failed to
+    guard, or (this class) a HubState stand-in that simply doesn't implement the method."""
+    def recent_openers(self):
+        raise RuntimeError("opener service torn down mid-read")
+
+
+def test_recent_openers_section_survives_a_raising_recent_openers_call():
+    """HubState.recent_openers() is documented to never raise, but this section's own
+    docstring is explicit that it does not re-guard that promise -- _safe_section is the
+    report's actual safety net here, exactly like every other section (see
+    test_malformed_status_section_does_not_crash_whole_report)."""
+    md = bugreport.build_report(_RaisingHubOpeners())
+    assert "## Recent openers" in md
+    assert "⚠️ this section failed to generate" in md
+    assert "## Debug log" in md               # the rest of the report still renders

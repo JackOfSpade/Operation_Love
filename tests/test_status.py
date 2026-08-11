@@ -56,6 +56,19 @@ def test_set_global():
     assert snap["running"] is False
 
 
+def test_stopping_defaults_false_and_is_settable_and_serialized():
+    # `stopping` means "stop_event is set and workers are being given time to notice" --
+    # strictly between running and stopped (see the field's own docstring in status.py).
+    # supervisor.py's shutdown `finally` is the only writer; pin the plain mechanics here
+    # so a future dataclass/field-list refactor can't silently drop it from snapshot().
+    s = _mk()
+    assert s.snapshot()["stopping"] is False
+    s.set_global(stopping=True)
+    assert s.snapshot()["stopping"] is True
+    s.set_global(stopping=False)
+    assert s.snapshot()["stopping"] is False
+
+
 def test_set_app_autocreates_unknown_app():
     s = _mk()
     s.set_app("newapp", state="scoring")
@@ -91,6 +104,32 @@ def test_suggesting_state_clears_a_stale_opener_suggestion():
     s.set_app("hinge", state="suggesting")
     app = s.snapshot()["apps"]["hinge"]
     assert app["state"] == "suggesting" and app["opener_suggestion"] is None
+
+
+def test_set_app_does_not_autoclear_referenced_and_anchored_when_suggestion_is_named():
+    """RunStatus.set_app's own safety net -- auto-clearing all three opener fields on a
+    normal state transition -- fires ONLY when opener_suggestion is ABSENT from the update
+    dict (see set_app's own comment). Any caller that explicitly passes opener_suggestion,
+    even to clear it, opts itself OUT of that safety net and must therefore name
+    opener_referenced/opener_anchored too, or they survive untouched exactly as pinned here.
+    worker.py has two call sites that do this (the observe loop's per-card reset and its
+    `finally`); an adversarial review found both had been passing opener_suggestion alone,
+    leaving the other two stale. This test pins the RunStatus mechanism responsible for that
+    gap, so the reason callers must name all three lives in a test, not just a comment."""
+    s = _mk()
+    s.set_app("hinge", state="waiting_for_send", opener_suggestion="about her dog",
+              opener_referenced="her dog", opener_anchored=True)
+
+    # A state transition ("waiting") that WOULD normally auto-clear all three (see
+    # test_suggesting_state_clears_a_stale_opener_suggestion just below) -- except this call
+    # explicitly supplies opener_suggestion, so set_app must leave opener_referenced/
+    # opener_anchored exactly as they were; only what the caller literally set changes.
+    s.set_app("hinge", state="waiting", opener_suggestion=None)
+    app = s.snapshot()["apps"]["hinge"]
+    assert app["state"] == "waiting"
+    assert app["opener_suggestion"] is None          # explicitly cleared by the caller
+    assert app["opener_referenced"] == "her dog"      # NOT auto-cleared -- caller opted out
+    assert app["opener_anchored"] is True             # NOT auto-cleared -- caller opted out
 
 
 def test_stop_reason_defaults_to_none_and_survives_serialization():

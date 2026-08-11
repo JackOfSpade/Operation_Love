@@ -148,8 +148,9 @@ def test_hinge_observe_reports_sheet_intent_before_manual_send_without_touching_
     monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(
         hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
+    sheet = _sheet_frame()
     next_card = _deck_frame()
-    adb = _Adb([b"card", _sheet_frame(), next_card])
+    adb = _Adb([b"card", sheet, next_card])
     callbacks = []
     polls = 0
 
@@ -165,10 +166,14 @@ def test_hinge_observe_reports_sheet_intent_before_manual_send_without_touching_
 
     result = _hinge(adb).wait_for_decision(
         timeout=None, should_stop=stop_after_budget,
-        on_like_intent=lambda active: callbacks.append(active))
+        on_like_intent=lambda active, anchor: callbacks.append((active, anchor)))
 
     assert result is True
-    assert callbacks == [True, False]
+    # The True notification carries the actual on-screen sheet frame as its anchor (the
+    # picture the driver used to know a like was in progress); the clearing False
+    # notification carries no anchor -- there is nothing left on screen to anchor once the
+    # sheet has closed.
+    assert callbacks == [(True, sheet), (False, None)]
     assert adb.taps == []
     assert adb.swipes == []
     assert adb.texts == []
@@ -200,8 +205,8 @@ def test_hinge_observe_waits_through_closed_sending_state_until_ready_deck(monke
 
     assert _hinge(adb).wait_for_decision(
         timeout=None, should_stop=stop_after_budget,
-        on_like_intent=lambda active: callbacks.append(active)) is True
-    assert callbacks == [True, False]
+        on_like_intent=lambda active, anchor: callbacks.append((active, anchor))) is True
+    assert callbacks == [(True, sheet), (False, None)]
     assert adb.taps == []
     assert adb.swipes == []
     assert adb.texts == []
@@ -212,7 +217,8 @@ def test_hinge_observe_cancelled_sheet_clears_intent_and_keeps_waiting(monkeypat
     monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(
         hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0)))
-    adb = _Adb([b"card", _sheet_frame(), b"card", b"card"])
+    sheet = _sheet_frame()
+    adb = _Adb([b"card", sheet, b"card", b"card"])
     callbacks = []
     stop_checks = 0
 
@@ -227,10 +233,10 @@ def test_hinge_observe_cancelled_sheet_clears_intent_and_keeps_waiting(monkeypat
 
     result = _hinge(adb).wait_for_decision(
         timeout=None, should_stop=stop_after_cancel,
-        on_like_intent=lambda active: callbacks.append(active))
+        on_like_intent=lambda active, anchor: callbacks.append((active, anchor)))
 
     assert result is None
-    assert callbacks == [True, False]
+    assert callbacks == [(True, sheet), (False, None)]
     assert adb.taps == []
     assert adb.swipes == []
     assert adb.texts == []
@@ -254,7 +260,7 @@ def test_hinge_observe_bottom_animation_without_send_like_never_surfaces_opener(
 
     assert driver.wait_for_decision(
         timeout=None, should_stop=stop_after_candidate_is_cancelled,
-        on_like_intent=lambda active: callbacks.append(active),
+        on_like_intent=lambda active, anchor: callbacks.append((active, anchor)),
     ) is None
     assert callbacks == []
     assert adb.taps == []
@@ -276,12 +282,85 @@ def test_hinge_observe_waits_through_keyboard_motion_until_send_like_closes(monk
     monkeypatch.setattr(driver, "_observe_deck_ready", lambda frame: frame == b"next-card")
     callbacks = []
 
-    assert driver.wait_for_decision(timeout=1.0,
-                                    on_like_intent=lambda active: callbacks.append(active)) is True
-    assert callbacks == [True, False]
+    assert driver.wait_for_decision(
+        timeout=1.0,
+        on_like_intent=lambda active, anchor: callbacks.append((active, anchor))) is True
+    # The True notification's anchor is the sheet frame that proved the sheet was up.
+    assert callbacks == [(True, b"sheet"), (False, None)]
     assert adb.taps == []
     assert adb.swipes == []
     assert adb.texts == []
+
+
+def test_notify_observe_like_intent_passes_frame_as_anchor_and_none_on_clear():
+    """Direct unit coverage of the anchor contract every wait_for_decision call site relies
+    on: the active=True notification carries the EXACT on-screen frame it was given (the
+    same picture the anchored opener repair path grounds a suggestion in -- see
+    _like_comment_sheet's anchored_opener parameter), and the clearing active=False
+    notification always carries anchor=None -- there is nothing left on screen to anchor a
+    picture of once the sheet has closed."""
+    drv = _hinge(_Adb([b"unused"]))
+    calls = []
+
+    drv._notify_observe_like_intent(
+        lambda active, anchor: calls.append((active, anchor)), True, b"the-real-on-screen-frame")
+    drv._notify_observe_like_intent(
+        lambda active, anchor: calls.append((active, anchor)), False)
+
+    assert calls == [(True, b"the-real-on-screen-frame"), (False, None)]
+
+
+def test_notify_observe_like_intent_callback_exception_is_printed_not_swallowed(capsys):
+    """A callback that raises must not vanish silently -- see _notify_observe_like_intent's
+    own docstring: the OLD bare `except Exception: pass` meant a stale callback signature
+    (an ordinary TypeError after some future refactor) made suggestions disappear forever
+    with zero evidence anything was ever wrong, nothing printed, nothing to grep for. The
+    failure must stay non-fatal (this method must not raise out to its caller -- observation
+    has to keep running with no suggestion rather than stop) but it must be VISIBLE."""
+    drv = _hinge(_Adb([b"unused"]))
+
+    def broken_callback(active, anchor):
+        raise ValueError("suggestion renderer exploded")
+
+    drv._notify_observe_like_intent(broken_callback, True, b"frame")   # must not raise
+
+    printed = capsys.readouterr().out
+    assert "ValueError" in printed
+    assert "suggestion renderer exploded" in printed
+
+
+def test_hinge_observe_broken_callback_does_not_break_observation_but_failure_is_printed(monkeypatch, capsys):
+    """End-to-end version of the unit test above: a callback that raises on every call must
+    not stop wait_for_decision from resolving the human's actual like/pass -- the run must
+    continue observing normally -- but each failure must still be printed to stdout, so a
+    broken suggestion hook is loud instead of just quietly producing no suggestions ever
+    again."""
+    monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
+    sheet = _sheet_frame()
+    next_card = _deck_frame()
+    adb = _Adb([b"card", sheet, next_card])
+    polls = 0
+
+    def stop_after_budget():
+        nonlocal polls
+        polls += 1
+        return polls > 200
+
+    def broken_callback(active, anchor):
+        raise ValueError("suggestion renderer exploded")
+
+    result = _hinge(adb).wait_for_decision(
+        timeout=None, should_stop=stop_after_budget, on_like_intent=broken_callback)
+
+    assert result is True             # observation still resolves the real decision
+    assert adb.taps == []
+    assert adb.swipes == []
+    assert adb.texts == []
+    printed = capsys.readouterr().out
+    assert printed.count("ValueError") >= 1
+    assert "suggestion renderer exploded" in printed
 
 
 class _Store:
@@ -324,10 +403,17 @@ class _OpenerService:
     def __init__(self):
         self.calls = []
         self.advisory_seen = []   # records advisory= from every call -- see change A's tests
+        self.anchor_seen = []     # records anchor= from every call -- the like-screen screenshot
+        # worker.py's on_like_intent now forwards UNCONDITIONALLY (see its own docstring: a
+        # client/service that cannot accept this kwarg must fail LOUDLY, not have it silently
+        # dropped). A fake missing this parameter entirely used to raise a TypeError right at
+        # the call boundary -- before self.calls.append() ever ran -- so opener.calls stayed
+        # empty and the caller never learned why.
 
-    def maybe_opener(self, run_id, app, profile, *, should_stop=None, advisory=False):
+    def maybe_opener(self, run_id, app, profile, *, anchor=None, should_stop=None, advisory=False):
         self.calls.append((run_id, app, profile))
         self.advisory_seen.append(advisory)
+        self.anchor_seen.append(anchor)
         return OpenerPick("Your trail photo looks like a great weekend plan.", index=0)
 
 

@@ -154,6 +154,70 @@ class AndroidAppSpec:
     read_scroll_frac: float = 0.55
     # How far each read-scroll advances the profile (fraction of screen height).
 
+    identity_band: tuple[float, float, float, float] | None = None
+    # Normalised (x0, y0, x1, y1) of the app's own STICKY PER-PROFILE HEADER: a region that
+    # stays pixel-identical while one profile is open and changes completely the moment the
+    # deck advances to a new profile (see hinge.py's _identity_of). This is the authoritative
+    # anchor for observe mode: whatever else moved on screen, a frame whose identity band still
+    # matches the captured profile is still the same card, never a decision -- this is what
+    # fixes the bug where a human scrolling to read a profile (Hinge Signals behavior #1) got
+    # recorded as a PASS with no tap of any kind (see the observe-mode redesign notes at the top
+    # of hinge.py). None means this app has no such anchor; observe mode then falls back to the
+    # legacy content-only match -- the same precedent as _require_deck_confirmed skipping its
+    # check when a spec declares no glyph templates.
+
+    identity_top_name_band: tuple[float, float, float, float] | None = None
+    # Normalised (x0, y0, x1, y1) of the app's own CARD HEADER name as rendered when the card
+    # is at SCROLL-TOP -- the position where identity_band (above) shows profile-independent
+    # chrome (Hinge's "Signals / Age / Height / Dating Intent" filter-chips row) instead of the
+    # person's name, which is precisely the state in which observe mode otherwise cannot tell
+    # one profile from the next. This is what fixes the bug where a pass advanced the deck from
+    # "Alina" to "jessica" and got recorded as a scroll WITHIN Alina's profile: identity_band's
+    # verdict at scroll-top is the inconclusive "top" (nothing on screen names the card), so the
+    # decision fell through to a loose pixel content-match that mistook the new woman's card for
+    # a continuation of the old one -- see hinge.py's module docstring and _identity_of for the
+    # full account.
+    #
+    # OCR-only, deliberately -- never a pixel signature, unlike identity_band/upsell_dismiss_zone
+    # above. This band's content shifts vertically depending on whether Hinge is showing its
+    # per-profile "shows thoughtful signals" banner for THIS card (MEASURED on the Pixel 7a
+    # 2026-08-10: "Alina %" with the banner present vs. "Alina @ | @ Signals Active today" once
+    # the banner is gone and content shifts up) -- a fixed pixel crop over it would therefore read
+    # as a MISMATCH for the very same profile depending on which layout happened to render, while
+    # OCR reads the name correctly either way because it is position-tolerant within the crop
+    # (tesseract --psm 6 read the name correctly on every scroll-top frame tested, both layouts,
+    # including three separate "jessica &" frames after the deck advanced).
+    #
+    # None (the default) means this app declares no such band; observe mode keeps its previous
+    # scroll-top behaviour (the inconclusive "top" verdict, unchanged).
+
+    content_band: tuple[float, float] = (0.125, 0.875)
+    # (y0, y1) fractions bounding the SCROLLING content only -- excluding fixed chrome (status
+    # bar, sticky header, floating like/pass overlay, bottom nav) that does NOT translate when
+    # the profile scrolls. Used exclusively by _vertical_shift_match (hinge.py) to slice both
+    # frames before searching for a shift match: searching the whole frame mixes in that fixed
+    # chrome and inflates the measured shift distance 3-4x past change_threshold, which is why
+    # the whole-frame version of that helper could never fire in production (see the measured
+    # shift-distance table in hinge.py's module docstring). The default here is a placeholder
+    # value, not a measurement -- each app should declare its own measured band.
+
+    observe_ignore_zones: tuple[tuple[float, float, float, float], ...] = ()
+    # Normalised (x0, y0, x1, y1) rects whose taps are known NOT to be decisions: rewind arrow,
+    # overflow "...", bottom nav bar -- controls that sit on the card screen but do not advance
+    # the deck the way a like/pass does. wait_for_decision's gesture-corroboration step
+    # (hinge.py) treats a card advance whose last tap landed inside one of these as a resync
+    # (`return None`) rather than a label, the same "recapture, record nothing" contract
+    # worker.py already gives any other None decision. Same shape and validation as
+    # forbidden_zones above; a separate field because these are about labelling a decision
+    # correctly, not about refusing to tap a paid control.
+
+    observe_touch_watch: bool = False
+    # Read the device's own touch event stream (host-side `adb shell getevent`, read-only --
+    # see touchwatch.py) to corroborate observe-mode decisions with actual gesture evidence
+    # instead of pixels alone. True only for an app whose identity_band is declared: the touch
+    # stream corroborates an identity-proven advance, it is not a standalone decision source
+    # (enforced in __post_init__ below).
+
     def __post_init__(self) -> None:
         if self.like_flow not in _LIKE_FLOWS:
             raise ValueError(
@@ -206,6 +270,72 @@ class AndroidAppSpec:
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).upsell_dismiss_zone {self.upsell_dismiss_zone} "
                     f"is not a normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
+        if self.identity_band is not None:
+            # Same normalised-rect shape as upsell_dismiss_zone above -- this band is what
+            # _identity_of (hinge.py) diffs on every poll to prove "still the same card" no
+            # matter what else on screen changed. A malformed rect here would silently defeat
+            # that anchor instead of raising, which is worse than declaring no anchor at all
+            # (identity_band=None at least keeps the legacy content-only rule intact).
+            x0, y0, x1, y1 = self.identity_band
+            if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+                raise ValueError(
+                    f"AndroidAppSpec({self.app!r}).identity_band {self.identity_band} is not a "
+                    f"normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
+        if self.identity_top_name_band is not None:
+            # Same normalised-rect shape as identity_band above -- a malformed rect here would
+            # silently defeat the scroll-top name check (OCR over garbage, or over the wrong
+            # part of the screen) rather than raise, which is worse than declaring no band at
+            # all (identity_top_name_band=None at least keeps the legacy scroll-top "top"
+            # verdict intact instead of quietly mis-reading it as some other profile's name).
+            x0, y0, x1, y1 = self.identity_top_name_band
+            if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+                raise ValueError(
+                    f"AndroidAppSpec({self.app!r}).identity_top_name_band "
+                    f"{self.identity_top_name_band} is not a normalised (x0, y0, x1, y1) rect "
+                    f"with x0<x1 and y0<y1 inside 0..1")
+        if self.identity_top_name_band is not None and self.identity_band is None:
+            # The name check is a REFINEMENT of the pixel identity verdict, not a standalone
+            # source: it only ever runs when that verdict is exactly "top" (hinge.py's
+            # _identity_of), and "top" cannot be produced without identity_band declared in the
+            # first place. Declaring identity_top_name_band with no identity_band is therefore a
+            # configuration error -- refused here the same way observe_touch_watch=True paired
+            # with identity_band=None is refused below, rather than left to silently never fire.
+            raise ValueError(
+                f"AndroidAppSpec({self.app!r}).identity_top_name_band is set but identity_band "
+                f"is None -- the scroll-top name check refines the pixel identity verdict, it "
+                f"is not a standalone source, and that verdict cannot be produced without "
+                f"identity_band declared")
+        for zone in self.observe_ignore_zones:
+            # Same normalised-rect shape as forbidden_zones above -- these are the taps
+            # wait_for_decision (hinge.py) must recognise as a resync rather than a decision
+            # (rewind arrow, overflow "...", bottom nav). A malformed entry here would silently
+            # fail to recognise a non-decision tap and could mislabel a resync as a real PASS.
+            x0, y0, x1, y1 = zone
+            if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+                raise ValueError(
+                    f"AndroidAppSpec({self.app!r}).observe_ignore_zones entry {zone} is not a "
+                    f"normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
+        # content_band: same "fraction, not pixel, and must actually be finite" reasoning as
+        # the coords / read_scroll_frac check below, but for a (y0, y1) pair rather than a
+        # single value or an (x0,y0,x1,y1) rect -- _vertical_shift_match (hinge.py) slices both
+        # frames to these rows before searching, and a bad pair here would silently reintroduce
+        # the fixed-chrome bug this field exists to fix (see the measured shift-distance table
+        # in hinge.py's module docstring).
+        y0, y1 = self.content_band
+        if not (math.isfinite(y0) and math.isfinite(y1) and 0.0 <= y0 < y1 <= 1.0):
+            raise ValueError(
+                f"AndroidAppSpec({self.app!r}).content_band {self.content_band} must be a "
+                f"finite (y0, y1) pair with 0.0 <= y0 < y1 <= 1.0")
+        if self.observe_touch_watch and self.identity_band is None:
+            # The touch stream corroborates an identity-proven card advance (wait_for_decision's
+            # gesture-corroboration step, hinge.py) -- it is not a standalone decision source.
+            # Without identity_band there is no identity-proven advance for a tap or drag to
+            # corroborate in the first place, so this combination is refused at construction
+            # rather than left to silently never corroborate anything at runtime.
+            raise ValueError(
+                f"AndroidAppSpec({self.app!r}).observe_touch_watch is True but identity_band "
+                f"is None -- the touch stream corroborates an identity-proven advance, it is "
+                f"not a standalone decision source")
         # coords / read_scroll_frac range check. This is the SPEC-level half of a two-part
         # fix (the other half is config.py's _validate_android_fractions, which covers an
         # OPERATOR's config.yaml override of these same values): an out-of-range coordinate

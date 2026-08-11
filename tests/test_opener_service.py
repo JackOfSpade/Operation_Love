@@ -4,6 +4,8 @@ The service is the GLOBAL, budget-aware gate for openers shared by every worker.
 It's exercised indirectly elsewhere; this pins its own decision branches with
 lightweight fakes (no provider SDK/network).
 """
+from types import SimpleNamespace
+
 import pytest
 
 import operation_love.opener.service as service_mod
@@ -50,6 +52,11 @@ class _Client:
     (e.model) and passes it through on the NEXT attempt -- see opener.py's GeminiOpener.
     generate, which uses this same parameter to steer its cascade away from a model that
     already failed to parse for this profile.
+
+    anchors records the anchor every call was made with (None when the caller omitted it),
+    so the anchor-threading tests below can pin that maybe_opener() forwards its own anchor
+    argument to the client UNCONDITIONALLY, on every attempt including retries -- see
+    service.py's maybe_opener docstring, anchor paragraph.
     """
     def __init__(self, exc=None, exc_sequence=None):
         self.exc = exc
@@ -58,13 +65,15 @@ class _Client:
         self.retry_hints = []
         self.should_stops = []
         self.skip_models_seen = []
+        self.anchors = []
 
-    def generate(self, profile, style, retry_hint="", *, should_stop=None,
+    def generate(self, profile, style, retry_hint="", *, anchor=None, should_stop=None,
                  skip_models=frozenset()):
         self.calls += 1
         self.retry_hints.append(retry_hint)
         self.should_stops.append(should_stop)
         self.skip_models_seen.append(skip_models)
+        self.anchors.append(anchor)
         if self.exc_sequence is not None:
             step = self.exc_sequence.pop(0) if self.exc_sequence else None
             if step is not None:
@@ -994,3 +1003,182 @@ def test_advisory_single_attempt_also_passes_an_empty_skip_models():
     s = OpenerService(c, t, st, "casual")
     s.maybe_opener("r", "hinge", object(), advisory=True)
     assert c.skip_models_seen == [frozenset()]
+
+
+# ---------------------------------------------------------------------------------------
+# anchor: a live screenshot of the app's own open like/comment screen, threaded through to
+# the client so the model grounds the opener in the ONE photo/prompt the comment will
+# actually be attached to instead of picking its own favourite from the profile scroll (see
+# service.py's maybe_opener docstring, anchor paragraph, and opener.py's GeminiOpener for the
+# full rationale). maybe_opener forwards anchor=anchor UNCONDITIONALLY on every attempt,
+# including retries, since what the message attaches to does not change just because the
+# previous attempt was malformed.
+# ---------------------------------------------------------------------------------------
+
+def test_anchor_reaches_the_client_verbatim_on_a_first_attempt():
+    """The anchor bytes passed to maybe_opener() must reach client.generate() unchanged --
+    this is the whole mechanism the anchor feature depends on: if the bytes were dropped or
+    swapped en route, the model would fall back to guessing which photo/prompt the comment
+    attaches to, exactly the out-of-place-opener bug the anchor exists to fix."""
+    anchor_bytes = b"...png bytes..."
+    c, t, st = _Client(), _Tracker([False, False]), _Store()
+    s = OpenerService(c, t, st, "casual")
+
+    out = s.maybe_opener("r", "hinge", object(), anchor=anchor_bytes)
+
+    assert out.text == _Res.opener
+    assert c.anchors == [anchor_bytes]
+
+
+def test_same_anchor_is_passed_again_on_every_retry_attempt_after_a_parse_error():
+    """A malformed first response is retried (see maybe_opener's OpenerParseError branch),
+    but retrying is about fixing the TEXT, not about re-deciding what the message is about --
+    what the message attaches to (the anchor) does not change just because the previous
+    attempt's opener text was rejected. If a retry ever passed a different anchor, or None,
+    the corrected opener could end up describing a different photo than the one it will
+    actually be displayed under."""
+    parse_error = OpenerParseError("bad JSON", "usage", "gemini-x")
+    anchor_bytes = b"anchor-frame-bytes"
+    c = _Client(exc_sequence=[parse_error, parse_error])   # attempts 1, 2 fail; attempt 3 succeeds
+    s = OpenerService(c, _Tracker(), _Store(), "casual", max_attempts=5)
+
+    out = s.maybe_opener("r", "hinge", object(), anchor=anchor_bytes)
+
+    assert out.text == _Res.opener
+    assert c.calls == 3
+    assert c.anchors == [anchor_bytes, anchor_bytes, anchor_bytes]
+
+
+def test_omitting_anchor_yields_none_at_the_client():
+    """Every pre-existing call site (and every test above this section) omits anchor, so it
+    must default to None at the client, not some other sentinel -- an OpenerClient
+    implementation that branches on `anchor is None` needs that exact contract to keep
+    behaving as an ordinary, unanchored request."""
+    c, t, st = _Client(), _Tracker([False, False]), _Store()
+    s = OpenerService(c, t, st, "casual")
+
+    s.maybe_opener("r", "hinge", object())
+
+    assert c.anchors == [None]
+
+
+def test_referenced_is_populated_from_the_client_result():
+    """OpenerPick.referenced echoes the client's own OpenerResult.referenced verbatim -- it's
+    what lets the hub show an operator WHICH profile detail the model believed its opener was
+    about, so a mismatch against the anchored item becomes visible instead of silent."""
+    c, t, st = _Client(), _Tracker([False, False]), _Store()
+    s = OpenerService(c, t, st, "casual")
+
+    out = s.maybe_opener("r", "hinge", object())
+
+    assert out.referenced == _Res.referenced
+
+
+def test_referenced_defaults_to_empty_string_when_the_client_result_has_no_such_attribute():
+    """service.py reads referenced via getattr(result, "referenced", "") specifically so a
+    minimal/older OpenerClient result that doesn't populate the field doesn't blow up with an
+    AttributeError -- it degrades to an empty string instead."""
+    class _MinimalClient:
+        def generate(self, profile, style, retry_hint="", *, anchor=None, should_stop=None,
+                     skip_models=frozenset()):
+            return SimpleNamespace(model="gemini-x", usage="usage",
+                                   opener="hey there", referenced_index=0)
+
+    s = OpenerService(_MinimalClient(), _Tracker([False, False]), _Store(), "casual")
+
+    out = s.maybe_opener("r", "hinge", object())
+
+    assert out.text == "hey there"
+    assert out.referenced == ""
+
+
+# ---------------------------------------------------------------------------------------
+# recent_openers_snapshot(): the ring buffer of the most recent SUCCESSFUL opener
+# generations, independent of self.store.record_opener's permanent per-run record -- see
+# __init__'s recent_openers docstring. Records whether the call was anchored/advisory
+# alongside the model's own referenced/index/opener fields, so a bug report can tell an
+# anchored generation apart from a blind one after the fact.
+# ---------------------------------------------------------------------------------------
+
+def test_recent_openers_snapshot_records_anchored_and_advisory_flags_with_fields_intact():
+    """One anchored AUTO call and one unanchored advisory call must produce two entries whose
+    `anchored`/`advisory` flags reflect exactly what that call was, while `referenced`,
+    `index`, and `opener` all carry through from the client's own result untouched."""
+    c, t, st = _Client(), _Tracker([False, False, False, False]), _Store()
+    s = OpenerService(c, t, st, "casual")
+
+    s.maybe_opener("r", "hinge", object(), anchor=b"anchor-bytes")
+    s.maybe_opener("r", "bumble", object(), advisory=True)
+
+    snap = s.recent_openers_snapshot()
+    assert len(snap) == 2
+    anchored_entry, advisory_entry = snap
+    assert anchored_entry["anchored"] is True
+    assert anchored_entry["advisory"] is False
+    assert advisory_entry["anchored"] is False
+    assert advisory_entry["advisory"] is True
+    for entry in snap:
+        assert entry["referenced"] == _Res.referenced
+        assert entry["index"] == _Res.referenced_index
+        assert entry["opener"] == _Res.opener
+
+
+def test_recent_openers_snapshot_is_capped_and_drops_the_oldest():
+    """Only the last _RECENT_OPENERS successful generations survive -- append more than the
+    cap and the OLDEST entries must be gone, with the newest ones retained in order (newest
+    last), not some arbitrary subset."""
+    class _CountingClient:
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, profile, style, retry_hint="", *, anchor=None, should_stop=None,
+                     skip_models=frozenset()):
+            self.calls += 1
+            return SimpleNamespace(model="gemini-x", usage="usage",
+                                   opener=f"opener #{self.calls}",
+                                   referenced=f"item {self.calls}",
+                                   referenced_index=self.calls)
+
+    cap = service_mod._RECENT_OPENERS
+    n = cap + 5
+    c = _CountingClient()
+    s = OpenerService(c, _Tracker(), _Store(), "casual")   # empty queue -> budget_reached() always False
+
+    for _ in range(n):
+        s.maybe_opener("r", "hinge", object())
+
+    snap = s.recent_openers_snapshot()
+    assert len(snap) == cap
+    openers = [entry["opener"] for entry in snap]
+    # The oldest 5 calls (#1..#5) were dropped; the newest `cap` calls remain, oldest-of-
+    # those-first / newest-last (append order), never re-sorted or reversed.
+    assert openers == [f"opener #{i}" for i in range(n - cap + 1, n + 1)]
+
+
+def test_recent_openers_snapshot_returns_a_plain_list_not_the_live_deque():
+    """recent_openers_snapshot() must hand back a stable copy: a bug-report reader on another
+    thread must never iterate the live deque a worker thread is concurrently appending to,
+    and mutating the returned list must not affect the service's own internal state."""
+    c, t, st = _Client(), _Tracker([False, False]), _Store()
+    s = OpenerService(c, t, st, "casual")
+    s.maybe_opener("r", "hinge", object())
+
+    snap = s.recent_openers_snapshot()
+    assert type(snap) is list
+    assert snap is not s.recent_openers
+
+    snap.append({"fake": "entry"})
+    snap.clear()
+    # The service's own ring buffer is untouched by mutating the returned snapshot.
+    assert len(s.recent_openers_snapshot()) == 1
+
+
+def test_a_failed_call_records_nothing_in_the_ring_buffer():
+    """Only SUCCESSFUL opener generations land in recent_openers -- a failed call (an
+    OpenerError here) must leave the buffer untouched, so the buffer can never imply a
+    message was produced when none was."""
+    c = _Client(exc=OpenerError("Gemini returned no usable opener for this profile"))
+    s = OpenerService(c, _Tracker([False]), _Store(), "casual")
+
+    assert s.maybe_opener("r", "hinge", object()) is None
+    assert s.recent_openers_snapshot() == []

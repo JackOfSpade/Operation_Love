@@ -68,9 +68,20 @@ def test_two_workers_run_concurrently_and_share_store():
 
 
 class _OpenerClient:
-    """One opener costs $0.002 at the PRICING below (400 input tok * $5/MTok)."""
-    def generate(self, profile, style, retry_hint="", *, should_stop=None,
+    """One opener costs $0.002 at the PRICING below (400 input tok * $5/MTok).
+
+    anchors records the anchor kwarg every call was made with -- mirrors _Client.anchors in
+    test_opener_service.py -- even though no test in this file currently asserts on it: the
+    signature must accept it unconditionally (see service.py's maybe_opener, which forwards
+    anchor=anchor on every call) or these concurrency tests would TypeError the moment
+    maybe_opener() is invoked.
+    """
+    def __init__(self):
+        self.anchors = []
+
+    def generate(self, profile, style, retry_hint="", *, anchor=None, should_stop=None,
                  skip_models=frozenset()):
+        self.anchors.append(anchor)
         return OpenerResult(opener="hi", referenced="r",
                             usage=Usage(input_tokens=400), model="gemini-test-model")
 

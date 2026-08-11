@@ -18,10 +18,12 @@ import pytest
 from operation_love.opener.opener import (
     GeminiOpener,
     OpenerParseError,
+    _ANCHOR_SYSTEM,
     _SYSTEM,
     _image_media_type,
     _sanitize,
     _sentence_count,
+    _system_text,
 )
 from operation_love.perception.capture import Profile
 
@@ -112,6 +114,22 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "never use an em dash or any hyphen" in lowered
     assert "low investment so she chases" not in lowered
     assert "tease her like a bratty little sister" not in lowered
+
+
+def test_system_text_appends_anchor_system_only_when_anchored():
+    """_system_text is the single place that decides whether a request's systemInstruction
+    carries the anchor addendum (see GeminiOpener.generate(), which derives its own
+    `anchored` flag once and calls this for every payload). Pinned directly, independent of
+    any request-building machinery, the same way _SYSTEM's own wording is pinned above: the
+    unanchored case must stay byte-identical to plain _SYSTEM (the compatibility guarantee
+    every un-anchored request depends on -- see test_gemini_opener.py's own byte-identical
+    request test), while the anchored case must be _SYSTEM with _ANCHOR_SYSTEM appended, and
+    must say plainly that the extra image isn't part of her profile."""
+    assert _system_text(False) == _SYSTEM
+    assert _system_text(True) == _SYSTEM + _ANCHOR_SYSTEM
+    assert _system_text(True) != _SYSTEM
+    assert _system_text(True).startswith(_SYSTEM)
+    assert "is NOT part of her profile" in _system_text(True)
 
 
 # ---------------------------------------------------------------------------------------

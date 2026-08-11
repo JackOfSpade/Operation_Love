@@ -280,7 +280,34 @@ def test_observe_label_persists_profile_metadata():
     w._observe_loop()
 
     metadata = store.labels[0][3]
-    assert metadata == {"photo_count": 2}
+    # capture_truncated rides along with photo_count so the system of record can tell a label
+    # made from a COMPLETE read of the profile apart from one made from a partial read (the
+    # driver hit its screencap ceiling before reaching the bottom). This profile's meta says
+    # nothing about truncation, which must read as False rather than raise -- meta is
+    # driver-authored and the Bumble capture path populates a different key set entirely.
+    assert metadata == {"photo_count": 2, "capture_truncated": False}
     assert store.profiles[0][2]["photo_count"] == 2
+    assert store.profiles[0][2]["capture_truncated"] is False
     assert "bio" not in store.profiles[0][2]
     assert "prompts" not in store.profiles[0][2]
+
+
+def test_observe_label_carries_capture_truncated_from_the_driver():
+    """A truncated read must be visible on the stored label, not only in the local debug log.
+
+    The debug dir rotates and is not the system of record, so without this the question
+    "which labels came from an incomplete read?" is unanswerable a week later -- and in the
+    audited run of 2026-08-10 one profile in three was truncated at the configured ceiling.
+    """
+    model = PreferenceModel(min_labels=10)
+    decider = RankerDecider(FakeQuality(), FakeEmbedder(), model)
+    store = FakeStore()
+    truncated = Profile(photos=[b"one", b"two"], bio="", prompts=[],
+                        meta={"app": "hinge", "vec": [1.0], "capture_truncated": True})
+    w = Worker("hinge", FakeObservingDriver([(truncated, True)]),
+               decider, None, store, "r", _Pacing(), threading.Event(),
+               mode="observe", retrain_every=5)
+    w._observe_loop()
+
+    assert store.labels[0][3]["capture_truncated"] is True
+    assert store.profiles[0][2]["capture_truncated"] is True

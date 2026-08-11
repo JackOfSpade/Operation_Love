@@ -54,6 +54,19 @@ def test_shipped_opener_style_keeps_faithful_corey_framework_and_two_sentence_ca
     assert "no interview questions" not in style
 
 
+def test_hinge_identity_top_name_band_matches_the_measured_ocr_band(cfg):
+    """apps.hinge.identity_top_name_band must carry the exact band MEASURED on real Pixel 7a
+    frames on 2026-08-10 (tesseract --psm 6 read the card-header name correctly on every
+    scroll-top frame tested, both banner-present and banner-gone layouts). This is what fixes
+    observe mode recording a pass that advanced Alina -> jessica as a scroll of Alina -- see
+    android_spec.py's identity_top_name_band docstring for the full mechanism. A drifted or
+    dropped value here would silently defeat the scroll-top name check on the one platform
+    that actually runs (Hinge; see live-bringup-status)."""
+    band = cfg.apps["hinge"].get("identity_top_name_band")
+    assert band is not None, "apps.hinge.identity_top_name_band is missing from config.yaml"
+    assert tuple(band) == (0.03, 0.130, 0.75, 0.250)
+
+
 def test_limits_are_uncapped_by_default(cfg):
     """Auto-mode volume is deliberately uncapped by default (see config.yaml's `limits:`
     block): a fixed numeric ceiling is itself a bot signature (an identical hard step

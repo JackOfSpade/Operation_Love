@@ -113,6 +113,10 @@ async function postJSON(u,b){ const r = await fetch(u,{method:'POST',headers:{'C
 // must not carry a hardcoded app list that could drift out of sync with it.
 let cfg = {kinds:[], all_apps:[], enabled_apps:[], mode:'observe', selected:null};
 let sel = {kind:null, app:null};
+// Previous tick's `running` (see renderGlobal/shouldClearHint below) -- tracked across
+// polls so #hint clears only on the TRANSITION into !running, never merely because the
+// page happens to load, or re-render, while no run is active.
+let _wasRunning = false;
 const hubClientId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '-' + Math.random());
 function hubLifecycle(path){
   const body = JSON.stringify({id: hubClientId});
@@ -138,15 +142,43 @@ window.addEventListener('pagehide', (event) => {
   if (!event.persisted) hubLifecycle('/api/hub/closed');
 });
 
+// Whether the Stop button should read "■ Stopping…" and be disabled, driven by the SAME
+// status.stopping the run pill and the swipe/auto banners read (status.py's docstring) --
+// not a separate ad hoc flag, so this can never disagree with what the rest of the page is
+// telling the operator. Disabling it once stopping is true makes a second press
+// impossible-BY-DESIGN, not merely a no-op HubState.stop() happens to tolerate gracefully.
+// Pure + named so the hub test suite can eval it with node.
+function stopButtonState(running, stopping){
+  return {label: stopping ? '■ Stopping…' : '■ Stop', disabled: !running || stopping};
+}
+// Whether #hint should be cleared THIS tick: only on the instant a run that WAS live
+// (previous poll had running=true) is no longer running -- never merely because running
+// already happens to be false. A blanket "clear whenever !running" would also wipe a
+// legitimate persistent message like 'not started' (set by startRunFromControls after a
+// FAILED Start, when running is already false) on the very next poll after it's shown.
+// Pure + named so the hub test suite can eval it with node instead of asserting a
+// substring a comment-only revert could dodge.
+function shouldClearHint(running, wasRunning){ return !!wasRunning && !running; }
+
 function renderGlobal(snap){
   const running = snap && snap.running;
   const s = snap && snap.status;
   const phase = s && s.phase;
+  const stopping = !!(s && s.stopping);
   $('#runpill').textContent = running ? ((phase && phase!=='live') ? phase : 'running') : 'stopped';
   $('#runpill').className = 'pill ' + (running ? 'run' : 'stop');
-  $('#start').disabled = running; $('#stop').disabled = !running;
+  $('#start').disabled = running;
+  const stopBtn = stopButtonState(running, stopping);
+  $('#stop').disabled = stopBtn.disabled;
+  $('#stop').textContent = stopBtn.label;
   if(phase === 'saving data') $('#hint').textContent = 'saving data…';
-  else if(!running && $('#hint').textContent === 'saving data…') $('#hint').textContent = '';
+  // Audit fix: this used to only clear the LITERAL string 'saving data…', so a Stop
+  // pressed during startup (which jumps straight from a starting-phase to phase='stopped'
+  // with no 'saving data' phase in between -- see supervisor.py's _abort_startup) left
+  // 'stopping…' stuck next to a 'stopped' pill forever. shouldClearHint fires on any
+  // running->!running transition instead, whatever text is currently sitting there.
+  else if(shouldClearHint(running, _wasRunning)) $('#hint').textContent = '';
+  _wasRunning = running;
   if(s){
     const cap = s.budget_cap!=null ? ' / $'+Number(s.budget_cap).toFixed(2) : '';
     $('#budget').textContent = `$${Number(s.budget_spent).toFixed(2)}${cap}`;
@@ -173,6 +205,12 @@ function renderSwipe(snap){
   if(!snap || !snap.running || !s){ el.style.display='none'; return; }
   const observeApps = selectObserveApps(s);
   if(!observeApps.length){ el.style.display='none'; return; }
+  // supervisor.run()'s shutdown tail (status.stopping -- set the instant stop_event.set()
+  // runs, cleared only once the run reaches its terminal phase; see status.py's docstring):
+  // worker.py re-checks stop_event and DISCARDS any card decided in this window rather than
+  // recording it, so every GO-style cue below would be actively lying if shown here --
+  // telling the operator to act on something that gets thrown away.
+  const stopping = !!s.stopping;
   const css = {go:'background:#123a23;border:1px solid #39d98a;color:#39d98a',
                wait:'background:#3a2f12;border:1px solid #f0b429;color:#f0b429',
                idle:'background:#22222b;border:1px solid rgba(255,255,255,.14);color:#9a9aa2'};
@@ -185,7 +223,30 @@ function renderSwipe(snap){
     const last = a.last_decision ? ('last '+a.last_decision) : '';
     const app = escHtml(a.app || 'app');
     const opener = typeof a.opener_suggestion === 'string' ? a.opener_suggestion.trim() : '';
-    if(opener) return box('go', `💬 ${escHtml(opener)}`, 'type this in Hinge, then tap Send Like');
+    // Intercepts every GO-producing branch below (opener suggestion, waiting_for_send,
+    // plain waiting) with one honest stop-coloured box instead -- see `stopping` above for
+    // why acting on any of them right now would be pointless at best.  Same WAIT (🔴) style
+    // as the suggesting/capturing/acting cues just below, per the owner's circle-only rule.
+    if(stopping && (opener || st==='waiting_for_send' || st==='waiting')) {
+      return box('wait', `🔴 ${app}: stopping — do not swipe, this decision will not be recorded`);
+    }
+    if(opener) {
+      // opener_referenced is the model's own one-line statement of which photo/prompt the
+      // suggestion is about (see OpenerPick.referenced); showing it here is what turns a
+      // mismatch between the suggestion and the item the comment actually lands under into
+      // something the operator can catch at a glance instead of only after sending it.
+      // opener_anchored is false when the driver could not hand over the open like/comment
+      // screen for this suggestion (see worker.py's _wait_for_observed_decision) -- the
+      // suggestion was then written blind, exactly like before this fix, and the operator
+      // needs an explicit warning rather than silent trust. 🔴/🟢 circles, never hand emoji
+      // -- see the owner's status-indicator convention.
+      const referenced = typeof a.opener_referenced === 'string' ? a.opener_referenced.trim() : '';
+      const aboutSub = referenced ? `about: ${escHtml(referenced)} · ` : '';
+      const anchorWarn = a.opener_anchored ? '' :
+        '🔴 written WITHOUT seeing which photo you hearted, may not match · ';
+      return box('go', `💬 ${escHtml(opener)}`,
+                 `${anchorWarn}${aboutSub}type this in Hinge, then tap Send Like`);
+    }
     if(st==='waiting_for_send') return box('go', '💬 No suggestion available',
                                             'type your own opener, then tap Send Like');
     if(st==='waiting') {
@@ -224,6 +285,11 @@ function renderAutoStatus(snap){
   if(!snap || !s){ el.style.display='none'; return; }
   const autoApps = selectAutoApps(s);
   if(!autoApps.length){ el.style.display='none'; return; }
+  // supervisor.run()'s shutdown tail (status.stopping -- see status.py's docstring and
+  // renderSwipe's identical use above): covers every non-terminal per-app state this
+  // banner's fall-through renders (acting/capturing/scoring/saving), so it must intercept
+  // that fall-through BEFORE the bare "running" box below claims the worker is still live.
+  const stopping = !!s.stopping;
   const css = {err:'background:#3a1414;border:1px solid #ff6b6b;color:#ff8585',
                idle:'background:#22222b;border:1px solid rgba(255,255,255,.14);color:#9a9aa2',
                go:'background:#123a23;border:1px solid #39d98a;color:#39d98a'};
@@ -253,6 +319,17 @@ function renderAutoStatus(snap){
     // past the end of a run, a run that ended without reaching its final status.set_app would
     // otherwise render a green "running" box next to a `stopped` run pill.
     if(!snap.running) return box('idle', `${a.app}: ended — last state ${st||'unknown'}`, swipes);
+    // Checked BEFORE the stopping fall-through: the supervisor stamps every app 'saving' just
+    // before store.flush(), while `stopping` is still true — so without this, the whole flush
+    // (unbounded on BigQuery) rendered as "finishing the current profile", which by then is
+    // over and done with.
+    if(st==='saving') return box('idle', `${a.app}: saving data…`, swipes);
+    // The run is still alive but shutting down. Deliberately does NOT claim the current
+    // decision is discarded: in AUTO mode the worker's last stop check happens BEFORE it hands
+    // the action to the driver, so a like/dislike already in flight still lands and is still
+    // recorded. Only work not yet started is dropped. (Observe mode is the stricter case — see
+    // renderSwipe, where the operator is being told not to swipe at all.)
+    if(stopping) return box('idle', `${a.app}: stopping — finishing the current profile`, swipes);
     return box('go', `${a.app}: running`, swipes);
   }).join('');
   el.style.display = 'block';
@@ -449,7 +526,16 @@ async function startRunFromControls(){
   tick();
 }
 $('#start').onclick = startRunFromControls;
-$('#stop').onclick = async () => { $('#hint').textContent='stopping…'; await postJSON('/api/stop',{}); tick(); };
+$('#stop').onclick = async () => {
+  // Disable + relabel BEFORE the POST round-trip, not only once the next poll picks up
+  // status.stopping (renderGlobal/stopButtonState above) -- a click during that gap must
+  // not still be possible just because the server hasn't answered yet.
+  $('#stop').disabled = true;
+  $('#stop').textContent = '■ Stopping…';
+  $('#hint').textContent = 'stopping…';
+  await postJSON('/api/stop', {});
+  tick();
+};
 
 async function getReport(){          // generate fresh each time (Copy/Download do this implicitly)
   $('#bughint').textContent = 'generating…';

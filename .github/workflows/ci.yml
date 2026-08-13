@@ -51,6 +51,26 @@ jobs:
         # eval/observe tests) failed on a clean runner. Install the package
         # editable with the extras its test suite actually exercises.
         run: pip install --quiet -e '.[dev,hinge,ml]'
+      # act-local-CI only. GitHub's ubuntu-latest image ships libGL, which OpenCV
+      # links against; act's runner image (catthehacker/ubuntu:act-latest) does not,
+      # so every test importing cv2 died with
+      # "ImportError: libGL.so.1: cannot open shared object file" under the global
+      # `act push` pre-push hook — a failure with no bearing on the code.
+      # `env.ACT` is set only by act and unset on GitHub-hosted runners, so this is
+      # skipped there and cannot change real CI. `== 'true'` rather than a bare
+      # truthiness test, because GitHub treats ANY non-empty string (including
+      # "false") as true; the in-script re-check is a second guard so a misfiring
+      # `if:` degrades to a no-op instead of failing the job on a transient apt error.
+      - name: Install libGL (act-local CI only — GitHub's runner already has it)
+        if: ${{ env.ACT == 'true' }}
+        run: |
+          set -euo pipefail
+          [ "${ACT:-}" = "true" ] || exit 0
+          if ! ldconfig -p 2>/dev/null | grep -q 'libGL\.so\.1'; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq libgl1
+          fi
+
       - name: Run tests
         run: python -m pytest -q
 

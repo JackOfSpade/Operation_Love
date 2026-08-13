@@ -1,0 +1,21 @@
+# act-local-CI config (read only by the `act` CLI; GitHub Actions has no concept
+# of this file, so it has zero effect on real CI). The global pre-push hook runs
+# `act push` before every push to a protected branch.
+#
+# Works around a real `act` bug (nektos/act#107), not anything in this repo:
+# under --container-architecture linux/amd64 on Apple Silicon (which the hook
+# forces so local results match GitHub's x86_64 runners), the FIRST
+# `::add-path::` in a job — actions/setup-python issues two — makes act rebuild
+# PATH for every later `docker exec` and substitute the HOST arch for its own
+# bundled-node toolcache entry. `.../node/<ver>/arm64/bin` does not exist in the
+# linux/amd64 image, so every later bare `node` fails with exit 127 — including
+# act's OWN internal node invocations used to run JS actions' Main/Post steps,
+# not just user `run:` steps. Pinning PATH to the image's real x64 toolcache dir
+# fixes it for the whole job.
+#
+# Re-derive with:
+#   docker run --rm --platform linux/amd64 catthehacker/ubuntu:act-latest \
+#     cat /etc/environment
+# if the image (or its bundled node version) is ever bumped. A stale value fails
+# loudly with 127 again, not silently.
+--env PATH=/opt/acttoolcache/node/24.19.0/x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin

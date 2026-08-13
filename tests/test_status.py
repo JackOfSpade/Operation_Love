@@ -94,11 +94,14 @@ def test_observe_opener_suggestion_is_published_in_app_snapshot():
 
 
 def test_suggesting_state_clears_a_stale_opener_suggestion():
-    """The interim 'suggesting' state (published while the advisory suggestion call is in
-    flight -- see worker.py's on_like_intent) must clear any stale opener_suggestion left
-    over from a PRIOR card automatically, exactly like the other WAIT-style transitions --
-    otherwise a re-render between the state flip and the real suggestion landing could
-    momentarily show the previous card's text next to the new one."""
+    """A WAIT-style state transition must clear any stale opener_suggestion left over from a
+    PRIOR card automatically, or a re-render between the flip and the real suggestion landing
+    could momentarily show the previous card's text next to the new one.
+
+    'suggesting' is the case pinned here because it is the one that has NO producer left (doc
+    5.9's inversion generates on its own thread, before the human acts, so there is nothing to
+    block on); pinning the branch keeps it honest for the older snapshots that can still carry
+    it, rather than letting it rot quietly."""
     s = _mk()
     s.set_app("hinge", state="waiting_for_send", opener_suggestion="stale suggestion")
     s.set_app("hinge", state="suggesting")
@@ -106,30 +109,70 @@ def test_suggesting_state_clears_a_stale_opener_suggestion():
     assert app["state"] == "suggesting" and app["opener_suggestion"] is None
 
 
-def test_set_app_does_not_autoclear_referenced_and_anchored_when_suggestion_is_named():
-    """RunStatus.set_app's own safety net -- auto-clearing all three opener fields on a
-    normal state transition -- fires ONLY when opener_suggestion is ABSENT from the update
-    dict (see set_app's own comment). Any caller that explicitly passes opener_suggestion,
-    even to clear it, opts itself OUT of that safety net and must therefore name
-    opener_referenced/opener_anchored too, or they survive untouched exactly as pinned here.
-    worker.py has two call sites that do this (the observe loop's per-card reset and its
-    `finally`); an adversarial review found both had been passing opener_suggestion alone,
-    leaving the other two stale. This test pins the RunStatus mechanism responsible for that
-    gap, so the reason callers must name all three lives in a test, not just a comment."""
+def test_a_state_transition_clears_every_opener_field_together():
+    """They describe ONE suggestion for one card between them -- its text, what it claims to be
+    about, which item it names, that item's description, why there is no text, and whether one
+    is still coming -- so any of them outliving the rest is the exact lie the auto-clear exists
+    to prevent. Since doc 5.9's inversion a survivor is worse than a stale caption: "like item
+    3" pointing at a profile that is no longer on screen is an instruction, not a note.
+
+    Asserted against status._OPENER_FIELDS itself rather than a re-typed list, so adding a field
+    to the set without teaching the net about it cannot pass."""
+    from operation_love.status import _OPENER_FIELDS
+
     s = _mk()
     s.set_app("hinge", state="waiting_for_send", opener_suggestion="about her dog",
-              opener_referenced="her dog", opener_anchored=True)
+              opener_referenced="her dog", opener_anchored=True, opener_item=3,
+              opener_item_description="the ridgeline photo", opener_warning="stale warning",
+              opener_pending=True)
 
-    # A state transition ("waiting") that WOULD normally auto-clear all three (see
-    # test_suggesting_state_clears_a_stale_opener_suggestion just below) -- except this call
-    # explicitly supplies opener_suggestion, so set_app must leave opener_referenced/
-    # opener_anchored exactly as they were; only what the caller literally set changes.
+    s.set_app("hinge", state="capturing")     # a transition that does NOT name opener_suggestion
+    app = s.snapshot()["apps"]["hinge"]
+    assert {name: app[name] for name in _OPENER_FIELDS} == _OPENER_FIELDS
+
+
+def test_set_app_does_not_autoclear_the_other_opener_fields_when_suggestion_is_named():
+    """RunStatus.set_app's own safety net -- auto-clearing the whole opener set on a normal
+    state transition -- fires ONLY when opener_suggestion is ABSENT from the update dict (see
+    set_app's own comment). Any caller that explicitly passes opener_suggestion, even to clear
+    it, opts itself OUT of that safety net and must therefore name the rest too, or they survive
+    untouched exactly as pinned here. worker.py has two call sites that do this (the observe
+    loop's per-card reset and its `finally`); an adversarial review found both had been passing
+    opener_suggestion alone, leaving the others stale. This test pins the RunStatus mechanism
+    responsible for that gap, so the reason callers must name all of them lives in a test, not
+    just a comment -- and status.cleared_opener_fields() is what those callers splat so the list
+    cannot drift."""
+    s = _mk()
+    s.set_app("hinge", state="waiting_for_send", opener_suggestion="about her dog",
+              opener_referenced="her dog", opener_anchored=True, opener_item=3)
+
+    # A state transition ("waiting") that WOULD normally auto-clear the whole set -- except this
+    # call explicitly supplies opener_suggestion, so set_app must leave the others exactly as
+    # they were; only what the caller literally set changes.
     s.set_app("hinge", state="waiting", opener_suggestion=None)
     app = s.snapshot()["apps"]["hinge"]
     assert app["state"] == "waiting"
     assert app["opener_suggestion"] is None          # explicitly cleared by the caller
     assert app["opener_referenced"] == "her dog"      # NOT auto-cleared -- caller opted out
     assert app["opener_anchored"] is True             # NOT auto-cleared -- caller opted out
+    assert app["opener_item"] == 3                    # NOT auto-cleared -- caller opted out
+
+
+def test_cleared_opener_fields_is_the_whole_set_and_a_fresh_dict_each_call():
+    """The helper the two opting-out callers splat. It must cover the set completely (a caller
+    that splats it is trusting it to) and must never hand out the module's own dict, which a
+    caller adding a key to its update would otherwise mutate for every future call."""
+    from operation_love.status import AppStatus, _OPENER_FIELDS, cleared_opener_fields
+
+    first = cleared_opener_fields()
+    assert first == _OPENER_FIELDS and first is not _OPENER_FIELDS
+    first["opener_suggestion"] = "mutated"
+    assert cleared_opener_fields()["opener_suggestion"] is None
+    # Every name in the set is a real AppStatus field, or splatting it would raise nothing and
+    # silently write an attribute the hub never reads.
+    blank = AppStatus(app="hinge")
+    for name in _OPENER_FIELDS:
+        assert hasattr(blank, name)
 
 
 def test_stop_reason_defaults_to_none_and_survives_serialization():

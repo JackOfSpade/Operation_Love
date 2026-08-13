@@ -79,12 +79,15 @@ def test_clean_text_removes_every_dash_variant():
         assert ch not in out
 
 
-def test_clean_text_collapses_double_space_artifacts():
-    # An unmapped codepoint (still dropped, as before) must not leave a double space where
-    # it used to sit.
+def test_clean_text_no_longer_drops_an_unmapped_codepoint():
+    # WYSIWYG regression guard: _clean_text_for_input used to silently DELETE any codepoint
+    # it didn't recognise (an emoji, here) -- the exact bug this module was rewritten to fix
+    # (see typography.fold_to_ascii's docstring). It must now pass an unmapped character
+    # through UNCHANGED; turning that into a loud failure is Adb.text()'s job now (see
+    # test_text_raises_adb_error_and_sends_nothing_for_an_undeliverable_emoji below), not
+    # this function's.
     out = _clean_text_for_input("choice \U0001F600 love")
-    assert "  " not in out
-    assert out == "choice love"
+    assert out == "choice \U0001F600 love"
 
 
 def test_clean_text_realistic_gemini_opener_reads_naturally():
@@ -117,6 +120,169 @@ def test_text_folds_gemini_opener_typography_then_escapes_for_shell(monkeypatch)
     assert "’" not in sent and "—" not in sent and "…" not in sent
     assert "%s" in sent                              # spaces still escaped (existing behaviour)
     assert "\\'" in sent                              # folded apostrophe still shell-escaped
+
+
+# --- Adb.text: fail loudly on an undeliverable character, never drop it silently ---------
+# The bug this whole feature exists to fix: _clean_text_for_input's old silent-drop behaviour
+# meant the opener recorded in BigQuery / shown in the hub could differ from what actually
+# got typed on the device. Owner hard rule: best humanized interaction or FAIL LOUDLY.
+def test_text_raises_adb_error_and_sends_nothing_for_an_undeliverable_emoji(monkeypatch):
+    run = FakeRun(_ok())
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    with pytest.raises(AdbError) as exc:
+        Adb(serial="pixel").text("great smile \U0001F600 love it")
+
+    assert run.calls == []                            # NO adb command issued at all
+    msg = str(exc.value)
+    assert "\\U0001f600" in msg                        # named codepoint escape
+    assert "GRINNING FACE" in msg                      # unicodedata.name
+    assert "not typed" in msg.lower() or "not been typed" in msg.lower() \
+        or "was not typed" in msg.lower()
+
+
+def test_text_raises_adb_error_for_cjk_text(monkeypatch):
+    run = FakeRun(_ok())
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    with pytest.raises(AdbError) as exc:
+        Adb(serial="pixel").text("你好")
+
+    assert run.calls == []
+    assert "\\u4f60" in str(exc.value)                 # first CJK codepoint named
+
+
+def test_text_types_accented_text_as_its_ascii_fold(monkeypatch):
+    # The headline WYSIWYG behaviour: an accented name is not undeliverable -- it has a
+    # perfectly good ASCII substitute (typography.fold_to_ascii's NFKD pass), so it types
+    # cleanly rather than raising.
+    run = FakeRun(_ok())
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    Adb(serial="pixel").text("Your trip to São Paulo, Chloé")
+
+    assert run.argv == [
+        ["adb", "-s", "pixel", "shell", "input", "text", "Your%strip%sto%sSao%sPaulo,%sChloe"],
+    ]
+
+
+# --- Android's real sendText() unescaping, ported for tests --------------------------------
+# The owner rejected the old blanket "% -> percent" rewrite in typography.fold_to_ascii as
+# unnatural ("50%" must type as "50%"). What actually collides with adb's %s space escape is
+# narrower: a literal '%' immediately followed by a lowercase 's' (see
+# typography.fold_to_ascii's docstring point 4 and typography.undeliverable_sequences'
+# docstring for the measured table this module reproduces). These two helpers are a faithful
+# port of Android's `Input.java` / `InputShellCommand` `sendText()` unescaping and of the
+# on-device shell's backslash-unescaping, so the round-trip test below pins the ACTUAL device
+# semantics rather than our assumption about them -- this is the highest-value test in this
+# file precisely because it is the thing a live on-device check (LIVE-VERIFY, device
+# currently disconnected) would confirm, not a guess about Android's internals.
+def shell_strip(escaped: str) -> str:
+    """Undo _escape_input_text's backslash-escaping of shell metacharacters -- what the
+    on-device shell does when it parses the `adb shell input text <escaped>` command line
+    before invoking the `input` binary: a backslash immediately preceding one of
+    adb._TEXT_SHELL_SPECIALS is consumed and only the literal character remains. Space
+    encoding (%s) is left untouched here -- decoding that is Android's own sendText() job,
+    handled by android_unescape below, not the on-device shell's.
+    """
+    out: list[str] = []
+    i, n = 0, len(escaped)
+    while i < n:
+        ch = escaped[i]
+        if ch == "\\" and i + 1 < n and escaped[i + 1] in adb_mod._TEXT_SHELL_SPECIALS:
+            out.append(escaped[i + 1])
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def android_unescape(s: str) -> str:
+    """A faithful port of Android's `Input.java` / `InputShellCommand` `sendText()`
+    unescaping: a literal '%' arms an escape flag; on the very NEXT character, a lowercase
+    's' becomes a space and the '%' is deleted (consumed together); any other character
+    instead flushes the armed '%' back out unconsumed, and that same character is then
+    re-examined as a possible NEW escape-starter in its own right (this is what makes
+    'a%%b' round-trip unchanged: the first '%' arms, the second '%' doesn't match 's' so the
+    first '%' flushes -- but the second '%' immediately re-arms for 'b', which also doesn't
+    match, so it flushes too, leaving both '%' intact). A '%' armed at the very end of the
+    string with no following character flushes literally.
+
+    This is the thing a LIVE on-device check would confirm (see typography.fold_to_ascii's
+    docstring point 4 and typography.undeliverable_sequences' docstring -- both flagged
+    LIVE-VERIFY, not yet confirmed on the physical Pixel 7a).
+    """
+    result: list[str] = []
+    escape = False
+    for ch in s:
+        if escape:
+            escape = False
+            if ch == "s":
+                result.append(" ")
+                continue
+            result.append("%")
+        if ch == "%":
+            escape = True
+        else:
+            result.append(ch)
+    if escape:
+        result.append("%")
+    return "".join(result)
+
+
+@pytest.mark.parametrize("s", [
+    "50%", "50% off", "up 30% today", "50%.", "a%%b", "50%S",
+    "hi there&you", "plain text", "no percent here at all",
+])
+def test_escape_input_text_round_trips_through_android_sendtext_for_safe_strings(s):
+    assert android_unescape(shell_strip(adb_mod._escape_input_text(s))) == s
+
+
+# --- % is left ALONE by fold_to_ascii; only the narrow %+lowercase-s collision is rejected --
+@pytest.mark.parametrize("s", ["50%", "50% off", "up 30% today", "50%."])
+def test_text_percent_survives_unrewritten(monkeypatch, s):
+    # Owner decision: "50%" must type as "50%", never "50 percent". Confirms both that the
+    # literal '%' is still present in what's actually sent (no silent rewording back to the
+    # word "percent"), and -- via the round-trip helpers above -- that it reaches the device
+    # exactly as written.
+    run = FakeRun(_ok())
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    Adb(serial="pixel").text(s)
+
+    sent = run.argv[0][6]
+    assert "%" in sent
+    assert "percent" not in sent
+    assert android_unescape(shell_strip(sent)) == s
+
+
+def test_text_uppercase_percent_s_is_safe_and_survives(monkeypatch):
+    # Android's sendText() comparison is against lowercase 's' only -- '%S' does NOT collide.
+    run = FakeRun(_ok())
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    Adb(serial="pixel").text("50%S accuracy")
+
+    sent = run.argv[0][6]
+    assert android_unescape(shell_strip(sent)) == "50%S accuracy"
+
+
+@pytest.mark.parametrize("s", ["100%sure thing", "20%stake in it", "%s", "hey 50%s off"])
+def test_text_percent_lowercase_s_collision_raises_and_sends_nothing(monkeypatch, s):
+    # The one real collision: a literal '%' directly against a following lowercase 's' is
+    # undeliverable as written (it silently becomes a space and eats both characters on the
+    # real device). Fail loudly instead of silently mistyping -- nothing is sent at all.
+    run = FakeRun(_ok())
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    with pytest.raises(AdbError) as exc:
+        Adb(serial="pixel").text(s)
+
+    assert run.calls == []                             # NO adb command issued at all
+    msg = str(exc.value)
+    assert "'%s'" in msg
+    assert "not typed" in msg.lower()
 
 
 def test_tap_is_single_fork_tap(monkeypatch):

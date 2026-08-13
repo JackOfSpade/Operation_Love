@@ -53,17 +53,49 @@ _TABLES = {
         "run_id STRING, app STRING, created_at TIMESTAMP, decision STRING, "
         "score FLOAT64, source STRING"
     ),
-    "openers": "run_id STRING, app STRING, created_at TIMESTAMP, model STRING, opener STRING, referenced STRING",
+    # `angle` is the model's own free-text description of what the opener is doing (a guess, a
+    # tease, a connection between two things she wrote). Telemetry only, never read back at
+    # runtime; it exists so "which opener shapes correlate with matches" becomes an answerable
+    # query. See _MIGRATIONS below — this line alone does NOT add it to the live table.
+    #
+    # `item_description` is the model's own short description of the ITEM it picked to write
+    # about and to like (ops/OPENER-REDESIGN.md 5.7). Deliberately NOT a duplicate of
+    # `referenced`: that column is the DETAIL the opener reacts to (and what the redundancy
+    # monitor compares the opener against), this one says what the item IS -- a photo, a
+    # written prompt -- which is the coarse class doc 5.8's pre-flight cross-check works on.
+    # Written in both auto and observe, always. Same _MIGRATIONS caveat as `angle`.
+    "openers": ("run_id STRING, app STRING, created_at TIMESTAMP, model STRING, opener STRING, "
+                "referenced STRING, angle STRING, item_description STRING"),
+    # Every REJECTED opener attempt (OpenerParseError), not just the successes `openers`
+    # above holds -- see opener/service.py's OpenerParseError handling and opener.py's
+    # OpenerParseError docstring for reason_code/raw_opener semantics. `attempt` is the
+    # 1-based retry count within maybe_opener()'s per-profile retry loop, so a run of
+    # consecutive rejections that exhausted the loop (service.py's max_attempts) is
+    # queryable as clearly as one that succeeded on the first retry.
+    "opener_rejections": (
+        "run_id STRING, app STRING, created_at TIMESTAMP, model STRING, attempt INT64, "
+        "reason_code STRING, reason STRING, raw_opener STRING"
+    ),
     "spend": (
         "run_id STRING, created_at TIMESTAMP, model STRING, input_tokens INT64, output_tokens INT64, "
         "cache_read_tokens INT64, cache_write_tokens INT64, cost_usd FLOAT64"
     ),
 }
 
+# Every column added to a table AFTER that table first shipped needs BOTH an entry in _TABLES
+# above and a line here, because the two reach different databases. The _TABLES column list is
+# only ever applied by CREATE TABLE IF NOT EXISTS, which is a silent no-op against a table that
+# already exists — so on its own it reaches new/empty projects only. The live project's tables
+# already exist and already hold real rows, so the ALTER below is the ONLY thing that puts the
+# column there, and without it the first insert carrying the new field would be rejected as
+# "no such field" in production while passing every local test. Additive + nullable in both
+# directions, so old rows simply read back NULL.
 _MIGRATIONS = (
     "ALTER TABLE `{labels}` ADD COLUMN IF NOT EXISTS profile_id STRING;",
     "ALTER TABLE `{decisions}` ADD COLUMN IF NOT EXISTS source STRING;",
     "ALTER TABLE `{profiles}` ADD COLUMN IF NOT EXISTS capture_truncated BOOL;",
+    "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS angle STRING;",
+    "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS item_description STRING;",
 )
 
 
@@ -354,13 +386,28 @@ class BigQueryStore:
             })
             self._maybe_flush("decisions")
 
-    def record_opener(self, run_id, app, model, opener, referenced):
+    def record_opener(self, run_id, app, model, opener, referenced, angle="",
+                      item_description=""):
+        # `angle` and `item_description`: telemetry only (see the openers entry in _TABLES).
+        # Both defaulted to "" so a caller that predates either still writes a valid row rather
+        # than omitting the field. The live table already holds real rows, so each column got
+        # to production via _MIGRATIONS, not via CREATE TABLE IF NOT EXISTS.
         with self._lock:
             self._buf["openers"].append({
                 "run_id": run_id, "app": app, "created_at": _now(),
-                "model": model, "opener": opener, "referenced": referenced,
+                "model": model, "opener": opener, "referenced": referenced, "angle": angle,
+                "item_description": item_description,
             })
             self._maybe_flush("openers")
+
+    def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener):
+        with self._lock:
+            self._buf["opener_rejections"].append({
+                "run_id": run_id, "app": app, "created_at": _now(), "model": model,
+                "attempt": int(attempt), "reason_code": reason_code, "reason": reason,
+                "raw_opener": raw_opener,
+            })
+            self._maybe_flush("opener_rejections")
 
     def record_spend(self, run_id, model, usage: Usage, cost):
         # cost is None when the call's price couldn't be determined (e.g. no

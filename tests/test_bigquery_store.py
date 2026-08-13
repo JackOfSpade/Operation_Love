@@ -1,4 +1,5 @@
 """BigQueryStore tests with a fake client — no google SDK or network required."""
+import inspect
 from datetime import datetime, timezone
 
 from operation_love.costing import Usage
@@ -121,6 +122,26 @@ def _store(client, flush_every=25):
                          client=client, storage_client=_FakeStorage(), ensure=False)
 
 
+def _declared_columns(table):
+    """The column NAMES _TABLES declares for `table`, in declaration order.
+
+    Every type in this schema is a single token (STRING / INT64 / BOOL / TIMESTAMP /
+    FLOAT64) or ARRAY<FLOAT64>, none of which contain a comma, so splitting the column
+    spec on ',' and taking each declaration's first whitespace-separated token is exact.
+    (It would not be if a nested STRUCT<a INT64, b INT64> ever appeared here.)"""
+    from operation_love.ranker.bigquery_store import _TABLES
+
+    return [col.strip().split()[0] for col in _TABLES[table].split(",")]
+
+
+def _declared_tables():
+    """Every table name _TABLES declares — i.e. exactly the keys _ensure_tables formats the
+    `{table}` placeholders in _MIGRATIONS against."""
+    from operation_love.ranker.bigquery_store import _TABLES
+
+    return list(_TABLES)
+
+
 def test_bigquery_store_conforms_to_store_protocol():
     assert isinstance(_store(_FakeBQ()), Store)
 
@@ -167,6 +188,222 @@ def test_record_decision_includes_source():
     row = client.inserted["proj.ds.decisions"][0]
     assert row["source"] == "manual"
     assert row["decision"] == "like" and row["score"] == 0.91
+
+
+def test_record_opener_buffers_and_flushes_the_expected_row_including_angle():
+    referenced = "Prompt card: two truths and a lie about 30 countries, cilantro, and a pop star"
+    angle = "guess which of her three claims is the lie and commit to it"
+    client = _FakeBQ()
+    s = _store(client, flush_every=2)
+
+    s.record_opener("r", "hinge", "gemini-x", "The cilantro one is the lie, I can feel it.",
+                    referenced, angle)
+    assert "proj.ds.openers" not in client.inserted          # buffered, not yet sent
+    s.record_opener("r", "hinge", "gemini-x", "second opener", "second referenced", "tease")
+
+    row = client.inserted["proj.ds.openers"][0]              # flushed at threshold
+    assert row["run_id"] == "r" and row["app"] == "hinge" and row["model"] == "gemini-x"
+    assert row["opener"] == "The cilantro one is the lie, I can feel it."
+    assert row["referenced"] == referenced
+    # `angle` is the model's own free-text words for what the opener is DOING. It is stored
+    # ALONGSIDE (never folded into) `referenced` -- what the opener is reacting to -- and
+    # `opener` -- the text actually sent -- because they answer three different questions.
+    # Only this column makes "which opener shapes correlate with matches" an answerable query,
+    # and it is telemetry only: nothing reads it back at runtime.
+    assert row["angle"] == angle
+    assert row["angle"] != row["referenced"] and row["angle"] != row["opener"]
+
+
+def test_record_opener_defaults_angle_to_empty_string_and_never_omits_the_field():
+    """A caller that predates `angle` (or a model response that carried none) must still write
+    a COMPLETE row: the key is always present holding "", never absent. An absent key inserts
+    as NULL, which is indistinguishable from the rows written before the column existed --
+    "this run produced no angle" and "this row predates angle" are different facts and must
+    stay separable in the system of record."""
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.record_opener("r", "hinge", "gemini-x", "Based on that ridgeline I am going to guess Norway.",
+                    "Photo of her on a ridge with mountains behind her")
+
+    row = client.inserted["proj.ds.openers"][0]
+    assert "angle" in row
+    assert row["angle"] == ""
+    # Same rule for item_description, and for exactly the same reason: absent-vs-"" is the
+    # difference between "this row predates the column" and "this generation produced none".
+    assert "item_description" in row
+    assert row["item_description"] == ""
+
+
+def test_record_opener_writes_item_description_alongside_referenced_and_angle():
+    """ops/OPENER-REDESIGN.md 5.7: `item_description` describes the ITEM the model picked,
+    `referenced` is the DETAIL the opener reacts to, and the doc is explicit that neither
+    replaces the other -- dropping `referenced` would blank the telemetry column and take the
+    redundancy monitor (3.7) dark. So the row must carry all three as separate values."""
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.record_opener("r", "hinge", "gemini-x", "The cilantro one is the lie, I can feel it.",
+                    "her two truths and a lie, the cilantro claim",
+                    "calling the lie and committing to it",
+                    "a written prompt card, two truths and a lie")
+
+    row = client.inserted["proj.ds.openers"][0]
+    assert row["item_description"] == "a written prompt card, two truths and a lie"
+    assert row["referenced"] == "her two truths and a lie, the cilantro claim"
+    assert row["angle"] == "calling the lie and committing to it"
+    # Three columns answering three different questions -- what the item IS, what the opener
+    # is reacting to, and what the opener is doing. Any two of them being equal would mean the
+    # positional call site had bound the wrong argument.
+    assert len({row["item_description"], row["referenced"], row["angle"]}) == 3
+
+
+def test_record_opener_writes_exactly_the_columns_the_openers_table_declares():
+    """Structural guard against the two ways this table silently drifts: writing a field the
+    table does not declare (BigQuery rejects the insert as "no such field" and, with
+    skip_invalid_rows unset, loses the WHOLE batch with it), or declaring a column nothing ever
+    populates. Key ORDER is deliberately not pinned: rows go out as JSON objects, so their key
+    order carries no meaning to BigQuery and pinning it would assert something untrue."""
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.record_opener("r", "hinge", "gemini-x", "hi", "her ridgeline photo", "guess")
+
+    assert "angle" in _declared_columns("openers")           # the column exists to be written
+    assert set(client.inserted["proj.ds.openers"][0]) == set(_declared_columns("openers"))
+
+
+def test_record_opener_signature_stays_positional_compatible_with_the_store_protocol():
+    """`angle` and `item_description` are TRAILING with "" defaults in both the Store Protocol
+    and this backend, so every existing five-positional-argument caller (and every test double
+    implementing the Protocol) keeps working untouched. A backend that inserted either
+    parameter anywhere earlier would silently bind it to `opener`/`referenced` at those call
+    sites and write garbage to the system of record rather than failing loudly.
+
+    ORDER between the two trailing parameters is pinned, not incidental: opener/service.py
+    passes both POSITIONALLY (`record_opener(..., referenced, angle, item_description)`), so
+    swapping them here would file every angle under item_description and vice versa, in the
+    system of record, with no error anywhere."""
+    params = inspect.signature(BigQueryStore.record_opener).parameters
+    assert list(params) == ["self", "run_id", "app", "model", "opener", "referenced", "angle",
+                            "item_description"]
+    assert params["angle"].default == ""
+    assert params["item_description"].default == ""
+    assert list(params) == list(inspect.signature(Store.record_opener).parameters)
+
+
+def test_ensure_tables_declares_angle_on_the_openers_create_table():
+    """The CREATE half of the two-part column rollout: this is what reaches a NEW/empty
+    project, where the table does not exist yet. It is NOT what fixes the live project -- see
+    test_ensure_tables_runs_openers_angle_migration for that half. Both are required."""
+    client = _FakeBQ()
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+
+    ddl = "\n".join(client.queries)
+    # Match the openers CREATE statement specifically, not the whole script: shared column
+    # names like "run_id STRING" appear in every table, so a substring test against the full
+    # script would pass even if the openers column list were missing them entirely.
+    create = next(line for line in ddl.splitlines()
+                  if line.startswith("CREATE TABLE IF NOT EXISTS `proj.ds.openers`"))
+    for col in ("run_id STRING", "app STRING", "created_at TIMESTAMP", "model STRING",
+                "opener STRING", "referenced STRING", "angle STRING",
+                "item_description STRING"):
+        assert col in create
+
+
+def test_ensure_tables_runs_openers_angle_migration():
+    """The production-critical half. The live `openers` table ALREADY EXISTS and already holds
+    real rows from live runs, so CREATE TABLE IF NOT EXISTS is a silent no-op against it: the
+    ALTER below is the ONLY thing that ever puts `angle` on the production table. Without it,
+    the first insert carrying the field is rejected as "no such field: angle" in production --
+    taking the whole batch with it, since skip_invalid_rows is unset -- while every local test
+    (which always creates the table fresh) keeps passing. Pin BOTH halves: that the migration
+    is declared, and that it actually reaches the script _ensure_tables submits."""
+    from operation_love.ranker.bigquery_store import _MIGRATIONS
+
+    assert "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS angle STRING;" in _MIGRATIONS
+
+    client = _FakeBQ()
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+    ddl = "\n".join(client.queries)
+    assert "ALTER TABLE `proj.ds.openers` ADD COLUMN IF NOT EXISTS angle STRING;" in ddl
+
+    # Ordering matters inside the single multi-statement script: an ALTER submitted before its
+    # table's CREATE would fail against a brand-new project.
+    assert (ddl.index("CREATE TABLE IF NOT EXISTS `proj.ds.openers`")
+            < ddl.index("ALTER TABLE `proj.ds.openers`"))
+
+    # And every declared migration reaches the script, not just this one -- so a future column
+    # added to _MIGRATIONS can't be left unapplied by an _ensure_tables that stopped looping.
+    tids = {name: f"proj.ds.{name}" for name in _declared_tables()}
+    for stmt in _MIGRATIONS:
+        assert stmt.format(**tids) in ddl
+
+
+def test_ensure_tables_runs_openers_item_description_migration():
+    """The same production-critical half for `item_description` (ops/OPENER-REDESIGN.md 5.7).
+    Pinned SEPARATELY from angle's migration rather than folded into it: the live `openers`
+    table holds real rows, so CREATE TABLE IF NOT EXISTS never touches it, and a column that
+    exists only in _TABLES is a column that does not exist in production. The first insert
+    carrying it would then be rejected as "no such field: item_description" and take the whole
+    batch with it (skip_invalid_rows is unset), while every local test -- which always creates
+    the table fresh -- keeps passing."""
+    from operation_love.ranker.bigquery_store import _MIGRATIONS
+
+    assert ("ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS item_description STRING;"
+            in _MIGRATIONS)
+
+    client = _FakeBQ()
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+    ddl = "\n".join(client.queries)
+    assert ("ALTER TABLE `proj.ds.openers` ADD COLUMN IF NOT EXISTS item_description STRING;"
+            in ddl)
+    assert (ddl.index("CREATE TABLE IF NOT EXISTS `proj.ds.openers`")
+            < ddl.index("ADD COLUMN IF NOT EXISTS item_description"))
+
+
+def test_ensure_tables_creates_opener_rejections_table():
+    """opener_rejections persists every REJECTED opener attempt (OpenerParseError), not just
+    the successes the `openers` table holds -- see ranker/bigquery_store.py's _TABLES entry
+    and opener/service.py's OpenerParseError handling."""
+    client = _FakeBQ()
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+    ddl = "\n".join(client.queries)
+    assert "CREATE TABLE IF NOT EXISTS `proj.ds.opener_rejections`" in ddl
+    for col in ("run_id STRING", "app STRING", "created_at TIMESTAMP", "model STRING",
+                "attempt INT64", "reason_code STRING", "reason STRING", "raw_opener STRING"):
+        assert col in ddl
+
+
+def test_record_opener_rejection_buffers_and_flushes_the_expected_row():
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.record_opener_rejection("r", "hinge", "gemini-x", 2, "scaffolding",
+                              "Gemini's opener contained scaffolding text", "Here's: hi")
+
+    row = client.inserted["proj.ds.opener_rejections"][0]
+    assert row["run_id"] == "r" and row["app"] == "hinge" and row["model"] == "gemini-x"
+    assert row["attempt"] == 2 and row["reason_code"] == "scaffolding"
+    assert row["reason"] == "Gemini's opener contained scaffolding text"
+    assert row["raw_opener"] == "Here's: hi"
+
+
+def test_record_opener_rejection_accepts_none_raw_opener_and_reason_code():
+    """no_text/max_tokens rejections carry no candidate opener text at all -- raw_opener (and,
+    for an external caller that doesn't classify a failure, reason_code) may be None; this
+    must serialize fine as a NULLable column, not raise."""
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.record_opener_rejection("r", "hinge", "gemini-x", 1, None, "no text content", None)
+
+    row = client.inserted["proj.ds.opener_rejections"][0]
+    assert row["reason_code"] is None and row["raw_opener"] is None
 
 
 def test_count_today_counts_only_auto_decisions():

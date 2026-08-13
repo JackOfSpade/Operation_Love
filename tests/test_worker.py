@@ -5,8 +5,18 @@ import time
 import pytest
 
 from operation_love.costing import CostTracker, ModelPricing, Usage
-from operation_love.drivers.base import DatingAppDriver, DriverClosed
-from operation_love.opener.opener import GeminiAPIError, OpenerError, OpenerParseError, OpenerResult
+from operation_love.drivers.base import (DatingAppDriver, DriverClosed,
+                                        ItemTargetingError)
+from operation_love.opener.opener import (
+    FIRST_ITEM_INDEX,
+    INDEX_SPACE_MODEL_ITEMS,
+    INDEX_SPACE_PROFILE_PHOTOS,
+    ITEM_INDEX_ABSENT,
+    GeminiAPIError,
+    OpenerError,
+    OpenerParseError,
+    OpenerResult,
+)
 from operation_love.opener.service import OpenerPick, OpenerService
 from operation_love.limits import RateLimiter
 from operation_love.perception.capture import Profile
@@ -27,7 +37,7 @@ class FakeDriver(DatingAppDriver):
         # stays a bare list of opener texts so every pre-existing `driver.likes == [...]`
         # assertion in this file keeps working unchanged).
         self.like_item_indexes = []
-        self.like_anchored_openers = []
+        self.like_model_item_indexes = []
 
     def open_session(self): self.opened = True
     def next_profile(self):
@@ -36,15 +46,20 @@ class FakeDriver(DatingAppDriver):
         p = self.cards[self.i]
         self.i += 1
         return p
-    # anchored_opener: the driver's repair-hatch callback for when item_index turns out wrong
-    # AT SWIPE TIME (see worker.py's _anchored_opener docstring). FakeDriver never invokes it
-    # itself -- it only RECORDS what it received, exactly like self.likes/self.like_item_indexes
-    # -- so a test can both assert whether one was handed over and call it directly to exercise
-    # its behavior (see the ANCHORED_OPENER tests near the end of this file).
-    def like(self, opener=None, item_index=0, *, anchored_opener=None):
+    # No `anchored_opener` keyword, deliberately: the driver's repair hatch -- a callback that
+    # re-asked the model for text about whatever item the tap had actually landed on -- was
+    # removed on 2026-08-12 (ops/OPENER-REDESIGN.md 5.6: rewriting the opener to match whatever
+    # we hit is a substitution, and a targeting miss is now a stop). This signature tracks
+    # base.Driver.like exactly, so a worker that started passing one again would fail here.
+    def like(self, opener=None, item_index=0, *, model_item_index=None):
         self.likes.append(opener)
         self.like_item_indexes.append(item_index)
-        self.like_anchored_openers.append(anchored_opener)
+        # The OTHER index space, recorded separately for the same reason `like_item_indexes` is
+        # separate from `likes`: since doc 5.5's counting navigation was wired the worker hands
+        # a model item number straight through as `model_item_index` rather than converting it,
+        # and a test that cannot see which of the two arguments was used cannot tell a navigated
+        # like from a capture-order one.
+        self.like_model_item_indexes.append(model_item_index)
     def dislike(self): self.dislikes += 1
     def out_of_profiles(self): return self.i >= len(self.cards)
     def close(self): self.closed = True
@@ -65,7 +80,7 @@ class RaisingLikeDriver(FakeDriver):
         super().__init__(n)
         self.snapshotted = []
 
-    def like(self, opener=None, item_index=0, *, anchored_opener=None):
+    def like(self, opener=None, item_index=0, *, model_item_index=None):
         raise RuntimeError("like did not land")
 
     def snapshot_failure(self, exc):
@@ -97,20 +112,36 @@ class FakeOpenerClient:
         self.cost_tokens = cost_tokens
         self.should_stops = []   # records should_stop from every call -- see BUG 1's tests
         self.anchors = []        # records anchor from every call -- see the ANCHORED_OPENER tests
-    def generate(self, profile, style, retry_hint="", *, anchor=None, should_stop=None,
+        self.items = []          # records items from every call -- doc 5.2's crop request shape
+    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+                 should_stop=None,
                  skip_models=frozenset()):
         self.calls += 1
         self.should_stops.append(should_stop)
         self.anchors.append(anchor)
+        self.items.append(items)
+        # item_index/index_space: a REALISTIC pick (the legacy frame shape's first item, in
+        # the translatable profile-photos space), not the OpenerResult dataclass's own
+        # ITEM_INDEX_ABSENT/INDEX_SPACE_MODEL_ITEMS defaults. Those defaults exist so a
+        # careless construction fails safe (see OpenerResult.index_space's own docstring),
+        # but "fails safe" now means the AUTO-loop refuses to call driver.like() at all (see
+        # the INDEX SPACES section below) -- which would silently turn every test in this
+        # file that just wants "a like happens, with an opener" into an untargeted-item stop
+        # unrelated to what it's actually testing. Tests that DO want an absent/untranslatable
+        # index construct their own OpenerPick directly (see _SequencedOpenerService) instead
+        # of going through this fake.
         return OpenerResult(opener=f"hi {self.calls}", referenced="r",
-                            usage=Usage(input_tokens=self.cost_tokens), model="gemini-test-model")
+                            usage=Usage(input_tokens=self.cost_tokens), model="gemini-test-model",
+                            item_index=FIRST_ITEM_INDEX, index_space=INDEX_SPACE_PROFILE_PHOTOS)
 
 
 class SlowOpenerClient(FakeOpenerClient):
-    def generate(self, profile, style, retry_hint="", *, anchor=None, should_stop=None,
+    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+                 should_stop=None,
                  skip_models=frozenset()):
         time.sleep(0.05)
-        return super().generate(profile, style, retry_hint, anchor=anchor, should_stop=should_stop)
+        return super().generate(profile, style, retry_hint, anchor=anchor, items=items,
+                                should_stop=should_stop)
 
 
 # --- opener clients that fail in the PER-CALL (not global-exhaustion) ways
@@ -127,7 +158,8 @@ class ParseErrorOpenerClient:
     def __init__(self):
         self.calls = 0
         self.retry_hints = []
-    def generate(self, profile, style, retry_hint="", *, anchor=None, should_stop=None,
+    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+                 should_stop=None,
                  skip_models=frozenset()):
         self.calls += 1
         self.retry_hints.append(retry_hint)
@@ -140,7 +172,8 @@ class OpenerErrorOpenerClient:
     corrupt captured photo that couldn't be decoded). NOT retried by maybe_opener()."""
     def __init__(self):
         self.calls = 0
-    def generate(self, profile, style, retry_hint="", *, anchor=None, should_stop=None,
+    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+                 should_stop=None,
                  skip_models=frozenset()):
         self.calls += 1
         raise OpenerError("Gemini opener: photo index 0 could not be decoded")
@@ -151,7 +184,8 @@ class BadRequestOpenerClient:
     disable the service, only skip this one profile's opener."""
     def __init__(self):
         self.calls = 0
-    def generate(self, profile, style, retry_hint="", *, anchor=None, should_stop=None,
+    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+                 should_stop=None,
                  skip_models=frozenset()):
         self.calls += 1
         raise GeminiAPIError(400, "INVALID_ARGUMENT", "bad image or request")
@@ -162,7 +196,8 @@ class TransientOpenerClient:
     _TRANSIENT_LATCH_THRESHOLD, so this alone must not disable the service."""
     def __init__(self):
         self.calls = 0
-    def generate(self, profile, style, retry_hint="", *, anchor=None, should_stop=None,
+    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+                 should_stop=None,
                  skip_models=frozenset()):
         self.calls += 1
         raise RuntimeError("connection reset")
@@ -171,6 +206,7 @@ class TransientOpenerClient:
 class FakeStore:
     def __init__(self):
         self.decisions, self.labels, self.profiles, self.spend, self.openers = [], [], [], [], []
+        self.rejections = []
     def load_labels(self): return []
     def record_profile(self, run_id, app, profile_id, liked, source="manual", **k):
         self.profiles.append((app, profile_id, liked, k))
@@ -179,7 +215,20 @@ class FakeStore:
         self.labels.append((app, profile_id, liked, k))
     def record_decision(self, run_id, app, decision, score, source="auto"):
         self.decisions.append((app, decision, source))
-    def record_opener(self, run_id, app, model, opener, referenced): self.openers.append(opener)
+    # Signature mirrors ranker/store.py's real record_opener EXACTLY, both trailing
+    # parameters included: angle="" (doc 3.4/3.5: the model's free-text account of what its
+    # opener is doing) and item_description="" (doc 5.7: the model's description of the ITEM
+    # it picked to write about and to like). Deliberately spelled out rather than *a:
+    # the service persists inside a non-fatal try/except, so a fake that drifts from the
+    # real signature does not raise here -- it prints "Warning: failed to persist opener
+    # spend record" and leaves self.openers empty, which surfaces as an unrelated-looking
+    # count assertion failing further down. Keeping the parameters explicit means the
+    # mismatch is at least visible in the traceback when it happens again.
+    def record_opener(self, run_id, app, model, opener, referenced, angle="",
+                      item_description=""):
+        self.openers.append(opener)
+    def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener):
+        self.rejections.append((app, model, attempt, reason_code, reason, raw_opener))
     def record_spend(self, run_id, model, usage, cost): self.spend.append(cost)
     def count_today(self, app):
         return sum(1 for row in self.decisions if row[0] == app and row[2] == "auto")
@@ -595,6 +644,10 @@ def test_auto_mode_stop_reason_is_visible_in_status_when_opener_budget_exhausts(
     app = status.app_view("bumble")["app"]
     assert app["state"] == "stopped"
     assert app["stop_reason"] == "run budget reached"
+    # stop_kind disambiguates stop_reason's SOURCE now that the deck-blocked check (added
+    # 2026-08-11, see the DECK_BLOCKED section below) also populates stop_reason -- an
+    # OpenerService-triggered stop must publish "opener", not the new "deck_blocked".
+    assert app["stop_kind"] == "opener"
 
 
 # ---------------------------------------------------------------------------------------
@@ -695,6 +748,11 @@ def test_auto_mode_stop_reason_names_the_cause_when_every_retry_attempt_fails():
     app = status.app_view("bumble")["app"]
     assert app["state"] == "stopped"
     assert "bad JSON in response body" in app["stop_reason"]
+    # See the matching stop_kind comment on
+    # test_auto_mode_stop_reason_is_visible_in_status_when_opener_budget_exhausts above --
+    # this is the OTHER opener-triggered stop path (retry exhaustion, not budget), and it
+    # must publish the same "opener" stop_kind, not the new "deck_blocked".
+    assert app["stop_kind"] == "opener"
 
 
 def test_worker_skips_openers_when_driver_declines_even_through_opener_failures():
@@ -773,6 +831,175 @@ def test_observe_mode_stop_reason_is_visible_in_status_when_opener_exhausts():
     app = status.app_view("bumble")["app"]
     assert app["state"] == "stopped"
     assert app["stop_reason"] == reason
+    # Same stop_kind disambiguation as the auto-mode pins above -- an OpenerService stop
+    # discovered mid-observe-session must publish "opener", not the new "deck_blocked".
+    assert app["stop_kind"] == "opener"
+
+
+# ---------------------------------------------------------------------------------------
+# DECK_BLOCKED: worker.py's blocked-deck check, added 2026-08-11 after THE INCIDENT (see
+# data/hinge_debug/run_20260811_011416) -- Hinge's own "you're out of free likes for today"
+# Hinge+ paywall refused a like the owner sent by hand, and observe mode hung inside
+# wait_for_decision(timeout=None) for 2.5 minutes polling for a decision that could never
+# come, because nothing recognized the screen and there was no bail-out at all. Both loops
+# now call driver.blocked_reason() every iteration, BEFORE out_of_profiles() (the more
+# specific, more actionable answer -- see worker.py's comment at each call site), and stop
+# the run as state="blocked"/stop_kind="deck_blocked" the moment it returns a string. This
+# is a GRACEFUL stop, not the HALT-on-unexpected error path: the phone is in a perfectly
+# normal state, nothing is broken, and observe mode's passivity rule means the screen must
+# be left exactly as found -- never tapped, swiped, or typed into to clear it.
+# ---------------------------------------------------------------------------------------
+
+_PAYWALL_REASON = "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+
+
+class _BlockedDriver(FakeDriver):
+    """Reports a blocked deck (Hinge's out-of-likes paywall stand-in) from the very first
+    loop iteration. `current_profile`/`wait_for_decision` raise if called at all -- the
+    blocked check must short-circuit BEFORE any capture or decision-wait is even attempted,
+    since the paywall is a purchase screen and observe mode must never touch it."""
+    def __init__(self, n, reason=_PAYWALL_REASON):
+        super().__init__(n)
+        self.reason = reason
+        self.blocked_calls = 0
+
+    def blocked_reason(self):
+        self.blocked_calls += 1
+        return self.reason
+
+    def current_profile(self, *, should_stop=None):
+        raise AssertionError("must not capture a profile once the deck is reported blocked")
+
+    def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
+        raise AssertionError("must not wait for a decision once the deck is reported blocked")
+
+    def render_busy(self, message=None):
+        pass
+
+
+def test_observe_mode_stops_as_blocked_when_driver_reports_a_blocked_deck():
+    """THE regression test for THE INCIDENT's D2 fix: a driver whose blocked_reason()
+    reports something on screen must stop observe mode immediately -- state="blocked",
+    stop_reason=<the driver's own operator-facing sentence, verbatim>, stop_kind=
+    "deck_blocked" -- and record NO decision/label, since nothing was ever captured or
+    decided on. Before this check existed there was no bail-out at all; the paywall just
+    hung the run until the owner pressed Stop by hand."""
+    from operation_love.status import RunStatus
+
+    driver = _BlockedDriver(1)
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    Worker("bumble", driver, FakeDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] == "blocked"
+    assert app["stop_reason"] == _PAYWALL_REASON
+    assert app["stop_kind"] == "deck_blocked"
+    assert store.decisions == [] and store.labels == [] and store.profiles == []
+    assert driver.closed
+
+
+def test_auto_mode_stops_as_blocked_and_never_acts_when_driver_reports_a_blocked_deck():
+    """Same incident, AUTO mode: a driver reporting a blocked deck must stop the same way
+    (state="blocked", stop_kind="deck_blocked") AND -- the extra AUTO-specific requirement
+    -- must never issue a single like/dislike. An autonomous loop that kept swiping past an
+    unrecognized paywall would be the worse failure mode; this pins that it doesn't."""
+    from operation_love.status import RunStatus
+
+    driver = _BlockedDriver(3)
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] == "blocked"
+    assert app["stop_reason"] == _PAYWALL_REASON
+    assert app["stop_kind"] == "deck_blocked"
+    assert driver.likes == [] and driver.dislikes == 0    # no autonomous action into a paywall
+    assert store.decisions == []
+    assert driver.closed
+
+
+class _BlockedAndEmptyDriver(FakeDriver):
+    """Reports BOTH a blocked deck AND an empty one -- the realistic case, since Hinge's
+    paywall covers the deck entirely, so out_of_profiles' own perception can't find any
+    cards either. blocked_reason() must win: it is the more specific, more actionable
+    answer (worker.py's own comment at both call sites), not whichever check happens to be
+    written first in the loop."""
+    def __init__(self):
+        super().__init__(0)             # genuinely no cards -- out_of_profiles is also True
+        self.reason = _PAYWALL_REASON
+
+    def blocked_reason(self):
+        return self.reason
+
+
+def test_observe_mode_prefers_blocked_over_out_of_profiles_when_driver_reports_both():
+    from operation_love.status import RunStatus
+
+    driver = _BlockedAndEmptyDriver()
+    assert driver.out_of_profiles() is True         # sanity: the empty-deck condition really holds
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    Worker("bumble", driver, FakeDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] == "blocked"                 # NOT "out_of_profiles"
+    assert app["stop_reason"] == _PAYWALL_REASON
+    assert app["stop_kind"] == "deck_blocked"
+    assert driver.closed
+
+
+def test_auto_mode_prefers_blocked_over_out_of_profiles_when_driver_reports_both():
+    from operation_love.status import RunStatus
+
+    driver = _BlockedAndEmptyDriver()
+    assert driver.out_of_profiles() is True          # sanity: the empty-deck condition really holds
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] == "blocked"                  # NOT "out_of_profiles"
+    assert app["stop_reason"] == _PAYWALL_REASON
+    assert app["stop_kind"] == "deck_blocked"
+    assert driver.likes == [] and driver.dislikes == 0
+    assert driver.closed
+
+
+def test_auto_mode_unaffected_when_driver_explicitly_reports_no_blocked_deck():
+    """Guards against the new check accidentally halting a normal run: a driver whose
+    blocked_reason() is explicitly present (not merely inherited-and-never-called) but
+    always answers None -- "nothing standing between us and the deck" -- must swipe the
+    whole deck exactly as before, with blocked_reason() polled once per loop iteration
+    (proving the check genuinely runs every time) but never once tripping it."""
+    class ExplicitlyUnblockedDriver(FakeDriver):
+        def __init__(self, n):
+            super().__init__(n)
+            self.blocked_calls = 0
+
+        def blocked_reason(self):
+            self.blocked_calls += 1
+            return None
+
+    driver = ExplicitlyUnblockedDriver(3)
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("dislike"), svc, store).run()
+
+    assert driver.dislikes == 3 and driver.likes == []
+    # Polled every iteration: 3 cards processed + 1 final iteration where out_of_profiles()
+    # finally reads True -- 4 calls, none of which ever returned anything but None.
+    assert driver.blocked_calls == 4
+    assert driver.closed
 
 
 def test_worker_stops_at_per_run_like_budget():
@@ -1415,23 +1642,46 @@ def test_auto_loop_passes_stop_event_is_set_as_should_stop_to_maybe_opener():
     assert client.should_stops == [w.stop_event.is_set]
 
 
-class _ObserveLikeIntentDriver(FakeDriver):
-    """A Hinge-style observe driver: exposes the post-heart comment-sheet suggestion hook
-    (supports_observe_like_intent) and calls it exactly like the real driver does -- TWO
-    positional args, active then anchor -- so _wait_for_observed_decision's on_like_intent
-    callback (the one that calls maybe_opener()) actually runs with a real-shaped anchor,
-    not the implicit anchor=None an old-style single-arg call would fall back to.
+# Sentinel for "this test did not override the pick", distinct from None (which is a real
+# maybe_opener answer: "no opener for this profile").
+_UNSET = object()
 
-    `anchor` defaults to a nonempty sentinel, matching the common case where the driver DID
-    manage to capture the live like-sheet frame; pass anchor=None to model the rarer case
-    where it could not (see the ANCHORED_OPENER/ANCHOR test sections for both)."""
+# The numbered item crops an enumerating capture hands over (ops/OPENER-REDESIGN.md 5.2/5.7).
+# Doc 5.9's inversion means OBSERVE sends these too, so every observe fake below has to carry
+# them -- a Profile with no items is now a Profile no suggestion can be made for, on purpose.
+_OBSERVE_ITEMS = (b"item-1-crop", b"item-2-crop", b"item-3-crop")
+
+
+def _observe_card(index=0):
+    return Profile(photos=[b"x"], bio=f"bio{index}", name="Ada", items=_OBSERVE_ITEMS,
+                   item_context=(b"vitals-crop",))
+
+
+class _ObserveLikeIntentDriver(FakeDriver):
+    """A Hinge-shaped observe driver for doc 5.9's INVERTED flow.
+
+    It exposes the comment-sheet hook (supports_observe_like_intent) and calls it exactly like
+    the real driver does -- TWO positional args, active then anchor -- and it enumerates, i.e.
+    its Profile carries numbered item crops, because since the inversion that is what a
+    suggestion is made FROM. It also implements `observe_item_mismatch`, the driver-side check
+    the worker runs the human's tap through; `mismatch` is what that returns ("" = the human
+    opened the item the suggestion names).
+
+    `gate`, when set, is called at the top of wait_for_decision -- the fake equivalent of a human
+    who waits for the hub before tapping. Without it the test would race the suggestion thread.
+    `anchor=None` models the driver failing to capture the live sheet frame, which under the
+    inversion is no longer "generate blind" but "cannot check what you opened"."""
     supports_observe_like_intent = True
     accepts_opener = True
 
-    def __init__(self, anchor=b"the-actual-like-sheet-frame"):
+    def __init__(self, anchor=b"the-actual-like-sheet-frame", *, mismatch="", gate=None):
         super().__init__(1)
+        self.cards = [_observe_card()]
         self._served = False
         self.anchor = anchor
+        self.mismatch = mismatch
+        self.gate = gate
+        self.checked = []          # every (sheet, model_item_index) the worker asked about
 
     def out_of_profiles(self):
         return self._served
@@ -1443,28 +1693,58 @@ class _ObserveLikeIntentDriver(FakeDriver):
     def render_busy(self, message=None):
         pass
 
+    def observe_item_mismatch(self, sheet, model_item_index):
+        self.checked.append((sheet, model_item_index))
+        return self.mismatch
+
     def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
+        if self.gate is not None:
+            self.gate()
         if on_like_intent is not None:
             on_like_intent(True, self.anchor)   # simulate opening Hinge's like/comment sheet
         return True                              # then LIKE
 
 
-def test_observe_mode_on_like_intent_passes_stop_event_is_set_to_maybe_opener():
-    """Pins the OTHER call site: the observe-mode opener suggestion surfaced after the
-    operator opens Hinge's like sheet must ALSO thread should_stop=self.stop_event.is_set,
-    not just the auto-loop path pinned above."""
+def _settled(status, app="bumble", timeout=10.0):
+    """A `gate` that blocks until the card's suggestion has finished publishing.
+
+    Doc 5.9 puts generation on its own thread so READY can be published immediately, which means
+    a test driver that taps the instant wait_for_decision is entered would be racing it. This is
+    the human who looks at the hub first: it waits for `opener_pending` to go False, which the
+    worker publishes exactly once per card when the call settles (or immediately, when there was
+    no call to make). Bounded, so a test that never produces a suggestion fails on its own
+    assertion rather than hanging."""
+    def gate():
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            view = status.app_view(app)["app"]
+            if view is not None and not view.get("opener_pending"):
+                return
+            time.sleep(0.002)
+    return gate
+
+
+def test_observe_suggestion_passes_stop_event_is_set_to_maybe_opener():
+    """Pins the OTHER call site: the observe-mode suggestion -- which doc 5.9 moved from the
+    post-heart callback to a thread started right after READY -- must still thread
+    should_stop=self.stop_event.is_set, not just the auto-loop path pinned above. It matters
+    MORE here than before the inversion: the call now happens on every card rather than only on
+    the ones the human hearts, so a Stop click has more in-flight calls to abort."""
+    from operation_love.status import RunStatus
+
     class ObserveDecider(FakeDecider):
         def embed(self, profile):
             return [0.1, 0.2]
         def retrain(self, store):
             return True
 
-    driver = _ObserveLikeIntentDriver()
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
     store = FakeStore()
     client = FakeOpenerClient()
     svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
     w = Worker("bumble", driver, ObserveDecider(), svc, store, "run1", _Pacing(),
-              threading.Event(), mode="observe")
+              threading.Event(), mode="observe", status=status)
     w.run()
 
     assert client.calls == 1
@@ -1491,45 +1771,66 @@ class _ObserveDecider(FakeDecider):
 
 
 class _RecordingOpenerService:
-    """Records every maybe_opener() call's kwargs (anchor, advisory, should_stop) and, if
-    `status` is supplied, the app's live state AT THE MOMENT of the call -- this is what
-    change B's tests use to prove the interim 'suggesting' state is actually up while the
-    call is happening, not just before/after it. `raise_exc`, if set, makes the call raise
-    instead of returning a pick -- exercising the exception path of the try/except in
-    _wait_for_observed_decision's on_like_intent. `referenced`, if set, is echoed onto the
-    returned OpenerPick -- see the ANCHOR tests, which check it lands in AppStatus verbatim."""
+    """Records every maybe_opener() call's kwargs (anchor, items, advisory, should_stop) and, if
+    `status` is supplied, the app's live state AT THE MOMENT of the call. `raise_exc`, if set,
+    makes the call raise instead of returning a pick -- exercising the exception path in
+    _ObserveSuggestion._generate. `referenced`/`item_description` are echoed onto the returned
+    OpenerPick, which is what the hub renders beside the text.
+
+    `index` defaults to a REAL item number rather than the dataclass's ITEM_INDEX_ABSENT: since
+    doc 5.9's inversion an opener with no item number is one observe refuses to show (there is
+    nothing to tell the human to like and nothing to check their tap against), so a careless
+    default would turn every test here into a warning-path test."""
     stop_requested = False
     disabled = False
+    last_skip_reason = None
 
-    def __init__(self, *, status=None, app=None, raise_exc=None, suggestion="hi", referenced=""):
+    def __init__(self, *, status=None, app=None, raise_exc=None, suggestion="hi", referenced="",
+                 index=2, item_description="", pick=_UNSET):
         self.status = status
         self.app = app
         self.raise_exc = raise_exc
         self.suggestion = suggestion
         self.referenced = referenced
+        self.index = index
+        self.item_description = item_description
+        self.pick = pick
         self.calls = []
         self.state_during_call = None
 
-    def maybe_opener(self, run_id, app, profile, *, anchor=None, should_stop=None,
-                     advisory=False):
-        self.calls.append({"run_id": run_id, "app": app, "anchor": anchor,
+    def maybe_opener(self, run_id, app, profile, *, anchor=None, items=None,
+                     should_stop=None, advisory=False):
+        self.calls.append({"run_id": run_id, "app": app, "anchor": anchor, "items": items,
                            "should_stop": should_stop, "advisory": advisory})
         if self.status is not None:
             self.state_during_call = self.status.app_view(self.app)["app"]["state"]
         if self.raise_exc is not None:
             raise self.raise_exc
-        return OpenerPick(self.suggestion, index=0, referenced=self.referenced)
+        if self.pick is not _UNSET:
+            return self.pick
+        return OpenerPick(self.suggestion, index=self.index, referenced=self.referenced,
+                          item_description=self.item_description)
 
 
-def test_observe_on_like_intent_passes_advisory_true():
+def test_observe_suggestion_passes_advisory_true():
     """The observe suggestion call site must pass advisory=True -- this is what makes
-    maybe_opener() use exactly one attempt and route any exhaustion through
-    request_stop=False instead of ending the session."""
-    driver = _ObserveLikeIntentDriver()
+    maybe_opener() use exactly one attempt and route any exhaustion through request_stop=False
+    instead of ending the session.
+
+    THE ONE DELIBERATE DIVERGENCE FROM AUTO left by doc 5.9's inversion, and it is a divergence
+    in RETRY POLICY, never in the request: the crops, the schema and the prompt are identical
+    (pinned below), so any opener observe DOES show is byte-identical to what auto would send.
+    What differs is that a first-attempt failure produces no suggestion here where auto would
+    retry -- a coverage difference, kept because an advisory failure must never end a labelling
+    session and because observe now calls on EVERY card rather than only on liked ones."""
+    from operation_love.status import RunStatus
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
     store = FakeStore()
     svc = _RecordingOpenerService()
     Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="observe").run()
+           threading.Event(), mode="observe", status=status).run()
 
     assert svc.calls and svc.calls[0]["advisory"] is True
 
@@ -1547,31 +1848,40 @@ def test_auto_loop_like_call_does_not_pass_advisory():
     assert svc.calls and svc.calls[0]["advisory"] is False
 
 
-def test_observe_suggestion_publishes_interim_suggesting_state_during_the_call():
-    """The hub must show SOMETHING while the blocking suggestion call is in flight, instead
-    of the stale 'click pass X or heart' banner from before the heart tap. Captured from
-    INSIDE the fake service's maybe_opener() -- i.e. at the exact moment the real, slow call
-    would be blocking -- so this actually proves the state was live during the call, not
-    merely bracketing it."""
+def test_observe_publishes_ready_before_the_suggestion_is_even_requested():
+    """DOC 5.9's TIMING RULE: "publish READY immediately and let the suggestion fill in behind
+    it". Captured from INSIDE the fake service's maybe_opener() -- i.e. at the exact moment the
+    real, slow call would be blocking -- so this proves the operator was already free to act
+    WHILE the call was in flight, not merely before or after it.
+
+    This is stronger than a courtesy and that is why it is pinned: generating before entering
+    wait_for_decision would mean a human who acts during the (up to request_timeout_s) call is
+    never observed at all, because the driver's first frame would already be the next card --
+    the decision lost, and the one after it attributed to the wrong profile."""
     from operation_love.status import RunStatus
 
-    driver = _ObserveLikeIntentDriver()
-    store = FakeStore()
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
+    store = FakeStore()
     svc = _RecordingOpenerService(status=status, app="bumble")
     Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
            threading.Event(), mode="observe", status=status).run()
 
-    assert svc.state_during_call == "suggesting"
+    # "waiting" is the GO cue -- the operator is being told to use the app's controls -- and it
+    # is live while the model is being asked. The old flow published a blocking "suggesting"
+    # state here instead, which was correct then (the call sat between the heart tap and the
+    # suggestion) and would be a lie now.
+    assert svc.state_during_call == "waiting"
+    assert svc.calls, "the suggestion must actually have been requested"
 
 
 def _record_state_transitions(status):
     """Wrap status.set_app to record every (fields) call while still applying it normally --
     lets a test see the STATE SEQUENCE over time, not just the observe loop's FINAL state.
-    The final state is the wrong thing to assert on for an interim marker like 'suggesting':
-    the loop's LATER stages (e.g. _block_observe_processing's 'acting') overwrite it again
-    well before the run ends, which would make a 'cleared' assertion pass for the wrong
-    reason (loop progress, not the specific transition this call site is responsible for)."""
+    The final state is the wrong thing to assert on for a per-card transition: the loop's LATER
+    stages (e.g. _block_observe_processing's 'acting') overwrite it again well before the run
+    ends, which would make a 'cleared' assertion pass for the wrong reason (loop progress, not
+    the specific transition this call site is responsible for)."""
     calls = []
     original = status.set_app
     def recording(app, **fields):
@@ -1581,158 +1891,323 @@ def _record_state_transitions(status):
     return calls
 
 
-def test_observe_suggestion_clears_interim_state_after_success():
+def test_observe_marks_the_suggestion_pending_and_then_clears_it():
+    """`opener_pending` is what replaced the old blocking "suggesting" STATE: the hub says a
+    suggestion is on its way beside a live GO cue, rather than telling the operator to wait.
+    It must be published before the call and cleared by the publish that carries the answer --
+    a pending flag that outlives its call is a spinner that never stops."""
     from operation_love.status import RunStatus
 
-    driver = _ObserveLikeIntentDriver()
-    store = FakeStore()
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
+    store = FakeStore()
     calls = _record_state_transitions(status)
-    svc = _RecordingOpenerService(status=status, app="bumble", suggestion="loved your trail photo")
+    svc = _RecordingOpenerService(suggestion="loved your trail photo")
     Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
            threading.Event(), mode="observe", status=status).run()
 
-    states = [c["state"] for c in calls if "state" in c]
-    suggesting_idx = states.index("suggesting")
-    waiting_for_send_idx = states.index("waiting_for_send")
-    assert waiting_for_send_idx == suggesting_idx + 1   # published, then cleared by the VERY NEXT
-                                                          # state transition -- nothing else runs
-                                                          # between them
-    waiting_for_send_call = next(c for c in calls if c.get("state") == "waiting_for_send")
-    assert waiting_for_send_call.get("opener_suggestion") == "loved your trail photo"
+    pendings = [c for c in calls if c.get("opener_pending") is True]
+    assert pendings, "the pending marker must be published before the call"
+    assert all(c.get("opener_suggestion") is None for c in pendings), \
+        "pending means there is nothing to type yet"
+    answered = next(c for c in calls if c.get("opener_suggestion") == "loved your trail photo")
+    assert answered["opener_pending"] is False
+    assert calls.index(answered) > calls.index(pendings[0])
+    # And nothing publishes the old blocking state any more.
+    assert "suggesting" not in [c.get("state") for c in calls]
 
 
-def test_observe_suggestion_clears_interim_state_after_an_exception():
-    """The interim marker must be cleared even when the call raises -- worker.py's on_like_
-    intent already wraps the call in try/except (a suggestion must never block a human
-    send), and the unconditional state transition right after it is what clears
-    'suggesting' on every path, not only the happy one."""
+def test_observe_suggestion_failure_publishes_a_warning_rather_than_going_quiet():
+    """A raise inside the suggestion call must never break a labelling run -- and must never be
+    silent either. There is no text, so the hub gets `opener_warning` naming the failure: doc
+    5.9's rule is that the one thing observe may not do is say nothing."""
     from operation_love.status import RunStatus
 
-    driver = _ObserveLikeIntentDriver()
-    store = FakeStore()
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
+    store = FakeStore()
     calls = _record_state_transitions(status)
-    svc = _RecordingOpenerService(status=status, app="bumble",
-                                  raise_exc=RuntimeError("boom"))
-    Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="observe", status=status).run()
+    svc = _RecordingOpenerService(raise_exc=RuntimeError("boom"))
+    w = Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+               threading.Event(), mode="observe", status=status)
+    w.run()
 
-    assert svc.state_during_call == "suggesting"    # it WAS published before the call
-    states = [c["state"] for c in calls if "state" in c]
-    suggesting_idx = states.index("suggesting")
-    waiting_for_send_idx = states.index("waiting_for_send")
-    assert waiting_for_send_idx == suggesting_idx + 1   # cleared right after, even on a raise
-    waiting_for_send_call = next(c for c in calls if c.get("state") == "waiting_for_send")
-    assert waiting_for_send_call.get("opener_suggestion") is None   # the raise produced no suggestion
+    warned = next(c for c in calls if c.get("opener_warning"))
+    assert "boom" in warned["opener_warning"]
+    assert warned["opener_suggestion"] is None
+    assert warned["opener_pending"] is False
+    assert len(store.labels) == 1 and not w.stop_event.is_set()   # the run carried on regardless
 
 
 # ---------------------------------------------------------------------------------------
-# ANCHOR: the fix for openers arriving out of place -- e.g. a suggestion about a lake photo
-# shown while the comment is actually going to land under a dining-table photo, because the
-# model was never told which item the human's tap opened a comment sheet for (see
-# _wait_for_observed_decision's own ANCHOR docstring paragraph in worker.py). The driver hands
-# the live like-sheet frame to on_like_intent(active=True, anchor=...); it must be forwarded
-# VERBATIM into maybe_opener(anchor=...), the resulting opener_referenced/opener_anchored must
-# reach AppStatus alongside the suggestion, anchor=None must still produce a suggestion (never
-# crash or stall), and the dismiss path (active=False) must reset all three published fields.
+# DOC 5.9's INVERSION. Observe used to generate AFTER the human tapped, handing the live
+# like-sheet frame to the model as an ANCHOR so the opener was right by construction. It now
+# generates BEFORE the tap, from the same numbered crops auto sends, and the hub tells the human
+# WHICH ITEM to like. Three properties fall out and all three are pinned below:
+#   * the request is the crop shape, and the anchor is not sent at all;
+#   * "like item N" plus the model's own description of item N reach the hub with the text;
+#   * the human may open a DIFFERENT item, which must be detected and surfaced -- warning, and
+#     NO text to type. Never silent, never a stop (that is AUTO's answer to the same rule).
 # ---------------------------------------------------------------------------------------
 
-def test_observe_forwards_the_live_like_sheet_anchor_verbatim_into_maybe_opener():
-    """THE regression test for the reported bug: an opener about a lake photo got suggested
-    while the human's tap actually opened a comment sheet anchored to a dining-table photo,
-    because the suggestion call never told the model which item Hinge's sheet was actually
-    showing. The driver's on_like_intent(active=True, anchor=<frame>) must forward that EXACT
-    frame into maybe_opener(anchor=...) -- not None, not some other bytes -- so the opener is
-    written about what the human is actually looking at right now, not whatever the model
-    happens to like best from the whole profile scroll."""
-    driver = _ObserveLikeIntentDriver(anchor=b"the-actual-like-sheet-frame")
+def test_observe_sends_the_item_crops_and_no_anchor():
+    """The canary property, at the request layer. Observe must issue the SAME request shape as
+    auto -- `ItemRequest.from_profile(profile)`, no anchor -- because a mode-dependent payload is
+    exactly the divergence that made testing observe say nothing about auto. The anchor is not
+    merely unnecessary here, it is mutually exclusive with the item list (the client refuses a
+    request carrying both), so this also pins that the inversion removed a live instruction
+    rather than leaving two in the same call."""
+    from operation_love.status import RunStatus
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
     store = FakeStore()
     svc = _RecordingOpenerService()
     Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="observe").run()
+           threading.Event(), mode="observe", status=status).run()
 
-    assert svc.calls and svc.calls[0]["anchor"] == b"the-actual-like-sheet-frame"
+    assert len(svc.calls) == 1
+    assert svc.calls[0]["anchor"] is None
+    items = svc.calls[0]["items"]
+    assert items is not None and items.items == _OBSERVE_ITEMS
+    assert items.context == (b"vitals-crop",) and items.name == "Ada"
 
 
-def test_observe_suggestion_publishes_referenced_and_anchored_true_alongside_the_text():
-    """The hub must show not just the suggested text but WHAT it claims to be about
-    (opener_referenced) and WHETHER it was actually grounded in the live like-sheet frame
-    (opener_anchored) -- this is what lets the operator catch a mismatch at a glance instead
-    of trusting every suggestion blindly (see AppStatus.opener_anchored's docstring for the
-    exact out-of-place-caption bug this exists to make visible)."""
+def test_observe_publishes_the_item_number_and_description_with_the_text():
+    """The instruction the inversion produces. `opener_item` is what the operator acts on FIRST
+    -- there is no point typing a message under the wrong card -- and `opener_item_description`
+    is the model's own words for that item so it can be found without counting hearts. Doc 5.7's
+    "observe displays it" for `item_description`, which until now was returned, carried and
+    persisted but rendered nowhere."""
     from operation_love.status import RunStatus
 
-    driver = _ObserveLikeIntentDriver(anchor=b"frame-bytes")
-    store = FakeStore()
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
+    store = FakeStore()
     calls = _record_state_transitions(status)
-    svc = _RecordingOpenerService(suggestion="loved your trail photo",
-                                  referenced="the trail photo")
+    svc = _RecordingOpenerService(suggestion="loved your trail photo", referenced="the trail photo",
+                                  index=3, item_description="the ridgeline photo")
     Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
            threading.Event(), mode="observe", status=status).run()
 
-    waiting_for_send_call = next(c for c in calls if c.get("state") == "waiting_for_send")
-    assert waiting_for_send_call["opener_suggestion"] == "loved your trail photo"
-    assert waiting_for_send_call["opener_referenced"] == "the trail photo"
-    assert waiting_for_send_call["opener_anchored"] is True
+    shown = next(c for c in calls if c.get("opener_suggestion") == "loved your trail photo")
+    assert shown["opener_item"] == 3
+    assert shown["opener_item_description"] == "the ridgeline photo"
+    assert shown["opener_referenced"] == "the trail photo"
+    assert shown["opener_warning"] is None
 
 
-def test_observe_suggestion_with_no_anchor_still_suggests_and_marks_it_unanchored():
-    """A driver can't always capture the live like-sheet frame (e.g. a screencap glitch) --
-    anchor=None must stay a valid, non-crashing, non-stalling path: the suggestion is still
-    generated (written blind, exactly as it always behaved before the anchor fix), but
-    opener_anchored must publish False so the operator can tell a blind suggestion apart from
-    a grounded one, rather than trusting every suggestion equally regardless of whether the
-    model actually knew what it was writing about."""
+def test_observe_checks_the_opened_sheet_against_the_item_the_opener_names():
+    """The mismatch guard's HAPPY path, and the pin that it actually runs. The frame the driver
+    hands over on the heart tap is passed to the driver's own deterministic check together with
+    the item number the model chose; the text survives only because that check confirmed it."""
     from operation_love.status import RunStatus
 
-    driver = _ObserveLikeIntentDriver(anchor=None)
-    store = FakeStore()
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(anchor=b"the-actual-like-sheet-frame",
+                                      gate=_settled(status))
+    store = FakeStore()
     calls = _record_state_transitions(status)
-    svc = _RecordingOpenerService(suggestion="hey there")
+    svc = _RecordingOpenerService(suggestion="loved your trail photo", index=3)
     Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
            threading.Event(), mode="observe", status=status).run()
 
-    assert svc.calls and svc.calls[0]["anchor"] is None       # driver truly had nothing to hand over
-    waiting_for_send_call = next(c for c in calls if c.get("state") == "waiting_for_send")
-    assert waiting_for_send_call["opener_suggestion"] == "hey there"   # still suggested -- no stall
-    assert waiting_for_send_call["opener_anchored"] is False
+    assert driver.checked == [(b"the-actual-like-sheet-frame", 3)]
+    sent = next(c for c in calls if c.get("state") == "waiting_for_send")
+    assert sent["opener_suggestion"] == "loved your trail photo"
+    assert sent["opener_warning"] is None
 
 
-def test_observe_dismissing_the_like_sheet_publishes_cleared_opener_fields():
-    """The sheet can close WITHOUT a send (dismissed) just as it can after one; on_like_intent
-    (active=False, anchor=None) must explicitly clear opener_suggestion/opener_referenced/
-    opener_anchored in that SAME status.set_app call, not rely on some later, unrelated state
-    transition to do it for it -- see status.py's own "safe default" comment: a stale "about
-    her trail photo" caption (or a stale anchored=True badge) surviving onto whatever gets
-    shown next is worse than showing nothing at all."""
+def test_observe_replaces_the_opener_with_a_warning_when_the_human_opens_another_item():
+    """THE headline requirement of doc 5.9, and the regression the inversion would otherwise
+    introduce on the one path where a real message reaches a real person.
+
+    The suggestion is about item 3; the human hearts something else. The hub must REPLACE the
+    opener with the warning and offer nothing to type -- not annotate it, not show both. Text
+    left on screen beside a caveat is text that gets typed anyway, which is precisely the
+    out-of-place opener this whole redesign exists to stop."""
+    from operation_love.status import RunStatus
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status),
+                                      mismatch="you opened item 5, not item 3")
+    store = FakeStore()
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService(suggestion="loved your trail photo", index=3)
+    w = Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+               threading.Event(), mode="observe", status=status)
+    w.run()
+
+    sent = next(c for c in calls if c.get("state") == "waiting_for_send")
+    assert sent["opener_warning"] == "you opened item 5, not item 3"
+    assert sent["opener_suggestion"] is None
+    assert sent["opener_item"] == 3        # still says which item it WAS written for
+    # Observe refuses to show text; it does NOT stop the run, and the human's own decision is
+    # still recorded. That asymmetry with AUTO is doc 5.9's, stated: same rule, different
+    # enforcement, because here the bot is not the one sending anything.
+    assert not w.stop_event.is_set()
+    assert len(store.labels) == 1
+
+
+def test_a_mismatch_reaches_the_console_as_well_as_the_hub(capsys):
+    """"Silent is the one thing it must not be" is a claim about both surfaces. The hub is what
+    doc 5.9 names, but stdout is what a bug report keeps and what the hub's own log panel tees,
+    and an operator who is looking at the phone rather than the browser has to be able to find
+    out afterwards why there was nothing to type."""
+    from operation_love.status import RunStatus
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status),
+                                      mismatch="you opened item 5, not item 3")
+    store = FakeStore()
+    svc = _RecordingOpenerService(suggestion="loved your trail photo", index=3)
+    Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    printed = capsys.readouterr().out
+    assert "you opened item 5, not item 3" in printed
+    assert printed.count("you opened item 5, not item 3") == 1   # once per distinct warning
+    assert "loved your trail photo" not in printed               # the TEXT stays hub-only
+
+
+def test_observe_warns_rather_than_trusting_a_sheet_it_could_not_be_given():
+    """A driver cannot always hand over the live sheet frame (a screencap glitch). Under the OLD
+    flow that meant "generate blind and badge it unanchored"; under the inversion it means the
+    one check standing between a suggestion and a wrong-item comment could not be made at all.
+
+    "Cannot look" must therefore render exactly like "looked and it is wrong" -- doc 5.9's
+    either-guard-refusing rule, applied to the guard being unable to run. The two call for the
+    same action from the operator, and only the diagnosis differs."""
+    from operation_love.status import RunStatus
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(anchor=None, gate=_settled(status))
+    store = FakeStore()
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService(suggestion="hey there", index=2)
+    Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    assert driver.checked == [], "nothing to check means the check must not be faked"
+    sent = next(c for c in calls if c.get("state") == "waiting_for_send")
+    assert sent["opener_suggestion"] is None
+    assert "could not hand over a picture" in sent["opener_warning"]
+
+
+def test_observe_warns_and_never_asks_when_the_capture_could_not_be_enumerated():
+    """An enumeration refusal STOPS an auto run (doc 5.2: raw scroll frames cannot carry an item
+    number, so there is no honest request to make). In observe the human is the one acting, so it
+    must not stop -- but it must not silently fall back to the old frame-shape request either,
+    which would put observe and auto back on different payloads. No call is made at all, and the
+    driver's own sentence is what the operator is shown."""
+    from operation_love.status import RunStatus
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
+    driver.cards = [Profile(photos=[b"x"], items_unavailable="the scroll top was not confirmed")]
+    store = FakeStore()
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService()
+    w = Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+               threading.Event(), mode="observe", status=status)
+    w.run()
+
+    assert svc.calls == [], "no numbered items means no request, never a frame-shape fallback"
+    warned = next(c for c in calls if c.get("opener_warning"))
+    assert warned["opener_warning"] == "the scroll top was not confirmed"
+    assert not w.stop_event.is_set() and len(store.labels) == 1
+
+
+def test_observe_says_nothing_at_all_on_an_app_that_has_no_opener_feature():
+    """A warning on EVERY card of a run that was never going to have a suggestion is a standing
+    red box that teaches the operator to stop reading warnings. "This app cannot attach a comment
+    to a like" (Bumble) and "openers are off for this run" are per-RUN facts and are not news;
+    only a per-CARD refusal is."""
+    from operation_love.status import RunStatus
+
+    class _NoOpenerObserveDriver(_ObserveLikeIntentDriver):
+        accepts_opener = False
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _NoOpenerObserveDriver(gate=_settled(status))
+    store = FakeStore()
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService()
+    Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    assert svc.calls == []
+    assert all(not c.get("opener_warning") for c in calls)
+    assert all(not c.get("opener_pending") for c in calls)
+
+
+def test_observe_tells_the_driver_whether_openers_exist_before_the_session_opens():
+    """`set_opener_enabled` is the driver's only gate on enumeration since doc 5.9 removed the
+    auto-session one, so BOTH loops must call it -- an observe run with openers off would
+    otherwise pay a ~40-frame enumeration read per card for a numbered list nobody would look at.
+    Called before open_session(), like the auto loop's, so the very first capture already knows."""
+    class _RecordingHookDriver(_ObserveLikeIntentDriver):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.opener_flags = []
+            self.hook_order = []
+
+        def set_opener_enabled(self, enabled):
+            self.opener_flags.append(enabled)
+            self.hook_order.append("set_opener_enabled")
+
+        def open_session(self):
+            self.hook_order.append("open_session")
+            super().open_session()
+
+    class _DisabledService(_RecordingOpenerService):
+        disabled = True
+
+    live = _RecordingHookDriver()
+    Worker("bumble", live, _ObserveDecider(), _RecordingOpenerService(), FakeStore(), "run1",
+           _Pacing(), threading.Event(), mode="observe").run()
+    assert live.opener_flags == [True]
+    assert live.hook_order == ["set_opener_enabled", "open_session"]
+
+    off = _RecordingHookDriver()
+    Worker("bumble", off, _ObserveDecider(), _DisabledService(), FakeStore(), "run1",
+           _Pacing(), threading.Event(), mode="observe").run()
+    assert off.opener_flags == [False]
+
+
+def test_observe_dismissing_the_like_sheet_goes_back_to_the_instruction_and_drops_the_warning():
+    """The sheet can close WITHOUT a send (dismissed) just as it can after one.
+
+    Under the inversion this is NOT "clear everything": the card has not changed, so "like item
+    3" is still the right advice and the human may well go and open item 3 next. What must be
+    dropped is the EVIDENCE about what they opened -- a mismatch warning that outlived the sheet
+    it was about would tell the operator their next tap was wrong before they made it. So a
+    dismiss returns the hub to the pre-tap instruction, with the text back."""
     from operation_love.status import RunStatus
 
     class DismissThenLikeDriver(_ObserveLikeIntentDriver):
         def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
+            self.gate()
             if on_like_intent is not None:
-                on_like_intent(True, self.anchor)    # sheet opens, suggestion generated
+                on_like_intent(True, self.anchor)    # sheet opens on the WRONG item -> warning
                 on_like_intent(False, None)           # sheet closes (dismissed, not sent)
             return True
 
-    driver = DismissThenLikeDriver()
-    store = FakeStore()
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = DismissThenLikeDriver(gate=_settled(status), mismatch="you opened item 5, not item 3")
+    store = FakeStore()
     calls = _record_state_transitions(status)
-    svc = _RecordingOpenerService(suggestion="loved your trail photo", referenced="the trail")
+    svc = _RecordingOpenerService(suggestion="loved your trail photo", referenced="the trail",
+                                  index=3)
     Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
            threading.Event(), mode="observe", status=status).run()
 
-    # Only the on_like_intent(active=False) call publishes state="waiting" together with
-    # opener_referenced -- the loop's own pre-wait _stat(state="waiting", opener_suggestion=
-    # None) call (published before wait_for_decision is even called) never mentions
-    # opener_referenced, so this filter isolates exactly the call under test.
-    dismiss_call = next(c for c in calls if c.get("state") == "waiting" and "opener_referenced" in c)
-    assert dismiss_call["opener_suggestion"] is None
-    assert dismiss_call["opener_referenced"] is None
-    assert dismiss_call["opener_anchored"] is False
+    warned = next(c for c in calls if c.get("opener_warning"))
+    dismissed = calls[calls.index(warned) + 1]
+    assert dismissed["state"] == "waiting"
+    assert dismissed["opener_warning"] is None
+    assert dismissed["opener_suggestion"] == "loved your trail photo"
+    assert dismissed["opener_item"] == 3
 
 
 # ---------------------------------------------------------------------------------------
@@ -1765,23 +2240,24 @@ def _record_calls_and_snapshots(status, app):
 
 
 class _ResyncThenSilentSecondCardDriver(FakeDriver):
-    """Card 1 opens Hinge's comment sheet (on_like_intent(active=True, ...) -- a suggestion is
-    generated, publishing opener_referenced/opener_anchored=True), but wait_for_decision then
-    resolves to None -- a RESYNC. This mirrors the real driver: hinge.py's wait_for_decision
-    can return None right after notifying on_like_intent(active=True, ...) (e.g. `if sent is
-    None: return None`, reached before any matching close notice), and _observe_loop's own
-    resync branch (`continue`, see its "Card changed without a corroborated decision" comment)
-    does not touch the opener fields either -- so nothing clears the stale suggestion until
-    the per-card reset at the top of the loop's NEXT iteration, which is exactly what these
-    tests target. Card 2 never opens a sheet at all (on_like_intent is never called for it) --
-    the "next card's suggestion fails or is absent" half of the reported failure mode."""
+    """Card 1 gets a suggestion and opens Hinge's comment sheet, but wait_for_decision then
+    resolves to None -- a RESYNC. This mirrors the real driver: hinge.py's wait_for_decision can
+    return None right after notifying on_like_intent(active=True, ...) (e.g. `if sent is None:
+    return None`, reached before any matching close notice), and _observe_loop's own resync
+    branch (`continue`, see its "Card changed without a corroborated decision" comment) does not
+    touch the opener fields either -- so nothing clears the stale suggestion until the per-card
+    reset at the top of the loop's NEXT iteration, which is exactly what these tests target.
+    Card 2 has no numbered items at all, so no suggestion is made for it -- the "next card's
+    suggestion fails or is absent" half of the reported failure mode."""
     supports_observe_like_intent = True
     accepts_opener = True
 
-    def __init__(self):
+    def __init__(self, gate=None):
         super().__init__(2)
+        self.cards = [_observe_card(0), Profile(photos=[b"x"], bio="bio1")]
         self.served = 0
         self.wait_calls = 0
+        self.gate = gate
 
     def out_of_profiles(self):
         return self.served >= 2
@@ -1794,41 +2270,57 @@ class _ResyncThenSilentSecondCardDriver(FakeDriver):
     def render_busy(self, message=None):
         pass
 
+    def observe_item_mismatch(self, sheet, model_item_index):
+        return ""
+
     def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
         self.wait_calls += 1
+        if self.gate is not None:
+            self.gate()
         if self.wait_calls == 1:
             if on_like_intent is not None:
-                on_like_intent(True, b"card-one-like-sheet-frame")   # sheet opens, suggestion made
+                on_like_intent(True, b"card-one-like-sheet-frame")   # sheet opens, suggestion up
             return None                                              # resync -- no close notice
         return True                                                  # card 2: plain LIKE, no sheet
 
 
-def test_observe_per_card_reset_clears_a_prior_cards_referenced_and_anchored_fields():
-    """THE regression test named in the task: after a card produces an anchored suggestion
-    (opener_referenced set, opener_anchored=True) that is never explicitly closed (a resync,
-    not a dismiss or a send), the per-card reset for the NEXT card must still clear all three
-    opener fields -- not just opener_suggestion. Because that reset call explicitly names
-    opener_suggestion, it opts itself out of RunStatus.set_app's own auto-clear (see
-    status.py's comment on the safety net), so it must name opener_referenced/opener_anchored
-    too, or the hub would keep showing card 1's "about: her dog" caption and anchored badge
-    while card 2 has no suggestion of its own at all."""
+def test_observe_per_card_reset_clears_every_opener_field_from_the_previous_card():
+    """THE regression test named in an earlier task, widened by doc 5.9's inversion from three
+    fields to seven. After a card produces a suggestion that is never explicitly closed (a
+    resync, not a dismiss or a send), the per-card reset for the NEXT card must clear ALL of
+    them. Because that reset call explicitly names opener_suggestion, it opts itself out of
+    RunStatus.set_app's own auto-clear (see status.py's comment on the safety net), so it must
+    name the rest too -- or the hub would keep showing card 1's "like item 3 — the ridgeline
+    photo" instruction while card 2 has no suggestion of its own at all, which under the
+    inversion is worse than a stale caption: it is an instruction to like a specific item on
+    somebody else's profile."""
     from operation_love.status import RunStatus
 
-    driver = _ResyncThenSilentSecondCardDriver()
-    store = FakeStore()
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ResyncThenSilentSecondCardDriver(gate=_settled(status))
+    store = FakeStore()
     calls = _record_calls_and_snapshots(status, "bumble")
-    svc = _RecordingOpenerService(suggestion="about her dog", referenced="her dog")
+    svc = _RecordingOpenerService(suggestion="about her dog", referenced="her dog", index=3,
+                                  item_description="the ridgeline photo")
     Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
            threading.Event(), mode="observe", status=status).run()
 
-    reset_calls = [c for c in calls
-                   if c["fields"].get("state") == "waiting" and "opener_suggestion" in c["fields"]]
-    assert len(reset_calls) >= 2      # the per-card reset fires once per card, including card 2's
-    card_two_reset = reset_calls[1]["after"]
+    # The per-card reset is the FIRST "waiting" publish after that card's "capturing" one. It
+    # cannot be picked out by its keys any more: the suggestion's own publishes are also
+    # state="waiting" carrying the whole opener set, which is deliberate (every publisher states
+    # all seven fields) and is exactly why this test locates the call by its POSITION in the
+    # loop instead.
+    capturing = [i for i, c in enumerate(calls) if c["fields"].get("state") == "capturing"]
+    assert len(capturing) == 2, "one capture per card"
+    card_two_reset = next(c for c in calls[capturing[1]:]
+                          if c["fields"].get("state") == "waiting")["after"]
     assert card_two_reset["opener_suggestion"] is None
     assert card_two_reset["opener_referenced"] is None    # NOT left over from card 1's "her dog"
-    assert card_two_reset["opener_anchored"] is False      # NOT left over from card 1's True
+    assert card_two_reset["opener_anchored"] is False
+    assert card_two_reset["opener_item"] is None          # NOT still saying "like item 3"
+    assert card_two_reset["opener_item_description"] is None
+    assert card_two_reset["opener_warning"] is None
+    assert card_two_reset["opener_pending"] is False
 
 
 def test_observe_loop_finally_clears_a_still_live_suggestion_before_the_terminal_state():
@@ -1836,7 +2328,7 @@ def test_observe_loop_finally_clears_a_still_live_suggestion_before_the_terminal
     this test right after the suggestion for the only card is published) while a suggestion
     is still live in AppStatus, the finally block's own clearing call -- which, like the
     per-card reset, explicitly names opener_suggestion and therefore also opts out of
-    RunStatus.set_app's auto-clear -- must name opener_referenced/opener_anchored too.
+    RunStatus.set_app's auto-clear -- must name every other opener field too.
     Snapshotted right after THAT specific call (identified by opener_suggestion being named
     with no accompanying `state` key -- the unique signature of this one call site in
     worker.py) rather than the final post-run() snapshot, because _finish_session's own
@@ -1846,6 +2338,7 @@ def test_observe_loop_finally_clears_a_still_live_suggestion_before_the_terminal
     from operation_love.status import RunStatus
 
     stop_event = threading.Event()
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
 
     class _StopRightAfterSuggestionDriver(_ObserveLikeIntentDriver):
         def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
@@ -1854,19 +2347,117 @@ def test_observe_loop_finally_clears_a_still_live_suggestion_before_the_terminal
             stop_event.set()          # Stop lands the instant the sheet's suggestion is up
             return result
 
-    driver = _StopRightAfterSuggestionDriver(anchor=b"the-actual-like-sheet-frame")
+    driver = _StopRightAfterSuggestionDriver(anchor=b"the-actual-like-sheet-frame",
+                                             gate=_settled(status))
     store = FakeStore()
-    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
     calls = _record_calls_and_snapshots(status, "bumble")
-    svc = _RecordingOpenerService(suggestion="about her dog", referenced="her dog")
+    svc = _RecordingOpenerService(suggestion="about her dog", referenced="her dog", index=3,
+                                  item_description="the ridgeline photo")
     Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
            stop_event, mode="observe", status=status).run()
 
     finally_clear = next(c for c in calls
                          if "opener_suggestion" in c["fields"] and "state" not in c["fields"])
-    assert finally_clear["after"]["opener_suggestion"] is None
-    assert finally_clear["after"]["opener_referenced"] is None
-    assert finally_clear["after"]["opener_anchored"] is False
+    after = finally_clear["after"]
+    assert after["opener_suggestion"] is None
+    assert after["opener_referenced"] is None
+    assert after["opener_anchored"] is False
+    assert after["opener_item"] is None
+    assert after["opener_item_description"] is None
+    assert after["opener_warning"] is None
+    assert after["opener_pending"] is False
+
+
+class _RecordingResultOpenerClient(FakeOpenerClient):
+    """Same canned-success shape as FakeOpenerClient, but returns a FIXED opener string (not
+    the f"hi {calls}" counter) and keeps every OpenerResult generate() actually produced --
+    so a test can assert byte-for-byte against THAT object's .opener rather than a re-typed
+    literal that might only match by coincidence."""
+    def __init__(self, opener_text, cost_tokens=400):
+        super().__init__(cost_tokens=cost_tokens)
+        self.opener_text = opener_text
+        self.results = []
+
+    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+                 should_stop=None,
+                 skip_models=frozenset()):
+        self.calls += 1
+        self.should_stops.append(should_stop)
+        self.anchors.append(anchor)
+        self.items.append(items)
+        # Same reasoning as FakeOpenerClient.generate() above: a realistic, translatable pick,
+        # not the dataclass's own untranslatable-by-default item_index/index_space.
+        result = OpenerResult(opener=self.opener_text, referenced="r",
+                              usage=Usage(input_tokens=self.cost_tokens),
+                              model="gemini-test-model",
+                              item_index=FIRST_ITEM_INDEX, index_space=INDEX_SPACE_PROFILE_PHOTOS)
+        self.results.append(result)
+        return result
+
+
+def test_observe_suggestion_and_auto_like_type_the_identical_opener_the_client_returned():
+    """OWNER REQUIREMENT: the observe banner's suggested text is a CANARY for auto mode --
+    catching scaffolding words a model wrapped around the real opener only works if what the
+    operator is shown to type is BYTE-FOR-BYTE what auto mode would actually send. This pins
+    that fidelity end to end through the REAL OpenerService/OpenerPick pipeline (unlike
+    _RecordingOpenerService above, a hand-written test double that never round-trips through
+    OpenerPick.text at all) on both sinks named in the requirement:
+      - AUTO mode: driver.like() receives OpenerResult.opener as its `opener` arg, unmodified.
+      - OBSERVE mode: status.set_app(..., opener_suggestion=...) receives the identical
+        OpenerResult.opener, unmodified.
+    The fixture opener is deliberately not innocuous ASCII: it carries the kind of scaffolding
+    a model might wrap a real line in ("Sure! Here's a great one:"), a curly apostrophe, and
+    leading/trailing whitespace -- so a silent .strip()/fold/quote-normalization introduced by
+    EITHER call site (and not the other) breaks the cross-check below instead of hiding behind
+    two independently-"clean" literals that happen to already match.
+
+    DOC 5.9 MADE THIS TEST MEAN SOMETHING IT DID NOT MEAN BEFORE. Byte-identical TEXT out of two
+    modes that issued different REQUESTS was never much of a canary: auto sent numbered crops and
+    asked the model to choose, observe sent scroll frames plus an anchor and asked it to describe
+    one. So this now also asserts that both modes reached the client with the SAME request shape
+    -- the crops, and no anchor -- which is the property the text-fidelity assertion rests on."""
+    from operation_love.status import RunStatus
+
+    weird_opener = '  Sure! Here’s a great one: "Nice antlers."  '
+
+    # --- AUTO: driver.like()'s opener kwarg must be exactly what generate() returned. ---
+    auto_driver = FakeDriver(1)
+    auto_driver.cards = [_observe_card()]
+    auto_store = FakeStore()
+    auto_client = _RecordingResultOpenerClient(weird_opener)
+    auto_svc = OpenerService(auto_client, CostTracker(PRICING, None), auto_store, "s")
+    _worker(auto_driver, FakeDecider("like"), auto_svc, auto_store).run()
+
+    assert auto_client.results, "the fake client must have been called at least once"
+    assert auto_driver.likes == [auto_client.results[0].opener]
+    assert auto_driver.likes == [weird_opener]
+
+    # --- OBSERVE: status.opener_suggestion must be exactly what generate() returned. ---
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    observe_driver = _ObserveLikeIntentDriver(gate=_settled(status))
+    observe_store = FakeStore()
+    observe_client = _RecordingResultOpenerClient(weird_opener)
+    observe_svc = OpenerService(observe_client, CostTracker(PRICING, None), observe_store, "s")
+    calls = _record_state_transitions(status)
+    Worker("bumble", observe_driver, _ObserveDecider(), observe_svc, observe_store, "run1",
+           _Pacing(), threading.Event(), mode="observe", status=status).run()
+
+    assert observe_client.results, "the fake client must have been called at least once"
+    waiting_for_send_call = next(c for c in calls if c.get("state") == "waiting_for_send")
+    assert waiting_for_send_call["opener_suggestion"] == observe_client.results[0].opener
+    assert waiting_for_send_call["opener_suggestion"] == weird_opener
+
+    # The canary property itself: what auto mode types and what observe mode shows the
+    # operator to type must be the IDENTICAL string, not merely each independently correct.
+    assert auto_driver.likes[0] == waiting_for_send_call["opener_suggestion"]
+
+    # ...and it rests on both modes having ASKED the same question. Same numbered crops, same
+    # unnumbered context, same name, and no anchor in either -- one ItemRequest each.
+    assert [i.items for i in auto_client.items] == [_OBSERVE_ITEMS]
+    assert [i.items for i in observe_client.items] == [_OBSERVE_ITEMS]
+    assert [i.context for i in observe_client.items] == [i.context for i in auto_client.items]
+    assert [i.name for i in observe_client.items] == [i.name for i in auto_client.items]
+    assert auto_client.anchors == observe_client.anchors == [None]
 
 
 class _TwoCardObserveLikeIntentDriver(FakeDriver):
@@ -1878,9 +2469,11 @@ class _TwoCardObserveLikeIntentDriver(FakeDriver):
     supports_observe_like_intent = True
     accepts_opener = True
 
-    def __init__(self):
+    def __init__(self, gate=None):
         super().__init__(2)
+        self.cards = [_observe_card(0), _observe_card(1)]
         self.served = 0
+        self.gate = gate
 
     def out_of_profiles(self):
         return self.served >= 2
@@ -1893,7 +2486,12 @@ class _TwoCardObserveLikeIntentDriver(FakeDriver):
     def render_busy(self, message=None):
         pass
 
+    def observe_item_mismatch(self, sheet, model_item_index):
+        return ""
+
     def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
+        if self.gate is not None:
+            self.gate()
         if on_like_intent is not None:
             on_like_intent(True, b"like-sheet-frame")
             on_like_intent(False, None)
@@ -1906,13 +2504,20 @@ def test_advisory_suggestion_failure_never_stops_the_observe_run_end_to_end():
     burn 5 real calls and, on exhaustion, set stop_requested -- which _observe_loop honours,
     ENDING the whole labelling session over a display-only failure. advisory=True must
     instead use exactly ONE attempt per card and leave stop_requested False, so BOTH cards'
-    human decisions get processed and persisted -- the entire point of observe mode."""
-    driver = _TwoCardObserveLikeIntentDriver()
+    human decisions get processed and persisted -- the entire point of observe mode.
+
+    Doc 5.9's inversion did not change any of that; it only moved WHEN the failing call
+    happens (before the human acts, on its own thread) and made it happen on every card rather
+    than only on hearted ones -- which makes the contract matter more, not less."""
+    from operation_love.status import RunStatus
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _TwoCardObserveLikeIntentDriver(gate=_settled(status))
     store = FakeStore()
     client = ParseErrorOpenerClient()          # every attempt fails to parse, forever
     svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
     w = Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
-              threading.Event(), mode="observe")
+              threading.Event(), mode="observe", status=status)
     w.run()
 
     # Card 1's single advisory attempt already exhausts the service (disabled=True), so
@@ -1973,23 +2578,21 @@ def test_auto_dislike_with_opener_service_none_does_not_crash():
 
 
 # ---------------------------------------------------------------------------------------
-# ANCHORED_OPENER: the driver's repair hatch for when item_index turns out wrong AT SWIPE
-# TIME -- the deck can scroll/reorder between when the opener was written and when the driver
-# actually taps the heart, so the item the driver lands on may not be the one the opener text
-# is about (see worker.py's _anchored_opener docstring). The AUTO-loop must hand the driver a
-# callable that re-asks maybe_opener() with the live like-screen frame and returns fresh text
-# grounded in it -- or refuses (returns None) rather than ship a mismatched comment -- and must
-# withhold the callable entirely whenever there is no opener for it to repair in the first
-# place (app doesn't accept openers / no opener_service / no opener was generated this call).
+# WHAT THE AUTO LOOP HANDS THE DRIVER, AND WHAT IT DOES WHEN THE DRIVER CANNOT HONOUR IT.
+# This section used to be headed ANCHORED_OPENER and was about the driver's repair hatch: a
+# callback the worker handed over so the driver could re-ask for text about whatever item its
+# tap actually landed on. That hatch was removed on 2026-08-12 -- it repaired the TEXT while
+# the LIKE still went to an item the model never chose (ops/OPENER-REDESIGN.md 5.6). What is
+# left is the index the worker converts and passes, the stops it makes before calling the
+# driver at all, and doc 5.6's stop for when the driver reports the miss itself (bottom of
+# this file).
 # ---------------------------------------------------------------------------------------
 
 class _SequencedOpenerService:
     """Records every maybe_opener() call's kwargs and returns a SCRIPTED pick per call, in
-    call order -- lets a test drive the AUTO-loop's initial opener call and the driver's later
-    anchored_opener repair re-ask through two DIFFERENT results, so it can tell which call
-    produced which text. A scripted entry of None models a repair re-ask that itself fails
-    (e.g. the service exhausted between the first call and the repair attempt) -- the driver
-    must then refuse to send rather than fall back to the stale, possibly-mismatched text."""
+    call order -- so a test can drive several opener calls through DIFFERENT results and tell
+    which call produced which text. A scripted entry of None models a call that produced no
+    opener at all."""
     stop_requested = False
     disabled = False
 
@@ -1997,108 +2600,416 @@ class _SequencedOpenerService:
         self.picks = list(picks)
         self.calls = []
 
-    def maybe_opener(self, run_id, app, profile, *, anchor=None, should_stop=None,
-                     advisory=False):
-        self.calls.append({"run_id": run_id, "app": app, "anchor": anchor,
+    def maybe_opener(self, run_id, app, profile, *, anchor=None, items=None,
+                     should_stop=None, advisory=False):
+        self.calls.append({"run_id": run_id, "app": app, "anchor": anchor, "items": items,
                            "should_stop": should_stop, "advisory": advisory})
         return self.picks[len(self.calls) - 1]
 
 
-def test_auto_like_receives_an_anchored_opener_callback_when_an_opener_was_generated():
-    """The AUTO-loop must hand driver.like() a callable anchored_opener whenever it generated
-    an opener for this like -- this is the repair hatch the driver can invoke later if it
-    can't land the comment on the item the opener was written about. Also pins item_index:
-    it must be the SAME index OpenerPick reported, not always 0."""
+def test_auto_like_passes_the_translated_item_index_and_no_repair_callback():
+    """Pins item_index: it must be whatever OpenerPick.capture_order_index says, never the raw
+    pick.index and never a hardcoded 0 -- this pick names model item 3 in the (translatable)
+    profile-photos space, so the driver must receive 2, not 3 and not 0.
+
+    And pins what is NO LONGER passed. This test used to assert that the worker also handed over
+    a callable `anchored_opener`, the driver's repair hatch for a targeting miss discovered at
+    swipe time. That hatch is removed (ops/OPENER-REDESIGN.md 5.6): it repaired the TEXT while the
+    LIKE still landed on an item the model never chose. FakeDriver.like's signature no longer
+    accepts the keyword, so a worker that started passing one again would raise a TypeError here
+    rather than silently reintroducing the substitution path."""
     driver = FakeDriver(1)
     store = FakeStore()
-    svc = _SequencedOpenerService([OpenerPick("hi 1", index=2, referenced="r")])
+    svc = _SequencedOpenerService([
+        OpenerPick("hi 1", index=3, referenced="r", index_space=INDEX_SPACE_PROFILE_PHOTOS),
+    ])
     Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
            threading.Event(), mode="auto").run()
 
     assert driver.likes == ["hi 1"]
     assert driver.like_item_indexes == [2]
-    assert len(driver.like_anchored_openers) == 1
-    assert callable(driver.like_anchored_openers[0])
 
 
-def test_anchored_opener_callback_reasks_maybe_opener_with_the_given_anchor_and_returns_new_text():
-    """Invoking the callback the driver received with a frame of bytes must call maybe_opener()
-    AGAIN, this time with anchor=<those exact bytes>, and return whatever new text comes back
-    -- this is how the driver repairs an opener that turned out to be written about the wrong
-    item once the like screen actually opened somewhere else than expected."""
+# --- INDEX SPACES AT THE WORKER/DRIVER SEAM (ops/OPENER-REDESIGN.md 5.1/5.3/5.7) ------------
+# `pick.index` counts the numbered images the MODEL was sent; driver.like(item_index=...)
+# counts the frames the DRIVER captured. Between 2026-08-12 and this regression the worker
+# handed one straight to the other, and because the driver's only bounds check is against its
+# own frame count, an in-range 1-based item number resolved to a real, adjacent, WRONG frame
+# and was reported on-target -- the comment landed one card down with full confidence.
+#
+# A LATER regression narrowed but did not close the gap: the worker started converting via
+# `capture_order_index`, but when that conversion came back None (no sound conversion exists)
+# it still called driver.like(item_index=None) and let the driver tap the first item and
+# repair the message against whatever it landed on -- which still spent a like on an item the
+# model never chose, just with text that matched it. The worker now refuses to call the driver
+# AT ALL in that case (ops/OPENER-REDESIGN.md 5.3: "treat a missing table as a hard stop, never
+# as a reason to fall back to a fixed coordinate") and stops the run instead. These tests pin
+# the crossing itself, at the seam, in the worker, where both bugs lived.
+
+def test_auto_like_translates_a_profile_photo_index_into_the_drivers_capture_order():
+    """The legacy frame shape numbers profile.photos 1..N, and the driver's capture order is
+    that same list 0-based, so model item 3 is capture-order index 2. The worker must send the
+    CONVERTED value -- sending 3 would target the next frame down."""
     driver = FakeDriver(1)
     store = FakeStore()
     svc = _SequencedOpenerService([
-        OpenerPick("hi 1", index=0, referenced="r"),
-        OpenerPick("hi 2 anchored", index=1, referenced="r2"),
+        OpenerPick("hi 1", index=3, referenced="r", index_space=INDEX_SPACE_PROFILE_PHOTOS),
     ])
     Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
            threading.Event(), mode="auto").run()
 
-    anchored_opener = driver.like_anchored_openers[0]
-    result = anchored_opener(b"live-like-screen-frame")
-
-    assert result == "hi 2 anchored"
-    assert len(svc.calls) == 2                                    # the original call + the repair re-ask
-    assert svc.calls[1]["anchor"] == b"live-like-screen-frame"     # forwarded verbatim
-    assert svc.calls[1]["advisory"] is False                       # unchanged AUTO-mode behavior
+    assert driver.like_item_indexes == [2]
 
 
-def test_anchored_opener_callback_returns_none_when_the_reask_fails():
-    """THE OWNER'S RULE applies here too: a comment written about the wrong item is not a
-    comment that can be sent, so a failed repair re-ask must make the driver refuse to send
-    (return None) rather than silently falling back to the original, mismatched opener text."""
+def test_auto_like_hands_a_model_item_number_to_the_driver_rather_than_converting_it():
+    """REWRITTEN IN PLACE, 2026-08-12, when doc 5.5's counting navigation was wired. This test
+    used to pin the opposite behaviour -- that a model-item pick was UNTRANSLATABLE and stopped
+    the run -- and the reason it stopped was true at the time: nothing could turn that number
+    into a tapped heart. `item_nav.navigate_to_item` now can, by walking UP from where the
+    profile read left the card, so the number goes to the driver AS a model item number.
+
+    What must NOT happen is a conversion. `capture_order_index` still returns None for this
+    space, correctly: the model's number resolves to a HEART ORDINAL, not to a captured frame,
+    and inventing a frame index for it is the exact bug the two index spaces exist to prevent.
+    So the worker passes `model_item_index=3` and leaves `item_index` at None -- which is the one
+    combination `hinge._like_comment_sheet` routes to counting navigation."""
     driver = FakeDriver(1)
     store = FakeStore()
     svc = _SequencedOpenerService([
-        OpenerPick("hi 1", index=0, referenced="r"),
-        None,                                          # the repair re-ask itself fails
+        OpenerPick("hi 1", index=3, referenced="r", index_space=INDEX_SPACE_MODEL_ITEMS),
     ])
     Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
            threading.Event(), mode="auto").run()
 
-    anchored_opener = driver.like_anchored_openers[0]
-    assert anchored_opener(b"live-like-screen-frame") is None
+    assert driver.likes == ["hi 1"]
+    assert driver.like_model_item_indexes == [3]      # the model's own number, unconverted
+    assert driver.like_item_indexes == [None]         # ...and NO capture-order index beside it
+    assert len(store.decisions) == 1
 
 
-def test_anchored_opener_callback_is_none_when_the_app_does_not_accept_openers():
-    """Bumble-style driver: no swipe-time opener at all, so there is nothing for a repair
-    callback to ever repair -- the opener service must not even be called, and the driver
-    must receive anchored_opener=None, not a callable that would immediately be irrelevant."""
+def test_auto_like_never_turns_an_absent_item_index_into_the_first_item():
+    """ITEM_INDEX_ABSENT means the model could not pick an item. It is 0, and 0 is a perfectly
+    legal FIRST FRAME in the driver's space, so passing it through would turn "no choice" into
+    a confident like of item 1 -- which is exactly what happened before this regression. It
+    must never even reach the driver -- let alone `_locate_target_heart` -- in any index
+    space: the worker refuses to call driver.like() and stops the run instead."""
+    for space in (INDEX_SPACE_PROFILE_PHOTOS, INDEX_SPACE_MODEL_ITEMS):
+        driver = FakeDriver(1)
+        svc = _SequencedOpenerService([
+            OpenerPick("hi 1", index=ITEM_INDEX_ABSENT, referenced="r", index_space=space),
+        ])
+        Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
+               threading.Event(), mode="auto").run()
+
+        assert driver.likes == [], space
+        assert driver.like_item_indexes == [], space
+
+
+def test_auto_mode_stop_reason_names_absent_item_index_distinctly_from_an_unknown_space():
+    """The operator's next move differs between the two refusal causes above: "the model never
+    named an item" is an opener-layer problem (a prompt/model issue -- retrying may help),
+    while "the model named one in a space this worker does not act on" is a wiring problem. A
+    single stop_reason reading "item None" for both would hide that distinction from the
+    operator, so the two must produce recognizably different text -- and both must publish
+    stop_kind="opener", the same channel every other opener-triggered stop uses.
+
+    REWRITTEN IN PLACE, 2026-08-12: the second half used to use INDEX_SPACE_MODEL_ITEMS, which
+    was untranslatable before doc 5.5's counting navigation was wired and is now the space the
+    worker acts on directly. What is left in the "cannot act on it" class is a space this build
+    has never heard of, which is what a stale or future producer would emit -- and which must
+    still degrade to a stop rather than to a guess."""
+    from operation_love.status import RunStatus
+
     driver = FakeDriver(1)
-    driver.accepts_opener = False
-    store = FakeStore()
-    svc = _SequencedOpenerService([OpenerPick("hi 1")])   # never actually reached
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+    svc = _SequencedOpenerService([OpenerPick("hi 1", index=ITEM_INDEX_ABSENT, referenced="r")])
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] == "stopped"
+    assert app["stop_kind"] == "opener"
+    assert "no item number" in app["stop_reason"]
+    assert driver.likes == []
+
+    driver2 = FakeDriver(1)
+    svc2 = _SequencedOpenerService([
+        OpenerPick("hi 1", index=3, referenced="r", index_space="some_future_space"),
+    ])
+    status2 = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    Worker("bumble", driver2, FakeDecider("like"), svc2, FakeStore(), "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status2).run()
+
+    app2 = status2.app_view("bumble")["app"]
+    assert app2["state"] == "stopped"
+    assert app2["stop_kind"] == "opener"
+    assert "some_future_space" in app2["stop_reason"]
+    assert "neither" in app2["stop_reason"]
+    assert driver2.likes == []
+
+
+# =====================================================================================
+# THE REQUEST SHAPE: numbered crops, or a stop -- never the raw frames
+# (ops/OPENER-REDESIGN.md 5.2/5.7)
+# =====================================================================================
+
+def test_auto_sends_the_enumerated_item_crops_as_the_request_not_the_scroll_frames():
+    """Doc 5.2's whole point: with crops, image k IS item k, so the number the model answers
+    with means something. When the capture enumerated the profile, the AUTO loop must build an
+    ItemRequest from it and hand it to the opener call -- numbered items in model order, the
+    unnumbered context tier after them, her name as text, the truncation flag -- and the raw
+    scroll frames must not be what the model is looking at."""
+    client = FakeOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), FakeStore(), "s")
+    driver = FakeDriver(1)
+    driver.cards[0] = Profile(
+        photos=[b"frame-0", b"frame-1", b"frame-2"],
+        name="Ada", items=(b"crop-1", b"crop-2"), item_context=(b"vitals",),
+        items_truncated=True)
+
+    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
            threading.Event(), mode="auto").run()
 
-    assert driver.likes == [None]
-    assert driver.like_anchored_openers == [None]
-    assert svc.calls == []                                # opener service never even called
+    assert len(client.items) == 1
+    request = client.items[0]
+    assert request is not None, "the crops the driver enumerated must reach the client"
+    assert request.items == (b"crop-1", b"crop-2")
+    assert request.context == (b"vitals",)
+    assert request.name == "Ada"
+    assert request.truncated is True
+    assert request.item_count == 2
+    # The frames are still on the Profile for the ranker; they are simply not the request.
+    assert b"frame-0" not in request.images
 
 
-def test_anchored_opener_callback_is_none_when_opener_service_is_none():
-    """Worker is a public class any caller can construct with opener_service=None (see the
-    C section above) -- the anchored_opener wiring must degrade the same way as the plain
-    opener wiring does: no callable handed to the driver, no crash."""
+def test_auto_keeps_the_frame_shape_for_a_driver_that_enumerates_nothing():
+    """A driver with no item space at all -- every non-Hinge driver today -- must be completely
+    unaffected: no ItemRequest, no refusal, exactly the pre-existing call. "This capture has no
+    items" and "this capture could not produce its items" are different facts and only the
+    second one stops a run."""
+    client = FakeOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), FakeStore(), "s")
     driver = FakeDriver(1)
-    store = FakeStore()
-    Worker("bumble", driver, FakeDecider("like"), None, store, "run1", _Pacing(),
+
+    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
            threading.Event(), mode="auto").run()
 
-    assert driver.likes == [None]
-    assert driver.like_anchored_openers == [None]
+    assert client.items == [None]
+    assert driver.likes == ["hi 1"]
 
 
-def test_anchored_opener_callback_is_none_when_no_opener_was_generated():
-    """opener.enabled=false in config produces an OpenerService(client=None, ...) -- `disabled`
-    from construction (see OpenerService.__init__), so maybe_opener() always returns None and
-    there is no opener text a repair callback could ever improve on. The driver must receive
-    anchored_opener=None here too, not a callable wrapping a pick that doesn't exist."""
+def test_auto_stops_when_the_capture_could_not_produce_numbered_items():
+    """The refusal doc 5.2 requires, at the one place the substitution would otherwise happen.
+    A driver that enumerates and failed says so on the Profile; the worker must stop with that
+    sentence rather than fall back to sending `profile.photos`, which would hand the model a
+    numbering nothing downstream can act on. No opener call is made and no like is sent."""
+    from operation_love.status import RunStatus
+
+    client = FakeOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), FakeStore(), "s")
     driver = FakeDriver(1)
-    store = FakeStore()
-    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
-    _worker(driver, FakeDecider("like"), svc, store).run()
+    driver.cards[0] = Profile(
+        photos=[b"frame-0", b"frame-1"],
+        items_unavailable="the card is not confirmed to be at its scroll top (confirmed_not_top)")
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
 
-    assert driver.likes == [None]
-    assert driver.like_anchored_openers == [None]
+    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] == "stopped"
+    assert app["stop_kind"] == "opener"
+    assert "scroll top" in app["stop_reason"]
+    assert "numbered items" in app["stop_reason"]
+    assert client.calls == 0, "nothing may be billed for a request that cannot be built"
+    assert driver.likes == []
+
+
+def test_auto_does_not_stop_on_items_unavailable_when_openers_are_disabled():
+    """Audit fix, "BUG 2" (2026-08-12): opener.enabled: false must not turn a driver's
+    items_unavailable sentence into a hard stop -- there is no consumer for a numbered item list
+    when openers are off, so its absence is not a failure. Mirrors
+    test_auto_stops_when_the_capture_could_not_produce_numbered_items immediately above with the
+    one variable that matters changed: OpenerService(client=None, ...), i.e. `disabled` from
+    construction exactly like opener.enabled: false produces (see
+    test_worker_with_opener_disabled_by_config_still_likes_normally_in_auto_mode). The driver-side
+    fix (HingeDriver.set_opener_enabled) is what stops a real Hinge read from ever setting this
+    field in the first place; this test pins the independent worker-side guard that must hold even
+    if a driver enumerates anyway (a fake, an older driver, or a future one that forgets the hook)."""
+    from operation_love.status import RunStatus
+
+    svc = OpenerService(None, CostTracker(PRICING, None), FakeStore(), "s")   # openers disabled
+    driver = FakeDriver(1)
+    driver.cards[0] = Profile(
+        photos=[b"frame-0", b"frame-1"],
+        items_unavailable="the card is not confirmed to be at its scroll top (confirmed_not_top)")
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+
+    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] != "stopped"
+    assert svc.stop_requested is False
+    assert driver.likes == [None]     # liked normally, with no opener -- exactly as if openers
+                                       # did not exist for this run at all
+
+
+# --- DOC 5.6'S HARD STOP: a targeting/verification miss stops the run --------------------------
+# WHAT THESE REPLACE. Five tests used to live here pinning the `anchored_opener` repair callback:
+# the worker handed the driver a closure, and the driver invoked it once its own heart targeting
+# missed, to re-ask the model for text about whatever item the sheet had actually opened on. That
+# callback was removed on 2026-08-12. It repaired the TEXT while the LIKE still went to an item
+# the model never chose, which is exactly the substitution ops/OPENER-REDESIGN.md 5.6 forbids
+# ("no falling back to `hearts[0]`, no 'closest reachable item', no rewriting the opener to match
+# whatever we hit"). Their coverage is not deleted, it is inverted: the same situations those
+# tests described -- targeting missed, or the sheet turned out to show a different item -- are now
+# the stop the tests below pin. The removal itself is pinned by FakeDriver.like's signature (no
+# such keyword) and by test_hinge_observe.py's `..._no_longer_accepts_an_anchored_opener_callback`.
+class _TargetingMissDriver(FakeDriver):
+    """Hinge-shaped: its like() reports it could not put the like on the chosen item.
+
+    Raises the DRIVER-AGNOSTIC base.ItemTargetingError rather than a Hinge symbol, which is the
+    contract the worker is written against -- worker.py must not have to import a concrete driver
+    to recognise the one failure class with a specific, non-error stop to render."""
+    halt_on_error = True
+
+    def __init__(self, n, *, stage="navigate", intended=4, actual=None,
+                 index_space="model_items", message="could not reach it"):
+        super().__init__(n)
+        self.snapshotted = []
+        self._exc = ItemTargetingError(message, stage=stage, intended=intended, actual=actual,
+                                       index_space=index_space)
+
+    def like(self, opener=None, item_index=0, *, model_item_index=None):
+        self.likes.append(opener)          # recorded so a test can prove it was CALLED and failed
+        raise self._exc
+
+    def snapshot_failure(self, exc):
+        self.snapshotted.append(exc)
+
+
+def _run_targeting_stop(driver, *, app="bumble"):
+    """Run one auto profile against `driver` and hand back the published app status + the store."""
+    from operation_love.status import RunStatus
+    svc = _SequencedOpenerService([
+        OpenerPick("hi 1", index=1, referenced="r", index_space=INDEX_SPACE_PROFILE_PHOTOS),
+    ])
+    store = FakeStore()
+    status = RunStatus("run1", [app], min_labels=1, mode="auto")
+    Worker(app, driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+    return status.app_view(app)["app"], store
+
+
+def test_a_targeting_miss_stops_the_run_instead_of_crashing_it():
+    """The headline. The driver could not put the like on the item the opener was written about,
+    so it put it nowhere -- and that is a DECISION the bot made correctly under a standing rule,
+    not a crash. Left to run()'s generic handler it would render as state="error" with a single
+    traceback line, and an operator who cannot tell a correct refusal from a bug soon stops
+    reading red banners. It stops, with the reason on the hub.
+
+    stop_kind="targeting" REPLACED "opener" here (the hub workflow, per doc 5.6's own handover
+    note). "opener" was the channel the hub already branched on, and its branch is titled
+    "opener capacity exhausted": nothing was exhausted, the opener itself is fine, and the
+    operator's next move is to go and read the phone rather than to check a quota. The value is
+    asserted rather than merely "not None" because the hub renders a different box for each kind
+    and an unrecognized one falls back to neutral wording (assets/hub.html)."""
+    app, _store = _run_targeting_stop(_TargetingMissDriver(2))
+
+    assert app["state"] == "stopped"
+    assert app["stop_kind"] == "targeting"
+    assert app["stop_kind"] != "opener"    # not the capacity/exhaustion channel -- see above
+    assert app["error"] is None            # NOT an error banner -- this is a clean stop
+
+
+def test_the_targeting_stop_records_intended_and_actual():
+    """Doc 5.6: "stop the run with intended and actual item both recorded". Both come off the
+    exception's own fields rather than being parsed back out of its prose, so the stop record
+    cannot drift out of agreement with the stop it describes."""
+    app, _store = _run_targeting_stop(
+        _TargetingMissDriver(2, stage="verify", intended=4, actual=6,
+                             message="the like sheet is NOT showing it"))
+
+    reason = app["stop_reason"]
+    assert "item 4" in reason and "item 6" in reason
+    assert "Intended" in reason and "Actual" in reason
+    assert "model_items" in reason                       # which numbering those two are in
+    assert "the like sheet is NOT showing it" in reason  # the driver's own words, kept whole
+
+
+def test_the_targeting_stop_says_so_when_nothing_was_ever_reached():
+    """"we could not reach item 4" and "we reached item 6 while aiming at item 4" are different
+    diagnoses, and the second is a much stronger signal that the item list itself is wrong. An
+    absent `actual` must therefore say it is absent rather than render as a number."""
+    app, _store = _run_targeting_stop(_TargetingMissDriver(2, stage="navigate", intended=4,
+                                                          actual=None))
+
+    assert "never got far enough" in app["stop_reason"]
+
+
+def test_the_targeting_stop_does_not_record_the_like_as_a_decision():
+    """The like was NOT sent, so counting it would corrupt both the stats and the daily rate
+    limit -- the same rule the pre-existing "do not record a phantom if like() raised" comment
+    states. Nothing swipes after it either: the run is over, with two profiles left unseen."""
+    driver = _TargetingMissDriver(3)
+    app, store = _run_targeting_stop(driver)
+
+    assert store.decisions == []
+    assert driver.likes == ["hi 1"]        # exactly one attempt, on the first profile
+    assert driver.dislikes == 0
+    assert app["state"] == "stopped"
+
+
+def test_the_targeting_stop_still_snapshots_the_screen():
+    """The screen IS the diagnosis here -- doc 5.6 leaves it exactly as it was (a scrolled
+    profile, or an open sheet with nothing typed) precisely so it can be read back. Catching the
+    exception must not cost the failure snapshot run()'s generic handler would have taken, and
+    that snapshot has to happen while the transport is still live, i.e. inside the loop."""
+    driver = _TargetingMissDriver(2)
+    _run_targeting_stop(driver)
+
+    assert len(driver.snapshotted) == 1
+    assert isinstance(driver.snapshotted[0], ItemTargetingError)
+
+
+def test_an_ordinary_driver_failure_is_still_an_error_not_a_targeting_stop():
+    """The catch is narrow on purpose. A stuck deck, a missed Send tap or any other unexpected
+    action failure is NOT a decision the bot made correctly, and must keep its red error banner
+    and its traceback. Only ItemTargetingError -- "we could not honour the item the model chose"
+    -- earns the clean stop."""
+    from operation_love.status import RunStatus
+    driver = RaisingLikeDriver(2)
+    svc = _SequencedOpenerService([
+        OpenerPick("hi 1", index=1, referenced="r", index_space=INDEX_SPACE_PROFILE_PHOTOS),
+    ])
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] == "error"
+    assert app["stop_kind"] is None
+
+
+class _ObserveNeverLikesDriver(_ObserveLikeIntentDriver):
+    """Observe-capable, and its like() is a tripwire rather than an implementation."""
+
+    def like(self, opener=None, item_index=0, *, model_item_index=None):
+        raise AssertionError("observe mode must never call driver.like()")
+
+
+def test_observe_mode_cannot_reach_the_targeting_stop_at_all():
+    """Structural, not incidental: worker.py calls driver.like() from exactly one place, inside
+    _auto_loop, and the new handler wraps that one call. _observe_loop never calls it at all --
+    the human taps Send Like with the app's own controls -- so there is no code path by which
+    this change could touch observe's behaviour. Pinned with a driver whose like() would blow the
+    test up if it were ever reached."""
+    driver = _ObserveNeverLikesDriver()
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe").run()
+
+    assert driver.likes == []              # never called, so the tripwire never fired
+    assert store.labels                     # and the human's own decision still got recorded

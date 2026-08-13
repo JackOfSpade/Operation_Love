@@ -17,6 +17,44 @@ class DriverClosed(RuntimeError):
     """The user closed the app/browser window during a run."""
 
 
+class ItemTargetingError(RuntimeError):
+    """The like could NOT be put on the item the opener was written about, so it was not put
+    anywhere. Doc 5.6's hard stop, in the one shape worker.py can catch without importing a
+    concrete driver.
+
+    Raised by a driver that targets per item (Hinge) at either of the two moments the question
+    can be answered: BEFORE the tap, when the chosen item cannot be reached or its crops cannot
+    serve as a verification reference, and AFTER the tap, when the opened like/comment sheet is
+    not showing that item. Both are the same operator-facing fact -- "we could not honour the
+    choice the model made" -- and both call for the same next move, so they are one type carrying
+    `stage` rather than two.
+
+    THE OWNER RULE THIS EXISTS TO ENFORCE (ops/OPENER-REDESIGN.md 5.6): never substitute a
+    different item. There is no `hearts[0]`, no "closest reachable item", and no rewriting the
+    opener to match whatever we hit -- every one of those ships a real message about the wrong
+    thing to a real person. Retrying the SAME item is allowed and is what the driver does first;
+    this is what is left when the retries are spent.
+
+    The screen is deliberately left exactly as it is when this is raised (a scrolled profile, or
+    an open sheet with nothing typed) so the failure can be read off the phone.
+
+    `intended` and `actual` are the two numbers doc 5.6 asks a stop record to hold. `actual` is
+    None whenever we never got far enough to see what we hit -- "we could not reach item 4" and
+    "we reached something and it was item 6" are different diagnoses, and None says which one this
+    is rather than pretending to an answer. `stage` is "navigate" (before the tap) or "verify"
+    (after it); `index_space` names WHICH numbering `intended` is in, because this codebase has
+    two and a bare small int that does not state its space is the exact bug the 2026-08-12 audit
+    found (see opener.py's INDEX_SPACE_* constants)."""
+
+    def __init__(self, message: str, *, stage: str = "", intended=None, actual=None,
+                 index_space: str = "") -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.intended = intended
+        self.actual = actual
+        self.index_space = index_space
+
+
 def open_debug_log(debug_dir: str):
     """Best-effort DebugLog bootstrap shared by every driver's open_session().
 
@@ -131,24 +169,57 @@ class DatingAppDriver(ABC):
         no new return value or exception is needed to carry the difference."""
 
     @abstractmethod
-    def like(self, opener: str | None = None, item_index: int = 0, *,
-             anchored_opener=None) -> None:
+    def like(self, opener: str | None = None, item_index: int | None = None, *,
+             model_item_index: int | None = None) -> None:
         """Like the current profile, optionally sending an opener message. item_index is the
         0-based index (capture order) of the photo/prompt the opener is about, so drivers that
         comment per-item (Hinge) can target it; drivers without that notion ignore it.
 
-        `anchored_opener` is a callback the driver MAY invoke, once its like/comment screen is
-        actually open, with a screenshot (bytes) of that screen — which visually shows the
-        item the comment is about to attach to — and which returns replacement opener text
-        grounded in what that screenshot shows (or None/empty if it can't produce one).
+        THIS PARAMETER IS IN THE DRIVER'S OWN CAPTURE-ORDER SPACE AND NOTHING ELSE. It is NOT
+        the model's item number: since 2026-08-12 the opener answers with a 1-based index over
+        the numbered ITEMS it was shown (ops/OPENER-REDESIGN.md 5.1/5.7), which counts a
+        different list from a different base. Callers convert with
+        opener.service.OpenerPick.capture_order_index, which is the only sanctioned crossing
+        and which refuses (returns None) whenever no sound conversion exists. Do NOT add a
+        +1/-1 anywhere else to paper over a mismatch.
 
-        It exists for the case where the driver could not land the comment on the item
-        `item_index` names (per-item targeting is best-effort, not guaranteed) and the sheet
-        that just opened is now anchored to a DIFFERENT item than the one `opener` was written
-        about — an out-of-place message (an opener about one photo landing under an unrelated
-        one) that a driver able to detect the mismatch should repair via this callback rather
-        than ship blind. Drivers that cannot land a comment on a specific item at all (e.g.
-        Bumble, which likes the whole profile) accept and ignore this parameter."""
+        None means NO ITEM WAS SPECIFIED -- the caller could not say which item this opener is
+        about. It is deliberately distinct from 0, which is a perfectly legal first captured
+        frame: collapsing the two is how an opener the model could not attach to any item got
+        treated as an opener about item 1 and sent with full confidence. A driver that targets
+        per item must REFUSE to send an `opener` alongside a None index, never treat None as an
+        index and never repair the text against whatever it happened to land on.
+
+        NEVER SUBSTITUTE A DIFFERENT ITEM (ops/OPENER-REDESIGN.md 5.6, owner rule). A driver that
+        targets per item and cannot put the like on the item it was told to -- even after
+        retrying that same item -- raises ItemTargetingError instead of liking a different one.
+        Retrying the SAME item is a shaky hand and is encouraged; landing on a neighbour is a
+        wrong decision and is forbidden. There used to be an `anchored_opener` repair callback
+        here, which let a driver re-ask the model for text about whatever the tap actually landed
+        on; it was removed 2026-08-12 because repairing the TEXT does not undo spending the LIKE
+        on an item the model never chose.
+
+        `model_item_index` is the OTHER index space, and it is the one doc 5.6 verifies against:
+        the 1-based number of the item in the numbered list the MODEL was shown
+        (`opener.ItemRequest`, i.e. `OpenerPick.index` when `index_space` is
+        INDEX_SPACE_MODEL_ITEMS). It is deliberately a separate parameter rather than a
+        re-interpretation of `item_index`, because the two count different lists from different
+        bases and a small int carrying no statement of its own space cannot be validated by the
+        side that receives it -- that is exactly the bug the 2026-08-12 audit found.
+
+        A driver that holds per-item crops for the profile on screen MUST, when given one, verify
+        the like/comment screen against that item's stored crop BEFORE typing anything, and stop
+        rather than type on a mismatch (never a commentless like, never a comment under an item
+        nobody checked, never a rewritten opener to match whatever was hit). None means no such
+        verification is possible or asked for; drivers with no per-item notion ignore it.
+
+        THAT POST-TAP CHECK IS NOT A LICENCE TO AIM LOOSELY, and the two parameters do not
+        substitute for one another. A driver given a `model_item_index` it has no way to NAVIGATE
+        to must refuse before it touches the screen rather than tap something and let the check
+        sort it out: the check discriminates items within one profile's payload, and it has been
+        measured accepting a card from a DIFFERENT profile (operation_love/drivers/item_verify.py,
+        "THIS IS A CLOSED-SET TEST"). Aiming at the topmost heart and verifying afterwards is the
+        `hearts[0]` substitution with an extra step."""
 
     @abstractmethod
     def dislike(self) -> None:
@@ -157,6 +228,32 @@ class DatingAppDriver(ABC):
     @abstractmethod
     def out_of_profiles(self) -> bool:
         """True if there are no more profiles to swipe right now."""
+
+    def blocked_reason(self) -> str | None:
+        """Is the deck unavailable for a reason the operator needs to be told about, and
+        what is that reason? Returns an operator-facing sentence describing what's on
+        screen, or None when the deck is fine.
+
+        This is a SEPARATE question from out_of_profiles(): out_of_profiles means the
+        deck ran dry — a normal end of supply, nothing is wrong. blocked_reason means
+        something is ON SCREEN standing BETWEEN us and the deck — the measured case
+        being Hinge's "out of free likes for today" Hinge+ paywall (2026-08-11, see
+        ops/ANTI-BOT-RESEARCH.md and data/hinge_debug/run_20260811_011416): the like
+        was refused, the paywall came up, and nothing in the codebase recognized it, so
+        the run hung polling for a decision that could never come.
+
+        Defaults to None rather than being abstract because every non-Hinge driver
+        (Bumble Android, the Playwright web drivers) is uncalibrated for this and must
+        be completely unaffected by its existence. A driver that has never been
+        calibrated for a blocking screen honestly does not know whether one is up, and
+        None is that honest answer — not a guess dressed up as one.
+
+        MUST NEVER raise and MUST NEVER touch the screen: worker.py calls this on every
+        loop iteration of both the auto and observe loops, and observe mode is strictly
+        passive — a driver that taps, swipes, or types from inside this method would
+        violate that on every single iteration, not just the blocked ones.
+        """
+        return None
 
     # --- observe mode (shadow learning); only needed when mode="observe" ---
     def current_profile(self, *, should_stop=None) -> Profile | None:

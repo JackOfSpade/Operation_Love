@@ -504,6 +504,158 @@ unavailable for that card and decisions on it rest on layer 2, which is stated o
 and recorded as a `session_top_unconfirmed` debug action rather than being inferred from a
 missing field.
 
+### Addendum 2026-08-11 — Hinge's out-of-free-likes paywall, and the observe hang it exposed
+
+**What happened.** Hinge observe run `run_20260811_011416`. At 01:42:36 the owner tapped the
+heart (`observe_like_anchor`), composed the comment "Was the water freezing?", and tapped Send
+Like. Hinge REFUSED the like — the account was out of free likes for the day — and put its
+"You're out of free likes for today" Hinge+ paywall on screen instead of resolving the send.
+`_await_like_resolved` kept polling `like_sheet`/`like_sending` from 01:42:43 until the owner
+pressed Stop at 01:45:02: a 2.5-minute hang. No label was written, which was correct — the like
+never went out — but the run hung instead of stopping.
+
+The paywall is the proximate trigger, but it is not the real defect. The real defect is that
+observe mode had **no bail-out for an unrecognized screen at all**: `worker.py` calls
+`wait_for_decision(timeout=None)`, so any screen the driver cannot classify hangs forever, by
+construction, regardless of what that screen turns out to be. The out-of-likes paywall is
+today's instance of that hole; the hole itself would have hung on any screen this codebase had
+never been taught to recognize.
+
+**What was measured live 2026-08-11.** Reference screenshot at
+`ops/calibration/hinge_out_of_likes_20260811.png` (1080x2400): headline "You're out of free
+likes for today", tabs "Hinge+" (active, purple) and "HingeX", scrolling benefit rows ("Send
+unlimited likes*", "See everyone who likes you", ...), a bottom CTA ("Get 3 months for
+CA$99.99"), and a top-left "Close" control. The hero image behind the headline is rotating
+marketing artwork and the benefit list scrolls, so neither is a stable anchor — but the tab bar
+is fixed chrome that does not move. The template
+`operation_love/drivers/assets/hinge_upgrade_tab.png` (210x76 grayscale) is cropped from that
+fixed tab bar, x 705..915 / y 254..330 of the reference screenshot (the "HingeX" wordmark).
+Measured discrimination with `cv2.TM_CCOEFF_NORMED`: 1.000 on the live paywall; 0.965..1.000
+under gain/bias perturbation (gain 0.35..1.4, bias -30..+90, standing in for the tab rendering
+purple-when-active vs. grey-when-inactive); a maximum of 0.4903 over ALL 88 real non-paywall
+frames of the hung run above. Threshold 0.75 sits with wide margin on both sides. The match is
+additionally gated on position — the tab chrome sits at y 266..318 of 2400 (y_frac
+0.111..0.133), so only a match whose centre y is `<= 0.30 * height` is accepted — the same
+defensive idiom already used by `_observe_like_sheet_visible`'s 0.25..0.85 y-gate.
+
+Headline OCR was also measured, best-effort only, never load-bearing. The existing `_ocr_band`
+recipe FAILS on this band — measured, it returns garbage ("“Tikes for today") — because the
+headline is white text over a photograph, unlike every other band this driver OCRs, which is
+dark text on flat chrome. The recipe that works, measured identically at thresholds 180/200/215
+(all three give the same clean read): grayscale crop, binarize (`pixel > threshold`), INVERT so
+it becomes black text on white, upscale ~2-3x, `tesseract --psm 6`. Verified output: "You're out
+of free likes for today". Normalized band `(0.0556, 0.1958, 0.9537, 0.3000)`, i.e. px
+(60,470)-(1030,720) of 1080x2400.
+
+**Reference artifacts.** Both committed under `ops/calibration/`:
+`hinge_out_of_likes_20260811.png` (the reference screenshot) and
+`hinge_out_of_likes_20260811_uiautomator.xml` (a read-only uiautomator dump used only to
+measure the bounds quoted above). That dump was a ONE-OFF calibration read, exactly the same
+kind already recorded for Bumble on 2026-08-10 (this section's addendum immediately above) — a
+read-only accessibility-tree probe used once, off the record, to pin coordinates for a vision
+template. It is not, and does not become, a standing capability: the accessibility tree remains
+FORBIDDEN in production code, which stays screencap + `cv2` template match + best-effort
+`tesseract` OCR only.
+
+**What ships now.** Detect the paywall and stop the run GRACEFULLY, with the reason surfaced to
+the hub — never dismiss it, never tap it, because it is a purchase screen and the standing owner
+rule is that paid controls are manual, always. `AndroidAppSpec` (`operation_love/drivers/
+android_spec.py`) gains `paywall_headline_band` and a `"paywall"` template role, with
+`__post_init__` validation that declaring the band without the template is a mis-wiring.
+`DatingAppDriver` (`operation_love/drivers/base.py`) gains a non-abstract `blocked_reason()`
+defaulting to `None`, so Bumble and the web drivers are completely unaffected. `AndroidDriver`
+(`operation_love/drivers/hinge.py`) gains `_paywall_visible`, `_paywall_headline`,
+`_deck_blocked_reason`, and the public, memoized `blocked_reason()`; `HINGE_SPEC` declares the
+`"paywall"` template and the measured `paywall_headline_band`. `_deck_blocked_reason` produces
+one of two operator-facing sentences: "Hinge is out of free likes for today — the Hinge+
+upgrade screen is up" when OCR confirms the headline, or the less specific "Hinge's Hinge+
+upgrade screen is up — the deck is not available" when the template matched but OCR is
+unavailable or inconclusive. `AppStatus` (`operation_love/status.py`) gains `stop_kind` ("opener"
+| "deck_blocked") alongside a new terminal "blocked" state, and `worker.py`'s two loops poll
+`blocked_reason()` each iteration and publish `state="blocked"` with that reason when it fires.
+
+Alongside the paywall-specific detector, a generic stuck-screen watchdog ships in the same pass:
+`_OBSERVE_STUCK_S` (90.0s) and `_OBSERVE_STUCK_CHECK_S` (5.0s) bound how long observe mode will
+sit on ANY screen it cannot positively recognize before it gives up and stops, reporting the
+paywall-specific reason when the paywall is what's up and a generic "showing a screen I can't
+recognize" message otherwise. This is the actual fix for the deeper defect above — the paywall
+detector alone would only have covered this one screen; the watchdog covers every future one.
+It is deliberately NOT a timeout on genuine human deliberation: it only arms against screens the
+driver cannot classify at all, so an owner reading a profile on a confirmed, ready deck is
+unbounded exactly as before — the 90s budget starts counting only when nothing recognizable is
+on screen, and a single recognized frame (deck ready, like sheet open, scroll settled) resets it.
+
+**Risk accepted.** The template is keyed on Hinge's *current* tab chrome (the "Hinge+"/"HingeX"
+tab bar). An A/B-tested or redesigned paywall variant that drops or relocates that chrome would
+not be recognized as a paywall specifically, and `_deck_blocked_reason` would return `None` for
+it. The generic stuck-screen watchdog is the backstop for exactly that case: it still stops the
+run and still leaves the screen untouched, just with the less specific "screen I can't
+recognize" message instead of naming the paywall. Losing specificity, not losing the stop, is
+the accepted downside.
+
+### Addendum 2026-08-11 (b) — correction: the stuck-screen watchdog's 90s is a floor, not a fixed budget
+
+Correction to the addendum above, which described `_OBSERVE_STUCK_S` (90.0s) as if it were the
+watchdog's actual timeout. It is now the FLOOR of a randomized budget, not the budget itself. The
+owner overruled the case-by-case argument that used to justify leaving it fixed ("this constant
+produces no device-observable behaviour, so there's nothing to fingerprint"): "humanize it because
+it's easier to just humanize all rather than selectively only humanizing what we think is
+detectable." The standing rule that every timing/probability parameter is randomized/hazard-based
+now applies uniformly, not only to the knobs a given pass of reasoning judges risky — see
+`operation_love/drivers/hinge.py`'s `_OBSERVE_STUCK_S` comment for the argument in full.
+
+**What ships now.** `_observe_stuck_bail` compares elapsed time against `self.
+_observe_stuck_budget_s`, drawn fresh on every (re)arm by the module-level `_observe_stuck_budget()`
+— `human_cooldown(_OBSERVE_STUCK_S)`, chosen specifically because it never returns below its
+anchor, so the floor guarantee above (a human genuinely deliberating is never cut short) still
+holds exactly as measured. MEASURED over 200k draws at anchor 90.0: min 90.0s, median 104.4s, p75
+115.9s, p95 138.5s, p99 158.5s, max ~249s, mean 108.2s, 0.0000 of draws below 90s. The `no_change`
+fast path's deck-ready reprobe cadence (`_OBSERVE_STUCK_CHECK_S`, 5.0s) is humanized the same way,
+via `human_delay(_OBSERVE_STUCK_CHECK_S)` per probe. The operator-facing generic stuck message
+(previously `"...for over {_OBSERVE_STUCK_S:.0f}s..."`) now names the actual elapsed time instead
+of the constant, since the budget is no longer fixed. No behavioural guarantee changed: a static
+deck-ready screen still never bails regardless of deliberation length, and `like_sheet` (human
+composing) still never times out while `like_sending` (the app working) still does.
+
+### Addendum 2026-08-12 — the enumeration scroll's distance: the ratio clamp was a fixed constant in disguise
+
+Same rule as the 2026-08-09 (fixed caps) and 2026-08-11 (b) (stuck-watchdog) addenda, applied to a
+knob nobody had looked at that way. Part B's item-enumeration pass sizes each read-scroll against
+the card spacing it can actually measure on the current frame (`operation_love/drivers/
+scroll_step.py`, built for ops/OPENER-REDESIGN.md 5.5/5.10.1 — the fixed `read_scroll_frac` cadence
+aliases against the card pitch and produces a wrong item index, so the distance has to follow the
+content). The randomization lived in the step/spacing RATIO, drawn uniformly from (0.26, 0.36),
+and the resulting pixel distance was then CLAMPED into the legal gesture range.
+
+**The clamp was the bug.** It maps every draw outside the range onto the same delivered distance,
+so the realised distribution grew a point mass at each end: at the 219px gesture floor (which a
+short card's lower ratio falls under) and at the 363px ceiling (which a tall card's upper ratio
+exceeds). Measured, 5000 draws per spacing: **95% of gestures on ONE distance at 620px of card
+spacing, 40% at 738px — the smallest spacing anywhere in the calibration corpus — 34% at 1166px,
+and 87% at 1400px.** Over the three captures in order, the single most common gesture distance was
+24-37% of all gestures. A scroll distance that is one constant a third of the time is exactly the
+step function §4's cap addendum describes, one layer down.
+
+**What ships now.** The ratio window defines the two ENDS of a draw window and the step is drawn
+uniformly over the integer pixels between them, so the distance still tracks the card (the window's
+position and width are both fractions of the measured spacing) while neither end accumulates mass.
+Re-measured: the most common distance is now 2-4% of gestures, and the cost is unchanged or
+slightly better (34-42 scrolls per profile against 35-43). No safety property moved — every
+delivered step is still under 0.36 of the spacing it was sized against, corpus maximum 0.3596
+before and after, and the ~608px hard refusal is untouched.
+
+**Accepted residual, stated.** Just above that refusal threshold the 219px gesture floor MEETS the
+aliasing ceiling (0.36 x 609 = 219), so exactly one distance is legal and every gesture on such a
+profile is identical. Nothing can fix that at any layer — a smaller gesture leaves the driver's
+sanctioned read-scroll window and a larger one aliases the index — so the plan REPORTS it
+(`ScrollStep.window_px`, and a sentence in `reason`) instead of presenting a forced constant as a
+draw. No profile in the corpus comes near it: the smallest spacing measured over 148 frames and two
+profiles is 737px, where 46 distinct distances survive.
+
+Not wired to production: this module and the rest of Part B's stack are still offline modules plus
+tests, and `config.yaml`'s `read_scroll_frac: 0.55` remains the swipe-deck read cadence, which
+indexes nothing.
+
 ## 5. Re-check triggers
 - **Realized auto-mode like rate drifting high** (added 2026-08-09) — with `target_like_ratio`
   unset, nothing holds the right-swipe ratio down. Measure it from the decision store; if it
@@ -556,3 +708,18 @@ missing field.
   whose decision never lands (the loop waiting through a real pass), and for `capture_split`
   records. If this shows up live, the fix is a second identity dimension (e.g. including the
   verified badge / photo-count row in the band), not a wider threshold.
+- **Hinge redesigns the Hinge+ upgrade screen (added 2026-08-11)** — `_PAYWALL_MATCH_THRESHOLD`
+  and the `hinge_upgrade_tab.png` template (§4's 2026-08-11 addendum) are keyed on the current
+  "Hinge+"/"HingeX" tab-bar chrome of one app build, measured live on one device. Any Hinge
+  redesign that removes, relocates, or restyles that tab bar invalidates the template — re-crop
+  and re-measure discrimination against fresh non-paywall frames before trusting it again. In the
+  interim, the generic `_OBSERVE_STUCK_S` watchdog from the same addendum still stops the run,
+  just without the paywall-specific reason string.
+- **A profile whose card spacing leaves the enumeration scroll no jitter (added 2026-08-12)** —
+  see §4's 2026-08-12 addendum. Once the enumeration pass is wired, watch `ScrollStep.window_px`
+  in the debug log: a window narrower than a few tens of pixels means that profile's every
+  read-scroll is the same distance, which is the signature shape the ratio-window fix exists to
+  avoid and which the geometry can still force just above the ~608px refusal threshold. Nothing in
+  the calibration corpus reaches it (smallest measured spacing 737px), so it is a "has Hinge
+  started drawing much shorter cards" signal, not a tuning knob — the answer is not to widen the
+  ratio window, which would alias the item index instead.

@@ -277,27 +277,209 @@ opener:
   # opener.max_attempts' own ceiling above by letting a single stalled call hang a profile
   # indefinitely. 180s is 2x this measured 90s worst case.
   request_timeout_s: 90
+  # The owner-tunable voice and substance rules for the opener itself. opener.py's _SYSTEM
+  # carries a near-duplicate copy of this same text, and the two are pinned by two SEPARATE
+  # tests (tests/test_config_yaml_real.py against this file, tests/test_opener.py against
+  # _SYSTEM). Editing one without the other hands the model two contradictory style guides in
+  # a single request AND fails a test in a file nobody would think to look at, so change both
+  # together. The duplication itself is known debt, recorded in ops/OPENER-REDESIGN.md 3.1.
+  #
+  # Rewritten 2026-08-11 per ops/OPENER-REDESIGN.md sections 2 and 3 (Part A). The previous
+  # text asked only that the opener be "grounded in exactly ONE concrete detail", which does
+  # not distinguish being GROUNDED IN a detail from NAMING it, so the model recited the detail
+  # back into the message it sent. For illustration: under a photo of her in an outdoor sauna
+  # at sunset, an opener reading "That view by the sauna during sunset looks relaxing, where
+  # is this from?" is naming exactly what the photo already shows. The failure is not
+  # hypothetical, only the wording above is illustrative: production openers have shown the
+  # same shape, restating the model's own internal grounding note (the `referenced` field)
+  # back into the visible message word for word.
+  # She is looking at the photo while she reads the words, so describing it back reads as if
+  # we think she cannot see it.
+  #
+  # The fix can be unconditional because the premise holds 100% of the time: on Hinge a
+  # like-with-comment is ALWAYS displayed attached to the specific photo or prompt card it
+  # was left on, and there is no delivery path where she reads the text without that item in
+  # front of her. Hence the SHARED CONTEXT RULE below.
+  #
+  # Shortening alone would have produced a worse failure ("That looks fun, where is it?" is
+  # sendable to any woman alive), so the replacement property is not brevity but falsifiability:
+  # the opener must carry a claim that COULD BE WRONG. Description is unfalsifiable by
+  # construction, which is exactly why it proves nothing -- a message that cannot be wrong
+  # could have been written without looking. Anyone can see; the opener has to show we thought.
+  #
+  # Two deliberate wordings that look like mistakes and are not. (1) The five moves are stated
+  # as examples with an explicit escape clause, never as a checklist, because forcing a move
+  # onto an item it does not suit produces awkwardness, which is worse than plain. (2) The
+  # guardrail says "the sender" and "he" rather than "me": the rest of the prompt addresses the
+  # model in the second person about a third-person man ("the opening message a man sends"), so
+  # a first-person "me" would be ambiguous about whose history is being protected.
+  #
+  # Every example opener below is free of em dashes and hyphens, and of emoji and non-ASCII,
+  # by owner rule: few-shot examples are the strongest instrument in this prompt and the model
+  # copies the shape of what it is shown, so a single hyphen in an example would teach the
+  # model to write them despite the HARD RULE.
+  #
+  # Addendum 2026-08-11 (same day, later): a live dry run against a real profile produced 5/5
+  # openers that all opened with "I bet", exactly the entropy-collapse risk doc 3.6 predicted.
+  # Root cause was the HEDGE THE CLAIM line offering only two named forms here ("I'm going to
+  # guess", "I bet", "I heard", "I'm assuming") and, worse, only TWO in opener.py's _SYSTEM ("a
+  # hedge like I bet or I heard"), with "I bet" landing first in the sentence the model reads
+  # right before it writes. Fixed by widening the named forms to seven, framing them explicitly
+  # as illustrative rather than a menu (the same escape-clause pattern already used for the
+  # five moves below), and adding a standalone VARY THE OPENING instruction. Both changes are
+  # mirrored in opener.py's _SYSTEM so the two copies keep agreeing (doc 3.1). This does not
+  # replace the deterministic entropy guard doc 3.6 describes as the eventual real fix; it is
+  # the prompt-layer mitigation that was actually missing.
+  #
+  # Addendum 2026-08-12 (Part B, ops/OPENER-REDESIGN.md 5.1): the model now CHOOSES which item
+  # to write about, and that choice is also the item that gets liked, so the style guide gained
+  # three paragraphs (PICK THE ITEM YOURSELF, THE FAILURE TO AVOID, THE UNNUMBERED IMAGES ARE
+  # CONTEXT). Nothing already here was edited: the one rule, the five moves and their escape
+  # clause, the three guardrails, the hedge list, VARY THE OPENING, the two sentence ceiling,
+  # the economy rule, the HARD RULEs and every edit pair are untouched, and opener.py's _SYSTEM
+  # carries a compressed copy of the same three paragraphs so the pair keeps agreeing (doc 3.1).
+  #
+  # The selection criterion is doc 5.1's: best ANGLE, not most striking photo. It is the same
+  # premise/point distinction THE ONE RULE already makes, applied one step earlier -- the item
+  # is only the premise, so choosing by how the item LOOKS optimises the half that never becomes
+  # the message. Doc 5.1's own illustration ships verbatim in spirit ("a mediocre backpacking
+  # shot that connects to her food prompt beats a great portrait with nothing to say about it")
+  # because the tradeoff, not the preference, is what a model with a page of photos in front of
+  # it gets wrong.
+  #
+  # The failure mode is named as a failure on purpose. Picking a striking item with nothing to
+  # say about it is not a separate bug from over-description, it is the upstream CAUSE of it:
+  # once the item is chosen and there is no claim available, description is the only material
+  # left, and every wording rule in Part A can be obeyed right up to that point. Hence "the way
+  # out is always to pick a different item", which is the only instruction that actually fixes
+  # it at the stage it goes wrong.
+  #
+  # The context tier is described rather than merely permitted. Doc 5.3 confirms from a live
+  # capture that Hinge's vitals block (age, job, school, city) carries no like heart, so it is
+  # sent unnumbered and can never be chosen -- but doc 2.3 names combining two things she said in
+  # different places as the strongest move precisely because it cannot be bluffed by anyone who
+  # read a single card, and the vitals block is prime material for it. Telling the model only
+  # "you may not pick it" would leave the strongest use of the strongest move unstated.
+  #
+  # Addendum 2026-08-12 (audit fix, "BUG 1" -- the observe prompt contradicted itself): the three
+  # paragraphs the addendum above added (PICK THE ITEM YOURSELF, THE FAILURE TO AVOID, THE
+  # UNNUMBERED IMAGES ARE CONTEXT) are GONE from this block, and are not moving to a parallel
+  # conditional copy here either. Root cause: this whole `style:` block is sent, byte-for-byte,
+  # as the user turn's STYLE GUIDE on EVERY request regardless of shape (see opener.py's
+  # _text_part), so an unconditional "you choose the item" instruction here directly contradicts
+  # the anchored closing paragraph _text_part appends for OBSERVE's request ("YOUR MESSAGE
+  # ATTACHES TO THE PHOTO OR PROMPT IN THAT LAST IMAGE ... Write about that item only"), which
+  # fires precisely when the item is NOT the model's choice -- the human already made it by
+  # tapping that item's heart. Both instructions reached Gemini in the same anchored request,
+  # confirmed live by building the real request via
+  # GeminiOpener._text_part(profile, cfg.opener.style, anchored=True).
+  #
+  # opener.py's _SYSTEM carries the same selection criterion and does NOT have this problem,
+  # because it is genuinely shape-aware: _ANCHOR_SYSTEM is only appended when the request is
+  # anchored, and it explicitly overrides _SYSTEM's own "PICK THE ITEM YOURSELF" line ("THIS
+  # OVERRIDES PICK THE ITEM YOURSELF ABOVE ... you do not choose one") before the model ever
+  # writes. Rather than build a second, parallel override for THIS copy -- which would leave two
+  # independently-maintained shape-aware mechanisms doing the same job, and doc 3.1 already names
+  # "the duplication trap" as the standing risk that produced this very bug -- the selection
+  # criterion is deleted from here and left to live in exactly one place. _SYSTEM's version is
+  # compressed, not abridged: every property this block used to state (the tradeoff, the failure
+  # mode, the context tier and why to use it) is still there in full, pinned by
+  # tests/test_opener.py, so nothing the model needs to choose well is lost -- only the
+  # unconditional, unguarded duplicate of it is. See that test and
+  # tests/test_config_yaml_real.py's test_shipped_opener_style_does_not_ship_the_item_selection_rule
+  # for the pinned shape of this decision.
   style: |
     Use the dating and conversational principles associated with Coach Corey Wayne's
     "How to Be a 3% Man", without copying his wording. Be a charming gentleman first:
     relaxed, confident, playful, genuinely curious, and direct without pressure. Carry the
     spirit of his 90/10 framework across the interaction: default to sincere interest and
     easy confidence, and reserve light teasing or cheeky humor for the occasional profile
-    where it arises naturally. Do not force teasing into every opener. Ground this opener
-    in exactly ONE concrete detail from a specific photo or prompt. Make one clear, positive,
-    profile specific bid, then leave room for her reply. Favor a sincere observation, a direct
-    low pressure invitation, or one open, easy to answer question about that detail. Questions
-    should invite positive, fun conversation, not form an interview. Any teasing must be clearly
-    good natured and never belittling, arrogant, condescending, or mean. Mild innuendo is eligible
-    only when her own profile clearly invites that playful tone; never force it. A brief greeting
-    is optional but cannot substitute for profile specific substance. At most one authentic,
-    specific compliment is allowed; never pile on flattery or seek approval. Do not act as if
-    intimacy or romantic interest already exists. Keep the tone non needy and do not demand that
-    she chase. APPLICATION RULE: ONE short sentence is preferred and TWO sentences is the absolute
-    maximum. A second sentence may be one easy positive question or a direct low pressure invitation.
-    Do not try to build a text relationship in the opener.
+    where it arises naturally. Do not force teasing into every opener.
+
+    SHARED CONTEXT RULE: your message is displayed directly under the exact photo or prompt it
+    attaches to. She is looking at that item while she reads your words. Write like two people
+    looking at the same thing.
+
+    THE ONE RULE: your opener must contain a claim that could be wrong. Describing what is in
+    the photo can never be wrong, which is exactly why it proves nothing. She is not checking
+    whether you have eyes. A message that could have been written without looking at her profile
+    has failed, whether it is too descriptive or too generic.
+
+    The thing you can see may be your premise. It may never be your point. Test it by covering
+    the photo: if nothing is left, start over.
+
+    Ground this opener in exactly ONE concrete detail from a specific photo or prompt, then do
+    not say that detail back to her. The detail is where your claim comes from, not what your
+    message is made of. Make one clear, positive, profile specific bid and leave room for her
+    reply.
+
+    WAYS THIS TENDS TO LOOK. These are examples, not a checklist. If none of them fits the item
+    in front of you, write whatever does fit and keep the rule. Never shoehorn one of these onto
+    an item it does not suit; awkward is worse than plain.
+      Guess something from the evidence and commit to it.
+      Say something you know that the item brought to mind.
+      Claim something outside the frame: what she felt, what it cost, what happened next.
+      Tease her, good naturedly, about something the evidence licenses.
+      Connect two things she said in different places on her profile.
+    Connecting two separate places on her profile is the strongest of these, because it could
+    not have been written by anyone who looked at less than the whole page, and because she
+    volunteered both halves herself.
+
+    A claim she can correct beats a question she has to answer. A correction is the easiest and
+    most enjoyable reply a person can give, so being wrong about the guess still wins. Questions
+    are allowed as the second beat after a real claim, never as the whole message: at most one
+    open, easy to answer question about that detail. Questions should invite positive, fun
+    conversation, not form an interview.
+
+    HEDGE THE CLAIM, NEVER YOURSELF: "I'm going to guess", "I heard", "I'm assuming",
+    "something tells me", "odds are", "my money is on", "I bet", or any other phrasing that
+    does the same job. These are examples, not a menu to pick the same one from every time: any
+    phrase that makes a real claim safe to make and trivially easy to answer qualifies. Being
+    wrong is then part of the fun and she gets to be the expert. Never apologise for writing,
+    never ask permission, never call your own question dumb.
+
+    VARY THE OPENING: do not start every message the same way. Rotate which hedge phrase, which
+    of the five moves, and which sentence shape leads from one opener to the next. The same
+    opening construction message after message reads as a template, not a person.
+
+    GUESS THE WORLD, NOT HER IDENTITY: name a country, a region, a park, the way a well travelled
+    friend would. Never a street, a neighbourhood, a hotel, a specific venue, or anywhere that
+    could be where she lives. Never guess her employer, her school, or her age, and never
+    identify anyone else in the photo. You may know more than this. Do not show it.
+
+    NEVER INVENT THE SENDER: you may not claim he has been somewhere, done something, or likes
+    something. You do not know his history and he has to live with whatever you write.
+
+    Any teasing must be clearly good natured and never belittling, arrogant, condescending, or
+    mean. Mild innuendo is eligible only when her own profile clearly invites that playful tone;
+    never force it. A brief greeting is optional but cannot substitute for profile specific
+    substance. At most one authentic, specific compliment is allowed; never pile on flattery or
+    seek approval. Do not act as if intimacy or romantic interest already exists. Keep the tone
+    non needy and do not demand that she chase.
+
+    APPLICATION RULE: TWO sentences is the absolute maximum. Within that ceiling, be as short as
+    the claim allows: spend no word on anything she can already see, and no word on padding, but
+    never cut the claim itself to save room. A second sentence may be one easy positive question
+    or a direct low pressure invitation. Do not try to build a text relationship in the opener.
     HARD RULE: never use an em dash or any hyphen; use commas or periods instead
     (write "physician assistant", not "PA-C").
+
+    EXAMPLES OF THE EDIT. Same item each time, first is wrong, second is right.
+    Photo of her in an outdoor sauna at sunset.
+      No:  That view by the sauna during sunset looks relaxing, where is this from?
+      Yes: That view looks relaxing, where is this from?
+    Photo of her with a husky in the arctic.
+      No:  That husky is too cute, is it yours?
+      Yes: I know you were smiling, but I bet you were freezing out there.
+      Yes: I heard huskies run about as warm as a space heater, so at least you had that.
+    Photo of her on a ridge with mountains behind her.
+      Yes: Based on that ridgeline I'm going to guess Norway.
+    Prompt card, two truths and a lie about 30 countries, cilantro, and meeting a pop star.
+      No:  Your two truths and a lie about the countries, cilantro and the pop star is fun,
+           which one is the lie?
+      Yes: The cilantro one is the lie, I can feel it.
+    Her prompts mention she puts hot sauce on everything; separate photo of her backpacking.
+      Yes: How many bottles of hot sauce did that trip cost you?
 
 # --- Cost control (see operation_love/costing.py) ---
 budget:

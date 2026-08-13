@@ -15,6 +15,8 @@ config.yaml that could not start was therefore fully CI-green.
 import pytest
 
 from operation_love.config import load
+from operation_love.opener.opener import GeminiOpener
+from operation_love.perception.capture import Profile
 
 
 @pytest.fixture(scope="module")
@@ -38,7 +40,51 @@ def test_opener_model_has_pricing_entry(cfg):
     )
 
 
+def _example_opener_lines(style):
+    """The example opener lines the model is actually shown, extracted from the style block.
+
+    Returned verbatim (stripped of leading indentation only), so a caller can assert on the
+    exact characters the model copies. Few-shot examples are the strongest instrument in this
+    prompt, so the owner rules about what may appear in them are enforced against THESE lines
+    specifically rather than against the block as a whole, which contains prose the rules do
+    not govern (the HARD RULE has to spell "PA-C" to forbid it).
+
+    Structure of the EXAMPLES OF THE EDIT block (config.yaml, per ops/OPENER-REDESIGN.md 3.3):
+    an item description at column 0, then its examples indented and labelled "No:"/"Yes:", and
+    one example that WRAPS onto a continuation line indented deeper still. The continuation is
+    part of the example the model reads, so it is collected too.
+    """
+    lines = style.splitlines()
+    starts = [i for i, line in enumerate(lines)
+              if line.strip().startswith("EXAMPLES OF THE EDIT")]
+    assert len(starts) == 1, (
+        "expected exactly one 'EXAMPLES OF THE EDIT' heading in opener.style, "
+        f"found {len(starts)}"
+    )
+    collected = []
+    in_example = False
+    for line in lines[starts[0] + 1:]:
+        stripped = line.strip()
+        if stripped.startswith(("No:", "Yes:")):
+            in_example = True
+            collected.append(stripped)
+        elif in_example and stripped and line.startswith(" "):
+            collected.append(stripped)      # wrapped continuation of the example above
+        else:
+            in_example = False              # blank line, or an item description at column 0
+    return collected
+
+
 def test_shipped_opener_style_keeps_faithful_corey_framework_and_two_sentence_cap(cfg):
+    """The Corey Wayne voice and the length ceiling survive the 2026-08-11 redesign.
+
+    Everything here predates ops/OPENER-REDESIGN.md and must NOT have been lost while the
+    substance rules around it were rewritten. The one deliberate casualty is the ONE-sentence
+    *preference*, removed per doc 3.2.1: a claim that could be wrong needs room to exist, and
+    the strongest opener in the whole design ("I know you were smiling, but I bet you were
+    freezing out there") is eighteen words. The two-sentence CEILING stays; the preference is
+    replaced by an economy rule aimed at padding rather than at substance, pinned below.
+    """
     style = " ".join(cfg.opener.style.lower().split())
     assert "90/10 framework" in style
     assert "genuinely curious" in style
@@ -52,6 +98,226 @@ def test_shipped_opener_style_keeps_faithful_corey_framework_and_two_sentence_ca
     assert "low investment so she chases" not in style
     assert "tease her like a bratty little sister" not in style
     assert "no interview questions" not in style
+    # The ceiling now lives under its own heading, alongside the economy rule that replaced
+    # the brevity preference. Pinning the heading keeps the two from drifting apart.
+    assert "application rule: two sentences is the absolute maximum" in style
+    assert "as short as the claim allows" in style
+    assert "spend no word on anything she can already see" in style
+    # Doc 3.2.1: this phrasing must stay GONE. Its return would silently reinstate the
+    # brevity-for-its-own-sake pressure the redesign removes, and it would do so without
+    # contradicting any other assertion in this file.
+    assert "one short sentence is preferred" not in style
+    assert "one short sentence" not in style
+
+
+def test_shipped_opener_style_ships_the_unbluffable_claim_rule(cfg):
+    """The substance rule from ops/OPENER-REDESIGN.md 2, 2.1 and 2.2.
+
+    This is the whole point of the redesign. "exactly one concrete detail" (asserted above)
+    survived the rewrite but no longer means what it used to: on its own it never distinguished
+    being GROUNDED IN a detail from NAMING it, which is how we shipped "That view by the sauna
+    during sunset looks relaxing, where is this from?" under a photo of a sauna at sunset. Each
+    half is now load-bearing, so each half is pinned:
+
+      - the premise that makes the rule unconditional (she is looking at the item),
+      - the falsifiability property that replaced brevity as the fix,
+      - the premise-not-point carve-out that keeps "based on that ridgeline" legal,
+      - the "do not say the detail back to her" clause bolted onto the grounding sentence,
+      - the demotion of questions to a second beat.
+    """
+    style = " ".join(cfg.opener.style.lower().split())
+    assert "shared context rule" in style
+    assert "displayed directly under the exact photo or prompt it attaches to" in style
+    assert "write like two people looking at the same thing" in style
+    assert "the one rule: your opener must contain a claim that could be wrong" in style
+    assert "she is not checking whether you have eyes" in style
+    assert "may be your premise. it may never be your point" in style
+    assert "test it by covering the photo: if nothing is left, start over" in style
+    # The grounding sentence and its new second half must stay adjacent: the sentence alone is
+    # root cause #1 from doc 1.1, and it is only safe with this clause attached.
+    assert "exactly one concrete detail" in style
+    assert "then do not say that detail back to her" in style
+    # Doc 2.2: questions stay legal, they stop being the default.
+    assert "a claim she can correct beats a question she has to answer" in style
+    assert "never as the whole message" in style
+
+
+def test_shipped_opener_style_frames_the_five_moves_as_non_binding_examples(cfg):
+    """ops/OPENER-REDESIGN.md 2.3: the five moves are illustrations, never a menu.
+
+    Deliberate and easy to "tidy" into a bug: if the escape clause is ever dropped, the moves
+    read as a checklist and the model shoehorns one onto an item it does not suit, which is
+    worse than plain. The five moves themselves are pinned so a silent deletion is caught, and
+    Connect is pinned as the strongest because that ranking is the reason Part B exists at all.
+    """
+    style = " ".join(cfg.opener.style.lower().split())
+    assert "ways this tends to look. these are examples, not a checklist" in style
+    assert "write whatever does fit and keep the rule" in style
+    assert "never shoehorn" in style
+    assert "guess something from the evidence and commit to it" in style
+    assert "say something you know that the item brought to mind" in style
+    assert "claim something outside the frame: what she felt, what it cost, what happened next" in style
+    assert "tease her, good naturedly, about something the evidence licenses" in style
+    assert "connect two things she said in different places on her profile" in style
+    assert "connecting two separate places on her profile is the strongest" in style
+
+
+def test_shipped_opener_style_does_not_ship_the_item_selection_rule(cfg):
+    """Bug 1 fix, 2026-08-12 audit: this block used to carry the item-selection instruction
+    (PICK THE ITEM YOURSELF / THE FAILURE TO AVOID / THE UNNUMBERED IMAGES ARE CONTEXT) and no
+    longer does, on purpose.
+
+    THIS BLOCK ('opener.style') IS SENT ON EVERY REQUEST, REGARDLESS OF SHAPE -- it is the user
+    turn's STYLE GUIDE (see opener.py's _text_part), with no anchored/unanchored branching of its
+    own. An unconditional "you choose the item" instruction there directly contradicted OBSERVE's
+    anchored closing paragraph, which tells the model the item is ALREADY decided (the human
+    picked it by tapping its heart) -- so an anchored request carried two live, opposing
+    instructions about who chooses the item, in the same call, with nothing resolving the clash.
+    Confirmed by building the real request via
+    GeminiOpener._text_part(profile, cfg.opener.style, anchored=True) with this real config; see
+    test_anchored_style_guide_never_carries_the_item_selection_instruction below for that same
+    reproduction pinned as a regression test.
+
+    opener.py's _SYSTEM keeps the selection criterion -- the tradeoff, the failure mode named as
+    a failure, and why to use (never pick) the unnumbered context tier -- in full, compressed but
+    not abridged, pinned by tests/test_opener.py. It does not have this bug: _ANCHOR_SYSTEM is
+    only appended when the request is anchored, and it explicitly overrides _SYSTEM's own "PICK
+    THE ITEM YOURSELF" line before the model ever writes. Rather than build a second, independent
+    override mechanism for THIS block -- two shape-aware copies of the same rule is exactly doc
+    3.1's "duplication trap" that produced this bug in the first place -- the instruction now
+    lives in exactly one place, and this test pins its absence here rather than its presence.
+    """
+    style = " ".join(cfg.opener.style.lower().split())
+
+    for _phrase in (
+        "pick the item yourself",
+        "the failure to avoid is picking an item you have nothing to say about",
+        "the unnumbered images are context, not choices",
+        "which one you write about is your choice to make",
+        "set item_index to its number",
+    ):
+        assert _phrase not in style, (
+            f"opener.style ships the item-selection instruction again ({_phrase!r}); this "
+            "block is sent on every request regardless of shape and has no anchored/unanchored "
+            "branch of its own, so an unconditional copy here re-introduces the 2026-08-12 "
+            "audit's Bug 1 (the observe prompt contradicting itself). The selection criterion "
+            "belongs in opener.py's _SYSTEM, which IS shape-aware via _ANCHOR_SYSTEM's explicit "
+            "override -- see test_opener.py's item-selection assertions."
+        )
+
+    # Everything else the redesign shipped around it must survive untouched -- this test exists
+    # to catch a regression in ONE paragraph, not to license churn on its neighbours.
+    assert "connecting two separate places on her profile is the strongest" in style
+    assert "a claim she can correct beats a question she has to answer" in style
+
+
+def test_anchored_style_guide_never_carries_the_item_selection_instruction(cfg):
+    """Bug 1's own reproduction, pinned as a regression test.
+
+    The audit that found Bug 1 reproduced it by building the real anchored user-turn text via
+    GeminiOpener._text_part(profile, cfg.opener.style, anchored=True) against the real shipped
+    config -- i.e. exactly what observe mode sends once the human has tapped a heart and the
+    anchor screenshot is in hand. This test is that same construction, so a future edit that
+    reintroduces an unconditional selection paragraph into opener.style (or removes the anchored
+    closing paragraph's own "write about that item only") fails here directly, rather than only
+    being caught by the style block's own isolated assertions above.
+    """
+    profile = Profile(photos=[b"fake-frame-1", b"fake-frame-2", b"fake-frame-3"])
+    opener = GeminiOpener(["gemini-test-model"], api_key="test-key")
+    text = opener._text_part(profile, cfg.opener.style, anchored=True)["text"].lower()
+
+    # The self-selection instruction must not be anywhere in the anchored request's user turn.
+    assert "pick the item yourself" not in text
+    assert "which one you write about is your choice to make" not in text
+    assert "read all of the numbered items before you choose" not in text
+
+    # The anchored closing paragraph -- the one genuinely shape-aware instruction for this
+    # request -- must still be exactly what tells the model which item it is writing about.
+    assert "your message attaches to the photo or prompt in that last image" in text
+    assert "write about that item only" in text
+
+
+def test_shipped_opener_style_ships_the_redesign_guardrails(cfg):
+    """ops/OPENER-REDESIGN.md 2.4. Two of these three are safety rules, not style.
+
+    HEDGE THE CLAIM is what makes a wrong guess a feature rather than a risk, and it is the
+    only thing that rescues the "say something you know" move from competing with her own
+    expertise. GUESS THE WORLD caps the SPECIFICITY of a guess, not its accuracy, and is the
+    rule keeping us off her street/employer/school/age. NEVER INVENT THE SENDER stops the model
+    fabricating the owner's history, which he then has to sustain five messages later.
+
+    British spellings are the doc's, kept verbatim on the "implement what it says" rule, so
+    they are pinned as shipped rather than quietly Americanized here.
+    """
+    style = " ".join(cfg.opener.style.lower().split())
+    assert "hedge the claim, never yourself" in style
+    assert "never apologise for writing, never ask permission" in style
+    assert "guess the world, not her identity" in style
+    assert "never a street, a neighbourhood, a hotel, a specific venue" in style
+    assert "the way a well travelled friend would" in style
+    assert "never guess her employer, her school, or her age" in style
+    assert "never invent the sender" in style
+    assert "you may not claim he has been somewhere" in style
+
+
+def test_shipped_opener_style_hedge_forms_are_wide_and_openings_are_varied(cfg):
+    """ops/OPENER-REDESIGN.md 3.6 (entropy guard) plus its 2026-08-11 addendum: a live dry run
+    against a real profile produced 5/5 openers that all opened with "I bet". Root cause was the
+    HEDGE THE CLAIM guardrail naming too few forms with "I bet" landing first/most salient, both
+    here and in opener.py's _SYSTEM (pinned separately by tests/test_opener.py). This test pins
+    the two-part fix so the regression cannot come back silently: (1) more than two named hedge
+    forms, offered as illustrative rather than a fixed menu, and (2) an explicit instruction not
+    to open every message the same way.
+    """
+    style = " ".join(cfg.opener.style.lower().split())
+    _hedge_forms = ["i'm going to guess", "i heard", "i'm assuming", "something tells me",
+                    "odds are", "my money is on", "i bet"]
+    for form in _hedge_forms:
+        assert form in style, f"hedge form {form!r} missing from opener.style"
+    _forms_present = sum(1 for form in _hedge_forms if form in style)
+    assert _forms_present > 2, (
+        f"opener.style's HEDGE THE CLAIM line only names {_forms_present} hedge forms "
+        f"(need >2) -- this is the exact 'I bet' monoculture regression"
+    )
+    assert "these are examples, not a menu to pick the same one from every time" in style
+    assert "vary the opening" in style
+    assert "do not start every message the same way" in style
+
+
+def test_shipped_example_openers_contain_no_hyphen_em_dash_or_non_ascii(cfg):
+    """Owner rule, and the strictest place it applies: the few-shot examples.
+
+    The model copies the shape of what it is shown, so a single hyphen inside an example opener
+    would teach it to write hyphens regardless of what the HARD RULE says in prose. The HARD
+    RULE itself has to contain "PA-C" in order to forbid it, which is why this is asserted
+    against the example lines rather than the whole block, and why the block-wide check below
+    allows exactly that one hyphen and names it.
+    """
+    raw = cfg.opener.style
+    examples = _example_opener_lines(raw)
+    # Guard the extractor itself: if a reflow ever breaks the parse, this test must fail loudly
+    # rather than silently pass over zero lines. 10 = 2 sauna + 3 husky + 1 ridge + 2 prompt
+    # card (one of which wraps, giving 3 lines) + 1 hot sauce.
+    assert len(examples) == 10, f"extractor found {len(examples)} example lines: {examples}"
+    assert "Yes: That view looks relaxing, where is this from?" in examples
+    assert "No:  That view by the sauna during sunset looks relaxing, where is this from?" in examples
+    assert "Yes: I know you were smiling, but I bet you were freezing out there." in examples
+    assert "which one is the lie?" in examples          # the wrapped continuation line
+    for line in examples:
+        assert "-" not in line, f"example opener contains a hyphen: {line!r}"
+        assert "—" not in line, f"example opener contains an em dash: {line!r}"
+        assert "–" not in line, f"example opener contains an en dash: {line!r}"
+        assert all(ord(c) < 128 for c in line), f"example opener is not plain ASCII: {line!r}"
+    # Block-wide, the same rules hold with exactly one documented exception. Asserting the
+    # count (rather than "no hyphen") is what lets this stay strict: a new hyphen anywhere in
+    # the style text fails here even if it is added outside the examples.
+    assert all(ord(c) < 128 for c in raw), "opener.style must be plain ASCII"
+    assert "—" not in raw
+    assert raw.count("-") == 1, (
+        "opener.style should contain exactly one hyphen, the 'PA-C' the HARD RULE forbids; "
+        f"found {raw.count('-')}"
+    )
+    assert 'not "PA-C"' in raw
 
 
 def test_hinge_identity_top_name_band_matches_the_measured_ocr_band(cfg):

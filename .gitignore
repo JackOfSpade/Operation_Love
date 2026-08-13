@@ -17,6 +17,14 @@ data/
 *.sqlite3
 captures/
 
+# Calibration captures: raw screencaps pulled off the phone to measure geometry
+# (card gutters, heart positions, band rects). These are frames of REAL people's
+# dating profiles -- faces, names, prompt answers -- so they must never reach a
+# remote. The measurements taken FROM them belong in ops/*.md; the frames do not
+# belong in git. Same reasoning as .env above: the artifact is local-only by rule,
+# not by accident.
+ops/calibration/
+
 # model weights (downloaded on first run)
 *.pth
 *.pt

@@ -12,18 +12,52 @@ import time
 from dataclasses import asdict, dataclass, field
 
 
+# The per-card opener suggestion, as a SET, with each field's blank value. Every one of them
+# describes one suggestion for one card, so they are published together and cleared together --
+# see RunStatus.set_app's clearing net and AppStatus's own field comments. Declared once, here,
+# rather than spelled out at each of the four sites that clear them (two in status.py, two in
+# worker.py), because the bug this guards against is precisely a site that clears three of them
+# and forgets the fourth: an adversarial review found exactly that when the set was three fields
+# long, and doc 5.9's inversion took it to seven.
+_OPENER_FIELDS: dict[str, object] = {
+    "opener_suggestion": None,
+    "opener_referenced": None,
+    "opener_anchored": False,
+    "opener_item": None,
+    "opener_item_description": None,
+    "opener_warning": None,
+    "opener_pending": False,
+}
+
+
+def cleared_opener_fields() -> dict:
+    """A fresh dict of every opener field at its blank value, for a caller that must clear them
+    EXPLICITLY -- i.e. one that names `opener_suggestion` in its own set_app call and therefore
+    opts itself out of the clearing net above (see worker.py's per-card reset and its observe
+    loop's `finally`). Returned as a new dict every call so a caller can add fields to it."""
+    return dict(_OPENER_FIELDS)
+
+
 @dataclass
 class AppStatus:
     app: str
     mode: str = "observe"
     # starting | capturing | waiting | suggesting | waiting_for_send | scoring | acting |
-    # out_of_profiles | rate_limited | saving | stopped | error | wedged
-    # "suggesting": observe-mode Hinge only -- the worker is blocked inside the (up to
-    # opener.request_timeout_s) advisory maybe_opener() call, generating the post-heart
-    # comment-sheet suggestion. Published immediately before that call and cleared by the
-    # unconditional state transition right after it (success or exception -- see worker.py's
-    # _wait_for_observed_decision), so the hub never keeps rendering the stale "click pass X
-    # or heart" banner while the operator is actually waiting on a live request.
+    # out_of_profiles | rate_limited | saving | stopped | error | wedged | blocked
+    # "suggesting": NO LONGER PUBLISHED, as of doc 5.9's observe inversion. It meant "the worker
+    # is blocked inside the advisory maybe_opener() call", which was true only while observe
+    # generated AFTER the human tapped a heart. Generation now happens on its own thread, before
+    # the human acts, so there is nothing to block on and nothing to hold the operator up: what
+    # replaced it is `opener_pending` beside a live GO cue. Left in this list because it is still
+    # a legal value an older snapshot can carry and the hub still renders it.
+    # "blocked": a DIFFERENT terminal state from out_of_profiles -- that one means the deck
+    # ran dry (a normal end of supply, nothing wrong); this one means something is ON SCREEN
+    # standing BETWEEN us and the deck and the driver can name it (DatingAppDriver.
+    # blocked_reason) -- the measured case being Hinge's "out of free likes for today"
+    # Hinge+ upgrade screen (2026-08-11, see ops/ANTI-BOT-RESEARCH.md and
+    # data/hinge_debug/run_20260811_011416). A graceful stop, not an error: the phone is in
+    # a perfectly normal state, nothing is broken, nothing should be retried, and the screen
+    # is left exactly as found -- see worker.py's blocked-deck check for why.
     state: str = "starting"
     last_decision: str | None = None       # like | pass | dislike | defer | no_face | no_photos
     last_score: float | None = None
@@ -37,24 +71,83 @@ class AppStatus:
     # text so the operator can instantly see whether the suggestion matches the photo they
     # actually hearted, rather than trusting it blind.
     opener_referenced: str | None = None
-    # Whether opener_suggestion was generated with the live like-screen anchor image (True) or
-    # blind from the profile alone (False) -- see OpenerService.maybe_opener's anchor
-    # parameter. A False here on Hinge means the suggestion was NOT told which item the
-    # comment attaches to and is therefore the exact configuration that produced the reported
-    # out-of-place openers (a caption about her beach photo landing under a dining table
-    # photo): the model had no way to know which item Hinge would actually attach the comment
-    # to, so it guessed from the whole profile instead.
+    # VESTIGIAL as of doc 5.9's observe inversion, and kept only so the anchor path stays
+    # bisectable for one phase (the doc's own instruction: invert observe first, retire the
+    # anchor separately). It recorded whether opener_suggestion had been generated FROM the live
+    # like-screen anchor image, which was meaningful only while observe generated AFTER the human
+    # tapped. Observe now generates BEFORE the tap, from the same numbered crops auto sends, so
+    # nothing publishes True any more and the hub no longer renders it -- what replaced it is
+    # opener_item (which item the model chose) plus opener_warning (the human opened a different
+    # one). Still cleared with the rest of the set below, so it cannot go stale while it exists.
     opener_anchored: bool = False
+    # --- doc 5.9's inverted observe suggestion -----------------------------------------
+    # The MODEL ITEM NUMBER the opener was written about (OpenerPick.index, 1-based over the
+    # numbered crops the model was sent -- ops/OPENER-REDESIGN.md 5.1/5.7). This is the whole
+    # instruction the inversion produces: "like item 3". None when there is no suggestion.
+    opener_item: int | None = None
+    # The model's own short description of that item (OpenerPick.item_description), so the
+    # operator can find it on the card without counting hearts. Display only -- nothing branches
+    # on it, and doc 5.8's coarse type cross-check is a separate, unbuilt thing.
+    opener_item_description: str | None = None
+    # Why there is NO text to type, when there is none. Set for two different situations that
+    # call for the same operator action (type your own words):
+    #   * doc 5.9's MISMATCH -- the human opened a different item than the suggestion was written
+    #     for, or the sheet is not on this profile at all, or the sheet could not be checked.
+    #     "The mismatch must be DETECTED and SURFACED": the hub replaces the opener with this and
+    #     offers nothing to type. It is never accompanied by opener_suggestion -- the worker
+    #     publishes one or the other, never both.
+    #   * NO SUGGESTION AT ALL -- the capture could not be enumerated into numbered items, or the
+    #     opener call produced nothing. Observe does not stop for either (that is AUTO's rule),
+    #     but going quiet about it is what made the old failure mode invisible.
+    opener_warning: str | None = None
+    # True while the suggestion for THIS card is still being generated. The operator is not
+    # asked to wait for it (doc 5.9: publish READY immediately and let the suggestion fill in
+    # behind it), so this is a note beside a live GO cue rather than a WAIT state of its own --
+    # which is exactly why it is a flag and not a `state` value. The old "suggesting" state,
+    # which DID block the operator, has no producer left in observe.
+    opener_pending: bool = False
     error: str | None = None
     # Human-readable cause of a "stopped" outcome that did NOT come from an exception --
-    # today, exclusively OpenerService exhausting its opener capacity (run budget reached,
-    # provider credit exhausted, or a permanent provider failure) and asking every worker to
-    # stop. `error` already covers the exception path (worker.py's HALT-on-unexpected
-    # handler); this is the equivalent for a clean stop, so the hub can tell "operator
-    # clicked Stop" apart from "every Gemini free-tier model is out of quota" instead of
-    # rendering both as a bare "stopped". None for every other terminal state
-    # (out_of_profiles/rate_limited/error already explain themselves via `state`/`error`).
+    # `error` already covers the exception path (worker.py's HALT-on-unexpected handler);
+    # this is the equivalent for a clean stop, so the hub can tell "operator clicked Stop"
+    # apart from a specific, nameable cause instead of rendering everything as a bare
+    # "stopped". None for every other terminal state (out_of_profiles/rate_limited/error
+    # already explain themselves via `state`/`error`).
+    #
+    # THIS FIELD USED TO HAVE EXACTLY ONE SOURCE: OpenerService exhausting its opener
+    # capacity (run budget reached, provider credit exhausted, or a permanent provider
+    # failure) and asking every worker to stop. That invariant is deliberately broken as of
+    # 2026-08-11: worker.py's blocked-deck check (see stop_kind below) now also populates
+    # this field, with a driver-supplied reason like Hinge's "out of free likes for today"
+    # Hinge+ upgrade screen (data/hinge_debug/run_20260811_011416). A consumer that still
+    # assumes "stop_reason set" means "OpenerService" will misreport a blocked deck as a
+    # quota/credit problem -- `stop_kind` is what you must branch on now, not the mere
+    # presence of a reason string.
     stop_reason: str | None = None
+    # Disambiguates stop_reason's SOURCE now that more than one code path populates it:
+    # "opener" -- an OpenerService-side stop: either it exhausted its capacity and asked
+    #             every worker to stop (the original, sole source of stop_reason -- see its
+    #             comment above), or a per-profile opener could not be produced or could not
+    #             be targeted (a per-profile OpenerError, a sub-latch failure, or an opener
+    #             whose item number has no driver-owned translation into a tappable item yet
+    #             -- see worker.py's _auto_loop opener guards).
+    # "deck_blocked" -- worker.py's blocked-deck check: the driver's blocked_reason()
+    #             reported something on screen standing between us and the deck (Hinge's
+    #             out-of-free-likes paywall being the measured case). A graceful stop, not
+    #             an error -- see AppStatus.state's "blocked" entry above.
+    # "targeting" -- ops/OPENER-REDESIGN.md 5.6's hard stop: an opener WAS produced and the
+    #             driver could not put the like on the item it was written about, so the like
+    #             was not sent at all (base.ItemTargetingError; worker.py's _auto_loop catches
+    #             it around its one driver.like call). Deliberately NOT "opener": nothing
+    #             opener-side was exhausted or failed, and the operator's next move is to go
+    #             and read the phone, which the driver leaves exactly as it stopped. It was
+    #             published as "opener" until this kind existed, which made it render under
+    #             the hub's "opener capacity exhausted" title -- a confidently wrong label on
+    #             the one stop that exists to prove we never comment on the wrong item.
+    # None for every stop that isn't one of the above (a manual Stop click,
+    # out_of_profiles, rate_limited, defer/cold-start) -- stop_reason is also None in all
+    # of those, so there is nothing to disambiguate.
+    stop_kind: str | None = None
     updated_at: float = field(default_factory=time.time)
 
 
@@ -97,22 +190,25 @@ class RunStatus:
             s = self._apps.setdefault(app, AppStatus(app=app))
             for k, v in fields.items():
                 setattr(s, k, v)
-            # A suggestion belongs only to Hinge's still-open comment sheet.  Clearing it
-            # with a normal state transition makes the safe default "never show it for the
-            # next card", even if a worker's dismissal path does not mention the field.
-            # The transition that opens the sheet supplies opener_suggestion explicitly.
-            # opener_referenced and opener_anchored describe THAT suggestion and must be
-            # cleared in the same place, under the same condition: a stale "about her beach
-            # photo" caption outliving its suggestion (or a stale anchored=True badge
-            # surviving onto whatever gets shown for the next card) is worse than showing
-            # nothing at all.
+            # A suggestion belongs only to ONE card. Clearing it with a normal state transition
+            # makes the safe default "never show it for the next card", even if a worker's
+            # dismissal path does not mention the field. The transition that publishes a
+            # suggestion supplies opener_suggestion explicitly and so opts out of this net.
+            #
+            # EVERY FIELD IN _OPENER_FIELDS IS CLEARED TOGETHER, ALWAYS. They describe ONE
+            # suggestion between them -- its text, what it claims to be about, which item it
+            # names, that item's description, why there is no text, and whether one is still
+            # coming -- so any of them outliving the rest is a lie of exactly the kind this net
+            # exists to prevent: a stale "about her beach photo" caption under a new card's
+            # suggestion, or (since doc 5.9) a stale "like item 3" instruction pointing at a
+            # profile that is no longer on screen. Named as one set here and in worker.py's own
+            # explicit clears so a field added to one cannot be forgotten by the other.
             if (fields.get("state") in {"waiting", "capturing", "suggesting", "acting",
                                         "out_of_profiles", "rate_limited", "saving", "stopped",
                                         "error", "wedged"}
                     and "opener_suggestion" not in fields):
-                s.opener_suggestion = None
-                s.opener_referenced = None
-                s.opener_anchored = False
+                for name, blank in _OPENER_FIELDS.items():
+                    setattr(s, name, blank)
             s.updated_at = time.time()
 
     def record_swipe(self, app: str, decision: str, score: float | None = None) -> None:
@@ -122,9 +218,10 @@ class RunStatus:
             s.last_score = score
             s.swipes_run += 1
             s.state = "acting"
-            s.opener_suggestion = None       # a completed manual decision consumes the sheet
-            s.opener_referenced = None       # same rationale -- describes the consumed suggestion
-            s.opener_anchored = False        # same rationale -- describes the consumed suggestion
+            # A completed decision consumes the suggestion, whole. Same set, same rule as
+            # set_app's clearing net above: they describe one suggestion for one card.
+            for name, blank in _OPENER_FIELDS.items():
+                setattr(s, name, blank)
             s.updated_at = time.time()
 
     # --- global updates (supervisor / decider) -------------------------

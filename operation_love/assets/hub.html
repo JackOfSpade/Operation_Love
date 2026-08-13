@@ -215,6 +215,36 @@ function renderSwipe(snap){
                wait:'background:#3a2f12;border:1px solid #f0b429;color:#f0b429',
                idle:'background:#22222b;border:1px solid rgba(255,255,255,.14);color:#9a9aa2'};
   const box = (k,t,sub) => `<div style="${css[k]};border-radius:10px;padding:12px 14px;margin-top:8px;font-weight:700;font-size:18px">${t}${sub?` <span style="font-weight:400;font-size:12px;opacity:.8">${sub}</span>`:''}</div>`;
+  // Auto mode types OpenerResult.opener into Hinge's comment sheet byte-for-byte (see
+  // worker.py: the exact same string reaches driver.like() -> adb.text() unmodified), so this
+  // box is the operator's only chance to catch scaffolding words ("Sure! Here's an opener:
+  // ...") the model wrapped around the real text -- because that same wrapped string is what
+  // ships untouched in automation. That canary only works if the opener's exact start and end
+  // are unmistakable, so unlike box() above (title + sub flowed inline on one line) this
+  // stacks three block rows -- a label, the opener alone in a delimited inset block, then
+  // chrome -- so a run-on line can never again hide where the opener stops and our own copy
+  // begins.
+  const openerBox = (opener, heading, chrome) => `<div style="${css.go};border-radius:10px;padding:12px 14px;margin-top:8px">
+<div style="font-weight:700;font-size:11px;letter-spacing:.05em;text-transform:uppercase;opacity:.85">${heading}</div>
+<div style="margin-top:6px;padding:8px 10px;background:rgba(0,0,0,.25);border-left:3px solid #39d98a;border-radius:4px;font-weight:600;font-size:16px;white-space:pre-wrap">${escHtml(opener)}</div>
+<div style="margin-top:6px;font-weight:400;font-size:12px;opacity:.8">${chrome}</div>
+</div>`;
+  // ops/OPENER-REDESIGN.md 5.9's mismatch surface. The opener is REPLACED by this, never shown
+  // beside it: leaving text on screen next to a caveat is how a wrong-item opener gets typed
+  // anyway. WAIT-coloured (🔴, per the owner's circle-only convention) because the one thing the
+  // operator must not do is copy something -- there is deliberately nothing here to copy.
+  // The THIRD row is the operator's next action, and it is not decoration. Doc 5.9 says the
+  // warning replaces the OPENER BLOCK -- not the banner -- and this box is the only thing on
+  // screen while it is up, so without it a card whose suggestion failed says what went wrong and
+  // nothing about what to do, and a session where every suggestion fails (a dead quota, a driver
+  // that cannot enumerate) loses the 🟢 turn-taking cue entirely for its whole length. Same two
+  // cues, same wording, as the box above and as the no-suggestion fallbacks below, so the three
+  // teach one thing: there is nothing to copy, and the decision is still yours.
+  const openerWarnBox = (warning, next) => `<div style="${css.wait};border-radius:10px;padding:12px 14px;margin-top:8px">
+<div style="font-weight:700;font-size:15px">🔴 no suggestion to type</div>
+<div style="margin-top:4px;font-weight:400;font-size:12px;opacity:.9">${escHtml(warning)}</div>
+<div style="margin-top:6px;font-weight:400;font-size:12px;opacity:.8">${next}</div>
+</div>`;
   // The worker may publish an opener while Hinge's comment sheet is open.  The suggested text
   // replaces the ordinary instruction in this same banner; it never goes to terminal output.
   // Every dynamic value is escaped before it enters innerHTML.
@@ -223,42 +253,82 @@ function renderSwipe(snap){
     const last = a.last_decision ? ('last '+a.last_decision) : '';
     const app = escHtml(a.app || 'app');
     const opener = typeof a.opener_suggestion === 'string' ? a.opener_suggestion.trim() : '';
+    // ops/OPENER-REDESIGN.md 5.9. opener_warning is set whenever there is deliberately no text
+    // to type -- the human opened a different item than the suggestion names, the sheet is not
+    // on this profile at all, the sheet could not be checked, or no suggestion was produced in
+    // the first place. The worker publishes opener_warning or opener_suggestion, never both, so
+    // the branch below is a belt on top of that rather than a precedence rule.
+    const warning = typeof a.opener_warning === 'string' ? a.opener_warning.trim() : '';
+    // Hoisted out of the 'waiting' branch below because the opener branch needs it too now:
+    // since doc 5.9's inversion a suggestion is published BEFORE the human taps, i.e. during
+    // the very window this sentence describes. Hinge has physically labelled X/heart controls;
+    // other platforms may not.
+    const controls = a.app === 'hinge' ? 'click pass X or heart'
+                                       : "use the app's pass or like control";
     // Intercepts every GO-producing branch below (opener suggestion, waiting_for_send,
     // plain waiting) with one honest stop-coloured box instead -- see `stopping` above for
     // why acting on any of them right now would be pointless at best.  Same WAIT (🔴) style
-    // as the suggesting/capturing/acting cues just below, per the owner's circle-only rule.
-    if(stopping && (opener || st==='waiting_for_send' || st==='waiting')) {
+    // as the capturing/acting cues just below, per the owner's circle-only rule. A pending
+    // WARNING is intercepted too: it is still per-card advice about a decision that is about
+    // to be thrown away, and "do not swipe" is the more urgent thing to say.
+    if(stopping && (opener || warning || st==='waiting_for_send' || st==='waiting')) {
       return box('wait', `🔴 ${app}: stopping — do not swipe, this decision will not be recorded`);
     }
+    if(warning) return openerWarnBox(warning, st === 'waiting_for_send'
+      ? 'type your own opener, then tap Send Like'
+      : `🟢 your call: ${controls}`);
     if(opener) {
-      // opener_referenced is the model's own one-line statement of which photo/prompt the
-      // suggestion is about (see OpenerPick.referenced); showing it here is what turns a
-      // mismatch between the suggestion and the item the comment actually lands under into
-      // something the operator can catch at a glance instead of only after sending it.
-      // opener_anchored is false when the driver could not hand over the open like/comment
-      // screen for this suggestion (see worker.py's _wait_for_observed_decision) -- the
-      // suggestion was then written blind, exactly like before this fix, and the operator
-      // needs an explicit warning rather than silent trust. 🔴/🟢 circles, never hand emoji
-      // -- see the owner's status-indicator convention.
+      // TWO ROWS OF CHROME, AND NEITHER MAY TOUCH THE OPENER ITSELF (owner rule: the string
+      // shown here must be byte-identical to what auto would type, so our own words never share
+      // a line with it -- see openerBox). The HEADING carries the instruction the inversion
+      // produces, "like item 3", because that is what the operator acts on first and it must not
+      // be buried in a dimmer sub-line. opener_item_description is the model's own words for
+      // that item, so it can be found on the card without counting hearts.
+      //
+      // opener_referenced (the model's one-line statement of which DETAIL the opener reacts to)
+      // stays in the lower row: since the inversion it is no longer the operator's only defence
+      // against an out-of-place opener -- opener_item is, and the mismatch check above enforces
+      // it -- but it is still the cheapest way to see at a glance what the message is claiming.
       const referenced = typeof a.opener_referenced === 'string' ? a.opener_referenced.trim() : '';
       const aboutSub = referenced ? `about: ${escHtml(referenced)} · ` : '';
-      const anchorWarn = a.opener_anchored ? '' :
-        '🔴 written WITHOUT seeing which photo you hearted, may not match · ';
-      return box('go', `💬 ${escHtml(opener)}`,
-                 `${anchorWarn}${aboutSub}type this in Hinge, then tap Send Like`);
+      const item = Number.isInteger(a.opener_item) ? a.opener_item : null;
+      const desc = typeof a.opener_item_description === 'string' ? a.opener_item_description.trim() : '';
+      const heading = item === null ? '💬 type exactly this'
+        : `💬 like item ${item}${desc ? ` — ${escHtml(desc)}` : ''}, then type exactly this`;
+      // THE DECISION IS STILL THE HUMAN'S, AND THE PRE-TAP WINDOW IS WHERE THAT HAS TO BE SAID.
+      // Before the inversion a suggestion could only appear AFTER the heart tap (state
+      // 'waiting_for_send'), so it never competed with the 🟢 GO cue that tells the operator it
+      // is their turn and that PASSING is one of the two things they may do. It is published
+      // before the tap now, and this branch runs ahead of the 'waiting' branch below, so
+      // without this the whole decision window rendered as "like item 3 ... then tap Send Like
+      // in Hinge" -- no circle, no X, and an instruction about a sheet that is not open yet --
+      // in the one mode whose entire output is the owner's own like/pass labels. The suggestion
+      // says which item to comment on IF they like her; it is not the decision, and a hub that
+      // reads like an order to like would bias the labels the ranker is trained on.
+      const chrome = st === 'waiting_for_send'
+        ? `${aboutSub}then tap Send Like in Hinge`
+        : `${aboutSub}🟢 your call: ${controls}`;
+      return openerBox(opener, heading, chrome);
     }
-    if(st==='waiting_for_send') return box('go', '💬 No suggestion available',
-                                            'type your own opener, then tap Send Like');
+    // The sheet is open and there is nothing to type. Two reasons, and the operator's next move
+    // differs: the suggestion is still being written (they tapped faster than the model answered
+    // -- doc 5.9's race, which is why this state is reachable at all), or there simply is not one.
+    if(st==='waiting_for_send') return a.opener_pending
+      ? box('go', '💬 still writing a suggestion…', 'type your own opener if you would rather not wait')
+      : box('go', '💬 No suggestion available', 'type your own opener, then tap Send Like');
     if(st==='waiting') {
-      const controls = a.app === 'hinge' ? 'click pass X or heart'
-                                          : "use the app's pass or like control";
-      return box('go', `🟢 ${app}: ${controls}`, 'make your choice in the app');
+      // The suggestion is generated while this cue is up (doc 5.9: READY is published
+      // immediately and the suggestion fills in behind it), so this says so instead of leaving
+      // the operator to wonder -- but it stays a GO cue, because nothing here asks them to wait.
+      const sub = a.opener_pending ? 'make your choice, or wait a moment for a suggestion'
+                                   : 'make your choice in the app';
+      return box('go', `🟢 ${app}: ${controls}`, sub);
     }
-    // The worker is blocked inside the (up to opener.request_timeout_s) advisory suggestion
-    // call -- without this the banner would keep showing the stale "click pass X or heart"
-    // GO cue from before the heart tap, with no sign anything is happening. WAIT cue (🔴,
-    // matching the capturing/acting/starting states below), plus 💬 to stay visually tied to
-    // the same suggestion feature the GO-state message above uses.
+    // "suggesting" USED TO BE A BLOCKING STATE and is deliberately not one any more (doc 5.9):
+    // the suggestion is generated on its own thread while the operator is already free to act,
+    // so it is a note beside the GO cue above (opener_pending) rather than a WAIT state that
+    // holds them up. Kept as a branch because it is still a legal AppStatus.state and an older
+    // status snapshot can carry it; nothing in this build publishes it.
     if(st==='suggesting') return box('wait', `🔴 wait — 💬 writing a suggestion for ${app}…`);
     if(st==='capturing') return box('wait', `🔴 wait — reading ${app} profile…`);
     if(st==='acting')    return box('wait', `🔴 wait — recording your ${app} decision…`);
@@ -273,9 +343,11 @@ function selectAutoApps(status){
   if (!status || !status.apps) return [];
   return Object.values(status.apps).filter(a => a.mode === 'auto');
 }
-// Keep auto-mode progress and terminal outcomes visible here instead of forcing the operator
-// to reconstruct them from the raw log tail. Per-app states distinguish unexpected errors,
-// deck exhaustion, rate limits, cold-start deferral, manual stops, and a live worker.
+// Keep autonomous progress and every terminal outcome visible here instead of forcing the
+// operator to reconstruct them from the raw log tail -- AUTO apps at every stage, OBSERVE
+// apps once they've stopped (see the terminalObserveApps comment below for why). Per-app
+// states distinguish unexpected errors, deck exhaustion/blocking, rate limits, cold-start
+// deferral, manual stops, and a live worker.
 function renderAutoStatus(snap){
   const el = $('#autobanner'); if(!el) return;
   const s = snap && snap.status;
@@ -283,7 +355,29 @@ function renderAutoStatus(snap){
   // autonomous run. HubState.running follows Thread.is_alive(), so gating on it would
   // hide the stop reason at exactly the moment a returning operator needs to see it.
   if(!snap || !s){ el.style.display='none'; return; }
-  const autoApps = selectAutoApps(s);
+  // This banner covers AUTO apps unconditionally, via selectAutoApps (unchanged -- it is
+  // their ONLY on-screen cue at every stage of a run, live or stopped), PLUS OBSERVE apps
+  // that have already reached one of the per-app TERMINAL states this function's own
+  // branches below recognise. `mode === 'observe'` (rather than `!== 'auto'`) keeps this
+  // from ever double-adding an app selectAutoApps(s) already covers.
+  //
+  // A live observe app's per-card GO/WAIT cue stays entirely owned by renderSwipe /
+  // selectObserveApps above and is UNTOUCHED by this addition: none of waiting / capturing /
+  // suggesting / waiting_for_send / acting / scoring / saving / starting are terminal, so a
+  // live observe app never matches the filter below. What DID need fixing: renderSwipe bails
+  // out the instant snap.running goes false (see its own early return, above), so an observe
+  // run that stopped on its own -- a cold-start defer, an unrecognized-screen halt, or the
+  // 2026-08-11 Hinge "out of free likes" paywall hang this whole mechanism fixes (see
+  // AndroidDriver.blocked_reason) -- left the operator staring at a bare 'stopped' pill with
+  // NOTHING anywhere on the page saying why. Kept inline (not hoisted into a third top-level
+  // selectXApps sibling) because, unlike selectObserveApps/selectAutoApps (which classify an
+  // app by its stable MODE), the terminal-state list here belongs with the per-state branches
+  // below that actually define what "terminal" means -- a second copy of that list living
+  // somewhere else could silently drift from the branches it's supposed to describe.
+  const terminalObserveApps = Object.values(s.apps || {}).filter(a =>
+    a.mode === 'observe'
+    && ['blocked', 'out_of_profiles', 'rate_limited', 'error', 'wedged', 'stopped'].includes(a.state));
+  const autoApps = selectAutoApps(s).concat(terminalObserveApps);
   if(!autoApps.length){ el.style.display='none'; return; }
   // supervisor.run()'s shutdown tail (status.stopping -- see status.py's docstring and
   // renderSwipe's identical use above): covers every non-terminal per-app state this
@@ -303,16 +397,73 @@ function renderAutoStatus(snap){
     if(st==='wedged')   return box('err', `🔴 ${a.app} stopped — worker did not exit cleanly`, a.error || swipes);
     if(st==='out_of_profiles') return box('idle', `${a.app}: no more profiles`, swipes);
     if(st==='rate_limited')    return box('idle', `${a.app}: stopped — rate limit reached`, swipes);
+    // NEW terminal state (AndroidDriver.blocked_reason -> Worker._finish_session's
+    // stop_kind="deck_blocked" path): the driver found the deck itself unavailable rather
+    // than the operator or OpenerService stopping the run -- today, exclusively Hinge's
+    // "out of free likes for today" Hinge+ paywall (the 2026-08-11 observe-mode hang this
+    // whole mechanism fixes). Deliberately idle here -- the SAME styling as out_of_profiles /
+    // rate_limited just above -- and NOT 'err' like error/wedged above them: this is
+    // NOT an error box. Running out of the app's own daily free-like allowance is a normal,
+    // expected outcome of using the app, not a bug or a crash; coloring it red would train
+    // the operator to treat a benign daily limit as something that needs investigating. The
+    // specific reason (OCR'd headline text, or a generic "upgrade screen is up" message if
+    // OCR was unavailable/inconclusive -- see _deck_blocked_reason) is the box's SUBTITLE,
+    // not folded into the title, so the title stays a stable, scannable label regardless of
+    // which reason produced it.
+    if(st==='blocked') return box('idle', `${a.app}: stopped — deck blocked`, a.stop_reason);
     if(st==='stopped' && a.last_decision==='defer')
       return box('idle', `${a.app}: stopped — ranker not ready (cold-start)`, 'run observe mode first');
-    // OpenerService exhausted its capacity (run budget / provider credit / a permanent
-    // provider failure) and asked every worker to stop. Without this, an opener-exhaustion
-    // stop rendered identically to the bare 'stopped' case below -- the operator could not
-    // tell "I clicked Stop" from "every Gemini free-tier model is out of quota" without
-    // digging through the raw log panel. stop_reason is only ever set for this cause (see
-    // Worker._opener_stop_reason), so its mere presence is the trigger.
-    if(st==='stopped' && a.stop_reason)
+    // ops/OPENER-REDESIGN.md 5.6's hard stop, and it is NOT the opener-capacity stop below.
+    // The bot got as far as the like, could not put it on the item the model chose, and
+    // therefore put it NOWHERE: nothing typed, nothing sent, the deck not advanced, and the
+    // screen deliberately left exactly as it stopped so it can be read back. Until this branch
+    // existed it published stop_kind="opener" and rendered under that branch's title, "opener
+    // capacity exhausted" -- a confidently wrong label on the one stop whose whole point is
+    // that we refused to attach a real message to the wrong person's card. It gets its OWN
+    // stop_kind (worker.py's ItemTargetingError handler) rather than a reason-string sniff for
+    // the reason stated two branches down: branch on the field that NAMES the cause, never on
+    // prose. The operator's next move is different too -- walk to the phone and read what is on
+    // it (possibly an open comment sheet with nothing typed in it), not check a quota.
+    //
+    // 'idle', NOT 'err', deliberately, and for exactly the reason worker.py catches the
+    // exception instead of letting it reach the generic handler: this is a standing rule being
+    // obeyed, not a crash, and an operator who cannot tell those apart soon stops reading red
+    // banners. The subtitle is the reason, which leads with the INTENDED and ACTUAL item
+    // numbers (Worker._targeting_stop_reason) -- the two things doc 5.6 asks a stop to record.
+    if(st==='stopped' && a.stop_kind==='targeting')
+      return box('idle', `${a.app}: stopped — could not like the item the opener was written about`,
+                 a.stop_reason);
+    // stop_reason no longer has exactly one cause, so its mere presence can no longer be
+    // trusted to mean "OpenerService exhaustion" the way it used to -- Worker._opener_stop_
+    // reason was, until 2026-08-11, the ONLY thing that ever set it. The Hinge paywall fix
+    // above gave a "stopped" outcome a second possible cause with its own reason string (and
+    // its own stop_kind), and a future cause could add a third. Branch on stop_kind -- the
+    // field that actually NAMES which cause produced stop_reason -- rather than inferring the
+    // cause from stop_reason merely being non-null. An unrecognized stop_kind (older data, an
+    // unlisted future cause, or simply none at all) falls through to the neutral
+    // "stopped — <reason>" wording below rather than being mislabeled with today's one
+    // specific cause: a future cause can never render as a wrong, confidently-labelled one.
+    //
+    // RESIDUAL, STATED RATHER THAN HIDDEN: "opener" is still a family, not a single cause.
+    // Besides genuine capacity exhaustion it carries a per-profile opener failure, a capture
+    // that could not be enumerated into numbered items, and an opener whose item number names
+    // nothing this build can act on (worker.py's _auto_loop). The title is exact only for the
+    // first; for the others the truth is in the reason on the sub-line. Only the TARGETING stop
+    // was split out into its own kind above, because it is the only one of them whose operator
+    // action differs (go and look at the phone) and the only one where the wrong title is
+    // actively misleading about what the bot did. Splitting the rest means a kind each at their
+    // own worker.py sites, and is not worth a new vocabulary until one of them needs a
+    // different action from the others.
+    if(st==='stopped' && a.stop_kind==='opener')
       return box('idle', `${a.app}: stopped — opener capacity exhausted`, a.stop_reason);
+    if(st==='stopped' && a.stop_kind==='deck_blocked')
+      return box('idle', `${a.app}: stopped — ${a.stop_reason}`, swipes);
+    if(st==='stopped' && a.stop_reason)
+      // Every OTHER stop_kind, including none at all -- same neutral wording as the
+      // deck_blocked case just above, deliberately: the honest thing to do with an
+      // unrecognized cause is show its own reason plainly, never guess which of the NAMED
+      // causes above it might actually be.
+      return box('idle', `${a.app}: stopped — ${a.stop_reason}`, swipes);
     if(st==='stopped') return box('idle', `${a.app}: stopped`, swipes);
     // Fall-through = a non-terminal state (saving/capturing/scoring/acting). That only means
     // "the worker is live" while the run actually IS live; since this banner now persists

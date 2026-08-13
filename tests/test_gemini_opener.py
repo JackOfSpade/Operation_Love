@@ -19,11 +19,15 @@ from operation_love.opener.opener import (
     GeminiAPIError,
     GeminiCapacityExhausted,
     GeminiOpener,
+    ItemRequest,
     OpenerAborted,
     OpenerError,
     OpenerParseError,
     _ANCHOR_LABEL,
     _ANCHOR_SYSTEM,
+    _CONTEXT_LABEL,
+    _ITEM_PREAMBLE,
+    _ITEM_PREAMBLE_CONTEXT,
     _SCHEMA,
     _SYSTEM,
 )
@@ -56,10 +60,27 @@ def _quota_exhausted(quota_id=None, quota_metric=None):
 
 
 def _success(opener="That pottery mug has a story. What happened?", *, index=1,
-             usage=None):
+             usage=None, angle="guessing she threw the mug herself",
+             item_description="a photo of a pottery mug"):
+    """A well-formed model response, with the fields in the SAME order _SCHEMA declares them
+    (item_index, referenced, angle, item_description, opener -- see ops/OPENER-REDESIGN.md 3.4
+    and 5.7). The order is cosmetic to _parse, which reads by key, but a fixture that emits the
+    old opener-first shape would quietly stop representing what a schema-honouring model
+    actually returns.
+
+    ``index`` is the MODEL ITEM INDEX and is 1-BASED (doc 5.7), which is why the default is 1
+    and not 0: under this contract 0 is the out-of-band "no item" value (ITEM_INDEX_ABSENT), so
+    a fixture defaulting to 0 would make every test that never thinks about the index assert
+    against a value the model is not allowed to mean.
+
+    ``angle`` is free text and pure telemetry (doc 3.5): nothing branches on it, so it is only
+    ever asserted on, never matched against a fixed vocabulary. ``item_description`` is the
+    model's own account of WHAT it picked, returned in both modes (doc 5.7).
+    """
     return {
         "candidates": [{"content": {"parts": [{"text": json.dumps({
-            "opener": opener, "referenced": "pottery mug", "referenced_index": index,
+            "item_index": index, "referenced": "pottery mug", "angle": angle,
+            "item_description": item_description, "opener": opener,
         })}]}}],
         "usageMetadata": usage or {
             "promptTokenCount": 11,
@@ -93,7 +114,18 @@ def test_generate_posts_structured_multimodal_request_and_maps_usage():
 
     assert result.model == "gemini-primary"
     assert result.opener == "Matcha and yoga, noted"
-    assert result.referenced == "pottery mug" and result.referenced_index == 1
+    assert result.referenced == "pottery mug"
+    # The MODEL ITEM INDEX, 1-based over the numbered items in the request (doc 5.1/5.7). It
+    # is not the old referenced_index: that was a 0-based index into raw scroll frames, and
+    # the field no longer exists in the schema or on OpenerResult.
+    assert result.item_index == 1
+    assert not hasattr(result, "referenced_index")
+    # `angle` (ops/OPENER-REDESIGN.md 3.4/3.5) must survive the round trip onto OpenerResult:
+    # it is what the stores persist as the telemetry column, so a mapping regression here
+    # would blank that column silently rather than fail anything. `item_description` is the
+    # same kind of round trip, and doc 5.7 requires it in BOTH modes.
+    assert result.angle == "guessing she threw the mug herself"
+    assert result.item_description == "a photo of a pottery mug"
     assert result.usage.input_tokens == 8       # prompt tokens exclude cache-read subset
     assert result.usage.output_tokens == 9       # candidates + Gemini thinking tokens
     assert result.usage.cache_read_input_tokens == 3
@@ -108,6 +140,14 @@ def test_generate_posts_structured_multimodal_request_and_maps_usage():
         "responseMimeType": "application/json",
         "responseJsonSchema": _SCHEMA,
     }
+    # The five-field schema as it goes out on the wire, in the order that reaches Gemini.
+    # Asserted on payload rather than only on the imported _SCHEMA constant so that "what is
+    # actually sent" is pinned, not merely "the payload references the constant" -- the
+    # equality above is true no matter what _SCHEMA contains. Field ORDER is load-bearing;
+    # see test_response_schema_orders_referenced_and_angle_before_the_opener for why.
+    schema = payload["generationConfig"]["responseJsonSchema"]
+    assert list(schema["properties"]) == ["item_index", "referenced", "angle",
+                                          "item_description", "opener"]
     parts = payload["contents"][0]["parts"]
     assert payload["contents"][0]["role"] == "user"
     assert parts[0]["inlineData"] == {
@@ -118,7 +158,144 @@ def test_generate_posts_structured_multimodal_request_and_maps_usage():
     }
     assert "STYLE GUIDE:\nbe curious" in parts[2]["text"]
     assert "HER PROFILE TEXT:\nWeekend potter" in parts[2]["text"]
-    assert "profile in scroll order" in parts[2]["text"]
+    # 2 images sent -> the model is told the items are numbered 1 to 2, and told which field
+    # to answer in. Both numbers are derived from the image count in _text_part, so this also
+    # pins that the range can never disagree with what was actually sent.
+    assert "numbered 1 to 2 in the order shown" in parts[2]["text"]
+    assert "Set item_index to the number of the one your opener is about." in parts[2]["text"]
+    assert "scroll order" not in parts[2]["text"]
+
+
+# ---------------------------------------------------------------------------------------
+# responseJsonSchema -- the five fields Gemini is asked to return, and the ORDER it is asked
+# to return them in. Both are part of the wire format this file exists to keep from drifting.
+# ---------------------------------------------------------------------------------------
+
+def test_response_schema_orders_referenced_and_angle_before_the_opener():
+    """FIELD ORDER IS LOAD-BEARING, not cosmetic (ops/OPENER-REDESIGN.md 3.4, and the comment
+    above _SCHEMA in opener.py). Every model in the cascade runs with thinkingLevel minimal
+    (config.yaml opener.thinking), so the model has NO scratchpad of any kind: an earlier
+    OUTPUT field is the only place it can do its grounding work before it writes the message.
+    The old schema emitted `opener` first, which forced the message itself to carry the
+    description of the photo -- root cause #3 of the over-description bug this redesign fixes.
+    `referenced` first discharges the description into a field that is never sent to her, and
+    `angle` makes the model commit to what its message is doing before it writes it.
+
+    `item_index` LEADS as of Part B (doc 5.1/5.7): it is now a CHOICE the opener must follow
+    rather than a label stuck on an opener that was already written, and emitting it after the
+    message would invert that -- the model would write first and then name whichever item its
+    message happened to suit, which is the blind-then-repair order Part B deletes.
+
+    Nothing else in the codebase would notice a reorder: a dict literal is order-insensitive
+    to every consumer, `required` is only a generation hint, and _parse reads by key. So this
+    assertion is the ONLY thing standing between a tidy-looking alphabetical reshuffle of the
+    _SCHEMA literal and the silent return of the exact bug Part A was written to remove.
+    """
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(Profile(bio="Weekend potter"), style="s")
+    schema = transport.calls[0][1]["generationConfig"]["responseJsonSchema"]
+
+    assert list(schema["properties"]) == ["item_index", "referenced", "angle",
+                                          "item_description", "opener"]
+    assert schema["required"] == ["item_index", "referenced", "angle", "item_description",
+                                  "opener"]
+    assert schema["additionalProperties"] is False
+    # The replaced field is GONE, not merely reordered. Its old meaning (a 0-based index into
+    # raw scroll frames) no longer names anything, so leaving it declared would invite a model
+    # to answer in a space nothing consumes -- see opener.py's OpenerResult.item_index comment.
+    assert "referenced_index" not in schema["properties"]
+
+    # The order must survive JSON serialization, since that -- not the Python dict -- is what
+    # Gemini actually reads. json.dumps preserves insertion order, so this is really a guard
+    # against a future sort_keys=True (or any other normalizing step) creeping into the
+    # request path and alphabetizing the properties into angle/item_description/..., which
+    # would put `opener` second and undo the reorder without touching opener.py at all.
+    serialized = json.dumps(schema)
+    assert (serialized.index('"item_index"') < serialized.index('"referenced"')
+            < serialized.index('"angle"') < serialized.index('"item_description"')
+            < serialized.index('"opener"'))
+
+    # The field descriptions are deliberately ADVERSARIAL to each other (doc 3.4), so the
+    # routing still works on a model that ignores declared property order entirely -- which is
+    # a hypothesis, not a documented Gemini guarantee. Losing either half turns the schema
+    # back into five neutral labels that all invite the same description.
+    referenced_description = schema["properties"]["referenced"]["description"].lower()
+    opener_description = schema["properties"]["opener"]["description"].lower()
+    assert "never sent to" in referenced_description
+    assert "does not leak into the opener" in referenced_description
+    assert "must not describe the item" in opener_description
+    assert "must not reuse the words from referenced" in opener_description
+    # `angle` is free text and telemetry only (doc 3.5) -- an enum would force a pick from a
+    # closed set, which is exactly the shoehorning the move list is designed to avoid.
+    assert "enum" not in schema["properties"]["angle"]
+    assert schema["properties"]["angle"]["type"] == "string"
+    # item_index's description carries the three facts doc 5.7 requires of it, because the
+    # schema is the only place the model is told what the number MEANS: which list it indexes,
+    # that only numbered items are choosable, and that unnumbered context blocks may be
+    # referred to but never picked (doc 5.3's two tiers). Substring-matched on substance
+    # rather than the full literal so wording can be tuned without a test edit.
+    item_index_description = schema["properties"]["item_index"]["description"].lower()
+    assert schema["properties"]["item_index"]["type"] == "integer"
+    assert "numbered items in this request" in item_index_description
+    assert "numbered from 1" in item_index_description
+    assert "you may only choose a number that was actually given" in item_index_description
+    assert "without a number" in item_index_description
+    assert "never pick one" in item_index_description
+    # One answer to two questions (doc 5.1): the item the opener is about IS the item liked.
+    assert "also the item that will be liked" in item_index_description
+    # item_description is free text describing the ITEM, not the detail -- doc 5.7 keeps it
+    # strictly separate from `referenced`, which the redundancy monitor (3.7) compares the
+    # opener against.
+    assert schema["properties"]["item_description"]["type"] == "string"
+    assert "enum" not in schema["properties"]["item_description"]
+
+
+def test_angle_is_mapped_from_the_response_and_degrades_to_empty_when_omitted():
+    """`angle` is pure telemetry: nothing branches on it, and no profile may lose its opener
+    because a model skipped it. _SCHEMA's "required" list is a generation HINT the API does
+    not enforce on the response (the same lesson the non-string `opener` guard was written
+    for), so a response with no angle at all must still parse -- carrying "", which is exactly
+    what an OpenerResult built without an angle already holds."""
+    with_angle = _Transport([(200, _success(angle="teasing her about the kiln"))])
+    assert _opener(with_angle).generate(Profile(), style="s").angle == "teasing her about the kiln"
+
+    body = {"referenced": "pottery mug", "item_index": 1, "opener": "That mug has a story"}
+    without_angle = _Transport([(200, {
+        "candidates": [{"content": {"parts": [{"text": json.dumps(body)}]}}],
+        "usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 7},
+    })])
+    result = _opener(without_angle).generate(Profile(), style="s")
+    assert result.angle == ""
+    assert result.opener == "That mug has a story"     # the opener itself is unaffected
+
+
+def test_item_description_is_mapped_from_the_response_and_degrades_to_empty_when_omitted():
+    """`item_description` (ops/OPENER-REDESIGN.md 5.7) round-trips onto OpenerResult, and a
+    response that omits it must still parse. Same reasoning as `angle` directly above: the
+    "required" list is a generation HINT the API does not enforce on the response, and nothing
+    branches on this field today -- the pre-flight cross-check that will read it is a later
+    workflow -- so a missing description may cost that check its input but must never cost a
+    profile its opener.
+
+    Contrast with `item_index`, which degrades to an out-of-band value instead of a plausible
+    one: a description that is missing is merely uninformative, an index that is missing would
+    otherwise be indistinguishable from a real pick."""
+    with_description = _Transport([(200, _success(item_description="a written prompt card"))])
+    assert (_opener(with_description).generate(Profile(), style="s").item_description
+            == "a written prompt card")
+
+    body = {"item_index": 2, "referenced": "pottery mug", "angle": "guessing",
+            "opener": "That mug has a story"}
+    without_description = _Transport([(200, {
+        "candidates": [{"content": {"parts": [{"text": json.dumps(body)}]}}],
+        "usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 7},
+    })])
+    # Two photos, so item_index=2 names one that was really sent -- an index past the end of
+    # the request is refused as ABSENT, which is a different guard and has its own test.
+    result = _opener(without_description).generate(Profile(photos=[b"a", b"b"]), style="s")
+    assert result.item_description == ""
+    assert result.opener == "That mug has a story"     # the opener itself is unaffected
+    assert result.item_index == 2                       # and the pick still survives
 
 
 def test_api_key_comes_from_injected_environment():
@@ -562,7 +739,9 @@ def _response_with_raw_opener(opener_value):
     'opener' field -- _success() always json.dumps's a real string, which can't represent
     Gemini returning null or a bare number for 'opener' despite the schema marking it
     required (see _SCHEMA's "required" list -- a generation hint, not a runtime guarantee)."""
-    body = {"opener": opener_value, "referenced": "pottery mug", "referenced_index": 0}
+    body = {"item_index": 1, "referenced": "pottery mug",
+            "angle": "guessing she threw the mug herself",
+            "item_description": "a photo of a pottery mug", "opener": opener_value}
     return {
         "candidates": [{"content": {"parts": [{"text": json.dumps(body)}]}}],
         "usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 7},
@@ -625,6 +804,30 @@ def test_valid_string_opener_still_parses_normally():
     result = _opener(_Transport([(200, _success(opener="That mug has a story"))])).generate(
         Profile(), style="s")
     assert result.opener == "That mug has a story"
+
+
+def test_redundancy_monitor_logs_but_never_rejects_an_otherwise_valid_opener(capsys):
+    """The redundancy monitor (ops/OPENER-REDESIGN.md 3.7) compares the opener against the
+    model's own `referenced` note and ships LOG ONLY, deliberately not as a gate: it is a
+    lower bound on redundancy that a terse `referenced` defeats, no threshold has been
+    calibrated against real data yet, and five consecutive rejections stop a run -- so an
+    uncalibrated gate here is a run-killer, not a safety feature. Pinned end to end through
+    generate() rather than only as a unit of _redundant_description_markers, because the
+    tempting future edit is to raise on it, which would silently convert a monitor into
+    exactly the stop condition it was designed not to be.
+
+    This also explains the monitor line every other test in this file prints: the shared
+    _success() fixture's opener restates two content words from its own `referenced` note
+    ("pottery mug"), which is precisely the over-description shape Part A targets.
+    """
+    result = _opener(_Transport([(200, _success())])).generate(Profile(), style="s")
+
+    assert result.opener == "That pottery mug has a story. What happened?"   # sent, not rejected
+    assert result.redundancy_markers == ['opener restates the referenced word "pottery"',
+                                          'opener restates the referenced word "mug"']
+    output = capsys.readouterr().out
+    assert "redundancy monitor" in output          # loud, never silent
+    assert "the opener is being sent" in output
 
 
 # ---------------------------------------------------------------------------------------
@@ -722,21 +925,73 @@ def test_geminiopener_constructs_its_own_lock_instance():
 # ---------------------------------------------------------------------------------------
 
 def test_absent_retry_hint_produces_a_byte_identical_request_to_today():
-    """The default ("") must not add so much as a stray delimiter or a blank section --
-    an ordinary first attempt (the overwhelmingly common case) must build the exact same
-    request it did before retries existed."""
+    """The default ("") must not add so much as a stray delimiter or a blank section -- an
+    ordinary first attempt (the overwhelmingly common case) must build the exact same request
+    it did before retries existed.
+
+    Pinned against a LITERAL expected string rather than against a second identical call.
+    Comparing two invocations of the same call could only ever prove _text_part is
+    deterministic, which was never in doubt; the thing worth guarding is the exact bytes of
+    the unanchored text part, because the whole point of this file is that the request shape
+    cannot drift silently. The Part A redesign left this branch of _text_part untouched (only
+    the ANCHORED closing gained the "you never need to name it" conclusion -- see
+    test_anchored_main_text_names_the_like_screen_and_forbids_app_chrome).
+
+    Part B (ops/OPENER-REDESIGN.md 5.1/5.7) is the first change that DOES move this literal,
+    and this profile carries no photos, so it exercises the zero-numbered-items branch: with
+    nothing numbered to choose from, the model is told so explicitly and told to answer with
+    the out-of-band value, rather than being asked for "the index of the one your opener is
+    about" out of an empty list -- which invited a confident 0 that was indistinguishable from
+    a real pick of the first item under the old 0-based contract. See
+    test_unanchored_text_numbers_the_items_from_one for the ordinary case.
+    """
     transport = _Transport([(200, _success())])
     opener = _opener(transport)
     opener.generate(Profile(bio="Weekend potter"), style="be curious")
 
-    baseline_transport = _Transport([(200, _success())])
-    baseline_opener = _opener(baseline_transport)
-    baseline_opener.generate(Profile(bio="Weekend potter"), style="be curious")
-
     text_with_default_arg = transport.calls[0][1]["contents"][0]["parts"][-1]["text"]
-    text_with_no_retry_hint_call = baseline_transport.calls[0][1]["contents"][0]["parts"][-1]["text"]
-    assert text_with_default_arg == text_with_no_retry_hint_call
+    assert text_with_default_arg == (
+        "STYLE GUIDE:\nbe curious\n\n"
+        "HER PROFILE TEXT:\nWeekend potter\n\n"
+        "No images of her profile were captured, so there are no numbered items in this "
+        "request and the profile text above is everything you have. Set item_index to 0, "
+        "which means you could not pick a numbered item. Write the opener now."
+    )
     assert "RETRY" not in text_with_default_arg
+    # The anchor-only copy must not leak into an unanchored request from either constant.
+    assert _ANCHOR_LABEL not in text_with_default_arg
+    assert transport.calls[0][1]["systemInstruction"]["parts"][0]["text"] == _SYSTEM
+
+
+def test_unanchored_text_numbers_the_items_from_one():
+    """The ordinary unanchored request, pinned as a literal for the same reason as the
+    zero-image case above: this paragraph is the model's ONLY statement of what the number it
+    is about to return indexes.
+
+    1-BASED (ops/OPENER-REDESIGN.md 5.7), and every number in the sentence is derived from the
+    image count rather than written out, so the range can never disagree with what was sent.
+    The old copy said "her profile in scroll order (index 0 first)", which named a space --
+    raw scroll frames -- that is not an item space at all: one card appears in several frames
+    and one frame can hold two cards, so the model had to invent its own enumeration and hope
+    it matched the driver's."""
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(
+        Profile(photos=[b"\x89PNG\r\n\x1a\na", b"\x89PNG\r\n\x1a\nb", b"\x89PNG\r\n\x1a\nc"],
+                bio="Weekend potter"),
+        style="be curious")
+
+    text = transport.calls[0][1]["contents"][0]["parts"][-1]["text"]
+    assert text == (
+        "STYLE GUIDE:\nbe curious\n\n"
+        "HER PROFILE TEXT:\nWeekend potter\n\n"
+        "The 3 image(s) above are her profile items, numbered 1 to 3 in the order shown. "
+        "Set item_index to the number of the one your opener is about. "
+        "Write the opener now."
+    )
+    # The replaced field's name and its index space must both be gone from the copy: doc 5.7
+    # calls out "every line of prompt copy saying scroll order" as part of the breaking change.
+    assert "referenced_index" not in text
+    assert "scroll order" not in text
 
 
 def test_empty_string_retry_hint_matches_omitted_retry_hint():
@@ -773,6 +1028,15 @@ def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     assert "two sentences" in lower
     assert "dash" in lower and "hyphen" in lower
     assert "concrete detail" in lower
+    # Root cause #1 (ops/OPENER-REDESIGN.md 1.1) named the retry hint as one of three places
+    # that demanded the opener prove it looked, with nothing to stop the model from naming the
+    # detail instead of merely being grounded in it. The counterweight must survive here too,
+    # not just in _SYSTEM and the anchored closing: the detail is a premise, never named or
+    # described back to her, and the corrected opener must still carry a claim that could be
+    # wrong.
+    assert "premise" in lower and "point" in lower
+    assert "never name it or describe it back to her" in lower
+    assert "must still carry a claim that could be wrong" in lower
 
 
 def test_retry_hint_reaches_the_second_model_after_a_429_cascade(capsys):
@@ -816,6 +1080,419 @@ def test_images_are_encoded_once_not_per_model_when_a_retry_hint_is_supplied():
     for _, payload, *_ in transport.calls:
         image_part = payload["contents"][0]["parts"][0]
         assert image_part["inlineData"]["data"] == base64.standard_b64encode(png).decode("ascii")
+
+
+# ---------------------------------------------------------------------------------------
+# THE ITEM-CROP REQUEST SHAPE (ops/OPENER-REDESIGN.md 5.2 and 5.7)
+#
+# What the model is shown stops being her raw scroll frames and becomes one cropped image per
+# profile item, numbered, plus the unnumbered context crops, her name as text, and a truncation
+# flag. These tests pin the NEW shape the same way the tests above pin the old one -- as
+# literals -- because doc 5.2's whole argument is that "image k IS item k" has to be true by
+# construction rather than by the model counting, and the only thing standing between that and
+# a silent drift is this file.
+#
+# The fixtures below are SYNTHETIC bytes, never a real capture: ops/calibration/ holds real
+# people's profiles and nothing from it may become a test fixture.
+# ---------------------------------------------------------------------------------------
+
+_ITEM_ONE = b"\x89PNG\r\n\x1a\nitem-one-crop"
+_ITEM_TWO = b"\x89PNG\r\n\x1a\nitem-two-crop"
+_ITEM_THREE = b"\x89PNG\r\n\x1a\nitem-three-crop"
+_CONTEXT_ONE = b"\x89PNG\r\n\x1a\nvitals-context-crop"
+_SCROLL_FRAME = b"\x89PNG\r\n\x1a\nraw-scroll-frame"
+
+
+def _part_shape(parts):
+    """One request's parts as ("text", str) / ("image", raw bytes) pairs, in wire order.
+
+    Asserting against the whole list at once is deliberate: it pins ADJACENCY (which label sits
+    against which image), ORDER (numbered items before context, text last) and CONTENT in a
+    single comparison. A test that only checked "the label is somewhere in the request" would
+    pass on the exact failure this shape exists to prevent -- a label that has drifted onto the
+    wrong crop."""
+    shape = []
+    for part in parts:
+        if "text" in part:
+            shape.append(("text", part["text"]))
+        else:
+            shape.append(("image", base64.b64decode(part["inlineData"]["data"])))
+    return shape
+
+
+def test_item_crop_request_labels_every_image_and_sends_no_scroll_frames():
+    """The full wire shape of an item-crop request, pinned part by part.
+
+    Doc 5.2: "With crops, image 3 in the request IS item 3. Agreement by construction." The
+    construction is exactly this: a preamble stating the label convention once, then for every
+    image a standalone label part IMMEDIATELY before it, numbered items first and context after
+    them, then the trailing instruction block. There is no counting step left for the model.
+
+    The profile also carries a scroll frame, which must NOT appear anywhere in the request --
+    doc 5.7's "Not sent: full screenshots, scroll frames, the anchor, endorsement blocks". A
+    frame sent alongside the crops would re-introduce the duplication bias doc 5.2 removes,
+    since a card straddling a scroll seam appears in several frames and repetition reads as
+    salience to a model that is now CHOOSING among items."""
+    transport = _Transport([(200, _success())])
+    items = ItemRequest(name="Sarah", items=[_ITEM_ONE, _ITEM_TWO], context=[_CONTEXT_ONE])
+
+    _opener(transport).generate(
+        Profile(photos=[_SCROLL_FRAME], bio="Weekend potter"), style="be curious", items=items)
+
+    payload = transport.calls[0][1]
+    assert _part_shape(payload["contents"][0]["parts"]) == [
+        ("text", _ITEM_PREAMBLE + _ITEM_PREAMBLE_CONTEXT),
+        ("text", "=== ITEM 1 ==="),
+        ("image", _ITEM_ONE),
+        ("text", "=== ITEM 2 ==="),
+        ("image", _ITEM_TWO),
+        ("text", _CONTEXT_LABEL),
+        ("image", _CONTEXT_ONE),
+        ("text",
+         "STYLE GUIDE:\nbe curious\n\n"
+         "HER NAME:\nSarah\n\n"
+         "HER PROFILE TEXT:\nWeekend potter\n\n"
+         "The 2 numbered image(s) above are her profile items, numbered 1 to 2, each shown "
+         "immediately after its own ITEM label, so the image after ITEM 1 is item 1. "
+         "The 1 image(s) labelled CONTEXT carry no number: use what they show if it helps, "
+         "but never pick one. "
+         "Set item_index to the number of the one your opener is about. Write the opener now."),
+    ]
+    # The frame is not merely absent from the image list -- it is nowhere on the wire at all.
+    assert _SCROLL_FRAME not in [img for kind, img in _part_shape(payload["contents"][0]["parts"])
+                                 if kind == "image"]
+
+
+def test_item_crop_request_sends_plain_system_text_and_no_anchor_copy():
+    """An item-crop request is UNANCHORED, so its systemInstruction is byte-identical to plain
+    _SYSTEM: no _ANCHOR_SYSTEM addendum, and no _ANCHOR_LABEL part in the contents.
+
+    Doc 5.1 drops the anchor from the prompt entirely, and this is the half of that which lands
+    now -- the anchored path itself stays alive and working (the driver still calls it) until
+    the workflow that removes it from the driver. The two shapes must simply never leak into
+    each other: an anchored paragraph on a request with no anchor image describes something
+    nobody sent."""
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(Profile(), style="s",
+                                items=ItemRequest(name="Sarah", items=[_ITEM_ONE]))
+
+    payload = transport.calls[0][1]
+    assert payload["systemInstruction"]["parts"][0]["text"] == _SYSTEM
+    assert _ANCHOR_SYSTEM not in payload["systemInstruction"]["parts"][0]["text"]
+    for kind, value in _part_shape(payload["contents"][0]["parts"]):
+        if kind == "text":
+            assert _ANCHOR_LABEL not in value
+            assert "like screen" not in value
+
+
+def test_item_crop_request_without_context_omits_every_mention_of_context():
+    """No context crops sent means no copy about them, in either the preamble or the closing.
+
+    Explaining a CONTEXT label that never appears would be describing something that is not in
+    the request -- the same small lie as anchored copy on an unanchored request, and the schema
+    description's promise that context blocks are "shown WITHOUT a number" only stays honest
+    while the two agree."""
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(
+        Profile(bio="Weekend potter"), style="be curious",
+        items=ItemRequest(name="Sarah", items=[_ITEM_ONE, _ITEM_TWO, _ITEM_THREE]))
+
+    parts = transport.calls[0][1]["contents"][0]["parts"]
+    assert _part_shape(parts) == [
+        ("text", _ITEM_PREAMBLE),
+        ("text", "=== ITEM 1 ==="),
+        ("image", _ITEM_ONE),
+        ("text", "=== ITEM 2 ==="),
+        ("image", _ITEM_TWO),
+        ("text", "=== ITEM 3 ==="),
+        ("image", _ITEM_THREE),
+        ("text",
+         "STYLE GUIDE:\nbe curious\n\n"
+         "HER NAME:\nSarah\n\n"
+         "HER PROFILE TEXT:\nWeekend potter\n\n"
+         "The 3 numbered image(s) above are her profile items, numbered 1 to 3, each shown "
+         "immediately after its own ITEM label, so the image after ITEM 1 is item 1. "
+         "Set item_index to the number of the one your opener is about. Write the opener now."),
+    ]
+    assert "CONTEXT" not in parts[0]["text"]
+    assert "CONTEXT" not in parts[-1]["text"]
+
+
+def test_truncated_capture_tells_the_model_it_is_seeing_only_part_of_her_profile():
+    """Doc 5.7's truncation flag. Present ONLY when the capture hit its ceiling, and phrased as
+    a fact about our capture rather than a deficiency in her profile -- immediately followed by
+    "choose from them anyway", so it can never read as licence to decline or to write about the
+    part we did not see."""
+    transport = _Transport([(200, _success()), (200, _success())])
+    opener = _opener(transport, models=("gemini-primary",))
+    truncated = ItemRequest(name="Sarah", items=[_ITEM_ONE], truncated=True)
+    opener.generate(Profile(), style="s", items=truncated)
+    whole = ItemRequest(name="Sarah", items=[_ITEM_ONE], truncated=False)
+    opener.generate(Profile(), style="s", items=whole)
+
+    truncated_text = transport.calls[0][1]["contents"][0]["parts"][-1]["text"]
+    whole_text = transport.calls[1][1]["contents"][0]["parts"][-1]["text"]
+    assert ("Her profile was longer than we could read, so these are only the items we saw. "
+            "Choose from them anyway.") in truncated_text
+    assert "longer than we could read" not in whole_text
+    # The truncation note never displaces the instruction the model acts on.
+    assert truncated_text.endswith(
+        "Set item_index to the number of the one your opener is about. Write the opener now.")
+
+
+def test_item_crop_request_passes_her_name_back_as_text():
+    """Doc 5.2: "Her name is lost by cropping and must be passed back as text." It is stated as
+    a bare labelled fact with no instruction attached -- the point is to restore what the sticky
+    header in every scroll frame already carried, not to introduce a new move. An OCR that read
+    nothing renders as an explicit "(not read)" rather than a blank line, which would read as a
+    name that is blank."""
+    transport = _Transport([(200, _success()), (200, _success())])
+    opener = _opener(transport)
+    opener.generate(Profile(), style="s", items=ItemRequest(name="  Sarah  ", items=[_ITEM_ONE]))
+    opener.generate(Profile(), style="s", items=ItemRequest(name="", items=[_ITEM_ONE]))
+
+    assert "HER NAME:\nSarah\n\n" in transport.calls[0][1]["contents"][0]["parts"][-1]["text"]
+    assert "HER NAME:\n(not read)\n\n" in transport.calls[1][1]["contents"][0]["parts"][-1]["text"]
+
+
+def test_item_crop_request_forwards_the_part_a_style_guide_byte_for_byte():
+    """Part B is a PAYLOAD change, not a voice change (doc sections 2 and 3 are shipped and
+    working). The owner-tunable style guide must arrive unchanged and in the same leading
+    position as on every other shape -- combined with the plain-_SYSTEM assertion above, that
+    is every Part A property reaching the model exactly as it did: the one rule, the five
+    non-binding moves, the three guardrails, the hedge variety, the two-sentence cap and the
+    economy rule, and the ASCII/no-dash hard rules."""
+    style = (
+        "THE ONE RULE: your opener must contain a claim that could be wrong.\n"
+        "HEDGE THE CLAIM, NEVER YOURSELF: I'm going to guess, I bet, I heard, I'm assuming.\n"
+        "NEVER INVENT THE SENDER.\n"
+        "TWO sentences is the absolute maximum."
+    )
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(Profile(), style=style,
+                                items=ItemRequest(name="Sarah", items=[_ITEM_ONE]))
+
+    text = transport.calls[0][1]["contents"][0]["parts"][-1]["text"]
+    assert text.startswith(f"STYLE GUIDE:\n{style}\n\n")
+
+
+def test_legacy_frame_request_carries_no_item_label_copy_at_all():
+    """The migration must not leak backwards. A request built the old way (profile.photos, no
+    ItemRequest) has no labels adjacent to its images, so it must not carry copy promising any
+    -- the model would go looking for labels that are not there."""
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(Profile(photos=[_SCROLL_FRAME], bio="Weekend potter"), style="s")
+
+    for kind, value in _part_shape(transport.calls[0][1]["contents"][0]["parts"]):
+        if kind == "text":
+            assert "=== ITEM" not in value
+            assert _CONTEXT_LABEL not in value
+            assert _ITEM_PREAMBLE not in value
+            assert "HER NAME:" not in value
+
+
+def test_an_anchored_item_crop_request_is_refused_before_anything_is_billed():
+    """The two shapes make opposite claims about who chooses the item -- the anchor IS the
+    choice (already open on the phone), the numbered list asks the model to make one (doc 5.1's
+    single call) -- so carrying both would have to silently demote one. Refused loudly, and
+    before a single request is issued."""
+    transport = _Transport([(200, _success())])
+    with pytest.raises(ValueError) as exc_info:
+        _opener(transport).generate(Profile(), style="s", anchor=b"\x89PNG\r\n\x1a\nlike-screen",
+                                    items=ItemRequest(name="Sarah", items=[_ITEM_ONE]))
+    assert "cannot carry both" in str(exc_info.value)
+    assert transport.calls == []     # nothing billed
+
+
+def test_item_crop_request_survives_a_retry_hint_without_anchor_copy():
+    """The retry block is the same corrective block as every other shape (it describes what the
+    previous ATTEMPT got wrong, which does not depend on the payload), appended after the
+    profile content -- but the anchored re-anchoring sentence must not follow it, because there
+    is no final like-screen image to point at."""
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(
+        Profile(), style="s", retry_hint="the opener field was empty after sanitizing",
+        items=ItemRequest(name="Sarah", items=[_ITEM_ONE, _ITEM_TWO]))
+
+    text = transport.calls[0][1]["contents"][0]["parts"][-1]["text"]
+    assert text.index("RETRY") > text.index("HER PROFILE TEXT:")
+    assert "the opener field was empty after sanitizing" in text
+    assert "the final image" not in text and "like screen" not in text
+
+
+# --- ItemRequest itself: the value type the numbering rests on -------------------------
+
+def test_item_request_orders_images_numbered_first_then_context():
+    """`images` IS the numbering: position k - 1 is item k, and every context crop sits after
+    every numbered one. _assemble_parts labels by position against this list and never
+    reorders, so this ordering is the whole contract."""
+    items = ItemRequest(name="Sarah", items=[_ITEM_ONE, _ITEM_TWO], context=[_CONTEXT_ONE])
+    assert items.images == (_ITEM_ONE, _ITEM_TWO, _CONTEXT_ONE)
+    assert items.item_count == 2 and items.context_count == 1 and items.image_count == 3
+    assert [items.label_for(i) for i in range(3)] == [
+        "=== ITEM 1 ===", "=== ITEM 2 ===", _CONTEXT_LABEL]
+
+
+def test_item_request_labels_are_one_based():
+    """1-based per doc 5.7 and FIRST_ITEM_INDEX: the first item is ITEM 1, never ITEM 0. Under
+    this contract 0 is ITEM_INDEX_ABSENT, so a label reading ITEM 0 would offer the model a
+    number that means "I could not pick one"."""
+    items = ItemRequest(name="Sarah", items=[_ITEM_ONE])
+    assert items.label_for(0) == f"=== ITEM {opener_module.FIRST_ITEM_INDEX} ==="
+    assert "ITEM 0" not in items.label_for(0)
+
+
+def test_item_request_from_profile_transcribes_the_capture_payload():
+    """THE ADAPTER (doc 5.7). The driver enumerates, the Profile carries plain bytes, and this
+    turns them into the request -- transcription, not translation: the four fields map one for
+    one, in order, and nothing here may renumber, reorder or drop a crop. `items` stays first
+    and `context` stays after it, because that ordering IS the numbering."""
+    profile = Profile(photos=[b"a frame nobody sends"], name="Sarah",
+                      items=(_ITEM_ONE, _ITEM_TWO), item_context=(_CONTEXT_ONE,),
+                      items_truncated=True)
+
+    request = ItemRequest.from_profile(profile)
+
+    assert request.items == (_ITEM_ONE, _ITEM_TWO)
+    assert request.context == (_CONTEXT_ONE,)
+    assert request.name == "Sarah"
+    assert request.truncated is True
+    assert request.images == (_ITEM_ONE, _ITEM_TWO, _CONTEXT_ONE)
+    assert b"a frame nobody sends" not in request.images
+
+
+def test_item_request_from_profile_refuses_a_capture_that_enumerated_nothing():
+    """A capture that could not enumerate says so in `Profile.items_unavailable`, and the
+    caller's move is to STOP with that sentence -- never to fall back to `profile.photos`, which
+    cannot carry an item number at all (one card appears in several frames, one frame can hold
+    two cards). Softening this into an empty request would put the substitution back."""
+    with pytest.raises(ValueError) as exc_info:
+        ItemRequest.from_profile(Profile(photos=[b"f0", b"f1"],
+                                         items_unavailable="the top was never confirmed"))
+    assert "at least one numbered item" in str(exc_info.value)
+
+
+def test_item_request_with_no_numbered_items_is_refused():
+    """Doc 5.1's contract is that the model CHOOSES an item, so a request offering none cannot
+    be answered honestly -- the only available reply is ITEM_INDEX_ABSENT, and paying for a
+    billed call to be told what we already knew is worse than raising. The caller hard stops
+    (doc 5.3) instead."""
+    with pytest.raises(ValueError) as exc_info:
+        ItemRequest(name="Sarah", items=[], context=[_CONTEXT_ONE])
+    assert "at least one numbered item" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("bad", [b"", None, "not bytes"])
+def test_item_request_refuses_an_unusable_image_because_numbering_is_positional(bad):
+    """A missing or empty crop would not merely lose one item, it would RENUMBER every item
+    after it -- item 3's label landing on item 4's crop, with the model's answer confidently
+    wrong and nothing downstream able to tell. Refused at construction."""
+    with pytest.raises(ValueError) as exc_info:
+        ItemRequest(name="Sarah", items=[_ITEM_ONE, bad])
+    assert "item 2's crop" in str(exc_info.value)
+
+
+def test_item_request_refuses_an_unusable_context_crop_by_its_own_name():
+    """Same guard, and the message must name the crop the way an operator can find it: a
+    context crop is not a numbered item and not "photo index N" either."""
+    with pytest.raises(ValueError) as exc_info:
+        ItemRequest(name="Sarah", items=[_ITEM_ONE], context=[b""])
+    assert "context crop 1 (unnumbered)" in str(exc_info.value)
+
+
+def test_item_request_is_frozen_against_post_construction_mutation():
+    """Normalized to tuples at construction, so a caller holding the list it passed in cannot
+    renumber a request that has already been built and sized."""
+    original = [_ITEM_ONE, _ITEM_TWO]
+    items = ItemRequest(name="Sarah", items=original)
+    original.append(_ITEM_THREE)
+    assert items.items == (_ITEM_ONE, _ITEM_TWO)
+    assert items.item_count == 2
+
+
+# --- the 20MB budget on the crop shape (doc 5.2: never DROP an image) ------------------
+
+def test_oversized_item_crops_are_all_compressed_and_none_is_dropped(monkeypatch, capsys):
+    """_fit_images_to_budget must compress every crop or raise; it must never send fewer.
+
+    On the legacy frame shape a dropped image lost some of what the model could look at. On
+    this shape it would RENUMBER everything after the gap, so the guarantee matters more, not
+    less -- and the labels must still be positionally correct after recompression, which is why
+    this asserts the whole shape rather than just the count."""
+    crops = [_noise_png(seed) for seed in range(3)]
+    context = [_noise_png(seed=9)]
+    monkeypatch.setattr(opener_module, "_MAX_INLINE_REQUEST_BYTES", 30_000)
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(
+        Profile(), style="s",
+        items=ItemRequest(name="Sarah", items=crops, context=context))
+
+    parts = transport.calls[0][1]["contents"][0]["parts"]
+    kinds = [kind for kind, _ in _part_shape(parts)]
+    # preamble, then (label, image) x 4, then the trailing text: nothing dropped, nothing
+    # reordered, every image still preceded by its own label.
+    assert kinds == ["text", "text", "image", "text", "image", "text", "image",
+                     "text", "image", "text"]
+    labels = [value for kind, value in _part_shape(parts) if kind == "text"]
+    assert labels[1:5] == ["=== ITEM 1 ===", "=== ITEM 2 ===", "=== ITEM 3 ===", _CONTEXT_LABEL]
+    image_parts = [p for p in parts if "inlineData" in p]
+    assert sum(len(p["inlineData"]["data"]) for p in image_parts) <= 30_000
+    for part in image_parts:
+        assert part["inlineData"]["mimeType"] == "image/jpeg"    # recompressed from PNG
+    assert "compressed 4 image" in capsys.readouterr().out
+
+
+def test_over_budget_item_request_error_names_crops_not_photo_indexes(monkeypatch):
+    """The operator-facing message must describe what was actually sent. "Reduce photo count"
+    on a crop request points at her profile photos, which are not in the request at all --
+    the same wrong-place mistake the anchor image's own label exists to avoid."""
+    monkeypatch.setattr(opener_module, "_MAX_INLINE_REQUEST_BYTES", 10)
+    with pytest.raises(OpenerError) as exc_info:
+        _opener(_Transport([])).generate(
+            Profile(), style="s",
+            items=ItemRequest(name="Sarah", items=[_noise_png(0), _noise_png(1)],
+                              context=[_noise_png(2)]))
+    message = str(exc_info.value)
+    assert "2 numbered item crop(s) and 1 context crop(s)" in message
+    assert "not scroll frames" in message
+
+
+def test_corrupt_item_crop_error_names_the_item_number_not_a_photo_index(monkeypatch):
+    """A crop PIL cannot decode must still surface as OpenerError (skip just this profile), and
+    must name the ITEM, not "photo index 1" -- on this shape there is no photo 1 to go and
+    look at."""
+    corrupt = b"not a real png, just garbage bytes that PIL cannot decode" * 200
+    monkeypatch.setattr(opener_module, "_MAX_INLINE_REQUEST_BYTES", 1)   # force the fit path
+    with pytest.raises(OpenerError) as exc_info:
+        _opener(_Transport([])).generate(
+            Profile(), style="s",
+            items=ItemRequest(name="Sarah", items=[_noise_png(0), corrupt]))
+    message = str(exc_info.value)
+    assert "item 2's crop" in message
+    assert "photo index" not in message
+    assert str(len(corrupt)) in message
+
+
+def test_mislabelled_part_count_is_refused_rather_than_shifting_the_numbering(monkeypatch):
+    """_assemble_parts labels positionally, so being handed a different number of encoded image
+    parts than the request describes would slide every label past the gap onto the wrong crop.
+    There is no safe repair for that, so it raises."""
+    items = ItemRequest(name="Sarah", items=[_ITEM_ONE, _ITEM_TWO])
+    with pytest.raises(ValueError) as exc_info:
+        GeminiOpener._assemble_parts([{"inlineData": {"mimeType": "image/png", "data": "x"}}],
+                                     {"text": "trailing"}, anchored=False, items=items)
+    assert "labels are positional" in str(exc_info.value)
+
+
+def test_assemble_parts_refuses_an_anchored_item_crop_layout():
+    """Restated at this layer as well as in generate(): _assemble_parts is a static method and
+    _fit_images_to_budget calls it directly, so the invariant cannot live only at the entry
+    point."""
+    with pytest.raises(ValueError) as exc_info:
+        GeminiOpener._assemble_parts([{"inlineData": {"mimeType": "image/png", "data": "x"}}],
+                                     {"text": "trailing"}, anchored=True,
+                                     items=ItemRequest(name="Sarah", items=[_ITEM_ONE]))
+    assert "cannot also be anchored" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------------------
@@ -998,28 +1675,55 @@ def test_fit_to_budget_measures_the_hinted_text_part_not_a_hintless_baseline(mon
     """Sets a budget that comfortably fits the photo plus an ORDINARY (hint-less) text part
     untouched, but not once the actual (much longer) RETRY-block text this call sends is
     appended -- isolating exactly what an under-count would miss, since retry_hint is what
-    generate() is actually asked to send here."""
+    generate() is actually asked to send here.
+
+    The budget is DERIVED from the two request sizes this build actually produces, not
+    hardcoded. It only means anything while it sits strictly between them, and both numbers
+    move with any prompt tuning -- the Part A rewrite roughly doubled _SYSTEM and _SCHEMA,
+    which pushed the hint-LESS baseline over the old literal 12,000 cap and failed this test
+    for a reason that had nothing to do with what it measures. Deriving the cap keeps the test
+    pinned to its actual subject (hinted vs. hint-less sizing) instead of to prompt length,
+    and the explicit ordering assertion below is what would fail, loudly and specifically, if
+    the hint ever stopped changing the measured size at all.
+    """
     photo = _noise_png(seed=0)
+    profile = Profile(photos=[photo])
     hint = ("reference a different specific detail from her profile, not the one you picked. "
             * 60)
-    monkeypatch.setattr(opener_module, "_MAX_INLINE_REQUEST_BYTES", 12_000)
+
+    # Measured through GeminiOpener's own helpers, so these are the very numbers
+    # _fit_images_to_budget compares against the cap -- not an independent re-derivation that
+    # could agree with the test while disagreeing with production.
+    sizer = _opener(_Transport([]))
+    image_parts = sizer._image_parts([photo])
+
+    def _request_size(retry_hint):
+        text_part = sizer._text_part(profile, "s", retry_hint, anchored=False)
+        return sizer._request_size_bytes(
+            sizer._assemble_parts(image_parts, text_part, anchored=False), _SYSTEM)
+
+    hintless_size = _request_size("")
+    hinted_size = _request_size(hint)
+    cap = (hintless_size + hinted_size) // 2
+    assert hintless_size < cap < hinted_size
+    monkeypatch.setattr(opener_module, "_MAX_INLINE_REQUEST_BYTES", cap)
 
     # Companion baseline: the SAME budget, WITHOUT the hint, doesn't even need to fit -- this
     # proves any compression below is caused by the hint's own size, not some other setting
     # (e.g. the monkeypatched budget alone would already have been too small).
     baseline_transport = _Transport([(200, _success())])
-    _opener(baseline_transport).generate(Profile(photos=[photo]), style="s")
+    _opener(baseline_transport).generate(profile, style="s")
     baseline_image = baseline_transport.calls[0][1]["contents"][0]["parts"][0]
     assert baseline_image["inlineData"]["mimeType"] == "image/png"   # sent untouched, no fit needed
 
     transport = _Transport([(200, _success())])
     opener = _opener(transport)
-    opener.generate(Profile(photos=[photo]), style="s", retry_hint=hint)
+    opener.generate(profile, style="s", retry_hint=hint)
 
     image_part = transport.calls[0][1]["contents"][0]["parts"][0]
     # Recompresses ONLY because the HINTED request (photo + the long retry text) is what got
     # measured against the budget -- the hint-less version of this same request (comfortably
-    # under 12,000 bytes, per the baseline above) would never have needed to fit at all.
+    # under `cap`, per the baseline above) would never have needed to fit at all.
     assert image_part["inlineData"]["mimeType"] == "image/jpeg"
     assert "compressed 1 image" in capsys.readouterr().out
 
@@ -1294,13 +1998,27 @@ def test_no_anchor_request_is_byte_identical_to_before_anchoring_existed():
     _opener(transport).generate(Profile(photos=[png_a, png_b]), style="s")
 
     payload = transport.calls[0][1]
-    assert payload["systemInstruction"]["parts"][0]["text"] == _SYSTEM
+    system_text = payload["systemInstruction"]["parts"][0]["text"]
+    assert system_text == _SYSTEM
     parts = payload["contents"][0]["parts"]
     assert len(parts) == 3
     assert parts[0]["inlineData"]["data"] == base64.standard_b64encode(png_a).decode("ascii")
     assert parts[1]["inlineData"]["data"] == base64.standard_b64encode(png_b).decode("ascii")
     assert "text" in parts[2]
     assert _ANCHOR_LABEL not in parts[2]["text"]
+    # The equality above is true no matter what _SYSTEM contains, so it cannot on its own
+    # prove the anchor copy stayed OUT of the unanchored request -- that only holds while
+    # _ANCHOR_SYSTEM remains a separate constant appended by _system_text(). Folding either
+    # anchor text into _SYSTEM would keep the equality passing and start telling every
+    # unanchored request about a like-screen image that is not in it. Pinned by substring on
+    # both the system instruction and the trailing text, including the second conclusion the
+    # Part A redesign added to the anchor copy (ops/OPENER-REDESIGN.md 1.1 root cause #4),
+    # which has no business in a request with nothing to anchor to.
+    assert _ANCHOR_SYSTEM not in system_text
+    assert "ANCHORED REQUEST" not in system_text
+    lower = (system_text + parts[2]["text"]).lower()
+    assert "like screen" not in lower
+    assert "you never need to name it or describe it back to her" not in lower
 
 
 def test_anchored_request_parts_are_profile_photos_then_label_then_anchor_then_text():
@@ -1334,7 +2052,18 @@ def test_anchored_request_parts_are_profile_photos_then_label_then_anchor_then_t
 def test_anchored_system_instruction_is_system_plus_anchor_system():
     """Once an anchor is present, the systemInstruction must be _SYSTEM with _ANCHOR_SYSTEM
     appended (never a different combined string), and it must tell the model the extra image
-    is not one more thing from her profile."""
+    is not one more thing from her profile.
+
+    It must ALSO draw both conclusions from that premise. "She reads your words directly
+    beneath that item" used to be stated purely as a TARGETING argument -- write about this
+    item, not that one -- which pressured the model to disambiguate inside the message, i.e.
+    to name the item so it was unmistakably clear which one it meant (ops/OPENER-REDESIGN.md
+    1.1 root cause #4). The second, opposite conclusion is the one that fixes the
+    over-description bug: precisely BECAUSE she is looking at that item while she reads,
+    naming it is wasted words. Both halves are pinned here because dropping either one
+    reinstates a shipped bug -- losing the targeting half sends the comment about the wrong
+    photo, losing the new half sends "That view by the sauna during sunset..." again.
+    """
     transport = _Transport([(200, _success())])
     _opener(transport).generate(Profile(photos=[b"\x89PNG\r\n\x1a\nfirst"]), style="s",
                                 anchor=b"\xff\xd8\xffanchor")
@@ -1342,6 +2071,22 @@ def test_anchored_system_instruction_is_system_plus_anchor_system():
     assert system_text == _SYSTEM + _ANCHOR_SYSTEM
     assert system_text.startswith(_SYSTEM)
     assert "is NOT part of her profile" in system_text
+    lowered = system_text.lower()
+    # Targeting half, unchanged by the redesign.
+    assert "she reads your words directly beneath that item" in lowered
+    assert "never on a different photo or prompt" in lowered
+    # Second conclusion, added by Part A.
+    assert "that same fact cuts the other way too" in lowered
+    assert "you never need to name it or describe it back to her" in lowered
+    assert "it is the premise your claim comes from, not the content of the message" in lowered
+    # Part B: _SYSTEM tells the model to PICK THE ITEM YOURSELF, and both constants arrive in
+    # the SAME systemInstruction, so on an anchored request the two instructions pull opposite
+    # ways unless precedence is stated. Asserted rather than left to ordering: an unstated
+    # precedence is not a wrinkle, it is two live instructions competing on the one path where
+    # a real message reaches a real person.
+    assert "this overrides pick the item yourself above" in lowered
+    assert "you do not choose one" in lowered
+    assert "item_index simply reports which numbered item it turned out to be" in lowered
 
 
 def test_anchored_main_text_names_the_like_screen_and_forbids_app_chrome():
@@ -1349,7 +2094,15 @@ def test_anchored_main_text_names_the_like_screen_and_forbids_app_chrome():
     LAST image is the like screen, that the message attaches to whatever item is shown there,
     and that the app's own interface elements (comment box, Send Like button, keyboard) are
     not hers and must never be described. Asserted on distinctive substrings rather than the
-    whole block, since the exact wording is free to be tuned."""
+    whole block, since the exact wording is free to be tuned.
+
+    Since Part A it must also close with the premise's SECOND conclusion (see
+    _ANCHOR_SYSTEM's companion test above), and the POSITION of that sentence is itself
+    load-bearing: it has to land immediately after "use one concrete thing you can genuinely
+    see in it", which is the last thing the model reads before writing. Left on its own that
+    sentence reads as an instruction to put the visible thing IN the message, which is the
+    over-description bug. Order is asserted, not just presence.
+    """
     transport = _Transport([(200, _success())])
     _opener(transport).generate(Profile(photos=[b"\x89PNG\r\n\x1a\nfirst"]), style="s",
                                 anchor=b"\xff\xd8\xffanchor")
@@ -1358,15 +2111,32 @@ def test_anchored_main_text_names_the_like_screen_and_forbids_app_chrome():
     assert "the last image is the like screen" in lower
     assert "your message attaches to the photo or prompt in that last image" in lower
     assert "comment box" in lower and "send like button" in lower and "keyboard" in lower
+    dont_describe_it = ("because she is looking straight at that item while she reads you, "
+                        "you never need to name it or describe it back to her.")
+    premise_not_point = ("what you can see is your premise, not your point: spend the words "
+                         "on a claim about it that could be wrong.")
+    assert dont_describe_it in lower
+    assert premise_not_point in lower
+    assert lower.index("use one concrete thing you can genuinely see in it") \
+        < lower.index(dont_describe_it) < lower.index(premise_not_point)
+    # Part B: on an ANCHORED request item_index REPORTS which numbered item the anchor turned
+    # out to be, it does not CHOOSE one -- the anchor is already open on the phone. The
+    # numbered items are still 1-based, and the anchor is explicitly not among them, so the
+    # model cannot answer with "the last image".
+    assert "numbered 1 to 1 in the order shown" in lower
+    assert "is not one of the numbered items" in lower
+    assert ("set item_index to the number of the profile item above that shows that same "
+            "photo or prompt; if none of them does, use 0.") in lower
+    assert "referenced_index" not in lower and "scroll order" not in lower
 
 
 def test_anchor_with_no_profile_photos_avoids_the_nonsensical_first_0_images_phrasing():
     """A profile whose scroll capture produced zero photos still has an anchor to write
     about: the wording must not fall through to the generic "The first {photo_count}
     image(s)..." branch, which would render as the nonsensical "The first 0 image(s) are her
-    profile in scroll order" and send the model hunting through images that were never sent.
-    It must instead say the anchor is the only image in the request, and the parts list must
-    only be [label, anchor, text] -- no empty profile-photo parts anywhere."""
+    profile items, numbered 1 to 0" and send the model hunting through numbered items that
+    were never sent. It must instead say the anchor is the only image in the request, and the
+    parts list must only be [label, anchor, text] -- no empty profile-photo parts anywhere."""
     transport = _Transport([(200, _success())])
     anchor = b"\xff\xd8\xffanchor"
     _opener(transport).generate(Profile(photos=[]), style="s", anchor=anchor)
@@ -1380,6 +2150,10 @@ def test_anchor_with_no_profile_photos_avoids_the_nonsensical_first_0_images_phr
     assert "first 0 image" not in lower
     assert "the like screen image below is the only image in this request" in lower
     assert "your message attaches to the photo or prompt shown in that image" in lower
+    # With nothing numbered in the request, the only honest answer is the out-of-band value --
+    # never 1, which would claim a first item that does not exist here (see ITEM_INDEX_ABSENT).
+    assert "there are no numbered items in this request, so set item_index to 0." in lower
+    assert "numbered 1 to 0" not in lower
 
 
 def test_retry_hint_on_an_anchored_request_keeps_the_reanchoring_sentence():

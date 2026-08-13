@@ -104,6 +104,85 @@ def _select_onnx_providers(device: str, available) -> list[str]:
     return selected or ["CPUExecutionProvider"]
 
 
+# CoreML EP options, passed for CoreMLExecutionProvider only (see _onnx_provider_options).
+# ModelFormat=MLProgram instead of onnxruntime's default NeuralNetwork, measured 2026-08-11 on
+# this project's dev Mac (Apple Silicon, macOS 26, onnxruntime 1.27.0, insightface 1.0.1) on
+# buffalo_l's recognition model w600k_r50, one 112x112 crop per call:
+#     CPU                          50.8 ms   (baseline)
+#     CoreML, MLProgram             5.5 ms   cosine vs CPU 0.99999994 (worst of 5 inputs)
+#     CoreML, NeuralNetwork         2.0 ms   cosine vs CPU 0.9957     (worst of 5 inputs)
+# NeuralNetwork is the faster of the two because it runs fp16 on the ANE, and that is exactly
+# why it is rejected: the face embedding is the ranker's input, and every stored label in the
+# training set was collected against CPU-computed vectors. Shifting the feature space under a
+# trained model to save 3.5ms/photo is a silent degradation, which the owner rule forbids.
+# MLProgram is ~9x faster than CPU at fp32 parity, so take that.
+_COREML_PROVIDER_OPTIONS = {"ModelFormat": "MLProgram"}
+
+
+def _onnx_provider_options(providers) -> list[dict[str, str]]:
+    """Per-provider option dicts, positionally aligned with `providers`.
+
+    onnxruntime (and insightface, which forwards `provider_options` straight through to
+    ort.InferenceSession) requires this list to be the same length as the provider list and
+    matched by position, so every non-CoreML provider gets an empty dict rather than being
+    omitted. Pure; unit-tested.
+    """
+    return [
+        dict(_COREML_PROVIDER_OPTIONS) if p == "CoreMLExecutionProvider" else {}
+        for p in providers
+    ]
+
+
+def _pin_detector_to_cpu(arc) -> None:
+    """Move ONLY buffalo_l's face DETECTOR (det_10g) off CoreML; leave every other model on it.
+
+    This is the fix for the error that used to abort the CoreML attempt on every single run:
+
+        [ONNXRuntimeError] : 1 : FAIL : ... CoreMLExecutionProvider ... GetStaticOutputShape
+        ... CoreML static output shape ({1,1,1,128,1}) and inferred shape ({3200,1}) have
+        different ranks.
+
+    Diagnosed offline 2026-08-11 (onnxruntime 1.27.0, insightface 1.0.1, Apple Silicon), and it
+    is a configuration problem, not an unfixable model/provider incompatibility:
+
+    det_10g.onnx takes a DYNAMIC input ([1, 3, '?', '?']) but DECLARES its output shapes for a
+    640x640 input -- 12800/3200/800 rows, one per FPN stride. Feed it any other size and the
+    real output disagrees with the declared one. The CPU EP shrugs (a VerifyOutputSizes warning,
+    suppressed anyway because insightface sets the ort log severity to ERROR) and returns the
+    true shape; the CoreML EP hard-asserts on the mismatch instead. The {1,1,1,128,1} in the
+    message is the rank-5 CoreML form of the 128 rows a 128x128 input really produces, against
+    the 3200 rows the graph declares. Probed size by size on CoreML: 640 OK; 128, 320 and 1024
+    all FAIL with that assert.
+
+    That is the trap insightface 1.0.1 walks into. FaceAnalysis.prepare() with no det_size now
+    defaults to MULTI-SCALE detection (DEFAULT_DET_SIZES = [(128,128), (640,640)]) and
+    SCRFD.detect() runs the session at BOTH sizes on every call -- so the 128x128 pass fails on
+    CoreML on the very first inference, always, regardless of the photo.
+
+    Two ways out, and the choice matters. Pinning det_size=(640,640) would let the detector run
+    on CoreML (53.8ms -> 17.3ms per call), but it silently drops the 128x128 scale and therefore
+    changes which faces are detected at all -- buying speed with detection recall, on the input
+    to a trained ranker, for a "no face -> skip this profile" decision. Not acceptable under the
+    never-silently-degrade rule. So do the opposite: leave the detector's input sizes exactly as
+    insightface chose them and give it the provider that tolerates them. Detection behaviour is
+    then bit-for-bit identical to what ships today; only its provider is now stated deliberately
+    instead of being discovered by a failed attempt and a fallback on every run.
+
+    (Also measured and rejected: provider option RequireStaticInputShapes=1, which keeps CoreML
+    off dynamically-shaped nodes and does make the detector safe at both scales -- but
+    w600k_r50's batch dim is symbolic too, so it pushes recognition back to 48.5ms/call, i.e. it
+    buys nothing over plain CPU. The other three buffalo_l models -- 2d106det, 1k3d68,
+    genderage -- were each checked on CoreML/MLProgram and agree with CPU to cosine 1.0000000,
+    so the detector is the only one that needs this.)
+
+    set_providers() on the live session is insightface's own mechanism for exactly this
+    (SCRFD.prepare does the same thing when ctx_id < 0), and FaceAnalysis.__init__ asserts
+    'detection' is present, so the lookup below cannot silently no-op. Call this BEFORE
+    arc.prepare(): prepare() with ctx_id >= 0 does not touch providers, so the pin survives it.
+    """
+    arc.models["detection"].session.set_providers(["CPUExecutionProvider"])
+
+
 def _is_onnx_provider_failure(error: BaseException | str) -> bool:
     msg = str(error)
     upper = msg.upper()
@@ -151,7 +230,12 @@ class Embedder:
     def _build_arc(self, providers: list[str]):
         from insightface.app import FaceAnalysis
 
-        arc = FaceAnalysis(name="buffalo_l", providers=providers)
+        arc = FaceAnalysis(name="buffalo_l", providers=providers,
+                           provider_options=_onnx_provider_options(providers))
+        if "CoreMLExecutionProvider" in providers:
+            # Before prepare(), and only when CoreML is actually in play: the detector cannot
+            # run there at insightface's multi-scale det sizes. See _pin_detector_to_cpu.
+            _pin_detector_to_cpu(arc)
         arc.prepare(ctx_id=-1 if providers == ["CPUExecutionProvider"] else 0)
         return arc
 
@@ -188,7 +272,11 @@ class Embedder:
         reported success -- see _probe_inference()'s docstring for the exact error and
         why running one real synthetic inference here, through the SAME fallback
         embed_profile() already has, is what catches it during startup instead of on the
-        operator's first real profile.
+        operator's first real profile. (That specific incompatibility is now fixed at its
+        source -- _pin_detector_to_cpu() -- so the probe should no longer trip on it; the
+        probe stays because "builds fine, cannot infer" is a provider-class hazard, not a
+        one-off bug, and it is the only thing standing between a future recurrence and the
+        operator's first real profile.)
         """
         self._ensure()
         self._probe_inference()
@@ -220,6 +308,13 @@ class Embedder:
 
             providers = _select_onnx_providers(self._device, ort.get_available_providers())
             self._set_arc_providers(providers)     # sets self._arc — LAST, after CLIP succeeded
+            # Say what ArcFace actually ended up on, once, at init. Before the detector pin
+            # the operator's only evidence was a CoreML stack trace at warmup followed by a
+            # silently CPU-only session; a provider split this consequential (~9x on the
+            # recognition model) should be legible from the run log, not only from the code.
+            detector_note = (" (detector on CPUExecutionProvider — see _pin_detector_to_cpu)"
+                             if "CoreMLExecutionProvider" in providers else "")
+            print(f"ArcFace providers: {', '.join(providers)}{detector_note}")
 
     def _probe_inference(self) -> None:
         """Run ONE real inference through embed_profile()'s exact code path, on a tiny
@@ -227,11 +322,12 @@ class Embedder:
         is caught here during startup instead of on the operator's first real profile.
 
         Concrete motivating case (a real observe-mode run on this project's dev Mac,
-        Apple Silicon, verified against this code): CoreMLExecutionProvider's
-        ort.InferenceSession(...) for buffalo_l builds without error -- the eager
-        _ensure() call warmup() makes above sees a clean success -- but the compiled
-        graph has a static-shape incompatibility that only throws on the first real
-        `.get()` call:
+        Apple Silicon, verified against this code), since fixed at its source by
+        _pin_detector_to_cpu() but kept here because it is what this probe is shaped
+        around: CoreMLExecutionProvider's ort.InferenceSession(...) for buffalo_l builds
+        without error -- the eager _ensure() call warmup() makes above sees a clean
+        success -- but the compiled graph has a static-shape incompatibility that only
+        throws on the first real `.get()` call:
             Photo embedding error: Fail: [ONNXRuntimeError] : 1 : FAIL : ...
             CoreMLExecutionProvider ... Status Message: Exception: ...
             GetStaticOutputShape ... CoreML static output shape ({1,1,1,128,1}) and
@@ -249,6 +345,15 @@ class Embedder:
         error (it counts it, prints it, and continues), so a non-provider-shaped hiccup
         on this synthetic image cannot turn into a hard startup failure here either --
         only a genuine _ensure() failure above (unchanged) does that.
+
+        Known limit, stated rather than papered over: structured noise contains no face,
+        so this probe exercises buffalo_l's DETECTOR only. The recognition and landmark
+        models run per detected face, so nothing here can reach them -- and after
+        _pin_detector_to_cpu() they are precisely the models left on CoreML. Their safety
+        net is therefore still embed_profile()'s runtime fallback: one profile re-embedded
+        on CPU, loudly, never a wrong decision. Making the probe reach them would mean
+        shipping an image a face detector is guaranteed to fire on, which is not something
+        a synthetic fixture can promise across model versions.
         """
         self.embed_profile(Profile(photos=[_synthetic_probe_image()]))
 

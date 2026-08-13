@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 
 import pytest
 
@@ -87,16 +88,26 @@ def _sheet_frame():
 
 
 def _deck_frame(*, invert_heart: bool = False):
-    """A synthetic, template-detectable Hinge swipe deck (heart plus pass X)."""
+    """A synthetic, template-detectable Hinge swipe deck (heart plus pass X).
+
+    The heart glyph is HINGE_SPEC.templates["like"] (hinge_like_button.png), the real
+    per-card like button (a white heart in a filled black circle) -- not hinge_heart.png,
+    which is a DIFFERENT control (the "Which do we have in common" widget's outline heart;
+    see hinge.py's templates dict comment). hinge_like_button.png is cropped directly from a
+    live frame, so it is already at the live render's polarity and invert_heart now models a
+    glyph that never actually occurs -- kept only so
+    test_hinge_observe_deck_ready_rejects_inverted_heart below can pin that it is deliberately
+    no longer accepted (see that test's docstring)."""
     import cv2
     import numpy as np
 
     canvas = np.full((2400, 1080), 120, dtype=np.uint8)
-    for name, (x, y) in (("hinge_heart.png", (930, 1600)),
+    like_glyph = hinge.HINGE_SPEC.templates["like"]
+    for name, (x, y) in ((like_glyph, (930, 1600)),
                          ("hinge_pass_x.png", (130, 2030))):
         template = hinge._load_template(name)
         assert template is not None
-        if invert_heart and name == "hinge_heart.png":
+        if invert_heart and name == like_glyph:
             template = np.bitwise_not(template)
         height, width = template.shape
         canvas[y - height // 2:y - height // 2 + height,
@@ -106,11 +117,21 @@ def _deck_frame(*, invert_heart: bool = False):
     return encoded.tobytes()
 
 
-def test_hinge_observe_deck_ready_accepts_live_inverted_heart_without_broadening_actions():
-    """The passive ready guard supports Hinge's white-outline heart on a dark circle."""
+def test_hinge_observe_deck_ready_rejects_inverted_heart():
+    """SUPERSEDES test_hinge_observe_deck_ready_accepts_live_inverted_heart_without_broadening_actions:
+    that test encoded a workaround for the OLD "like" template (hinge_heart.png), which was
+    the wrong polarity versus the live render, so _observe_glyph_visible tried both polarities
+    to catch it. hinge_like_button.png (the current "like" template) is cropped directly from
+    a live frame and is ALREADY at the live polarity (measured 0.815..1.000 correlation,
+    uninverted, across 115 real frames -- see _LIKE_MATCH_THRESHOLD in hinge.py). Inverting it
+    reproduces Hinge's OUTLINE heart -- the "Which do we have in common" widget's control --
+    almost exactly, so _observe_glyph_visible now deliberately skips the inverted check for
+    role == "like": accepting an inverted match here would quietly resurrect, in this
+    perception-only path, the exact false positive the like-button template swap exists to
+    fix. This pins the new, narrower contract."""
     driver = _hinge(_Adb([b"unused"]))
 
-    assert driver._observe_deck_ready(_deck_frame(invert_heart=True)) is True
+    assert driver._observe_deck_ready(_deck_frame(invert_heart=True)) is False
 
 
 class _ScriptedDiff:
@@ -295,8 +316,9 @@ def test_hinge_observe_waits_through_keyboard_motion_until_send_like_closes(monk
 def test_notify_observe_like_intent_passes_frame_as_anchor_and_none_on_clear():
     """Direct unit coverage of the anchor contract every wait_for_decision call site relies
     on: the active=True notification carries the EXACT on-screen frame it was given (the
-    same picture the anchored opener repair path grounds a suggestion in -- see
-    _like_comment_sheet's anchored_opener parameter), and the clearing active=False
+    picture of the item the human's own tap opened a comment sheet for, which is what observe's
+    anchored suggestion is grounded in -- and, since the auto-mode repair hatch was removed on
+    2026-08-12, the only consumer of the anchor left anywhere), and the clearing active=False
     notification always carries anchor=None -- there is nothing left on screen to anchor a
     picture of once the sheet has closed."""
     drv = _hinge(_Adb([b"unused"]))
@@ -399,22 +421,34 @@ class _Decider:
 
 class _OpenerService:
     stop_requested = False
+    # Declared, because worker.py reads it with `getattr(..., "disabled", True)` -- a service
+    # that does not say is treated as switched off, which is the safe default (never spend on a
+    # service nobody vouched for) and which a fake has to opt out of explicitly.
+    disabled = False
+    last_skip_reason = None
 
     def __init__(self):
         self.calls = []
         self.advisory_seen = []   # records advisory= from every call -- see change A's tests
-        self.anchor_seen = []     # records anchor= from every call -- the like-screen screenshot
+        self.anchor_seen = []     # records anchor= from every call -- always None since doc 5.9
+        self.items_seen = []      # records items= -- the numbered crops BOTH modes now send
         # worker.py's on_like_intent now forwards UNCONDITIONALLY (see its own docstring: a
         # client/service that cannot accept this kwarg must fail LOUDLY, not have it silently
         # dropped). A fake missing this parameter entirely used to raise a TypeError right at
         # the call boundary -- before self.calls.append() ever ran -- so opener.calls stayed
         # empty and the caller never learned why.
 
-    def maybe_opener(self, run_id, app, profile, *, anchor=None, should_stop=None, advisory=False):
+    def maybe_opener(self, run_id, app, profile, *, anchor=None, items=None,
+                     should_stop=None, advisory=False):
         self.calls.append((run_id, app, profile))
         self.advisory_seen.append(advisory)
         self.anchor_seen.append(anchor)
-        return OpenerPick("Your trail photo looks like a great weekend plan.", index=0)
+        self.items_seen.append(items)
+        # A REAL item number (ops/OPENER-REDESIGN.md 5.9): the inversion's whole output is
+        # "like item N plus this text", and index=0 (ITEM_INDEX_ABSENT) is what observe now
+        # refuses to show, so a fake returning it would exercise the warning path by accident.
+        return OpenerPick("Your trail photo looks like a great weekend plan.", index=2,
+                          item_description="the trail photo")
 
 
 class _Pacing:
@@ -431,7 +465,11 @@ class _HumanHingeDriver(DatingAppDriver):
         self.outcome = outcome
         self.store = store
         self.status = status
-        self.profile = Profile(photos=[b"photo"], meta={"app": "hinge"})
+        # An ENUMERATED capture, because doc 5.9's observe now sends the numbered crops auto
+        # sends and refuses to suggest anything without them.
+        self.profile = Profile(photos=[b"photo"], meta={"app": "hinge"}, name="Ada",
+                               items=(b"item-1", b"item-2", b"item-3"),
+                               item_context=(b"vitals",))
         self.done = False
         self.closed = False
         self.action_calls = []
@@ -481,28 +519,47 @@ class _HumanHingeDriver(DatingAppDriver):
         self.action_calls.append(("send", (), {}))
         raise AssertionError("observe sent a like")
 
+    def _await_suggestion(self, timeout=10.0):
+        """The human looks at the hub before tapping.
+
+        Doc 5.9 generates on its own thread so READY can be published immediately, so a fake that
+        tapped the instant wait_for_decision was entered would be racing it. `opener_pending`
+        going False is the worker's own "this card's suggestion has settled" signal."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            app = self.status.app_view("hinge")["app"]
+            if app is not None and not app.get("opener_pending"):
+                return
+            time.sleep(0.002)
+
+    def observe_item_mismatch(self, sheet, model_item_index):
+        """The human opened the item the suggestion named. Doc 5.9's guard, satisfied."""
+        return ""
+
     def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
         assert timeout is None
         self.wait_calls += 1
+        self._await_suggestion()
         if self.outcome == "like":
             assert on_like_intent is not None, "worker must listen for Hinge's sheet-open stage"
-            on_like_intent(True)
+            on_like_intent(True, b"the-open-comment-sheet")
             app = self.status.app_view("hinge")["app"]
             self.before_confirmation = {
                 "profiles": list(self.store.profiles),
                 "labels": list(self.store.labels),
                 "decisions": list(self.store.decisions),
                 "opener_suggestion": app.get("opener_suggestion"),
+                "opener_item": app.get("opener_item"),
                 "state": app["state"],
             }
-            on_like_intent(False)
+            on_like_intent(False, None)
             self.done = True
             return True
         if self.outcome == "dismiss":
             assert on_like_intent is not None
             if self.wait_calls == 1:
-                on_like_intent(True)
-                on_like_intent(False)
+                on_like_intent(True, b"the-open-comment-sheet")
+                on_like_intent(False, None)
                 app = self.status.app_view("hinge")["app"]
                 self.after_dismiss = {
                     "opener_suggestion": app.get("opener_suggestion"),
@@ -540,27 +597,45 @@ def test_observe_hinge_suggests_opener_before_human_send_then_persists_like():
     driver, store, opener, _status = _run_one_observe("like")
 
     assert opener.calls and len(opener.calls) == 1
+    # Doc 5.9's inversion: the suggestion is on the hub before the heart is tapped, so what is
+    # still live once the sheet is open is the SAME suggestion plus the item number it names --
+    # not one generated in response to the tap.
     assert driver.before_confirmation == {
         "profiles": [], "labels": [], "decisions": [],
         "opener_suggestion": "Your trail photo looks like a great weekend plan.",
+        "opener_item": 2,
         "state": "waiting_for_send",
     }
     assert [row[2] for row in store.labels] == [True]
     assert [row[2] for row in store.decisions] == ["like"]
     assert driver.action_calls == []
     assert driver.closed
+    # The request shape, which is the property that makes observe a canary for auto: the
+    # numbered crops, and no anchor at all (doc 5.9 retired the anchored shape's last caller).
+    assert opener.anchor_seen == [None]
+    assert [i.items for i in opener.items_seen] == [(b"item-1", b"item-2", b"item-3")]
 
 
 def test_observe_hinge_dismissed_sheet_does_not_persist_or_call_actions():
     driver, store, opener, _status = _run_one_observe("dismiss")
 
-    assert len(opener.calls) == 1              # suggestion may be prepared, never sent
+    # One per CAPTURE, and a dismissal recaptures -- doc 5.9 asks before the human acts, so it
+    # has to ask again for the re-read, which the loop cannot tell from a new card. Suggestions
+    # may be prepared; none is ever sent.
+    assert len(opener.calls) == 2
     assert store.profiles == []
     assert store.labels == []
     assert store.decisions == []
     assert driver.action_calls == []
     assert driver.capture_calls == 2            # dismissal returns to the same profile's decision loop
-    assert driver.after_dismiss == {"opener_suggestion": None, "state": "waiting"}
+    # Backing out of the sheet returns the hub to the pre-tap INSTRUCTION rather than clearing
+    # it: the card has not changed, so "like item 2, and here is the text" is still the advice,
+    # and the human may go and open item 2 next. What a dismiss drops is only the evidence about
+    # what they had opened.
+    assert driver.after_dismiss == {
+        "opener_suggestion": "Your trail photo looks like a great weekend plan.",
+        "state": "waiting",
+    }
     assert driver.closed
 
 
@@ -568,7 +643,11 @@ def test_observe_hinge_persists_pass_only_after_human_x_advances_profile():
     driver, store, opener, _status = _run_one_observe("pass")
 
     assert driver.before_pass_advance == {"profiles": [], "labels": [], "decisions": []}
-    assert opener.calls == []
+    # ONE call, for a profile the human then PASSED. Doc 5.9's inversion has to ask before it
+    # knows what the human will do, so observe now spends an opener call on every card rather
+    # than only on hearted ones -- the honest cost of generating before the tap, recorded here
+    # rather than left to be discovered as a quota surprise.
+    assert len(opener.calls) == 1
     assert [row[2] for row in store.labels] == [False]
     assert [row[2] for row in store.decisions] == ["dislike"]
     assert driver.action_calls == []

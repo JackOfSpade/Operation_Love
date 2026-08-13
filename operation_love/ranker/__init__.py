@@ -25,7 +25,32 @@ class Store(Protocol):
                   profile_id: str = "") -> None: ...
     def record_decision(self, run_id: str, app: str, decision: str, score: float,
                         source: str = "auto") -> None: ...
-    def record_opener(self, run_id: str, app: str, model: str, opener: str, referenced: str) -> None: ...
+    # `angle` is the model's own free-text words for what the opener is DOING (guess / know /
+    # imagine / tease / connect and anything else it invents) — telemetry only, it never
+    # constrains generation. Deliberately not an enum: the opener design's move list is
+    # explicitly non-binding, and a closed set would force the shoehorning it's meant to avoid.
+    # It exists so we can eventually ask which opener shapes correlate with matches, a question
+    # that is unaskable today. Trailing with a "" default so every existing positional caller
+    # (and every test double implementing this Protocol) keeps working unchanged.
+    #
+    # `item_description` is the model's own short description of the ITEM it picked to write
+    # about and to like (ops/OPENER-REDESIGN.md 5.7), recorded in auto and observe alike. Not
+    # a second copy of `referenced`: that is the DETAIL the opener reacts to, this is what the
+    # item IS (a photo, a written prompt), which is the coarse class doc 5.8's pre-flight
+    # cross-check compares against our own crop. Telemetry here too -- nothing reads it back at
+    # runtime -- and trailing with a "" default for the same compatibility reason as `angle`.
+    def record_opener(self, run_id: str, app: str, model: str, opener: str, referenced: str,
+                      angle: str = "", item_description: str = "") -> None: ...
+    # Durable record of a REJECTED opener attempt (OpenerParseError -- see opener/service.py's
+    # OpenerParseError handling), captured for every attempt including the final one that
+    # exhausts a profile's retries. Without this, only SUCCEEDED openers were ever recorded
+    # (record_opener above), so there was no way to ask "how often does each guard fire" or
+    # "is the scaffolding/sentence-cap detector too strict" -- the rejected text and reason
+    # were printed and then lost forever. reason_code/raw_opener may be None (see
+    # OpenerParseError's own docstring for exactly when each is None vs populated).
+    def record_opener_rejection(self, run_id: str, app: str, model: str, attempt: int,
+                                reason_code: str | None, reason: str,
+                                raw_opener: str | None) -> None: ...
     def record_spend(self, run_id: str, model: str, usage: Usage, cost: float | None) -> None: ...
     def count_today(self, app: str) -> int: ...
     def flush(self) -> None: ...

@@ -1,4 +1,5 @@
 """bugreport — redacted markdown diagnostic. Offline."""
+import datetime
 import io
 import json
 import os
@@ -20,6 +21,7 @@ def test_report_has_core_sections():
     for h in ["# Operation Love — Bug Report", "## What happened", "it broke",
               "## Build", "## System", "## Dependencies", "## Capabilities", "## Config",
               "## Secrets", "## Diagnostic improvement", "## Run status", "## Recent openers",
+              "## Recent opener rejections",
               "## Debug log (on-disk actions + screenshots)", "## Recent logs"]:
         assert h in md, f"missing section: {h}"
     assert "improve `operation_love/bugreport.py`" in md
@@ -240,6 +242,103 @@ def test_status_section_stop_reason_with_pipes_and_newlines_does_not_corrupt_rep
     assert not any(ln.strip().startswith("# fake heading") for ln in md.splitlines())
     # ...but the meaningful content survived, collapsed onto one line inside a code span.
     assert "quota exceeded | model='gemini-2.0-flash' # fake heading | injected | row |" in md
+
+
+# ── stop_kind: disambiguating stop_reason's SOURCE (2026-08-11, deck-blocked addition) ──────
+# stop_reason used to have exactly one cause (OpenerService exhaustion). worker.py's blocked-
+# deck check (Hinge's out-of-free-likes Hinge+ paywall, data/hinge_debug/run_20260811_011416)
+# gave it a second, with its own stop_kind -- see status.py's AppStatus.stop_kind and
+# _app_diagnostics_md's own docstring for the full "which subsystem?" reasoning this rendering
+# exists to remove.
+class _DeckBlockedHub:
+    """A Hinge observe run halted by worker.py's blocked-deck check: the driver recognised
+    Hinge's out-of-free-likes paywall standing between us and the deck. Pins that the bullet
+    names BOTH the reason and its kind, not just the reason alone (as it did before stop_kind
+    existed -- see test_status_section_renders_stop_reason_verbatim above)."""
+    REASON = "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+
+    def snapshot(self):
+        return {"running": True, "error": None, "status": {
+            "phase": "stopped", "mode": "observe", "running": True, "labels": 12, "min_labels": 40,
+            "ranker_ready": False, "labels_needed": 28, "budget_spent": 0.0, "budget_cap": None,
+            "openers": 0,
+            "apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "blocked",
+                                "last_decision": None, "last_score": None, "swipes_run": 3,
+                                "error": None, "stop_reason": _DeckBlockedHub.REASON,
+                                "stop_kind": "deck_blocked"}}}}
+
+
+def test_status_section_renders_stop_kind_alongside_stop_reason():
+    md = bugreport.build_report(_DeckBlockedHub())
+    assert _DeckBlockedHub.REASON in md
+    assert "**hinge** stop reason:" in md
+    assert "(kind: `deck_blocked`)" in md
+
+
+class _StopReasonWithoutKindHub:
+    """A stop_reason from a code path that has no stop_kind of its own (an opener-exhaustion
+    stop predating 2026-08-11, or any future one that simply forgets to set it) must render
+    honestly as "unlabelled" rather than silently dropping the bracket -- omitting it here
+    would just move the "which subsystem caused this?" guesswork one field over, exactly the
+    ambiguity stop_kind exists to remove (see _app_diagnostics_md's docstring)."""
+    REASON = "every configured Gemini model has exhausted its per-day free-tier quota"
+
+    def snapshot(self):
+        return {"running": True, "error": None, "status": {
+            "phase": "stopped", "mode": "auto", "running": True, "labels": 40, "min_labels": 40,
+            "ranker_ready": True, "labels_needed": 0, "budget_spent": 1.2, "budget_cap": 5.0,
+            "openers": 12,
+            # stop_kind deliberately absent from this dict -- not merely None -- to also pin
+            # the .get("stop_kind") lookup itself, not just a falsy value stored under the key.
+            "apps": {"hinge": {"app": "hinge", "mode": "auto", "state": "stopped",
+                                "last_decision": None, "last_score": None, "swipes_run": 12,
+                                "error": None,
+                                "stop_reason": _StopReasonWithoutKindHub.REASON}}}}
+
+
+def test_status_section_missing_stop_kind_renders_as_unlabelled():
+    md = bugreport.build_report(_StopReasonWithoutKindHub())
+    assert _StopReasonWithoutKindHub.REASON in md
+    assert "(kind: unlabelled)" in md
+
+
+class _MalformedStopKindHub:
+    """stop_kind is presently a fixed small vocabulary ("opener" / "deck_blocked" /
+    "targeting" -- ops/OPENER-REDESIGN.md 5.6's hard stop), not
+    provider-sourced text -- but _app_diagnostics_md routes it through _sanitize_inline anyway
+    (see that function's docstring for why), and this pins that decision: embedded newlines,
+    pipes, and backticks in EITHER field must not corrupt the report structure or escape the
+    inline-code span they're rendered inside, the same guarantee
+    test_status_section_stop_reason_with_pipes_and_newlines_does_not_corrupt_report already
+    pins for stop_reason alone."""
+    REASON = "quota exceeded | model=`gemini-2.0-flash`\n# fake heading"
+    KIND = "deck_blocked`\n# also fake"
+
+    def snapshot(self):
+        return {"running": True, "error": None, "status": {
+            "phase": "stopped", "mode": "auto", "running": True, "labels": 40, "min_labels": 40,
+            "ranker_ready": True, "labels_needed": 0, "budget_spent": 1.2, "budget_cap": 5.0,
+            "openers": 12,
+            "apps": {"hinge": {"app": "hinge", "mode": "auto", "state": "stopped",
+                                "last_decision": None, "last_score": None, "swipes_run": 12,
+                                "error": None, "stop_reason": _MalformedStopKindHub.REASON,
+                                "stop_kind": _MalformedStopKindHub.KIND}}}}
+
+
+def test_status_section_stop_kind_with_pipes_newlines_backticks_does_not_corrupt_report():
+    md = bugreport.build_report(_MalformedStopKindHub())
+    # The report must still parse into the normal downstream sections.
+    assert "## Debug log (on-disk actions + screenshots)" in md
+    assert "## Recent logs" in md
+    # Neither raw, unsanitized field appears anywhere...
+    assert _MalformedStopKindHub.REASON not in md
+    assert _MalformedStopKindHub.KIND not in md
+    # ...and in particular neither embedded "# fake heading"/"# also fake" line was left to
+    # stand alone at the start of a line where a markdown renderer would treat it as real.
+    assert not any(ln.strip().startswith("# fake heading") for ln in md.splitlines())
+    assert not any(ln.strip().startswith("# also fake") for ln in md.splitlines())
+    # ...but the meaningful content survived, sanitized onto one line inside its own code span.
+    assert "(kind: `deck_blocked' # also fake`)" in md
 
 
 class _MalformedHub:
@@ -625,6 +724,127 @@ def test_debug_log_section_shows_action_counts_histogram_above_the_tail(tmp_path
     assert counts_pos < tail_pos                               # directly above the inlined tail
 
 
+# ── Stall summary (§ filed against data/hinge_debug/run_20260811_011416, 2026-08-11) ────────
+# The owner tapped the heart, composed a comment, and tapped Send Like; Hinge refused it (out
+# of free likes for the day) and put its Hinge+ paywall up, which nothing recognised.
+# _await_like_resolved polled like_sheet for 2.5 minutes before the owner pressed Stop by hand.
+# actions.jsonl recorded every poll faithfully, but diagnosing the hang meant reading the ~88-
+# line tail by eye and noticing observe_waiting repeating with the same reason. These tests pin
+# _stall_summary_md's own worked example from its docstring: "longest observe stall:
+# reason=`like_sheet` for 1m37s (5 records)" for that exact run's repeats.
+def test_stall_summary_names_the_reason_and_its_duration_from_uncollapsed_records():
+    """UNCOLLAPSED shape: individual, raw actions.jsonl lines -- one per poll, real ISO
+    timestamps -- exactly as hinge.py's _note_observe_waiting actually writes them, and exactly
+    what _one_debug_dir_md hands to _stall_summary_md (never the collapsed display form; see
+    the sibling test below for that shape). Reproduces the audited run's own like_sheet repeats
+    verbatim: 01:42:43 -> 01:44:20, 97s, 5 records -- the exact numbers _stall_summary_md's own
+    docstring worked example quotes."""
+    lines = [
+        json.dumps({"ts": "2026-08-11T01:42:36", "action": "observe_like_anchor"}),
+        json.dumps({"ts": "2026-08-11T01:42:43", "action": "observe_waiting", "reason": "like_sheet"}),
+        json.dumps({"ts": "2026-08-11T01:43:13", "action": "observe_waiting", "reason": "like_sheet"}),
+        json.dumps({"ts": "2026-08-11T01:43:19", "action": "observe_waiting", "reason": "like_sheet"}),
+        json.dumps({"ts": "2026-08-11T01:43:49", "action": "observe_waiting", "reason": "like_sheet"}),
+        json.dumps({"ts": "2026-08-11T01:44:20", "action": "observe_waiting", "reason": "like_sheet"}),
+    ]
+
+    md = bugreport._stall_summary_md(lines)
+
+    assert "longest observe stall" in md
+    assert "reason=`like_sheet`" in md
+    assert "1m37s" in md            # 01:42:43 -> 01:44:20
+    assert "(5 records)" in md
+
+
+def test_stall_summary_and_the_collapsed_tail_entry_agree_on_the_same_stall(tmp_path):
+    """COLLAPSED shape: the SAME repeats, independently reduced by _collapse_action_tail /
+    _render_run into bugreport.py's own display object -- {"ts": "<start>-<end>", "action":
+    ..., "reason": ..., "repeated": N} -- for the "actions.jsonl (tail)" section further down
+    the same report. The stall summary (computed from the raw, uncollapsed lines) and the tail
+    (computed from the same lines but collapsed for display) must describe the SAME stall
+    consistently -- same reason, same record count -- not silently disagree because one code
+    path counts differently than the other."""
+    run = tmp_path / "run_20260811_011416"
+    run.mkdir(parents=True)
+    start = datetime.datetime(2026, 8, 11, 1, 22, 13)
+    lines = [json.dumps({"ts": "2026-08-11T01:19:51", "action": "capture", "photos": 9,
+                          "profile_name": "Victoria"})]
+    for i in range(12):
+        ts = (start + datetime.timedelta(seconds=15 * i)).isoformat()
+        lines.append(json.dumps({"ts": ts, "action": "observe_waiting", "reason": "no_change"}))
+    lines.append(json.dumps({"ts": (start + datetime.timedelta(seconds=15 * 11 + 5)).isoformat(),
+                              "action": "observe_decision", "decision": "pass",
+                              "profile_name": "Victoria"}))
+    (run / "actions.jsonl").write_text("\n".join(lines) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    # (1) the UNCOLLAPSED-derived stall summary, at the top of the section...
+    assert "stall summary:" in md
+    assert "reason=`no_change`" in md
+    assert "2m45s" in md           # 11 * 15s between the first and last of the 12 repeats
+    assert "(12 records)" in md
+    # (2) ...and the SAME 12 repeats, independently collapsed for the tail further down.
+    assert '"repeated": 12' in md
+    assert '"reason": "no_change"' in md
+    stall_pos = md.index("stall summary:")
+    tail_pos = md.index("actions.jsonl (tail):")
+    assert stall_pos < tail_pos    # the summary sits above the raw/collapsed tail, not below it
+
+
+def test_stall_summary_is_empty_for_a_healthy_run_with_nothing_repeated():
+    """The common case -- a run that never waited on the same reason twice in a row -- must
+    render nothing extra, the same "quiet when healthy" contract as _app_diagnostics_md and
+    _action_counts_line."""
+    lines = [
+        json.dumps({"ts": "2026-08-11T01:00:00", "action": "capture", "photos": 6}),
+        json.dumps({"ts": "2026-08-11T01:00:05", "action": "observe_waiting", "reason": "no_change"}),
+        json.dumps({"ts": "2026-08-11T01:00:10", "action": "observe_decision", "decision": "like"}),
+    ]
+    assert bugreport._stall_summary_md(lines) == ""
+
+
+def test_stall_summary_survives_malformed_and_missing_timestamps():
+    """A bug report that crashes while reporting a bug is the worst possible failure mode (see
+    _diagnostic_improvement_md). actions.jsonl "ts" fields are free-form -- _parse_action_ts's
+    own docstring names three failure shapes that must all degrade to "unknown duration" rather
+    than raise: the key missing entirely, a non-string value, and a string that isn't
+    ISO-parseable. All three appear here on repeats of the SAME reason (so _stall_candidates
+    still has something to report), mixed with one line that isn't even valid JSON."""
+    lines = [
+        "not valid json {{{",
+        json.dumps({"action": "observe_waiting", "reason": "not_deck_ready"}),        # no ts key at all
+        json.dumps({"ts": None, "action": "observe_waiting", "reason": "not_deck_ready"}),
+        json.dumps({"ts": "not-a-timestamp", "action": "observe_waiting", "reason": "not_deck_ready"}),
+        json.dumps({"ts": 12345, "action": "observe_waiting", "reason": "not_deck_ready"}),  # not a string
+    ]
+
+    md = bugreport._stall_summary_md(lines)      # must not raise
+
+    assert "reason=`not_deck_ready`" in md
+    assert "unknown duration" in md
+    assert "(4 records)" in md                    # the unparsable JSON line never joins the stretch
+
+
+def test_stall_summary_malformed_timestamps_do_not_crash_the_full_debug_section(tmp_path):
+    """The same guarantee, exercised through the real on-disk path (_one_debug_dir_md) rather
+    than calling _stall_summary_md directly -- a malformed timestamp in a real actions.jsonl
+    file must not take down the rest of the debug-log section, or the report around it."""
+    run = tmp_path / "run_malformed_ts"
+    run.mkdir(parents=True)
+    lines = [
+        json.dumps({"action": "observe_waiting", "reason": "no_change"}),
+        json.dumps({"ts": "garbage", "action": "observe_waiting", "reason": "no_change"}),
+        json.dumps({"ts": "still garbage", "action": "observe_waiting", "reason": "no_change"}),
+    ]
+    (run / "actions.jsonl").write_text("\n".join(lines) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})   # must not raise
+
+    assert "reason=`no_change`" in md
+    assert "unknown duration" in md
+
+
 # ── Run status: defensive `stopping` flag (landing concurrently in status.py) ───────────────
 class _StoppingHub:
     def snapshot(self):
@@ -714,23 +934,49 @@ def test_recent_openers_section_renders_newest_first_and_caps_at_the_shown_limit
     assert order == list(range(total - 1, total - 1 - bugreport._RECENT_OPENERS_SHOWN, -1))  # newest first
 
 
-def test_recent_openers_section_marks_anchored_and_blind_with_status_circles():
-    """Anchored state is the whole point of this section -- it must be unmissable and use the
-    owner's 🟢/🔴 status-circle convention, never a hand emoji (owner rule: hard to tell
-    thumbs-up/down apart at a glance)."""
+def test_recent_openers_section_marks_what_the_model_was_looking_at_with_status_circles():
+    """WHAT THE MODEL SAW is the whole point of this section -- it must be unmissable and use
+    the owner's 🟢/🔴 status-circle convention, never a hand emoji (owner rule: hard to tell
+    thumbs-up/down apart at a glance).
+
+    The three states are not symmetrical, and doc 5.9's observe inversion is why. Both modes now
+    send numbered item crops and NOTHING passes an anchor, so `model_items` is the strongest
+    shape this pipeline has and must not print as "blind"; the anchored wording survives only
+    for entries written before the crop shape existed, where it still means what it said."""
     entries = [
         _opener_entry(index=0, anchored=True, opener="alpha"),
         _opener_entry(index=1, anchored=False, opener="beta"),
+        _opener_entry(index=2, anchored=False, opener="gamma"),
     ]
+    entries[2]["index_space"] = "model_items"
 
     md = bugreport._recent_openers_md(_FakeHubOpeners(entries))
 
     lines = md.splitlines()
     alpha_header = next(ln for ln in lines if "index: 0" in ln)
     beta_header = next(ln for ln in lines if "index: 1" in ln)
+    gamma_header = next(ln for ln in lines if "index: 2" in ln)
     assert "🟢 anchored to the live like screen" in alpha_header
     assert "🔴 blind" in beta_header
+    assert "🟢 chose from numbered item crops" in gamma_header
+    assert "blind" not in gamma_header       # the crop shape is the opposite of blind
     assert "👍" not in md and "👎" not in md          # never the banned hand-emoji convention
+
+
+def test_recent_openers_section_names_the_index_space_when_the_entry_carries_one():
+    """`index: 3` is uninterpretable on its own -- 3 means a different item depending on
+    whether the request numbered her scroll frames or her item crops, and a reader comparing
+    two reports has no other way to tell (that ambiguity is what let the two spaces be confused
+    in code in the first place). Entries written before 2026-08-12 carry no space and must
+    render with no suffix rather than a guessed one."""
+    entry = _opener_entry(index=3, opener="with a space")
+    entry["index_space"] = "profile_photos"
+    older = _opener_entry(index=4, opener="without a space")   # no index_space key at all
+
+    md = bugreport._recent_openers_md(_FakeHubOpeners([entry, older]))
+
+    assert "index: 3 (profile_photos)" in md
+    assert "index: 4 ·" in md or "index: 4\n" in md
 
 
 def test_recent_opener_text_is_truncated_at_the_configured_character_cap():
@@ -778,5 +1024,103 @@ def test_recent_openers_section_survives_a_raising_recent_openers_call():
     test_malformed_status_section_does_not_crash_whole_report)."""
     md = bugreport.build_report(_RaisingHubOpeners())
     assert "## Recent openers" in md
+    assert "⚠️ this section failed to generate" in md
+
+
+# ── Recent opener rejections: the OTHER half of the opener paper trail -- attempts the
+# deterministic guards in opener.py's _parse REJECTED, not just the successes above. Before
+# this section existed, a rejection was printed to the console and then lost forever.
+def _rejection_entry(ts="2026-08-10T12:00:00", app="hinge", model="gemini-2.5-flash",
+                     attempt=2, reason_code="scaffolding",
+                     reason="Gemini's opener contained scaffolding text",
+                     raw_opener="Here's the response: love the beach shot"):
+    return {"ts": ts, "app": app, "model": model, "attempt": attempt,
+            "reason_code": reason_code, "reason": reason, "raw_opener": raw_opener}
+
+
+class _FakeHubRejections:
+    """Stands in for HubState: build_report/_recent_opener_rejections_md only ever call
+    .recent_opener_rejections() on it."""
+    def __init__(self, entries):
+        self._entries = entries
+
+    def recent_opener_rejections(self):
+        return self._entries
+
+
+def test_recent_opener_rejections_section_handles_no_hub_gracefully():
+    md = bugreport._recent_opener_rejections_md(None)
+    assert "no hub" in md
+
+
+def test_recent_opener_rejections_section_handles_empty_list_gracefully():
+    md = bugreport._recent_opener_rejections_md(_FakeHubRejections([]))
+    assert "no opener rejections recorded" in md
+
+
+def test_recent_opener_rejections_section_renders_newest_first_and_caps_at_the_shown_limit():
+    total = bugreport._RECENT_REJECTIONS_SHOWN + 4
+    entries = [_rejection_entry(attempt=i, raw_opener=f"opener-body-{i}") for i in range(total)]
+
+    md = bugreport._recent_opener_rejections_md(_FakeHubRejections(entries))
+
+    order = [int(tok.rsplit("-", 1)[1]) for tok in re.findall(r"opener-body-\d+", md)]
+    assert len(order) == bugreport._RECENT_REJECTIONS_SHOWN
+    assert order == list(range(total - 1, total - 1 - bugreport._RECENT_REJECTIONS_SHOWN, -1))
+
+
+def test_recent_opener_rejections_section_shows_reason_code_and_attempt():
+    entries = [_rejection_entry(attempt=4, reason_code="undeliverable_chars",
+                                raw_opener="love the \U0001F384 vibes")]
+
+    md = bugreport._recent_opener_rejections_md(_FakeHubRejections(entries))
+
+    assert "attempt 4" in md
+    assert "undeliverable_chars" in md
+    assert "love the" in md
+
+
+def test_recent_opener_rejections_section_renders_none_raw_opener_as_a_placeholder():
+    """no_text/max_tokens rejections carry raw_opener=None -- must render a plain
+    placeholder, never the literal string "None"."""
+    entries = [_rejection_entry(reason_code="no_text", raw_opener=None)]
+
+    md = bugreport._recent_opener_rejections_md(_FakeHubRejections(entries))
+
+    assert "no candidate text" in md
+    assert "> None" not in md
+
+
+def test_recent_opener_rejection_text_is_truncated_at_the_configured_character_cap():
+    long_text = "x" * (bugreport._RECENT_OPENER_TEXT_CHARS + 50)
+    entries = [_rejection_entry(raw_opener=long_text)]
+
+    md = bugreport._recent_opener_rejections_md(_FakeHubRejections(entries))
+
+    assert long_text not in md
+    assert ("x" * bugreport._RECENT_OPENER_TEXT_CHARS) + "…" in md
+
+
+def test_recent_opener_rejections_section_sanitizes_free_text():
+    entries = [_rejection_entry(
+        model="gemini-2.5-flash`\n# fake heading",
+        raw_opener="hey! loved the beach\nkeep swimming `champ`",
+    )]
+
+    md = bugreport._recent_opener_rejections_md(_FakeHubRejections(entries))
+
+    assert not any(ln.strip().startswith("# fake heading") for ln in md.splitlines())
+    assert "gemini-2.5-flash' # fake heading" in md
+    assert "hey! loved the beach keep swimming 'champ'" in md
+
+
+class _RaisingHubRejections:
+    def recent_opener_rejections(self):
+        raise RuntimeError("opener service torn down mid-read")
+
+
+def test_recent_opener_rejections_section_survives_a_raising_call():
+    md = bugreport.build_report(_RaisingHubRejections())
+    assert "## Recent opener rejections" in md
     assert "⚠️ this section failed to generate" in md
     assert "## Debug log" in md               # the rest of the report still renders

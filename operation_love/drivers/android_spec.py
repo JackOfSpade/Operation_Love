@@ -58,12 +58,23 @@ class AndroidAppSpec:
     templates: dict[str, str] = field(default_factory=dict)
     # Logical UI role -> PNG filename under operation_love/drivers/assets/. Roles the driver
     # knows about: "like" (the like glyph), "pass" (the pass glyph), "confirm" (the
-    # send/"Send Like" button used to detect a still-open confirmation sheet), and
-    # "upsell_dismiss" (the dismiss/"send anyway" control on a paid-upgrade interstitial —
-    # NEVER the paid option itself). A role with no entry here means vision-location for
-    # that role is skipped entirely (no template to match against); the driver falls back
-    # to the fixed coordinate in `coords` (or, for upsell_dismiss, simply does nothing —
-    # there is no safe fixed-coordinate fallback for a button we must never mis-tap).
+    # send/"Send Like" button used to detect a still-open confirmation sheet), "upsell_dismiss"
+    # (the dismiss/"send anyway" control on a paid-upgrade interstitial — NEVER the paid option
+    # itself), and "paywall" (fixed chrome used to detect that a full-screen upgrade paywall is
+    # covering the deck — Hinge's is hinge_upgrade_tab.png, the "HingeX" tab wordmark cropped
+    # from the tab bar; chosen because the tab bar is FIXED chrome while the hero art below it
+    # is rotating marketing imagery — MEASURED 2026-08-11: cv2.TM_CCOEFF_NORMED 0.965-1.000 on
+    # the live paywall under gain/bias perturbation vs. a max of 0.4903 over all 88 real
+    # non-paywall frames of the run this template exists to fix — see hinge.py's
+    # _PAYWALL_MATCH_THRESHOLD / _paywall_visible). Unlike the other roles, "paywall" names no
+    # tap target: it is detection-only, because the whole point is that observe mode must
+    # recognise the screen and STOP rather than touch it — the paywall is a purchase screen and
+    # must never be dismissed automatically. A role with no entry here means vision-location for
+    # that role is skipped entirely (no template to match against); the driver falls back to the
+    # fixed coordinate in `coords` for a tappable role (or, for upsell_dismiss, simply does
+    # nothing — there is no safe fixed-coordinate fallback for a button we must never mis-tap).
+    # "paywall" has no coords fallback at all: an unmatched paywall template just means this
+    # detection path stays silent, never that some control gets tapped in its place.
 
     like_flow: str = "direct"
     # "comment_sheet" — Hinge: tap the heart -> a comment/"Send Like" sheet opens ->
@@ -191,6 +202,25 @@ class AndroidAppSpec:
     # None (the default) means this app declares no such band; observe mode keeps its previous
     # scroll-top behaviour (the inconclusive "top" verdict, unchanged).
 
+    paywall_headline_band: tuple[float, float, float, float] | None = None
+    # Normalised (x0, y0, x1, y1) crop of Hinge's "You're out of free likes for today" Hinge+
+    # upgrade headline (MEASURED live on the Pixel 7a, 1080x2400, 2026-08-11 -- see
+    # ops/calibration/hinge_out_of_likes_20260811.png and the read-only uiautomator dump
+    # committed alongside it: band = (0.0556, 0.1958, 0.9537, 0.3000), i.e. px
+    # (60,470)-(1030,720)).
+    #
+    # OCR'd BEST-EFFORT ONLY -- the screen itself is detected by the "paywall" TEMPLATE (see
+    # `templates` above), never by OCR over this band: detection must not depend on tesseract
+    # being installed. This band exists purely to refine the operator-facing stop message from
+    # the generic "the deck is not available" into the specific "Hinge is out of free likes for
+    # today" once OCR confirms the headline (see AndroidDriver._paywall_headline in hinge.py,
+    # which never raises -- a missing or failed tesseract read costs message specificity only,
+    # never detection).
+    #
+    # None (the default) means no headline refinement is attempted even when a "paywall"
+    # template is declared and matches; the stop message then falls back to the generic
+    # wording.
+
     content_band: tuple[float, float] = (0.125, 0.875)
     # (y0, y1) fractions bounding the SCROLLING content only -- excluding fixed chrome (status
     # bar, sticky header, floating like/pass overlay, bottom nav) that does NOT translate when
@@ -305,6 +335,31 @@ class AndroidAppSpec:
                 f"is None -- the scroll-top name check refines the pixel identity verdict, it "
                 f"is not a standalone source, and that verdict cannot be produced without "
                 f"identity_band declared")
+        if self.paywall_headline_band is not None:
+            # Same normalised-rect shape as identity_top_name_band above -- a malformed rect
+            # here would silently defeat the OCR refinement (garbage text, or a crop over the
+            # wrong part of the screen) rather than raise. Unlike identity_top_name_band, a bad
+            # rect here is never the difference between detecting the screen and not -- that is
+            # what the "paywall" template is for, checked separately below -- but it should
+            # still fail at import rather than at the first live paywall.
+            x0, y0, x1, y1 = self.paywall_headline_band
+            if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+                raise ValueError(
+                    f"AndroidAppSpec({self.app!r}).paywall_headline_band "
+                    f"{self.paywall_headline_band} is not a normalised (x0, y0, x1, y1) rect "
+                    f"with x0<x1 and y0<y1 inside 0..1")
+        if self.paywall_headline_band is not None and "paywall" not in self.templates:
+            # The headline band is an OCR REFINEMENT of the paywall verdict, not a standalone
+            # detector -- it only ever runs once the "paywall" template has already matched
+            # (AndroidDriver._deck_blocked_reason, hinge.py). Declaring a headline band with no
+            # "paywall" template to detect the screen it sits on is therefore a mis-wiring: a
+            # band with nothing to refine -- refused here the same way identity_top_name_band
+            # with no identity_band is refused above.
+            raise ValueError(
+                f"AndroidAppSpec({self.app!r}).paywall_headline_band is set but no 'paywall' "
+                f"template is declared -- the headline band refines the paywall verdict, it is "
+                f"not a standalone detector, and there is nothing to detect the screen it sits "
+                f"on without a 'paywall' template")
         for zone in self.observe_ignore_zones:
             # Same normalised-rect shape as forbidden_zones above -- these are the taps
             # wait_for_decision (hinge.py) must recognise as a resync rather than a decision

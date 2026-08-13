@@ -35,7 +35,12 @@ import subprocess
 from collections.abc import Sequence
 
 from ..human import human_delay
-from ..typography import DASH_FOLD, tidy_punctuation_spacing
+from ..typography import (
+    describe_char,
+    fold_to_ascii,
+    undeliverable_chars,
+    undeliverable_sequences,
+)
 from .base import DriverClosed
 
 _DEVICE_LOST_PHRASES = (
@@ -180,10 +185,44 @@ class Adb:
     def text(self, s: str) -> None:
         """Type a string via ``adb shell input text``.
 
-        NOT round-trip-safe for every string: ``adb shell input text`` reserves
-        ``%s`` as its space escape. This method cleans the input to keep printable ASCII
-        and avoids the space encoding collision.
+        Checked BEFORE anything is folded or sent: if `s` still contains a character the
+        device keyboard cannot render even after ASCII folding (typography.fold_to_ascii --
+        curly quotes, dashes, accents, ligatures, etc.), this raises AdbError naming it and
+        NO adb command is issued at all. This is the owner's "best humanized interaction or
+        fail loudly" rule applied to text input: the old behaviour silently dropped the
+        undeliverable character and typed a truncated message, so the text recorded in
+        BigQuery / shown in the hub could read differently from what the device actually
+        typed to a real person. Failing here instead makes that impossible -- what got
+        recorded as sent is always what was actually sent, or nothing was sent at all.
+
+        A literal ``%`` is otherwise left completely alone by fold_to_ascii (the owner
+        rejected an earlier version that rewrote it to the word " percent" -- unnatural: "50%"
+        must type as "50%") -- it round-trips fine through ``adb shell input text``'s own
+        ``%s`` space escape in every case measured EXCEPT one: a literal ``%`` immediately
+        followed by a lowercase ``s`` collides with the escape and is silently eaten
+        (measured via a faithful port of Android's sendText() unescaper against this file's
+        own _escape_input_text -- see typography.fold_to_ascii's docstring point 4 for the
+        full round-trip table). That one narrow case is checked for explicitly, right below,
+        and rejected the same way an undeliverable character is: loudly, with nothing typed.
         """
+        bad = undeliverable_chars(s)
+        if bad:
+            names = ", ".join(describe_char(ch) for ch in bad)
+            raise AdbError(
+                ["shell", "input", "text", s],
+                f"cannot type this text: it contains character(s) the device keyboard "
+                f"cannot render even after ASCII folding: {names}. The text was NOT typed.",
+            )
+        bad_seqs = undeliverable_sequences(s)
+        if bad_seqs:
+            seqs = ", ".join(repr(seq) for seq in bad_seqs)
+            raise AdbError(
+                ["shell", "input", "text", s],
+                f"cannot type this text: it contains sequence(s) that collide with "
+                f"adb's own %s space escape and cannot be delivered as written, even though "
+                f"every character in them is individually typeable: {seqs}. "
+                f"The text was NOT typed.",
+            )
         cleaned = _clean_text_for_input(s)
         if cleaned:
             self._run_device(["shell", "input", "text", _escape_input_text(cleaned)])
@@ -304,11 +343,15 @@ def _escape_input_text(s: str) -> str:
     """Best-effort escaping for ``adb shell input text``.
 
     Whitespace -> ``%s`` (input text's space escape) and shell metacharacters are
-    backslash-escaped so the on-device shell doesn't interpret them. Caveat: a
-    literal ``%`` / ``%s`` in ``s`` is NOT round-trip-safe (it collides with the
-    space encoding); :meth:`Adb.text` works around that by rewriting a literal
-    ``%`` to the word "percent" before this escaping runs (see
-    :func:`_clean_text_for_input`).
+    backslash-escaped so the on-device shell doesn't interpret them. Caveat: a literal ``%``
+    immediately followed by a lowercase ``s`` in ``s`` is NOT round-trip-safe -- it collides
+    with the space encoding produced right here (any other literal ``%``, including one
+    followed by uppercase ``S``, round-trips fine; see typography.fold_to_ascii's docstring
+    point 4 for the measured table). :meth:`Adb.text` does NOT work around this by rewriting
+    the text -- the owner rejected that as unnatural -- it instead checks for the collision
+    via :func:`typography.undeliverable_sequences` BEFORE this function ever runs, and raises
+    :class:`AdbError` naming it rather than typing something silently different from what was
+    asked for.
     """
     escaped: list[str] = []
     for ch in str(s):
@@ -341,45 +384,26 @@ def _format_argv(argv: Sequence[str]) -> str:
     return shlex.join(argv)
 
 
-_QUOTE_FOLD = {
-    "’": "'", "‘": "'", "‚": "'", "‛": "'",   # curly single: ‘ ’ ‚ ‛
-    "“": '"', "”": '"', "„": '"', "‟": '"',   # curly double: “ ” „ ‟
-}
-_SPACE_FOLD = {" ": " ", " ": " ", " ": " "}       # nbsp, narrow no-break space, thin space
-# Owner rule (b): no dash of any kind may survive (reads as AI). Dash folding uses the SAME
-# canonical table as opener.py's _sanitize() (operation_love.typography.DASH_FOLD), so this
-# device-input safety net and the LLM-output sanitizer can't silently disagree again on which
-# codepoints count as a dash or what they fold to.
+# Owner rule (b): no dash of any kind may survive (reads as AI). Folding (quotes, dashes,
+# ellipsis, exotic spaces, ligatures, accents) is delegated entirely to
+# operation_love.typography.fold_to_ascii -- the SAME function opener.py's _sanitize() uses
+# -- so this device-input safety net and the LLM-output sanitizer can't silently disagree
+# again on which codepoints count as a dash, an accent, or anything else.
 
 
 def _clean_text_for_input(s: str) -> str:
-    """Fold common non-ASCII typography to its ASCII equivalent (curly quotes, ellipsis,
-    exotic spaces, every dash variant) instead of silently deleting it. Anything still
-    unmapped after folding is dropped, same as before; the punctuation-spacing tidy-up
-    (shared with opener.py's _sanitize()) then cleans up whitespace/punctuation artifacts
-    the fold can leave behind (double spaces, a stray space before punctuation, a comma
-    stranded before terminal punctuation, leading/trailing connective punctuation)."""
-    folded = []
-    for ch in s:
-        if ch in _QUOTE_FOLD:
-            folded.append(_QUOTE_FOLD[ch])
-        elif ch in DASH_FOLD:
-            folded.append(DASH_FOLD[ch])
-        elif ch == "…":
-            folded.append("...")
-        elif ch in _SPACE_FOLD:
-            folded.append(" ")
-        else:
-            folded.append(ch)
+    """Fold `s` to its ASCII-typeable equivalent via typography.fold_to_ascii (curly quotes,
+    ellipsis, exotic spaces, every dash variant, and NFKD accent-stripping -- e.g. an
+    accented "e" becomes a plain ASCII "e", not a mangled or truncated string).
 
-    cleaned = []
-    for ch in "".join(folded):
-        o = ord(ch)
-        if 32 <= o <= 126:
-            if ch == "%":
-                cleaned.append(" percent")
-            else:
-                cleaned.append(ch)
-        elif ch == "\n":
-            cleaned.append(" ")
-    return tidy_punctuation_spacing("".join(cleaned))
+    Unlike the version of this function that shipped before typography.py's fold_to_ascii
+    existed, it no longer silently DROPS whatever is left over after folding: a character
+    fold_to_ascii cannot reduce to printable ASCII is now Adb.text()'s problem, not this
+    function's -- Adb.text() calls typography.undeliverable_chars() on the raw input BEFORE
+    this function ever runs (undeliverable_chars folds internally too, so the check is
+    equivalent to checking this function's own output) and raises AdbError naming the
+    offending character(s) rather than typing a silently truncated message. See adb.py's
+    module docstring and the owner's "best humanized interaction or fail loudly" rule for
+    why a silent drop is not acceptable here: the text recorded in BigQuery / shown in the
+    hub must always be exactly what the device actually typed."""
+    return fold_to_ascii(s)

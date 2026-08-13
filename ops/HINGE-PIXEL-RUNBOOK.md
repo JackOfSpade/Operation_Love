@@ -301,3 +301,48 @@ Do not:
       the research marks those vendor/biometric specifics as disputed. The robust
       guardrails are stock physical hardware, residential network, burner
       account, and no on-device helper.
+
+## 10. Known blocking screen — Hinge's "out of free likes" paywall
+
+Research basis: a 2026-08-11 observe run hung 2.5 minutes because Hinge
+refused a Send Like (daily free likes exhausted) and put its Hinge+ upgrade
+screen up in place of the deck, and nothing in the codebase recognized it. See
+[ANTI-BOT-RESEARCH.md, "Addendum 2026-08-11 — Hinge's out-of-free-likes paywall, and the observe hang it exposed"](./ANTI-BOT-RESEARCH.md#4-decisions-this-research-drove).
+This is vision-only detection (screencap + `cv2` template match + best-effort
+`tesseract` OCR) — no accessibility tree, per §5's guardrail above; the
+uiautomator dump used to measure the geometry below was a one-off read-only
+calibration read, the same kind already used for Bumble, never a standing
+capability.
+
+Measured live on the Pixel 7a (1080x2400) 2026-08-11. Reference artifacts:
+`ops/calibration/hinge_out_of_likes_20260811.png` (screenshot) and
+`ops/calibration/hinge_out_of_likes_20260811_uiautomator.xml` (the one-off
+read-only dump).
+
+- [ ] **Template crop box** (`operation_love/drivers/assets/hinge_upgrade_tab.png`,
+      210x76 grayscale): x 705..915, y 254..330 on a 1080x2400 frame — the
+      fixed "HingeX" tab-bar wordmark, chosen because the tab bar is fixed
+      chrome while the hero image and benefit list rotate/scroll underneath
+      it. `cv2.TM_CCOEFF_NORMED` measured 1.000 on the live paywall, 0.965 to
+      1.000 under gain/bias perturbation, and a maximum of 0.4903 over all 88
+      real non-paywall frames of the hung run — `_PAYWALL_MATCH_THRESHOLD =
+      0.75` sits with wide margin on both sides.
+- [ ] **Position gate:** only accept a template match whose centre y is
+      `<= 0.30 * height` (`_PAYWALL_MAX_Y_FRAC`) — the tab bar sits at y
+      266..318 of 2400 (y_frac 0.111..0.133). Same defensive idiom as the
+      like-sheet detector's existing y-gate.
+- [ ] **Headline OCR band** (best-effort only, never load-bearing —
+      `AndroidAppSpec.paywall_headline_band`): normalized `(0.0556, 0.1958,
+      0.9537, 0.3000)`, i.e. px (60,470)-(1030,720) on 1080x2400, covering
+      the wrapped headline "You're out of free likes for today."
+- [ ] **OCR recipe for that band** — the driver's ordinary dark-text-on-chrome
+      recipe fails here (measured: garbage output) because the headline is
+      white text over a photograph. What works, measured identically at
+      thresholds 180/200/215: grayscale crop, binarize (`pixel > threshold`),
+      **invert** so it becomes black text on white, upscale roughly 2-3x, then
+      `tesseract --psm 6`.
+- [ ] These coordinates are pinned to one Hinge app build on one physical
+      Pixel 7a. Re-measure (fresh reference screenshot + uiautomator dump,
+      same one-off read-only method) after any Hinge app update, and
+      especially after any redesign of the Hinge+ upgrade screen — see
+      ANTI-BOT-RESEARCH.md §5's matching re-check trigger.

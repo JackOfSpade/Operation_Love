@@ -42,13 +42,19 @@ def _action_frame(heart_xy=(937, 1600), x_xy=(125, 2035), confirm_xy=(540, 1300)
     pasted at known spots, so the driver's vision locator finds them — exercises the real
     action path, not the fallback. The confirm glyph is what lets _await_sheet_open() (the
     gate that confirms the comment sheet actually opened before the driver taps the FIXED
-    comment_box / send_like coordinates) succeed from a single scripted frame."""
+    comment_box / send_like coordinates) succeed from a single scripted frame.
+
+    The heart glyph is HINGE_SPEC.templates["like"] (hinge_like_button.png), not a hardcoded
+    filename — it must always be whatever the real spec currently wires to the "like" role, or
+    this fixture silently stops representing a real deck the moment that role's asset changes
+    again (as it did away from hinge_heart.png, the "Which do we have in common" outline
+    heart — see the templates dict comment on HINGE_SPEC in hinge.py)."""
     import cv2
     import numpy as np
     rng = np.random.default_rng(1)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     for name, (cx, cy) in (
-        ("hinge_heart.png", heart_xy),
+        (hinge.HINGE_SPEC.templates["like"], heart_xy),
         ("hinge_pass_x.png", x_xy),
         ("hinge_send_like.png", confirm_xy),
     ):
@@ -265,7 +271,11 @@ def test_like_without_opener_taps_heart_then_send():
 
 def test_like_with_opener_types_comment_between_heart_and_send():
     adb = FakeAdb([_action_frame()])
-    _drv(adb).like("loved your stargazing prompt")
+    # item_index=0 -- "the opener is about the first captured frame", the shape the live pipeline
+    # produces for model item 1 in profile-photos space. An opener with NO item index at all is
+    # refused before any gesture since 2026-08-12 (never attach real text to whichever heart
+    # happens to be topmost); that refusal has its own test below.
+    _drv(adb).like("loved your stargazing prompt", 0)
     heart = (937, 1600)                          # vision-located
     box = (int(0.500 * 1080), int(0.529 * 2400))
     send = (int(0.643 * 1080), int(0.576 * 2400))
@@ -1978,7 +1988,7 @@ def _like_flow_frame_with_modal(heart_xy=(937, 1600), confirm_xy=(540, 1300), mo
     rng = np.random.default_rng(9)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     for name, (cx, cy) in (
-        ("hinge_heart.png", heart_xy),
+        (hinge.HINGE_SPEC.templates["like"], heart_xy),
         ("hinge_send_like.png", confirm_xy),
         ("hinge_send_like_anyway.png", modal_xy),
     ):
@@ -1998,11 +2008,19 @@ def test_like_dismisses_rose_upsell_modal():
     assert (420, 2197) in adb.taps            # the normal-like confirmation was tapped
 
 
-# --- opener item targeting (like the RIGHT photo, not always the first) -
+# --- opener item targeting: reach the RIGHT item, or STOP -----------------------------------
+# THE RULE THESE PIN (ops/OPENER-REDESIGN.md 5.6, standing owner rule): never substitute a
+# different item. Until 2026-08-12 every route that could not reach the item the opener was
+# written about fell back to the topmost heart on screen and reported the miss as
+# on_target=False, for the caller to repair the TEXT against. Repairing the text does not undo
+# spending the LIKE on an item the model never chose, so every one of those routes is now a stop.
+# The tests below are the same cases as before, inverted: what used to assert a fallback point
+# plus a False flag now asserts a HingeTargetingError and an untouched screen.
 def test_locate_target_heart_navigates_to_referenced_item(monkeypatch):
-    """When the referenced frame is found and its heart is visible, the method reports
-    on_target=True — this is the "targeting actually worked" case `_like_comment_sheet`
-    relies on to skip the (billed) anchored_opener repair call entirely."""
+    """The happy path: the referenced frame is found, its heart is visible, and the method
+    returns that heart's point. There is no second return value any more -- this method either
+    answers with the chosen item's heart or raises, so there is no state left for an
+    "is this actually the right one" flag to describe."""
     import numpy as np
     sig0, sig1 = np.zeros((24, 24)), np.ones((24, 24)) * 50
     adb = FakeAdb([b"f0", b"f1"])
@@ -2011,23 +2029,61 @@ def test_locate_target_heart_navigates_to_referenced_item(monkeypatch):
     monkeypatch.setattr(hinge, "_downsample", lambda f, size=24: sig0 if f == b"f0" else sig1)
     monkeypatch.setattr(hinge, "_match_glyph",
                         lambda frame, t, side="right", **k: [(937, 1500)] if frame == b"f1" else [])
-    # scrolled to frame 1, tapped its heart, and reported on_target=True
-    assert drv._locate_target_heart(1) == ((937, 1500), True)
+    # scrolled to frame 1 and took its heart
+    assert drv._locate_target_heart(1) == (937, 1500)
 
 
 def test_locate_target_heart_index0_uses_topmost():
-    """index 0 -> topmost (first photo), no navigation needed. This is the ONE fallback
-    route that is still on_target=True by construction: the opener was written about item
-    0, and "fell back to the first photo" IS item 0 — see _locate_target_heart's docstring."""
+    """index 0 -> topmost (first photo), no navigation needed. This is a FAST PATH, not a
+    fallback: _like_comment_sheet scrolls to the top immediately before calling this, so the
+    topmost heart on screen IS item 0's -- the item asked for and the item found are the same
+    item, which is exactly what distinguishes it from the removed first-photo fallback."""
     adb = FakeAdb([_action_frame()])
     drv = _drv(adb)
     drv._current_sigs = [object(), object()]
-    assert drv._locate_target_heart(0) == ((937, 1600), True)
+    assert drv._locate_target_heart(0) == (937, 1600)
+
+
+def test_locate_target_heart_none_taps_the_topmost_heart_because_nothing_was_chosen():
+    """None means NOBODY SAID WHICH ITEM, and it is still not the same input as 0. It is legal
+    only where there is no opener to misplace (Hinge with opener.enabled=false sends a plain
+    like), and there it takes the topmost heart because something has to open the sheet. That is
+    not a substitution: no item was ever chosen, so there is no chosen item to substitute FOR.
+    The combination that WOULD be a substitution -- an opener plus a None index -- is refused one
+    layer up, before any gesture; see the like() test for it below."""
+    adb = FakeAdb([_action_frame()])
+    drv = _drv(adb)
+    drv._current_sigs = [object(), object()]
+    assert drv._locate_target_heart(None) == (937, 1600)
+
+
+def test_locate_target_heart_none_is_logged_as_its_own_reason(tmp_path):
+    """"we were never told which item" and "we aimed at item N and could not find it" are
+    different bugs in different layers, so a debug log must not render them the same. Recorded
+    even though there ARE sigs to search -- unlike every other branch, this one is not a search
+    that failed, and unlike every other branch it is not a stop either."""
+    from operation_love.drivers.debuglog import HingeDebugLog
+    import json
+    drv = _drv(FakeAdb([_action_frame()]))
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="r")
+    drv._current_sigs = [object(), object()]
+
+    assert drv._locate_target_heart(None) == (937, 1600)
+
+    recs = [json.loads(ln) for ln in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()]
+    entries = [r for r in recs if r["action"] == "locate_target_heart"]
+    assert len(entries) == 1
+    assert entries[0]["outcome"] == "no_item_named"      # not "stop": nothing was aimed at
+    assert entries[0]["reason"] == "no_target_index"
+    assert entries[0]["item_index"] is None
 
 
 def test_capture_keeps_sigs_index_aligned_with_photos():
     # an undecodable middle frame: it lands in photos AND in _current_sigs (as None) at the SAME
-    # index, so opener referenced_index (into photos) and the sig lookup never desync.
+    # index, so the driver's own capture-order index and the sig lookup never desync. (That
+    # capture-order space is no longer what the opener answers in -- since 2026-08-12 the model
+    # returns a 1-based index over numbered ITEMS, ops/OPENER-REDESIGN.md 5.1/5.7 -- but the
+    # alignment pinned here is a property of the driver alone and holds either way.)
     adb = FakeAdb([_png(10), b"BADFRAME", _png(20), _png(20)])   # f3 dups f2 -> stop
     drv = _drv(adb)
     prof = drv._capture_current()
@@ -2035,158 +2091,244 @@ def test_capture_keeps_sigs_index_aligned_with_photos():
     assert drv._current_sigs[1] is None                  # the undecodable frame's aligned slot
 
 
-def test_locate_target_heart_falls_back_on_none_sig():
-    """An undecodable target signature is a genuine fallback (not the index-0 fast path),
-    so on_target must report False — the opener was written about item 1, but the tap is
-    about to land on item 0 instead."""
+def test_locate_target_heart_stops_rather_than_substitute_on_an_undecodable_sig():
+    """An undecodable target signature used to fall back to the first photo's heart and report
+    on_target=False. It now stops: the opener was written about item 1, and item 0 is a different
+    item, which is the one thing that is never an option."""
     drv = _drv(FakeAdb([_action_frame()]))
     drv._current_sigs = [object(), None, object()]       # target index 1 is undecodable
-    # falls back to the first photo's heart, and is NOT on target
-    assert drv._locate_target_heart(1) == ((937, 1600), False)
+    with pytest.raises(hinge.HingeTargetingError, match="could not be decoded"):
+        drv._locate_target_heart(1)
 
 
-def test_locate_target_heart_falls_back_on_out_of_range_index():
-    """item_index >= len(_current_sigs) is the other "genuine fallback" route besides an
-    undecodable sig — also never on_target, for the same reason: the opener referenced an
-    item that fell outside the captured profile entirely, yet the tap still lands on item 0."""
+def test_locate_target_heart_stops_rather_than_substitute_on_an_out_of_range_index():
+    """item_index >= len(_current_sigs): the opener referenced an item outside the captured
+    profile entirely. Also a stop, for the same reason -- there is no item here to land on, and
+    landing on a different one is not a degraded success."""
     drv = _drv(FakeAdb([_action_frame()]))
     drv._current_sigs = [object(), object()]              # only indices 0..1 exist
-    assert drv._locate_target_heart(5) == ((937, 1600), False)
+    with pytest.raises(hinge.HingeTargetingError, match="outside the 2 frame"):
+        drv._locate_target_heart(5)
 
 
-# --- HINGE-05: fallback must be recorded in the debug log, and the search must not sweep
-# the whole deck when the target is never found --------------------------------------------
-def test_locate_target_heart_logs_fallback_when_target_not_found(monkeypatch, tmp_path):
-    from operation_love.drivers.debuglog import HingeDebugLog
+def test_locate_target_heart_stops_rather_than_substitute_on_a_negative_index():
+    """A negative index is invalid input, NOT the index-0 fast path, and the two must not
+    collapse: treating -1 as "the first item" is precisely how an unusable index would once again
+    resolve into a confident tap on card 1."""
+    drv = _drv(FakeAdb([_action_frame()]))
+    drv._current_sigs = [object(), object()]
+    with pytest.raises(hinge.HingeTargetingError, match="not a valid capture-order index"):
+        drv._locate_target_heart(-1)
+
+
+def test_locate_target_heart_stops_when_no_frames_were_captured_at_all():
+    """No _current_sigs means the profile on screen was never captured by this driver instance,
+    so there is nothing to navigate back to. Old behaviour: tap the first heart anyway."""
+    drv = _drv(FakeAdb([_action_frame()]))
+    drv._current_sigs = []
+    with pytest.raises(hinge.HingeTargetingError, match="no captured frames"):
+        drv._locate_target_heart(3)
+
+
+def test_locate_target_heart_retries_the_same_item_before_it_stops(monkeypatch):
+    """RETRYING THE SAME ITEM IS ALLOWED AND IS TRIED FIRST -- a shaky hand is not a wrong
+    decision. The search is run _TARGET_HEART_ATTEMPTS times, each from its own re-established
+    scroll top, and only then does the run stop. Pinned by the number of forward read-scrolls:
+    one attempt's worth would be at most `min(limit + 1, item_index + 3)`, and two attempts is
+    what actually happens."""
     import numpy as np
     never_matches = np.ones((24, 24)) * 250
     monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: np.zeros((24, 24)))
-    # The final fallback is _await_button("like"), which now vision-locates for real (no
-    # blind-coordinate fallback left) -- the scripted frame must actually carry the heart
-    # glyph, or the "fallback" this test is pinning would itself raise UnlocatedControlError.
+    adb = FakeAdb([_action_frame()])
+    drv = _drv(adb, scroll_captures=8)
+    drv._current_sigs = [np.zeros((24, 24)), never_matches]
+
+    with pytest.raises(hinge.HingeTargetingError):
+        drv._locate_target_heart(1)
+
+    per_attempt = min(drv._profile_capture_limit + 1, 1 + 3)
+    assert adb.scrolls == per_attempt * hinge._TARGET_HEART_ATTEMPTS
+    assert adb.swipes >= 1        # the retry re-established the top before searching again
+    assert adb.taps == []         # locating never taps, and a stop least of all
+
+
+def test_locate_target_heart_returns_the_heart_when_the_retry_finds_it(monkeypatch):
+    """The other half of the retry rule: a target the FIRST search misses and the second finds is
+    a success, not a stop. This is the case the retry exists for (HINGE-05's measured cause: a
+    real-device scroll can over/undershoot the intended frame), and it must not cost a run."""
+    import numpy as np
+    target = np.ones((24, 24)) * 50
+    seen = {"n": 0}
+
+    def _ds(frame, size=24):
+        seen["n"] += 1
+        # Attempt 1 reads `per_attempt` frames and matches none of them; attempt 2's very first
+        # frame is the target, which is what a corrected over/undershoot looks like.
+        return target if seen["n"] > 4 else np.zeros((24, 24))
+
+    monkeypatch.setattr(hinge, "_downsample", _ds)
+    monkeypatch.setattr(hinge, "_match_glyph", lambda frame, t, side="right", **k: [(937, 1500)])
+    adb = FakeAdb([_action_frame()])
+    drv = _drv(adb, scroll_captures=8)
+    drv._current_sigs = [np.zeros((24, 24)), target]
+
+    assert drv._locate_target_heart(1) == (937, 1500)
+    assert hinge._TARGET_HEART_ATTEMPTS >= 2      # or the retry above never ran at all
+
+
+def test_locate_target_heart_records_the_stop_when_the_target_is_never_found(monkeypatch, tmp_path):
+    """HINGE-05's debug record survives the change from fallback to stop, and says which of the
+    two search failures it was: the frame never matched, versus it matched and carried no heart.
+    Every attempt is recorded, and only the last one is an outcome of "stop"."""
+    from operation_love.drivers.debuglog import HingeDebugLog
+    import json
+    import numpy as np
+    never_matches = np.ones((24, 24)) * 250
+    monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: np.zeros((24, 24)))
     adb = FakeAdb([_action_frame()])
     drv = _drv(adb, scroll_captures=8)
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="r")
     drv._current_sigs = [np.zeros((24, 24)), never_matches]
 
-    # target sig never matches any captured frame -> falls back, and must NOT report on_target
-    # (the whole point of the debug log line this test also checks: this is a real miss).
-    assert drv._locate_target_heart(1) == ((937, 1600), False)
+    with pytest.raises(hinge.HingeTargetingError, match="none of the frames read back matched"):
+        drv._locate_target_heart(1)
 
-    import json
     recs = [json.loads(ln) for ln in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()]
-    fallback_recs = [r for r in recs if r["action"] == "locate_target_heart"]
-    assert len(fallback_recs) == 1
-    assert fallback_recs[0]["outcome"] == "fallback"
-    assert fallback_recs[0]["reason"] == "target_frame_not_found"
+    entries = [r for r in recs if r["action"] == "locate_target_heart"]
+    assert len(entries) == hinge._TARGET_HEART_ATTEMPTS
+    assert [e["outcome"] for e in entries] == ["retry", "stop"]
+    assert {e["reason"] for e in entries} == {"target_frame_not_found"}
+
+
+def test_locate_target_heart_records_the_stop_when_the_matched_frame_has_no_heart(monkeypatch, tmp_path):
+    """The other search failure: the frame IS the one the target was captured on, but no like
+    glyph is visible on it. Distinguished in both the debug record and the raised message, because
+    "we never found the card" and "we found it and it has no heart" are different bugs."""
+    from operation_love.drivers.debuglog import HingeDebugLog
+    import json
+    import numpy as np
+    monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: np.zeros((24, 24)))
+    monkeypatch.setattr(hinge, "_match_glyph", lambda *a, **k: [])     # nothing on the frame
+    adb = FakeAdb([_action_frame()])
+    drv = _drv(adb, scroll_captures=8)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="r")
+    drv._current_sigs = [np.zeros((24, 24)), np.zeros((24, 24))]       # target matches at once
+
+    with pytest.raises(hinge.HingeTargetingError, match="no like heart was visible"):
+        drv._locate_target_heart(1)
+
+    recs = [json.loads(ln) for ln in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()]
+    entries = [r for r in recs if r["action"] == "locate_target_heart"]
+    assert {e["reason"] for e in entries} == {"heart_not_visible_on_matched_frame"}
 
 
 def test_locate_target_heart_bounds_search_when_target_not_found(monkeypatch):
     # Old code swept the FULL scroll_captures+1 depth (9 scrolls, for the default
     # scroll_captures=8) before giving up on a target it never matched -- a target already
-    # scrolled past effectively costs a full wasted sweep. The search must be capped closer to
-    # item_index (how far down from the top the target should be).
+    # scrolled past effectively costs a full wasted sweep. Each attempt's search must stay capped
+    # close to item_index (how far down from the top the target should be), so the bound holds
+    # per attempt and the retry multiplies a small number rather than a full sweep.
     import numpy as np
     never_matches = np.ones((24, 24)) * 250
     monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: np.zeros((24, 24)))
-    # As above: the final fallback vision-locates for real, so the frame needs the heart glyph.
     adb = FakeAdb([_action_frame()])
     drv = _drv(adb, scroll_captures=8)
     drv._current_sigs = [np.zeros((24, 24)), never_matches]
 
-    point, on_target = drv._locate_target_heart(1)
+    with pytest.raises(hinge.HingeTargetingError):
+        drv._locate_target_heart(1)
 
-    assert on_target is False   # a target that was never found is never on target
-    assert adb.scrolls <= 4   # old code: 9 (scroll_captures + 1); capped near item_index + 3 here
+    # old code: 9 (scroll_captures + 1) for ONE attempt; capped near item_index + 3 per attempt
+    assert adb.scrolls <= 4 * hinge._TARGET_HEART_ATTEMPTS
 
 
-# --- like() x anchored_opener: repair a mismatched comment, never send a wrong or empty one -
-def test_like_with_on_target_heart_never_calls_anchored_opener_and_types_original_opener():
-    """When targeting lands on the exact item the opener was written about (index 0, the
-    on_target=True fast path), the sheet already matches the opener text — re-asking would
-    just spend a second billed provider request for nothing (see _like_comment_sheet's own
-    comment on this). anchored_opener must not be called at all, and the ORIGINAL opener
-    text must be the one typed into the comment box."""
+def test_a_targeting_stop_is_the_driver_agnostic_type_the_worker_catches():
+    """The exception has to satisfy two callers at once. worker.py is app-agnostic and catches
+    base.ItemTargetingError (it must not import a Hinge symbol to recognise the one failure class
+    with a specific non-error stop to render); everything that has always caught this driver's
+    action failures by type still sees a HingeActionError. It also carries intended/actual/stage
+    as FIELDS, so the worker's stop record is read off the exception rather than parsed back out
+    of its prose."""
+    from operation_love.drivers.base import ItemTargetingError
+    from operation_love.drivers.hinge import HingeActionError
+    drv = _drv(FakeAdb([_action_frame()]))
+    drv._current_sigs = [object(), object()]
+
+    with pytest.raises(hinge.HingeTargetingError) as exc:
+        drv._locate_target_heart(5)
+
+    assert isinstance(exc.value, ItemTargetingError)
+    assert isinstance(exc.value, HingeActionError)
+    assert exc.value.stage == "navigate"
+    assert exc.value.intended == 5
+    assert exc.value.actual is None          # we never got far enough to see what we would hit
+    assert exc.value.index_space == "capture_order"
+
+
+# --- like(): never substitutes, and there is no repair callback left to substitute WITH ------
+def test_like_types_the_original_opener_when_targeting_reaches_the_item():
+    """Targeting lands on the exact item the opener was written about (index 0, the fast path),
+    so the ORIGINAL opener text is what reaches the phone. Nothing re-asks, nothing rewrites."""
     adb = FakeAdb([_action_frame()])
-    calls = []
 
-    def anchored_opener(anchor):
-        calls.append(anchor)
-        return "should never be used"
+    _drv(adb).like(opener="original opener about the first photo", item_index=0)
 
-    _drv(adb).like(opener="original opener about the first photo", item_index=0,
-                   anchored_opener=anchored_opener)
-
-    assert calls == []
     assert adb.texts == ["original opener about the first photo"]
 
 
-def test_like_with_off_target_heart_calls_anchored_opener_once_and_types_replacement():
-    """The core regression test: when heart-targeting falls back to the first item (item_index
-    1 with no _current_sigs captured -- a genuine, not index-0, fallback), the sheet that just
-    opened is anchored to a DIFFERENT item than the one the opener text describes. like() must
-    call anchored_opener exactly once with the like screen's own screenshot bytes (what
-    _like_comment_sheet calls `anchor`, captured right after the sheet is confirmed open) and
-    type the REPLACEMENT text it returns instead of the original, stale opener."""
-    frame = _action_frame()
-    adb = FakeAdb([frame])
-    calls = []
+def test_like_stops_and_sends_nothing_when_targeting_cannot_reach_the_item():
+    """THE CORE REGRESSION TEST, inverted from what it used to be. It used to assert that a
+    targeting miss called an anchored_opener callback and typed its replacement under whatever
+    item the fallback tap had landed on. That IS the substitution the owner rule forbids -- the
+    like still went to an item the model never chose, and only the wording was made to agree with
+    it afterwards. Now: no tap, no text, no Send, and the run stops."""
+    adb = FakeAdb([_action_frame()])
+    drv = _drv(adb)
+    drv._current_sigs = [object(), object()]        # item 5 is outside the capture
 
-    def anchored_opener(anchor):
-        calls.append(anchor)
-        return "replacement text grounded in the real anchor"
+    with pytest.raises(hinge.HingeTargetingError):
+        drv.like(opener="original opener about a different item", item_index=5)
 
-    _drv(adb).like(opener="original opener about a different item", item_index=1,
-                   anchored_opener=anchored_opener)
-
-    assert len(calls) == 1
-    assert calls[0] == frame   # exactly the like-screen screenshot, not a re-capture
-    assert adb.texts == ["replacement text grounded in the real anchor"]
+    assert adb.taps == []       # the heart was never tapped, so no sheet and no like
+    assert adb.texts == []
 
 
-def test_like_raises_and_sends_nothing_when_anchored_opener_returns_none():
-    """Owner rules: never send a commentless like, and never silently ship one attached to
-    the wrong photo/prompt. When targeting misses AND the repair request comes back with
-    nothing usable (None here), the only choice that violates neither rule is to not send
-    the like at all -- no comment-box tap, no text typed, and Send Like never tapped."""
-    from operation_love.drivers.hinge import HingeActionError
+def test_like_refuses_an_opener_with_no_item_index_at_all_before_touching_the_screen():
+    """An opener with no item index is "we have real text and no idea which photo or prompt it
+    would hang under". It used to tap the first heart and route the text through the repair hatch;
+    it is now refused before the scroll, so the screen is exactly as the caller left it -- no
+    gesture of any kind, not just no tap. The message names the cause rather than rendering it as
+    "item None"."""
     adb = FakeAdb([_action_frame()])
 
-    with pytest.raises(HingeActionError):
-        _drv(adb).like(opener="original opener", item_index=1,
-                       anchored_opener=lambda anchor: None)
+    with pytest.raises(hinge.HingeTargetingError, match="no item index was supplied at all"):
+        _drv(adb).like(opener="original opener about an unidentified item")
+
+    assert adb.taps == [] and adb.texts == []
+    assert adb.scrolls == 0 and adb.swipes == 0     # not even the scroll-to-top happened
+
+
+def test_like_with_no_opener_and_no_item_still_likes():
+    """The openers-disabled path (opener.enabled=false in config), which must keep working
+    exactly as if openers had never existed: a plain like, no comment, no item chosen and
+    therefore nothing that could be substituted for one."""
+    adb = FakeAdb([_action_frame()])
+
+    _drv(adb).like()
 
     assert adb.texts == []
-    assert adb.taps == [(937, 1600)]     # only the heart tap happened; nothing after it
+    assert (937, 1600) in adb.taps                  # the heart was tapped
 
 
-def test_like_raises_and_sends_nothing_when_anchored_opener_returns_whitespace():
-    """Same owner-rule guard as the None case, but for a replacement that is technically a
-    string yet has no real content (whitespace-only) -- `.strip()`-empty must be refused
-    exactly like a bare None, not treated as "got an answer, ship it"."""
-    from operation_love.drivers.hinge import HingeActionError
+def test_like_no_longer_accepts_an_anchored_opener_callback():
+    """The repair hatch is REMOVED, not merely unused: a caller still passing one must fail
+    loudly at the call rather than have its callback silently ignored, which would look exactly
+    like a repair that was never needed. Pins the parameter's absence from the whole chain
+    (base.Driver.like -> hinge.like -> _like_comment_sheet)."""
     adb = FakeAdb([_action_frame()])
 
-    with pytest.raises(HingeActionError):
-        _drv(adb).like(opener="original opener", item_index=1,
-                       anchored_opener=lambda anchor: "   ")
-
-    assert adb.texts == []
-    assert adb.taps == [(937, 1600)]
-
-
-def test_like_with_off_target_heart_and_no_anchored_opener_still_sends_original_opener():
-    """The repair path is opt-in: an off-target heart with anchored_opener=None (auto mode's
-    contract when no anchored-opener provider was wired up, or any caller from before this
-    feature existed) must behave exactly as it always did -- ship the original opener under
-    whatever item the fallback tap landed on, no crash, no repair attempt."""
-    adb = FakeAdb([_action_frame()])
-
-    _drv(adb).like(opener="original opener, unrepaired", item_index=1, anchored_opener=None)
-
-    assert adb.texts == ["original opener, unrepaired"]
-
-
+    with pytest.raises(TypeError):
+        _drv(adb).like(opener="x", item_index=0, anchored_opener=lambda anchor: "repaired")
 def test_verify_like_landed_raises_when_sheet_or_modal_open(monkeypatch):
     from operation_love.drivers.hinge import HingeActionError
     drv = _drv(FakeAdb([b"f"]), halt_on_error=True)
@@ -2809,8 +2951,12 @@ def test_a_deck_advance_mid_capture_discards_the_mixed_profile(monkeypatch):
     content = {b"f0": 200, b"f1": 90, b"f2": 91, b"f3": 120}
     adb = FakeAdb([b"f0", b"f1", b"f2", b"f3"])
     drv = _drv(adb, observe_name_ocr=False, scroll_captures=6)
+    # Observe enumerates since doc 5.9's inversion, and its scroll-top gate reads this same band
+    # through the driver's one decode -- with a THIRD argument (the grid). The 2-argument lambda
+    # this fixture used to install raised a TypeError out of that gate rather than being refused
+    # by it. `*rest` keeps the fake honest for both callers; what this test is about is untouched.
     monkeypatch.setattr(hinge, "_band",
-                        lambda f, rect: np.full((16, 64), bands[f], dtype="int16"))
+                        lambda f, rect, *rest: np.full((16, 64), bands[f], dtype="int16"))
     monkeypatch.setattr(hinge, "_downsample",
                         lambda f: np.full((24, 24), content[f], dtype="int16"))
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda f: False)

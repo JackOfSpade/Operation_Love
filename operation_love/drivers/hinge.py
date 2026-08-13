@@ -67,14 +67,24 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Callable
 
+from ..typography import format_duration
 from ..human import human_cooldown, human_delay
 from ..human_motion import tap_jitter_margin_px
 from ..perception.capture import Profile
-from .adb import SCROLL_X_JITTER_PX, Adb, AdbError, clamp_xy
+from .adb import SCROLL_X_JITTER_PX, Adb, AdbError, clamp_xy, scroll_x
 from .android_spec import AndroidAppSpec
-from .base import DatingAppDriver, DriverClosed, open_debug_log, snapshot_failure_frame
+from .base import (DatingAppDriver, DriverClosed, ItemTargetingError, open_debug_log,
+                   snapshot_failure_frame)
+from .frameshift import ShiftEstimationError
+from .item_crops import ItemCropError, build_item_payload
+from .item_identity import IdentityError, compare_profile_identity
+from .item_index import ItemIndexError, build_item_index
+from .item_nav import ItemNavigationError, navigate_to_item
+from .item_verify import SheetVerificationError, verification_blocker, verify_sheet_item
+from .scroll_step import ScrollStepError, plan_scroll_step
+from .scroll_top import ScrollTopError, confirm_scroll_top
+from .segment import SegmentationError, segment_frame
 from .touchwatch import TouchWatcher, TouchWatchUnavailable
 from .uhid import UhidTouch, UhidUnavailable
 
@@ -88,6 +98,27 @@ class HingeActionError(RuntimeError):
 
     Named for Hinge (the first, and so far only calibrated, Android app) but raised by
     AndroidDriver generically — any Android app's driver instance can raise it."""
+
+
+class HingeTargetingError(HingeActionError, ItemTargetingError):
+    """This driver could not put the like on the item the opener was written about, so it put it
+    nowhere. Doc 5.6's hard stop; see base.ItemTargetingError for the rule and the fields.
+
+    BOTH bases are load-bearing and neither is decorative. `HingeActionError` keeps the existing
+    halt/preserve-the-debug-logs behaviour for any caller that has always caught this driver's
+    action failures by type (and `_verify_like_landed`, `UnlocatedControlError` and the rest stay
+    exactly what they were). `ItemTargetingError` is what worker.py catches, because the worker is
+    app-agnostic and must not import a Hinge symbol to recognise the one failure class that has a
+    specific, non-error stop to render (see _auto_loop's targeting stop).
+
+    Raised at three places, all leaving the screen untouched-from-here-on:
+      * `_verifiable_payload`, before any gesture at all -- an item whose crops cannot serve as a
+        verification reference must not be tapped, and finding that out afterwards costs a stop
+        with a sheet open on somebody's card;
+      * `_locate_target_heart`, after the retries are spent -- scrolled, but nothing tapped, no
+        sheet, no like;
+      * `_verify_sheet_shows`, after the tap -- sheet open, nothing typed, Send never tapped.
+    """
 
 
 class ForbiddenTapError(HingeActionError):
@@ -217,6 +248,98 @@ _UPSELL_DISMISS_MAX_ATTEMPTS = 3
 # Bounded retries for AndroidDriver._dismiss_via_zone before it gives up (PaidUpsellStuckError)
 # rather than tapping an already-detected modal again and again. See that error's docstring.
 
+# --- a BLOCKED deck (a purchase screen standing between us and the cards) ----------------
+# Added 2026-08-11 after this run: data/hinge_debug/run_20260811_011416. At 01:42:36 the owner
+# tapped the heart, wrote "Was the water freezing?" and tapped Send Like; Hinge refused the like
+# (the account was out of free likes for the day) and put its "You're out of free likes for
+# today" Hinge+ upgrade screen up instead. Nothing in this codebase recognised that screen, so
+# _await_like_resolved polled like_sheet/like_sending from 01:42:43 until the owner pressed Stop
+# by hand at 01:45:02 -- a 2m26s hang. (No label was written, which was correct: the like never
+# went out. But the run should have STOPPED, not hung.)
+_PAYWALL_MATCH_THRESHOLD = 0.75
+# Template-match threshold for the "paywall" role (Hinge: the "HingeX" tab wordmark -- see
+# HINGE_SPEC's templates comment for why that particular 210x76 crop and not the headline or the
+# CTA). MEASURED with cv2.TM_CCOEFF_NORMED against the committed reference screenshot
+# ops/calibration/hinge_out_of_likes_20260811.png (Pixel 7a, 1080x2400, 2026-08-11):
+#   * live paywall frame                                            1.000
+#   * same frame under gain 0.35..1.4 / bias -30..+90 perturbation   0.965 .. 1.000
+#     (standing in for the tab rendering purple-when-active vs grey-when-inactive)
+#   * max over ALL 88 real non-paywall frames of the hung run       0.4903
+# 0.75 therefore sits with a wide margin on BOTH sides -- 0.215 below the worst positive and
+# 0.26 above the best negative -- rather than being tuned to just clear one of them.
+_PAYWALL_MAX_Y_FRAC = 0.30
+# ...and the match must also be in the right PLACE. The tab chrome sits at y 266..318 of 2400
+# (y_frac 0.111..0.133) in the reference dump, so a hit whose centre is below 0.30 of the screen
+# height is not the tab bar and is rejected. Same defensive idiom as
+# _observe_like_sheet_visible's existing 0.25..0.85 y-gate: cv2's normalized matcher can report a
+# mathematically-perfect hit on a flat/degraded frame, and a position gate costs nothing.
+
+_OBSERVE_STUCK_S = 90.0
+# The FLOOR/anchor of the stuck-screen watchdog's budget, NOT the budget itself -- every arm
+# point draws its own value from _observe_stuck_budget() below, and this constant is only the
+# lower bound that draw can never fall under. This is the fix for the DEEPER defect the paywall
+# merely exposed: worker.py calls wait_for_decision(timeout=None), so before this existed ANY
+# unrecognised screen -- a paywall, a system dialog, an app update prompt, a crash to the
+# launcher -- hung the run forever with no bail-out of any kind. The paywall is only today's
+# instance of it.
+#
+# 90s is chosen to be far longer than anything the APP legitimately takes (Hinge's like-send
+# resolves in seconds) while never limiting the HUMAN: every state where a person is genuinely
+# thinking or typing resets this budget instead of consuming it -- see the reset points in
+# wait_for_decision and the deliberately asymmetric like_sheet/like_sending handling in
+# _await_like_resolved. In the incident run the owner spent 01:22:33 -> 01:27:14, nearly five
+# minutes, deciding on ONE profile: that is normal, legitimate use and must never be interrupted.
+#
+# THIS IS RANDOMIZED (see _observe_stuck_budget() below) -- an earlier version of this comment
+# argued it should NOT be, on the grounds that a host-side-only diagnostic with no
+# device-observable behaviour has nothing for Hinge to fingerprint. The owner overruled that
+# case-by-case reasoning: "humanize it because it's easier to just humanize all rather than
+# selectively only humanizing what we think is detectable." The standing rule -- every
+# timing/probability parameter is randomized/hazard-based, never a fixed constant, because a
+# fixed constant is a bot signature -- now applies UNIFORMLY, not only to the knobs any single
+# pass of reasoning judges risky. That judgement call is precisely the fragile part: a blanket
+# rule cannot be wrong about which knob turned out to be observable, but an argument like the one
+# this comment used to make can be, silently, and the codebase would have no way to notice. See
+# _observe_stuck_budget() for the drawn value and its measured distribution.
+
+
+def _observe_stuck_budget() -> float:
+    """Draw one stuck-screen watchdog budget, anchored at the _OBSERVE_STUCK_S floor.
+
+    human_cooldown is the correct primitive here specifically because it NEVER returns below its
+    anchor: the floor guarantee is what stops the watchdog from ever cutting short a legitimate
+    wait (see _OBSERVE_STUCK_S's own comment for why that floor matters), while the log-normal
+    tail above it removes the fixed-90.0s signature a bare constant would otherwise carry.
+
+    MEASURED over 200k draws at anchor 90.0: min 90.0s, median 104.4s, p75 115.9s, p95 138.5s,
+    p99 158.5s, max ~249s, mean 108.2s, and exactly 0.0000 of draws below 90s.
+
+    Deliberately a module-level function rather than an inline `human_cooldown(_OBSERVE_STUCK_S)`
+    call at each arm site, so tests can monkeypatch `hinge._observe_stuck_budget` for
+    deterministic arms instead of fighting real randomness.
+    """
+    return human_cooldown(_OBSERVE_STUCK_S)
+
+
+_OBSERVE_STUCK_CHECK_S = 5.0
+# The ANCHOR for how often the stuck-screen watchdog is allowed to spend a deck-ready probe on
+# the `no_change` fast path -- like _OBSERVE_STUCK_S, humanized via human_delay(...) at each use
+# rather than compared against directly (same uniform-humanization reasoning; see
+# _OBSERVE_STUCK_S's comment). That path returns BEFORE any classification runs, so a STATIC
+# unrecognised screen (exactly what the paywall is: nothing moves on it) is indistinguishable
+# from a human sitting still and thinking -- both produce `no_change` forever. The only way to
+# tell them apart is to ask whether a real deck is underneath, which costs two template matches.
+# At the 0.35s poll cadence that would be ~6 matches a second for the entire wait; throttled to
+# roughly once per 5s it is roughly two matches per 5s, i.e. ~3% of the polls, which is nothing.
+
+_PAYWALL_OCR_WHITE_MIN = 200
+# Luminance above which a pixel of the paywall HEADLINE band counts as text, for the
+# binarize-and-invert preprocessing _paywall_headline asks _ocr_band for. MEASURED 2026-08-11 on
+# ops/calibration/hinge_out_of_likes_20260811.png: 180, 200 and 215 all produce the identical,
+# completely clean read ("You're out of free likes for today"), so 200 is the middle of a
+# measured-flat range rather than a tuned edge. See _ocr_band's `white_text_threshold` parameter
+# for why the ordinary recipe cannot read this band at all.
+
 # Hinge's spec: exactly today's values (formerly the module-level `DEFAULTS` dict + the
 # `apps.hinge` block in config.yaml). calibrated=True — coords/templates verified live on the
 # Pixel 7a (1080x2400) 2026-06-27. Config-overridable (apps.hinge.* in config.yaml).
@@ -235,10 +358,48 @@ HINGE_SPEC = AndroidAppSpec(
         "send_like": (0.643, 0.576),    # "Send Like" button (kept clear of the 🌷Rose button)
     },
     templates={
-        "like": "hinge_heart.png",
+        # "like" -> hinge_like_button.png, NOT hinge_heart.png. hinge_heart.png (still shipped,
+        # see below) is the WRONG glyph for this role -- it is Hinge's OUTLINE heart, which is
+        # what appears in the "Which do we have in common" list rows, a different, non-like
+        # control. Cross-correlated against it, those outline-heart rows score 1.000 (a perfect
+        # match) while the REAL per-card like button (white heart in a filled black circle,
+        # bottom-right of every photo/prompt card) peaked around 0.544 -- under the 0.6 default
+        # threshold, and that 0.544 peak wasn't even on a heart. Confirmed on real profiles
+        # (ops/calibration/scroll_20260811T211209Z/, 115 frames, 1080x2400, gitignored): with
+        # hinge_heart.png as "like", _locate_button("like") could never find the true control,
+        # and — worse — would have matched the "common" widget's outline hearts perfectly, which
+        # must never be tapped as a like. hinge_like_button.png (88x88 grayscale, cropped from
+        # ops/calibration/scroll_20260811T211209Z/00050.png, a pixel-exact inscribed square of
+        # the filled black circle so the crop is 100% button chrome -- no photo, no face, no
+        # text) fixes this: 199 genuine card-heart matches across those 115 frames scored
+        # 0.815..1.000 (mean 0.999), and it does NOT fire on the outline hearts at all (measured
+        # correlation ~ -0.09 there, not a near-miss). See _LIKE_MATCH_THRESHOLD below for why
+        # the module's 0.6 default is unsafe specifically for this template (a fixed, unrelated
+        # bit of UI chrome scores 0.653 against it on every single frame) and why 0.75 was
+        # chosen instead. hinge_heart.png is kept on disk, unused by any role, purely as a
+        # reference for what it actually is -- do not repurpose it for "like".
+        "like": "hinge_like_button.png",
         "pass": "hinge_pass_x.png",
         "confirm": "hinge_send_like.png",              # the "Send Like" sheet's own glyph
         "upsell_dismiss": "hinge_send_like_anyway.png",  # "Send Like anyway" — NEVER the Rose button
+        # The "HingeX" tab wordmark of Hinge's full-screen upgrade paywall — the screen Hinge
+        # shows INSTEAD of the deck once the account is out of free likes for the day. Cropped
+        # (210x76, grayscale) from x 705..915, y 254..330 of the committed reference screenshot
+        # ops/calibration/hinge_out_of_likes_20260811.png, taken live on the Pixel 7a
+        # (1080x2400) on 2026-08-11 together with a one-off read-only uiautomator dump
+        # (ops/calibration/hinge_out_of_likes_20260811_uiautomator.xml) used purely to measure
+        # the geometry below — exactly like the 2026-08-10 Bumble measurement recorded in
+        # ops/ANTI-BOT-RESEARCH.md. The accessibility tree stays FORBIDDEN in production code;
+        # nothing at runtime reads it.
+        #
+        # The TAB CHROME, not the headline and not the CTA, because it is the only part of that
+        # screen that holds still: the hero image is rotating marketing artwork, the benefit
+        # list ("Send unlimited likes*", "See everyone who likes you", ...) scrolls, and the
+        # bottom CTA carries a price string ("Get 3 months for CA$99.99") that varies by
+        # currency, promo and plan. The tab bar does not move. Detection-only: unlike every
+        # other role here, nothing ever aims a tap at this match — the paywall is a PURCHASE
+        # screen and is never dismissed automatically (see _deck_blocked_reason).
+        "paywall": "hinge_upgrade_tab.png",
     },
     like_flow="comment_sheet",
     accepts_opener=True,          # Hinge sends the opener as a comment at like-time
@@ -270,6 +431,14 @@ HINGE_SPEC = AndroidAppSpec(
     # On SCROLLED frames the same band OCRs to garbage, which is safe: the check this feeds is
     # gated on the pixel verdict being genuinely "top".
     identity_top_name_band=(0.03, 0.130, 0.75, 0.250),
+    # The headline of the out-of-free-likes paywall above: "You're out of free likes for today"
+    # (plain ASCII apostrophe), a white TextView over the hero photo at bounds [116,505][964,692]
+    # in the 2026-08-11 reference dump. The band is padded out to px (60,470)-(1030,720) =
+    # (0.0556, 0.1958, 0.9537, 0.3000) of 1080x2400 so a slightly different two-line wrap still
+    # falls inside it. BEST-EFFORT REFINEMENT ONLY: the screen is DETECTED by the "paywall"
+    # template above, never by this OCR — with no tesseract on PATH the stop still happens, just
+    # with the less specific message (see _deck_blocked_reason's two strings).
+    paywall_headline_band=(0.0556, 0.1958, 0.9537, 0.3000),
     # Scrolling content only. Above 0.125 is the status bar + sticky header, below 0.875 is the
     # floating X/heart overlay and the dark bottom nav -- none of which translate when content
     # scrolls, which is exactly why a whole-frame shift search never matched (see the table in
@@ -329,7 +498,8 @@ _IDENTITY_DS = (64, 16)   # identity-band downsample (w, h) -- see _band. Matche
 # downsample is only for the pixel-distance comparison _identity_of makes on every poll).
 
 
-def _band(frame: bytes, rect: tuple[float, float, float, float]):
+def _band(frame: bytes, rect: tuple[float, float, float, float],
+          size: tuple[int, int] = _IDENTITY_DS):
     """Downsampled grayscale crop of the normalised rect `(x0, y0, x1, y1)` of `frame`, at
     _IDENTITY_DS resolution. None when the frame can't be decoded -- same contract as
     _downsample (every caller here already knows how to fall back to 'unknown' on None; a
@@ -341,6 +511,14 @@ def _band(frame: bytes, rect: tuple[float, float, float, float]):
     0.00-vs-17.95 separation measured on the real device (see the module docstring) actually
     survive to a 64x16 array -- downsampling the WHOLE frame first and then trying to compare
     a sub-region of that would throw away exactly the resolution this anchor depends on.
+
+    `size` is the (w, h) downsample grid and defaults to _IDENTITY_DS, which is the only grid
+    anything in THIS file uses. It exists so `scroll_top.py` can read the SAME band through the
+    SAME decode at its own coarser grid instead of re-implementing crop-and-resize: two decode
+    paths that disagree is a measured trap in this repo, not a hypothetical one (see
+    `item_crops.signature_of`'s docstring, where cv2's IMREAD_GRAYSCALE and a
+    decode-then-cvtColor landed 1.46 grey levels apart on average and 9.8 apart on a 32x32
+    signature -- twice the distance separating the two most alike items on that profile).
     """
     try:
         from io import BytesIO
@@ -351,7 +529,7 @@ def _band(frame: bytes, rect: tuple[float, float, float, float]):
         w, h = im.size
         x0, y0, x1, y1 = rect
         crop = im.crop((round(x0 * w), round(y0 * h), round(x1 * w), round(y1 * h)))
-        return np.asarray(crop.resize(_IDENTITY_DS), dtype="int16")
+        return np.asarray(crop.resize(size), dtype="int16")
     except Exception:  # noqa: BLE001 — any decode/dep failure -> caller falls back to 'unknown'
         return None
 
@@ -431,6 +609,136 @@ def _frame_sig(frame: bytes) -> bytes:
 # one profile top-to-bottom can be up to _READ_SCROLL_FRAC_MAX apart.
 _READ_SCROLL_FRAC_MIN = 0.10
 _READ_SCROLL_FRAC_MAX = 0.75
+
+# --- item enumeration (ops/OPENER-REDESIGN.md 5.2/5.3/5.5) --------------------------------
+# The per-profile screencap ceiling for a read that is ALSO building an item index, replacing
+# `scroll_captures` (config.yaml: 12) for that read only. The two are different jobs and the
+# doc says so in as many words: `scroll_captures` sizes the ordinary profile read, while the
+# closed loop steps at most ~1/3 of the locally measured card spacing and therefore needs
+# several times as many frames for the same profile.
+#
+# DERIVED FROM MEASURED GEOMETRY, and the derivation is spelled out here because the value it
+# lands on (48) is the same one that shipped on 2026-08-12 with a much weaker justification --
+# "the ceiling the validated bot-driven probe itself ran at". That was headroom, not a
+# derivation, and the 2026-08-12 bottom-up workflow was asked to TIGHTEN it. The measured
+# geometry does not license a smaller number, and stating why is more useful than shaving frames:
+#
+#   PAGE SPAN.    The two calibration profiles measure 8349px and 10027px, and both carry NINE
+#                 selectable items, which is Hinge's own maximum (6 photos + 3 prompts). So the
+#                 longer of them is close to the structural worst case rather than a sample from
+#                 an open-ended distribution.
+#   REALISED STEP. The closed loop does NOT step `scroll_step._MAX_STEP_PX` (363px). It draws
+#                 uniformly inside a window whose ends are the ratio rule applied to the SMALLEST
+#                 spacing seen so far on this profile, and both calibration profiles contain a
+#                 685px card, so both loops end up drawing from (219, 265). Measured mean step
+#                 with that memory in play: 235..262px, and the loop was measured to need 35
+#                 gestures (36 frames) for profile B and 43 (44 frames) for profile A.
+#   THE BOUND.    44 frames for the worst measured profile, x1.1 for a page longer than either
+#                 calibration profile = 48.4, floor 48. Computing it against the ABSOLUTE worst
+#                 case instead -- every draw landing on the 219px gesture floor -- gives
+#                 ceil(10027/219) + 1 = 47, which 48 also covers.
+#
+# A tighter value would have to come from a faster cadence, which doc 5.10.1 forbids (a step past
+# ~1/3 of the local spacing aliases the count against the card pitch), so the only honest
+# tightening available is none. Reading "~28 steps for a ~10,000px profile" off `_MAX_STEP_PX`
+# assumes every draw is the ceiling, which happens on no profile in the corpus.
+#
+# ABOVE THE CEILING THE READ IS LOUD, not silent (doc 5.11's own ask, and the reason this comment
+# is not just arithmetic). `_note_enumeration_truncated` prints the profile's frame count and this
+# constant, records a `capture_enumeration_truncated` debug action, and the flag still reaches the
+# model on `Profile.items_truncated` per doc 5.7. It is deliberately NOT a hard stop: a profile
+# longer than the ceiling is not an error, and the owner's stop-condition rule scopes stops to an
+# unrecognized screen or an error rather than to a quota. What a hard stop would buy is nothing --
+# the item the model picks is inside the enumerated region either way, so navigation is unaffected
+# -- and what it would cost is a halted run on a legitimate profile.
+#
+# NOT a config key, deliberately: it is a property of the measured card geometry and the
+# gesture window, not an operator preference, and `scroll_captures` must stay exactly what it
+# is for the observe read and for `_ensure_session_top`'s swipe ceiling. The jitter that keeps
+# profile after profile from terminating at one identical depth is unchanged and still applied
+# on top of this, by `_capture_limit_for_profile`.
+_ENUMERATION_CAPTURE_LIMIT = 48
+
+
+def _ranker_frames_from_enumeration(frames: list[bytes], target: int) -> list[bytes]:
+    """Downsample an enumeration-cadence capture back to the ranker's ordinary frame budget
+    (audit fix, "BUG 3", 2026-08-12).
+
+    THE PROBLEM. `_ENUMERATION_CAPTURE_LIMIT` (48, above) replaced `scroll_captures` (12,
+    config.yaml) as the CEILING for a read that is also building an item index -- the index
+    needs the finer, closed-loop cadence to avoid the step/spacing aliasing doc 5.10.1
+    measured, so raising the ceiling for THAT consumer is correct and is not touched here. But
+    `_capture_current` used to hand every frame it read straight to `Profile.photos` regardless
+    of which ceiling was in force, and `Profile.photos` is also the RANKER's whole view of the
+    profile (`decider.decide`, worker.py's auto loop). Per-profile pooling is not scale-free
+    (aggregation-design.md: ArcFace is a raw MEAN over every detected face, CLIP dedups by
+    cosine similarity but does not equalise weights), so a card sampled ~4x as often at the
+    enumeration cadence would carry ~4x the weight it carried before Part B -- and only on
+    AUTO, since observe (the only mode that produces the labels the ranker is trained against,
+    per doc 4) never enumerates and always reads at the 12-cadence. Left alone, every auto
+    decision would run train/serve skewed against its own labels in a way that looks like a
+    ranker regression but is actually a change to the ranker's INPUT.
+
+    THE FIX is a resample, not a smaller enumeration ceiling: the index still gets every frame
+    it needs (this function never touches `photos` before `_index_captured_items` folds it),
+    and only the copy handed to `Profile.photos` -- the ranker's copy -- is thinned back down.
+    Evenly spaced across the WHOLE captured range and always including the first and last frame
+    (`round(i * (n - 1) / (target - 1))` for `i` in `0..target-1`, deduplicated), so the ranker
+    keeps seeing top-to-bottom coverage rather than just the top of the profile, which is what
+    naively keeping the first `target` frames of a finer-grained read would do.
+
+    `target` is `self.scroll_captures`, the CONFIGURED base with no jitter applied. The jitter
+    `_capture_limit_for_profile` adds on top of a base exists so the DEVICE-facing scroll
+    ceiling is not a fixed, externally observable bot signature; this function produces nothing
+    Hinge's servers or a human ever sees (it runs entirely after every gesture for this profile
+    has already happened), so that reasoning does not transfer here -- a second, unrelated
+    random draw would only make the ranker's input size non-deterministic for no anti-detection
+    benefit.
+
+    NOT EXACT EQUIVALENCE to what the ranker received before Part B, and that is stated plainly
+    rather than papered over. The pre-Part-B read walked the profile in big (~1299px at the
+    shipped 0.55 `read_scroll_frac`) steps and stopped the moment a repeated frame signalled the
+    bottom, so a SHORT profile could see fewer than `target` frames at that coarse spacing. This
+    function instead resamples whatever the (finer-grained, closed-loop) capture already read,
+    which on a short profile can still return close to `target` frames spanning the same short
+    page -- i.e. it can hand the ranker a slightly denser sampling of a short profile than the
+    old cadence ever would have, though never more frames than the device actually produced
+    (`min(len(frames), target)`) and never a synthesised one: every frame returned is a genuine
+    frame this capture read. The ranker's own pooling (ArcFace's mean, CLIP's dedup+GeM) already
+    collapses near-duplicate detections, so an extra same-content frame that would not have
+    existed under the old cadence contributes at most a near-duplicate of a frame the old
+    cadence WOULD have kept -- it is not a new face, pose, or piece of content, so the SKEW this
+    function exists to remove is addressed even though the exact pre-Part-B frame set cannot be
+    reconstructed after the fact.
+    """
+    n = len(frames)
+    if n <= target or target <= 0:
+        return list(frames)
+    if target == 1:
+        return [frames[0]]
+    step = (n - 1) / (target - 1)
+    indices = sorted({round(i * step) for i in range(target)})
+    return [frames[i] for i in indices]
+
+
+# How many times `_locate_target_heart` searches for the SAME item before the run stops.
+#
+# The owner rule draws the line between two things a fixed retry count has to keep apart:
+# retrying the item the model chose is a shaky hand and is encouraged, while landing on a
+# different item is a wrong decision and is forbidden outright (doc 5.6, "no falling back to
+# `hearts[0]`, no 'closest reachable item'"). So this bounds the shaky hand, and there is no
+# value of it that permits a substitution.
+#
+# 2, not 1 and not more, and the reason is what a repeat can actually change. Every attempt is
+# one affirmative return to the top followed by the same bounded downward search, so attempt 2
+# re-reads the profile from a re-established zero point -- which is exactly the failure the
+# search's own +3 frame slack was added for (HINGE-05: "on a real device a scroll can
+# over/undershoot the intended frame"), and a single over/undershoot is the one condition a
+# repeat is measured to fix. A third attempt repeats the same deterministic comparison over
+# frames captured from the same top by the same gestures; it buys another whole profile's worth
+# of dwell for a case nothing has measured, and the honest answer to "the second read did not
+# find it either" is that the capture and the screen disagree, which is a stop, not a third try.
+_TARGET_HEART_ATTEMPTS = 2
 
 
 def _content_rows(content_band: tuple[float, float], size: int) -> tuple[int, int]:
@@ -649,11 +957,25 @@ def _load_template(name: str):
     return cv2.imread(str(_ASSETS / name), cv2.IMREAD_GRAYSCALE)   # None if file missing
 
 
-def _match_glyph(frame: bytes, template, *, side: str, threshold: float = 0.6) -> list:
+def _match_glyph(frame: bytes, template, *, side: str, threshold: float = 0.6,
+                 y_band: tuple[float, float] | None = None) -> list:
     """Locate a button glyph in a screencap by normalized cross-correlation. `side` keeps only
     matches on the right ('like' heart) or left ('pass' X) of the screen. Returns (x, y)
     centers sorted top->bottom (so [0] is the first photo's heart after scroll-to-top). Empty
-    list if cv2/template/decoding is unavailable — the driver then uses its fixed-coord fallback."""
+    list if cv2/template/decoding is unavailable — the driver then uses its fixed-coord fallback.
+
+    `y_band`, when given, is a `(y0, y1)` fraction-of-height band (the same shape as
+    HINGE_SPEC.content_band) that a match's CENTER must fall inside. It exists for the "like"
+    role specifically: Hinge's bottom nav bar carries two persistent false positives at y=2258
+    (constant, static UI chrome, not photo content) -- the "Matches" tab icon (~0.65 correlation,
+    previously excluded only by _LIKE_MATCH_THRESHOLD's 0.75 floor, a margin of ~0.10) and the
+    "Likes" tab heart (~1.0 correlation, previously excluded only by `side`'s x >= 0.55*w cutoff,
+    a margin of 54px/5% of screen width). Both sit outside content_band (y 300..2100 of 2400 on
+    the calibrated device); every genuine card heart (y 570..1890, MEASURED against 115 real
+    frames) sits inside it. Masking the band structurally excludes both false positives instead
+    of relying on threshold/side margins that a layout shift could erode. See _match_glyph's
+    call sites in _locate_button/_locate_target_heart/_observe_glyph_visible for why only "like"
+    passes this (the floating pass-X can legitimately sit low, outside content_band)."""
     if template is None:
         return []
     try:
@@ -666,6 +988,26 @@ def _match_glyph(frame: bytes, template, *, side: str, threshold: float = 0.6) -
         th, tw = template.shape
         res = cv2.matchTemplate(img, template, cv2.TM_CCOEFF_NORMED)
         work = res.copy()
+        if y_band is not None:
+            # Mask OUT-OF-BAND rows to -1 (the same sentinel the loop below uses to retire an
+            # already-found peak) BEFORE the non-max-suppression loop starts, rather than
+            # filtering matches after minMaxLoc returns them. This matters because the loop's
+            # 12-iteration budget is consumed on every pass regardless of what the body decides
+            # to do with the peak it found (see the `side` check a few lines down, which DOES
+            # reject a wrong-side peak only after minMaxLoc already spent an iteration finding
+            # it -- an existing wart this deliberately does not reproduce for y_band). Masking
+            # `work` up front means an out-of-band peak -- e.g. either nav-bar false positive
+            # above -- is never returned by minMaxLoc at all, so it can never starve the budget
+            # a real in-band match further down the correlation surface would need.
+            r0, r1 = _content_rows(y_band, h)
+            # `res`/`work` rows are the template's TOP-LEFT y (`loc[1]`), but the band is
+            # defined against a match's CENTER (`loc[1] + th // 2`, same as `cy` below) -- shift
+            # by that half-height before masking, or a template straddling the band edge would
+            # be kept/dropped by its top-left corner instead of the center this function reports.
+            wr0 = max(0, r0 - th // 2)
+            wr1 = max(wr0, r1 - th // 2)
+            work[:wr0, :] = -1.0
+            work[wr1:, :] = -1.0
         centers: list = []
         for _ in range(12):                                   # non-max suppression loop
             _, maxv, _, loc = cv2.minMaxLoc(work)
@@ -682,6 +1024,53 @@ def _match_glyph(frame: bytes, template, *, side: str, threshold: float = 0.6) -
         return centers
     except Exception:  # noqa: BLE001 — any cv2/decoding failure -> fixed-coord fallback
         return []
+
+
+# Correlation floor for the "like" role specifically -- NOT a change to _match_glyph's own 0.6
+# default above, which stays as-is for every other role (pass/confirm/upsell_dismiss/paywall
+# weren't touched by this recalibration and their own margins against 0.6 are unverified here).
+#
+# MEASURED 2026-08-11 against ops/calibration/scroll_20260811T211209Z/ (115 real-profile frames,
+# 1080x2400, gitignored) with hinge_like_button.png as the template:
+#   - 199 genuine card-heart matches (side="right", every frame that had a button on screen)
+#     scored 0.815 .. 1.000, mean 0.999. The single sub-0.93 outlier (0.815) was a button
+#     straddling the very bottom screen edge, only ~2/3 visible -- an inherent template-matching
+#     limitation for a partially off-screen glyph, not a template defect; every FULLY visible
+#     button scored >= 0.933.
+#   - The one reproducible false positive on the right side is Hinge's own bottom-nav bar glyph
+#     (the "Matches" tab icon) at a constant (756, 2258): it scored 0.6527 in literally all 115
+#     frames (stable to 5 decimals -- it's static UI chrome, not photo content). That is BELOW
+#     0.75 but ABOVE _match_glyph's 0.6 default, which is exactly why 0.6 is unsafe here: at 0.6
+#     that nav icon is a "like" button hit on every single frame.
+#   - Hinge's bottom-nav "Likes" tab icon (a heart, at a constant (540, 2258)) is a near-perfect
+#     match too (~1.0! it's visually almost the same glyph, just outline-on-dark instead of
+#     filled-circle) but sits on the LEFT half of the screen (540 < 0.55 * 1080), so side="right"
+#     already excludes it regardless of threshold. Flagged here because the margin is thin (540
+#     vs the 594px cutoff, 54px / 5% of screen width) -- a layout shift that moved that icon
+#     right of center would reintroduce it as a live false positive.
+#
+# 0.75 sits with ~0.10 of margin above the worst known false positive (0.6527) and ~0.065 under
+# the worst real (edge-clipped) true positive (0.815); every fully-visible true positive clears
+# it by >= 0.18. Not the same 0.6 every other role uses, and not raised further, because raising
+# it past ~0.815 would start rejecting that legitimate edge-clipped case.
+#
+# Addendum 2026-08-11: both nav false positives above are now ALSO excluded structurally, via
+# _match_glyph's y_band parameter (wired to self.content_band, (0.125, 0.875) -> y 300..2100)
+# at every role=="like" call site. Both sit at y=2258, below content_band's lower edge; every
+# real card heart (y 570..1890, measured against the same 115 frames) sits inside it. This
+# threshold and the side="right" cutoff both stay as they were -- y_band is an added,
+# independent layer, not a replacement for either -- so the "Matches" tab margin (~0.10 above
+# 0.6527) and the "Likes" tab margin (54px of screen width) described above are no longer the
+# ONLY thing standing between either false positive and a live match.
+#
+# This is keyed by ROLE NAME ("like"), not by app -- AndroidDriver (this class) is shared with
+# BumbleAndroidDriver. BUMBLE_SPEC.templates is currently {} (empty, uncalibrated -- see
+# operation_love/drivers/android/bumble.py), so no Bumble call ever reaches a role=="like"
+# branch today. If Bumble later grows its own "like" template, this threshold (and the
+# skip-inversion behaviour in _observe_glyph_visible below) would apply to it too, sight
+# unseen -- whoever wires that up should re-measure against Bumble's own asset rather than
+# assume this number still holds.
+_LIKE_MATCH_THRESHOLD = 0.75
 
 
 def _retry_until(check_fn, tries: int, delay_s: float, *, is_found=bool):
@@ -823,6 +1212,25 @@ class AndroidDriver(DatingAppDriver):
         # attaching TouchWatcher for it would hold a persistent `adb shell getevent` subprocess
         # open for the whole run for a reader that never exists.
         self._auto_session = False
+        # Whether an opener will actually be REQUESTED for a like this session -- i.e. whether
+        # anything downstream can consume the numbered item list enumeration builds. Starts True
+        # (the conservative default that preserves every existing caller's behaviour), and is set
+        # once per session by BOTH worker loops from
+        # `opener_service is not None and not opener_service.disabled` -- the exact condition
+        # that already tells "openers administratively off" apart from "a live service" at every
+        # other call site in worker.py. Since doc 5.9's inversion this is the ONLY session-level
+        # gate on enumeration (`_auto_session` no longer gates it, because observe enumerates
+        # too), which is why a calibration tool that wants the ordinary 12-frame read has to say
+        # so explicitly -- tools/hinge_bot_scroll_probe.py calls set_opener_enabled(False) for
+        # exactly that reason. Read by _item_enumeration_blocker (audit
+        # fix, "BUG 2", 2026-08-12): item enumeration exists solely to let the model pick an item
+        # for an opener, so with opener.enabled: false there is no consumer for it at all, and it
+        # must not run -- reading a profile enumerated at _ENUMERATION_CAPTURE_LIMIT (48 frames,
+        # ~3x the dwell) for a run that was only ever going to send bare likes is both wasted
+        # device time and, worse, the one condition doc 5.2's "never fall back to raw frames"
+        # stop was never meant to fire for: nothing was ever going to consume the numbered list,
+        # so its absence is not a failure. See _item_enumeration_blocker's docstring.
+        self._openers_enabled = True
         # Set fresh by _capture_current every profile; None until a profile actually reveals
         # the sticky header (identity_top_sig) and, past that, until the header itself
         # (identity_sig) is seen. See _capture_current's identity-anchor block and
@@ -854,6 +1262,35 @@ class AndroidDriver(DatingAppDriver):
         # distance and lane per gesture, so undo must be based on what actually happened.
         self._capture_scroll_ledger: list[tuple[float, float]] = []
         self._profile_capture_limit = self.scroll_captures
+        # --- doc 5.3's driver-owned index space, per profile ------------------------------
+        # "Index space belongs to the driver. Selectability is policy." These three are the
+        # driver's private table for the profile currently on screen, built by _capture_current
+        # from the frames it just read, and they live and die with `_current_sigs`: reset at
+        # the top of every capture, cleared on the deck-advance path, and cleared again once an
+        # action (like/dislike) has moved the deck on. A STALE table is the failure this whole
+        # design exists to prevent -- it would navigate by a previous profile's heart ordinals
+        # and compare the opened sheet against a previous profile's crops.
+        #
+        # `_current_item_index` is the page (heart ordinals, page extents, per-frame evidence);
+        # `_current_item_payload` is what the model was shown (the numbered crops, their
+        # signatures, and `translation` from model item number to heart ordinal, which is the
+        # authoritative copy whenever policy excluded anything selectable).
+        # `_current_items_unavailable` is the one-sentence reason there is no payload, and
+        # exactly one of it and the payload is ever set.
+        #
+        # `_current_item_anchor` is the FOURTH member of the same lifetime, added with doc 5.5's
+        # bottom-up navigation: the last frame the index was built from, i.e. the frame
+        # `ItemIndex.offsets[-1]` was measured on. `item_nav.navigate_to_item` measures ONE shift
+        # against it to put the screen into the index's page space, which is what replaced the
+        # rewind's `_scroll_to_top`. It is set and cleared with the other three, never separately
+        # -- an anchor from one profile beside an index from another would be an arithmetic error
+        # dressed as a measurement, and keeping them in one lifetime is what makes that
+        # unreachable rather than merely unlikely.
+        self._current_item_index = None
+        self._current_item_payload = None
+        self._current_item_anchor = None
+        self._current_items_unavailable = (
+            "no profile has been read yet, so this driver has enumerated nothing")
         self._touch = None            # touch transport: UhidTouch (genuine) or Adb (input fallback)
         self.touch_backend = app_cfg.get("touch_backend", "auto")   # auto | uhid | adb
         self._observe_ready = False   # True once open_session validated PIL/numpy + device
@@ -865,6 +1302,27 @@ class AndroidDriver(DatingAppDriver):
         # emitted rather than suppressed by an accidental match.
         self._observe_last_notice = 0.0
         self._observe_last_reason: str | None = None
+        # Stuck-screen watchdog state (see _OBSERVE_STUCK_S / _observe_stuck_budget).
+        # `_observe_last_recognized` is "when did we last positively recognize what is on
+        # screen", and like the notice anchors above it is re-anchored at the top of every
+        # wait_for_decision call, so the budget is per-profile-wait and can never leak across
+        # profiles. `_observe_stuck_probe_at` throttles the deck-ready probe the `no_change` fast
+        # path needs, against `_observe_stuck_probe_interval_s` (anchored at
+        # _OBSERVE_STUCK_CHECK_S). `_observe_stuck_budget_s` is the budget `_observe_stuck_bail`
+        # actually compares elapsed time against -- a FRESH draw every time the watchdog is
+        # (re)armed, never one draw reused across a whole run (see _observe_stuck_budget's
+        # docstring). All four are initialised here so _observe_stuck_bail is safe to call from
+        # anywhere, including tests and tools that exercise it without going through a full wait.
+        self._observe_last_recognized = 0.0
+        self._observe_stuck_probe_at = 0.0
+        self._observe_stuck_budget_s = _OBSERVE_STUCK_S
+        self._observe_stuck_probe_interval_s = _OBSERVE_STUCK_CHECK_S
+        # The blocked-deck reason, once anything has proven one (a recognised paywall, or the
+        # stuck-screen watchdog giving up). Memoized rather than recomputed because worker.py
+        # asks blocked_reason() on every loop iteration and the answer costs a screencap plus a
+        # template match plus an OCR; a deck that is blocked stays blocked until the operator
+        # deals with it, so the first non-None answer is the answer.
+        self._blocked_reason: str | None = None
         # Whether this session's one-shot "put the card at a confirmed scroll-top" pass has
         # been attempted yet -- see _ensure_session_top for why a session cannot assume the
         # previous one left the card where it found it.
@@ -1140,7 +1598,7 @@ class AndroidDriver(DatingAppDriver):
         self._assert_tap_allowed(x1, y1)
         self.touch.swipe(x1, y1, x2, y2)
 
-    def _scroll(self, frac: float, x_frac: float = 0.5) -> None:
+    def _scroll(self, frac: float, x_frac: float = 0.5, *, reverse: bool = False) -> None:
         """touch.scroll_up() with the forbidden-zone guard every other gesture gets.
 
         scroll_up computes its geometry INSIDE the transport, so the driver cannot see
@@ -1156,13 +1614,48 @@ class AndroidDriver(DatingAppDriver):
 
         scroll_x jitters the column by +/-SCROLL_X_JITTER_PX so repeated scrolls aren't
         pixel-identical, so both extremes are checked rather than the nominal centre — a
-        guard that only the average case passes is not a guard."""
+        guard that only the average case passes is not a guard.
+
+        REVERSE (`reverse=True`) IS THE SAME STROKE PLAYED BACKWARDS, AND IT IS A DIRECTION
+        OF THIS METHOD RATHER THAN A SECOND GESTURE PATH ON PURPOSE (ops/OPENER-REDESIGN.md
+        5.5, bottom-up navigation). Doc 5.5's navigation used to be "scroll to top, then walk
+        forward", i.e. every reverse travel went through `_scroll_to_top`'s ledger REPLAY.
+        Walking up under continuous shift tracking needs one measured reverse step at a time,
+        and the owner rule ("best humanized interaction or FAIL LOUDLY; no silent fallback to
+        a degraded transport") means it must not reach for `self.touch` on its own. So the
+        guard, the column jitter and the transport are all the forward path's, and the only
+        difference is which end the finger goes down on:
+
+          forward  touch-down at h*(0.5 + frac/2), release at h*(0.5 - frac/2)  (content up)
+          reverse  touch-down at h*(0.5 - frac/2), release at h*(0.5 + frac/2)  (content down)
+
+        BOTH END ROWS ARE ZONE-CHECKED FOR THE REVERSE STROKE, which is stricter than the
+        forward one (`_swipe`, and `_decide_by_card_swipe`'s docstring, check only the START —
+        "a drag that ends over a button does not press it"). Two reasons to be stricter here
+        rather than consistent: the reverse stroke's touch-down and release swap, so "the
+        start" is a different row than every other read-scroll in this driver puts a finger on,
+        and the enumeration/navigation fracs are small (0.10..0.16 measured, i.e. both rows
+        inside 0.42..0.58 of the screen) so nothing legal is refused by asking for both. The
+        cost of the extra check is two array comparisons; the cost of getting it wrong is the
+        owner's money."""
         w, h = self.adb.screen_size()
-        y = int(h * (0.5 + frac / 2))
+        y_low = int(h * (0.5 + frac / 2))     # the FORWARD stroke's touch-down, low on screen
+        y_high = int(h * (0.5 - frac / 2))    # ...and its release, high on screen
         nominal = int(w * x_frac)
         for x in (nominal - SCROLL_X_JITTER_PX, nominal + SCROLL_X_JITTER_PX):
-            self._assert_tap_allowed(x, y)
-        self.touch.scroll_up(frac, x_frac)
+            self._assert_tap_allowed(x, y_low)
+            if reverse:
+                self._assert_tap_allowed(x, y_high)
+        if not reverse:
+            self.touch.scroll_up(frac, x_frac)
+            return
+        # scroll_x is the SHARED column jitter both transports' scroll_up() applies (HINGE-04),
+        # called here rather than re-derived so a reverse read-scroll is not the one gesture in
+        # this driver that lands on a pixel-identical column every time. `self._swipe`, not
+        # `self.touch.swipe`: it re-asserts the delivered start point, which is the same
+        # chokepoint every other drag in this file goes through.
+        x = scroll_x(w, x_frac)
+        self._swipe(x, y_high, x, y_low)
 
     def _tap_frac(self, frac) -> None:
         w, h = self.adb.screen_size()
@@ -1212,8 +1705,15 @@ class AndroidDriver(DatingAppDriver):
         role = "like" if which == "like" else "pass"
         if role not in self.spec.templates:
             return None
+        # "like" gets its own, higher-margin threshold (_LIKE_MATCH_THRESHOLD) AND a content_band
+        # y_band restriction (see _match_glyph's own comment for why: two Hinge nav-bar false
+        # positives at y=2258, structurally outside content_band). "pass" keeps _match_glyph's
+        # own 0.6 default and no y_band, unchanged -- the floating pass-X can legitimately sit
+        # low on the screen, outside content_band, so restricting it was never verified as safe.
+        kwargs = ({"threshold": _LIKE_MATCH_THRESHOLD, "y_band": self.content_band}
+                 if role == "like" else {})
         centers = _match_glyph(self._screencap(), self._template(role),
-                               side="right" if which == "like" else "left")
+                               side="right" if which == "like" else "left", **kwargs)
         return centers[0] if centers else None
 
     def _await_button(self, which: str, tries: int = 5):
@@ -1580,6 +2080,31 @@ class AndroidDriver(DatingAppDriver):
         self._auto_session = True
         self._auto_policy = policy if self.spec.app == "hinge" else None
 
+    def set_opener_enabled(self, enabled: bool) -> None:
+        """Tell this driver whether an opener will actually be requested for a like this
+        session (audit fix, "BUG 2", 2026-08-12).
+
+        BOTH worker loops call this once, unconditionally for any driver that defines it,
+        before open_session() -- _auto_loop right alongside set_auto_session_policy, and
+        _observe_loop on its own (observe has no session policy to sit beside, and as of doc
+        5.9's inversion it enumerates too, so this hook is the ONLY thing standing between a
+        no-opener observe session and a ~40-frame read per card it would never use).
+        `enabled` is
+        `opener_service is not None and not opener_service.disabled`, i.e. true exactly when a
+        live, administratively-enabled OpenerService exists to consume a numbered item list.
+        `opener.enabled: false` in config constructs OpenerService(client=None, ...), which is
+        `disabled` from construction (see OpenerService.__init__) -- a deliberate "openers do
+        not exist this run" choice, not a per-call failure, so this is checked once at session
+        start rather than per profile (mid-run exhaustion is a different, already-handled case:
+        it also sets stop_requested, which _auto_loop checks independently and which ends the
+        run before another profile is ever read).
+
+        Read by _item_enumeration_blocker: with no consumer for a numbered item list, item
+        enumeration must not run at all, not merely "must not stop the run over its absence" --
+        see that method's docstring for the reasoning.
+        """
+        self._openers_enabled = bool(enabled)
+
     def _sample_read_step(self, depth: int, complexity_hint: float | None):
         """Return one coherent ``(dwell, distance, lane)`` read step.
 
@@ -1635,14 +2160,22 @@ class AndroidDriver(DatingAppDriver):
                 pass
         return human_delay(self.dwell_s)
 
-    def _capture_limit_for_profile(self) -> int:
+    def _capture_limit_for_profile(self, base: int | None = None) -> int:
         """Per-profile screencap ceiling.
 
         Observe/legacy behavior remains exactly the configured value.  An auto policy opts
         into a small upward-only variation, so the shipped safety baseline of eight is never
         weakened and profile after profile does not terminate at one identical depth.
+
+        `base` overrides the configured `scroll_captures` for ONE read, and exists for the item
+        enumeration pass, whose ceiling is a different quantity entirely
+        (`_ENUMERATION_CAPTURE_LIMIT` -- see its comment for the measured frame counts). The
+        policy's upward-only jitter is applied on top of whichever base is in force, so the
+        enumeration read varies its depth exactly the way the ordinary read does: a fixed
+        terminal depth is the bot signature the owner rule forbids, and it does not stop being
+        one because the constant got larger.
         """
-        base = self.scroll_captures
+        base = self.scroll_captures if base is None else max(1, int(base))
         policy = self._auto_behavior_policy()
         if policy is None:
             return base
@@ -1669,6 +2202,44 @@ class AndroidDriver(DatingAppDriver):
         self._scroll(frac, x_frac)
         # Append only after the transport accepted the gesture: a forbidden-zone refusal or
         # transport failure must not leave a fictional scroll for _scroll_to_top to undo.
+        self._capture_scroll_ledger.append((frac, x_frac))
+        self._capture_scrolls = len(self._capture_scroll_ledger)
+
+    def _scroll_up_one(self, frac: float, x_frac: float) -> None:
+        """One humanized REVERSE read-scroll: the twin of `_scroll_down_one`, going back up.
+
+        Doc 5.5's bottom-up navigation is what needs it. Until 2026-08-12 every backwards
+        travel in this driver went through `_scroll_to_top`, which REPLAYS a counted ledger and
+        whose arrival test is a settle heuristic "every pre-existing caller ignores"; walking up
+        one measured step at a time, cross-checked against the item index, needs a single reverse
+        gesture it can size itself. It goes through `_scroll(..., reverse=True)`, so the
+        forbidden-zone guard, the shared column jitter and the humanized kinematics are the same
+        ones every forward read-scroll gets -- nothing here touches the transport.
+
+        BOTH ARGUMENTS ARE REQUIRED, deliberately, and this is the one place the two methods
+        differ in signature. `_scroll_down_one(frac=None, x_frac=None)` re-samples BOTH from the
+        behaviour policy when either is None, which is right for a read loop and catastrophic
+        here: the only caller is the closed loop, which owns the distance (doc 5.10.1's ratio
+        rule), and a silently re-sampled 0.55 would move the content four times further than the
+        step it was planned as. Having nowhere to put a None is the cheapest way to make that
+        impossible.
+
+        THE LEDGER IS APPENDED TO, NOT POPPED, AND THAT IS NOT AN OVERSIGHT. The ledger's only
+        consumer is `_scroll_to_top`, where `len(ledger)` is a CEILING on undo-swipes ("a few
+        attempts beyond the recorded count are a hard safety margin ... not a target") and the
+        settle check is what actually ends that loop. Overstating the outstanding downward
+        travel therefore costs nothing -- at the top, one downward swipe changes no pixels and
+        the loop exits on its first iteration -- while UNDERSTATING it leaves the card scrolled
+        and the next capture's identity anchor seeded from a real person's sticky header instead
+        of the app's chrome (see _ensure_session_top). Popping one forward entry per reverse
+        gesture would understate whenever a reverse step is smaller than the forward step it is
+        undoing, which is exactly what the ratio rule makes likely (both are drawn per frame
+        against the card in front of them, independently). So the safe direction is chosen and
+        stated rather than a distance ledger being invented for a consumer that only wants a
+        bound.
+        """
+        self._scroll(frac, x_frac, reverse=True)
+        # Same rule as _scroll_down_one: append only after the transport accepted the gesture.
         self._capture_scroll_ledger.append((frac, x_frac))
         self._capture_scrolls = len(self._capture_scroll_ledger)
 
@@ -1892,6 +2463,280 @@ class AndroidDriver(DatingAppDriver):
             except Exception:  # noqa: BLE001 — debug logging must never break a shutdown
                 pass
 
+    # --- item enumeration: doc 5.3's driver-owned index space -----------
+    #
+    # Four leaf modules do every piece of thinking here (scroll_top confirms the top, segment
+    # finds the cards and hearts, scroll_step sizes each gesture against the card in front of
+    # us, item_index folds the frames into one page and item_crops cuts the numbered crops).
+    # This driver contributes exactly two things they cannot have: a device to look at, and the
+    # humanized gesture path. Nothing below issues a gesture except through `_scroll_down_one`,
+    # so the ledger, the jitter and the forbidden-zone guard all still apply unchanged.
+    #
+    # EVERY FAILURE HERE IS A RECORDED SENTENCE, NOT AN EXCEPTION, and that is deliberate. The
+    # frames are wanted by two independent consumers: the ranker (faces, embeddings, the stored
+    # label) and the opener (numbered items). Enumeration failing says nothing about the first,
+    # so a failed enumeration must not discard a perfectly good capture -- it produces a Profile
+    # with `items_unavailable` set, and worker.py's auto loop turns that into the hard stop
+    # before any like is sent. Doc 5.2's rule ("never fall back to sending raw frames") is
+    # enforced at that decision point, which is where the substitution would otherwise happen,
+    # rather than by crashing the read here.
+
+    def _item_enumeration_blocker(self) -> str:
+        """Why this capture will not attempt an enumeration read, or "" when it will.
+
+        Four conditions, checked before a single frame is looked at, so nothing below has to
+        re-derive them.
+
+        OBSERVE IS NO LONGER EXCLUDED (doc 5.9's inversion, 2026-08-12). Until this workflow the
+        first condition here was `_auto_session`, on the reasoning that enumeration reads a
+        profile in ~37-44 frames instead of `scroll_captures`' 12 and observe would pay that on
+        the one mode a human sits and waits through, "while having nothing yet to show for it".
+        Observe now has everything to show for it: it runs the SAME request auto runs (numbered
+        crops, no anchor), and the model's chosen item is what the hub tells the operator to
+        like. Keeping the exclusion would have meant observe generating from raw scroll frames
+        while auto generated from crops -- the same request-shape divergence one layer down that
+        the 2026-08-12 audit named as the quiet death of the canary property.
+
+        THE WALL CLOCK IS REAL AND IT IS THE OWNER'S TO ACCEPT. Measured against the two
+        calibration profiles' page heights at the loop's own 233..262px cadence, the read goes
+        from 12 frames to 36 (profile B, 8349px) and 44 (profile A, 10027px). The scroll back to
+        the top does NOT scale with it: `_scroll_to_top` has no auto behaviour policy in observe,
+        so it throws `read_scroll_frac`-sized (0.55h) undo strokes and ends on its own settle
+        check, i.e. ~9-10 swipes over a ~10,000px page regardless of how many fine enumeration
+        steps went down. So the cost is the READ, roughly 3x the ~85s per-profile figure, and doc
+        5.5's bottom-up navigation buys observe nothing at all -- what it removed was the BOT's
+        rewind-then-walk on the auto like path, and in observe the human does the navigating.
+
+        OPENERS ADMINISTRATIVELY DISABLED IS THE ONE POLICY DECISION LEFT (audit fix, "BUG 2",
+        2026-08-12). Item enumeration exists solely to let the model pick an item for an opener
+        -- with `opener.enabled: false` there is no consumer for a numbered item list at all, so
+        this refuses: not "capability" (Hinge can always attach a comment, see `accepts_opener`
+        below) but "nothing downstream wants this payload". Before this check existed, a
+        disabled-opener AUTO run still paid for a ~40-frame enumeration read, and any refusal in
+        it (an unconfirmed scroll top, a spacing no gesture could respect, ...) reached
+        worker.py's `items_unavailable` stop and halted a run that was only ever going to send
+        bare likes -- see `set_opener_enabled`'s docstring for who sets `self._openers_enabled`
+        and when. BOTH loops now call that hook, which is what lets this one condition carry the
+        whole "does this session want a numbered list" question for observe as well as auto.
+
+        The other three are capability, not policy: an app that cannot send an opener at swipe
+        time has nothing to number items for; the affirmative scroll-top gate reads
+        `identity_band` and cannot run without one; and `segment_frame` refuses a None like
+        template rather than reporting a page of heartless cards (which would silently reclassify
+        every photo as unselectable context).
+        """
+        if not getattr(self, "_openers_enabled", True):
+            return ("openers are disabled for this run (opener.enabled: false), so nothing "
+                    "would consume a numbered item list -- reading a profile at the enumeration "
+                    "cadence for a run that only ever sends bare likes would waste device time "
+                    "and risk stopping a run over the absence of a payload nobody wanted")
+        if not self.accepts_opener:
+            return (f"{self.spec.app} cannot attach an opener to a like at swipe time, so there "
+                    "is no request for numbered items to answer")
+        if self.identity_band is None:
+            return (f"{self.spec.app} declares no identity_band, so doc 5.5's affirmative "
+                    "filter-chips scroll-top confirmation cannot be read at all, and counting "
+                    "items from an unconfirmed top gives a systematic off-by-N in every ordinal")
+        if self._template("like") is None:
+            return (f"{self.spec.app} declares no calibrated 'like' glyph template, so hearts "
+                    "cannot be located and every card would segment as unselectable context")
+        return ""
+
+    def _confirm_enumeration_top(self) -> str:
+        """Affirmatively confirm the card is at scroll top. "" when confirmed, else the reason.
+
+        Doc 5.5: "the design needs an affirmative top confirmation before counting starts ...
+        treat failure to confirm as a hard stop". The signal is positive rather than an absence
+        -- at a genuine top Hinge draws its own filter-chips row in `identity_band`, and the
+        sticky per-profile header covers that strip the moment the card is scrolled at all.
+
+        This runs BEFORE the read loop, on its own screencap, because the answer decides the
+        read's CEILING (`_ENUMERATION_CAPTURE_LIMIT` vs `scroll_captures`) and a ceiling cannot
+        be raised half way through a loop that is already running against it. The frame is read
+        with `on_blank="none"` so a screen that has gone dark is reported here as an
+        unconfirmable top rather than raising out of a gate whose only job is to answer a
+        question -- the loop's own `_screencap()` a moment later is the caller that is entitled
+        to raise about a blank screen, and it does.
+
+        `confirm_scroll_top`, not `require_scroll_top`: the exception form is for callers that
+        must stop, and this one has a third option that is neither stopping nor proceeding
+        blind, namely reading the profile without enumerating it. The three-valued verdict is
+        preserved in the reason text either way -- "confirmed NOT at top" and "cannot tell" are
+        different situations for whoever reads the stop line.
+        """
+        frame = self._screencap(on_blank="none")
+        if frame is None:
+            return ("the screen was blank when the scroll-top gate looked, so the filter-chips "
+                    "row could not be read and the top could not be confirmed")
+        try:
+            verdict = confirm_scroll_top(frame, identity_band=self.identity_band)
+        except ScrollTopError as exc:
+            return (f"the scroll-top gate could not read the identity band ({exc}), so the top "
+                    "could not be confirmed")
+        if not verdict.confirmed:
+            return (f"the card is not confirmed to be at its scroll top ({verdict.state}): "
+                    f"{verdict.reason}")
+        return ""
+
+    def _plan_enumeration_step(self, frame: bytes, x_frac: float, min_spacing_px: int | None):
+        """Size the next enumeration scroll against the spacing THIS frame shows.
+
+        Returns the `ScrollStep`; `.frac` and `.x_frac` go straight to `_scroll_down_one`, both
+        of them, always (passing the frac alone makes that method re-sample both from the
+        behaviour policy and silently issue production's 0.55 cadence instead).
+
+        `x_frac` is the LANE the behaviour policy already drew for this step, handed through
+        rather than replaced: the distance is what has to follow the card in front of us (doc
+        5.10.1's ratio rule), while the column the thumb travels in is ordinary humanization and
+        has no business being decided by a geometry module. `_sample_read_step` has already
+        validated it into 0.10..0.90, which is exactly the window `plan_scroll_step` accepts.
+
+        `min_spacing_px` is the smallest spacing measured anywhere on THIS profile so far, which
+        is the loop's only piece of memory: it makes the step shrink permanently once a short
+        card has been seen, which is the only defence against a card that is still below the
+        fold. Per profile -- carrying it across a deck advance would be wrong.
+
+        NO `**plan_kwargs` PASS-THROUGH, deliberately. `ratio_window`, `max_step_px` and
+        `fallback_spacing_px` are the offline-validation door doc 5.6 flags: widening one takes
+        the gesture outside the envelope every measurement in this stack was taken inside. A
+        production caller passes none of them, and the way to keep that true is to have nowhere
+        to put them.
+        """
+        segmentation = segment_frame(frame, content_band=self.content_band,
+                                     like_template=self._template("like"),
+                                     like_threshold=_LIKE_MATCH_THRESHOLD)
+        return plan_scroll_step(segmentation, x_frac=x_frac,
+                                profile_min_spacing_px=min_spacing_px)
+
+    def _index_captured_items(self, photos: list[bytes]) -> str:
+        """Fold this capture's frames into doc 5.3's index and doc 5.2's crops.
+
+        Sets `_current_item_index` / `_current_item_payload` on success and returns ""; on any
+        refusal it leaves both None and returns the reason, which becomes
+        `Profile.items_unavailable` and then worker.py's stop line. Called exactly once per
+        capture, after the read loop, with the frames that were actually kept.
+
+        `at_scroll_top=True` is passed because `_confirm_enumeration_top` confirmed it
+        affirmatively for this very read -- that argument is an assertion by the caller and this
+        is the caller doc 5.5 had in mind. It is what buys ABSOLUTE heart ordinals, which is
+        what a counting navigation needs; an index built with it False numbers hearts relative
+        to whatever happened to be in view.
+
+        `identity_band` is passed for the same kind of reason and is REQUIRED by the builder: the
+        index carries a fingerprint of this profile's sticky header, taken from these very
+        frames, and `item_nav`'s entry gate refuses to navigate an index that cannot say whose
+        profile it describes (doc 5.7's carried-forward requirement 1 -- geometry cannot tell two
+        stereotyped Hinge cards apart, so the check has to be this strip).
+
+        FOUR FAILURE FAMILIES, all of them results rather than crashes:
+          * the index refuses (aliasing, a broken correspondence chain, a block two frames
+            disagree about, a heart nothing bounded). `usable` is False and its own failure list
+            is the reason. Doc 5.10.1 measured what an over-large step costs: coverage first,
+            then the whole index -- it cannot misnumber, and it cannot fabricate an item;
+          * the index holds together but carries no IDENTITY (no `identity_band` declared, or a
+            capture in which the sticky header never appeared). Nothing is wrong with the
+            numbering; it simply could never be navigated safely, so it is refused before a
+            billed opener call rather than after one;
+          * the crops refuse (a block taller than the analysed band, nothing selectable left to
+            number). Same contract, one layer up;
+          * a dependency raises (`SegmentationError` on a frame that will not decode,
+            `ShiftEstimationError` when no page space spans the capture, `ItemIndexError` /
+            `ItemCropError` on a capture that cannot be indexed at all, including a missing
+            cv2/numpy). Caught by name and turned into the same sentence.
+
+        Note `build_item_payload` re-checks that these frames really are the ones the index was
+        built from, by a sha256 per frame recorded at segmentation time. That guard exists
+        because an offline validation pass once drove the same capture in REVERSE order past a
+        weaker one and got ten confidently wrong crops with zero failures.
+        """
+        try:
+            index = build_item_index(
+                photos, content_band=self.content_band,
+                like_template=self._template("like"), like_threshold=_LIKE_MATCH_THRESHOLD,
+                at_scroll_top=True, identity_band=self.identity_band)
+            if not index.usable:
+                return ("the item index this capture produced contradicts itself, so its "
+                        "numbering cannot be trusted: " + "; ".join(index.failures))
+            if not index.identity.known:
+                # Refused HERE rather than left for navigation, and the difference is a billed
+                # call: an index that cannot say whose profile it describes is one
+                # `item_nav.navigate_to_item` will refuse at its entry gate, so producing crops
+                # from it would buy an opener for a profile that can never be targeted. The same
+                # placement argument as every other refusal in this method -- the ranker's frames
+                # are untouched, and worker.py stops before the model is asked anything.
+                return ("this capture could not be fingerprinted for identity, so a navigation "
+                        "pass could never confirm the card it counts on is this profile's: "
+                        + index.identity.reason)
+            payload = build_item_payload(photos, index)
+            if not payload.usable:
+                return ("the item crops this capture produced are not a request the model can "
+                        "be asked to answer: " + "; ".join(payload.failures))
+        except (ItemIndexError, ItemCropError, SegmentationError, ShiftEstimationError) as exc:
+            return (f"this capture could not be indexed into items "
+                    f"({type(exc).__name__}: {exc})")
+        self._current_item_index = index
+        self._current_item_payload = payload
+        # Doc 5.5's bottom-up entry anchor. `photos[-1]` is the last frame the index was folded
+        # from, so `index.offsets[-1]` is ITS page offset -- and it is also, by construction, the
+        # frame still on screen when this capture returns: `_capture_current`'s repeated-frame
+        # break happens BEFORE the repeat is appended, and its ceiling path issues no scroll on
+        # the final iteration. So the shift `navigate_to_item` measures against it is 0px in the
+        # ordinary case, and a measurement rather than an assumption in every case.
+        self._current_item_anchor = photos[-1] if photos else None
+        return ""
+
+    def _note_enumeration_truncated(self, frames: int) -> None:
+        """Say out loud that an ENUMERATION read hit its ceiling without reaching the bottom.
+
+        `_ENUMERATION_CAPTURE_LIMIT`'s comment carries the derivation and why exceeding it is not
+        a hard stop; this is the other half of that decision. Truncation was already recorded --
+        `ItemIndex.truncated` -> `Profile.items_truncated` -> the model, per doc 5.7 -- but only
+        the MODEL was told, and only as a flag beside a numbered list. The operator saw nothing,
+        which is what makes "it truncates silently" a fair description even though a flag exists.
+
+        So the console gets a sentence naming the frame count against the derived ceiling, and
+        actions.jsonl gets its own record. What the operator does about it is a judgement call
+        this method deliberately does not make for them: a profile past the ceiling still yields a
+        usable numbered list of everything above the cut, and the item the model picks from it is
+        inside the enumerated region by construction, so navigation is unaffected. What is lost is
+        Connect material from the tail of the profile (doc 4's own reason Part B exists), which is
+        a quality cost rather than a correctness one.
+
+        Only ever called for a read that raised the ceiling. An ordinary 12-frame read that hits
+        `scroll_captures` is the pre-existing `capture_truncated` case and is untouched.
+        """
+        print(f"{self.spec.app}: this profile is longer than the enumeration read could cover -- "
+              f"{frames} frame(s) at the derived ceiling of {_ENUMERATION_CAPTURE_LIMIT} and the "
+              f"bottom was never reached, so the numbered item list stops part way down the "
+              f"profile and the model is told so. See _ENUMERATION_CAPTURE_LIMIT for the "
+              f"derivation; if this is not rare, that constant is measured against the wrong "
+              f"profiles.")
+        if self._dbg is not None:
+            try:
+                self._dbg.action("capture_enumeration_truncated", frames=frames,
+                                 ceiling=_ENUMERATION_CAPTURE_LIMIT,
+                                 limit=self._profile_capture_limit,
+                                 profile_name=self._identity_name)
+            except Exception:  # noqa: BLE001 — debug logging must never break a capture
+                pass
+
+    def _invalidate_item_index(self, reason: str) -> None:
+        """Drop the driver-owned index, with the reason a later reader would need.
+
+        Doc 5.3: the table's "lifetime is exactly one profile, and it must be invalidated
+        wherever `_current_sigs` is today, including the deck-advance path". A stale table would
+        navigate by the previous profile's heart ordinals and then verify against the previous
+        profile's crops -- doc 5.6's own addendum measures that at ordinal 1 nothing before the
+        tap catches it, which is what makes correct invalidation load-bearing rather than tidy.
+
+        Sets the reason as `_current_items_unavailable` rather than clearing it, so the state is
+        never "no payload and no explanation": every reader gets either crops or a sentence.
+        """
+        self._current_item_index = None
+        self._current_item_payload = None
+        self._current_item_anchor = None
+        self._current_items_unavailable = reason
+
     # --- capture (Signals #1: read the whole profile, human-paced) ------
     def _capture_current(self, should_stop=None) -> Profile | None:
         """Read the profile currently on screen, human-paced, returning its frames.
@@ -1910,6 +2755,16 @@ class AndroidDriver(DatingAppDriver):
         recapturing -- and which, with the stop event set, means they simply leave their loop.
         The partial frames are dropped rather than returned precisely because a half-read profile
         must never reach the ranker as if it were a whole one.
+
+        ENUMERATION (ops/OPENER-REDESIGN.md 5.2/5.3/5.5): an AUTO read is also the pass that
+        builds the profile's item index. It confirms the scroll top affirmatively before the
+        first gesture, sizes every step against the card spacing the current frame shows instead
+        of a screen fraction, and folds the frames it kept into the driver-owned index plus the
+        numbered crops the opener sends. See the block of `_item_enumeration_*` /
+        `_index_captured_items` methods immediately above for the reasoning, including why every
+        failure in there is a sentence on the Profile rather than an exception out of here: these
+        frames have TWO consumers with independent needs, and the one that wants faces is not the
+        one that wants item numbers.
         """
         photos: list[bytes] = []
         self._current_sigs = []
@@ -1930,7 +2785,43 @@ class AndroidDriver(DatingAppDriver):
         # a stale answer. See _ocr_band_cache's own comment in __init__.
         self._ocr_band_cache = {}
         self._current_capture_split = False   # set if the deck advanced mid-capture; see the loop
-        self._profile_capture_limit = self._capture_limit_for_profile()
+        # Doc 5.3's table dies with the profile it described. Reset HERE, alongside
+        # _current_sigs and the identity anchors above and for exactly their reason: the frames
+        # about to be read belong to a different person, so anything left over from the last
+        # read is a table pointing at somebody else's card.
+        self._invalidate_item_index(
+            "this profile's read has not finished, so nothing has been enumerated for it yet")
+        # ENUMERATION (doc 5.2/5.3/5.5), decided BEFORE the loop because it sets the ceiling.
+        # `enumeration_reason` is "" while the read is still on track to produce an item index
+        # and a sentence the moment it is not -- the first sentence wins, so a later step's
+        # failure never overwrites the reason the read stopped enumerating in the first place.
+        enumeration_reason = self._item_enumeration_blocker()
+        if not enumeration_reason:
+            if should_stop is not None and should_stop():
+                # The loop's own first check returns None one line below, so the gate's answer
+                # would be discarded -- and the gate costs a full ADB round-trip, which is
+                # exactly the latency a Stop is not supposed to wait through.
+                enumeration_reason = ("the run is stopping, so this profile was never "
+                                      "enumerated")
+            else:
+                enumeration_reason = self._confirm_enumeration_top()
+        enumerating = not enumeration_reason
+        # Audit fix, "BUG 3" (2026-08-12): `enumerating` can flip False MID-LOOP (a scroll that
+        # cannot be sized ends the enumeration but lets the read finish at the ordinary cadence
+        # -- see the `except (ScrollStepError, SegmentationError)` branch below), but
+        # `_profile_capture_limit` is fixed for the whole capture right here, before that can
+        # happen. So whether the RANKER needs its frames thinned back down (see
+        # _ranker_frames_from_enumeration) depends on whether the ceiling was raised for this
+        # read at all, not on whether enumeration was still running when the read stopped --
+        # a read that raised the ceiling to 48 and then fell back to the ordinary cadence at
+        # frame 20 can still walk all the way to frame 48 at that ordinary cadence, and the
+        # ranker must not see all 48 of those either.
+        enumeration_ceiling_raised = enumerating
+        self._profile_capture_limit = self._capture_limit_for_profile(
+            _ENUMERATION_CAPTURE_LIMIT if enumerating else None)
+        # The smallest heart-bearing card spacing measured anywhere on THIS profile so far; see
+        # _plan_enumeration_step. None until the first frame that can measure one.
+        enum_min_spacing_px: int | None = None
         read_dwell_s_total = 0.0
         seen = set()
         for i in range(self._profile_capture_limit):
@@ -1997,9 +2888,26 @@ class AndroidDriver(DatingAppDriver):
                         self._identity_sig = band         # first frame showing the sticky header
                         self._identity_name = self._ocr_band(frame, self.identity_band)
             # Keep _current_sigs index-ALIGNED with photos: append ds even when None (an
-            # undecodable frame). The opener's referenced_index indexes photos, and
-            # _locate_target_heart looks it up here — a gap would desync them and target the
-            # WRONG photo. Consumers below filter/guard the Nones.
+            # undecodable frame). _locate_target_heart looks its target up here — a gap would
+            # desync the two and target the WRONG photo. Consumers below filter/guard the Nones.
+            #
+            # This list is a CAPTURE-ORDER (0-based, per scroll frame) space, and as of
+            # 2026-08-12 the opener no longer speaks it: OpenerResult.item_index is 1-based over
+            # the numbered ITEMS the model was shown (ops/OPENER-REDESIGN.md 5.1/5.7). Nothing
+            # converts between the two here, and nothing may: the crossing happens exactly once,
+            # in opener.service.OpenerPick.capture_order_index, which knows which list the
+            # model's number counted and refuses rather than guessing when it cannot say. Doc
+            # 5.3's driver-owned translation table (model item -> heart ordinal) now EXISTS
+            # alongside this list -- see _current_item_payload, built below from these same
+            # frames -- but it is a different table in a different space, and nothing converts
+            # between the two: the crop-shape index resolves to a HEART ORDINAL, never to a
+            # position in this frame list.
+            #
+            # Why this list cannot police the difference itself, since it looks like it could:
+            # its only bound is its own length, and there are always more frames than items (24
+            # frames for 9 items on the calibration capture), so every out-of-space value it
+            # could receive looks perfectly in range. That is not a missing check here, it is
+            # why the space has to be stated by the producer.
             self._current_sigs.append(ds)
 
             if i < self._profile_capture_limit - 1:
@@ -2010,6 +2918,33 @@ class AndroidDriver(DatingAppDriver):
                     except Exception:  # noqa: BLE001 — hint is optional, capture is not
                         pass
                 dwell, frac, x_frac = self._sample_read_step(i, complexity_hint)
+                if enumerating:
+                    # THE CLOSED LOOP (doc 5.5 / 5.10.1). The distance stops being a screen
+                    # fraction and becomes a fraction of the card actually in front of us,
+                    # because the two must not alias: a step near the item spacing makes "the
+                    # same heart moved" and "the next heart arrived" geometrically
+                    # indistinguishable, which no better estimator can fix. The lane and the
+                    # dwell keep coming from the behaviour policy exactly as they did.
+                    #
+                    # A refusal here ENDS THE ENUMERATION and lets the read finish at the
+                    # ordinary cadence. That is not the forbidden substitution: no item payload
+                    # will be built from this capture (the reason is recorded and the crops are
+                    # never produced), so nothing downstream can mistake these frames for a
+                    # numbered list -- the only thing degrading is the frame set the RANKER
+                    # gets, which has no index in it to be wrong about.
+                    try:
+                        step = self._plan_enumeration_step(frame, x_frac, enum_min_spacing_px)
+                    except (ScrollStepError, SegmentationError) as exc:
+                        enumerating = False
+                        enumeration_reason = (
+                            f"the enumeration scroll could not be sized against frame "
+                            f"{len(photos) - 1} of this profile ({type(exc).__name__}: {exc})")
+                    else:
+                        frac, x_frac = step.frac, step.x_frac
+                        if step.spacing.measured:
+                            enum_min_spacing_px = (
+                                step.spacing.px if enum_min_spacing_px is None
+                                else min(enum_min_spacing_px, step.spacing.px))
                 # The read dwell is the single longest stretch of this loop (dwell_s=1.1
                 # humanized, x11), so it is where a Stop most often lands. Credit
                 # read_dwell_s_total only with time actually spent: this counter is the
@@ -2033,6 +2968,12 @@ class AndroidDriver(DatingAppDriver):
             # wait_for_decision's PASS diagnostic and Profile.meta below -- monitoring only,
             # never changes what gets decided.
             self._current_capture_truncated = bool(photos)
+            # ...except that an ENUMERATION read hitting its ceiling is worth saying out loud,
+            # because that ceiling is derived from measured page geometry and a profile past it
+            # is either genuinely unusual or evidence the derivation is wrong. See
+            # _note_enumeration_truncated and _ENUMERATION_CAPTURE_LIMIT.
+            if enumeration_ceiling_raised and photos:
+                self._note_enumeration_truncated(len(photos))
         # H1: in a real run (open_session validated PIL/numpy), every frame should
         # downsample. If none did, decode is broken at runtime (PIL/numpy failure OR a wedged
         # device returning empty/truncated screencap) — refuse to continue in a degraded mode
@@ -2067,7 +3008,39 @@ class AndroidDriver(DatingAppDriver):
             print(f"{self.spec.app}: the deck advanced while reading this profile "
                   f"(captured {len(photos)} frame(s) spanning two cards); discarding and "
                   f"recapturing rather than mixing two people into one label.")
+            # THE DECK-ADVANCE PATH, named explicitly by doc 5.3 as a place the table must be
+            # invalidated. Nothing was indexed on this path anyway (the build below never runs),
+            # but the point is that the state must not be left describing whatever was here
+            # before: these frames span two people, so no index over them could be right, and an
+            # index from the PREVIOUS profile surviving into the recapture is the exact stale
+            # table doc 5.3 says a wrong like is built from.
+            self._invalidate_item_index(
+                "the deck advanced while this profile was being read, so the capture spans two "
+                "cards and nothing about it can be enumerated")
             return None
+        # THE INDEX, from the frames that were actually kept (doc 5.2/5.3). Only when the whole
+        # read was an enumeration read: a capture that stopped enumerating half way through has
+        # a mixed cadence, and folding those frames would be indexing a page nobody scrolled.
+        if enumerating:
+            enumeration_reason = self._index_captured_items(photos)
+        if enumeration_reason:
+            self._invalidate_item_index(enumeration_reason)
+            print(f"{self.spec.app}: no numbered item list for this profile -- "
+                  f"{enumeration_reason}")
+        else:
+            self._current_items_unavailable = ""
+        payload = self._current_item_payload
+        # THE RANKER'S COPY (audit fix, "BUG 3", 2026-08-12). `photos` above -- and everything
+        # already built from it (`_current_sigs`, the item index, the crops) -- stays the FULL
+        # enumeration-cadence capture; only what goes to `Profile.photos` below is thinned back
+        # down to what the ranker saw before Part B raised the enumeration ceiling. See
+        # _ranker_frames_from_enumeration's docstring for the full reasoning and what is NOT
+        # exactly reproduced. A capture that never raised the ceiling (observe, or any read that
+        # was blocked from enumerating before the first frame) is untouched: `ranker_photos is
+        # photos` in that case, so nothing about this file changes for it.
+        ranker_photos = (
+            _ranker_frames_from_enumeration(photos, self.scroll_captures)
+            if enumeration_ceiling_raised else photos)
         if self._dbg is not None and photos:
             # profile_name, not name: DebugLog.action's own first positional parameter IS
             # called `name` (the action-type string, "capture" here) -- a fields key of
@@ -2076,9 +3049,22 @@ class AndroidDriver(DatingAppDriver):
             # profile_name too.
             self._dbg.action("capture", before=photos[0], photos=len(photos),   # first frame = who was scored
                              capture_truncated=self._current_capture_truncated,
-                             identity_seen=identity_seen, profile_name=self._identity_name)
+                             identity_seen=identity_seen, profile_name=self._identity_name,
+                             # The enumeration's own verdict, so a debug replay can tell "this
+                             # profile was never enumerated" from "it was, and here is what it
+                             # found" without re-running any vision.
+                             items=(payload.item_count if payload is not None else 0),
+                             item_context=(payload.context_count if payload is not None else 0),
+                             items_unavailable=self._current_items_unavailable or None,
+                             # "BUG 3" fix: only present (and only ever < photos) when this read
+                             # raised the enumeration ceiling and the ranker's copy was thinned
+                             # back down for it -- absent, not equal to photos, on every ordinary
+                             # (non-enumerating) read, so a debug replay can tell "this read never
+                             # needed thinning" from "it did, and here is what survived".
+                             ranker_photos=(len(ranker_photos)
+                                            if enumeration_ceiling_raised else None))
         return Profile(
-            photos=photos,
+            photos=ranker_photos,
             prompts=[],
             meta={
                 "app": self.spec.app,
@@ -2087,6 +3073,21 @@ class AndroidDriver(DatingAppDriver):
                 "read_dwell_s_total": read_dwell_s_total,
                 "capture_truncated": self._current_capture_truncated,
             },
+            # THE ITEM PAYLOAD (doc 5.7's request shape), copied out of the driver's own table
+            # as plain bytes. The driver keeps the index, the crops' signatures and
+            # `translation` (model item number -> heart ordinal) for navigation and doc 5.6's
+            # verification; the Profile carries only what the MODEL is shown, because that is
+            # all the opener layer has any business seeing.
+            #
+            # `payload.images` is deliberately not used here even though it is the same bytes in
+            # the same order: it concatenates the two tiers, and the split is what stops a
+            # context crop from being numbered. Exactly one of `items` and `items_unavailable`
+            # is ever non-empty.
+            name=self._identity_name or "",
+            items=tuple(c.image for c in payload.items) if payload is not None else (),
+            item_context=tuple(c.image for c in payload.context) if payload is not None else (),
+            items_truncated=bool(payload.truncated) if payload is not None else False,
+            items_unavailable=self._current_items_unavailable,
         )
 
     def next_profile(self, *, should_stop=None) -> Profile | None:
@@ -2123,49 +3124,243 @@ class AndroidDriver(DatingAppDriver):
         # and the run stops via the rate limiter (auto) or the operator (observe).
         return False
 
-    def _locate_target_heart(self, item_index: int) -> tuple[tuple[int, int], bool]:
-        """comment_sheet flow only. Locate the heart of the photo/prompt the opener is about.
-        item_index is the 0-based index (capture order) the opener returned. We re-navigate to
-        that captured frame by matching its downsample signature, then take its heart. Falls
-        back to the topmost heart (first photo) when targeting isn't possible (index 0, no
-        sigs, no match) — so it is never worse than the old 'always first photo' behavior.
-        Every genuine fallback (as opposed to the ordinary index-0 fast path) is recorded via
-        _dbg_action so a bug report can tell "target not found" apart from "no sigs to search
-        at all" (HINGE-05). (LIVE-VERIFY during observe seeding.)
+    # --- is something STANDING BETWEEN us and the deck? -----------------
+    # A different question from out_of_profiles() above (which means the deck ran dry — normal
+    # end of supply, nothing wrong). See DatingAppDriver.blocked_reason for the contract and
+    # _PAYWALL_MATCH_THRESHOLD for the 2026-08-11 incident these exist for. Everything in this
+    # block is READ-ONLY perception: it screencaps, template-matches and OCRs, and NEVER taps,
+    # swipes or types. That is not a style preference here — the one screen it recognises is a
+    # PURCHASE screen, and observe mode is strictly passive besides.
 
-        Returns `(point, on_target)`. `on_target` is what this method's whole contract is FOR:
-        whether `point` actually IS the item the opener was written about, or a first-photo
-        fallback that merely has the same shape as a real answer. When it's False, the caller
-        is one tap away from attaching a comment written about item `item_index` to item 0
-        instead — the exact out-of-place-message failure this feature exists to catch (an
-        opener about a beach photo landing under a dining-table photo) — and `_like_comment_sheet`
-        must repair the mismatch (see its `anchored_opener` parameter) rather than ship it.
-        index 0 is the one case where "fell back to the first photo" and "the opener genuinely
-        was about the first photo" are the same outcome, so that fast path is on target by
-        construction; every OTHER path that reaches the first-photo fallback below is a real
-        miss, because the opener was written about a different item than the one about to be
-        tapped."""
+    def _paywall_visible(self, frame: bytes) -> bool:
+        """Whether `frame` is an app upgrade/paywall screen, by the spec's "paywall" template.
+
+        For Hinge that template is the "HingeX" tab wordmark of the out-of-free-likes upgrade
+        screen. The tab CHROME was chosen over the two more obvious candidates because it is the
+        only fixed part of that screen: the hero image is rotating marketing artwork (a template
+        cut from it would stop matching the next time Hinge changes the campaign), and the
+        benefit list below it scrolls, as does the price string in the bottom CTA. The tab bar
+        holds still — MEASURED at y 266..318 of 2400 in the 2026-08-11 reference dump, which is
+        also what makes the position gate below meaningful.
+
+        MEASURED discrimination with cv2.TM_CCOEFF_NORMED (Pixel 7a, 1080x2400, 2026-08-11):
+        1.000 on the live paywall; 0.965..1.000 with the frame perturbed over gain 0.35..1.4 and
+        bias -30..+90 (standing in for the tab rendering purple-when-active vs
+        grey-when-inactive); and a maximum of 0.4903 over ALL 88 real non-paywall frames of the
+        hung run this fix comes from. _PAYWALL_MATCH_THRESHOLD (0.75) sits with a wide margin on
+        both sides.
+
+        An app whose spec declares no "paywall" template at all (every app but Hinge today)
+        gets None from `_template`, `_match_glyph`'s own None-template guard returns no hits,
+        and this is simply always False — no behaviour change for Bumble or the web drivers.
+
+        False on ANY exception: inability to PROVE a paywall must never break observation. The
+        cost of a false negative here is only that the generic stuck-screen watchdog stops the
+        run 90s later with a vaguer message; the cost of raising would be a crashed run.
+        """
+        try:
+            hits = _match_glyph(frame, self._template("paywall"), side="any",
+                                threshold=_PAYWALL_MATCH_THRESHOLD)
+            if not hits:
+                return False
+            import cv2
+            import numpy as np
+            image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+            if image is None:
+                return False
+            height = image.shape[0]
+            return any(y <= height * _PAYWALL_MAX_Y_FRAC for _x, y in hits)
+        except Exception:  # noqa: BLE001 — see the docstring: never break observation over this
+            return False
+
+    def _paywall_headline(self, frame: bytes) -> str | None:
+        """Best-effort OCR of the paywall's headline (spec.paywall_headline_band), or None.
+
+        NEVER load-bearing, and deliberately not a detector: `_paywall_visible` above has
+        already decided whether this screen IS a paywall, from pixels alone. This only refines
+        the operator-facing message from "the deck is not available" into "out of free likes for
+        today", so no `tesseract` on PATH costs message specificity and nothing else.
+
+        The ordinary `_ocr_band` recipe cannot read this band — MEASURED 2026-08-11, it returns
+        garbage ("“Tikes for today") — because the headline is WHITE text over a PHOTOGRAPH,
+        where every other band this driver OCRs is dark text on flat chrome. Hence
+        `white_text_threshold`: binarize at a high luminance and invert, so tesseract gets the
+        black-on-white it wants. See that parameter's own documentation on `_ocr_band` for the
+        measured before/after, and `_PAYWALL_OCR_WHITE_MIN` for why 200.
+
+        `psm="6"` (a uniform block of text) rather than the `_ocr_band` default of `"7"` (a
+        single line): the headline wraps onto two lines ("You're out of free / likes for today"),
+        and forcing multi-line content through a single-line segmentation is exactly the failure
+        already documented for identity_top_name_band.
+
+        Note that this inherits `_ocr_band`'s `observe_name_ocr` gate: an operator who has turned
+        host-side OCR off gets None here too, and therefore the generic message. That is the
+        honest outcome — with OCR off, nothing has actually read the headline — and it is not a
+        loss of detection, only of specificity.
+
+        Never raises: `_ocr_band` swallows every failure into None by contract.
+        """
+        band = self.spec.paywall_headline_band
+        if band is None:                       # this app declares no headline to refine with
+            return None
+        return self._ocr_band(frame, band, psm="6",
+                              white_text_threshold=_PAYWALL_OCR_WHITE_MIN)
+
+    def _deck_blocked_reason(self, frame: bytes) -> str | None:
+        """`frame` -> an operator-facing sentence saying what is standing between us and the
+        deck, or None if nothing recognisable is.
+
+        Two outcomes only, and the difference between them is purely how much we can honestly
+        claim: the OCR-refined string asserts WHICH paywall this is, the generic one asserts
+        only that the upgrade screen is up. Nothing here ever dismisses the screen — it is a
+        purchase screen, and the standing owner rule is that paid controls are manual, always.
+
+        The "is this the out-of-likes one" test is deliberately loose: lowercase the read and
+        require "out of" AND "likes" anywhere in it. Hard-matching the full sentence would throw
+        away a perfectly good read the moment tesseract drops the apostrophe, splits a word, or
+        picks up a stray glyph from the photo behind the text — and the penalty for being wrong
+        in either direction is one adjective in a message, never a wrong action.
+
+        That is not a hypothetical tolerance: MEASURED 2026-08-11 against the reference
+        screenshot, this exact path reads "You're out of freelikes for today" — tesseract reads
+        the headline's two wrapped lines correctly, and then `_ocr_band`'s existing character
+        filter strips the newline BETWEEN them without leaving a space, welding "free" onto
+        "likes". Both substrings this test looks for survive that, which is the point; the
+        filter itself is deliberately left alone, because it is shared with the identity-band
+        call sites whose behaviour must not change.
+
+        Both strings name Hinge outright even though this method lives on the app-agnostic
+        AndroidDriver, because both are reachable only through a spec that declares a "paywall"
+        template and HINGE_SPEC is the only one that does (2026-08-11). The day a second app
+        gets one, these need to become per-spec wording rather than being left to tell a Bumble
+        operator about Hinge+.
+        """
+        if not self._paywall_visible(frame):
+            return None
+        headline = (self._paywall_headline(frame) or "").casefold()
+        if "out of" in headline and "likes" in headline:
+            return "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+        return "Hinge's Hinge+ upgrade screen is up — the deck is not available"
+
+    def blocked_reason(self) -> str | None:
+        """Worker-facing: is the deck unavailable for a reason the operator must be told about?
+
+        Contract (DatingAppDriver.blocked_reason): never raises, never touches the screen, and
+        is called on EVERY iteration of both worker loops — hence the memo. Once a paywall (or
+        the stuck-screen watchdog) has established a reason, that reason stands until the
+        operator deals with it, so re-screencapping and re-OCRing it on every loop would burn
+        seconds per iteration to re-derive an answer we already have. `self._blocked_reason` is
+        also where `_observe_stuck_bail` deposits its verdict, so a watchdog stop the driver
+        already decided on is reported through this same channel.
+
+        `on_blank="none"`: a blank/asleep screen is the owner having stepped away, not a blocked
+        deck. Reporting one as blocked would stop a perfectly healthy run.
+        """
+        if self._blocked_reason is not None:
+            return self._blocked_reason
+        try:
+            frame = self._screencap(on_blank="none")
+            if frame is None:
+                return None
+            reason = self._deck_blocked_reason(frame)
+        except Exception:  # noqa: BLE001 — a failed probe is not evidence of a blocked deck
+            # Deliberately catches DriverClosed too, despite that being a real, meaningful stop:
+            # this method's contract is that it never raises, and a dropped ADB link surfaces
+            # from the very next capture the loop makes anyway (that is how it has always been
+            # reported). Letting it out HERE would turn a diagnostic probe into a second,
+            # competing place the run can die from, for no earlier warning.
+            return None
+        if reason is not None:
+            self._blocked_reason = reason
+        return reason
+
+    def _locate_target_heart(self, item_index: int | None) -> tuple[int, int]:
+        """comment_sheet flow only. Locate the heart of the photo/prompt the opener is about --
+        or STOP. This method never returns a DIFFERENT item's heart than the one it was asked for.
+
+        item_index is a 0-based index into CAPTURE ORDER (this driver's `_current_sigs`), and
+        that is the ONLY space it is ever in -- it is not the model's item number, which counts
+        a different list from a different base (ops/OPENER-REDESIGN.md 5.1/5.7). Callers cross
+        the two spaces exactly once, through opener.service.OpenerPick.capture_order_index, and
+        that method returns None rather than guessing when no sound conversion exists. We
+        re-navigate to the named captured frame by matching its downsample signature, then take
+        its heart.
+
+        NO SUBSTITUTION, AND THAT IS WHAT CHANGED HERE (doc 5.6, standing owner rule). Until
+        2026-08-12 every route that could not reach the named item -- an out-of-range index, an
+        undecodable target signature, a search that never matched, a matched frame carrying no
+        heart -- fell back to `hearts[0]`/`_await_button("like")`, the topmost heart on screen,
+        and reported the miss as `on_target=False` for the caller to repair the TEXT against.
+        Repairing the text does not undo attaching the like to an item the model never chose, so
+        all four now raise `HingeTargetingError` and the run stops. There is no "and by the way
+        this is the wrong item" flag in the return value any more, because there is no path that
+        can produce one: this returns the heart of item `item_index`, or it raises.
+
+        RETRYING THE SAME ITEM IS ALLOWED AND IS TRIED FIRST. `_TARGET_HEART_ATTEMPTS` whole
+        searches, each starting from its own `_scroll_to_top()`, before the stop -- a shaky hand
+        is not a wrong decision (that constant carries why the number is 2). Every gesture is the
+        driver's own humanized `_scroll_to_top` / `_scroll_down_one`, so the ledger, the jitter
+        and the forbidden-zone guard all still apply, and a retry's scrolls are tracked exactly
+        like the first attempt's.
+
+        `item_index is None` MEANS NOBODY SAID WHICH ITEM, and it is deliberately not the same
+        input as 0. It is legal only where there is no opener to misplace -- Hinge with
+        `opener.enabled: false`, where a like is a plain like and no item was ever chosen, so
+        there is nothing for a substitution rule to protect. `_like_comment_sheet` REFUSES the
+        combination of an opener and a None index before any of this runs, so an opener can never
+        ride on this branch. Here it simply takes the topmost heart, because something has to
+        open the sheet.
+
+        `item_index == 0` needs no navigation at all: `_like_comment_sheet` scrolls to the top
+        immediately before calling this, so the topmost heart on screen IS item 0's. That is a
+        fast path, not a fallback -- the item asked for and the item found are the same item.
+
+        RESIDUAL, UNCHANGED AND STILL ACCEPTED ON THIS PATH: the heart taken from a matched frame
+        is the topmost one on it, so a scroll position showing two items at once (a photo AND a
+        prompt) can still land the tap on the neighbour. That is a property of the capture-order
+        space itself, which numbers FRAMES rather than items; doc 5.6 closes it with counting
+        navigation plus the post-tap crop check, and `model_item_index` is the parameter that
+        turns the latter on. Nothing here can detect it, and nothing here pretends to."""
         sigs = getattr(self, "_current_sigs", None)
-        if not sigs or item_index <= 0 or item_index >= len(sigs) or sigs[item_index] is None:
-            if sigs and item_index > 0:                # a genuine fallback, not the index-0 fast path
-                self._dbg_action("locate_target_heart", self._snap(), item_index=item_index,
-                                  outcome="fallback", reason="out_of_range_or_undecodable_target")
-            # item_index == 0 -> index 0 legitimately IS the topmost heart, so this fast path
-            # lands on exactly the item the opener was about (on target). Anything else that
-            # reaches this branch (no sigs, out-of-range, or an undecodable target signature)
-            # falls back to the first photo despite the opener being about a DIFFERENT item —
-            # not on target.
-            #
-            # `== 0`, not `<= 0`, even though the branch condition above is `<= 0`: a NEGATIVE
-            # index is invalid input, not the index-0 fast path, and the two must not report
-            # the same verdict. opener.py clamps referenced_index with max(0, ...) so the live
-            # path can't produce one today, but the honest answer for an index we cannot honour
-            # is "off target" — that routes it into the anchored_opener repair (see
-            # _like_comment_sheet), which re-reads the like screen and rewrites the message
-            # against whatever the heart actually landed on. Claiming on_target for a nonsense
-            # index would instead ship the original text unchecked, which is precisely the
-            # silent mismatch this flag exists to prevent.
-            return self._await_button("like"), item_index == 0
+        if item_index is None:
+            # Recorded whether or not we have sigs: unlike every other branch this one is not a
+            # search that failed, it is about never having been given anything to search for, and
+            # a bug report must be able to tell those apart (HINGE-05). Not an error HERE --
+            # _like_comment_sheet already refused any call that carries an opener, so what is
+            # left is a plain, itemless like with nothing to misplace.
+            self._dbg_action("locate_target_heart", self._snap(), item_index=None,
+                             outcome="no_item_named", reason="no_target_index")
+            return self._await_button("like")
+        if item_index == 0:
+            return self._await_button("like")   # at the scroll top the topmost heart IS item 0's
+        # THE FOUR REFUSALS THAT USED TO BE FALLBACKS. Each names what specifically went wrong,
+        # because the operator's next move differs: a negative or out-of-range index is a caller
+        # or conversion bug, an empty sig list means the profile on screen was never captured by
+        # this driver instance, and an undecodable target frame is a capture-path failure.
+        # `< 0` is separate from the fast path above deliberately: a negative index is invalid
+        # input, not "the first item", and collapsing the two is how an unusable index would once
+        # again resolve to a confident tap on card 1.
+        if item_index < 0:
+            refusal = f"item {item_index} is not a valid capture-order index"
+        elif not sigs:
+            refusal = ("this driver holds no captured frames for the profile on screen, so there "
+                       "is nothing to navigate back to")
+        elif item_index >= len(sigs):
+            refusal = (f"item {item_index} is outside the {len(sigs)} frame(s) captured for this "
+                       f"profile")
+        elif sigs[item_index] is None:
+            refusal = (f"the captured frame for item {item_index} could not be decoded, so there "
+                       f"is no signature to navigate back to")
+        else:
+            refusal = ""
+        if refusal:
+            self._dbg_action("locate_target_heart", self._snap(), item_index=item_index,
+                             outcome="stop", reason="unresolvable_target_index")
+            raise HingeTargetingError(
+                f"{self.spec.app}: cannot target the item the opener was written about -- "
+                f"{refusal}. Nothing was tapped and the like is NOT sent; liking a different "
+                f"item instead is never an option (ops/OPENER-REDESIGN.md 5.6).",
+                stage="navigate", intended=item_index, index_space="capture_order")
         import numpy as np
         target = sigs[item_index]
         before = self._snap()
@@ -2173,27 +3368,131 @@ class AndroidDriver(DatingAppDriver):
         # order index counted down from the top) should need about that many scroll_up()s to
         # reach. Cap the search there (+ slack) instead of sweeping the whole scroll_captures
         # depth: on a real device a scroll can over/undershoot the intended frame, and without a
-        # cap a target we've scrolled past costs a full wasted sweep before the fallback below
-        # even starts (HINGE-05).
+        # cap a target we've scrolled past costs a full wasted sweep before we even find out
+        # (HINGE-05). That same over/undershoot is what the outer retry below exists for.
         tries = min(self._profile_capture_limit + 1, item_index + 3)
-        matched_frame_no_heart = False
-        for _ in range(tries):
-            frame = self._screencap()
-            ds = _downsample(frame)
-            if ds is not None and float(np.mean(np.abs(ds - target))) < self.change_threshold:
-                hearts = _match_glyph(frame, self._template("like"), side="right")
-                if hearts:
-                    return hearts[0], True            # the referenced item's heart, now in view
-                matched_frame_no_heart = True
-                break
-            self._scroll_down_one()          # tracked, so the fallback _scroll_to_top() below (if it
-            time.sleep(human_delay(self.dwell_s * 0.4))  # comes to that) undoes exactly these scrolls too
-        reason = "heart_not_visible_on_matched_frame" if matched_frame_no_heart else "target_frame_not_found"
-        self._dbg_action("locate_target_heart", before, item_index=item_index,
-                          outcome="fallback", reason=reason)
-        self._scroll_to_top()                         # no match: reset and take the first photo
-        time.sleep(human_delay(0.3))
-        return self._await_button("like"), False
+        reason = ""
+        for attempt in range(1, _TARGET_HEART_ATTEMPTS + 1):
+            if attempt > 1:
+                # Re-establish the zero point and search for THE SAME ITEM again. This is the
+                # sanctioned retry: same target, same comparison, a fresh read. `_scroll_to_top`
+                # undoes exactly the tracked scrolls the previous attempt made.
+                self._scroll_to_top()
+                time.sleep(human_delay(0.3))
+            matched_frame_no_heart = False
+            for _ in range(tries):
+                frame = self._screencap()
+                ds = _downsample(frame)
+                if ds is not None and float(np.mean(np.abs(ds - target))) < self.change_threshold:
+                    hearts = _match_glyph(frame, self._template("like"), side="right",
+                                          threshold=_LIKE_MATCH_THRESHOLD, y_band=self.content_band)
+                    if hearts:
+                        return hearts[0]              # the referenced item's heart, now in view
+                    matched_frame_no_heart = True
+                    break
+                self._scroll_down_one()          # tracked, so the retry's _scroll_to_top() above
+                time.sleep(human_delay(self.dwell_s * 0.4))   # undoes exactly these scrolls too
+            reason = ("heart_not_visible_on_matched_frame" if matched_frame_no_heart
+                      else "target_frame_not_found")
+            self._dbg_action("locate_target_heart", before, item_index=item_index,
+                             outcome=("retry" if attempt < _TARGET_HEART_ATTEMPTS else "stop"),
+                             reason=reason, attempt=attempt,
+                             attempts=_TARGET_HEART_ATTEMPTS)
+        detail = ("its frame was found but no like heart was visible on it"
+                  if reason == "heart_not_visible_on_matched_frame"
+                  else "none of the frames read back matched the one it was captured on")
+        raise HingeTargetingError(
+            f"{self.spec.app}: could not reach item {item_index}, the item the opener was "
+            f"written about, in {_TARGET_HEART_ATTEMPTS} attempts -- {detail}. Nothing was "
+            f"tapped and the like is NOT sent; the profile is left scrolled where the search "
+            f"ended, for debugging. Liking whichever item we could reach instead is never an "
+            f"option (ops/OPENER-REDESIGN.md 5.6).",
+            stage="navigate", intended=item_index, index_space="capture_order")
+
+    def _navigate_to_model_item(self, model_item_index: int) -> tuple[int, int]:
+        """Doc 5.5's counting navigation, wired: put model item N's heart on screen and return
+        the point to tap. Never taps, never substitutes, and never scrolls back to the top.
+
+        THIS IS THE HANDOVER `_like_comment_sheet` USED TO REFUSE AT. Until now a
+        `model_item_index` with no capture-order index beside it was a hard stop naming
+        `item_nav.navigate_to_item` as the missing piece; this is that call.
+
+        BOTTOM-UP (ops/OPENER-REDESIGN.md 5.5, owner-approved 2026-08-12). The enumeration read
+        leaves the card at the BOTTOM of the profile, and navigation walks back UP from there
+        rather than rewinding to the top and walking down again. Two consequences for this
+        method's placement, and both are why it is called where it is:
+
+          * IT MUST RUN BEFORE ANY `_scroll_to_top`, and there is no longer one on this path at
+            all. The old flow's rewind is gone; what is left is the entry frame the read left us
+            on, which is the only frame the entry anchor can be measured against and the only one
+            the identity strip is readable on (`item_identity`: at a scroll top that strip is
+            Hinge's own chrome, byte-identical across two different people).
+          * IT SPENDS `_current_item_anchor`, which lives and dies with the index and the crops.
+            A missing anchor beside a present index is not a state `_invalidate_item_index` can
+            produce, and it is checked anyway: doc 5.3's rule is that a missing table is a hard
+            stop, never a reason to fall back to a fixed coordinate, and half a table is a
+            missing table.
+
+        EVERY REFUSAL BECOMES `HingeTargetingError`, which is what closes doc 9's blocker 4.
+        `item_nav` refuses with a coded `ItemNavigationError`, but three of its dependencies
+        refuse UNCODED and by design -- `ScrollStepError` (a card spacing no permitted gesture
+        can enumerate), `SegmentationError` and `ShiftEstimationError` (the vision layer could
+        not look at all) -- and `IdentityError` joins them. All four are correct hard stops and
+        all four mean the same thing to the operator: the like was not put on the item the opener
+        was written about, so it was not put anywhere. Translating them here rather than at the
+        worker keeps `worker.py` free of Hinge symbols, which is the reason `ItemTargetingError`
+        exists in `base.py`.
+
+        NO `**plan_kwargs` PASS-THROUGH, on `_plan_enumeration_step`'s own precedent and for its
+        reason: `ratio_window` / `max_step_px` / `fallback_spacing_px` are the offline-validation
+        door doc 5.6 flags, a production caller passes none of them, and the way to keep that
+        true is to have nowhere to put them (doc 9, blocker 8).
+        """
+        index = self._current_item_index
+        anchor = self._current_item_anchor
+        if index is None or anchor is None:
+            missing = ("index" if index is None else "entry anchor frame")
+            raise HingeTargetingError(
+                f"{self.spec.app}: the opener targets model item {model_item_index}, but this "
+                f"driver holds no item {missing} for the profile on screen "
+                f"({self._current_items_unavailable or 'it was cleared without a reason'}), so "
+                f"there is no way to count to that item. Nothing was tapped and the like is NOT "
+                f"sent (ops/OPENER-REDESIGN.md 5.3/5.5).",
+                stage="navigate", intended=model_item_index, index_space="model_items")
+        # No pre-capture. `navigate_to_item`'s own first act is a screencap of the entry frame,
+        # and it hands that frame back on every refusal it decides (`ItemNavigationError.frame`)
+        # and the LANDING frame on success -- both of which are the frame a reader of the debug
+        # log actually wants. A `_snap()` here would be a second ADB round-trip for a worse
+        # picture, on every navigation, whether or not debug logging is on.
+        try:
+            target = navigate_to_item(self, index, model_item_index, entry_reference=anchor)
+        except ItemNavigationError as exc:
+            self._dbg_action("navigate_to_item", exc.frame, item=model_item_index,
+                             outcome="stop", reason=exc.code)
+            raise HingeTargetingError(
+                f"{self.spec.app}: could not put the tap on model item {model_item_index}, the "
+                f"item the opener was written about -- {exc} [{exc.code}]. Nothing was tapped "
+                f"and the like is NOT sent; the profile is left where the walk stopped, for "
+                f"debugging. Liking whichever item we could reach instead is never an option "
+                f"(ops/OPENER-REDESIGN.md 5.6).",
+                stage="navigate", intended=model_item_index,
+                index_space="model_items") from exc
+        except (ScrollStepError, SegmentationError, ShiftEstimationError, IdentityError) as exc:
+            self._dbg_action("navigate_to_item", None, item=model_item_index,
+                             outcome="stop", reason=type(exc).__name__)
+            raise HingeTargetingError(
+                f"{self.spec.app}: could not put the tap on model item {model_item_index} -- the "
+                f"navigation pass could not look at the screen at all ({type(exc).__name__}: "
+                f"{exc}). Nothing was tapped and the like is NOT sent "
+                f"(ops/OPENER-REDESIGN.md 5.6).",
+                stage="navigate", intended=model_item_index,
+                index_space="model_items") from exc
+        self._dbg_action("navigate_to_item", target.frame, item=model_item_index,
+                         outcome="located", heart_ordinal=target.heart_ordinal,
+                         point=list(target.point), scrolls=target.scrolls,
+                         climbed_px=target.climbed_px, agreement_px=target.agreement_px,
+                         hearts_counted=target.hearts_counted, reason=target.reason)
+        return target.point
 
     def _verify_like_landed(self, before) -> None:
         """comment_sheet flow only. A like is COMPLETE only when the comment sheet AND any
@@ -2225,79 +3524,413 @@ class AndroidDriver(DatingAppDriver):
         raise HingeActionError("like did not change the screen (missed tap or stuck)")
 
     # --- actions (NORMAL like only — never a paid upgrade) ----------------------
-    def like(self, opener: str | None = None, item_index: int = 0, *,
-             anchored_opener: Callable[[bytes], str | None] | None = None) -> None:
-        if self.spec.like_flow == "comment_sheet":
-            self._like_comment_sheet(opener, item_index, anchored_opener=anchored_opener)
-        else:
-            self._like_direct(opener, item_index, anchored_opener=anchored_opener)
+    def like(self, opener: str | None = None, item_index: int | None = None, *,
+             model_item_index: int | None = None) -> None:
+        # item_index defaults to None ("nobody said which item"), NOT to 0 ("the first captured
+        # frame"). See base.Driver.like and _locate_target_heart: the two are different inputs
+        # and only one of them licenses attaching an opener to what gets tapped.
+        #
+        # model_item_index is the OTHER space and is doc 5.6's input: the 1-based number of the
+        # item in the list the model was actually shown, which this driver holds the crops for in
+        # `_current_item_payload`. When it is given, the sheet that opens is VERIFIED against
+        # that item's stored crop before a character is typed -- see _like_comment_sheet.
+        #
+        # RAISES HingeTargetingError (a HingeActionError AND a base.ItemTargetingError) when the
+        # chosen item cannot be reached or the opened sheet is not showing it. Never a different
+        # item, never a rewritten opener, never a commentless like: doc 5.6's hard stop, which
+        # worker.py catches by the base type and renders as a stop rather than a crash.
+        try:
+            if self.spec.like_flow == "comment_sheet":
+                self._like_comment_sheet(opener, item_index,
+                                         model_item_index=model_item_index)
+            else:
+                self._like_direct(opener, item_index, model_item_index=model_item_index)
+        finally:
+            # The deck has moved on (or an action failed part way through it, which is worse:
+            # nobody knows where the deck is). Either way the item table describes a card that
+            # is no longer the current one, so it is dropped here rather than left to be
+            # overwritten by the next capture -- doc 5.3's invalidation rule, applied at the
+            # other place the profile on screen changes. In `finally` deliberately: an exception
+            # is exactly when a stale table would survive longest.
+            self._invalidate_item_index(
+                "the deck advanced after this like, so anything enumerated for the previous "
+                "profile no longer describes what is on screen")
 
-    def _like_comment_sheet(self, opener: str | None, item_index: int, *,
-                            anchored_opener: Callable[[bytes], str | None] | None = None) -> None:
+    def _verifiable_payload(self, model_item_index: int | None):
+        """The crops doc 5.6 will verify the sheet against, or None when nobody named an item.
+
+        Runs BEFORE the scroll, the heart search and the tap, so every refusal it makes leaves the
+        screen exactly as it was: no gesture, no opened sheet, no like spent. That placement is
+        the point -- an item that cannot be verified after the tap is an item that must not be
+        tapped, and finding out afterwards costs a stop with a sheet open on somebody's card.
+
+        Three refusals, all `HingeTargetingError`, which is the same halt every other
+        "we could not put the like on the chosen item" outcome raises -- worker.py catches it by
+        its `base.ItemTargetingError` half and turns it into a stop with the reason on the hub
+        banner rather than a crash (see _auto_loop's targeting stop):
+
+          * a model item number with no payload behind it. The table's lifetime is one profile and
+            `_invalidate_item_index` records WHY it went, so the reason is quoted rather than
+            replaced -- "the deck advanced" and "this capture could not be indexed" call for very
+            different next moves by the operator;
+          * a number outside 1..N, or a payload that is unusable. `verification_blocker` raises
+            `SheetVerificationError` for both rather than answering, on `ItemPayload.item`'s
+            reasoning (doc 5.6: never substitute a different item);
+          * an item whose stored crop cannot serve as a verification reference at all -- doc 5.4's
+            animated-card class, detected explicitly from the numbers `item_crops` measured for
+            this very profile rather than assumed away by a wider tolerance.
+        """
+        if model_item_index is None:
+            return None
+        payload = self._current_item_payload
+        if payload is None:
+            raise HingeTargetingError(
+                f"{self.spec.app}: the opener targets model item {model_item_index}, but this "
+                f"driver holds no item crops for the profile on screen, so the sheet that opens "
+                f"cannot be checked against the item the opener was written about — "
+                f"{self._current_items_unavailable or 'no reason was recorded'}. Doc 5.3 treats a "
+                f"missing table as a hard stop, never as a reason to fall back to a fixed "
+                f"coordinate, so nothing is tapped and the like is NOT sent.",
+                stage="verify", intended=model_item_index, index_space="model_items")
+        try:
+            blocker = verification_blocker(payload, model_item_index)
+        except SheetVerificationError as exc:
+            raise HingeTargetingError(
+                f"{self.spec.app}: refusing to like model item {model_item_index} — {exc}. "
+                f"Nothing was tapped and the like is NOT sent.",
+                stage="verify", intended=model_item_index, index_space="model_items") from exc
+        if blocker:
+            raise HingeTargetingError(
+                f"{self.spec.app}: refusing to like model item {model_item_index} — {blocker}. "
+                f"Nothing was tapped and the like is NOT sent.",
+                stage="verify", intended=model_item_index, index_space="model_items")
+        return payload
+
+    def _confirm_payload_profile(self, model_item_index: int) -> None:
+        """Is the person on screen still the person the stored crops describe? Or STOP.
+
+        Runs BEFORE the scroll and the tap, on the same terms as `_verifiable_payload`: every
+        refusal leaves the screen exactly as it was. It is the same check, at the same point in
+        the sequence, that `item_nav.navigate_to_item` makes as the first thing it does -- so
+        whoever wires counting navigation inherits this rather than replacing it.
+
+        WHY THE POST-TAP CHECK IS NOT ENOUGH ON ITS OWN, measured rather than reasoned. Doc 5.3
+        argued a stale table was "a reliability bug rather than a safety one" because the stored
+        crops would be stale too and the sheet comparison would fail. It does not always fail: a
+        validation pass drove a stale payload for one profile against a sheet rendering another
+        profile's card through this very method and got a MATCH, a typed opener and a SENT like,
+        10 times in 540 comparisons. `item_verify` is a closed-set test over one payload's items
+        with no absolute ceiling (its "THIS IS A CLOSED-SET TEST" section), so out-of-payload
+        content only has to beat that payload's own internal spacing.
+
+        AND THIS CHECK IS NOT ENOUGH ON ITS OWN EITHER, which is why both run. Over six real
+        profiles the identity band's closest different-person pair measures 2.565 grey levels
+        against a 3.0 bound, i.e. one pair in fifteen would MATCH
+        (`item_identity._IDENTITY_MATCH_MAX_DIST` carries the table). It is a strong REFUSAL
+        mechanism and a weak confirmation one. Two weak-in-the-same-direction guards do not make a
+        strong one, and neither does the pair of them make the invalidation in `_invalidate_item_index`
+        optional -- that is still the guard that actually holds.
+
+        IDENTITY IS NOT READABLE AT A SCROLL TOP, and that is why this is here rather than after
+        the `_scroll_to_top` below: there the strip is Hinge's own filter-chips row, identical for
+        everybody, so there is nothing to tell two people apart. An enumeration read leaves the
+        card scrolled with the sticky header showing, which is exactly where a like starts. If the
+        screen is somewhere else, the answer is "cannot tell" and this stops -- never a pass,
+        because a check that cannot be made must not read as a check that succeeded.
+        """
+        index = self._current_item_index
+        if index is None:
+            # Cannot happen through `_index_captured_items`, which sets the index and the payload
+            # together and clears them together, but it is stated rather than assumed: a payload
+            # whose index went missing is a payload nobody can attribute to a profile.
+            raise HingeTargetingError(
+                f"{self.spec.app}: the opener targets model item {model_item_index} and this "
+                f"driver holds crops for it but no index behind them, so there is no fingerprint "
+                f"to check the profile on screen against. Nothing was tapped and the like is NOT "
+                f"sent.",
+                stage="navigate", intended=model_item_index, index_space="model_items")
+        frame = self._screencap()
+        try:
+            verdict = compare_profile_identity(frame, index.identity,
+                                               identity_band=self.identity_band)
+        except IdentityError as exc:
+            raise HingeTargetingError(
+                f"{self.spec.app}: the profile on screen could not be checked against the one "
+                f"model item {model_item_index}'s crops were cut from ({exc}). Nothing was tapped "
+                f"and the like is NOT sent.",
+                stage="navigate", intended=model_item_index, index_space="model_items") from exc
+        self._dbg_action("confirm_payload_profile", frame, item=model_item_index,
+                         outcome=verdict.state, distance=verdict.distance)
+        if verdict.matched:
+            return
+        raise HingeTargetingError(
+            f"{self.spec.app}: the profile on screen is not the one model item "
+            f"{model_item_index}'s crops were cut from, so the opener would be attached to a "
+            f"card this driver has never seen. Nothing was tapped and the like is NOT sent. "
+            f"{verdict.reason}",
+            stage="navigate", intended=model_item_index, index_space="model_items")
+
+    def _verify_sheet_shows(self, sheet: bytes, payload, model_item_index: int, before) -> None:
+        """Doc 5.6's post-tap check. Returns only when the sheet IS showing item `model_item_index`.
+
+        `sheet` is the screencap taken once `_await_sheet_open` confirmed the comment sheet is up
+        — the picture of the item this comment is about to attach to. The comparison is a
+        deterministic signature match against the crop this driver stored for that item while it
+        enumerated the profile; there is no model call, no judgement and no repair.
+
+        On anything else this raises, which is what makes "verify, then type" a property of the
+        code rather than a convention: the caller's typing lives below this line, so a miss cannot
+        reach it. The screen is deliberately left exactly as it is — sheet open, nothing typed,
+        Send never tapped — matching the rest of this driver's halt behaviour, and the message
+        carries INTENDED and ACTUAL item numbers because those are the two things doc 5.6 asks a
+        stop record to hold.
+
+        `SheetVerificationError` ("could not look": no preview on the frame, undecodable bytes,
+        missing vision extras) becomes the same stop as a mismatch. To a run that is one tap away
+        from typing an opener under an unverified card the two call for the same action, and only
+        the diagnosis differs.
+        """
+        # `before` is the PRE-TAP card and `_dbg_action` captures the screen as it is now, so one
+        # debug entry holds both sides of the tap: what was under the heart and what the sheet
+        # opened on. That pair is the whole diagnosis when a verification stop has to be read back
+        # a day later.
+        try:
+            verdict = verify_sheet_item(sheet, payload, model_item_index)
+        except SheetVerificationError as exc:
+            self._dbg_action("verify_sheet_item", before, item=model_item_index,
+                             outcome="unreadable", reason=str(exc))
+            raise HingeTargetingError(
+                f"{self.spec.app}: the like sheet could not be checked against model item "
+                f"{model_item_index} ({exc}). The opener is NOT typed and the like is NOT sent; "
+                f"the sheet is left open on screen for debugging.",
+                stage="verify", intended=model_item_index, index_space="model_items") from exc
+        self._dbg_action("verify_sheet_item", before, item=model_item_index,
+                         outcome=verdict.state, nearest=verdict.nearest_index,
+                         distance=verdict.distance, bound=verdict.bound,
+                         preview=[verdict.preview.y0, verdict.preview.y1,
+                                  verdict.preview.x0, verdict.preview.x1])
+        if verdict.matched:
+            return
+        # Never send a commentless like, never ship a comment attached to the wrong item, never
+        # rewrite the opener to match whatever we hit (all three are owner rules, and the third is
+        # why there is no anchored re-ask here -- that repair callback was removed outright on
+        # 2026-08-12, see base.Driver.like). Every remaining option violates one of them, so the
+        # run stops with the screen exactly as it is. `intended` and `actual` ride on the
+        # exception as well as in the sentence, because worker.py records them in the stop.
+        raise HingeTargetingError(
+            f"{self.spec.app}: the like sheet is NOT showing the item the opener was written "
+            f"about — intended model item {model_item_index}, actual {verdict.nearest_index} — so "
+            f"the opener is NOT typed and the like is NOT sent. {verdict.reason}",
+            stage="verify", intended=model_item_index, actual=verdict.nearest_index,
+            index_space="model_items")
+
+    # --- doc 5.9's observe-side mismatch guard ---------------------------------------
+    # Same two comparisons `like()` makes, in the same order, on a sheet a HUMAN opened. The
+    # difference is only what a refusal costs: auto stops the run, observe refuses to show text.
+    # There is deliberately no `supports_*` capability flag beside it: the method's PRESENCE is
+    # the capability, worker.py tests exactly that, and a second declaration of the same fact is
+    # one more thing that can drift out of agreement with the first.
+    def observe_item_mismatch(self, sheet: bytes, model_item_index: int) -> str:
+        """"" when the open comment sheet in `sheet` IS showing model item `model_item_index` of
+        the profile this driver enumerated; otherwise the operator-facing reason it is not.
+
+        DOC 5.9's MISMATCH GUARD, and the reason it exists is that the inversion removed a
+        guarantee. While observe generated AFTER the tap, the suggestion was right by
+        construction ("exact by construction (a human tapped it)"). Generating BEFORE the tap
+        means the human may heart a different item than the one the hub named -- and the owner
+        explicitly declined to make that a prompt, a question, or training data. So it is
+        DETECTED and SURFACED and nothing else: the hub replaces the opener with this sentence
+        and offers no text to type. Silence is the one outcome that is not allowed.
+
+        TWO CHECKS, AND EITHER REFUSING MEANS REFUSE. This is not belt-and-braces, it is the
+        only honest reading of the measurements this project has:
+
+          * `compare_profile_identity` answers WHOSE profile the sheet belongs to. Doc 5.9 asks
+            for the deck-advance race to be answered on identity rather than on card pixels, and
+            it can be, on the frame already in hand: the comment sheet does NOT occlude the
+            sticky header (`identity_band` cuts rows 115..226; the sheet's preview starts at row
+            236), measured on six real sheets, every one of which read `confirmed_not_top` and
+            sat 0.000 from its own profile's neighbouring scrolled frames. No extra screencap.
+          * `verify_sheet_item` answers WHICH item of that profile is on the sheet.
+
+          NEITHER IS SUFFICIENT ALONE AND THEY FAIL IN THE SAME DIRECTION. Over six real profiles
+          the identity band's closest two DIFFERENT people measure 2.565 grey levels against a
+          3.0 bound, so an identity MATCH is a strong refusal and a weak confirmation; and
+          `verify_sheet_item` is a CLOSED-SET test with no absolute accept ceiling, measured
+          accepting a foreign card 10 times in 540. "Both passed" is therefore never proof.
+          What this method promises is only the contrapositive -- either one refusing is enough
+          to withhold the text -- which is exactly the promise doc 5.9 needs it to make.
+
+        IT NEVER RAISES AND IT NEVER STOPS THE RUN. Observe is a labelling session; ending it
+        over a cosmetic display failure is the mistake the advisory plumbing already exists to
+        prevent. Every "could not look" -- a missing payload, an unreadable band, no preview on
+        the frame, missing vision extras -- comes back as a REASON, which the hub renders exactly
+        like a mismatch, because to an operator about to type they call for the same action.
+
+        IT NEVER TOUCHES THE TRANSPORT AND IT NEVER LOGS. Both are deliberate: this can be called
+        from the worker's suggestion thread (when the model's answer lands while the sheet is
+        already open) while the worker thread is inside `wait_for_decision` screencapping and
+        writing its own debug records. Pure vision over a frame the caller already holds is the
+        only shape that is safe there -- `DebugLog` appends to one file from one thread by
+        design, and a second writer would interleave records in the artefact a bug report is
+        reconstructed from. The console line the caller prints is this check's record.
+        """
+        payload = self._current_item_payload
+        index = self._current_item_index
+        if payload is None or index is None:
+            return (f"this driver holds no numbered items for the profile on screen, so there is "
+                    f"no way to tell whether the sheet is showing item {model_item_index}: "
+                    f"{self._current_items_unavailable or 'no reason was recorded'}")
+        try:
+            verdict = compare_profile_identity(sheet, index.identity,
+                                               identity_band=self.identity_band)
+        except IdentityError as exc:
+            return (f"the profile on the like sheet could not be checked against the one item "
+                    f"{model_item_index} was cropped from ({exc}), so the suggestion is not "
+                    f"offered")
+        if not verdict.matched:
+            return (f"the like sheet is not on the profile item {model_item_index} was cropped "
+                    f"from, so this suggestion is about a card you are no longer looking at. "
+                    f"{verdict.reason}")
+        try:
+            blocker = verification_blocker(payload, model_item_index)
+            if blocker:
+                return blocker
+            sheet_verdict = verify_sheet_item(sheet, payload, model_item_index)
+        except (SheetVerificationError, ItemCropError) as exc:
+            return (f"the like sheet could not be checked against model item "
+                    f"{model_item_index} ({exc}), so the suggestion is not offered")
+        if sheet_verdict.matched:
+            return ""
+        actual = ("nothing this profile was indexed with" if sheet_verdict.nearest_index is None
+                  else f"item {sheet_verdict.nearest_index}")
+        return (f"you opened {actual}, but this suggestion was written about item "
+                f"{model_item_index}. {sheet_verdict.reason}")
+
+    def _like_comment_sheet(self, opener: str | None, item_index: int | None, *,
+                            model_item_index: int | None = None) -> None:
         """Hinge's flow: heart -> comment/"Send Like" sheet opens -> optionally type the
         opener into the comment box (Signals #2: the opener is sent WITH the like) -> tap
         Send -> handle a paid-upsell interstitial (never tap the paid option) -> verify.
 
-        `anchored_opener`, when given, is the repair path for a targeting miss. On Hinge a
-        like's comment is attached to ONE specific photo or prompt — every photo AND every
-        prompt card has its own heart — and the opener writer picks which item it's about
-        before this method ever runs. `_locate_target_heart` usually lands the tap on that
-        exact item, but when it can't (see its `on_target` return value) the tap falls back
-        to the first photo instead, and the comment sheet that just opened is now anchored to
-        a DIFFERENT item than the one the opener text describes — an obviously out-of-place
-        message (a beach-photo opener landing under a dining-table photo) shipped with full
-        confidence. `anchored_opener` is called with a screencap of the open sheet itself
-        (which visually shows the item the comment will attach to) and returns replacement
-        opener text grounded in what that screencap actually shows, so the message that gets
-        typed matches the item the heart tap actually landed on."""
-        self._scroll_to_top()
-        time.sleep(human_delay(0.4))
-        heart, on_target = self._locate_target_heart(item_index)  # heart of the photo the opener is about
+        NOTHING HERE EVER SUBSTITUTES AN ITEM, AND THERE IS NO LONGER A REPAIR PATH THAT COULD.
+        Doc 5.6, standing owner rule: "no falling back to `hearts[0]`, no 'closest reachable
+        item', no rewriting the opener to match whatever we hit". Until 2026-08-12 an
+        `anchored_opener` callback sat below the tap and re-asked the model for text about
+        whichever item the sheet had actually opened on; it is removed, because repairing the TEXT
+        does not undo spending the LIKE on an item the model never chose. What is left is: reach
+        the chosen item or stop (`_locate_target_heart`), and -- when we hold crops for it --
+        prove the sheet is showing it or stop (`_verify_sheet_shows`).
+
+        TWO TARGETING CONTRACTS LIVE HERE, AND `model_item_index` PICKS BETWEEN THEM.
+
+        Given a `model_item_index`, doc 5.6's POST-TAP CHECK is in force and is the only thing
+        that licenses typing: the sheet that opens is matched, deterministically and without a
+        model call, against this profile's stored crop of that item (`item_verify`), and a miss
+        is a hard stop with nothing typed and the sheet left open. The check that used to stand
+        here was a PRE-tap screen comparison which `_locate_target_heart` still admits "can land
+        the tap on the neighbour" when one frame shows two items; a post-tap CONTENT check is the
+        thing that was actually missing.
+
+        Whether item `model_item_index` can be verified at all is settled BEFORE anything is
+        touched, by `verification_blocker` -- an animated card whose own frame-to-frame drift
+        exceeds half its distance to its neighbours has a stored crop that cannot serve as a
+        reference, and doc 5.4 asks for that to be detected explicitly rather than papered over
+        with a tolerance band wide enough to accept a different item.
+
+        AND SO IS WHOSE PROFILE THIS IS, by `_confirm_payload_profile`, which runs before any
+        gesture because the identity strip is only readable while the card is scrolled -- which,
+        with bottom-up navigation, is exactly where the profile read leaves it. The order is
+        deliberate and is the order `item_nav.navigate_to_item` uses too: whose profile, then can
+        this item be checked at all, then -- after the tap -- which item. The post-tap check does
+        NOT subsume the first of those; it was measured accepting another profile's card outright
+        (see that method's docstring for the 10-of-540).
+
+        HOW THE TAP POINT IS REACHED DEPENDS ON WHICH SPACE NAMED THE ITEM, and the two do not
+        mix. A `model_item_index` with no capture-order index beside it is doc 5.5's counting
+        navigation: `_navigate_to_model_item` walks UP from where the read left the card, counting
+        hearts in reverse against the driver-owned index, and returns the chosen item's heart or
+        raises. Anything else is the legacy capture-order path (`_scroll_to_top` then
+        `_locate_target_heart`), unchanged, including the residual it states about a frame showing
+        two items at once.
+
+        AN OPENER WITH NO ITEM AT ALL IS REFUSED HERE, BEFORE ANY GESTURE. `item_index is None`
+        means nobody said which item; combined with text to type it is the "confident wrong send"
+        doc 5.3 forbids, so it stops with the screen untouched. Without an opener the same None is
+        perfectly legal (Hinge with `opener.enabled: false` sends a plain like), and nothing is
+        substituted because nothing was chosen."""
+        if opener and item_index is None and model_item_index is None:
+            # Not reachable from worker.py -- `_auto_loop` stops on an untranslatable pick before
+            # it calls the driver at all -- and deliberately guarded anyway: `like()` is a public
+            # driver method, and this is the one input combination that would otherwise attach
+            # real text to whatever heart happened to be topmost. Refused before the scroll, so
+            # the screen is exactly as the caller left it.
+            raise HingeTargetingError(
+                f"{self.spec.app}: an opener was supplied but no item index was supplied at all, "
+                f"so there is no way to know which photo or prompt the comment would attach to. "
+                f"Nothing was tapped and the like is NOT sent; attaching it to the first item "
+                f"instead is never an option (ops/OPENER-REDESIGN.md 5.3/5.6).",
+                stage="navigate", intended=None, index_space="capture_order")
+        payload = self._verifiable_payload(model_item_index)   # raises before anything is touched
+        if payload is not None:
+            # Whose profile is this, before a finger moves and while the sticky header is still
+            # readable. See _confirm_payload_profile for why the post-tap crop check does not
+            # cover this and why this does not cover the post-tap crop check.
+            #
+            # KEPT even though `item_nav.navigate_to_item` opens with the very same comparison.
+            # The duplication is one band decode and it is the only identity gate on this path if
+            # `like()` is ever called with a model item number by something that is not the
+            # counting-navigation branch below -- `like()` is a public driver method, and the two
+            # guards fail in the SAME direction on the same input (doc 5.6's addendum measures
+            # the closest two different people at 2.565 grey levels against a 3.0 bound), so
+            # neither may be dropped on the grounds that the other exists.
+            self._confirm_payload_profile(model_item_index)
+        if model_item_index is not None and item_index is None:
+            # DOC 5.5'S COUNTING NAVIGATION, AND THIS IS WHERE THE HANDOVER LANDED. Until
+            # 2026-08-12 this branch was a hard stop naming `item_nav.navigate_to_item` as the
+            # missing piece; it is now that call, and the shape it refused is the shape that
+            # runs.
+            #
+            # NO `_scroll_to_top` ON THIS PATH, deliberately, and that is the change rather than
+            # an omission (ops/OPENER-REDESIGN.md 5.5, bottom-up navigation, owner-approved).
+            # The enumeration read leaves the card at the bottom of the profile; navigation walks
+            # back UP from there under continuous shift tracking, cross-checked by counting
+            # hearts in reverse against the index. Rewinding first would throw away the one
+            # anchor that is MEASURED rather than replayed, would put the identity strip on a
+            # screen where it carries no identity at all, and would cost ~51 gestures to arrive
+            # somewhere the read had already been.
+            heart = self._navigate_to_model_item(model_item_index)
+        else:
+            # The legacy capture-order path, byte-for-byte what it was: `item_index=0` beside a
+            # model item number still means "the topmost heart at the scroll top", which is a
+            # real aimed target rather than a default, and an opener with no item at all was
+            # already refused above.
+            self._scroll_to_top()
+            time.sleep(human_delay(0.4))
+            # Raises HingeTargetingError rather than returning a different item's heart. Anything
+            # below this line is therefore working with the heart of the item the opener is about
+            # -- as far as the capture-order space can tell, see that method's stated residual.
+            heart = self._locate_target_heart(item_index)
         before = self._snap()                         # baseline AFTER navigation: the pre-tap card
         self._tap(*heart)                             # opens the comment / "Send Like" sheet
         time.sleep(human_cooldown(0.8))               # sheet animates in; you read/think
         self._await_sheet_open()                      # gate: the fixed taps below are only
                                                        # valid while the sheet is actually up
-        anchor = self._screencap()          # the like screen: shows the item this comment attaches to
-        reasked = False
-        # Re-ask ONLY when targeting missed (`not on_target`) — never unconditionally, even
-        # though `anchored_opener` is available on every call. Each re-ask is a SECOND billed
-        # provider request against a free tier whose per-minute cap can be as low as 5 (see
-        # the Gemini opener migration notes); when targeting succeeded, the sheet is already
-        # anchored to the very item the opener was written about, so a second call would buy
-        # nothing but spend budget the run may not have. Residual, deliberately-accepted risk,
-        # stated honestly rather than papered over: `_locate_target_heart` takes the TOPMOST
-        # heart on the matched frame, so a scroll position that shows two items in one frame
-        # (a photo AND a prompt, say) can still land the tap on the neighbour even when
-        # on_target reports True — that miss is invisible to this check. Observe mode reads
-        # the real like screen and is exact by construction (a human tapped it); auto mode is
-        # best-effort here.
-        if opener and not on_target and anchored_opener is not None:
-            replacement = anchored_opener(anchor)
-            if not replacement or not str(replacement).strip():
-                # Never send a commentless like, and never silently ship a comment attached to
-                # the wrong photo/prompt (both owner rules). Heart targeting already fell back
-                # to the first item, so the opener written about item item_index no longer
-                # matches what the comment is about to attach to — and the replacement request
-                # that was supposed to fix that produced nothing usable either. The only choice
-                # left that doesn't violate one of those two rules is to not send the like at
-                # all. The sheet is intentionally left open on screen for debugging, consistent
-                # with the rest of this driver's halt behaviour (see HingeActionError).
-                raise HingeActionError(
-                    f"{self.spec.app}: heart targeting fell back to the first item, so the "
-                    f"opener written about item {item_index} no longer matches what the "
-                    f"comment attaches to, and the replacement (anchored) opener request "
-                    f"produced no usable opener — so the like is deliberately NOT sent. Never "
-                    f"send a commentless like; never silently ship one attached to the wrong "
-                    f"photo/prompt. The sheet is left open on screen for debugging."
-                )
-            opener = str(replacement)
-            reasked = True
+        sheet = self._screencap()           # the like screen: shows the item this comment attaches to
+        # DOC 5.6'S POST-TAP CHECK, AND IT IS THE FIRST THING THAT LOOKS AT THE OPEN SHEET.
+        # Placed above every branch that can type: the ordering IS the guarantee ("verify, then
+        # type"), and there is no path from here to `self.adb.text(...)` that does not pass
+        # through `verdict.matched`. `_verify_sheet_shows` raises on anything but a match.
+        if payload is not None:
+            self._verify_sheet_shows(sheet, payload, model_item_index, before)
         if self._dbg is not None:
             # Best-effort, never raising (DebugLog.action swallows its own I/O failures) — a
             # broken debug log must never take down a like that would otherwise send cleanly.
-            self._dbg.action("like_anchor", before=anchor, item_index=item_index,
-                             on_target=on_target, reasked=reasked)
+            # Kept after the anchor mechanism itself went away: this frame is a picture of the
+            # item a real comment is about to attach to, and doc 5.6's addendum records the
+            # observe-side twin of it as the only corpus of open like sheets anyone has.
+            self._dbg.action("like_anchor", before=sheet, item_index=item_index,
+                             model_item_index=model_item_index, verified=payload is not None)
         if opener:
             self._tap_frac(self.coords["comment_box"])
             time.sleep(human_delay(0.5))
@@ -2306,8 +3939,9 @@ class AndroidDriver(DatingAppDriver):
         self._tap_frac(self.coords["send_like"])
         time.sleep(human_cooldown(0.6))               # let the send register / upsell modal animate in
         rose = self._handle_rose_upsell()             # paid-upsell interstitial: dismiss, NEVER pay
-        self._dbg_action("like", before, heart=list(heart), opener_chars=len(opener or ""), rose_modal=rose,
-                         on_target=on_target, anchor_reask=reasked)
+        self._dbg_action("like", before, heart=list(heart), opener_chars=len(opener or ""),
+                         rose_modal=rose, item_index=item_index,
+                         model_item_index=model_item_index, verified=payload is not None)
         self._verify_like_landed(before)
 
     def _deliver_decision(self, decision: str):
@@ -2331,15 +3965,20 @@ class AndroidDriver(DatingAppDriver):
         self._tap(*point)
         return point
 
-    def _like_direct(self, opener: str | None, item_index: int, *,
-                     anchored_opener: Callable[[bytes], str | None] | None = None) -> None:
+    def _like_direct(self, opener: str | None, item_index: int | None, *,
+                     model_item_index: int | None = None) -> None:
         """Bumble's flow: one like, no comment sheet, no per-item targeting.
-        `opener`/`item_index`/`anchored_opener` are accepted only for interface parity with
-        the comment_sheet flow and are otherwise unused — accepts_opener is False for every
-        spec using this flow (Bumble is match-first-then-message, so there is no swipe-time
-        opener to attach), so worker.py never actually passes a real `opener` here, and there
-        is no comment sheet here to screenshot in the first place, so `anchored_opener` has
-        nothing to anchor a replacement opener against even if it were called."""
+        `model_item_index` joins the list of parameters accepted for parity and ignored: doc
+        5.6's post-tap check verifies the COMMENT SHEET against a stored crop, and this flow has
+        no sheet — `_item_enumeration_blocker` refuses to enumerate for an app that cannot attach
+        an opener at swipe time, so there are no crops to verify against either.
+        `opener`/`item_index` are accepted only for interface parity with the comment_sheet flow
+        and are otherwise unused — accepts_opener is False for every spec using this flow (Bumble
+        is match-first-then-message, so there is no swipe-time opener to attach), so worker.py
+        never actually passes a real `opener` here.
+
+        Consequently this flow can never raise HingeTargetingError: there is no per-item target to
+        miss, so the never-substitute rule has nothing to protect here."""
         before = self._snap()
         like_btn = self._deliver_decision("like")
         time.sleep(human_cooldown(0.6))                # let it register / an upsell modal animate in
@@ -2350,10 +3989,17 @@ class AndroidDriver(DatingAppDriver):
 
     def dislike(self) -> None:
         before = self._snap()                         # snapped immediately before acting (no scroll between)
-        x = self._deliver_decision("pass")            # vision-located X, or a card drag per spec
-        self._dbg_action("dislike", before, x=list(x) if x else None,
-                         gesture=self.spec.decide_gesture)
-        self._verify_progress(before, "dislike")
+        try:
+            x = self._deliver_decision("pass")        # vision-located X, or a card drag per spec
+            self._dbg_action("dislike", before, x=list(x) if x else None,
+                             gesture=self.spec.decide_gesture)
+            self._verify_progress(before, "dislike")
+        finally:
+            # Same rule as like(): the card on screen is no longer the card that was enumerated.
+            # See _invalidate_item_index and doc 5.3.
+            self._invalidate_item_index(
+                "the deck advanced after this pass, so anything enumerated for the previous "
+                "profile no longer describes what is on screen")
 
     # --- observe mode: identity anchor + gesture corroboration ---------
     # See the module docstring's redesign notes and HINGE_SPEC's identity_band/content_band/
@@ -2370,7 +4016,7 @@ class AndroidDriver(DatingAppDriver):
     _OCR_BAND_CACHE_MISS = object()
 
     def _ocr_band(self, frame: bytes, rect: tuple[float, float, float, float], *,
-                  psm: str = "7") -> str | None:
+                  psm: str = "7", white_text_threshold: int | None = None) -> str | None:
         """Best-effort OCR of `rect` via the host's `tesseract` binary (MEASURED reliable
         recipe on the Pixel 7a 2026-08-10: crop tightly -- a wider crop that includes photo
         content makes tesseract's page segmentation fail -- upscale 3x LANCZOS, `tesseract
@@ -2412,13 +4058,28 @@ class AndroidDriver(DatingAppDriver):
         `(rect, psm, frame bytes)` always yields whatever the first real OCR of that input
         produced (including a cached `None` miss), and any input not seen before takes the
         exact same path as before this cache existed.
+
+        `white_text_threshold` is OFF by default (None), and both pre-existing call sites leave
+        it that way, so their behaviour -- and their cache entries -- are identical to before it
+        existed. When set, the crop is binarized at that luminance (pixels ABOVE it are taken to
+        be the text) and INVERTED before the upscale, i.e. tesseract is handed black text on a
+        white background. This exists for one MEASURED reason: the recipe above assumes DARK
+        text on FLAT chrome, which is exactly what identity_band and identity_top_name_band are,
+        and it fails outright on WHITE text over a PHOTOGRAPH. On Hinge's out-of-free-likes
+        paywall headline (2026-08-11, ops/calibration/hinge_out_of_likes_20260811.png) the plain
+        recipe returns garbage -- MEASURED, literally "“Tikes for today" -- while
+        binarize-and-invert at 180, 200 or 215 all return the exact headline, "You're out of
+        free likes for today". Rather than duplicating this method's tesseract/cache/timeout
+        plumbing in a second OCR helper, the one genuinely different STEP is a parameter; it is
+        part of the cache key below, so a preprocessed read can never be served out of a plain
+        read of the same frame (or vice versa).
         """
         if not self.observe_name_ocr:
             return None
         tesseract = shutil.which("tesseract")
         if tesseract is None:
             return None
-        cache_key = (rect, psm, hashlib.sha1(frame).digest())
+        cache_key = (rect, psm, white_text_threshold, hashlib.sha1(frame).digest())
         cached = self._ocr_band_cache.get(cache_key, self._OCR_BAND_CACHE_MISS)
         if cached is not self._OCR_BAND_CACHE_MISS:
             return cached
@@ -2430,6 +4091,13 @@ class AndroidDriver(DatingAppDriver):
             w, h = im.size
             x0, y0, x1, y1 = rect
             crop = im.crop((round(x0 * w), round(y0 * h), round(x1 * w), round(y1 * h)))
+            if white_text_threshold is not None:
+                # Binarize AND invert in one pass: a pixel brighter than the threshold is text
+                # and becomes black (0), everything else becomes white (255). Done BEFORE the
+                # upscale, which is the order the recipe was measured in -- LANCZOS on the
+                # already-binary image keeps the glyph edges clean, while binarizing after an
+                # interpolating resize would threshold the interpolated halo instead.
+                crop = crop.point(lambda p: 0 if p > white_text_threshold else 255)
             crop = crop.resize((max(1, crop.width * 3), max(1, crop.height * 3)), Image.LANCZOS)
             buf = BytesIO()
             crop.save(buf, format="PNG")
@@ -2915,6 +4583,73 @@ class AndroidDriver(DatingAppDriver):
             # class of event it sits next to.
             self._dbg_action("observe_bottom_delta", base, **fields)
 
+    def _observe_recognized(self) -> None:
+        """Mark the frame just classified as POSITIVELY RECOGNIZED, re-arming the stuck-screen
+        watchdog with a FRESH budget draw (see _OBSERVE_STUCK_S, _observe_stuck_budget, and
+        _observe_stuck_bail).
+
+        Called from every branch of the observe loops that can say what it is looking at: the
+        like sheet is open, identity says this is still the captured profile, layer 2 matched a
+        scroll, the deck is confirmed ready, or the like flow resolved onto a known screen.
+        Deliberately NOT called from the branches that only know what the screen ISN'T -- those
+        are the ones the budget is counting."""
+        self._observe_last_recognized = time.monotonic()
+        self._observe_stuck_budget_s = _observe_stuck_budget()
+
+    def _observe_stuck_bail(self, frame: bytes) -> str | None:
+        """Has observe mode been staring at a screen it cannot recognize for longer than this
+        arm's drawn budget (self._observe_stuck_budget_s, floored at _OBSERVE_STUCK_S -- see
+        _observe_stuck_budget)? Returns the operator-facing reason (having recorded and printed
+        it) when the caller must give up, or None to keep watching.
+
+        This is the bail-out that did not exist on 2026-08-11: worker.py calls
+        wait_for_decision(timeout=None), so every "keep watching" branch of both observe loops
+        was, before this, unbounded for ANY screen the driver could not classify. When Hinge
+        replaced the deck with its out-of-free-likes paywall the run polled for 2.5 minutes and
+        only stopped because the owner pressed Stop by hand.
+
+        The reason is the SPECIFIC one when the paywall is recognisable, and otherwise a generic
+        one that is careful to claim only what is actually true -- that a screen has been up for
+        the ACTUAL elapsed time and could not be classified -- because the whole class of failure
+        this guards is "something nobody has seen before is on screen", and a message that
+        guessed at which thing would be wrong exactly when it matters most.
+
+        Both the debug record and the print exist because they answer different questions later:
+        the record carries the FRAME (what was actually on screen, the single most useful thing
+        in a bug report about an unrecognised screen), and the print is what the operator sees
+        live -- the hub tees stdout into its log panel. The action NAME distinguishes the two
+        cases so `actions.jsonl` can be grepped for either.
+        """
+        if not self._observe_last_recognized:
+            # Never armed -- something reached an observe wait without going through
+            # wait_for_decision (a calibration tool, a test exercising _await_like_resolved
+            # directly). Arm it here instead of reading "has recognized nothing since the epoch"
+            # as "stuck": a watchdog whose unarmed state is 'already expired' would stop a run
+            # the instant any path that forgot to arm it was taken, which is exactly backwards.
+            # The safe failure for a guard like this is to keep watching.
+            self._observe_last_recognized = time.monotonic()
+            self._observe_stuck_budget_s = _observe_stuck_budget()
+            return None
+        stuck_s = time.monotonic() - self._observe_last_recognized
+        if stuck_s <= self._observe_stuck_budget_s:
+            return None
+        paywall_reason = self._deck_blocked_reason(frame)
+        # No trailing full stop, matching _deck_blocked_reason's two strings: these are published
+        # verbatim as the hub's stop_reason, and the sentence they are embedded in supplies its
+        # own punctuation (below, and in the hub).
+        reason = paywall_reason or (
+            f"{self.spec.app} has been showing a screen I can't recognize for "
+            f"{format_duration(stuck_s)} — stopping so nothing is mislabelled; the phone "
+            f"is untouched, check what's on screen"
+        )
+        self._blocked_reason = reason
+        self._dbg_action("observe_blocked" if paywall_reason else "observe_stuck", frame,
+                         reason=reason, stuck_s=round(stuck_s, 1))
+        print(f"{self.spec.app}: STOPPING — {reason}. Nothing was recorded for this card: "
+              f"whatever you last tapped, this driver never saw it complete, so recording a "
+              f"decision here would be inventing one. The phone has not been touched.")
+        return reason
+
     # --- observe mode (shadow learning) --------------------------------
     def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None,
                           on_like_intent=None) -> bool | None:
@@ -2928,8 +4663,11 @@ class AndroidDriver(DatingAppDriver):
           PASS — the whole card advances to a DIFFERENT, deck-ready, SETTLED profile,
                  positively proven by the identity anchor and/or content match below
                  (never by "changed and unrecognised" alone) -> False.
-          none — stop requested, deck empty, timeout, or a card change with no positive
-                 decide evidence (a resync -- see _observe_gesture_verdict) -> None.
+          none — stop requested, deck empty, timeout, a card change with no positive
+                 decide evidence (a resync -- see _observe_gesture_verdict), or the
+                 stuck-screen watchdog giving up on a screen it cannot recognize
+                 (see _observe_stuck_bail, which also leaves an operator-facing reason
+                 in self._blocked_reason for worker.py to publish) -> None.
 
         ⚠️ LIVE-VERIFY: the like-sheet geometry is gated until the profile is
         finished, so the top/bottom thresholds must be confirmed on-device before
@@ -2953,6 +4691,17 @@ class AndroidDriver(DatingAppDriver):
         # suppressed as a repeat of whatever the previous profile happened to end on.
         self._observe_last_notice = time.monotonic()
         self._observe_last_reason = None
+        # Stuck-screen watchdog, armed here for the same reason and in the same place as the
+        # notice anchor above: one call = one profile's wait, so the budget is per-profile and
+        # never leaks across profiles. A FRESH budget is drawn here too (see
+        # _observe_stuck_budget) rather than reusing whatever the previous profile's wait last
+        # drew. Every branch below that can say WHAT it is looking at calls _observe_recognized()
+        # to re-arm it, which draws its own fresh budget in turn; the branches that only know
+        # what the screen is not are exactly the ones it counts. See _OBSERVE_STUCK_S.
+        self._observe_last_recognized = time.monotonic()
+        self._observe_stuck_budget_s = _observe_stuck_budget()
+        self._observe_stuck_probe_at = self._observe_last_recognized
+        self._observe_stuck_probe_interval_s = human_delay(_OBSERVE_STUCK_CHECK_S)
         while deadline is None or time.monotonic() < deadline:
             if should_stop and should_stop():
                 return None
@@ -2960,6 +4709,17 @@ class AndroidDriver(DatingAppDriver):
             if cur is None:                           # screen asleep: the owner stepped away.
                 time.sleep(_OBSERVE_POLL_S)           # keep watching — do NOT diff a black frame
                 continue                              # against `base` (that reads as a phantom pass)
+
+            # Checked here, at the top of the poll, against everything the PREVIOUS polls
+            # concluded -- so it fires only after this arm's drawn budget (floored at
+            # _OBSERVE_STUCK_S -- see _observe_stuck_budget) of unbroken failure to recognize the
+            # screen, whichever branches those polls took.
+            # Returns None, never True/False: the whole point is that nothing on screen was
+            # understood, and None is worker.py's "record nothing". A LIKE label here would be
+            # fabricated -- in the incident this fixes, the like the owner tried to send was
+            # REFUSED by Hinge and never went out.
+            if self._observe_stuck_bail(cur) is not None:
+                return None
 
             # Check the actual compose sheet BEFORE interpreting aggregate screen deltas.
             # Opening the keyboard can change both halves at once, which the generic branch
@@ -2973,6 +4733,7 @@ class AndroidDriver(DatingAppDriver):
                 # already contains both the item the comment attaches to AND the composer
                 # itself. Re-capturing here would add ADB latency and an animation-timing
                 # race for zero gain over what's already in hand.
+                self._observe_recognized()            # an open like sheet is a screen we know
                 self._notify_observe_like_intent(on_like_intent, True, cur)
                 sent, intent_notified = self._await_like_resolved(
                     base, deadline, should_stop, on_like_intent=on_like_intent,
@@ -2993,6 +4754,27 @@ class AndroidDriver(DatingAppDriver):
                 continue
             top, bot = _split_diff(base, cur)
             if top < self.change_threshold and bot < self.change_threshold:
+                # THE SUBTLE CASE for the watchdog. This fast path returns BEFORE any
+                # classification runs, so a STATIC unrecognised screen -- which is exactly what
+                # the paywall is, nothing on it moves -- produces `no_change` forever and looks
+                # identical to a human sitting still and thinking. Both must be handled, and
+                # they pull in opposite directions: a human deliberating on a real deck may take
+                # as long as they like (in the incident run the owner spent 01:22:33 -> 01:27:14
+                # on ONE profile, nearly five minutes, which is normal use and must never be
+                # interrupted), while a screen that isn't the deck at all must not be waited on
+                # forever. So the timer is NOT re-armed unconditionally here: instead, at most
+                # once every drawn probe interval (anchored at _OBSERVE_STUCK_CHECK_S and
+                # humanized the same uniform way as the stuck budget itself -- see
+                # _OBSERVE_STUCK_S's comment; this costs two template matches roughly per 5s, not
+                # per 0.35s poll), ask whether a real deck is actually underneath. Deck ready ->
+                # the human is deliberating, re-arm. Not ready -> leave the budget running and
+                # draw the next interval.
+                now = time.monotonic()
+                if now - self._observe_stuck_probe_at >= self._observe_stuck_probe_interval_s:
+                    self._observe_stuck_probe_at = now
+                    self._observe_stuck_probe_interval_s = human_delay(_OBSERVE_STUCK_CHECK_S)
+                    if self._observe_deck_ready(cur):
+                        self._observe_recognized()
                 self._note_observe_waiting("no_change", cur)
                 time.sleep(_OBSERVE_POLL_S)
                 continue
@@ -3053,6 +4835,7 @@ class AndroidDriver(DatingAppDriver):
             )
             if identity_state == "same":
                 base = cur                            # scroll within the SAME profile -> keep waiting
+                self._observe_recognized()            # identity named this card: recognised
                 self._note_observe_waiting("same", cur)
                 time.sleep(_OBSERVE_POLL_S)
                 continue
@@ -3103,6 +4886,7 @@ class AndroidDriver(DatingAppDriver):
                                      identity=identity_state, min_sig_dist=round(min_dist, 2),
                                      sig_index=min_idx, name_read=self._identity_top_name_read)
                     base = cur                        # it's a scroll -> keep waiting
+                    self._observe_recognized()        # layer 2 recognised this frame
                     self._note_observe_waiting("scroll", cur)
                     time.sleep(_OBSERVE_POLL_S)
                     continue
@@ -3129,6 +4913,7 @@ class AndroidDriver(DatingAppDriver):
                                      sig_index=sig_index, shift=shift, overlap_rows=overlap_rows,
                                      band_rows=band_rows, name_read=self._identity_top_name_read)
                     base = cur                        # it's a scroll -> keep waiting
+                    self._observe_recognized()        # layer 2 recognised this frame
                     self._note_observe_waiting("scroll", cur)
                     time.sleep(_OBSERVE_POLL_S)
                     continue
@@ -3148,6 +4933,12 @@ class AndroidDriver(DatingAppDriver):
                 self._note_observe_waiting("not_deck_ready", cur)
                 time.sleep(_OBSERVE_POLL_S)
                 continue
+            # Falling through means the deck's own controls are BOTH visibly on screen: whatever
+            # this card turns out to be, we are demonstrably still looking at Hinge's deck and
+            # not at some screen nobody has seen before. That is a positive recognition, and it
+            # is what keeps the settle/confirm loop below (which can legitimately re-poll for a
+            # while on an animating deck) from ever being counted as a stuck screen.
+            self._observe_recognized()
 
             time.sleep(0.5)
             confirm = self._screencap(on_blank="none")
@@ -3222,12 +5013,25 @@ class AndroidDriver(DatingAppDriver):
         a suggestion fails, the human can still write their own message or dismiss
         the sheet, so observation must continue normally.
 
-        `anchor` is a screencap of the like sheet as it is open on screen — the same
-        "which item does this comment attach to" picture `_like_comment_sheet`'s
-        `anchored_opener` repair path uses in auto mode, surfaced here so observe mode's
-        suggestion can be grounded in the real item too instead of guessing. None when
-        clearing (`active=False`) — there is nothing left on screen to anchor a picture
-        of once the sheet has closed.
+        `anchor` is a screencap of the like sheet as it is open on screen — the "which item does
+        this comment attach to" picture. None when clearing (`active=False`) — there is nothing
+        left on screen to take a picture of once the sheet has closed.
+
+        WHAT THIS FRAME IS FOR CHANGED WITH DOC 5.9's INVERSION, AND THE PARAMETER DELIBERATELY
+        DID NOT. It used to be the model's INPUT: observe generated after the tap, and the frame
+        told the model which item the human had chosen. Observe now generates BEFORE the tap,
+        from the same numbered crops auto sends, so the model is not told anything by this frame
+        at all. It is now the EVIDENCE the worker checks the human's tap against
+        (`observe_item_mismatch`): the item the human opened, compared against the item the
+        suggestion was written for, with a warning and no text to type on a mismatch. Same frame,
+        same call site, same one-shot notification — the receiver's job is what inverted.
+
+        The frame is passed rather than re-captured for the reason it always was: `cur` has
+        ALREADY proved the Send Like glyph is visible, the sheet slides up over the BOTTOM while
+        the liked item stays up top, and `identity_band` (rows 115..226) sits above the sheet's
+        preview (row 236), so this one full-screen frame carries the item, the composer AND the
+        sticky header the identity check reads. A second screencap would add ADB latency and an
+        animation-timing race for nothing.
 
         Instance method rather than the `@staticmethod` this used to be, so it can reach
         `self._dbg` for the best-effort anchor log below.
@@ -3296,21 +5100,41 @@ class AndroidDriver(DatingAppDriver):
     def _observe_glyph_visible(self, frame: bytes, role: str, *, side: str) -> bool:
         """Passive control detection, accepting either UI contrast polarity.
 
-        The stored heart template is a dark glyph, while the live Hinge deck can render the
-        same outline white inside a black circle.  Autonomous actions intentionally retain
-        `_match_glyph`'s calibrated, single-polarity matcher: broadening it would turn this
-        perception-only readiness check into a new tap target.  Here we only need evidence
-        that a future deck has loaded, so testing the contrast-inverted template is safe.
+        This inverted-template fallback was written against the OLD "like" template
+        (hinge_heart.png, a dark outline glyph) to catch the live deck's real button, which
+        actually renders the opposite polarity (a white heart in a filled black circle) --
+        see the templates dict comment on HINGE_SPEC and _LIKE_MATCH_THRESHOLD above for the
+        full story. hinge_like_button.png (the CORRECT "like" template, now wired in) is
+        already cropped at that same live polarity, so it no longer needs inverting -- and
+        MUST NOT be inverted: bitwise-NOT of a white-heart-on-black-circle glyph reproduces
+        Hinge's OUTLINE heart almost exactly (measured correlation ~1.0 against the "Which do
+        we have in common" row hearts, the same false-positive the new template was built to
+        avoid — see the templates dict comment). Testing the inverted template for "like"
+        would therefore silently resurrect that exact bug for this perception-only path, so
+        role == "like" skips it entirely and relies solely on the primary (uninverted) match,
+        which measurement showed is already reliable (0.815..1.000 across 115 real frames).
+        "pass" is unaffected -- its own template/polarity wasn't touched by this recalibration,
+        so it keeps the original both-polarities behaviour.  Autonomous ACTIONS intentionally
+        keep `_match_glyph`'s calibrated, single-polarity matcher regardless of role:
+        broadening it would turn this perception-only readiness check into a new tap target.
+        Here we only need evidence that a future deck has loaded.
         """
         template = self._template(role)
-        if _match_glyph(frame, template, side=side, threshold=0.6):
+        threshold = _LIKE_MATCH_THRESHOLD if role == "like" else 0.6
+        # y_band (content_band) is "like"-only, same rationale as _locate_button/
+        # _locate_target_heart: the floating pass-X can legitimately sit outside content_band,
+        # so "pass" gets no y_band restriction here either.
+        y_band = self.content_band if role == "like" else None
+        if _match_glyph(frame, template, side=side, threshold=threshold, y_band=y_band):
             return True
+        if role == "like":
+            return False
         try:
             import numpy as np
             inverted = np.bitwise_not(template)
         except Exception:  # noqa: BLE001 — no usable template means no proof of a deck
             return False
-        return bool(_match_glyph(frame, inverted, side=side, threshold=0.6))
+        return bool(_match_glyph(frame, inverted, side=side, threshold=threshold))
 
     def _await_like_resolved(self, base: bytes, deadline, should_stop,
                              *, on_like_intent=None,
@@ -3322,6 +5146,13 @@ class AndroidDriver(DatingAppDriver):
         Once the sheet glyph is gone, a *stable, visibly ready* new deck card is a sent
         like; closing the sheet onto Hinge's transient sending UI is deliberately neither.
         The base card (or another captured frame of the current profile) is a dismissal.
+
+        This loop shares wait_for_decision's stuck-screen budget (self._observe_stuck_budget_s,
+        floored at _OBSERVE_STUCK_S -- see _observe_stuck_budget), armed once per profile-wait by
+        that method and re-armed with a fresh draw by every _observe_recognized() call, with a
+        deliberate ASYMMETRY between its two waiting states -- see the `like_sheet` and
+        `like_sending` branches below. This is where the 2026-08-11 incident actually hung, so it
+        matters more here than anywhere else.
         """
         while deadline is None or time.monotonic() < deadline:
             if should_stop and should_stop():
@@ -3330,10 +5161,23 @@ class AndroidDriver(DatingAppDriver):
             if cur is None:                           # screen asleep mid-wait: keep watching
                 time.sleep(_OBSERVE_POLL_S)           # (never diff a black frame against base)
                 continue
+            # (None, ...) on expiry, never (True, ...): the caller turns a True into a LIKE
+            # label, and the whole reason we are giving up is that we never saw the like land.
+            # In the incident, Hinge had REFUSED it (out of free likes) -- a LIKE label here
+            # would have been fabricated from a like that never went out.
+            if self._observe_stuck_bail(cur) is not None:
+                return None, intent_notified
             if self._observe_like_sheet_visible(cur):
                 if not intent_notified:
                     self._notify_observe_like_intent(on_like_intent, True, cur)   # cur already proves the sheet -- see wait_for_decision's call sites
                     intent_notified = True
+                # HALF of the watchdog's deliberate ASYMMETRY here (the other half is at the
+                # `like_sending` notice at the bottom of this loop). `like_sheet` means the sheet
+                # is OPEN and the HUMAN is composing a comment, which is human-paced and must
+                # stay completely unbounded -- the owner may spend minutes writing one (measured
+                # 3m44s in the audited run of 2026-08-10). So this re-arms the budget on every
+                # poll it holds.
+                self._observe_recognized()
                 # The keyboard/sheet may radically alter the top half. It is still
                 # an unsent human draft while the Send Like control is visible.
                 self._note_observe_waiting("like_sheet", cur)
@@ -3344,6 +5188,7 @@ class AndroidDriver(DatingAppDriver):
             current = cur == base or self._is_current_profile_frame(cur, require_content=True)
             ready = not current and self._observe_deck_ready(cur)
             if current or ready:
+                self._observe_recognized()            # back on the known card, or on a ready deck
                 # Both a dismissal and a ready deck must settle.  This rejects a single
                 # transition frame and, for the ready case, proves the deck controls remain
                 # present after Hinge's sending animation has completed.
@@ -3362,6 +5207,14 @@ class AndroidDriver(DatingAppDriver):
                     return True, intent_notified      # stable, non-current, ready next deck card
             # Closed sheet but no current card and no ready deck = Hinge is still processing.
             # Keep observing; a timeout is unresolved, never a false cancellation/label.
+            #
+            # The OTHER half of the watchdog's asymmetry, and the exact state the 2026-08-11
+            # incident hung in: `like_sending` is the APP working, not the human, and it must
+            # resolve in seconds. So it deliberately does NOT re-arm the budget -- unlike
+            # `like_sheet` above, which re-arms it on every poll. In the incident it never
+            # resolved at all, because Hinge had refused the like and silently swapped the deck
+            # for the out-of-free-likes paywall; this loop polled from 01:42:43 until the owner
+            # pressed Stop at 01:45:02.
             self._note_observe_waiting("like_sending", cur)
             time.sleep(_OBSERVE_POLL_S)
         return None, intent_notified

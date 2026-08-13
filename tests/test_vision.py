@@ -4,8 +4,9 @@ import types
 
 from operation_love.perception.capture import Profile
 from operation_love.vision.embed import (
-    Embedder, _is_onnx_provider_failure, _select_onnx_providers, _synthetic_probe_image,
-    aggregate, concat, dedup_by_cosine, gem_pool, l2_normalize, square_crop_around_bbox,
+    _COREML_PROVIDER_OPTIONS, Embedder, _is_onnx_provider_failure, _onnx_provider_options,
+    _select_onnx_providers, _synthetic_probe_image, aggregate, concat, dedup_by_cosine,
+    gem_pool, l2_normalize, square_crop_around_bbox,
 )
 from operation_love.vision.quality import QualityFilter
 
@@ -95,6 +96,119 @@ def test_select_onnx_providers_never_returns_empty():
     # raises on an empty provider list).
     assert _select_onnx_providers("mps", []) == ["CPUExecutionProvider"]
     assert _select_onnx_providers("cuda", ["AzureExecutionProvider"]) == ["CPUExecutionProvider"]
+
+
+def test_onnx_provider_options_are_positionally_aligned_with_providers():
+    # onnxruntime matches provider_options to providers BY POSITION, so the list has to be
+    # the same length -- a non-CoreML provider gets an empty dict, never an omitted slot.
+    assert _onnx_provider_options(["CoreMLExecutionProvider", "CPUExecutionProvider"]) == [
+        {"ModelFormat": "MLProgram"}, {}
+    ]
+    assert _onnx_provider_options(["CUDAExecutionProvider", "CPUExecutionProvider"]) == [{}, {}]
+    assert _onnx_provider_options(["CPUExecutionProvider"]) == [{}]
+    assert _onnx_provider_options([]) == []
+
+
+def test_coreml_uses_mlprogram_not_the_default_neuralnetwork_format():
+    """Guards a measured decision, not a preference. onnxruntime's default CoreML model
+    format (NeuralNetwork) runs w600k_r50 in fp16 on the ANE: 2.0ms/call but only 0.9957
+    cosine against the CPU embedding. MLProgram is 5.5ms/call at 0.99999994. Every stored
+    training label was collected against CPU vectors, so dropping back to the default would
+    silently shift the ranker's feature space to save 3.5ms per photo."""
+    assert _COREML_PROVIDER_OPTIONS == {"ModelFormat": "MLProgram"}
+
+
+class _FakeSession:
+    def __init__(self):
+        self.provider_calls = []
+
+    def set_providers(self, providers):
+        self.provider_calls.append(list(providers))
+
+
+class _FakeModel:
+    def __init__(self):
+        self.session = _FakeSession()
+
+
+class _FakeFaceAnalysis:
+    """Records what _build_arc did, in order. Stands in for insightface's FaceAnalysis so
+    this test needs neither the package, the ~350MB of buffalo_l weights, nor a GPU."""
+
+    instances = []
+
+    def __init__(self, name=None, providers=None, provider_options=None):
+        self.name = name
+        self.providers = list(providers or [])
+        self.provider_options = provider_options
+        self.models = {"detection": _FakeModel(), "recognition": _FakeModel()}
+        self.prepared_ctx = None
+        # Detector providers at the moment prepare() ran: the pin only survives because it
+        # happens BEFORE prepare(), so the ordering is part of what's under test.
+        self.detector_providers_at_prepare = None
+        _FakeFaceAnalysis.instances.append(self)
+
+    def prepare(self, ctx_id=None, **kwargs):
+        self.prepared_ctx = ctx_id
+        self.detector_providers_at_prepare = list(self.models["detection"].session.provider_calls)
+
+
+def _install_fake_insightface(monkeypatch):
+    """Inject fake `insightface` / `insightface.app` modules via sys.modules (the same
+    trick tests/test_concurrency.py uses for open_clip/onnxruntime) so the REAL
+    Embedder._build_arc runs unmodified against a stand-in FaceAnalysis."""
+    import sys
+
+    _FakeFaceAnalysis.instances = []
+    app = types.ModuleType("insightface.app")
+    app.FaceAnalysis = _FakeFaceAnalysis
+    pkg = types.ModuleType("insightface")
+    pkg.app = app
+    monkeypatch.setitem(sys.modules, "insightface", pkg)
+    monkeypatch.setitem(sys.modules, "insightface.app", app)
+
+
+def test_build_arc_pins_the_detector_to_cpu_when_coreml_is_selected(monkeypatch):
+    """buffalo_l's det_10g declares 640x640-shaped outputs but insightface 1.0.1 runs it
+    multi-scale (128x128 AND 640x640 per call), and the CoreML EP hard-asserts on the
+    resulting declared-vs-actual output shape mismatch -- the rank error that used to fail
+    every run. The detector must therefore be moved to CPU while the rest of buffalo_l
+    stays on CoreML, and it must happen BEFORE prepare()."""
+    _install_fake_insightface(monkeypatch)
+    providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+
+    arc = Embedder()._build_arc(providers)
+
+    assert arc.providers == providers                       # CoreML still attempted, not dropped
+    assert arc.provider_options == [{"ModelFormat": "MLProgram"}, {}]
+    assert arc.models["detection"].session.provider_calls == [["CPUExecutionProvider"]]
+    assert arc.models["recognition"].session.provider_calls == []   # recognition stays on CoreML
+    assert arc.detector_providers_at_prepare == [["CPUExecutionProvider"]]   # pinned pre-prepare
+    assert arc.prepared_ctx == 0
+
+
+def test_build_arc_on_cpu_only_touches_no_provider_and_uses_cpu_ctx(monkeypatch):
+    # Nothing to work around when CoreML was never selected: no per-model provider surgery,
+    # no CoreML options, and ctx_id=-1 (insightface's own "everything on CPU" signal).
+    _install_fake_insightface(monkeypatch)
+
+    arc = Embedder()._build_arc(["CPUExecutionProvider"])
+
+    assert arc.provider_options == [{}]
+    assert arc.models["detection"].session.provider_calls == []
+    assert arc.prepared_ctx == -1
+
+
+def test_build_arc_on_cuda_does_not_pin_the_detector(monkeypatch):
+    # The declared-shape mismatch is a CoreML-EP assert; the CUDA EP handles the dynamic
+    # detector input fine, so it must not inherit a macOS-specific workaround.
+    _install_fake_insightface(monkeypatch)
+
+    arc = Embedder()._build_arc(["CUDAExecutionProvider", "CPUExecutionProvider"])
+
+    assert arc.provider_options == [{}, {}]
+    assert arc.models["detection"].session.provider_calls == []
+    assert arc.prepared_ctx == 0
 
 
 def test_provider_failure_detector_matches_coreml_onnxruntime_failures():

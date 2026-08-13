@@ -80,19 +80,50 @@ from typing import Callable
 from ..costing import CostTracker
 from ..perception.capture import Profile
 from .opener import (
+    FIRST_ITEM_INDEX,
+    INDEX_SPACE_MODEL_ITEMS,
+    INDEX_SPACE_PROFILE_PHOTOS,
+    ITEM_INDEX_ABSENT,
     GeminiAPIError,
     GeminiCapacityExhausted,
+    ItemRequest,
     OpenerAborted,
     OpenerClient,
     OpenerError,
     OpenerParseError,
+    _leading_ngram,
 )
 
 
 @dataclass
 class OpenerPick:
-    """An opener plus which profile item (0-based index, capture order) it is about, so the
-    driver can attach the comment to the RIGHT photo/prompt instead of always the first.
+    """An opener plus which profile item it is about, so the driver can attach the comment to
+    the RIGHT photo/prompt instead of always the first.
+
+    `index` CHANGED MEANING on 2026-08-12 and was NOT renamed, so read this before using it
+    (ops/OPENER-REDESIGN.md 5.1/5.3/5.7):
+
+      before: 0-based index into the profile CAPTURE ORDER -- i.e. into the raw scroll frames
+              the request was built from, which is not an item space at all (one card appears
+              in several frames, one frame can hold two cards).
+      now:    the MODEL ITEM INDEX, 1-based, straight off OpenerResult.item_index. It counts
+              the numbered items the model was shown, and it is one answer to two questions:
+              the item the opener is about AND the item to like.
+
+    Both are ints, both are small, and neither carries its base in its type, which is exactly
+    the class of bug doc 5.3 exists to prevent -- so no consumer may assume the old meaning
+    still holds, and none may quietly add or subtract one to make an old consumer fit.
+
+    `index_space` is what stops that from being a comment nobody reads: it says WHICH LIST
+    `index` counts, is set from the request the opener client actually built, and
+    `capture_order_index` below is the ONLY sanctioned way to turn this pick into something a
+    driver can act on. It returns None whenever no sound conversion exists, which a driver must
+    treat as "I was not told which item" rather than as any particular item.
+
+    ITEM_INDEX_ABSENT (0) means the model gave no usable item number. Under the 1-based
+    contract that is out of band by construction and can never be confused with a real pick --
+    but note that it IS a legal value in the driver's own 0-based capture-order space, which is
+    precisely why `capture_order_index` maps it to None instead of passing the zero along.
 
     `referenced` is the model's own one-line statement of WHICH profile detail the opener is
     about (OpenerResult.referenced, echoed here verbatim). It is not used for targeting --
@@ -101,8 +132,94 @@ class OpenerPick:
     and the item the comment actually hangs under becomes visible instead of silent -- the
     failure this whole anchor mechanism exists to prevent."""
     text: str
-    index: int = 0
+    index: int = ITEM_INDEX_ABSENT
     referenced: str = ""
+    # The model's own free-text words for what this opener is DOING ("guessing where the ridge
+    # is", "teasing her about the cold"), echoed verbatim from OpenerResult.angle. PURE
+    # TELEMETRY: nothing in this service, the worker, or any driver branches on it, and it is
+    # deliberately not an enum anywhere in the pipeline (ops/OPENER-REDESIGN.md 3.5) -- a closed
+    # set would force the model to pick a move from a menu and shoehorn the opener into it,
+    # which is exactly the awkwardness the move list is written to avoid. It exists so the
+    # persisted `openers` rows can eventually answer which SHAPES correlate with matches, a
+    # question this project currently cannot ask at all. Trailing, with a "" default, so every
+    # existing OpenerPick(...) construction (worker.py, the tests' fakes) keeps working
+    # untouched and a client that never populates the field degrades to "" rather than raising.
+    angle: str = ""
+    # The model's own short description of the ITEM it picked, echoed verbatim from
+    # OpenerResult.item_description. Carried in BOTH modes, always (doc 5.7): auto logs it,
+    # observe displays it, and it must never become conditional on `advisory` -- a
+    # mode-dependent schema would make auto and observe issue different requests and quietly
+    # destroy the canary property that is observe's entire reason to exist.
+    #
+    # Distinct from `referenced`: that is the DETAIL the opener reacts to, this is the ITEM it
+    # was picked from. Doc 5.8 uses this one, coarsely (photo vs written prompt), to check our
+    # own crop at `index` against what the model thought it chose BEFORE anything is tapped.
+    # That check is a later workflow; nothing branches on this today.
+    item_description: str = ""
+    # WHICH LIST `index` COUNTS -- one of opener.INDEX_SPACE_*, echoed from
+    # OpenerResult.index_space, which generate() sets from the request shape it actually built.
+    #
+    # Trailing with a default so every existing OpenerPick(...) construction keeps working, and
+    # the default is the UNTRANSLATABLE space on purpose (same reasoning as
+    # OpenerResult.index_space): a pick built by a fake or by some future call site that never
+    # set this must not have its number converted into a tap on somebody's phone. Fail-safe
+    # means "no target", not "target 1".
+    index_space: str = INDEX_SPACE_MODEL_ITEMS
+
+    @property
+    def capture_order_index(self) -> int | None:
+        """This pick as a 0-based index into the DRIVER's capture order, or None.
+
+        This is the one sanctioned crossing between the model's index space and the driver's,
+        and it exists because on 2026-08-12 the two stopped agreeing while nothing in the types
+        said so. `Driver.like(item_index=...)` counts the frames the driver captured for this
+        profile; `index` counts the numbered images the model was SENT. Handing one to the
+        other unconverted is not a near miss -- an in-range 1-based item number resolves to a
+        real, adjacent, WRONG frame and the driver reports it as on-target, so the comment
+        lands one card down with full confidence and nothing detects it.
+
+        None means "no sound conversion exists", and a driver must read it as "I was not told
+        which item", never as an index. It is NOT the same as 0, which is a perfectly legal
+        first frame in the driver's space -- collapsing the two is how ITEM_INDEX_ABSENT ("the
+        model could not pick") turned into a confident like of item 1.
+
+        The three cases:
+
+        * ITEM_INDEX_ABSENT -> None. Doc 5.3: "treat a missing table as a hard stop, never as a
+          reason to fall back to a fixed coordinate." And a hard stop is now literally what it
+          is: worker._auto_loop refuses to call the driver at all with an untranslatable pick,
+          and the driver itself refuses an opener carrying no item index
+          (hinge._like_comment_sheet). Until 2026-08-12 this state instead tapped the first heart
+          and repaired the message against whatever the sheet turned out to show; that repair
+          hatch is removed, because rewriting the TEXT does not undo spending the LIKE on an item
+          the model never chose (doc 5.6, never substitute).
+
+        * INDEX_SPACE_PROFILE_PHOTOS -> index - FIRST_ITEM_INDEX. The numbered images WERE the
+          profile's scroll frames, sent in capture order, so model item k is frame k-1. This is
+          a derivation, not a fudge: the request was built from `profile.photos`, the driver
+          captured `profile.photos` and keeps `_current_sigs` index-aligned with it (see
+          hinge._capture_current, pinned by
+          tests/test_hinge_observe.py::test_capture_keeps_sigs_index_aligned_with_photos), and
+          the same Profile object is what the worker holds across both calls. The frames are
+          poor "items" -- that is what doc 5.2 replaces with crops -- but the correspondence
+          itself is exact.
+
+        * INDEX_SPACE_MODEL_ITEMS -> None, and it STAYS None now that doc 5.5's counting
+          navigation exists. Item k is the k-th SELECTABLE item, which the driver reaches by
+          walking to its HEART ORDINAL -- not to a captured frame -- so there is no capture-order
+          value that names it and inventing one is the bug this property was written to prevent.
+          What changed on 2026-08-12 is what a CALLER does with the None: `worker._auto_loop` no
+          longer reads it as "this pick cannot be acted on", it passes `pick.index` to
+          `driver.like(model_item_index=...)` instead and lets the driver navigate. Also the
+          default, so an unknown or unrecognised space refuses too -- and there a None really
+          does mean "cannot be acted on", which is why the worker branches on `index_space`
+          rather than on this being None.
+        """
+        if self.index == ITEM_INDEX_ABSENT:
+            return None
+        if self.index_space == INDEX_SPACE_PROFILE_PHOTOS:
+            return self.index - FIRST_ITEM_INDEX
+        return None
 
 
 # How many consecutive provider HTTP 400s to require before treating the failure
@@ -133,6 +250,22 @@ _TRANSIENT_LATCH_THRESHOLD = 3
 # this is a live debugging aid, not the permanent record (that's self.store.record_opener), so
 # it only needs to cover roughly the last screenful of activity, not the whole run.
 _RECENT_OPENERS = 12
+
+# Same idea as _RECENT_OPENERS, but for REJECTED attempts (OpenerParseError) -- see
+# self.recent_rejections' docstring in __init__. Kept as its own ring buffer/constant rather
+# than folded into recent_openers: a rejection is not a shorter-lived variant of a success,
+# it is the other outcome entirely, and a bug report needs to show both without one crowding
+# the other out of a shared, fixed-size buffer.
+_RECENT_REJECTIONS = 12
+
+# How many LEADING words the entropy guard compares between openers -- see
+# OpenerService._leading_ngram_collision / _apply_entropy_guard below and
+# ops/OPENER-REDESIGN.md 3.6. Four is wide enough to catch a recurring OPENING FORMULA
+# ("based on that ridgeline", "i bet you were") and narrow enough not to fire on two openers
+# that merely share a word or two of ordinary English ("that view ...", "that husky ..."),
+# which is not a fingerprint. Compared against self.recent_openers, whose own cap
+# (_RECENT_OPENERS) therefore also decides how far back the guard can see.
+_ENTROPY_NGRAM_WORDS = 4
 
 
 def _is_invalid_gemini_api_key(exc: Exception) -> bool:
@@ -284,6 +417,22 @@ class OpenerService:
         # locking -- only recent_openers_snapshot (a reader that may run on a different
         # thread, e.g. while building a bug report) takes the lock itself.
         self.recent_openers: deque[dict] = deque(maxlen=_RECENT_OPENERS)
+        # Ring buffer of the most recent REJECTED opener attempts (OpenerParseError), mirroring
+        # recent_openers above but for the other outcome. WHY THIS EXISTS: self.store.
+        # record_opener_rejection is the durable per-run record, but a bug report (see
+        # bugreport.py's Recent opener rejections section) needs this data WITHOUT a BigQuery
+        # round-trip, exactly like recent_openers exists so the report doesn't have to query
+        # self.store.record_opener's table either. Appended in the OpenerParseError branch of
+        # maybe_opener below, for EVERY rejected attempt (including the final one that
+        # exhausts a profile's retries) regardless of whether persisting to self.store
+        # succeeded -- this in-memory copy must not depend on the store being reachable.
+        # "Attempt" is exact: an unusable ENTROPY REGENERATION draw (see _apply_entropy_guard)
+        # is deliberately absent from both this buffer and the store's ledger, because that
+        # draw never gated a send, and counting it would inflate the very guard-firing rate
+        # these records exist to measure.
+        # Guarded by self._lock exactly like recent_openers (maybe_opener already runs its
+        # whole body under that lock).
+        self.recent_rejections: deque[dict] = deque(maxlen=_RECENT_REJECTIONS)
         self._lock = threading.RLock()
 
     def _register_transient_failure(self, exc: Exception, *, request_stop: bool = True) -> bool:
@@ -321,11 +470,251 @@ class OpenerService:
             return True
         return False
 
+    def _leading_ngram_collision(self, opener: str) -> str:
+        """The leading n-gram this opener SHARES with one already produced this run, or "" when
+        it opens with words we have not used yet. Pure lookup over self.recent_openers (the ring
+        buffer that already exists for bug reports -- see its docstring in __init__); it decides
+        nothing on its own, _apply_entropy_guard below owns every consequence.
+
+        Deliberately NOT filtered by app, and deliberately counting ADVISORY entries: the
+        fingerprint this guard exists to avoid is "every message this account sends opens the
+        same way", and neither a woman comparing screenshots with a friend nor an anti-bot
+        heuristic cares which of our workers produced which line. Observe-mode suggestions
+        belong in that population too, because the human retypes and sends them verbatim (see
+        the observe-opener canary rule) -- they are real sent messages, not drafts.
+
+        The n-gram is recomputed from each entry's stored text rather than cached in the entry:
+        the buffer is bounded at _RECENT_OPENERS, so this is a dozen string compares, and
+        keeping that dict schema stable matters more than the microseconds -- bugreport.py
+        renders those same entries.
+        """
+        ngram = _leading_ngram(opener, _ENTROPY_NGRAM_WORDS)
+        if not ngram:
+            return ""
+        for entry in self.recent_openers:
+            if _leading_ngram(str(entry.get("opener") or ""), _ENTROPY_NGRAM_WORDS) == ngram:
+                return ngram
+        return ""
+
+    def _record_billed_draw(self, run_id: str, model: str, usage, *, note: str) -> None:
+        """Track + persist the spend of a billed opener call whose text is NOT the one being
+        sent: the draft the entropy guard threw away, or a regeneration draw that came back
+        unparseable. A discarded draw is no less billed than a sent one, and this service's
+        entire budget contract rests on every real call being recorded exactly once.
+
+        Deliberately does NOT call _exhaust on an unpriceable model, unlike every other
+        tracker.record() call site in this file -- the entropy guard's contract is that it can
+        never stop a run (see _apply_entropy_guard). Nothing is lost by that: the draw we KEEP
+        is recorded a few lines later in maybe_opener's success branch, essentially always from
+        the same model id, and that call site does exhaust on the identical KeyError. The only
+        gap is the freak case where the cascade changed models between the two draws and only
+        the discarded one is unpriceable, which is why that path still prints a loud warning
+        rather than passing silently.
+        """
+        try:
+            cost = self.tracker.record(model, usage)
+        except KeyError:
+            print(f"Warning: no budget.pricing entry for model '{model}'; the {note} was "
+                  "billed but its spend cannot be tracked")
+            cost = None
+        except Exception as e:  # noqa: BLE001
+            # Broader than the main path's KeyError-only guard, deliberately: this helper is
+            # reached ONLY from the entropy guard, which is holding a perfectly good opener at
+            # the time. Letting an accounting oddity (a result with no usage, a tracker that
+            # raises something new) escape from here would turn a cosmetic style check into a
+            # failed generation, which is precisely the inversion the guard must never cause.
+            print(f"Warning: could not track the spend of the {note} "
+                  f"({type(e).__name__}: {e})")
+            cost = None
+        try:
+            self.store.record_spend(run_id, model, usage, cost)
+        except Exception as e:  # noqa: BLE001
+            print(f"Warning: failed to persist the spend record for the {note} "
+                  f"({_display_cost(cost)}): {e}")
+
+    def _apply_entropy_guard(self, run_id: str, profile: Profile, result, *,
+                             anchor: bytes | None,
+                             items: ItemRequest | None,
+                             should_stop: Callable[[], bool] | None,
+                             skip_models: frozenset[str]) -> tuple[object, str, bool]:
+        """THE ENTROPY GUARD (ops/OPENER-REDESIGN.md 3.6). Given a parsed, usable opener, return
+        `(result_to_send, colliding_ngram, regenerated)`: either the result handed in, or a
+        second draw taken because the first one opened with words already sent this run.
+
+        WHY IT EXISTS: shortening the openers compresses the output space, and the few-shot edit
+        pairs in the style block make direct copying a live risk. Across a burner account
+        sending uncapped volume, a run of messages that all open "Based on that X, I'm going to
+        guess ..." is simultaneously a bot fingerprint and genuinely embarrassing if two matches
+        ever compare screenshots. The check is a plain string comparison of leading n-grams (see
+        _leading_ngram_collision) -- no semantics, no classifier, no second judge, and no
+        constraint whatsoever on WHAT the model is allowed to write. It only ever asks for
+        another draw.
+
+        THREE THINGS IT MUST NEVER DO, and they are the whole design:
+          1. Never raise. Every failure of the extra call is swallowed and the original opener
+             is kept, because the original was already good enough to send.
+          2. Never reject, never _exhaust(), never touch stop_requested or either latch counter.
+             A stylistic near-miss is not evidence that the provider, the prompt, or the request
+             pipeline is unhealthy, and stopping a run over one would be wildly disproportionate.
+          3. Never consume the per-profile attempt budget. Note precisely what that means
+             structurally: the call site is lexically INSIDE maybe_opener's
+             `for attempt in range(...)` loop, on the success path, but that path returns
+             unconditionally, so the extra draw can never produce another `attempt` iteration
+             and can never push a profile toward the max_attempts exhaustion that stops the
+             whole run. The budget exemption comes from the guard living on a returning path
+             and never re-entering the loop, not from its line number. Anyone moving this call
+             must preserve that property, not just its position. Doc 3.6 calls the requirement
+             out explicitly: a hard rejection here "can stop a run over a stylistic near-miss,
+             which is disproportionate".
+
+        THE ADVISORY ASYMMETRY -- CORRECTED 2026-08-11. Read this before "restoring" the old
+        behavior; the paragraph that used to live here argued the guard must be skipped OUTRIGHT
+        when advisory is True, and that argument was WRONG. Do not resurrect it.
+
+        The old reasoning: an advisory (Hinge observe-mode) call runs with
+        effective_max_attempts == 1 -- not five -- because a human is sitting there waiting on
+        the suggestion (see maybe_opener's advisory docstring paragraph), so a guard that
+        consumed an attempt would consume THE ONLY attempt and disable suggestions for the rest
+        of the session over a stylistic near-miss. That premise is false for this guard as
+        actually built: see THE THREE THINGS above, especially point 3. The extra draw sits on
+        the SUCCESS path, lexically inside maybe_opener's `for attempt in range(...)` loop but
+        returning unconditionally, so it structurally CANNOT produce another `attempt` iteration
+        -- in AUTO or in advisory alike. There was never an attempt for advisory to lose. The old
+        paragraph was reasoning about a cost this function's own construction already ruled out;
+        it was carried over from ops/OPENER-REDESIGN.md 3.6's open question about a
+        HARD-REJECTING guard design (one that never shipped) and never re-checked against the
+        soft, budget-exempt design that actually did.
+
+        Running the guard under advisory is not merely SAFE, it is REQUIRED, and skipping it was
+        an active bug, not a conservative default. Hinge observe mode is the canary for auto --
+        the owner's rule is that the opener shown to a human in observe must be byte-identical to
+        what auto would type for the same profile, because observe exists to preview what auto is
+        about to do at scale. A guard that runs in AUTO but is inert in observe makes the two
+        modes diverge on exactly the profiles the guard exists to change: a collision that AUTO
+        would quietly redraw around used to ship untouched to the human in observe, so observe
+        stopped predicting what auto actually sends -- defeating the canary. This is not
+        hypothetical: a live dry run with advisory=True and a shared OpenerService (so
+        recent_openers accumulates across calls, exactly like a real observe session) produced 5
+        openers where 4 opened with the identical phrase, because the guard never even looked.
+
+        So: advisory now runs through the exact same collision check, extra draw, and
+        accept-on-second-collision path as AUTO, with no branch on `advisory` anywhere in this
+        function any more. What makes that safe is not "advisory is a lesser case needing its own
+        carve-out" -- it is this guard's OWN invariants (points 1-3 above), which hold
+        identically in both modes: it never raises, never rejects, never calls _exhaust(), and
+        never touches stop_requested or either latch counter, regardless of advisory. There was
+        never a failure mode here for advisory's single attempt to be exposed to.
+
+        ONE extra draw, never a loop: if the second draw collides too, it is ACCEPTED and
+        logged. A near-identical opener that gets sent is a much smaller problem than a retry
+        storm, a stalled profile, or the sunk cost of a third billed call, and an unbounded
+        "keep asking until it is different" loop is a spend hole with no ceiling. This part is
+        unchanged by the correction above and applies identically in advisory and AUTO.
+        """
+        text = str(getattr(result, "opener", "") or "")
+        collision = self._leading_ngram_collision(text)
+        if not collision:
+            return result, "", False
+
+        # Below here we KNOW we would like another draw. Two reasons not to actually take one,
+        # both about spending money we should not spend; in each case the original opener is
+        # perfectly sendable, so this degrades to "ship the repetitive one" rather than to any
+        # kind of failure.
+        if should_stop is not None and should_stop():
+            print(f"Opener: this draft repeats an earlier opening this run "
+                  f"(\"{collision}\"), but the run is stopping -- sending it as is rather "
+                  "than spending on another draw.")
+            return result, collision, False
+        if self.tracker.budget_reached():
+            print(f"Opener: this draft repeats an earlier opening this run "
+                  f"(\"{collision}\"), but the run budget is reached -- sending it as is "
+                  "rather than spending on another draw.")
+            return result, collision, False
+
+        print(f"Opener: this draft opens with words already sent this run (\"{collision}\"); "
+              "asking once for a different opening. This extra call is deliberately EXEMPT "
+              "from the per-profile attempt budget -- see _apply_entropy_guard.")
+        # Written to be read by the MODEL, so: no em dash, no hyphen, plain ASCII, and no
+        # suggestion that the previous draft was bad. It was not; it was fine and merely
+        # familiar. Telling the model it was "rejected" (the wording the real retry path uses,
+        # where the text genuinely was unusable) would push it to change the wrong things.
+        retry_hint = (
+            f"Your previous draft was fine, but it opened with the same words as an opener "
+            f"already sent to someone else recently: \"{collision}\". Write a different "
+            f"opener for this profile that does not open with those words. Every other rule "
+            f"is unchanged."
+        )
+        try:
+            # `items` rides along for exactly the reason `anchor` does: the second draw is the
+            # SAME request with a different retry_hint. Dropping it here would silently switch
+            # the regeneration to the raw-frame shape -- the model would be answering about a
+            # different set of images, in a different index space, and whichever draw survived
+            # would carry the other one's numbering. The entropy guard is about the opening
+            # WORDS and must change nothing else about the request.
+            second = self.client.generate(profile, self.style, retry_hint=retry_hint,
+                                          anchor=anchor, items=items, should_stop=should_stop,
+                                          skip_models=skip_models)
+        except OpenerParseError as e:
+            # Billed but unusable. Record the spend (real money, see _record_billed_draw) and
+            # keep the original opener. Deliberately NOT written to the opener_rejections
+            # ledger: that table answers "how often do the deterministic SEND guards reject an
+            # attempt", and this draw was never gating a send -- counting it there would inflate
+            # exactly the statistic it exists to measure. The console line below plus the
+            # `entropy_collision` field on the ring-buffer entry are this path's paper trail.
+            self._record_billed_draw(run_id, e.model, e.usage,
+                                     note="rejected entropy regeneration draw")
+            print(f"Opener: the entropy regeneration came back unusable ({e}); keeping the "
+                  "original opener, which was already good enough to send.")
+            return result, collision, False
+        except Exception as e:  # noqa: BLE001
+            # Anything else at all: a stop signal mid-cascade (OpenerAborted), a per-profile
+            # OpenerError, an HTTP failure, capacity exhaustion, a fake client that cannot cope
+            # with a second call. NONE of them move a latch counter, set last_skip_reason, or
+            # exhaust: we are holding a perfectly good opener, so there is no failure to report
+            # to anyone -- only a cosmetic improvement we did not get.
+            print(f"Opener: the entropy regeneration failed ({type(e).__name__}: {e}); "
+                  "keeping the original opener, which was already good enough to send.")
+            return result, collision, False
+
+        second_text = str(getattr(second, "opener", "") or "")
+        if not second_text:
+            # This second call was real and billed, exactly like the first -- record it before
+            # anything else. Defensive in practice: a real GeminiOpener._parse() raises
+            # REASON_EMPTY_AFTER_SANITIZE on an empty opener, so only a fake or future client
+            # can land `second` here with blank text. But _record_billed_draw's own invariant
+            # ("every real call being recorded exactly once") is unconditional, not contingent
+            # on which client made the call, so it is recorded anyway.
+            self._record_billed_draw(run_id, getattr(second, "model", "") or "",
+                                     getattr(second, "usage", None),
+                                     note="empty entropy regeneration draw")
+            # A client that returns a result with no text at all would turn a cosmetic guard
+            # into a commentless like, the one outcome this whole file exists to prevent.
+            print("Opener: the entropy regeneration returned no opener text; keeping the "
+                  "original opener.")
+            return result, collision, False
+
+        # The first draft is being thrown away, but it was BILLED. Record it here so the money
+        # is accounted for exactly once; maybe_opener records the surviving draw itself.
+        self._record_billed_draw(run_id, getattr(result, "model", "") or "",
+                                 getattr(result, "usage", None),
+                                 note="entropy regenerated opener draft")
+        again = self._leading_ngram_collision(second_text)
+        if again:
+            # ONE extra draw only -- accept and be loud about it. (A second draw that repeats
+            # the FIRST draft's opening is covered by this same check: the first draft collided
+            # with the buffer, so anything sharing its n-gram collides with the buffer too.)
+            print(f"Opener: the regenerated opener still opens with \"{again}\"; SENDING it "
+                  "anyway. The guard asks once and never loops -- a near-repeat that goes out "
+                  "is a smaller problem than a retry storm or an unbounded spend.")
+        return second, collision, True
+
     def maybe_opener(self, run_id: str, app: str, profile: Profile, *,
                       anchor: bytes | None = None,
+                      items: ItemRequest | None = None,
                       should_stop: Callable[[], bool] | None = None,
                       advisory: bool = False) -> "OpenerPick | None":
-        """Return an OpenerPick (text + referenced item index), or None (disabled / budget
+        """Return an OpenerPick (text + the MODEL ITEM INDEX the opener is about and the item
+        to like -- 1-based, see OpenerPick), or None (disabled / budget
         reached / out of credit / permanent provider error / every retry attempt used up /
         a per-profile OpenerError / a single sub-latch 400 or transient failure / the run
         stopping via should_stop).
@@ -348,6 +737,39 @@ class OpenerService:
              (collecting real training labels) for something that was never going to touch
              automation. See worker.py's _wait_for_observed_decision for the call site and
              this class's own _exhaust() for the matching request_stop plumbing.
+
+        items (default None): ops/OPENER-REDESIGN.md 5.2/5.7's item-crop request shape -- one
+        cropped image per numbered profile item, the unnumbered context crops after them, her
+        name as text and the capture's truncation flag, built by
+        opener.ItemRequest.from_profile() from what the driver enumerated. When present it
+        REPLACES profile.photos as the model's view of her, which is the whole point: image k
+        IS item k, so the number the model answers with means something. Forwarded to
+        self.client.generate(...) UNCONDITIONALLY below, exactly like anchor and for a sharper
+        version of the same reason -- a client that silently dropped this kwarg would fall back
+        to sending raw scroll frames, where one card appears in several frames and one frame can
+        hold two cards, and the returned item number would be confidently meaningless. A
+        TypeError out of the call is the correct failure there.
+
+        MUTUALLY EXCLUSIVE WITH anchor, and the client refuses a request carrying both before
+        anything is encoded or billed (see GeminiOpener.generate): the anchor IS the chosen item
+        and the numbered list asks the model to choose one. This service does not resolve that
+        by precedence and must never learn to -- callers pass one shape or the other.
+
+        **NOTHING IN PRODUCTION PASSES `anchor` ANY MORE, as of doc 5.9's observe inversion
+        (2026-08-12), and this is the honest state of that parameter.** BOTH modes now pass
+        `items`. The two callers it had are gone for two different reasons: the driver's
+        `anchored_opener` repair re-ask (doc 5.6 -- rewriting the opener to match whatever we hit
+        is a substitution, and a targeting miss is now a stop), and observe's post-heart
+        suggestion (doc 5.9 -- observe generates BEFORE the human taps, from the same crops auto
+        sends, which is the whole point of it being a canary). The anchored REQUEST-BUILDING
+        machinery below and in opener.py is deliberately left in place for one phase, so that
+        inverting observe and retiring the anchor are separately bisectable; the workflow that
+        removes it should start here and confirm the call graph rather than trusting this
+        paragraph.
+
+        Like anchor, it changes NOTHING about retries, budget, latches, or the model cascade,
+        and the same crops are reused verbatim on every attempt for this profile: what the model
+        is looking at does not change because the previous attempt's wording was rejected.
 
         anchor (default None): a live screenshot of the app's own open like/comment screen --
         the exact frame on the phone right now, which visually shows WHICH ONE profile item (a
@@ -397,6 +819,23 @@ class OpenerService:
         degenerate model, a schema bug) -- at that point the whole run stops via
         _exhaust(), exactly like the owner's instruction: "if after 5 attempts it's still a
         bad response, stop the automation -- that means something is wrong."
+
+        ONE further billed call can happen per profile, and it is NOT an attempt: after a
+        successful parse, the entropy guard (ops/OPENER-REDESIGN.md 3.6, implemented in
+        _apply_entropy_guard) may ask once more when the opener opens with the same words as
+        one already produced this run. It sits deliberately OUTSIDE the attempt loop, so a
+        stylistic near-miss can never push a profile toward the max_attempts exhaustion that
+        stops the run; it never raises, never rejects, and never latches anything; and -- as of
+        the 2026-08-11 correction -- it now runs IDENTICALLY on an advisory call, not skipped:
+        its exemption from the attempt budget was never conditional on advisory in the first
+        place (it lives on the success path, outside the loop, in either mode), so there was
+        never a cost for skipping it to avoid, and running it in observe is REQUIRED, not merely
+        tolerated -- observe is the canary for auto (the opener shown to a human there must be
+        byte-identical to what auto would send), and a guard that only fired in AUTO made observe
+        stop predicting auto on exactly the profiles it exists to change. Both draws' spend is
+        recorded either way. See _apply_entropy_guard for the full reasoning, especially the
+        ADVISORY ASYMMETRY paragraph, which documents the old (wrong) design explicitly so it
+        does not get "simplified" back in.
 
         Every OTHER kind of per-call failure is deliberately NOT retried:
           - OpenerError (not a parse error) is almost always deterministic -- e.g. a
@@ -476,8 +915,13 @@ class OpenerService:
                     # degradation the anchor mechanism exists to prevent. See this method's
                     # anchor docstring paragraph for what it is and why it never varies across
                     # retries for the same profile.
+                    # items is forwarded UNCONDITIONALLY for the same reason anchor is, and the
+                    # cost of getting it wrong is higher: a client that quietly ignored it would
+                    # send profile.photos instead, and the model's item_index would then count
+                    # scroll frames while every consumer downstream reads it as an item number
+                    # (doc 5.2/5.7). Loud TypeError over silent renumbering.
                     result = self.client.generate(profile, self.style, retry_hint=retry_hint,
-                                                  anchor=anchor,
+                                                  anchor=anchor, items=items,
                                                   should_stop=should_stop,
                                                   skip_models=frozenset(failed_models))
                 except OpenerAborted as e:
@@ -532,6 +976,36 @@ class OpenerService:
                               f"({_display_cost(cost)}): {store_exc}")
                     print(f"Opener attempt {attempt}/{effective_max_attempts}: unparseable "
                           f"response (billed {_display_cost(cost)}): {e}")
+                    # Durable record of EVERY rejected attempt, not just successes (see
+                    # ranker/bigquery_store.py's opener_rejections table and opener.py's
+                    # OpenerParseError docstring for reason_code/raw_opener semantics).
+                    # Recorded HERE, before the retry/exhaust decision below, so the FINAL
+                    # attempt -- the one that calls _exhaust() and stops the run -- is
+                    # captured too, not only the attempts that go on to a further retry.
+                    # Without this, only SUCCEEDED openers were ever persisted, so there was
+                    # no way to ask how often any guard fires or whether the deterministic
+                    # detectors (scaffolding, sentence-count, ...) are too strict or too
+                    # loose. Guarded exactly like record_spend just above: a store outage
+                    # must never take down opener generation, the one invariant this whole
+                    # file exists to protect.
+                    try:
+                        self.store.record_opener_rejection(
+                            run_id, app, e.model, attempt, e.reason_code, str(e), e.raw_opener)
+                    except Exception as store_exc:  # noqa: BLE001
+                        print(f"Warning: failed to persist opener rejection record: {store_exc}")
+                    # In-memory mirror of the row just above, independent of the store call's
+                    # success -- see recent_rejections' docstring in __init__ for why this
+                    # exists (the bug report's Recent opener rejections section reads this,
+                    # not the store, exactly like recent_openers/recent_openers_snapshot).
+                    self.recent_rejections.append({
+                        "ts": datetime.now().isoformat(timespec="seconds"),
+                        "app": app,
+                        "model": e.model,
+                        "attempt": attempt,
+                        "reason_code": e.reason_code,
+                        "reason": str(e),
+                        "raw_opener": e.raw_opener,
+                    })
 
                     if self.disabled:
                         # _exhaust() already ran above (the unpriceable-model guard) -- the
@@ -684,6 +1158,30 @@ class OpenerService:
                 # misread as describing this one (see last_skip_reason's docstring).
                 self.last_skip_reason = None
 
+                # ENTROPY GUARD (ops/OPENER-REDESIGN.md 3.6, and see _apply_entropy_guard for
+                # the full rationale, INCLUDING THE 2026-08-11 CORRECTION: this now runs
+                # identically whether or not the call is advisory -- it takes no `advisory`
+                # argument at all any more, deliberately, because nothing about its behavior may
+                # ever depend on that flag (see the ADVISORY ASYMMETRY paragraph in its
+                # docstring for why the OLD advisory-skips-it design was wrong, not merely
+                # conservative). It may hand back a SECOND draw taken because this one opened
+                # with words already sent this run. That extra call must not consume the
+                # per-profile attempt budget whose exhaustion stops the whole run, and it does
+                # not: these lines are lexically inside the `for attempt in ...` loop, but they
+                # sit on the SUCCESS path, which returns unconditionally a few lines below, so no
+                # extra draw can ever cause another `attempt` iteration -- true in AUTO and in
+                # advisory alike. Keep the guard on a returning path if it ever moves.
+                #
+                # It runs BEFORE any spend/opener recording below for one reason: exactly one
+                # `openers` row per profile must exist, and it must hold the text that actually
+                # gets sent. The draft the guard discards was still billed, so the guard records
+                # THAT spend itself -- the money is tracked either way, while the opener row is
+                # written once, below, for whichever draw survives.
+                result, entropy_collision, entropy_regenerated = self._apply_entropy_guard(
+                    run_id, profile, result,
+                    anchor=anchor, items=items, should_stop=should_stop,
+                    skip_models=frozenset(failed_models))
+
                 try:
                     cost = self.tracker.record(result.model, result.usage)
                 except KeyError:
@@ -697,9 +1195,84 @@ class OpenerService:
                     self._exhaust(f"no budget.pricing entry for model '{result.model}'; "
                                   "spend can no longer be tracked", request_stop=not advisory)
                     cost = None
+                # getattr defaults here for the same defensive reason as the pre-existing
+                # getattr on the old referenced_index (this block used to read only that
+                # field): a simple/fake OpenerClient used by a test, or some future call site,
+                # need not populate every field on the OpenerResult it constructs, and a bare
+                # AttributeError from a call that otherwise fully succeeded would be a strange
+                # way for this method to fail. Read HERE, above the store calls, rather than
+                # after them, because `angle` and `item_description` are both part of the
+                # persisted opener row below.
+                #
+                # `item_index` REPLACES `referenced_index` and is a different quantity, not a
+                # rename: 1-based over the NUMBERED ITEMS the model was shown, where the old
+                # field was 0-based over raw scroll frames (see OpenerPick's docstring and
+                # ops/OPENER-REDESIGN.md 5.1/5.7). The default is ITEM_INDEX_ABSENT rather than
+                # a bare 0 for the same reason: 0 is out of band under the new contract, and a
+                # stand-in result that never set the field must not read as "she picked item 1".
+                # Deliberately NO getattr fallback to "referenced_index": silently accepting an
+                # old 0-based frame index here and treating it as an item number is precisely
+                # the reinterpretation doc 5.3 exists to prevent, so a stale producer degrades
+                # to ABSENT (loud, unusable) instead of to a plausible wrong item.
+                item_index = getattr(result, "item_index", ITEM_INDEX_ABSENT)
+                # WHICH LIST that number counts, straight off the result rather than inferred
+                # from anything here. The getattr default is the UNTRANSLATABLE space, matching
+                # OpenerResult's own default: a client that does not state its space gets a
+                # pick nothing will convert into a tap, which is the safe direction. Reading it
+                # from `result` (not from, say, whether `items` was passed) keeps one producer
+                # of this fact -- generate(), which built the payload -- instead of two that
+                # can drift.
+                index_space = str(getattr(result, "index_space", INDEX_SPACE_MODEL_ITEMS)
+                                  or INDEX_SPACE_MODEL_ITEMS)
+                referenced = str(getattr(result, "referenced", "") or "")
+                # The model's own words for what this opener is DOING -- telemetry only, never
+                # read to make a decision (see OpenerPick.angle). "" when the model omitted it
+                # or returned a non-string; opener.py has already stripped it.
+                angle = str(getattr(result, "angle", "") or "")
+                # The model's own short description of the ITEM it picked (doc 5.7). Read
+                # unconditionally, with no branch on `advisory` anywhere: auto logs it, observe
+                # displays it, and the moment one mode stops asking for it the two modes stop
+                # issuing the same request, which is the canary property observe exists for.
+                item_description = str(getattr(result, "item_description", "") or "")
+                # Output of opener.py's deterministic redundancy MONITOR: content words this
+                # opener restated from its own `referenced` note (doc 3.7). isinstance-checked
+                # rather than trusted, so a fake/older result carrying a string or None here
+                # degrades to [] instead of being iterated character by character into twelve
+                # bogus markers. LOG ONLY, and that is not a soft preference: this monitor is a
+                # documented LOWER BOUND on redundancy (a terse `referenced` defeats it
+                # entirely), it has never been calibrated against real data, and five
+                # consecutive rejections stop the whole run -- gating on it would make an
+                # uncalibrated metric a run-killer. It never rejects anything here, ever.
+                raw_markers = getattr(result, "redundancy_markers", None)
+                redundancy_markers = ([str(m) for m in raw_markers]
+                                      if isinstance(raw_markers, (list, tuple)) else [])
+                if redundancy_markers:
+                    # opener.py prints its own line when it computes these, but that fires for
+                    # every PARSED draft, including one the entropy guard then throws away.
+                    # This line fires only for the opener that is actually about to be sent,
+                    # which is the population the offline calibration in doc 3.7 needs to count.
+                    print(f"Opener: the opener being sent restates "
+                          f"{len(redundancy_markers)} word(s) from its own `referenced` note "
+                          f"({'; '.join(redundancy_markers)}). Logged only, never a rejection.")
                 try:
                     self.store.record_spend(run_id, result.model, result.usage, cost)
-                    self.store.record_opener(run_id, app, result.model, result.opener, result.referenced)
+                    # angle and item_description ride along as the 6th and 7th POSITIONAL
+                    # arguments: both stores declare them as trailing `angle: str = ""` /
+                    # `item_description: str = ""` parameters (see ranker/store.py and
+                    # ranker/bigquery_store.py, each with its own column migration), and a
+                    # positional call keeps working against the fakes in the test suite that
+                    # accept *a. `referenced` is the defensively-read local above rather than
+                    # result.referenced: a result missing that attribute should persist an empty
+                    # note, not blow up mid-try and get reported as a failure to persist SPEND,
+                    # which is a misleading thing to print about an AttributeError on
+                    # `referenced` (the spend row above it was already written fine).
+                    #
+                    # item_description is persisted for the same reason `angle` is (doc 5.7:
+                    # "auto ignores and logs it"): it is the model's own account of WHAT it
+                    # picked, so a wrong-item report months later can be checked against what
+                    # the model believed it was writing about without re-running anything.
+                    self.store.record_opener(run_id, app, result.model, result.opener,
+                                             referenced, angle, item_description)
                 except Exception as e:  # noqa: BLE001
                     # Spend was already tracked in-memory by CostTracker (or deliberately
                     # marked unrecoverable above); store failure is non-fatal.
@@ -707,31 +1280,62 @@ class OpenerService:
                           f"({_display_cost(cost)}): {e}")
                 if self.tracker.budget_reached():
                     self._exhaust("run budget reached", request_stop=not advisory)
-                # getattr defaults here for the same defensive reason as the pre-existing
-                # getattr on referenced_index above (this line used to read only that field):
-                # a simple/fake OpenerClient used by a test, or some future call site, need not
-                # populate every field on the OpenerResult it constructs, and a bare
-                # AttributeError from a call that otherwise fully succeeded would be a strange
-                # way for this method to fail.
-                referenced_index = getattr(result, "referenced_index", 0)
-                referenced = str(getattr(result, "referenced", "") or "")
                 # Append to the ring buffer for EVERY successful call, advisory or AUTO alike
                 # -- see recent_openers' docstring in __init__ for why: this is the paper trail
                 # that lets a bug report tell an anchored generation (told which item the
                 # comment attaches to) apart from a blind one (guessing from the whole profile
                 # alone, the exact configuration that produced the reported out-of-place
                 # openers), and shows the model's own `referenced` claim alongside it.
+                #
+                # The three newer fields all exist to make a redesign VISIBLE in a bug report
+                # rather than only in a console line nobody kept: `angle` is the model's own
+                # account of what it was doing, `redundancy_markers` is the over-description
+                # monitor's verdict on the text actually sent, and `entropy_collision` /
+                # `entropy_regenerated` record whether this opener repeated an earlier opening
+                # and whether a second draw was taken -- reflecting a REAL collision check on
+                # every call, advisory included as of the 2026-08-11 correction (previously
+                # hardcoded to "" / False on an advisory call because the guard was skipped
+                # outright there; see _apply_entropy_guard's ADVISORY ASYMMETRY paragraph for why
+                # that was wrong). Extra keys are safe here: bugreport.py reads this dict key by
+                # key with .get defaults, never by unpacking or exact comparison.
+                #
+                # The "index" KEY KEEPS ITS NAME AND CHANGES ITS MEANING, which is worth
+                # knowing before comparing two bug reports across this commit: entries written
+                # before 2026-08-12 hold a 0-based index into the raw scroll frames, entries
+                # after hold the 1-based MODEL ITEM INDEX (doc 5.1/5.7, and OpenerPick's
+                # docstring). The key was not renamed because bugreport.py reads it by that
+                # name and a report is a human-read artefact, but `item_description` sitting
+                # beside it is what makes the two eras distinguishable at a glance: it is
+                # simply absent from every pre-change entry.
+                #
+                # "index_space" rides alongside it so a report never has to be dated to be
+                # read: it names the list "index" counts, which is the one fact a bare small
+                # integer cannot carry and whose absence is what let the two spaces be confused
+                # in the first place.
                 self.recent_openers.append({
                     "ts": datetime.now().isoformat(timespec="seconds"),
                     "app": app,
                     "model": result.model,
                     "anchored": anchor is not None,
                     "advisory": bool(advisory),
-                    "index": referenced_index,
+                    "index": item_index,
+                    "index_space": index_space,
                     "referenced": referenced,
+                    "angle": angle,
+                    "item_description": item_description,
+                    "redundancy_markers": redundancy_markers,
+                    "entropy_collision": entropy_collision,
+                    "entropy_regenerated": entropy_regenerated,
                     "opener": result.opener,
                 })
-                return OpenerPick(result.opener, referenced_index, referenced)
+                # Positional, matching OpenerPick's field order: text, index (the MODEL ITEM
+                # INDEX now -- see that dataclass's docstring), referenced, angle,
+                # item_description. `index_space` is passed by KEYWORD rather than as a sixth
+                # positional: it is the field that makes `index` interpretable at all, and a
+                # bare trailing string in a five-argument positional call is exactly the kind
+                # of thing a later edit drops or reorders without noticing.
+                return OpenerPick(result.opener, item_index, referenced, angle, item_description,
+                                  index_space=index_space)
             # Unreachable in practice: __init__ now rejects any max_attempts that isn't an
             # int >= 1 (see BUG 2), so range(1, effective_max_attempts + 1) -- 1 for an advisory
             # call, self.max_attempts otherwise -- always yields at least one iteration, and
@@ -759,6 +1363,15 @@ class OpenerService:
         under the reader's feet."""
         with self._lock:
             return list(self.recent_openers)
+
+    def recent_rejections_snapshot(self) -> list[dict]:
+        """A copy of the most recent REJECTED opener attempts -- see recent_rejections'
+        docstring in __init__ for exactly what each entry records. Same reasoning as
+        recent_openers_snapshot above: returns a plain list copy under self._lock rather than
+        the live deque, so a bug-report reader on another thread never iterates a deque a
+        worker thread is concurrently appending to."""
+        with self._lock:
+            return list(self.recent_rejections)
 
     def _exhaust(self, reason: str, *, request_stop: bool = True) -> None:
         """Flip the service permanently disabled and record WHY (exhausted_reason), so an

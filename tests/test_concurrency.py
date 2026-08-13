@@ -79,7 +79,8 @@ class _OpenerClient:
     def __init__(self):
         self.anchors = []
 
-    def generate(self, profile, style, retry_hint="", *, anchor=None, should_stop=None,
+    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+                 should_stop=None,
                  skip_models=frozenset()):
         self.anchors.append(anchor)
         return OpenerResult(opener="hi", referenced="r",

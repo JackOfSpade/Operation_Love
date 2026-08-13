@@ -143,6 +143,78 @@ def test_api_stop_returns_200_with_ok_true_when_a_run_is_active():
         _join_hub_watch_threads()
 
 
+def test_api_status_snapshot_carries_stop_kind_alongside_stop_reason():
+    """The real /api/status HTTP endpoint -- not just RunStatus/HubState in isolation -- must
+    actually serialize AppStatus.stop_kind through the handler's own json.dumps, alongside
+    stop_reason. stop_kind disambiguates stop_reason's SOURCE now that two different worker.py
+    code paths populate it: OpenerService exhaustion (the original, sole source) and the
+    blocked-deck check added 2026-08-11 (Hinge's out-of-free-likes Hinge+ paywall,
+    data/hinge_debug/run_20260811_011416) -- see status.py's AppStatus.stop_kind docstring. A
+    consumer that only ever saw stop_reason (older hub.html, an external tool reading this
+    endpoint) would misreport a blocked deck as an opener/quota problem without this field
+    actually reaching the wire."""
+    from operation_love.status import RunStatus
+
+    _Handler.state = HubState("config.yaml")
+    status = RunStatus("r1", ["hinge"], min_labels=1, mode="observe")
+    status.set_app(
+        "hinge", mode="observe", state="blocked",
+        stop_reason="Hinge is out of free likes for today — the Hinge+ upgrade screen is up",
+        stop_kind="deck_blocked")
+    with _Handler.state._lock:
+        _Handler.state._status = status
+
+    httpd = _bind("127.0.0.1", 8799)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        code, raw = _get(base, "/api/status")
+        app = json.loads(raw)["status"]["apps"]["hinge"]
+        assert app["stop_kind"] == "deck_blocked"
+        assert app["stop_reason"] == (
+            "Hinge is out of free likes for today — the Hinge+ upgrade screen is up")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        _join_hub_watch_threads()
+
+
+def test_api_status_snapshot_stop_kind_defaults_to_none_for_ordinary_stops():
+    """A plain operator-clicked Stop (or any other terminal path that never populates
+    stop_reason) must leave stop_kind at AppStatus's own default of None in the served JSON --
+    never a stray truthy placeholder that would make a consumer of this endpoint (the bug
+    report's _app_diagnostics_md, or a future hub-UI branch) render an explanation for a stop
+    that was never actually disambiguated. Two apps in one snapshot: "hinge" never even calls
+    set_app with a stop_reason/stop_kind (the AppStatus dataclass default, exercised by a run
+    that hasn't stopped at all yet); "bumble" reaches an explicit state="stopped" the same way
+    a manual Stop click does, again with no stop_reason/stop_kind -- both must serialize the
+    same None, not two different "absent" shapes."""
+    from operation_love.status import RunStatus
+
+    _Handler.state = HubState("config.yaml")
+    status = RunStatus("r1", ["hinge", "bumble"], min_labels=1, mode="observe")
+    status.set_app("bumble", mode="observe", state="stopped")
+    with _Handler.state._lock:
+        _Handler.state._status = status
+
+    httpd = _bind("127.0.0.1", 8799)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        code, raw = _get(base, "/api/status")
+        apps = json.loads(raw)["status"]["apps"]
+        assert apps["hinge"]["stop_kind"] is None
+        assert apps["hinge"]["stop_reason"] is None
+        assert apps["bumble"]["stop_kind"] is None
+        assert apps["bumble"]["stop_reason"] is None
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        _join_hub_watch_threads()
+
+
 def test_hub_tab_close_shuts_server_after_last_client(monkeypatch):
     # Collapse the reload grace so the test asserts the shutdown CONTRACT, not the constant's
     # value — otherwise retuning the grace silently breaks a test that isn't about timing.
@@ -1160,7 +1232,7 @@ def test_observe_banner_uses_click_language_and_replaces_it_with_hinge_opener():
         }}},
     }
     suggestion = _run_node(_observe_status_script(with_sheet))
-    assert "type this in Hinge, then tap Send Like" in suggestion["html"]
+    assert "then tap Send Like in Hinge" in suggestion["html"]
     assert "I like &lt;your prompt&gt; &amp; &quot;this&quot;" in suggestion["html"]
     assert "click pass X or heart" not in suggestion["html"]
     assert "<your prompt>" not in suggestion["html"]
@@ -1190,12 +1262,296 @@ def test_observe_banner_uses_click_language_and_replaces_it_with_hinge_opener():
     assert "<img" not in escaped_app["html"] and "&lt;img" in escaped_app["html"]
 
 
+def test_observe_banner_opener_row_is_the_auto_mode_canary():
+    """OWNER REQUIREMENT: the observe banner's suggested text must let the operator see
+    EXACTLY where the opener starts and stops, because that same OpenerResult.opener string
+    is what auto mode types verbatim (driver.like() -> adb.text(), see worker.py). If a model
+    wraps the real opener in scaffolding ("Sure! Here's a great opener: ...") that scaffolding
+    must show up in the banner too, byte for byte -- and it must be visually unmistakable from
+    the hub's own chrome, or the operator has no way to tell "the model's words" from "our
+    instructions" and the canary is defeated. This pins the opener onto its own delimited
+    block containing nothing but the escaped opener, structurally separate from the label and
+    chrome rows -- not merely present as a substring somewhere in the banner."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    scaffolded = 'Sure! Here\'s a great opener: "Nice antlers."'
+    snap = {
+        "running": True,
+        "status": {"apps": {"hinge": {
+            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
+            "opener_suggestion": scaffolded,
+        }}},
+    }
+    html = _run_node(_observe_status_script(snap))["html"]
+
+    escaped_opener = (
+        scaffolded.replace("&", "&amp;").replace("<", "&lt;")
+                  .replace(">", "&gt;").replace('"', "&quot;")
+    )
+    # The whole point of the canary: the scaffolding words survive into the banner
+    # byte-for-byte, exactly once, so the operator sees the same wrapper auto mode would type
+    # rather than a hub-cleaned version of it.
+    assert escaped_opener in html
+    assert html.count(escaped_opener) == 1
+
+    # Structural check, not substring-only -- a future revert to box()'s inline "title + sub
+    # flowed on one run-on line" rendering must fail this test even though the opener text
+    # would still appear somewhere in the markup. Label -> opener block -> chrome block must
+    # be three separate elements in this order, and the opener's own element must contain
+    # NOTHING else: no hub instruction text bleeding into the same row the operator is meant
+    # to read as "type exactly this."
+    m = re.search(
+        r'type exactly this</div>\s*<div[^>]*>(.*?)</div>\s*<div[^>]*>(.*?)</div>',
+        html, re.S,
+    )
+    assert m, f"expected label -> opener block -> chrome block structure, got:\n{html}"
+    opener_row, chrome_row = m.group(1), m.group(2)
+    assert opener_row == escaped_opener
+    assert "then tap Send Like in Hinge" in chrome_row
+    assert "then tap Send Like in Hinge" not in opener_row
+
+
+def test_observe_banner_opener_row_escapes_html_metacharacters_without_altering_content():
+    """The opener's delimited row still goes through innerHTML (the text comes straight from
+    an AI response), so it must stay injection-safe -- but escaping must be the ONLY thing
+    that happens to it. The canary (see test above) only holds if what's shown, once
+    unescaped by the browser, is identical to what auto mode types; if escaping ever dropped,
+    reordered, or added characters beyond turning &<>" into entities, the operator would be
+    proofreading a string auto mode never actually sends."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    raw = 'Nice <ears> & "antlers", right?'
+    snap = {
+        "running": True,
+        "status": {"apps": {"hinge": {
+            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
+            "opener_suggestion": raw,
+        }}},
+    }
+    html = _run_node(_observe_status_script(snap))["html"]
+    assert "<ears>" not in html
+    assert "Nice &lt;ears&gt; &amp; &quot;antlers&quot;, right?" in html
+
+
+def test_observe_banner_leads_with_which_item_to_like():
+    """DOC 5.9's INVERSION, at the surface the operator actually reads. The system now chooses
+    the item and the human is TOLD which one, before they tap -- so "like item 3" is the first
+    thing to do and must lead the box, with the model's own description of that item beside it
+    so it can be found without counting hearts (doc 5.7's "observe displays it" for
+    item_description, which until the inversion was rendered nowhere).
+
+    The canary rule still binds: the instruction is hub chrome and must stay OUT of the opener's
+    own row, which is asserted structurally here rather than by looking for the text anywhere in
+    the box."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {
+        "running": True,
+        "status": {"apps": {"hinge": {
+            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
+            "opener_suggestion": "Based on that ridgeline I'm going to guess Norway",
+            "opener_item": 3, "opener_item_description": "the ridgeline photo",
+            "opener_referenced": "the mountain behind her",
+        }}},
+    }
+    html = _run_node(_observe_status_script(snap))["html"]
+
+    assert "like item 3" in html
+    assert "the ridgeline photo" in html
+    m = re.search(r'then type exactly this</div>\s*<div[^>]*>(.*?)</div>\s*<div[^>]*>(.*?)</div>',
+                  html, re.S)
+    assert m, f"expected heading -> opener block -> chrome block structure, got:\n{html}"
+    opener_row, chrome_row = m.group(1), m.group(2)
+    assert opener_row == "Based on that ridgeline I'm going to guess Norway"
+    assert "like item 3" not in opener_row      # the instruction is chrome, never inline with it
+    assert "the mountain behind her" in chrome_row
+
+
+def test_observe_banner_keeps_the_pass_option_visible_while_a_suggestion_is_up():
+    """THE INVERSION MOVED THE SUGGESTION INTO THE DECISION WINDOW, AND THE DECISION IS STILL
+    THE HUMAN'S. Until doc 5.9 a suggestion could only be published AFTER the heart tap
+    ('waiting_for_send'), so it never competed with the 🟢 GO cue that says it is the operator's
+    turn and that PASSING is one of the two things they may do. It is published before the tap
+    now, and the opener branch runs ahead of the 'waiting' branch, so the whole decision window
+    read as "like item 3 ... then tap Send Like in Hinge": no circle (against the owner's
+    GO/WAIT convention), no X, and an instruction about a sheet that is not open yet -- in the
+    one mode whose entire output is the owner's own like/pass labels.
+
+    The canary rule is unaffected and is re-checked here rather than assumed: the pass cue is
+    chrome and must stay out of the opener's own row."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    app = {"app": "hinge", "mode": "observe",
+           "opener_suggestion": "Based on that ridgeline I'm going to guess Norway",
+           "opener_item": 3, "opener_item_description": "the ridgeline photo"}
+
+    deciding = {"running": True,
+                "status": {"apps": {"hinge": dict(app, state="waiting")}}}
+    html = _run_node(_observe_status_script(deciding))["html"]
+    assert "like item 3" in html                       # the instruction still leads
+    assert "🟢" in html                                 # ...and it is still their turn
+    assert "click pass X or heart" in html             # ...and passing is still on the table
+    assert "then tap Send Like in Hinge" not in html   # no sheet is open yet
+    m = re.search(r'then type exactly this</div>\s*<div[^>]*>(.*?)</div>\s*<div[^>]*>(.*?)</div>',
+                  html, re.S)
+    assert m, f"expected heading -> opener block -> chrome block structure, got:\n{html}"
+    assert m.group(1) == "Based on that ridgeline I'm going to guess Norway"
+    assert "click pass X or heart" in m.group(2)       # chrome, never inline with the opener
+
+    # Once the sheet IS open the choice has been made, so the cue becomes the send instruction
+    # and the pass wording goes away -- offering "pass X" under an open comment sheet would be
+    # advice about a control the operator is no longer looking at.
+    sending = {"running": True,
+               "status": {"apps": {"hinge": dict(app, state="waiting_for_send")}}}
+    html2 = _run_node(_observe_status_script(sending))["html"]
+    assert "then tap Send Like in Hinge" in html2
+    assert "click pass X or heart" not in html2
+
+    # Non-Hinge apps keep the generic control wording they already had in the plain GO cue.
+    other = {"running": True, "status": {"apps": {"bumble": dict(
+        app, app="bumble", state="waiting")}}}
+    html3 = _run_node(_observe_status_script(other))["html"]
+    assert "use the app's pass or like control" in html3
+    assert "click pass X or heart" not in html3
+
+
+def test_observe_banner_replaces_the_opener_with_a_warning_on_a_mismatch():
+    """DOC 5.9's mismatch surface, and the property that makes it worth having: the opener is
+    REPLACED, not annotated. Text left on screen beside a caveat is text that gets typed anyway,
+    which is exactly the wrong-item comment the inversion would otherwise reintroduce. WAIT (🔴)
+    styling per the owner's circle-only rule, because the one thing not to do here is copy
+    something -- and there is deliberately nothing to copy."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {
+        "running": True,
+        "status": {"apps": {"hinge": {
+            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
+            "opener_suggestion": None, "opener_item": 3,
+            "opener_warning": "you opened item 5, but this was written about item 3",
+        }}},
+    }
+    out = _run_node(_observe_status_script(snap))
+    assert out["display"] == "block"
+    assert "no suggestion to type" in out["html"]
+    assert "you opened item 5" in out["html"]
+    assert "🔴" in out["html"] and "🟢" not in out["html"]
+    assert "type exactly this" not in out["html"]
+    # ...and it still says what to do instead. This box replaces the OPENER BLOCK, not the
+    # banner, so it is the only thing on screen: without a next action a card whose suggestion
+    # failed states a problem and stops, and a session where they all fail (dead quota, a driver
+    # that cannot enumerate) would never show the operator a cue at all.
+    assert "type your own opener, then tap Send Like" in out["html"]
+
+    # Before the tap the cue is the DECISION, not the send -- same wording the suggestion box
+    # uses in that window, and the 🟢 that says it is their turn.
+    deciding = {"running": True, "status": {"apps": {"hinge": dict(
+        snap["status"]["apps"]["hinge"], state="waiting")}}}
+    out_deciding = _run_node(_observe_status_script(deciding))
+    assert "🟢 your call: click pass X or heart" in out_deciding["html"]
+    assert "you opened item 5" in out_deciding["html"]
+    assert "type exactly this" not in out_deciding["html"]
+
+    # A warning is a per-card WARNING, not a stop: while the run is shutting down the "do not
+    # swipe" box still takes precedence, because a decision about to be discarded is the more
+    # urgent thing to say.
+    stopping = {"running": True, "status": {"stopping": True, "apps": {"hinge": dict(
+        snap["status"]["apps"]["hinge"])}}}
+    out2 = _run_node(_observe_status_script(stopping))
+    assert "stopping — do not swipe" in out2["html"]
+    assert "you opened item 5" not in out2["html"]
+
+    # And the warning text is escaped like everything else that reaches innerHTML.
+    hostile = {"running": True, "status": {"apps": {"hinge": {
+        "app": "hinge", "mode": "observe", "state": "waiting_for_send",
+        "opener_warning": '<img src=x onerror="alert(1)">'}}}}
+    out3 = _run_node(_observe_status_script(hostile))
+    assert "<img" not in out3["html"] and "&lt;img" in out3["html"]
+
+
+def test_observe_banner_offers_no_text_to_type_when_a_warning_and_an_opener_arrive_together():
+    """THE CANARY RULE AND THE MISMATCH RULE MEET HERE, and the hub is the last place either can
+    be enforced. worker.py publishes opener_warning or opener_suggestion and never both (see
+    _ObserveSuggestion._display, which RETURNS at the mismatch), so this shape should be
+    unreachable -- which is exactly why the hub's own precedence has to be pinned rather than
+    assumed. A stale poll, a reordered publish, or a future producer that annotates instead of
+    replacing would otherwise put a wrong-item opener back on screen next to a caveat, and text
+    on screen beside a caveat is text that gets typed anyway (doc 5.9).
+
+    "Offers nothing to type" is asserted on the OPENER STRING ITSELF, not on the absence of a
+    label: the failure this guards against is the operator copying those exact words."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {
+        "running": True,
+        "status": {"apps": {"hinge": {
+            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
+            "opener_suggestion": "Based on that ridgeline I'm going to guess Norway",
+            "opener_referenced": "the mountain behind her",
+            "opener_item": 3, "opener_item_description": "the ridgeline photo",
+            "opener_warning": "you opened item 5, but this suggestion was written about item 3",
+        }}},
+    }
+    html = _run_node(_observe_status_script(snap))["html"]
+
+    assert "you opened item 5" in html
+    assert "no suggestion to type" in html
+    # Nothing copyable survives: not the opener, not the "type exactly this" instruction that
+    # would tell the operator there is something to copy, and not the referenced caption that
+    # only makes sense under a suggestion.
+    assert "ridgeline I'm going to guess Norway" not in html
+    assert "type exactly this" not in html
+    assert "the mountain behind her" not in html
+    assert "🔴" in html and "🟢" not in html
+
+
+def test_observe_banner_keeps_the_go_cue_while_the_suggestion_is_still_being_written():
+    """DOC 5.9's timing rule at the surface: READY is published immediately and the suggestion
+    fills in behind it, so `opener_pending` is a NOTE beside a live GO cue rather than a WAIT
+    state that holds the operator up. The old blocking "suggesting" state was correct when the
+    call sat between the heart tap and the suggestion; it would be a lie now."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    pending = {
+        "running": True,
+        "status": {"apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting",
+                                      "opener_pending": True}}},
+    }
+    out = _run_node(_observe_status_script(pending))
+    assert "🟢" in out["html"]                        # still GO: they may act right now
+    assert "click pass X or heart" in out["html"]
+    assert "wait a moment for a suggestion" in out["html"]
+
+    settled = {
+        "running": True,
+        "status": {"apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting",
+                                      "opener_pending": False}}},
+    }
+    out2 = _run_node(_observe_status_script(settled))
+    assert "make your choice in the app" in out2["html"]
+    assert "wait a moment for a suggestion" not in out2["html"]
+
+    # The race doc 5.9 names: the human taps FASTER than the model answers, so the sheet is open
+    # with nothing to type yet. That must read as "still writing", not as "there is none" -- the
+    # operator's next move differs (wait a beat, versus write your own).
+    tapped_first = {
+        "running": True,
+        "status": {"apps": {"hinge": {"app": "hinge", "mode": "observe",
+                                      "state": "waiting_for_send", "opener_pending": True}}},
+    }
+    out3 = _run_node(_observe_status_script(tapped_first))
+    assert "still writing a suggestion" in out3["html"]
+    assert "No suggestion available" not in out3["html"]
+
+
 def test_observe_banner_shows_wait_cue_while_a_suggestion_is_being_generated():
-    """B: while the worker is blocked inside the (up to opener.request_timeout_s) advisory
-    maybe_opener() call, the hub must show SOMETHING instead of the stale 'click pass X or
-    heart' GO banner from before the heart tap -- otherwise the operator has no way to tell
-    anything is happening. OWNER UI RULE: GO/WAIT cues use only 🟢/🔴 circles, so this must
-    render as the same WAIT (🔴) style as capturing/acting/starting, not a new indicator."""
+    """The legacy blocking "suggesting" state. NOTHING PUBLISHES IT since doc 5.9's inversion
+    (the suggestion is generated on its own thread while the operator is already free to act --
+    see the opener_pending test above), but it stays a legal AppStatus.state that an older
+    snapshot can carry, so the branch that renders it stays pinned rather than silently rotting.
+
+    OWNER UI RULE: GO/WAIT cues use only 🟢/🔴 circles, so this must render as the same WAIT (🔴)
+    style as capturing/acting/starting, not a new indicator."""
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     suggesting = {
@@ -1378,6 +1734,14 @@ def test_render_auto_status_shows_opener_exhaustion_stop_reason():
     # operator-clicked Stop -- both were just state='stopped' with no reason field. The
     # banner must show the specific cause (AppStatus.stop_reason), the same way it already
     # shows `.error` for the exception path above.
+    #
+    # stop_kind="opener" is required here since the 2026-08-11 blocked-deck addition gave
+    # stop_reason a SECOND possible cause (worker.py's blocked-deck check) with its own
+    # stop_kind: hub.html now branches the "opener capacity exhausted" wording specifically on
+    # stop_kind==='opener' rather than on stop_reason's mere presence (see hub.html's comment
+    # right above that branch) -- a real run always sets both together (worker.py's four
+    # opener-triggered stop sites), so omitting it here would test a shape no live run ever
+    # actually produces.
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     snap = {
@@ -1385,7 +1749,8 @@ def test_render_auto_status_shows_opener_exhaustion_stop_reason():
         "status": {
             "apps": {
                 "hinge": {"app": "hinge", "mode": "auto", "state": "stopped",
-                          "stop_reason": "run budget reached", "swipes_run": 4},
+                          "stop_reason": "run budget reached", "stop_kind": "opener",
+                          "swipes_run": 4},
             },
         },
     }
@@ -1395,6 +1760,56 @@ def test_render_auto_status_shows_opener_exhaustion_stop_reason():
     assert "opener capacity exhausted" in result["html"]
     # The reason takes over the box's sub-line instead of the ordinary swipe count.
     assert "4 swipes this run" not in result["html"]
+
+
+def test_render_auto_status_reads_a_targeting_stop_as_one_not_as_opener_capacity():
+    """ops/OPENER-REDESIGN.md 5.6's hard stop, at the surface the operator reads. The bot
+    reached the like, could not put it on the item the model chose, and put it nowhere. That
+    used to publish stop_kind="opener" and therefore rendered under the branch above titled
+    "opener capacity exhausted" -- a confidently wrong label (nothing was exhausted; the opener
+    is fine) on the one stop that exists to prove we never comment on the wrong item, with the
+    truth demoted to the sub-line. It now has its own stop_kind and its own title.
+
+    Two properties beyond the wording. It must NOT render as an error box: worker.py catches
+    ItemTargetingError precisely so a rule being obeyed does not look like a crash, and a red
+    banner here would undo that one layer up. And the reason -- which leads with INTENDED and
+    ACTUAL (Worker._targeting_stop_reason) -- has to survive into the box, because those two
+    numbers are the whole diagnosis."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    reason = ("the like was NOT sent: reaching the item the opener was written about failed. "
+              "Intended: item 4 (model_items). Actual: item 6 (model_items).")
+    snap = {
+        "running": True,
+        "status": {"apps": {"hinge": {"app": "hinge", "mode": "auto", "state": "stopped",
+                                      "stop_reason": reason, "stop_kind": "targeting",
+                                      "swipes_run": 2}}},
+    }
+    result = _run_node(_autostatus_script(snap))
+    assert result["display"] == "block"
+    html = result["html"]
+
+    assert "could not like the item the opener was written about" in html
+    assert "opener capacity exhausted" not in html
+    assert "Intended: item 4" in html and "Actual: item 6" in html
+    # Not the error box: 'idle' styling (the same neutral box every other non-crash stop uses),
+    # never 'err'. Asserted on the styles themselves so a future re-colour has to come through
+    # this test and worker.py's reasoning for catching the exception at all.
+    assert "#22222b" in html                      # css.idle background
+    assert "#3a1414" not in html                  # css.err background
+    assert "🔴" not in html                        # the owner's WAIT/error circle stays for crashes
+
+    # And the branch it was split OUT of is untouched: a genuine capacity stop still reads as
+    # one, so the split gained a true label rather than trading one wrong label for another.
+    capacity = {
+        "running": True,
+        "status": {"apps": {"hinge": {"app": "hinge", "mode": "auto", "state": "stopped",
+                                      "stop_reason": "run budget reached", "stop_kind": "opener",
+                                      "swipes_run": 2}}},
+    }
+    other = _run_node(_autostatus_script(capacity))["html"]
+    assert "opener capacity exhausted" in other
+    assert "could not like the item" not in other
 
 
 def test_render_auto_status_escapes_stop_reason_before_using_inner_html():

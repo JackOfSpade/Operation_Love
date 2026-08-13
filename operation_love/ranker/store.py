@@ -36,7 +36,11 @@ CREATE TABLE IF NOT EXISTS decisions (
 );
 CREATE TABLE IF NOT EXISTS openers (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
-    model TEXT, opener TEXT, referenced TEXT
+    model TEXT, opener TEXT, referenced TEXT, angle TEXT, item_description TEXT
+);
+CREATE TABLE IF NOT EXISTS opener_rejections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
+    model TEXT, attempt INTEGER, reason_code TEXT, reason TEXT, raw_opener TEXT
 );
 CREATE TABLE IF NOT EXISTS spend (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, created_at REAL, model TEXT,
@@ -61,6 +65,27 @@ class SQLiteStore:
                 raise
         try:
             self.con.execute("ALTER TABLE labels ADD COLUMN profile_id TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+        # openers.angle: the two statements above are BOTH needed for every added column, and
+        # for the same reason — CREATE TABLE IF NOT EXISTS is a no-op against a db file that
+        # already has the table, so the _SCHEMA entry only ever reaches a FRESH database and
+        # the ALTER is what carries the column into an existing one. Same shape as the two
+        # migrations above: swallow only "duplicate column name" (the already-migrated case)
+        # and re-raise anything else rather than starting up with a schema we can't write to.
+        try:
+            self.con.execute("ALTER TABLE openers ADD COLUMN angle TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+        # openers.item_description: the model's own short description of the ITEM it picked
+        # (ops/OPENER-REDESIGN.md 5.7 -- auto logs it, observe displays it). Same two-part
+        # migration as every column above, for the same reason spelled out there: the _SCHEMA
+        # line only reaches a FRESH database, this ALTER is what carries the column into one
+        # that already exists.
+        try:
+            self.con.execute("ALTER TABLE openers ADD COLUMN item_description TEXT")
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
@@ -109,11 +134,32 @@ class SQLiteStore:
             )
             self.con.commit()
 
-    def record_opener(self, run_id, app, model, opener, referenced):
+    def record_opener(self, run_id, app, model, opener, referenced, angle="",
+                      item_description=""):
+        # `angle` is the model's own free-text label for what this opener is doing. Telemetry
+        # only — nothing reads it back at runtime; it's here so the question "which opener
+        # shapes correlate with matches" becomes answerable offline later. Defaulted so
+        # callers that predate it (and any store used positionally) still work.
+        #
+        # `item_description` is the model's own short description of the ITEM it chose to write
+        # about and to like (ops/OPENER-REDESIGN.md 5.7). Also telemetry here, and distinct
+        # from `referenced`: that column holds the DETAIL the opener reacts to, this one holds
+        # what the item IS. Persisted in both modes so a wrong-item report can later be checked
+        # against what the model believed it picked. Same trailing-default rule as `angle`.
         with self._lock:
             self.con.execute(
-                "INSERT INTO openers (run_id, app, created_at, model, opener, referenced) VALUES (?,?,?,?,?,?)",
-                (run_id, app, time.time(), model, opener, referenced),
+                "INSERT INTO openers (run_id, app, created_at, model, opener, referenced,"
+                " angle, item_description) VALUES (?,?,?,?,?,?,?,?)",
+                (run_id, app, time.time(), model, opener, referenced, angle, item_description),
+            )
+            self.con.commit()
+
+    def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener):
+        with self._lock:
+            self.con.execute(
+                "INSERT INTO opener_rejections (run_id, app, created_at, model, attempt,"
+                " reason_code, reason, raw_opener) VALUES (?,?,?,?,?,?,?,?)",
+                (run_id, app, time.time(), model, attempt, reason_code, reason, raw_opener),
             )
             self.con.commit()
 

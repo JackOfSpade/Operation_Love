@@ -513,13 +513,16 @@ class BumbleWebDriver(PlaywrightDriver):
         return out
 
     # --- actions --------------------------------------------------------
-    def like(self, opener: str | None = None, item_index: int = 0, *,
-             anchored_opener=None) -> None:
-        # item_index is ignored: Bumble likes the whole profile (no per-photo comment).
-        # anchored_opener is ignored for the same reason: it exists so a driver that missed
-        # its per-item target can re-ground the opener in a screenshot of the item the
-        # comment actually attaches to, and Bumble likes the whole profile, so there is no
-        # per-item comment -- and therefore no per-item screenshot -- to anchor one against.
+    def like(self, opener: str | None = None, item_index: int | None = None, *,
+             model_item_index: int | None = None) -> None:
+        # item_index is ignored: Bumble likes the whole profile (no per-photo comment). The
+        # signature still tracks base.Driver.like's `int | None` (None = "nobody said which
+        # item", distinct from 0 = "the first one") so no caller has to know which driver it is
+        # holding before choosing what to pass.
+        # model_item_index is ignored one step further on: doc 5.6's post-tap check verifies a
+        # per-item comment screen against a stored crop of that item, and there is neither here.
+        # For the same reason this flow can never raise base.ItemTargetingError -- there is no
+        # per-item target to miss, so there is nothing for the never-substitute rule to protect.
         # NORMAL like only — never the super-swipe. Super-likes/boosts are the
         # owner's manual call (see DEFAULT_SELECTORS["superlike"]).
         before = self._card_fingerprint()

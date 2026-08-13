@@ -225,6 +225,24 @@ def test_identity_top_name_band_without_identity_band_is_rejected():
                        identity_top_name_band=(0.03, 0.130, 0.75, 0.250))
 
 
+# --- paywall_headline_band: OCR-only REFINEMENT of the "paywall" template's verdict --------
+# See android_spec.py's paywall_headline_band docstring for the mechanism: the screen itself is
+# detected by the "paywall" TEMPLATE (hinge.py's _paywall_visible), never by this band's OCR --
+# this band only refines the operator-facing stop message once that template has already
+# matched (AndroidDriver._deck_blocked_reason). Same "refinement, not a standalone source"
+# shape -- and the same __post_init__ idiom -- as identity_top_name_band requiring identity_band
+# just above.
+
+def test_paywall_headline_band_without_paywall_template_is_rejected():
+    """Declaring paywall_headline_band with no "paywall" template to detect the screen it sits
+    on is a mis-wiring: there is nothing for this OCR refinement to refine. Refused at
+    construction the same way identity_top_name_band without identity_band is refused above
+    (test_identity_top_name_band_without_identity_band_is_rejected)."""
+    with pytest.raises(ValueError, match="paywall"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       paywall_headline_band=(0.0556, 0.1958, 0.9537, 0.3000))
+
+
 def test_malformed_observe_ignore_zones_entry_is_rejected():
     with pytest.raises(ValueError, match="observe_ignore_zones"):
         AndroidAppSpec(app="x", package="x.y", calibrated=False,
@@ -290,8 +308,29 @@ def test_hinge_spec_matches_the_original_hardcoded_defaults():
     assert HINGE_SPEC.scroll_captures == 8
     assert HINGE_SPEC.dwell_s == 1.1
     assert HINGE_SPEC.read_scroll_frac == 0.55
-    assert set(HINGE_SPEC.templates) == {"like", "pass", "confirm", "upsell_dismiss"}
+    # "paywall" (hinge_upgrade_tab.png) joined this set 2026-08-11 -- see
+    # test_hinge_spec_carries_the_paywall_template_and_headline_band below for the dedicated
+    # regression test against that specific addition being dropped.
+    assert set(HINGE_SPEC.templates) == {"like", "pass", "confirm", "upsell_dismiss", "paywall"}
     assert set(HINGE_SPEC.coords) == {"like_heart", "pass_x", "comment_box", "send_like"}
+
+
+def test_hinge_spec_carries_the_paywall_template_and_headline_band():
+    """Regression against someone dropping the out-of-free-likes paywall wiring (2026-08-11,
+    data/hinge_debug/run_20260811_011416): HINGE_SPEC must actually declare BOTH the "paywall"
+    template -- hinge_upgrade_tab.png, the fixed "HingeX" tab wordmark crop AndroidDriver.
+    _paywall_visible template-matches against (see that method's docstring for the measured
+    0.75 threshold and the tab-chrome-not-headline-or-CTA reasoning) -- and the MEASURED
+    paywall_headline_band (0.0556, 0.1958, 0.9537, 0.3000), i.e. px (60,470)-(1030,720) of the
+    1080x2400 reference screenshot, ops/calibration/hinge_out_of_likes_20260811.png. Either one
+    silently missing would degrade a real paywall stop from the specific "Hinge is out of free
+    likes for today" message back to the generic "the deck is not available" one (the template
+    missing would be worse still: no detection at all, falling through to the ~90s-floor generic
+    stuck-screen watchdog instead of an immediate, specific stop) -- with nothing else in this
+    suite that would catch either regressing, since test_android_app_spec_is_frozen and friends
+    only cover construction-time validation, not HINGE_SPEC's own field values."""
+    assert HINGE_SPEC.templates.get("paywall") == "hinge_upgrade_tab.png"
+    assert HINGE_SPEC.paywall_headline_band == (0.0556, 0.1958, 0.9537, 0.3000)
 
 
 def test_bumble_spec_is_an_uncalibrated_direct_placeholder():
@@ -400,13 +439,42 @@ def test_comment_sheet_flow_types_the_opener_between_heart_and_send():
     heart_pt = (900, 1200)      # right of the vision side-filter (x > 0.55 * 1080)
     adb = FakeAdb([_sheet_frame(heart_pt)])
     drv = _drv(_SHEET_SPEC, adb)
-    drv.like("great smile in photo 2")
+    # item_index=0 ("the opener is about the first captured frame"), which is what the live
+    # pipeline hands over for model item 1 in profile-photos space. An opener with NO item index
+    # is refused outright since 2026-08-12 -- see _like_comment_sheet and the never-substitute
+    # rule -- so passing one here keeps this test about typing rather than about targeting.
+    drv.like("great smile in photo 2", 0)
 
     w, h = adb.screen_size()
     box = (int(0.5 * w), int(0.4 * h))
     send = (int(0.6 * w), int(0.6 * h))
     assert adb.taps == [heart_pt, box, send]
     assert adb.texts == ["great smile in photo 2"]
+
+
+def test_comment_sheet_flow_types_exactly_the_bare_opener_with_no_ui_chrome_attached():
+    """THE WYSIWYG headline regression test (typography.fold_to_ascii / Adb.text fail-loud
+    fix): what reaches Adb.text() during a live like must be EXACTLY the opener string and
+    nothing else -- no hub display chrome ever gets concatenated onto it before it's typed
+    into Hinge's comment box and sent to a real person. "about: ...", a " · " separator,
+    "type this in Hinge", and a leading "💬" marker are all real substrings this codebase's
+    hub/status layer uses to LABEL an opener FOR THE OPERATOR (see worker.py's
+    opener_referenced / opener_suggestion display fields) -- they describe the opener, they
+    are never part of it, and this test pins that the like() -> adb.text() path can never
+    blur that line. Equality (not just "these chrome strings are missing") is the real
+    guarantee: OpenerResult.opener travels through OpenerPick.text (service.py) to
+    driver.like()'s `opener` argument to Adb.text()'s `s` argument completely unchanged."""
+    heart_pt = (900, 1200)
+    adb = FakeAdb([_sheet_frame(heart_pt)])
+    drv = _drv(_SHEET_SPEC, adb)
+    opener = "Your trip to Sao Paulo looks incredible, what was the best meal there"
+
+    drv.like(opener, 0)               # 0 = "about the first captured frame"; see the test above
+
+    assert adb.texts == [opener]      # exact match end to end, not merely "close enough"
+    sent = adb.texts[0]
+    for ui_chrome in ("about:", " · ", "type this in Hinge", "\U0001f4ac", "referenced"):
+        assert ui_chrome not in sent
 
 
 def test_comment_sheet_flow_skips_comment_box_without_an_opener():

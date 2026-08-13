@@ -277,6 +277,21 @@ class HubState:
         except Exception:  # noqa: BLE001 — never raise into a bug report; see this method's docstring
             return []
 
+    def recent_opener_rejections(self) -> list[dict]:
+        """The REJECTED opener attempts this run, newest LAST, or [] when no run is/was
+        active -- same shape and same reasoning as recent_openers above, just reading
+        OpenerService.recent_rejections_snapshot instead of recent_openers_snapshot (see
+        opener/service.py's recent_rejections docstring in __init__)."""
+        with self._lock:
+            svc = self._opener_service
+        snapshot_fn = getattr(svc, "recent_rejections_snapshot", None)
+        if snapshot_fn is None:
+            return []
+        try:
+            return snapshot_fn()
+        except Exception:  # noqa: BLE001 — never raise into a bug report; see this method's docstring
+            return []
+
     def config_defaults(self) -> dict:
         try:
             cfg = cfg_mod.load(self.config_path)

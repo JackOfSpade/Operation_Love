@@ -1,6 +1,6 @@
 """Provider-backed opener generation, with enforced JSON output.
 
-Structured outputs guarantee the model returns exactly {opener, referenced} —
+Structured outputs guarantee the model returns exactly the fields in _SCHEMA below —
 no "Sure! Here's a great opener:" preamble (the problem that killed the original
 ChatGPT attempt). The provider is behind a small interface so it stays swappable.
 
@@ -15,7 +15,7 @@ import json
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Protocol
 from urllib.error import HTTPError
@@ -24,23 +24,233 @@ from urllib.request import Request, urlopen
 
 from ..costing import Usage
 from ..perception.capture import Profile
-from ..typography import DASH_TRANSLATION, tidy_punctuation_spacing
+from ..typography import (
+    describe_char,
+    fold_to_ascii,
+    undeliverable_chars,
+    undeliverable_sequences,
+)
 
+# The value `item_index` carries when the model gave us no usable item number at all: a
+# missing field, a null, a non-integer, or anything below the first item. NOT "item 0" and not
+# "the first item" -- the item numbering the model is given is 1-BASED (ops/OPENER-REDESIGN.md
+# 5.7), so zero is out of band by construction and there is no legal index it can be confused
+# with. It exists as a named constant precisely so a reader cannot mistake a bare `0` here for
+# the old `referenced_index` default, which really did mean "the first image".
+#
+# What a consumer must do with it is NOT decided here -- doc 5.3's rule is "treat a missing
+# table as a hard stop, never as a reason to fall back to a fixed coordinate", and the
+# navigation half of that (the driver-owned translation table, the removal of the hearts[0]
+# fallback) is a LATER workflow. What IS decided here, as of the 2026-08-12 correction, is that
+# it must never arrive at a consumer wearing a legal value's clothes: see
+# OpenerPick.capture_order_index, which maps it to None rather than to any tappable index,
+# because the driver's own capture-order space has a perfectly legal 0 in it.
+ITEM_INDEX_ABSENT = 0
+
+# The number of the first item in the list the model is shown. 1-based per doc 5.7, and named
+# rather than written as a bare 1 in the clamp below because "is this index 0-based or 1-based"
+# is the exact question that made the old field unsafe to reinterpret.
+FIRST_ITEM_INDEX = 1
+
+# WHICH LIST `item_index` COUNTS. The number alone cannot say, which is the entire class of bug
+# doc 5.3 is written against ("index space belongs to the driver"), and leaving it to a comment
+# is what let a 1-based item number be handed to a 0-based capture-order parameter and be
+# accepted as a confident, in-range, on-target answer. So generate() records the space it
+# actually built the request in, on the result, and every consumer branches on it rather than
+# on an assumption about which shape production happens to send today.
+#
+# These are the model-facing spaces only. The DRIVER's capture-order space is deliberately NOT
+# one of them: nothing in this module can produce a value in it, and naming it here would
+# invite exactly the silent conversion this constant exists to stop.
+#
+# PROFILE_PHOTOS: the numbered images were `profile.photos`, i.e. the raw scroll frames, sent in
+# capture order and numbered 1..len(photos) (see _text_part's frame branches). This is the
+# legacy shape and it is what production still sends. The frames are not really items -- one
+# card can appear in three of them and one frame can hold two cards -- which is the whole reason
+# doc 5.2 replaces them with crops; but the CORRESPONDENCE between the number the model returns
+# and the driver's capture order is exact and derivable, so a consumer holding the driver may
+# translate it (see OpenerPick.capture_order_index).
+#
+# MODEL_ITEMS: the numbered images were an ItemRequest's per-item crops (doc 5.1/5.2), numbered
+# 1..item_count over the SELECTABLE items only. There is no way to get from one of these to
+# anything the driver can tap without doc 5.3's driver-owned translation table, which is the
+# next workflow -- so this space is untranslatable on purpose, and a consumer that cannot
+# translate it must refuse to target rather than guess.
+INDEX_SPACE_PROFILE_PHOTOS = "profile_photos"
+INDEX_SPACE_MODEL_ITEMS = "model_items"
+
+# FIELD ORDER IS LOAD-BEARING, not cosmetic (ops/OPENER-REDESIGN.md 3.4 and 5.7): item_index,
+# then referenced, then angle, then item_description, then opener LAST. Every model in the
+# cascade runs with minimal thinking (config.yaml opener.thinking), so the model has no
+# scratchpad of any kind and the only place it can do its grounding work is an earlier OUTPUT
+# field. The old order emitted `opener` first, which meant the message itself had to carry the
+# description because nothing had absorbed it yet -- root cause #3 of the over-description bug
+# this redesign fixes. Putting `referenced` first discharges the description into a field that
+# is never sent to her, and `angle` makes the model commit to what its message is doing before
+# it writes the message.
+#
+# `item_index` leads because it is now a CHOICE the opener has to follow, not a label attached
+# to an opener that was already written (doc 5.1: "the model receives the profile and returns
+# which item to like plus the opener", and selection is by best ANGLE rather than best photo).
+# Emitting it after the message would invert that: the model would write first and then pick
+# whichever item the message happened to suit, which is the blind-then-repair order Part B
+# exists to delete. `item_description` sits immediately before `opener` for the same
+# discharge-it-first reason as `referenced`, and because doc 5.8's pre-flight cross-check reads
+# it against our own crop at that index.
+#
+# Whether Gemini actually honours declared property order in responseJsonSchema is a
+# HYPOTHESIS, not a documented guarantee (doc 3.4 says to A/B it rather than assume it), so
+# this ordering is cheap insurance that costs nothing if the hypothesis is wrong. The field
+# descriptions below are written to be adversarial to each other -- `referenced` says "this is
+# never sent to her, put the whole description here", `opener` says "do not reuse those words"
+# -- so the routing survives even on a model that ignores order entirely.
 _SCHEMA = {
     "type": "object",
     "properties": {
-        "opener": {"type": "string", "description": "The message to send, bare text only. Maximum two sentences. No em dash, no hyphen."},
-        "referenced": {"type": "string", "description": "The specific profile detail it references."},
-        "referenced_index": {
+        "item_index": {
             "type": "integer",
-            "description": "0-based index, in the order the images were given (profile scroll order), "
-                           "of the image whose photo/prompt your opener is about.",
+            "description": "The number of the item your opener is about. This is also the item "
+                           "that will be liked, so the message and the like always land on the "
+                           "same thing. The list it indexes is the numbered items in THIS "
+                           "request and nothing else: they are numbered from 1, in the order "
+                           "they are given, and you may only choose a number that was actually "
+                           "given to you. Some blocks are shown WITHOUT a number, for context "
+                           "only; you may take them into account and refer to what they show, "
+                           "but you can never pick one.",
+        },
+        "referenced": {
+            "type": "string",
+            "description": "What you are reacting to, described in full: the exact photo or "
+                           "prompt detail your claim comes from. THIS FIELD IS NEVER SENT TO "
+                           "HER. Put the whole description here so it does not leak into the "
+                           "opener, and do not reuse its words in the opener.",
+        },
+        "angle": {
+            "type": "string",
+            "description": "In your own words, what your opener is doing: what you are "
+                           "guessing, claiming, teasing about, or connecting. Free text, not a "
+                           "fixed list of choices. Recorded for analysis only, never sent to her.",
+        },
+        "item_description": {
+            "type": "string",
+            "description": "A short description of the item you picked: say whether it is a "
+                           "photo or a written prompt, and in a few words what it shows or "
+                           "says. This is how we check that the item you numbered is the item "
+                           "we think it is. Never sent to her.",
+        },
+        "opener": {
+            "type": "string",
+            "description": "The message to send, bare text only. She reads it while looking at "
+                           "the item, so it must not describe the item and must not reuse the "
+                           "words from referenced. Maximum two sentences. No em dash, no hyphen.",
         },
     },
-    "required": ["opener", "referenced", "referenced_index"],
+    "required": ["item_index", "referenced", "angle", "item_description", "opener"],
     "additionalProperties": False,
 }
 
+# THIS TEXT IS DUPLICATED, AND THE COPIES ARE SENT IN THE SAME REQUEST. config.yaml's
+# opener.style carries a near-duplicate of the substance rules below; it arrives as the user
+# turn's STYLE GUIDE while this constant arrives as systemInstruction, so the two disagreeing
+# is not a cosmetic inconsistency but a real bug -- the model receives both at once. Each copy
+# is pinned by a SEPARATE test (tests/test_opener.py against this constant,
+# tests/test_config_yaml_real.py against the real config file), so editing one alone also
+# fails a test in a file nobody would think to look at. The duplication itself is known debt,
+# recorded in ops/OPENER-REDESIGN.md 3.1.
+#
+# Division of labour between the two copies, per doc 3.1: the LONG form of the rule, the
+# reasoning behind it, and the few-shot edit pairs live in config.yaml, which is owner tunable
+# and is where voice belongs. This constant carries a COMPRESSED statement of the same
+# property plus the mechanics that have nowhere else to live (field semantics, output format,
+# the two HARD RULEs).
+#
+# Rewritten 2026-08-11 per ops/OPENER-REDESIGN.md Part A. What changed, and why each change:
+#   - "Ground this opener in exactly ONE concrete detail from a specific photo or prompt" is
+#     GONE (doc 1.1 root cause #1). It never distinguished being GROUNDED IN a detail from
+#     NAMING it, so the model recited the detail back inside the message -- under a photo she
+#     is already looking at, which reads as if we think she cannot see it. Its replacement is
+#     the falsifiability rule: the opener must carry a claim that could be wrong. Description
+#     is unfalsifiable by construction, which is exactly why it proves nothing.
+#   - "Favor a sincere observation, a direct low-pressure invitation, or one open,
+#     easy-to-answer question about that detail" goes with it: it made an unfalsifiable
+#     observation and an interview question the two default shapes. Questions are demoted
+#     rather than banned (doc 2.2): a claim she can correct is the easiest reply to give.
+#   - "ONE short sentence is preferred" is GONE (doc 3.2.1); the TWO sentence ceiling stays.
+#     Preferring brevity for its own sake worked against a claim that needs room to exist
+#     ("I know you were smiling, but I bet you were freezing out there" is eighteen words and
+#     is the strongest opener in the whole design). Word economy is now tied to the actual
+#     goal instead: spend no word on anything she can already see. Budget reallocated, not cut.
+#   - The three guardrails (hedge the claim not yourself, guess the world not her identity,
+#     never invent the sender) are compressed to one line each here; config.yaml carries them
+#     in full. They are safety rules rather than style preferences, so both copies state them.
+#
+# Addendum 2026-08-11 (same day, later): a live dry run against a real profile produced 5/5
+# openers that all opened with "I bet" -- exactly the entropy-collapse risk doc 3.6 predicted.
+# This constant's HEDGE THE CLAIM line was the sharper half of the root cause: it named only
+# two forms ("a hedge like I bet or I heard"), with "I bet" first in the very sentence the
+# model reads immediately before it writes, on every request, on every model in the cascade
+# (thinkingLevel minimal, so nothing intervenes between reading this and generating). Fixed by
+# widening the named forms to seven, marking the list illustrative rather than exhaustive, and
+# adding a standalone VARY THE OPENING instruction. config.yaml's copy got the same two changes
+# so the pair keeps agreeing (doc 3.1). Neither change touches the underlying guardrail: hedge
+# the claim, never the sender, is unchanged word for word at the start of the sentence.
+#
+# Addendum 2026-08-12 (Part B, ops/OPENER-REDESIGN.md 5.1/5.7): the model now CHOOSES the item
+# rather than labelling one after the fact, so two lines changed here and nothing else did.
+# "The images are her profile in scroll order; set referenced_index to the 0-based index of the
+# image your opener is about" is gone: `referenced_index` no longer exists, its 0-based index
+# into raw SCROLL FRAMES no longer names anything (frames are not items -- one card can appear
+# in three of them, and a frame can hold two cards), and the replacement PICK THE ITEM YOURSELF
+# line states the three facts the new contract depends on: items are numbered from 1, the
+# chosen item is also the one that gets liked (5.1's single call), and unnumbered context
+# blocks may be read but never picked (5.3's two tiers). The selection criterion in that line
+# is 5.1's, word for word in substance: best ANGLE, not most striking photo.
+#
+# Addendum 2026-08-12 (Part B, doc 5.1): the SELECTION CRITERION is now spelled out rather than
+# compressed to a single clause. The line above said only "choose the item you have the best
+# thing to say about, not the most striking picture", which states the preference but not the
+# tradeoff it exists to settle, and a model with a page of photos in front of it has a strong
+# prior toward the best photograph. Three things were added, all of them doc 5.1's:
+#   - The tradeoff, made explicit: a plain item you can make a real claim about beats a
+#     beautiful one you have nothing to say about ("a mediocre backpacking shot that connects to
+#     her food prompt beats a great portrait with nothing to say about it"). It is the same
+#     premise/point distinction THE ONE RULE already makes, applied one step earlier -- the item
+#     is the premise, so picking by how the item LOOKS optimises the half that is not the message.
+#   - The failure mode, named as a failure: picking an item it has nothing to say about, which
+#     leaves description as the only thing left to write. That is not a separate bug from
+#     over-description, it is the upstream cause of it, and it is reachable while every wording
+#     rule in Part A is obeyed, which is why naming it here is not redundant with THE ONE RULE.
+#   - What the unnumbered tier IS, not merely that it exists: her vitals (age, job, school,
+#     city), per doc 5.3's live capture. They may be referenced freely and never chosen. Doc 2.3
+#     names combining two things she said in different places as the strongest move precisely
+#     because it cannot be bluffed by anyone who read one card, and the vitals block is prime
+#     material for it -- so "read it, use it, but never pick it" needed the REASON to use it,
+#     not just permission. Deliberately worded WITHOUT naming the move list itself: the moves are
+#     stated as non-binding examples in config.yaml only (doc 2.3), and a compressed copy here
+#     would arrive without its escape clause, which is exactly what
+#     tests/test_opener.py::test_system_prompt_never_turns_the_five_moves_into_a_binding_menu
+#     watches for.
+# config.yaml's opener.style carries the long form of all three (doc 3.1's division of labour),
+# and both copies are pinned by their own tests.
+#
+# Addendum 2026-08-12 (audit fix, "BUG 1"): the line above is no longer accurate and is left
+# unedited only per this file's own "never rewrite existing lines" convention (see
+# ops/OPENER-REDESIGN.md). config.yaml's opener.style is sent, byte-for-byte, on EVERY request
+# regardless of shape (it is the user turn's STYLE GUIDE -- see _text_part), so its unconditional
+# copy of PICK THE ITEM YOURSELF directly contradicted the anchored closing paragraph _text_part
+# appends for OBSERVE's request, which tells the model the item is ALREADY chosen (the human
+# picked it by tapping its heart). _SYSTEM below does not have that problem, because it is
+# genuinely shape-aware: _ANCHOR_SYSTEM is appended only when the request is anchored, and it
+# explicitly overrides this constant's own "PICK THE ITEM YOURSELF" sentence before the model
+# ever writes ("THIS OVERRIDES PICK THE ITEM YOURSELF ABOVE ... you do not choose one"). Building
+# a second, independent override for config.yaml's copy would leave two shape-aware mechanisms
+# doing the same job in parallel -- exactly the "duplication trap" this module's own comment
+# above (3.1) already names as the standing risk -- so the three paragraphs were deleted from
+# config.yaml instead, and _SYSTEM below is now their one remaining home. Nothing below this
+# comment changed: the compressed copy was already complete (the tradeoff, the failure mode, the
+# context tier and why to use it), so no content was lost, only the unconditional duplicate of
+# it. See tests/test_config_yaml_real.py's
+# test_shipped_opener_style_does_not_ship_the_item_selection_rule.
 _SYSTEM = (
     "You write the opening message a man sends a woman on a dating app. Use the dating and "
     "conversational principles associated with Coach Corey Wayne's 'How to Be a 3% Man', without "
@@ -48,22 +258,65 @@ _SYSTEM = (
     "curious, and direct without pressure. Carry the spirit of his 90/10 framework across the "
     "interaction: default to sincere interest and easy confidence, and reserve light teasing or "
     "cheeky humor for the occasional profile where it arises naturally. Do not force teasing into "
-    "every opener. Ground this opener in exactly ONE concrete detail from a specific photo or "
-    "prompt. Make one clear, positive, profile-specific bid, then leave room for her reply. Favor a "
-    "sincere observation, a direct low-pressure invitation, or one open, easy-to-answer question "
-    "about that detail. Questions should invite positive, fun conversation, not form an interview. "
+    "every opener. SHARED CONTEXT RULE: your message is displayed directly under the exact photo "
+    "or prompt it attaches to, and she is looking at that item while she reads your words. THE "
+    "ONE RULE: your opener must contain a claim that could be wrong. Describing what is in the "
+    "photo can never be wrong, which is exactly why it proves nothing; she is not checking "
+    "whether you have eyes. The thing you can see may be your premise. It may never be your "
+    "point. Make one clear, positive, profile-specific bid, then leave room for her reply. A "
+    "claim she can correct beats a question she has to answer: a question is allowed as the "
+    "second beat after a real claim, never as the whole message. "
+    "Questions should invite positive, fun conversation, not form an interview. "
     "Any teasing must be clearly good-natured and never belittling, arrogant, condescending, or "
     "mean. Mild innuendo is eligible only when her own profile clearly invites that playful tone; "
     "never force it. A brief greeting is optional but cannot substitute for profile-specific "
     "substance. At most one authentic, specific compliment is allowed; never pile on flattery or "
     "seek approval. Do not act as if intimacy or romantic interest already exists. Keep the tone "
-    "non-needy and do not demand that she chase. APPLICATION RULE: ONE short sentence is preferred "
-    "and TWO sentences is the absolute maximum. A second sentence may be one easy positive question "
+    "non-needy and do not demand that she chase. HEDGE THE CLAIM, NEVER YOURSELF: a hedge such as "
+    "I'm going to guess, I heard, I'm assuming, something tells me, odds are, my money is on, or "
+    "I bet makes a real claim safe to make and trivially easy to answer; that list is "
+    "illustrative, not exhaustive, so never reach for the same one every time. VARY THE OPENING: "
+    "rotate which hedge, move, or sentence shape leads from one opener to the next, and never "
+    "open every message the same way. Never apologise for writing, never ask permission, and "
+    "never call your own question dumb. GUESS "
+    "THE WORLD, NOT HER IDENTITY: name a country, a region, or a park the way a well travelled "
+    "friend would, never a street, a neighbourhood, a hotel, a specific venue, or anywhere that "
+    "could be where she lives, and never guess her employer, her school, or her age, or identify "
+    "anyone else in the photo. NEVER INVENT THE SENDER: you may not claim he has been somewhere, "
+    "done something, or likes something, because you do not know his history and he has to live "
+    "with whatever you write. PICK THE ITEM YOURSELF: the numbered images are her profile items, "
+    "numbered from 1 in the order they are given, and you choose which one to write about. Choose "
+    "the item you have the best angle on, not the most striking picture: a plain photo you can "
+    "make a real claim about beats a beautiful one you have nothing to say about, because the "
+    "item is only ever your premise and the claim is the message. THE FAILURE TO AVOID IS PICKING "
+    "AN ITEM YOU HAVE NOTHING TO SAY ABOUT, because then all that is left to write is what it "
+    "looks like, which is the one thing that is never allowed. Read all of the numbered items "
+    "first, find the one that hands you a claim that could be wrong, and pick that one even when "
+    "another item is the better picture. Set item_index "
+    "to that item's number; it is also the item that gets liked, so your message and the like "
+    "always land on the same thing. Any image given WITHOUT a number is context, usually her "
+    "vitals: her age, her job, her school, her city. Read it, use it, and refer to what it shows "
+    "whenever it sharpens your claim, because something she states there, set against a numbered "
+    "item, is often the best angle on the page. It simply carries no number, so you can never "
+    "pick it and item_index can never refer to it. "
+    "APPLICATION RULE: TWO sentences is the absolute maximum, and within "
+    "that ceiling be as short as the claim allows: spend no word on anything she can already see "
+    "and none on padding, but never cut the claim itself to save room. A second sentence may be "
+    "one easy positive question "
     "or a direct low-pressure invitation. Do not try to build a text relationship in the opener. "
     "HARD RULE: never use an em dash or any hyphen; use commas or periods instead (write 'physician "
-    "assistant', not 'PA-C'). The "
-    "images are her profile in scroll order; set referenced_index to the 0-based index of the image "
-    "your opener is about. Follow the style guide. Output only the structured result."
+    "assistant', not 'PA-C'). HARD RULE: write the opener in plain ASCII letters and punctuation "
+    "only; use no emoji and no accented or non-English letters (spell a name like Chloe or Zoe with "
+    "plain English letters, never an accented one). "
+    "Fill item_index, referenced, angle and item_description before you write the opener: "
+    "referenced is the "
+    "full description of what you are reacting to and is never sent to her, so put the whole "
+    "description there and keep its words out of the message, angle is your own short wording "
+    "for what your opener is doing, and item_description says in a few words what the item you "
+    "picked is, a photo or a written prompt and what it shows. "
+    "The opener field must contain only the bare message itself, "
+    "with no "
+    "preamble, label, or surrounding quotes. Follow the style guide. Output only the structured result."
 )
 
 # Appended to _SYSTEM (never mutated in place -- see _system_text) only when generate() was
@@ -73,13 +326,36 @@ _SYSTEM = (
 # the opener describes -- the exact bug this whole anchor feature exists to fix. Kept as a
 # separate constant rather than folded into _SYSTEM directly so the un-anchored request stays
 # byte-identical to what it was before this feature existed (see _system_text).
+#
+# THE PREMISE HAS TWO CONCLUSIONS, and this text used to draw only one of them (ops/
+# OPENER-REDESIGN.md 1.1 root cause #4). "She reads your words directly beneath that item" was
+# stated purely as a TARGETING argument -- write about this item, not that one -- which
+# pressured the model to disambiguate inside the message, i.e. to name the item so it was
+# unmistakably clear which one it meant. The conclusion never drawn is the opposite and more
+# useful one: precisely BECAUSE she is looking at that item while she reads, naming it is
+# wasted words at best and reads as if we think she cannot see it at worst. Both conclusions
+# now ship together, and the targeting half is unchanged.
+#
+# Addendum 2026-08-12 (Part B): _SYSTEM now tells the model to CHOOSE the item, which on an
+# anchored request directly contradicts "the anchor decides what you write about" -- the model
+# reads both constants in the same systemInstruction, so an unstated precedence is not a
+# stylistic wrinkle but two live instructions pulling opposite ways (doc 3.1's duplication
+# lesson). Stated explicitly rather than left to be inferred from ordering, and stated HERE
+# rather than in _SYSTEM so the unanchored request keeps no trace of anchoring at all. Doc 5.1
+# drops the anchor from the prompt in both modes; until that lands this is the seam.
 _ANCHOR_SYSTEM = (
     " ANCHORED REQUEST: this request ends with one extra image that is NOT part of her "
     "profile. It is the app's like screen exactly as it looks on the phone right now, and the "
     "single photo or prompt visible in it is the item your message is attached to: she reads "
     "your words directly beneath that item. When that image is present it decides what you "
-    "write about. Ground the opener in that item so it reads as a natural remark on it, never "
-    "on a different photo or prompt, and never mention the app's own interface."
+    "write about. THIS OVERRIDES PICK THE ITEM YOURSELF ABOVE: on this request the item is "
+    "already chosen and open on the phone, so you do not choose one, and item_index simply "
+    "reports which numbered item it turned out to be. "
+    "Ground the opener in that item so it reads as a natural remark on it, never "
+    "on a different photo or prompt, and never mention the app's own interface. That same fact "
+    "cuts the other way too: because she is looking straight at that item while she reads you, "
+    "you never need to name it or describe it back to her. It is the premise your claim comes "
+    "from, not the content of the message."
 )
 
 # Placed immediately before the anchor image in _assemble_parts, not just referenced from the
@@ -101,8 +377,233 @@ def _system_text(anchored: bool) -> str:
     path stays byte-for-byte what it was before anchoring existed -- existing tests assert
     payload["systemInstruction"]["parts"][0]["text"] == _SYSTEM, and that must keep holding
     for every request that has no anchor image.
+
+    THE ITEM-CROP SHAPE (ItemRequest, below) IS UNANCHORED, so it gets plain _SYSTEM -- and
+    deliberately gets no extra system text of its own. The per-image ITEM/CONTEXT label
+    convention is stated in the USER turn (see _ITEM_PREAMBLE) rather than here, because
+    systemInstruction is shared with the anchored shape, where no such labels exist: a system
+    line promising "every image is preceded by its own label" would be a lie on every anchored
+    request, and doc 3.1's duplication lesson is precisely that two copies of the same claim
+    disagreeing is a real bug, not a cosmetic one. _SYSTEM's PICK THE ITEM YOURSELF paragraph
+    is already written in item terms ("the numbered images are her profile items, numbered
+    from 1 in the order they are given ... any image given WITHOUT a number is context") and
+    is true of both shapes as written, so it is unchanged by the crop migration.
     """
     return _SYSTEM + _ANCHOR_SYSTEM if anchored else _SYSTEM
+
+
+# ---------------------------------------------------------------------------------------
+# THE ITEM-CROP REQUEST SHAPE (ops/OPENER-REDESIGN.md 5.2 and 5.7)
+#
+# What the model sees stops being her raw scroll frames and becomes one cropped image per
+# profile item, numbered, plus the unnumbered context crops. Doc 5.2's argument is NOT about
+# legibility or size -- it is about who owns the numbering:
+#
+#   "If we send overlapping full frames, the model must derive its own independent enumeration
+#    and the two must agree by luck. With crops, image 3 in the request IS item 3. Agreement by
+#    construction."
+#
+# Two more reasons from the same section, both of which this shape has to preserve rather than
+# merely allow. (1) DUPLICATION BIAS: a card straddling a scroll seam appears in two or three
+# frames, and now that the model is CHOOSING among items rather than writing about whatever
+# caught its eye, repetition reads as salience -- we would bias selection by our own scroll
+# cadence. One crop per item removes the duplicate entirely. (2) The crops are needed anyway,
+# because doc 5.6's post-tap verification is a signature match against the stored crop.
+#
+# Sent (doc 5.7): her name as text, items 1..N each as ONE cropped image in order, the context
+# blocks cropped and unnumbered, a truncation flag when the capture hit its ceiling, and the
+# Part A style guide unchanged. NOT sent: full screenshots, scroll frames, the anchor, and the
+# endorsement blocks (doc 2.4 -- a tease built on a friend's line is the worst possible
+# ammunition, so they are excluded upstream and never reach this module at all).
+#
+# HER NAME IS PASSED BACK AS TEXT because cropping loses it (doc 5.2: "Her name is lost by
+# cropping and must be passed back as text. It is already extracted"). It is the one piece of
+# information the frames carried in their sticky header that no crop can carry, so passing it
+# restores parity with the old shape rather than adding a new input.
+# ---------------------------------------------------------------------------------------
+
+# Stated ONCE, before the first image, rather than repeated on every label: the convention is
+# what needs stating, not the instruction. Repeating "set item_index to k" next to each image
+# would put a fresh imperative immediately before the model writes, N times, with the LAST one
+# read the freshest -- the same recency mechanism that made _SYSTEM's old two-hedge list
+# produce 5/5 "I bet" openers on a live dry run (see _SYSTEM's 2026-08-11 addendum). The labels
+# themselves stay bare identifiers for that reason.
+_ITEM_PREAMBLE = (
+    "=== HER PROFILE, ONE IMAGE PER ITEM ===\n"
+    "Every image below is one item cropped from her profile, and each image is immediately "
+    "preceded by its own label. A label reading ITEM k means the image directly after it IS "
+    "item k, so there is nothing here for you to count and no order for you to work out."
+)
+
+# Appended to _ITEM_PREAMBLE only when context crops are actually being sent. Explaining a
+# label that does not appear in the request would be describing something that is not there,
+# which is the same class of small lie as the anchor copy on an unanchored request.
+_ITEM_PREAMBLE_CONTEXT = (
+    " A label reading CONTEXT means the image directly after it has no number: read it and "
+    "use what it shows, but you can never pick it."
+)
+
+# Placed immediately BEFORE the image it names, exactly like _ANCHOR_LABEL and for exactly the
+# reason in _assemble_parts' docstring: Gemini reads parts as one ordered sequence, and "the
+# next image" is only unambiguous when the pointer text sits adjacent to what it points at.
+# Adjacency is what turns doc 5.2's "image k IS item k" from a fact about how we built the
+# request into a fact the model can read off the request.
+_ITEM_LABEL = "=== ITEM {number} ==="
+
+# Deliberately spells out the prohibition in the label itself rather than only in the preamble.
+# A context block is the one thing in the request that looks exactly like a selectable item
+# (it is a crop of her profile, sitting in the same list) and differs only by not having a
+# number, so the difference is stated where it cannot be missed. Doc 5.3: context blocks are
+# "sent, read, freely referenced, never selectable".
+_CONTEXT_LABEL = "=== CONTEXT, NOT NUMBERED, CANNOT BE PICKED ==="
+
+# What HER NAME renders as when the driver's OCR did not read one. An explicit "we did not read
+# it" rather than an empty line or a silently omitted section: the model is being told what it
+# has, and a blank field reads as a name that is blank.
+_NAME_UNAVAILABLE = "(not read)"
+
+
+@dataclass(frozen=True)
+class ItemRequest:
+    """One profile's items as the MODEL sees them: the payload half of doc 5.7's request shape.
+
+    Deliberately a plain value type over bytes and strings, holding no vision objects, no
+    segmentation, and no signatures -- this module must be able to build (and a test must be
+    able to pin) a request without the vision extras installed, and without importing anything
+    from `operation_love.drivers`. The producer side is `drivers.item_crops.ItemPayload`, whose
+    `items`/`context`/`truncated` map onto the fields here one for one, deliberately with the
+    SAME names so the adapter that will build this from a payload (a LATER workflow -- see this
+    module's `generate` docstring for the seam) is transcription rather than translation.
+
+    `items` is the numbered list, in model order: `items[k - 1]` is item k, 1-based per
+    FIRST_ITEM_INDEX. `context` is the unnumbered tier, sent AFTER every numbered item, which
+    the schema's `item_index` description promises to the model in as many words ("Some blocks
+    are shown WITHOUT a number, for context only ... you can never pick one"). Sending a
+    context crop among the numbered ones, or numbering it, would make that description a lie.
+
+    `name` is her first name as text (doc 5.2: cropping loses the sticky-header name, so it is
+    passed back). `truncated` is True when the capture hit its ceiling, i.e. these are only the
+    items we managed to read.
+
+    AN EMPTY `items` IS REFUSED, LOUDLY. Doc 5.1's contract is that the model picks an item, so
+    a request offering zero of them cannot be answered honestly -- the only reply available is
+    ITEM_INDEX_ABSENT, and paying for a billed API call to be told what we already knew is
+    worse than raising. The zero-image branches that DO exist in _text_part are for the legacy
+    frame/anchor shapes, where the model still had a profile to write about; this shape has
+    nothing at all. Doc 5.3's "treat a missing table as a hard stop, never as a reason to fall
+    back to a fixed coordinate" is the same instinct one layer up.
+    """
+
+    # `items` is the one field with no default, and that ordering is the point: there is no such
+    # thing as an item request without items, so it cannot be omitted by accident. Everything
+    # else degrades honestly -- a name the OCR did not read renders as "(not read)", a profile
+    # with no vitals block simply sends no context, and an untruncated capture says nothing
+    # about truncation.
+    items: tuple[bytes, ...]
+    name: str = ""
+    context: tuple[bytes, ...] = ()
+    truncated: bool = False
+
+    def __post_init__(self) -> None:
+        # Normalize to tuples so a caller passing a list cannot mutate the request after it was
+        # built (frozen is only shallow), and so `images` below is cheap and order-stable.
+        object.__setattr__(self, "name", str(self.name).strip())
+        object.__setattr__(self, "items", tuple(self.items))
+        object.__setattr__(self, "context", tuple(self.context))
+        object.__setattr__(self, "truncated", bool(self.truncated))
+        if not self.items:
+            raise ValueError(
+                "ItemRequest requires at least one numbered item: the model's job on this "
+                "request shape is to CHOOSE an item (ops/OPENER-REDESIGN.md 5.1), and a "
+                "request carrying none can only be answered with ITEM_INDEX_ABSENT. Hard stop "
+                "upstream instead of paying for a call that cannot succeed.")
+        for position, image in enumerate(self.images):
+            if not isinstance(image, (bytes, bytearray)) or not image:
+                raise ValueError(
+                    f"ItemRequest: {self.describe_image(position)} is not usable image bytes "
+                    f"({type(image).__name__}, {len(image) if hasattr(image, '__len__') else '?'} "
+                    "bytes). Every image in this request is one item's crop and the numbering "
+                    "is positional, so a missing or empty one would silently renumber every "
+                    "item after it.")
+
+    @classmethod
+    def from_profile(cls, profile: Profile) -> "ItemRequest":
+        """THE ADAPTER: one capture's item payload as the model's request (doc 5.7).
+
+        Transcription, not translation -- `Profile.items` / `item_context` / `name` /
+        `items_truncated` were shaped to map onto this class's four fields one for one (see
+        this class's docstring and `perception.capture.Profile`), so this method can be read
+        end to end and nothing here can renumber, reorder or drop a crop.
+
+        It lives here rather than on `Profile` for the dependency direction: this module
+        already imports `Profile`, while `perception.capture` must stay importable by the
+        ranker and the stores without dragging the opener in.
+
+        RAISES (via `__post_init__`) when the profile carries no numbered items. That is
+        deliberate and it is not this method's job to soften: a capture that could not
+        enumerate says so in `Profile.items_unavailable`, and the caller's correct move is to
+        stop with that sentence, never to fall back to `profile.photos` -- doc 5.2's whole
+        point is that raw scroll frames cannot carry an item number (one card appears in
+        several frames, one frame can hold two cards), so substituting them would hand the
+        model a numbering nobody can act on.
+        """
+        return cls(
+            items=tuple(getattr(profile, "items", ()) or ()),
+            name=str(getattr(profile, "name", "") or ""),
+            context=tuple(getattr(profile, "item_context", ()) or ()),
+            truncated=bool(getattr(profile, "items_truncated", False)),
+        )
+
+    @property
+    def item_count(self) -> int:
+        """N: the size of the list the model is offered. It may only answer with 1..N."""
+        return len(self.items)
+
+    @property
+    def context_count(self) -> int:
+        return len(self.context)
+
+    @property
+    def images(self) -> tuple[bytes, ...]:
+        """THE REQUEST'S IMAGE LIST, in wire order: numbered items first, then context.
+
+        Identical in construction and in order to `ItemPayload.images`, which is what a caller
+        will hand us. Position is the whole contract here -- `images[k - 1]` is item k -- so
+        every other method on this class indexes into this one list rather than re-deriving the
+        split, and _assemble_parts labels by position against it.
+        """
+        return self.items + self.context
+
+    @property
+    def image_count(self) -> int:
+        return len(self.items) + len(self.context)
+
+    def label_for(self, position: int) -> str:
+        """The text part that must sit immediately before `images[position]`.
+
+        Numbered items are labelled with their 1-based number; anything past the numbered items
+        is a context crop and gets the unnumbered label. Positional by construction, so a crop
+        can never be labelled with a number that disagrees with where it actually sits in the
+        list -- which is the entire point of doc 5.2's "agreement by construction".
+        """
+        if not 0 <= position < self.image_count:
+            raise ValueError(
+                f"image position {position} is outside 0..{self.image_count - 1}")
+        if position < self.item_count:
+            return _ITEM_LABEL.format(number=position + FIRST_ITEM_INDEX)
+        return _CONTEXT_LABEL
+
+    def describe_image(self, position: int) -> str:
+        """Operator-facing name for `images[position]`, for error messages only.
+
+        Never "photo index N": these are not her profile photos in capture order, and telling
+        an operator to go look at photo 3 of a profile when the failure is in item 3's CROP
+        sends them to the wrong place entirely -- the same mistake the anchor image's own
+        label in _fit_images_to_budget exists to avoid.
+        """
+        if position < self.item_count:
+            return f"item {position + FIRST_ITEM_INDEX}'s crop"
+        return f"context crop {position - self.item_count + 1} (unnumbered)"
 
 
 _COMMON_ABBREVIATION_RE = re.compile(
@@ -141,13 +642,289 @@ def _image_media_type(data: bytes) -> str:
 
 
 def _sanitize(text: str) -> str:
-    """Enforce the no-dash opener rule as a safety net (the prompt also instructs it): every
-    dash-like codepoint (em/en dash, hyphen, and their lookalikes) becomes a comma or space
-    via the canonical table in operation_love.typography, then collapse whitespace and tidy
-    punctuation. OWNER HARD RULE: no em dashes, no hyphens of any kind -- it's the single
-    biggest AI-written tell."""
-    t = str(text).translate(DASH_TRANSLATION)
-    return tidy_punctuation_spacing(t)
+    """The single fold applied to every model-written opener before it becomes the recorded,
+    sent OpenerResult.opener -- delegates entirely to operation_love.typography.fold_to_ascii
+    so the text this function returns is BYTE-FOR-BYTE what Adb.text() will actually type
+    (fold_to_ascii is also what drivers.adb._clean_text_for_input calls; see typography.py's
+    module docstring). This keeps the owner's no-dash rule intact (every dash-like codepoint
+    -- em/en dash, hyphen, and their lookalikes -- folds to a comma or space via the
+    canonical DASH_FOLD table inside fold_to_ascii) while also folding curly quotes, exotic
+    spaces, ligatures, and accents (an accented name survives as its plain ASCII spelling,
+    not a silently mangled or dropped one) -- OWNER HARD RULE: no em dashes, no hyphens of
+    any kind, it's the single biggest AI-written tell. Whatever fold_to_ascii cannot reduce
+    to printable ASCII survives here untouched; _parse's undeliverable_chars() check right
+    after this call is what turns that into a loud, retried failure instead of a silent send
+    of unrenderable text."""
+    return fold_to_ascii(str(text))
+
+
+def _strip_wrapping_quotes(text: str) -> str:
+    """Repair an opener the model wrapped in its own matching pair of quotes (e.g. the
+    opener field holding '"Nice antlers."' instead of the bare Nice antlers.) -- a pure
+    formatting artifact with an unambiguous repair, so it is fixed silently here rather than
+    routed through _scaffolding_markers to burn a retry. Called from _parse AFTER _sanitize,
+    so curly quotes have already folded to straight ASCII ones (see typography.fold_to_ascii's
+    QUOTE_FOLD table) and this only ever has to consider a straight " or ' pair.
+
+    Only strips when the wrapping is unambiguous: the first and last characters are the same
+    quote character, and that same character does not also occur anywhere in the interior.
+    That second condition is what keeps 'Nice antlers, isn't it?' untouched -- its interior
+    apostrophe means the leading/trailing ' are not a clean matched wrapping pair (just an
+    opening quote and an unrelated apostrophe that happen to match), so stripping them would
+    leave a broken, unbalanced string. Anything else -- unquoted text, mismatched quote
+    characters, an empty/1-char string -- is returned unchanged.
+    """
+    if len(text) < 2:
+        return text
+    first, last = text[0], text[-1]
+    if first != last or first not in ("\"", "'"):
+        return text
+    inner = text[1:-1]
+    if first in inner:
+        return text
+    return inner
+
+
+# Keywords that make a leading "<clause>:" read as a self-describing label rather than
+# ordinary opener text (rule 1 of _scaffolding_markers below). "option"/"options"/"version"
+# are deliberately NOT here -- see that function's docstring.
+_SCAFFOLD_LABEL_KEYWORDS_RE = re.compile(
+    r"\b(?:here|opener|response|message|suggestion|reply|draft|output|result|answer|example)\b",
+    re.IGNORECASE,
+)
+
+# Leading interjections a model uses to preface its answer instead of just answering (rule 2).
+_SCAFFOLD_LEADING_PHRASES = (
+    "sure!", "sure,", "certainly", "of course,", "absolutely!", "got it",
+    "here you go", "here is", "here's",
+)
+
+# Meta self-reference phrases beyond the bare word "opener" (rule 3). These are assistant
+# framing that no human message ever contains, so they are matched unconditionally.
+_SCAFFOLD_META_PHRASE_RE = re.compile(
+    r"\bas an ai\b|\bas a language model\b",
+    re.IGNORECASE,
+)
+
+# Refusal framing (rule 3, continued). "I cannot" / "I'm unable" CANNOT be matched on their
+# own: "I cannot believe you skied that line." and "I cannot get over that dog's face." are
+# natural, in-style openers, and flagging them would burn a retry apiece -- five in a row
+# stops the whole run (service.py). So the phrase only counts as scaffolding when a refusal
+# verb follows it. "help" carries a negative lookahead for "but", because "I cannot help but
+# notice the antlers" is the idiom, not a refusal.
+_SCAFFOLD_REFUSAL_RE = re.compile(
+    r"\b(?:i cannot|i can not|i'm unable to|i am unable to)\s+"
+    r"(?:help(?!\s+but)|assist|provide|generate|create|write|produce|comply|fulfil|fulfill|"
+    r"do that|answer that|respond to)\b",
+    re.IGNORECASE,
+)
+
+_SCAFFOLD_OPENER_WORD_RE = re.compile(r"\bopener\b", re.IGNORECASE)
+
+_SCAFFOLD_LEADING_MARKUP_CHARS = ("#", "*", "`", "{", "[")
+
+
+def _scaffolding_markers(text: str) -> list[str]:
+    """Deterministic (NOT a second LLM call) detector for scaffolding/preamble text that
+    leaked INSIDE the opener string despite the JSON schema forbidding free text outside it
+    -- e.g. {"opener": "Here's the response: Great ocean, where was this taken?"}. Returns a
+    list of short human-readable descriptions of every pattern found; an empty list means
+    clean. Feeds _parse's OpenerParseError, which service.py's retry loop turns into a
+    retry_hint the model can act on.
+
+    Precision matters far more than recall: a false positive burns a retry, and 5
+    consecutive rejections stop the whole run (service.py). Every rule below is therefore
+    narrow and literal rather than a broad "sounds like AI" heuristic. Newlines are already
+    collapsed to spaces and dashes already folded by the time this runs (fold_to_ascii, via
+    _sanitize), so no rule here needs to account for either.
+
+    Rules (exactly these, no more):
+      1. Leading label/interjection clause: a colon in the first 40 characters whose
+         preceding clause (<=40 chars, guaranteed by the 40-char window) contains one of
+         the label words above, e.g. "Here's the response: ..." or "Opener: ...". Excludes
+         option/options/version so "Two options: skiing or the beach?" is not rejected.
+      2. Leading interjection: text starts with one of the interjection phrases above
+         ("Sure!", "Certainly", "Here's", ...).
+      3. Meta self-reference anywhere: the word "opener" (a genuine opener about her ski
+         photo will never contain the word "opener"), "as an AI"/"as a language model", or
+         refusal framing ("I cannot" and friends followed by a refusal verb -- see
+         _SCAFFOLD_REFUSAL_RE for why the bare phrase alone must not count).
+      4. Markup/structural artifacts: text starts with #, *, `, {, or [; or contains a
+         backtick, **, or the literal substring "opener" (a leaked JSON key).
+    """
+    markers: list[str] = []
+    stripped = text.strip()
+
+    # Rule 1: leading label/interjection clause.
+    head = stripped[:40]
+    for i, ch in enumerate(head):
+        if ch != ":":
+            continue
+        clause = stripped[:i]
+        if _SCAFFOLD_LABEL_KEYWORDS_RE.search(clause):
+            markers.append(f'leading label clause "{stripped[:i + 1]}"')
+            break
+
+    # Rule 2: leading interjection.
+    lowered = stripped.lower()
+    for phrase in _SCAFFOLD_LEADING_PHRASES:
+        if lowered.startswith(phrase):
+            markers.append(f'leading interjection "{stripped[:len(phrase)]}"')
+            break
+
+    # Rule 3: meta self-reference anywhere.
+    if _SCAFFOLD_OPENER_WORD_RE.search(text):
+        markers.append('meta self-reference: the word "opener"')
+    meta_match = _SCAFFOLD_META_PHRASE_RE.search(text)
+    if meta_match:
+        markers.append(f'meta self-reference "{meta_match.group(0)}"')
+    refusal_match = _SCAFFOLD_REFUSAL_RE.search(text)
+    if refusal_match:
+        markers.append(f'refusal framing "{refusal_match.group(0)}"')
+
+    # Rule 4: markup/structural artifacts.
+    if stripped[:1] in _SCAFFOLD_LEADING_MARKUP_CHARS:
+        markers.append(f'markup artifact: starts with "{stripped[:1]}"')
+    if "`" in text:
+        markers.append("markup artifact: backtick")
+    if "**" in text:
+        markers.append("markup artifact: double asterisk")
+    if '"opener"' in text.lower():
+        markers.append('markup artifact: literal "opener" key')
+
+    return markers
+
+
+# Function words plus the handful of "structural" nouns that name the CONTAINER rather than
+# the detail inside it. Both groups are dropped before _redundant_description_markers compares
+# the two strings, for the same reason: they carry no information about WHICH profile this is.
+# "photo"/"prompt"/"picture" earn their place in the second group because nearly every
+# `referenced` value the model writes starts with one of them ("photo of her with a husky in
+# the arctic"), so counting them would swamp the real signal ("husky", "arctic") with a
+# constant that fires on almost every profile.
+_REDUNDANCY_STOPWORDS = frozenset("""
+    a an the this that these those there here
+    i me my mine myself you your yours yourself we us our ours
+    he him his she her hers it its they them their theirs
+    who whom whose what which when where why how
+    is am are was were be been being do does did doing have has had having
+    will would shall should can could may might must let
+    of in on at to for with from by about into onto over under near around as after before
+    and or but if so than then too very just also not no nor only own same still yet
+    one two some any all both each few more most other such
+    photo photos picture pictures pic pics image images shot shots
+    prompt prompts card cards answer answers profile bio caption
+""".split())
+
+# Tokenizer for the redundancy monitor: letters and digits only, so possessives and
+# contractions split ("husky's" -> "husky", "s") and the leftover fragment is dropped by the
+# length filter below. That loses a little signal and never invents any, which is the right
+# direction for a metric that is already documented as a lower bound.
+_REDUNDANCY_WORD_RE = re.compile(r"[a-z0-9]+")
+
+# Tokens shorter than this are dropped whether or not they are in the stopword list above.
+# It is a cheap catch-all for the function words and fragments no hand-written list covers
+# ("ah", "id", the "s" left behind by a possessive). It does cost a few real two-letter words
+# (a DJ, an ox), and that is the correct trade for a monitor: a two-character overlap between
+# two short strings is noise far more often than it is evidence of a restated description, and
+# every loss here only makes an already-declared lower bound slightly looser.
+_REDUNDANCY_MIN_WORD_LEN = 3
+
+
+def _redundancy_content_words(text: str) -> list[str]:
+    """Lowercase content words of ``text`` in order of appearance, punctuation stripped and
+    stopwords/short fragments dropped. Shared by both sides of the comparison in
+    _redundant_description_markers so the two strings are always normalized identically."""
+    return [word for word in _REDUNDANCY_WORD_RE.findall(str(text).lower())
+            if len(word) >= _REDUNDANCY_MIN_WORD_LEN and word not in _REDUNDANCY_STOPWORDS]
+
+
+def _redundant_description_markers(opener: str, referenced: str) -> list[str]:
+    """Deterministic (NOT a second LLM call) MONITOR for the over-description bug: content
+    words the opener restated from the model's own `referenced` note. Returns a list of short
+    human-readable markers, one per distinct restated word, in the order they appear in
+    ``referenced``; an empty list means clean. Pure function, exactly like
+    _scaffolding_markers, and normalization is identical on both sides (lowercase, punctuation
+    stripped, stopwords and sub-3-character fragments dropped -- see _redundancy_content_words).
+
+    THE IDEA (ops/OPENER-REDESIGN.md 3.7). Over-description looks like a semantic property but
+    has a deterministic proxy sitting in the same parsed dict: the model already tells us, in
+    `referenced`, what it was reacting to. If `referenced` is "outdoor sauna at sunset" and the
+    opener contains "sauna" and "sunset", the opener is restating its own grounding note back
+    to a woman who is looking at that exact photo while she reads it. On that real pair the
+    signal separates cleanly: the bad opener overlaps on two content words, the good one
+    ("That view looks relaxing, where is this from?") on zero.
+
+    IT IS A LOWER BOUND, NOT A MEASUREMENT. A terse `referenced` ("the sauna photo") defeats it
+    completely while the opener describes the scene in full, and it counts words rather than
+    meaning, so a paraphrase ("that steam room") scores zero. Morphology defeats it too: the
+    match is exact-token, so "huskies" against "husky" does not count. Every one of those
+    failures is a MISS (redundancy present, nothing reported), never a false alarm on a clean
+    opener, which is the direction a monitor should fail in.
+
+    IT SHIPS LOG ONLY, AND CALLERS MUST NOT GATE ON IT. Four reasons, all from doc 3.7:
+      1. Being a lower bound (above) makes it structurally unfit as the primary defence. The
+         prompt is the fix; this only measures whether the fix worked.
+      2. Five consecutive rejections stop the whole run (service.py). An uncalibrated
+         threshold is therefore a run-killer, not merely a noisy check.
+      3. There is real opener data, and it is far too thin to set a threshold on: the local
+         sqlite db has 0 rows and the BigQuery `openers` table holds only a handful of live
+         rows. Enough to sanity-check the metric, nowhere near enough to pick a cutoff.
+      4. The threshold can be derived offline for free later, because record_opener already
+         persists both `opener` and `referenced` (store.py, bigquery_store.py). No schema
+         change and no live experiment is needed to calibrate it.
+    Promote it to a gate only once real data shows a threshold with a zero false-positive rate
+    on owner-approved openers. This stays within the existing scaffolding-defense decision:
+    deterministic only, no LLM judge, no classifier.
+
+    CALIBRATION WARNING for whoever does that offline pass: rows written BEFORE the 2026-08-11
+    prompt rewrite are not comparable to rows written after it. The new style text explicitly
+    tells the model to keep the grounding detail out of the message, so overlap counts should
+    drop on their own; a threshold fitted on pre-change rows would be fitted to the bug.
+    """
+    referenced_words = _redundancy_content_words(referenced)
+    opener_words = set(_redundancy_content_words(opener))
+    markers: list[str] = []
+    seen: set[str] = set()
+    for word in referenced_words:
+        if word in opener_words and word not in seen:
+            seen.add(word)
+            markers.append(f'opener restates the referenced word "{word}"')
+    return markers
+
+
+# Tokenizer for _leading_ngram. Unlike the redundancy tokenizer above this KEEPS apostrophes,
+# because the phrases the entropy guard exists to catch are contraction-heavy ("I'm going to
+# guess") and splitting them would make "I'm going" and "I am going" collide with each other
+# while "im"/"i" fragments polluted the n-gram.
+_NGRAM_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def _leading_ngram(text: str, n: int = 4) -> str:
+    """The normalized leading n-gram of an opener: its first ``n`` words, lowercased, with
+    punctuation dropped and whitespace collapsed to single spaces. Pure and deterministic; a
+    text with fewer than ``n`` words returns all of them, and ``n <= 0`` returns "".
+
+    Exists for the entropy guard in ops/OPENER-REDESIGN.md 3.6, whose whole point is that
+    shortening the openers compresses the output space and few-shot examples make direct
+    copying a live risk -- across a burner account sending uncapped volume, near-identical
+    openers are both a fingerprint and embarrassing if two matches compare screenshots. The
+    guard is a plain string comparison of this value against the last N successful openers
+    (OpenerService.recent_openers), which catches "Based on the X, I'm going to guess"
+    recurring without needing any taxonomy of moves, any semantics, or any second model call.
+
+    Deliberately dumb, and deliberately free of policy: it decides nothing. What counts as a
+    collision, what happens on one, and how a collision interacts with the attempt budget are
+    all the service's business (that budget accounting is the entire reason the guard cannot
+    simply reject -- an advisory/observe call gets exactly ONE attempt, so a hard rejection
+    there would disable suggestions for the rest of the session over a stylistic near-miss).
+    Keeping the string normalization here, alone, is what lets that policy change without
+    touching the definition of the thing being compared.
+    """
+    if n <= 0:
+        return ""
+    words = (word.strip("'") for word in _NGRAM_WORD_RE.findall(str(text).lower()))
+    return " ".join([word for word in words if word][:n])
 
 
 def _sentence_count(text: str) -> int:
@@ -180,7 +957,81 @@ class OpenerResult:
     referenced: str
     usage: Usage
     model: str
-    referenced_index: int = 0
+    # WHICH ITEM THE MODEL PICKED: 1-based, and it indexes the NUMBERED ITEMS that were sent in
+    # this request (ops/OPENER-REDESIGN.md 5.1/5.7). Per doc 5.1 this is one answer to two
+    # questions -- the item the opener is about AND the item to like -- which is what makes the
+    # message and the like land on the same thing by construction instead of by repair.
+    #
+    # THIS REPLACES `referenced_index`, AND IT IS NOT A RENAME. That field was a 0-BASED index
+    # into raw SCROLL FRAMES, which is not an item space at all: one card can appear in three
+    # frames, one frame can hold two cards, and the model had to invent its own enumeration and
+    # hope it matched the driver's (doc 5.2's "agreement by luck"). Nothing may reinterpret an
+    # old integer as a new one -- the meaning, the base, and the thing counted all changed.
+    #
+    # ITEM_INDEX_ABSENT (0) when the model gave no usable number; see that constant for why 0
+    # is safe as an out-of-band value here and what a consumer may NOT conclude from it.
+    item_index: int = ITEM_INDEX_ABSENT
+    # WHICH LIST `item_index` COUNTS -- one of INDEX_SPACE_*, set by generate() from the request
+    # shape it actually built. Read those constants before using either field: the number is
+    # meaningless without this, and the 2026-08-12 correction exists because a consumer that
+    # assumed the space got a confident, in-range, wrong answer instead of a failure.
+    #
+    # Defaults to INDEX_SPACE_MODEL_ITEMS, the UNTRANSLATABLE space, on purpose. Every
+    # OpenerResult built outside generate() -- the fake clients in tests, any future call site
+    # -- therefore carries an index no consumer will convert into a tap, which is the safe
+    # direction to be wrong in. Defaulting to PROFILE_PHOTOS would mean a stand-in result got
+    # its number silently turned into a coordinate on somebody's phone.
+    index_space: str = INDEX_SPACE_MODEL_ITEMS
+    # The model's own free-text words for what its opener is DOING ("guessing where the ridge
+    # is", "teasing her about the cold", ...) -- see _SCHEMA's `angle` property. Deliberately
+    # not an enum anywhere in this pipeline (ops/OPENER-REDESIGN.md 3.5): a closed set would
+    # force the model to pick a move and shoehorn the opener into it, which is exactly the
+    # awkwardness the move list is written to avoid. Pure telemetry: nothing reads it to make
+    # a decision, it exists so we can eventually ask which shapes correlate with matches.
+    #
+    # Defaults to "" rather than being required so every OpenerResult built outside _parse --
+    # the fake OpenerClients in tests, and any future call site -- keeps working unchanged.
+    angle: str = ""
+    # The model's own short description of the ITEM it picked ("a photo of her on a ridge", "a
+    # prompt about hot sauce") -- see _SCHEMA's `item_description` property. NOT the same field
+    # as `referenced`, and doc 5.7 is explicit that neither replaces the other: `referenced` is
+    # the full-text DETAIL the opener reacts to (what the redundancy monitor compares the
+    # opener against, and what store.record_opener persists as the telemetry note), while this
+    # describes the ITEM, coarsely, so doc 5.8's pre-flight cross-check can ask whether the
+    # thing we cropped at that index is the same KIND of thing the model thought it chose.
+    #
+    # RETURNED IN BOTH MODES, always (doc 5.7): auto logs it, observe displays it. It must
+    # never become conditional on `advisory`, because a mode-dependent schema would mean auto
+    # and observe issue different requests, and observe's entire value is that its opener is
+    # byte-identical to what auto would have sent for the same profile.
+    #
+    # That cross-check is a LATER workflow; nothing reads this to make a decision today. Same
+    # default rationale as `angle` above.
+    item_description: str = ""
+    # Output of the deterministic redundancy MONITOR (_redundant_description_markers): the
+    # content words this opener restated from its own `referenced` note. LOG ONLY, never a
+    # rejection -- a non-empty list here has no effect on whether the opener is sent, by
+    # design (see _redundant_description_markers' docstring and doc 3.7 for the four reasons
+    # it must not be a gate yet). Same default rationale as `angle` above.
+    redundancy_markers: list[str] = field(default_factory=list)
+
+
+# Machine-readable reason codes for OpenerParseError.reason_code -- see the class docstring
+# below and ranker/bigquery_store.py's opener_rejections table (persisted so guard-firing
+# frequency can be aggregated with a GROUP BY instead of regex-parsing free-text `message`,
+# which stays exactly the retry_hint the model reads and existing tests assert on verbatim).
+# Bare string literals rather than an enum: they cross a storage boundary (a BigQuery/sqlite
+# TEXT column) where an enum would just get str()'d back down to one of these values anyway.
+REASON_NO_TEXT = "no_text"
+REASON_MAX_TOKENS = "max_tokens"
+REASON_BAD_JSON = "bad_json"
+REASON_MISSING_FIELD = "missing_field"
+REASON_NOT_A_STRING = "not_a_string"
+REASON_EMPTY_AFTER_SANITIZE = "empty_after_sanitize"
+REASON_UNDELIVERABLE_CHARS = "undeliverable_chars"
+REASON_UNDELIVERABLE_SEQUENCE = "undeliverable_sequence"
+REASON_SCAFFOLDING = "scaffolding"
+REASON_TOO_MANY_SENTENCES = "too_many_sentences"
 
 
 class OpenerParseError(OpenerError):
@@ -188,12 +1039,37 @@ class OpenerParseError(OpenerError):
 
     Carries normalized usage/model so the caller can still record a provider's spend
     after bad JSON, missing keys, or a response without usable text.
+
+    reason_code is one of the REASON_* constants above, letting a persisted rejection row
+    be grouped/queried by failure kind without regex-parsing `message`. Defaults to None
+    only so external callers/tests built against the original 3-positional-arg signature
+    keep working unchanged; every raise site inside _parse below passes one explicitly.
+
+    raw_opener is the literal candidate text the FAILING GUARD actually looked at, so a
+    persisted rejection row shows exactly what got rejected, not just why:
+      - pre-sanitize (the value straight out of the model's JSON, before fold_to_ascii's
+        dash-fold/accent-fold ran) when the guard runs BEFORE _sanitize is ever called
+        (not_a_string -- the value there usually isn't even a string).
+      - post-sanitize (after fold_to_ascii) when the guard runs on the already-sanitized
+        string (empty_after_sanitize, undeliverable_chars, undeliverable_sequence,
+        too_many_sentences, scaffolding) -- these all call their check function with
+        `sanitized`, so that is unambiguously the value being judged, even for
+        empty_after_sanitize where the result is "" itself.
+      - the raw response text (no per-field candidate exists to point at) for bad_json and
+        missing_field: neither ever produced a usable "opener" value, so the whole raw text
+        the model returned is the most useful thing available, well short of nothing.
+      - None for no_text/max_tokens: the response carried no text part at all, so there is
+        nothing to show.
+    Defaults to None so existing raisers/tests that don't pass it keep working unchanged.
     """
 
-    def __init__(self, message: str, usage: Usage, model: str):
+    def __init__(self, message: str, usage: Usage, model: str, *,
+                 reason_code: str | None = None, raw_opener: str | None = None):
         super().__init__(message)
         self.usage = usage
         self.model = model
+        self.reason_code = reason_code
+        self.raw_opener = raw_opener
 
 
 class OpenerAborted(OpenerError):
@@ -215,8 +1091,24 @@ class OpenerAborted(OpenerError):
 
 
 class OpenerClient(Protocol):
+    """What OpenerService requires of an opener client -- i.e. every argument the service
+    actually passes, and nothing more.
+
+    `items` IS NOW DECLARED, because OpenerService threads it (doc 5.2/5.7's item-crop request
+    shape) exactly the way it threads `anchor`: unconditionally, on every call, so a client
+    that cannot accept the kwarg fails LOUDLY with a TypeError instead of silently dropping the
+    numbered crops and sending `profile.photos` in their place. That silent fallback is the one
+    outcome doc 5.2 exists to prevent -- raw scroll frames cannot carry an item number, so a
+    dropped `items` would give the model a numbering nothing downstream can act on.
+
+    The two image shapes are MUTUALLY EXCLUSIVE, not ordered by precedence: `anchor` IS the
+    chosen item, already open on the phone, and `items` asks the model to choose one.
+    GeminiOpener.generate refuses a request carrying both before a byte is encoded or billed.
+    """
+
     def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
                  anchor: bytes | None = None,
+                 items: "ItemRequest | None" = None,
                  should_stop: Callable[[], bool] | None = None,
                  skip_models: frozenset[str] = frozenset()) -> OpenerResult: ...
 
@@ -495,10 +1387,13 @@ class GeminiOpener:
         computes it once per profile and reuses the result across every model tried during
         a capacity cascade instead of re-encoding the same screenshots per model.
 
-        ``images`` is renamed from the old ``photos`` because it now carries her profile
-        photos plus, when generate() was given one, the anchor screenshot appended at the
-        end (see generate()'s docstring) -- both are encoded identically here, the anchoring
-        itself only happens later, in _assemble_parts and _text_part.
+        ``images`` is renamed from the old ``photos`` because it carries whichever request
+        shape generate() built: her profile photos (plus, when given one, the anchor screenshot
+        appended at the end), or -- on the item-crop shape -- ItemRequest.images, the numbered
+        item crops followed by the unnumbered context crops. All three are encoded identically
+        here; labelling and numbering happen later, in _assemble_parts and _text_part, so this
+        method stays the single place that knows how to turn bytes into an inlineData part and
+        knows nothing about what any of them mean.
         """
         return [{
             "inlineData": {
@@ -508,7 +1403,7 @@ class GeminiOpener:
         } for image in images]
 
     def _text_part(self, profile: Profile, style: str, retry_hint: str = "", *,
-                   anchored: bool = False) -> dict[str, Any]:
+                   anchored: bool = False, items: ItemRequest | None = None) -> dict[str, Any]:
         """Build the one part of the request that varies per attempt (see generate()'s "encode
         once, reuse across the cascade" note -- the image parts never depend on this).
 
@@ -520,35 +1415,127 @@ class GeminiOpener:
         the profile content, so it is the most recent instruction the model reads before
         writing the corrected opener -- a corrected re-ask rather than an identical dice roll.
 
+        ``items`` is the item-crop request shape (ops/OPENER-REDESIGN.md 5.2/5.7): when it is
+        present the images are one crop per profile item rather than raw scroll frames, each
+        already labelled by _assemble_parts, so the closing paragraph only has to state the
+        counts and point at the field to answer in. It is mutually exclusive with ``anchored``
+        (generate() refuses the combination before reaching here) because the two shapes
+        disagree about who chooses the item.
+
         ``anchored`` mirrors generate()'s own flag: True once an anchor screenshot has been
         appended after her profile photos (see generate()'s docstring for what the anchor is
-        and why it exists). When False the closing paragraph below is BYTE-IDENTICAL to what
-        this method produced before anchoring existed -- existing tests depend on that -- and
-        when True it is replaced with wording that tells the model the last image is not one
-        more profile photo but the live like screen her comment attaches under.
+        and why it exists). When False the closing paragraph tells the model to CHOOSE one of
+        the numbered items itself (ops/OPENER-REDESIGN.md 5.1); when True it is replaced with
+        wording that tells the model the last image is not one more profile item but the live
+        like screen her comment attaches under, and that the anchor rather than its own
+        judgement decides the subject.
+
+        HER NAME is rendered as its own labelled section, and ONLY on the item-crop shape --
+        the legacy frame shapes carry her name in the pixels (every scroll frame has the
+        sticky header in it), and cropping is what loses it (doc 5.2). Adding the section
+        unconditionally would also move the legacy shapes' byte-identical text, which several
+        tests pin precisely so this file's wire format cannot drift silently.
+
+        ITEM NUMBERING IS 1-BASED IN EVERY BRANCH (doc 5.7), and the branch for "no numbered
+        items were sent" says so explicitly rather than asking for an index into an empty list
+        -- see ITEM_INDEX_ABSENT. The item-crop shape has no such branch at all: ItemRequest
+        refuses to exist with zero items.
         """
         photo_count = len(profile.photos)
-        if not anchored:
+        if items is not None:
+            # Every number below is derived from the ItemRequest rather than written out, for
+            # the same reason the frame branches derive theirs from photo_count: the range the
+            # model is told about can never disagree with what was actually sent. The
+            # "so the image after ITEM 1 is item 1" clause restates the label convention with a
+            # concrete number the model can check against the request it is holding -- and it
+            # uses FIRST_ITEM_INDEX rather than a sample number like 3, which would name an
+            # item that need not exist on a short profile.
+            sentences = [
+                f"The {items.item_count} numbered image(s) above are her profile items, "
+                f"numbered {FIRST_ITEM_INDEX} to {items.item_count}, each shown immediately "
+                f"after its own ITEM label, so the image after ITEM {FIRST_ITEM_INDEX} is item "
+                f"{FIRST_ITEM_INDEX}."
+            ]
+            if items.context_count:
+                sentences.append(
+                    f"The {items.context_count} image(s) labelled CONTEXT carry no number: use "
+                    "what they show if it helps, but never pick one.")
+            if items.truncated:
+                # Doc 5.7's truncation flag. Stated as a fact about OUR capture, not as a
+                # deficiency in her profile, and immediately followed by "choose from them
+                # anyway" so it cannot read as licence to decline or to write about the part
+                # we did not see. Present ONLY when the capture really did hit its ceiling.
+                sentences.append(
+                    "Her profile was longer than we could read, so these are only the items "
+                    "we saw. Choose from them anyway.")
+            # Byte-identical to the unanchored frame branch's closing instruction on purpose:
+            # the field being answered and what it means did not change with the payload, and
+            # keeping one wording for it means the two shapes cannot drift into telling the
+            # model two different things about the same field.
+            sentences.append(
+                "Set item_index to the number of the one your opener is about. "
+                "Write the opener now.")
+            closing = " ".join(sentences)
+        elif not anchored and photo_count > 0:
+            # 1-BASED, and every number in this sentence is derived from photo_count rather
+            # than written out, so the range the model is told about can never disagree with
+            # the number of images actually sent (ops/OPENER-REDESIGN.md 5.7).
             closing = (
-                f"The {photo_count} image(s) above are her profile in scroll order "
-                "(index 0 first). Set referenced_index to the index of the one your opener is about. "
+                f"The {photo_count} image(s) above are her profile items, numbered "
+                f"{FIRST_ITEM_INDEX} to {photo_count} in the order shown. Set item_index to the "
+                "number of the one your opener is about. "
                 "Write the opener now."
+            )
+        elif not anchored:
+            # photo_count == 0 and no anchor either: the request carries her profile TEXT and
+            # no images at all, so there is no numbered item for the model to choose and no
+            # honest number for it to return. Saying so explicitly, and naming the out-of-band
+            # value, is the whole point: the old copy rendered as "The 0 image(s) above are her
+            # profile in scroll order (index 0 first)" and then asked for "the index of the one
+            # your opener is about", which invites a confident `0` that is indistinguishable
+            # from a real pick of the first item. Under the 1-based contract 0 is out of band
+            # by construction (see ITEM_INDEX_ABSENT), so a consumer can tell "no item" from
+            # "item 1" without guessing.
+            closing = (
+                "No images of her profile were captured, so there are no numbered items in "
+                "this request and the profile text above is everything you have. Set "
+                f"item_index to {ITEM_INDEX_ABSENT}, which means you could not pick a numbered "
+                "item. Write the opener now."
             )
         elif photo_count > 0:
             closing = (
-                f"The first {photo_count} image(s) are her profile in scroll order (index 0 "
-                "first). The LAST image is the like screen described above.\n"
+                f"The first {photo_count} image(s) are her profile items, numbered "
+                f"{FIRST_ITEM_INDEX} to {photo_count} in the order shown. The LAST image is the "
+                "like screen described above and is NOT one of the numbered items.\n"
                 "YOUR MESSAGE ATTACHES TO THE PHOTO OR PROMPT IN THAT LAST IMAGE. She sees it "
                 "captioned under that item, so an opener about anything else reads as if it "
                 "were written for someone else. Write about that item only, even if another "
                 "photo or prompt seems more interesting.\n"
                 "If that item is a written prompt, respond to what she actually wrote. If it "
                 "is a photo, use one concrete thing you can genuinely see in it.\n"
+                # The second conclusion of the same premise (see _ANCHOR_SYSTEM's comment, and
+                # ops/OPENER-REDESIGN.md 1.1 root cause #4). The paragraph above tells the model
+                # she is looking at this exact item, and then only ever concludes "so target it",
+                # which pushes it to name the item in the text to prove it hit the right one.
+                # Stated immediately after "use one concrete thing you can genuinely see in it"
+                # on purpose: that sentence is what the model reads last before writing, and
+                # left alone it reads as an instruction to put the visible thing IN the message.
+                "Because she is looking straight at that item while she reads you, you never "
+                "need to name it or describe it back to her. What you can see is your premise, "
+                "not your point: spend the words on a claim about it that could be wrong.\n"
                 "Ignore the app's own interface in that screenshot: the comment box, the Send "
                 "Like button, the keyboard, the icons, the name header, and any other chrome "
                 "are not hers and must never be mentioned or described.\n"
-                "Set referenced_index to the index of the profile image, from the scroll order "
-                "above, that shows that same photo or prompt; if none of them does, use 0.\n"
+                # ANCHORED requests are the one place item_index does not drive the tap: the
+                # anchor IS the item, already open on the phone, so this asks the model to
+                # report which numbered item shows that same thing rather than to choose one.
+                # Kept because the anchored path still exists for OBSERVE MODE -- and, since
+                # 2026-08-12, for observe mode ONLY: the driver's `anchored_opener` repair hatch,
+                # which was the other caller, is gone (doc 5.6, never rewrite the opener to match
+                # whatever we hit). Doc 5.1 drops the anchor from the prompt entirely, and doc
+                # 5.9's observe inversion is the workflow that gets to do it.
+                "Set item_index to the number of the profile item above that shows that same "
+                f"photo or prompt; if none of them does, use {ITEM_INDEX_ABSENT}.\n"
                 "Write the opener now."
             )
         else:
@@ -556,8 +1543,8 @@ class GeminiOpener:
             # capture-path failure, or simply a run that never scrolled), so the anchor is the
             # ONLY image in the request. This needs its own wording rather than falling through
             # to the photo_count > 0 branch above, which would render as "The first 0 image(s)
-            # are her profile in scroll order" -- nonsensical, and it would send the model
-            # hunting through scroll-order images that were never sent.
+            # are her profile items, numbered 1 to 0" -- nonsensical, and it would send the
+            # model hunting through numbered items that were never sent.
             closing = (
                 "No profile scroll images were captured for her; the like screen image below "
                 "is the only image in this request.\n"
@@ -566,11 +1553,24 @@ class GeminiOpener:
                 "Ignore the app's own interface in that screenshot: the comment box, the Send "
                 "Like button, the keyboard, the icons, the name header, and any other chrome "
                 "are not hers and must never be mentioned or described.\n"
-                "Set referenced_index to 0.\n"
+                # No numbered items were sent at all, so the only honest answer is the
+                # out-of-band value -- not "1", which would claim a first item that does not
+                # exist in this request.
+                f"There are no numbered items in this request, so set item_index to "
+                f"{ITEM_INDEX_ABSENT}.\n"
                 "Write the opener now."
             )
+        # "" on every legacy shape, so their text stays byte-for-byte what it was (see the
+        # HER NAME paragraph in this method's docstring). Stated as a bare labelled fact with
+        # no instruction attached: doc 5.2 passes the name back because CROPPING LOST IT, i.e.
+        # to restore what the frames already carried, not to introduce a new move. Telling the
+        # model what to do with it here would be a voice change smuggled in as a payload
+        # change, and Part A's wording rules are shipped and working (doc sections 2 and 3).
+        name_block = (f"HER NAME:\n{items.name or _NAME_UNAVAILABLE}\n\n"
+                      if items is not None else "")
         text = (
             f"STYLE GUIDE:\n{style}\n\n"
+            f"{name_block}"
             f"HER PROFILE TEXT:\n{profile.text_blob() or '(none)'}\n\n"
             f"{closing}"
         )
@@ -590,8 +1590,10 @@ class GeminiOpener:
                 "null, a number, or an empty/whitespace value), and the opener must be at "
                 "most TWO sentences. Also keep following the style guide above, especially "
                 "the hard rule against em dashes and hyphens, and ground the opener in one "
-                "concrete detail from her profile text or photos. Write the corrected opener "
-                "now."
+                "concrete detail from her profile text or photos. That detail is your "
+                "premise, not your point: never name it or describe it back to her. The "
+                "corrected opener must still carry a claim that could be wrong. Write the "
+                "corrected opener now."
             )
             if anchored:
                 # Without this, a retry's corrective block talks only about the general HARD
@@ -606,14 +1608,28 @@ class GeminiOpener:
 
     @staticmethod
     def _assemble_parts(image_parts: list[dict[str, Any]], text_part: dict[str, Any], *,
-                        anchored: bool) -> list[dict[str, Any]]:
-        """Arrange the encoded image parts, the anchor label (when present), and the text
-        part into the final ``contents[0].parts`` list Gemini receives, in the order the
-        model reads them.
+                        anchored: bool, items: ItemRequest | None = None) -> list[dict[str, Any]]:
+        """Arrange the encoded image parts, the labels (when present), and the text part into
+        the final ``contents[0].parts`` list Gemini receives, in the order the model reads them.
 
-        Unanchored (or no images at all -- profile.photos == [] with no anchor either):
-        exactly today's shape, image parts followed by the text part, so a request with no
-        anchor is unaffected by any of this.
+        ITEM-CROP SHAPE (``items`` given, ops/OPENER-REDESIGN.md 5.2/5.7): a preamble text part
+        stating the label convention, then, for each image in ``ItemRequest.images`` order, a
+        standalone label part immediately followed by that image, then the trailing text part.
+        The numbered items come first and the context crops after them, which is what
+        ``ItemRequest.images`` already guarantees -- this method only labels by position, it
+        never reorders, because position IS the numbering.
+
+        The per-image labels are the whole mechanism doc 5.2 asks for. Crops make "image k is
+        item k" true by construction, but true-by-construction is a property of how WE built
+        the request; the model still has to know it, and left to a paragraph at the end it would
+        have to COUNT images to use it -- an inference step, on exactly the kind of enumeration
+        this redesign exists to stop leaving to luck. A label adjacent to its image removes the
+        step: there is nothing to count when each image says what it is. Same lesson, and the
+        same placement rule, as the anchor label below.
+
+        Unanchored with no ``items`` (or no images at all -- profile.photos == [] with no anchor
+        either): exactly today's shape, image parts followed by the text part, so a legacy
+        request is unaffected by any of this.
 
         Anchored: the anchor is, by construction, the LAST entry of ``image_parts`` (see
         generate(), which appends it to ``images`` after profile.photos before encoding). A
@@ -626,6 +1642,32 @@ class GeminiOpener:
         it only in a paragraph several parts away (after profile photos, before the label
         never existed) is exactly the ambiguity this whole feature exists to remove.
         """
+        if items is not None:
+            if anchored:
+                # Not reachable through generate(), which refuses the combination earlier and
+                # with a fuller explanation; re-stated here because this method is also called
+                # directly by _fit_images_to_budget and is a static method a future caller
+                # could reach on its own. The two shapes contradict each other outright: the
+                # anchor decides the item, the item list asks the model to decide.
+                raise ValueError(
+                    "an item-crop request cannot also be anchored: the anchor decides the item "
+                    "and the numbered list asks the model to choose one (ops/OPENER-REDESIGN.md "
+                    "5.1/5.2)")
+            if len(image_parts) != items.image_count:
+                # A length mismatch would silently shift every label past the gap, so item 4's
+                # label would sit on item 5's crop and the model's answer would be confidently
+                # wrong with nothing to detect it downstream. Refuse instead.
+                raise ValueError(
+                    f"item-crop request has {items.image_count} image(s) but "
+                    f"{len(image_parts)} encoded image part(s); the labels are positional, so "
+                    "a mismatch would number the wrong crops")
+            preamble = _ITEM_PREAMBLE + (_ITEM_PREAMBLE_CONTEXT if items.context_count else "")
+            parts: list[dict[str, Any]] = [{"text": preamble}]
+            for position, image_part in enumerate(image_parts):
+                parts.append({"text": items.label_for(position)})
+                parts.append(image_part)
+            parts.append(text_part)
+            return parts
         if not anchored or not image_parts:
             return [*image_parts, text_part]
         profile_parts, anchor_part = image_parts[:-1], image_parts[-1]
@@ -633,7 +1675,8 @@ class GeminiOpener:
 
     def _payload(self, profile: Profile, style: str, model: str, *,
                  image_parts: list[dict[str, Any]] | None = None,
-                 retry_hint: str = "", anchored: bool = False) -> dict[str, Any]:
+                 retry_hint: str = "", anchored: bool = False,
+                 items: ItemRequest | None = None) -> dict[str, Any]:
         """Build one model's GenerateContent request. ``image_parts`` lets generate() pass
         in already-encoded photos (and, when anchored, the anchor screenshot appended after
         them) so a cascade across N models doesn't re-encode the same screenshots N times;
@@ -646,15 +1689,29 @@ class GeminiOpener:
         anchoring if one appears later). ``retry_hint`` is forwarded to _text_part unchanged
         -- it must reach EVERY model tried in this attempt's cascade, because it describes
         what the previous attempt got wrong, which stays true no matter which model ends up
-        serving the retry."""
+        serving the retry.
+
+        ``items`` (ops/OPENER-REDESIGN.md 5.2/5.7) travels with ``image_parts``: it is what
+        those encoded parts ARE, so the no-``image_parts`` fallback below re-encodes from
+        ``items.images`` rather than from profile.photos when one is present. Encoding the
+        scroll frames while telling the model it is looking at labelled item crops is precisely
+        the kind of silent lie the anchored fallback below already refuses to tell."""
         if image_parts is not None:
             resolved_image_parts = list(image_parts)
             resolved_anchored = anchored
+            resolved_items = items
+        elif items is not None:
+            resolved_image_parts = self._image_parts(list(items.images))
+            resolved_anchored = False
+            resolved_items = items
         else:
             resolved_image_parts = self._image_parts(profile.photos)
             resolved_anchored = False
-        text_part = self._text_part(profile, style, retry_hint, anchored=resolved_anchored)
-        parts = self._assemble_parts(resolved_image_parts, text_part, anchored=resolved_anchored)
+            resolved_items = None
+        text_part = self._text_part(profile, style, retry_hint, anchored=resolved_anchored,
+                                    items=resolved_items)
+        parts = self._assemble_parts(resolved_image_parts, text_part, anchored=resolved_anchored,
+                                     items=resolved_items)
         generation_config: dict[str, Any] = {
             "maxOutputTokens": self.max_tokens,
             "responseMimeType": "application/json",
@@ -701,7 +1758,8 @@ class GeminiOpener:
 
     def _fit_images_to_budget(self, images: list[bytes], image_parts: list[dict[str, Any]],
                               text_part: dict[str, Any], system_text: str, *,
-                              anchored: bool) -> list[dict[str, Any]]:
+                              anchored: bool,
+                              items: ItemRequest | None = None) -> list[dict[str, Any]]:
         """Guarantee the request fits Gemini's 20MB inline-image cap, compressing only if
         it doesn't.
 
@@ -721,12 +1779,22 @@ class GeminiOpener:
         image in an anchored request from the very budget this method exists to enforce.
 
         Sizing uses the FULLY ASSEMBLED parts list (image parts, the standalone
-        _ANCHOR_LABEL text part when anchored, and the trailing text part -- see
-        _assemble_parts), not the image parts alone, so the label part's few dozen bytes
-        count against the budget too rather than being a free rider that _request_size_bytes
-        never sees.
+        _ANCHOR_LABEL text part when anchored, the item preamble and the per-image ITEM/CONTEXT
+        labels on an item-crop request, and the trailing text part -- see _assemble_parts), not
+        the image parts alone, so those label parts count against the budget too rather than
+        being free riders that _request_size_bytes never sees.
+
+        THIS METHOD MUST NEVER DROP AN IMAGE, and that requirement gets sharper under doc 5.2,
+        not softer. It compresses every image or it raises; it has no branch that sends fewer.
+        On the legacy frame shape a dropped image lost some of what the model could look at; on
+        the item-crop shape it would RENUMBER every item after the gap, so item 5's label would
+        sit on item 6's crop and the model would return a confidently wrong number that nothing
+        downstream could detect. Crops are also ~4.4x smaller than the frames they came from
+        (doc 5.2's addendum measured 8.53MB of crops against 37.15MB of frames on one real
+        capture), so this path should now essentially never fire -- which is a reason to keep
+        it honest, not a reason to relax it.
         """
-        assembled = self._assemble_parts(image_parts, text_part, anchored=anchored)
+        assembled = self._assemble_parts(image_parts, text_part, anchored=anchored, items=items)
         original_size = self._request_size_bytes(assembled, system_text)
         if original_size <= _MAX_INLINE_REQUEST_BYTES:
             return image_parts
@@ -772,7 +1840,15 @@ class GeminiOpener:
                     # the live like screen, so reporting it as a photo index sends the operator
                     # hunting through her profile photos for a capture bug ("photo index 9" on a
                     # profile with 6 photos) that is actually in the anchor capture path.
-                    if anchored and index == len(images) - 1:
+                    #
+                    # An item-crop request gets its own naming for the same reason, one step
+                    # further: none of its images is a profile photo in capture order at all,
+                    # so "photo index 4" names something that does not exist. ItemRequest
+                    # reports "item 5's crop" or "context crop 2 (unnumbered)" instead, which
+                    # is a thing the operator can actually go and look at.
+                    if items is not None:
+                        label = items.describe_image(index)
+                    elif anchored and index == len(images) - 1:
                         label = "the like screen anchor image"
                     else:
                         label = f"photo index {index}"
@@ -787,7 +1863,8 @@ class GeminiOpener:
                     "data": base64.standard_b64encode(image).decode("ascii"),
                 },
             } for image in recompressed]
-            fitted_assembled = self._assemble_parts(fitted_parts, text_part, anchored=anchored)
+            fitted_assembled = self._assemble_parts(fitted_parts, text_part, anchored=anchored,
+                                                    items=items)
             new_size = self._request_size_bytes(fitted_assembled, system_text)
             if new_size <= _MAX_INLINE_REQUEST_BYTES:
                 print(f"Gemini opener: compressed {len(images)} image(s) to fit the "
@@ -807,13 +1884,21 @@ class GeminiOpener:
         # with the number actually being compared to the budget above.
         image_bytes = sum(len(part["inlineData"]["data"]) for part in fitted_parts)
         text_bytes = new_size - image_bytes
-        anchor_note = (
-            " (one of these is the like screen anchor image, itself a full-resolution phone "
-            "screenshot subject to the same compression as her profile photos)"
-            if anchored else ""
-        )
+        if items is not None:
+            composition_note = (
+                f" ({items.item_count} numbered item crop(s) and {items.context_count} context "
+                "crop(s), not scroll frames -- crops are already the small shape, so an "
+                "oversized request here points at the capture or the crop geometry)"
+            )
+        elif anchored:
+            composition_note = (
+                " (one of these is the like screen anchor image, itself a full-resolution phone "
+                "screenshot subject to the same compression as her profile photos)"
+            )
+        else:
+            composition_note = ""
         raise OpenerError(
-            f"Gemini opener: request has {len(images)} image(s){anchor_note}; the request "
+            f"Gemini opener: request has {len(images)} image(s){composition_note}; the request "
             f"still totals {new_size} bytes encoded even at the smallest compression step "
             f"({image_bytes} bytes of images, {text_bytes} bytes of text -- style guide, "
             f"profile content, system instruction, and the anchor label when present, "
@@ -883,7 +1968,24 @@ class GeminiOpener:
         except (TypeError, ValueError):
             return 0
 
-    def _parse(self, response: Mapping[str, Any], requested_model: str) -> OpenerResult:
+    def _parse(self, response: Mapping[str, Any], requested_model: str, *,
+               index_space: str, numbered_item_count: int) -> OpenerResult:
+        """Turn one billed provider response into an OpenerResult, or raise OpenerParseError.
+
+        ``index_space`` and ``numbered_item_count`` describe the request this response is an
+        answer to: which list the model was told to number, and how many numbered items were
+        actually in it. Both are REQUIRED keywords rather than optional with a default,
+        deliberately -- a default would be this method quietly assuming a request shape, and
+        assuming a request shape is the exact bug the 2026-08-12 correction fixes. generate()
+        derives both from the payload it just built, so they can never disagree with what was
+        sent.
+
+        They exist because the RANGE CHECK on `item_index` has nowhere else to live. `_parse`
+        alone cannot do it (it never saw the request) and the driver cannot do it (it counts a
+        different thing -- it compares against its own frame count, so on a 24-frame capture of
+        9 items every value 1..23 looks in range). This method plus its two new arguments is the
+        only place both facts are present at once.
+        """
         usage = self._usage(response)
         # Price against the configured model id. Gemini's optional modelVersion can be an
         # opaque serving revision rather than a key in budget.pricing.
@@ -903,19 +2005,25 @@ class GeminiOpener:
                     f"(finishReason=MAX_TOKENS): thinking alone used {thoughts} of "
                     f"{self.max_tokens} configured max_tokens, leaving no room for the opener "
                     f"JSON. Raise opener.max_tokens, or lower {model!r}'s opener.thinking level.",
-                    usage, model)
+                    usage, model, reason_code=REASON_MAX_TOKENS)
             raise OpenerParseError(f"Gemini returned no text content (finishReason={finish_reason!r})",
-                                   usage, model)
+                                   usage, model, reason_code=REASON_NO_TEXT)
         try:
             data = json.loads(text)
         except json.JSONDecodeError as exc:
+            # raw_opener=text (the whole raw response, not a per-field candidate): the JSON
+            # never parsed at all, so there is no "opener" value to isolate -- see
+            # OpenerParseError's own docstring for why the two no-candidate-string cases
+            # (this one and missing_field just below) get the raw response text instead of
+            # None, unlike no_text/max_tokens where there is no text of any kind.
             raise OpenerParseError(
                 f"Gemini's opener output wasn't valid JSON (finishReason={finish_reason!r}): {exc}",
-                usage, model) from exc
+                usage, model, reason_code=REASON_BAD_JSON, raw_opener=text) from exc
         try:
             opener = data["opener"]
         except (KeyError, TypeError) as exc:
-            raise OpenerParseError(f"{type(exc).__name__}: {exc}", usage, model) from exc
+            raise OpenerParseError(f"{type(exc).__name__}: {exc}", usage, model,
+                                   reason_code=REASON_MISSING_FIELD, raw_opener=text) from exc
         # _SCHEMA's "required": ["opener", ...] is a generation HINT sent to the model, not a
         # runtime guarantee the API enforces on the response -- Gemini can (and, per an
         # adversarial audit of this project, DOES in practice) still return {"opener": null}
@@ -926,40 +2034,269 @@ class GeminiOpener:
         # types that literal text into the Hinge comment box and sends it to a real person.
         # So the type is re-verified here, at the boundary, rather than trusted.
         if not isinstance(opener, str):
+            # raw_opener is the repr of the non-string value itself (pre-sanitize -- this
+            # check runs before _sanitize is ever called, since _sanitize's str(text) would
+            # happily coerce a None/int/list into a plausible-looking string and hide exactly
+            # the bug this guard exists to catch).
             raise OpenerParseError(
                 f"Gemini's opener field was not a string: received {type(opener).__name__} "
                 f"{_truncated_repr(opener)}",
-                usage, model)
+                usage, model, reason_code=REASON_NOT_A_STRING, raw_opener=_truncated_repr(opener))
+        # WHICH ITEM THE MODEL PICKED (ops/OPENER-REDESIGN.md 5.1/5.7). Read exactly as
+        # defensively as the old referenced_index was, and clamped the same way -- but the
+        # clamp floor now MEANS something: item numbering starts at FIRST_ITEM_INDEX, so
+        # anything at or below ITEM_INDEX_ABSENT (a missing field, a null, a float, a string, a
+        # negative) collapses to the single out-of-band value rather than to "the first item".
+        # Under the old 0-based contract that same coercion silently produced a confident,
+        # perfectly legal "index 0", which is exactly the failure this constant exists to make
+        # impossible to mistake.
+        raw_item_index = data.get("item_index", ITEM_INDEX_ABSENT) if isinstance(data, Mapping) else None
+        # ONLY A VALUE THAT UNAMBIGUOUSLY NAMES AN ITEM IS ACCEPTED. `int()` is happy to turn
+        # things into a plausible item number that never meant one, and under 1-based numbering
+        # a plausible number is worse than a rejected one because it names a REAL card:
+        #
+        #   3.7   -> int() truncates to 3. But 3.7 does not mean item 3 any more than item 4;
+        #            the truncation invents the answer. An integral float (3.0) is different --
+        #            it names exactly one item -- so that one is accepted.
+        #   True  -> int() gives 1, i.e. "item 1", because bool is a subclass of int in Python.
+        #            A boolean is not a choice of item at all.
+        #   "4"   -> accepted: a decimal string names exactly one item and nothing is invented.
+        #            "4.7" is not accepted, because int() raises on it rather than truncating.
+        #
+        # None of these is reachable from a schema-conforming model ("type": "integer"), which
+        # is why the old code's truncation was harmless under the 0-based contract and is worth
+        # closing under this one: the whole point of ITEM_INDEX_ABSENT is that a value we cannot
+        # trust must not come out looking like a value we can.
+        if isinstance(raw_item_index, bool) or (
+                isinstance(raw_item_index, float) and not raw_item_index.is_integer()):
+            item_index = ITEM_INDEX_ABSENT
+        else:
+            try:
+                item_index = max(ITEM_INDEX_ABSENT, int(raw_item_index))
+            except (AttributeError, TypeError, ValueError):
+                item_index = ITEM_INDEX_ABSENT
+        # ABOVE the range: the model named an item that was never sent. Refused here rather
+        # than passed on, because NOTHING downstream can catch it -- the driver's own bounds
+        # check counts a different thing (its captured FRAMES, of which there are always more
+        # than there are items), so an out-of-range item number sails straight through it and
+        # lands on a real, wrong heart with full confidence. This method plus generate()'s two
+        # arguments is the only place the request and the response are both in scope.
+        #
+        # It collapses to ITEM_INDEX_ABSENT rather than raising OpenerParseError, and that is a
+        # deliberate choice between two loud options. Raising would throw away an opener that
+        # may be perfectly good (the TEXT is not what went wrong), consume one of
+        # max_attempts, and -- since five consecutive rejections stop the run -- let a model
+        # quirk about numbering kill a session. ABSENT is already the project's one out-of-band
+        # value and is already handled as "no usable item number, do not target anything"
+        # everywhere it is consumed, so this reuses a guarantee that exists instead of adding a
+        # second failure mode. The print is what makes it visible; the ABSENT contract is what
+        # makes it safe.
+        if item_index > numbered_item_count:
+            print(f"Gemini opener: the model returned item_index={item_index} but only "
+                  f"{numbered_item_count} numbered item(s) were sent in the "
+                  f"{index_space} space, so it names an item that does not exist. Refusing "
+                  f"it: recorded as ITEM_INDEX_ABSENT ({ITEM_INDEX_ABSENT}), which means no "
+                  "item was chosen and nothing may be targeted from it. The opener text "
+                  "itself is unaffected.")
+            item_index = ITEM_INDEX_ABSENT
+        elif item_index == ITEM_INDEX_ABSENT and raw_item_index not in (None, ITEM_INDEX_ABSENT):
+            # The coercion above already did the right thing; this only says so out loud, for
+            # anything that HAD a value and lost it: a negative, a non-integral float, a
+            # boolean, a list, an unparseable string. A missing field and a literal 0 are
+            # excluded because they are not slips -- 0 is what the prompt itself asks for when
+            # the model cannot pick, and a line for it would fire on every honest refusal.
+            print(f"Gemini opener: the model's item_index was not a usable item number "
+                  f"({_truncated_repr(raw_item_index)}); recorded as ITEM_INDEX_ABSENT "
+                  f"({ITEM_INDEX_ABSENT}), so nothing may be targeted from it. The opener "
+                  "text itself is unaffected.")
+        # `angle` is read exactly as defensively as item_index above, and for the same
+        # reason: _SCHEMA's "required" list is a generation HINT, not something the API
+        # enforces on the response (the isinstance check on `opener` above is the same lesson,
+        # learned the hard way). Unlike `opener` this field is pure telemetry -- nothing reads
+        # it to make a decision (ops/OPENER-REDESIGN.md 3.5) -- so a missing, null, or oddly
+        # typed value must never cost a profile its opener. Anything unusable degrades to "",
+        # which is exactly what an OpenerResult built without an angle carries anyway.
         try:
-            index = max(0, int(data.get("referenced_index", 0)))
+            angle = str(data.get("angle", "") or "").strip()
         except (AttributeError, TypeError, ValueError):
-            index = 0
-        sanitized = _sanitize(opener)
+            angle = ""
+        # `item_description` is read with the same defensiveness as `angle`, and for the same
+        # reason -- but note the ASYMMETRY with `item_index` directly above, which is
+        # deliberate. A missing description degrades to "" and costs a later cross-check its
+        # input; a missing index has no safe default at all, which is why that one gets a named
+        # out-of-band value instead of a plausible-looking number. Never gated on `advisory`:
+        # see OpenerResult.item_description for why a mode-dependent schema breaks observe.
+        try:
+            item_description = str(data.get("item_description", "") or "").strip()
+        except (AttributeError, TypeError, ValueError):
+            item_description = ""
+        sanitized = _strip_wrapping_quotes(_sanitize(opener))
         # A string that is empty, or becomes empty/whitespace-only once the dash-fold and
         # punctuation cleanup in _sanitize run, is just as unusable as a missing field --
         # sending nothing (or degrading silently to a bare like) is the same failure mode
         # this whole check exists to catch. An empty string happened to be falsy and degrade
         # safely downstream by luck alone; this makes it an explicit, named failure instead.
         if not sanitized.strip():
+            # raw_opener=sanitized (post-sanitize -- the empty/whitespace string this check
+            # actually tests), per OpenerParseError's own docstring rule. The pre-sanitize
+            # original is still visible in the message itself (_truncated_repr(opener)) for a
+            # human reading the retry_hint; raw_opener's job is only to record, unambiguously,
+            # which stage the guard judged.
             raise OpenerParseError(
                 f"Gemini's opener field was empty or whitespace only after sanitizing "
                 f"(received {_truncated_repr(opener)})",
-                usage, model)
+                usage, model, reason_code=REASON_EMPTY_AFTER_SANITIZE, raw_opener=sanitized)
+        # WYSIWYG guard: _sanitize already folded everything fold_to_ascii knows how to fold
+        # (accents, curly quotes, dashes, ligatures, ...), so anything undeliverable_chars
+        # still finds here is something no ASCII substitute exists for -- almost always an
+        # emoji. Sending it anyway would mean drivers.adb.Adb.text() either raises at the
+        # device boundary AFTER this opener was already recorded as the sent text (a
+        # BigQuery/hub row that no longer matches what actually reached the phone -- exactly
+        # the drift this whole feature exists to prevent), or -- if some future call site
+        # ever bypassed that boundary check -- silently drops the character again. Raising
+        # HERE instead routes into OpenerService's existing retry loop (service.py, around
+        # its OpenerParseError handling), which feeds this message back to the model as a
+        # retry_hint: the model simply rewrites the opener without the offending
+        # character(s), and the profile still gets an opener rather than being skipped.
+        bad = undeliverable_chars(sanitized)
+        if bad:
+            names = ", ".join(describe_char(ch) for ch in bad)
+            # raw_opener=sanitized: undeliverable_chars() is called directly on `sanitized`
+            # above, so that is unambiguously the value this guard judged.
+            raise OpenerParseError(
+                f"Gemini's opener contains characters the phone keyboard cannot type: "
+                f"{names}. Rewrite it using plain ASCII letters only.",
+                usage, model, reason_code=REASON_UNDELIVERABLE_CHARS, raw_opener=sanitized)
+        # Second WYSIWYG guard, same rationale as the one directly above, for the one
+        # collision undeliverable_chars structurally cannot see: a literal '%' immediately
+        # followed by a lowercase 's' is a two-character SEQUENCE that eats itself in adb's
+        # own %s space escape (typography.undeliverable_sequences' docstring has the measured
+        # round-trip table), even though '%' alone and 's' alone are both perfectly
+        # typeable. This is rare and narrow on purpose -- it is NOT worth a line in _SYSTEM
+        # telling the model to avoid it; a prompt-level warning about '%' risks scaring the
+        # model off percent signs entirely (the exact unnatural "50 percent" rewrite the
+        # owner rejected), for a collision that in practice almost never fires. The retry
+        # hint below is the only place this is mentioned, and only on the rare occasion it's
+        # actually needed.
+        bad_seqs = undeliverable_sequences(sanitized)
+        if bad_seqs:
+            seqs = ", ".join(repr(seq) for seq in bad_seqs)
+            raise OpenerParseError(
+                f"Gemini's opener contains a sequence the phone keyboard cannot type as "
+                f"written: {seqs}. A percent sign like '50%' is fine on its own, but a "
+                f"literal '%' directly against a following lowercase 's' cannot be typed. "
+                f"Reword that spot (e.g. spell out '50 percent' there, or rephrase so the "
+                f"'%' isn't immediately followed by 's').",
+                usage, model, reason_code=REASON_UNDELIVERABLE_SEQUENCE, raw_opener=sanitized)
         if _sentence_count(sanitized) > 2:
+            # raw_opener=sanitized: _sentence_count() is likewise called on `sanitized`.
             raise OpenerParseError("Gemini returned an opener longer than the two-sentence maximum",
-                                   usage, model)
+                                   usage, model, reason_code=REASON_TOO_MANY_SENTENCES,
+                                   raw_opener=sanitized)
+        # Deterministic (no second LLM call) guard against scaffolding/preamble text that
+        # leaked INSIDE the opener string -- the JSON schema stops free text OUTSIDE the
+        # field, but not a meta-clause like "Here's the response: ..." inside it. Named
+        # matches feed back into service.py's retry loop as a retry_hint, so the model just
+        # rewrites the opener without whatever it self-described this time.
+        markers = _scaffolding_markers(sanitized)
+        if markers:
+            # raw_opener=sanitized: _scaffolding_markers() is called on `sanitized` above.
+            raise OpenerParseError(
+                f"Gemini's opener contained scaffolding text rather than the bare message "
+                f"(matched: {'; '.join(markers)}). Return ONLY the message itself in the "
+                f"opener field, with no preamble, no label, and no surrounding quotes "
+                f"(received {_truncated_repr(opener)})",
+                usage, model, reason_code=REASON_SCAFFOLDING, raw_opener=sanitized)
+        referenced = str(data.get("referenced", "")).strip()
+        # REDUNDANCY MONITOR (ops/OPENER-REDESIGN.md 3.7), and note where it sits: AFTER every
+        # guard that can reject, and it deliberately rejects nothing itself. An opener that
+        # restates its own `referenced` note is the over-description bug this redesign targets,
+        # but the measurement is a lower bound and no threshold has been calibrated yet (the
+        # function's docstring has all four reasons), so it ships log only. There is
+        # deliberately no REASON_* constant for it: it is not a rejection reason, and inventing
+        # one would invite a future edit to raise on it before the data exists to justify a cut.
+        #
+        # Wrapped even though the function is pure and cannot realistically raise: this runs on
+        # an opener that has already passed every real guard, so a bug in a MONITOR must never
+        # be able to fail a request that was otherwise about to succeed. That is not a silent
+        # degradation of the send path -- the opener is unaffected either way -- and the print
+        # keeps it loud rather than invisible.
+        try:
+            redundancy_markers = _redundant_description_markers(sanitized, referenced)
+        except Exception as exc:  # noqa: BLE001 -- see the paragraph above.
+            print(f"Gemini opener: redundancy monitor failed with "
+                  f"{type(exc).__name__}: {exc}; the opener itself is unaffected (this check "
+                  "never rejects). This is a bug in _redundant_description_markers.")
+            redundancy_markers = []
+        if redundancy_markers:
+            print(f"Gemini opener: redundancy monitor: this opener restates "
+                  f"{len(redundancy_markers)} word(s) from its own `referenced` note "
+                  f"({'; '.join(redundancy_markers)}). Logged for offline calibration only; "
+                  "the opener is being sent.")
         return OpenerResult(
             opener=sanitized,
-            referenced=str(data.get("referenced", "")).strip(),
+            referenced=referenced,
             usage=usage,
             model=model,
-            referenced_index=index,
+            item_index=item_index,
+            # Stated, never inferred: this is the request shape generate() actually built, so a
+            # consumer never has to guess which list `item_index` counts (see the INDEX_SPACE_*
+            # constants for why guessing was the bug).
+            index_space=index_space,
+            angle=angle,
+            item_description=item_description,
+            redundancy_markers=redundancy_markers,
         )
 
     def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
                  anchor: bytes | None = None,
+                 items: ItemRequest | None = None,
                  should_stop: Callable[[], bool] | None = None,
                  skip_models: frozenset[str] = frozenset()) -> OpenerResult:
+        # items is doc 5.2/5.7's item-crop request shape and is THE shape Part B is migrating
+        # to: one cropped image per profile item, numbered by position and labelled adjacent to
+        # its own image, then the unnumbered context crops, plus her name as text and the
+        # capture's truncation flag. When present it REPLACES profile.photos as the model's view
+        # of her -- the raw scroll frames are not sent at all, which is doc 5.7's "Not sent:
+        # full screenshots, scroll frames, the anchor, endorsement blocks". profile is still
+        # passed and still contributes its TEXT (profile.text_blob(), empty on Hinge, real on
+        # Bumble web); only its photos go unused, deliberately and silently, because the caller
+        # that has crops also still has the frames and needs them for ranking and embedding.
+        #
+        # MUTUALLY EXCLUSIVE WITH anchor, and refused loudly rather than resolved by precedence.
+        # The two shapes make opposite claims about who chooses the item -- the anchor IS the
+        # choice, already open on the phone, while the numbered list asks the model to make one
+        # (doc 5.1's single call) -- so a request carrying both would have to silently demote
+        # one of them, and _ANCHOR_SYSTEM would ship a paragraph about "one extra image that is
+        # NOT part of her profile" describing an image nobody sent.
+        #
+        # THE ANCHOR PATH NOW HAS NO PRODUCTION CALLER AT ALL, AND IS DELIBERATELY LEFT INTACT
+        # FOR ONE PHASE. Doc 5.1 drops the anchor from the prompt in both modes; that is now
+        # true of the CALLERS and not yet of this module. Both of them are gone: the driver's
+        # repair hatch (hinge._like_comment_sheet re-asking against the live anchor when its own
+        # targeting missed) went on 2026-08-12, because repairing the TEXT does not undo spending
+        # the LIKE on an item the model never chose (doc 5.6, never substitute); and observe's
+        # post-heart suggestion went with doc 5.9's INVERSION the same day -- observe now
+        # generates BEFORE the human taps, from these very item crops, and the live sheet frame
+        # became the evidence its tap is CHECKED against rather than an input to the model.
+        # Removing the anchored machinery is deliberately NOT part of that inversion, so a
+        # regression in either half stays bisectable; the workflow that deletes it owns
+        # `_ANCHOR_SYSTEM`, `_ANCHOR_LABEL`, `_system_text`'s anchored branch, both anchored
+        # closing paragraphs, the anchored retry sentence, `_assemble_parts`' anchor placement,
+        # and the `anchor=` parameters on generate()/maybe_opener(). Until then both shapes
+        # work and neither leaks into the other.
+        #
+        # REACHABLE FROM PRODUCTION AS OF 2026-08-12. The chain is: hinge._capture_current
+        # enumerates the profile (doc 5.5's closed loop) and builds a
+        # drivers.item_crops.ItemPayload; the crops, the context crops, her name and the
+        # truncation flag ride on the Profile; worker._auto_loop calls
+        # ItemRequest.from_profile(profile) and OpenerService.maybe_opener threads the result
+        # here. What is STILL not wired is the other direction -- the returned item_index is in
+        # INDEX_SPACE_MODEL_ITEMS, and nothing yet converts it into a tapped heart, so an AUTO
+        # like on this shape hard-stops at worker.py's capture_order_index guard rather than
+        # targeting. That is doc 5.6's workflow, and the stop is the intended behaviour until
+        # it lands (never a fallback tap on item 1).
+        #
         # anchor is a screenshot of the app's like/comment screen exactly as it is open on the
         # phone at this instant -- captured live, right before this call, not one of her
         # profile photos -- showing the single photo or prompt her comment will actually be
@@ -971,9 +2308,11 @@ class GeminiOpener:
         # under her dining table photo. Passing anchor fixes that by grounding the opener in the
         # one item that is provably correct, verified visually rather than guessed from scroll
         # order. It is appended AFTER her profile photos in the image list built below, and
-        # deliberately kept OUT of the profile scroll-order indexing referenced_index uses (see
-        # _text_part's anchored wording) -- it is not one more thing to reference by index, it
-        # is the fixed target every opener must be about whenever it's present.
+        # deliberately kept OUT of the item numbering item_index uses (see _text_part's anchored
+        # wording) -- it is not one more thing to reference by number, it is the fixed target
+        # every opener must be about whenever it's present. On an anchored request item_index
+        # therefore REPORTS which numbered item the anchor turned out to be rather than
+        # CHOOSING one, which is the one case where it does not drive the tap.
         #
         # retry_hint defaults to "" (falsy): an ordinary first attempt, no correction to make.
         # When OpenerService is re-asking after a rejected attempt, it passes the specific
@@ -1030,12 +2369,42 @@ class GeminiOpener:
             # and the budget fit) keys off this one boolean rather than re-deriving it, so the
             # request is anchored, consistently, top to bottom, or not at all.
             anchored = anchor is not None
-            images = list(profile.photos) + ([anchor] if anchored else [])
+            if anchored and items is not None:
+                # Fail loud, before a single byte is encoded or billed. See this method's
+                # `items` paragraph for why precedence is not an option here.
+                raise ValueError(
+                    "Gemini opener: a request cannot carry both an anchor screenshot and an "
+                    "item-crop list. The anchor IS the chosen item (already open on the phone) "
+                    "and the numbered list asks the model to choose one "
+                    "(ops/OPENER-REDESIGN.md 5.1/5.2); pick one shape.")
+            if items is not None:
+                # profile.photos is deliberately NOT included: on this shape the crops are the
+                # model's whole view of her (doc 5.7's "Not sent: ... scroll frames"), and
+                # appending the frames would re-introduce the duplication bias doc 5.2 removes
+                # -- a card straddling a scroll seam appearing three times reads as salience to
+                # a model that is now CHOOSING among items.
+                images = list(items.images)
+            else:
+                images = list(profile.photos) + ([anchor] if anchored else [])
+            # WHAT `item_index` WILL MEAN IN THE ANSWER, derived from the payload actually being
+            # built rather than assumed anywhere downstream (see the INDEX_SPACE_* constants).
+            # Both travel to _parse, which needs the count for its range check and the space for
+            # the result it returns.
+            #
+            # The anchored shape numbers profile.photos exactly like the plain frame shape does
+            # -- the anchor is appended AFTER them and is deliberately outside the numbering
+            # (see _text_part's anchored wording) -- so its count is photo_count, not
+            # photo_count + 1. Getting that wrong in the permissive direction would let the
+            # model "pick" the anchor and have it pass the range check as a real item.
+            index_space = (INDEX_SPACE_MODEL_ITEMS if items is not None
+                           else INDEX_SPACE_PROFILE_PHOTOS)
+            numbered_item_count = (items.item_count if items is not None
+                                   else len(profile.photos))
             image_parts = self._image_parts(images)
-            text_part = self._text_part(profile, style, retry_hint, anchored=anchored)
+            text_part = self._text_part(profile, style, retry_hint, anchored=anchored, items=items)
             system_text = _system_text(anchored)
             image_parts = self._fit_images_to_budget(images, image_parts, text_part, system_text,
-                                                      anchored=anchored)
+                                                      anchored=anchored, items=items)
             # SAFETY VALVE (see this method's skip_models docstring paragraph above): if the
             # caller's skip set would leave literally nothing eligible, ignore it entirely
             # rather than raising GeminiCapacityExhausted without ever trying a single model.
@@ -1074,7 +2443,7 @@ class GeminiOpener:
                     scopes[model] = self._unavailable_models[model]
                     continue
                 payload = self._payload(profile, style, model, image_parts=image_parts,
-                                        retry_hint=retry_hint, anchored=anchored)
+                                        retry_hint=retry_hint, anchored=anchored, items=items)
                 url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                        f"{quote(model, safe='-_.')}:generateContent")
                 try:
@@ -1200,7 +2569,8 @@ class GeminiOpener:
                     raise error
                 if not isinstance(response, Mapping):
                     raise GeminiAPIError(int(code), None, "malformed success response")
-                return self._parse(response, model)
+                return self._parse(response, model, index_space=index_space,
+                                   numbered_item_count=numbered_item_count)
             raise GeminiCapacityExhausted(_exhaustion_reason(scopes))
 
     def preflight(self) -> None:

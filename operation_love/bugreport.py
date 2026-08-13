@@ -6,7 +6,9 @@ dependency versions, runtime CAPABILITY presence (the tesseract OCR binary,
 opencv, and which /dev/input/event* device the touch watcher would attach
 to — see _capabilities_md), the config (secrets stripped — presence only,
 never a value or even a derived prefix), the live run status (phase, labels,
-ranker, per-app decisions, budget, last error), and recent log lines. Output
+ranker, per-app decisions, budget, last error), a STALL SUMMARY distilled from
+each app's on-disk actions.jsonl (the longest same-reason observe_waiting
+repeats, worst first — see _stall_summary_md), and recent log lines. Output
 is markdown the owner can paste to a developer to debug. The report includes
 an instruction to improve this collector when it lacks enough context, and it
 caps output at 50k lines by dropping the oldest captured lines first.
@@ -32,6 +34,8 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .typography import format_duration
+
 _MAX_REPORT_LINES = 50_000
 _DEBUG_ACTION_TAIL = 30          # actions.jsonl DISPLAY entries to inline from the latest run
 # ^ Used to be "raw lines", and the comment here claimed a profile logs at most 2 of those, so
@@ -52,6 +56,8 @@ _DEBUG_ACTION_TAIL = 30          # actions.jsonl DISPLAY entries to inline from 
 # included) is never hidden behind a "repeated: N" summary with no filename in it.
 _RECENT_OPENERS_SHOWN = 10        # cap on _recent_openers_md rows -- see its docstring
 _RECENT_OPENER_TEXT_CHARS = 240   # per-opener cap so one runaway response can't blow up the report
+_RECENT_REJECTIONS_SHOWN = 10     # cap on _recent_opener_rejections_md rows -- mirrors the above
+_STALL_STRETCHES_SHOWN = 3        # cap on _stall_summary_md rows -- see its docstring
 _LOG_RING: deque[str] = deque(maxlen=_MAX_REPORT_LINES)
 _LOG_LOCK = threading.Lock()
 _PROCESS_START = time.time()
@@ -339,13 +345,39 @@ def _app_diagnostics_md(apps: dict) -> str:
     separator and silently corrupt the table's column count. A labelled bullet list has no such
     ambiguity and reads as clearly as the table itself.
 
+    The stop reason bullet also carries AppStatus.stop_kind (status.py) — "opener" (an
+    opener-side stop: capacity exhausted, or no usable opener for this profile), "deck_blocked"
+    (worker.py's blocked-deck check: DatingAppDriver.blocked_reason() found something on screen
+    standing between us and the deck, e.g. Hinge's out-of-free-likes Hinge+ paywall,
+    data/hinge_debug/run_20260811_011416, 2026-08-11), or "targeting"
+    (ops/OPENER-REDESIGN.md 5.6: the like could not be put on the item its opener was written
+    about, so it was not sent — the phone is left exactly as the driver stopped it). The value
+    is rendered verbatim rather than mapped, so a kind added later reaches the report without
+    an edit here. Before stop_kind existed, all of those
+    rendered as an identical "stop reason: <free text>" bullet with no way to tell which
+    SUBSYSTEM decided to stop without reading the message and guessing — exactly the ambiguity
+    this report's own STALL SUMMARY (see _stall_summary_md) was filed to remove one layer down,
+    for the same incident. When stop_kind is None (a stop path that predates it, or a manual
+    Stop click that never sets stop_reason at all) the bullet says so explicitly as
+    "unlabelled" rather than silently dropping the bracket — omitting it here would just
+    reintroduce that same "which subsystem?" guesswork one field over. Routed through
+    _sanitize_inline like every other free-text field in this file, even though stop_kind is
+    presently a fixed small vocabulary and not itself provider-sourced text.
+
     Returns "" (no heading, no bullets) when no app has anything to report — the common healthy
     run must render nothing extra here, not an empty section."""
     lines: list[str] = []
     for name, a in apps.items():
         reason = a.get("stop_reason")
         if reason:
-            lines.append(f"- ⚠️ **{name}** stop reason: `{_sanitize_inline(str(reason))}`")
+            # "**{name}** stop reason:" is kept as an unbroken substring (kind appended AFTER
+            # the value, not spliced in before the colon) so this stays the same stable anchor
+            # older callers/tests already grep for; the new information is additive, not a
+            # reformat of what was already there.
+            kind = a.get("stop_kind")
+            kind_label = f"`{_sanitize_inline(str(kind))}`" if kind else "unlabelled"
+            lines.append(f"- ⚠️ **{name}** stop reason: `{_sanitize_inline(str(reason))}` "
+                         f"(kind: {kind_label})")
         err = a.get("error")
         if err:
             lines.append(f"- ⚠️ **{name}** error: `{_sanitize_inline(str(err))}`")
@@ -397,12 +429,16 @@ def _status_md(hub_state) -> str:
 
 
 def _recent_openers_md(hub_state) -> str:
-    """WHAT the opener said, and whether it was anchored to the like screen it will actually
-    hang under -- the diagnostic this report was missing. The bug this collector improvement
-    was filed against showed only `openers: 1` in `## Run status`: that count proves a call
-    happened, but says nothing about what the model wrote or whether it was told which photo
-    the comment attaches to (the anchor mechanism this whole feature is about -- see
-    worker.py's _wait_for_observed_decision and opener/service.py's OpenerPick.referenced).
+    """WHAT the opener said, and what the model was looking at when it wrote it -- the
+    diagnostic this report was missing. The bug this collector improvement was filed against
+    showed only `openers: 1` in `## Run status`: that count proves a call happened, but says
+    nothing about what the model wrote or which item the comment attaches to.
+
+    The second half of that sentence used to read "whether it was ANCHORED to the like screen",
+    and doc 5.9's observe inversion retired that framing along with the anchor's last caller:
+    both modes now send numbered item crops and the model CHOOSES the item, so the useful fact
+    is the request shape (`index_space`) rather than an anchor flag. Older entries still carry
+    the flag and still render by it -- see the anchor_note branch below.
 
     DATA ROUTE: PRIMARY source is hub_state.recent_openers() -- HubState now captures a live
     reference to the running OpenerService (supervisor.run()'s on_opener_service callback,
@@ -415,14 +451,16 @@ def _recent_openers_md(hub_state) -> str:
     model produced it -- not just a guess from whatever suggestion happens to still be live
     on the hub right now.
 
-    Dropped the old fallback (reading each app's CURRENT live suggestion off
-    AppStatus.opener_suggestion / opener_referenced / opener_anchored) rather than keeping it
-    as a secondary line: worker.py sets those three fields from the exact same successful
-    generate() call that appends to OpenerService's ring buffer (see worker.py's
-    `_stat(state="waiting_for_send", opener_suggestion=..., opener_referenced=...,
-    opener_anchored=...)`), so the live-status fields are always either identical to the
+    Dropped the old fallback (reading each app's CURRENT live suggestion off the
+    AppStatus.opener_* set) rather than keeping it as a secondary line: those fields are
+    published from the exact same successful generate() call that appends to OpenerService's
+    ring buffer (worker.py's _ObserveSuggestion publishes the whole set together -- see
+    status.cleared_opener_fields), so the live-status fields are always either identical to the
     newest ring-buffer entry for that app or already stale/cleared -- never something extra.
-    Keeping both would just show the same generation twice.
+    Keeping both would just show the same generation twice. The one thing the live set carries
+    that the ring buffer does not is doc 5.9's MISMATCH (opener_warning: the human opened a
+    different item than the suggestion names), and that is a fact about the human's tap rather
+    than about a generation, so it does not belong in this section either.
 
     Best-effort, returns markdown -- may raise (hub_state.recent_openers() is documented
     never to, but this function does not re-guard that promise); wrapped by _safe_section
@@ -444,24 +482,91 @@ def _recent_openers_md(hub_state) -> str:
         anchored = bool(e.get("anchored"))
         advisory = bool(e.get("advisory"))
         index = e.get("index")
+        # WHICH LIST that number counts (opener.INDEX_SPACE_*). A bare small int is
+        # uninterpretable on its own -- "3" means a different thing depending on whether the
+        # request numbered her scroll frames or her item crops, and a reader comparing two
+        # reports has no other way to tell. Absent from every entry written before 2026-08-12,
+        # which renders as no suffix rather than as a wrong one.
+        index_space = e.get("index_space")
+        index_space = index_space.strip() if isinstance(index_space, str) else ""
         referenced = e.get("referenced")
         referenced = referenced.strip() if isinstance(referenced, str) else ""
         opener = str(e.get("opener") or "")
         if len(opener) > _RECENT_OPENER_TEXT_CHARS:
             opener = opener[:_RECENT_OPENER_TEXT_CHARS] + "…"
         mode_note = "advisory" if advisory else "auto"
+        # WHAT THE MODEL WAS LOOKING AT, which is the diagnostic this line has always been for.
+        # It used to be a two-way anchored/blind flag, and that reading died with doc 5.9's
+        # observe inversion: BOTH modes now send numbered item crops and NOTHING passes an
+        # anchor, so "no like-screen anchor" would print on every entry and read as a warning
+        # about the strongest request shape this pipeline has. So the shape is reported from
+        # `index_space` (the model chose from a numbered list) and the anchor flag survives only
+        # for entries written before the crop shape existed, where it still means what it said.
         # 🟢/🔴 circles per the owner's status-indicator convention -- never a hand emoji
         # (👍/👎 etc.), which the owner has flagged before as hard to tell apart at a glance.
-        anchor_note = ("🟢 anchored to the live like screen" if anchored
-                       else "🔴 blind — no like-screen anchor")
+        if index_space == "model_items":
+            anchor_note = "🟢 chose from numbered item crops"
+        elif anchored:
+            anchor_note = "🟢 anchored to the live like screen"
+        else:
+            anchor_note = "🔴 blind — no item list and no like-screen anchor"
         about = f" · about: {_sanitize_inline(referenced)}" if referenced else ""
+        space_note = f" ({_sanitize_inline(index_space)})" if index_space else ""
         lines.append(
             f"- `{ts}` · **{app}** · model: `{model}` · {mode_note} · {anchor_note} · "
-            f"index: {index}{about}\n"
+            f"index: {index}{space_note}{about}\n"
             f"  > {_sanitize_inline(opener)}"
         )
     if not lines:
         return "- (no openers generated yet this run, or no run is active)"
+    return "\n".join(lines)
+
+
+def _recent_opener_rejections_md(hub_state) -> str:
+    """The other half of the opener paper trail: attempts the deterministic guards in
+    opener.py's _parse REJECTED (scaffolding text, an emoji/undeliverable char, an over-long
+    opener, bad JSON, ...), not just the successes _recent_openers_md above shows. Before
+    this section existed, a rejected opener was printed to the console and then lost forever
+    -- BigQuery only ever recorded SUCCEEDED openers (record_opener), so there was no way to
+    answer "how often does any guard fire" or "is the scaffolding/sentence-cap detector too
+    strict" from a bug report alone.
+
+    DATA ROUTE: reads hub_state.recent_opener_rejections() -- an in-memory ring buffer on the
+    live OpenerService (recent_rejections / recent_rejections_snapshot, see its __init__
+    docstring), the same "no BigQuery round-trip needed" design as _recent_openers_md's own
+    ring buffer. reason_code/raw_opener may be missing or None (see OpenerParseError's own
+    docstring for exactly which guards leave raw_opener empty), which is rendered as a plain
+    placeholder rather than the literal string "None".
+
+    Best-effort, returns markdown -- may raise; wrapped by _safe_section like every other
+    section in this file, so a raise here degrades to a warning line, not a broken report."""
+    if hub_state is None:
+        return "- (no hub — run via `python -m operation_love hub` for live run status)"
+    entries = hub_state.recent_opener_rejections()
+    if not entries:
+        return "- (no opener rejections recorded this run, or no run is active)"
+    newest_first = list(reversed(entries))[:_RECENT_REJECTIONS_SHOWN]   # ring buffer is newest-LAST
+    lines = []
+    for e in newest_first:
+        if not isinstance(e, dict):
+            continue
+        ts = _sanitize_inline(str(e.get("ts") or "unknown time"))
+        app = _sanitize_inline(str(e.get("app") or "?"))
+        model = _sanitize_inline(str(e.get("model") or "?"))
+        attempt = e.get("attempt")
+        reason_code = e.get("reason_code") or "(no reason code)"
+        reason_code = _sanitize_inline(str(reason_code))
+        raw_opener = e.get("raw_opener")
+        raw_opener = str(raw_opener) if raw_opener is not None else "(no candidate text)"
+        if len(raw_opener) > _RECENT_OPENER_TEXT_CHARS:
+            raw_opener = raw_opener[:_RECENT_OPENER_TEXT_CHARS] + "…"
+        lines.append(
+            f"- `{ts}` · **{app}** · model: `{model}` · attempt {attempt} · "
+            f"reason: `{reason_code}`\n"
+            f"  > {_sanitize_inline(raw_opener)}"
+        )
+    if not lines:
+        return "- (no opener rejections recorded this run, or no run is active)"
     return "\n".join(lines)
 
 
@@ -579,6 +684,184 @@ def _action_counts_line(lines: list[str]) -> str | None:
     return "action counts: " + " · ".join(f"{k} {v}" for k, v in counts.items())
 
 
+# ── stall summary ──────────────────────────────────────────────────────────
+# Filed against the exact incident this bugreport.py improvement pass exists for:
+# data/hinge_debug/run_20260811_011416 (2026-08-11). The owner tapped the heart, composed a
+# comment, and tapped Send Like; Hinge refused it (out of free likes for the day) and showed
+# its Hinge+ paywall, which nothing in the driver recognised. observe mode has no bail-out for
+# an unrecognised screen (worker.py calls wait_for_decision(timeout=None)), so
+# _await_like_resolved polled like_sheet / like_sending for 2.5 minutes until the owner pressed
+# Stop by hand. actions.jsonl recorded every one of those polls faithfully — but diagnosing the
+# hang from the raw report meant reading its ~88-line tail by eye and noticing that
+# observe_waiting kept firing with the same reason. The functions below turn that pattern into
+# one line: "longest observe stall: reason=like_sheet for 1m37s (5 records)" for that run,
+# printed at the top of the debug-log section instead of buried in it.
+def _parse_action_ts(raw_ts: object) -> datetime | None:
+    """Best-effort parse of an actions.jsonl "ts" field into a datetime for wall-clock
+    arithmetic. Every action logger in hinge.py (_note_observe_waiting included) writes
+    datetime.now().isoformat(timespec="seconds")-shaped strings, e.g. "2026-08-11T01:42:43" —
+    see the raw lines in data/hinge_debug/run_20260811_011416/actions.jsonl. A bug report must
+    never crash on a malformed, missing, or older-format timestamp (not a string at all, not
+    ISO-parseable, the "?" placeholder _rec_ts substitutes elsewhere for a field that's plain
+    absent), so every failure here returns None rather than raising. Every caller treats None
+    as "duration unknown", never as zero — a missing timestamp is not the same claim as an
+    instantaneous stall."""
+    if not isinstance(raw_ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw_ts)
+    except ValueError:
+        return None
+
+
+def _observe_waiting_stretches(lines: list[str]) -> list[list[dict]]:
+    """Split a run's actions.jsonl into maximal stretches of consecutive records whose
+    "action" is "observe_waiting" — i.e. one profile's entire wait for a decision, bounded by
+    whatever resolves it (observe_decision, capture, observe_like_anchor, ...) on either side.
+    A line that fails to parse, or parses to something with no "observe_waiting" action, closes
+    whatever stretch is currently open rather than silently vanishing into it — a malformed
+    line must never let two unrelated waits (different profiles, potentially minutes apart)
+    merge into one bogus stall. Returns parsed record dicts, not raw strings, since every
+    caller needs both "reason" and "ts" out of each one."""
+    stretches: list[list[dict]] = []
+    current: list[dict] = []
+    for raw in lines:
+        rec = None
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                rec = parsed
+        except Exception:  # noqa: BLE001
+            rec = None
+        if rec is not None and rec.get("action") == "observe_waiting":
+            current.append(rec)
+            continue
+        if current:
+            stretches.append(current)
+            current = []
+    if current:
+        stretches.append(current)
+    return stretches
+
+
+def _stall_candidates(lines: list[str]) -> list[tuple[int, str, int, float | None]]:
+    """(stretch index in file order, reason, record count, duration in seconds or None) for
+    every reason that repeats (>=2 records) within a single observe_waiting stretch — one
+    profile's wait, per `_observe_waiting_stretches`. The stretch index is what lets
+    `_stall_summary_md` rank a still-unresolved wait above an old one that took just as long
+    but eventually got a decision -- see that function's docstring for why raw duration alone
+    is the WRONG primary sort key, measured against this exact incident.
+
+    Records need not be strictly ADJACENT within the stretch to count together -- this is the
+    one place this module deliberately does NOT reuse `_group_action_reason_runs`'s strict
+    adjacency, and the reason is measured, not stylistic: the incident run's final stretch
+    alternates `like_sheet` (composing) with `like_sending` (Hinge resolving the send) every
+    ~30s while stuck on a SINGLE like, e.g.
+        01:42:43 like_sheet, 01:43:13 like_sheet, 01:43:16 like_sending, 01:43:19 like_sheet,
+        01:43:49 like_sheet, 01:44:20 like_sheet, 01:44:39 like_sending
+    A strict-adjacency grouping (matching this file's OWN "collapsed record" display format —
+    see _render_run's "repeated": N objects, lines ~521-573) would fragment that into four
+    separate runs of 2/1/3/1 records and miss the actual story: Hinge was stuck resolving ONE
+    like for 1m37s across five like_sheet polls, not several shorter unrelated stalls. Grouping
+    by reason across the WHOLE stretch (rather than the whole file — bounding to the stretch is
+    what stops an unrelated, already-resolved like from an earlier profile at 01:19:51 from
+    being counted into the same total) reproduces that reading exactly: 5 records,
+    01:42:43 -> 01:44:20, 97s.
+
+    So this function's own record/duration arithmetic never touches the file's collapsed
+    "repeated": N / "ts": "<start>-<end>" display format at all — it always counts and dates
+    genuinely raw, uncollapsed per-poll records straight out of `_observe_waiting_stretches`.
+    That is the correct way to "account for both collapsed and uncollapsed records" the task
+    warns about: by construction, every record counted here IS an individual, uncollapsed
+    actions.jsonl line, and duration/count fall straight out of len(group) and the first/last
+    entries' own timestamps — there is no separate collapsed-record code path to reconcile
+    against.
+
+    Duration is (last occurrence's ts) - (first occurrence's ts); None if either timestamp is
+    missing or fails to parse (see _parse_action_ts), or if the clock appears to run backwards
+    (a malformed-timestamp case too, not a negative stall). A reason seen only once within a
+    stretch is not a stall — nothing repeated — and is dropped here rather than reported with a
+    meaningless 0s duration."""
+    out: list[tuple[int, str, int, float | None]] = []
+    for stretch_index, stretch in enumerate(_observe_waiting_stretches(lines)):
+        by_reason: dict[str, list[dict]] = {}
+        for rec in stretch:
+            reason = rec.get("reason")
+            if isinstance(reason, str):
+                by_reason.setdefault(reason, []).append(rec)
+        for reason, recs in by_reason.items():
+            if len(recs) < 2:
+                continue
+            start = _parse_action_ts(recs[0].get("ts"))
+            end = _parse_action_ts(recs[-1].get("ts"))
+            duration = (end - start).total_seconds() if start is not None and end is not None else None
+            if duration is not None and duration < 0:
+                duration = None
+            out.append((stretch_index, reason, len(recs), duration))
+    return out
+
+
+# Compact "1m37s" wall-clock durations, and the "unknown duration" a malformed/missing
+# timestamp pair produces (see _stall_candidates). Shared with hinge.py's stuck-screen
+# watchdog message so a stall reads identically live and in this report; it lives in
+# typography.py rather than here because a driver must not import the bug reporter — see
+# format_duration's own docstring for why that direction breaks.
+_format_stall_duration = format_duration
+
+
+_STALL_ORDINALS = ["longest", "2nd-longest", "3rd-longest"]   # matches _STALL_STRETCHES_SHOWN
+
+
+def _stall_summary_md(lines: list[str]) -> str:
+    """STALL SUMMARY: the top `_STALL_STRETCHES_SHOWN` same-reason observe_waiting repeats in a
+    run's actions.jsonl, worst first — see _stall_candidates for exactly what counts as one.
+    This is the bug-report's own self-improvement (_diagnostic_improvement_md) filed against
+    the incident it's named for: data/hinge_debug/run_20260811_011416 hung for 2.5 minutes on
+    an unrecognised Hinge paywall, and diagnosing that from the original report meant reading
+    the actions.jsonl tail by eye and noticing observe_waiting/like_sheet repeating. For that
+    exact run this renders:
+        "- longest observe stall: reason=`like_sheet` for 1m37s (5 records)"
+    turning an eyeball pattern-match over ~88 log lines into one line, surfaced at the top of
+    the debug-log section rather than requiring a developer to find it in the tail.
+
+    Ranked by STRETCH RECENCY FIRST (the most recent profile-wait's own repeats outrank every
+    earlier one), THEN by duration/count within that -- deliberately NOT by raw duration alone
+    across the whole file. Measured on that exact incident run, sorting by raw duration alone
+    gets this backwards: an entirely benign 4m08s / 17-record `no_change` streak sits earlier
+    in the same file (01:22:36-01:26:44, one profile's long — and successful — human read time,
+    eventually followed by a normal decision) and would outrank the actual 1m37s / 5-record
+    `like_sheet` stall that never resolved, burying the real incident under stale, already-
+    resolved deliberation from ~16 minutes earlier in the SAME run (01:26:44 -> 01:42:43).
+    Recency fixes this on a principle broader than this one run: every stretch except the run's
+    last is, by construction, followed by something that resolved it (an observe_decision, or
+    the next profile's capture) -- however long it took, it was not what was still stuck when
+    the run stopped. Only the run's current/final stretch is possibly still open, so its own
+    repeats are what a developer investigating "the run hung" actually needs first; older
+    resolved waits are still shown (this is "top few", not "only the last one") as lower-ranked
+    context, not hidden. Unknown-duration entries (malformed/missing timestamps) sort after
+    every known duration within the same stretch, then by record count as the next-best signal.
+
+    Returns "" (no heading, no bullets) when nothing repeated — the common healthy run, or a
+    run that stalled but never on the SAME reason twice in a row, must render nothing extra
+    here, same "quiet when healthy" contract as `_app_diagnostics_md` and
+    `_action_counts_line`. Never raises: `_stall_candidates` / `_parse_action_ts` already
+    swallow every parse failure, so there is nothing left here that can throw on malformed
+    input."""
+    candidates = _stall_candidates(lines)
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda c: (-c[0], c[3] is None, -(c[3] or 0.0), -c[2]))
+    out = []
+    for i, (_stretch_index, reason, count, duration) in enumerate(candidates[:_STALL_STRETCHES_SHOWN]):
+        label = _STALL_ORDINALS[i] if i < len(_STALL_ORDINALS) else f"{i + 1}th-longest"
+        record_word = "record" if count == 1 else "records"
+        out.append(
+            f"- {label} observe stall: reason=`{_sanitize_inline(reason)}` for "
+            f"{_format_stall_duration(duration)} ({count} {record_word})"
+        )
+    return "\n".join(out)
+
+
 def _debug_log_md(config_path: str) -> str:
     """Surface the on-disk action/screenshot debug log (Hinge's silent auto-mode logging) so the
     report points a developer straight at a failure: the latest run folder, the tail of its
@@ -618,6 +901,15 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
                 raw_lines = log.read_text().splitlines()
             except Exception:  # noqa: BLE001
                 raw_lines = []
+            # Stall summary goes FIRST, ahead of the action-counts histogram and the tail --
+            # it is the one line a developer needs before anything else if this run hung (see
+            # _stall_summary_md's docstring for the incident this is filed against). Rendered
+            # as its own nested bullet block only when there's something to say; a healthy run
+            # (nothing repeated on the same reason) adds nothing here.
+            stall = _stall_summary_md(raw_lines)
+            if stall:
+                out.append("  - stall summary:")
+                out.extend(f"    {line}" for line in stall.splitlines())
             counts_line = _action_counts_line(raw_lines)
             if counts_line:
                 out.append(f"  - {counts_line}")
@@ -702,6 +994,7 @@ def build_report(hub_state=None, description: str = "", config_path: str = "conf
         f"## Diagnostic improvement\n{_safe_section(_diagnostic_improvement_md)}\n\n"
         f"## Run status\n{_safe_section(_status_md, hub_state)}\n\n"
         f"## Recent openers\n{_safe_section(_recent_openers_md, hub_state)}\n\n"
+        f"## Recent opener rejections\n{_safe_section(_recent_opener_rejections_md, hub_state)}\n\n"
         f"## Debug log (on-disk actions + screenshots)\n{_safe_section(_debug_log_md, config_path)}\n\n"
         f"## Recent logs\n"
     )

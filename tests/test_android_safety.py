@@ -453,12 +453,15 @@ def test_require_vision_raises_from_open_session_when_a_template_cannot_load():
 
 def _heart_only_frame(cx=900, cy=1200):
     """A decodable frame carrying ONLY the heart glyph: the tap that opens the sheet succeeds,
-    but nothing on screen proves the sheet actually opened afterwards."""
+    but nothing on screen proves the sheet actually opened afterwards.
+
+    Uses HINGE_SPEC.templates["like"] (hinge_like_button.png), not a hardcoded filename, so
+    this stays a real deck frame if that role's asset ever changes again."""
     import cv2
     import numpy as np
     rng = np.random.default_rng(21)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
-    t = hinge._load_template("hinge_heart.png")
+    t = hinge._load_template(hinge.HINGE_SPEC.templates["like"])
     th, tw = t.shape
     canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
@@ -591,6 +594,55 @@ def test_scroll_guard_accounts_for_the_column_jitter_not_just_the_centre():
     with pytest.raises(ForbiddenTapError):
         drv._scroll_down_one()
     assert adb.scrolls == 0
+
+
+def test_the_reverse_read_scroll_goes_through_the_same_guard_at_BOTH_ends():
+    """`_scroll_up_one` is doc 5.5's bottom-up navigation gesture, added 2026-08-12. It is a
+    DIRECTION of `_scroll` rather than a second path to the transport, so it inherits the
+    forbidden-zone guard, the shared column jitter and the humanized kinematics — and it checks
+    BOTH end rows rather than only the touch-down, because the reverse stroke swaps which end the
+    finger goes down on and the enumeration fracs put both rows in the middle of the screen
+    anyway.
+
+    Three claims, one per assertion: it reaches the transport as an ordinary swipe; a zone over
+    the row where it PRESSES refuses it; and a zone over the row where it RELEASES refuses it
+    too, which is the half a start-only check would miss."""
+    ok_adb = FakeAdb()
+    _drv(_spec_with_scroll(0.55), ok_adb)._scroll_up_one(0.16, 0.5)
+    assert ok_adb.swipes, "the real bottom-of-card zone must not block a reverse read-scroll"
+
+    for zone, where in ((((0.0, 0.0, 1.0, 0.47),), "the press, high on screen"),
+                        (((0.0, 0.53, 1.0, 1.0),), "the release, low on screen")):
+        spec = AndroidAppSpec(
+            app="bumble", package="com.bumble.app", calibrated=False,
+            decide_gesture="card_swipe", coords=dict(BUMBLE_SPEC.coords),
+            forbidden_zones=zone,
+        )
+        adb = FakeAdb()
+        with pytest.raises(ForbiddenTapError):
+            _drv(spec, adb)._scroll_up_one(0.16, 0.5)
+        assert adb.swipes == [] and adb.scrolls == 0, where
+
+
+def test_the_reverse_read_scroll_records_itself_in_the_ledger_and_never_shortens_it():
+    """`_scroll_up_one`'s own docstring argument, pinned. The ledger is a CEILING on the
+    undo-swipes `_scroll_to_top` will throw, and the settle check is what actually ends that
+    loop, so overstating outstanding downward travel is free while understating it leaves the
+    card scrolled and the next capture's identity anchor seeded from a real person's header.
+
+    A reverse gesture therefore APPENDS like a forward one rather than popping the last forward
+    entry off — popping would understate whenever a reverse step is smaller than the forward step
+    it undoes, which the per-frame ratio rule makes likely."""
+    adb = FakeAdb()
+    drv = _drv(_spec_with_scroll(0.55), adb)
+    drv._scroll_down_one(0.16, 0.5)
+    drv._scroll_down_one(0.16, 0.5)
+    assert len(drv._capture_scroll_ledger) == 2
+
+    drv._scroll_up_one(0.14, 0.5)
+    assert len(drv._capture_scroll_ledger) == 3, "a reverse gesture must not shrink the ceiling"
+    assert drv._capture_scrolls == 3
+    assert drv._capture_scroll_ledger[-1] == (0.14, 0.5)
 
 
 def test_scroll_to_top_undo_swipes_go_through_the_guard():

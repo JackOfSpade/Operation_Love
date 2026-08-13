@@ -212,6 +212,14 @@ def test_real_auto_session_policy_drives_capture_geometry_dwell_and_metadata(mon
     drv.set_auto_session_policy(policy)
     slept = []
     monkeypatch.setattr(hinge.time, "sleep", lambda seconds: slept.append(seconds))
+    sleep_requests = []
+    real_interruptible_sleep = drv._interruptible_sleep
+
+    def _record_sleep(seconds, should_stop=None):
+        sleep_requests.append(seconds)
+        return real_interruptible_sleep(seconds, should_stop)
+
+    monkeypatch.setattr(drv, "_interruptible_sleep", _record_sleep)
 
     profile = drv._capture_current()
 
@@ -220,10 +228,20 @@ def test_real_auto_session_policy_drives_capture_geometry_dwell_and_metadata(mon
     assert len({round(frac, 4) for frac, _lane in drv._capture_scroll_ledger}) > 1
     assert len({round(lane, 4) for _frac, lane in drv._capture_scroll_ledger}) > 1
     assert len({round(seconds, 4) for seconds in slept}) > 1
+    # Each forward read has two waits in order: a policy-sampled dwell BEFORE the scroll,
+    # then the independent post-scroll UI settle.  The latter must happen, but represents
+    # animation latency rather than time spent reading and therefore must not inflate this
+    # metadata signal.
+    assert len(sleep_requests) == 2 * len(drv._capture_scroll_ledger)
+    read_dwells = sleep_requests[::2]
+    post_scroll_settles = sleep_requests[1::2]
+    assert len(read_dwells) == len(post_scroll_settles) == len(drv._capture_scroll_ledger)
+    assert all(seconds > 0 for seconds in post_scroll_settles)
     assert profile.meta["app"] == "hinge"
     assert profile.meta["capture_frames"] == len(profile.photos)
     assert profile.meta["read_scrolls"] == len(drv._capture_scroll_ledger)
-    assert profile.meta["read_dwell_s_total"] == pytest.approx(sum(slept))
+    assert profile.meta["read_dwell_s_total"] == pytest.approx(sum(read_dwells))
+    assert profile.meta["read_dwell_s_total"] < sum(slept)
 
 
 def test_malformed_auto_policy_falls_back_to_existing_read_behavior():

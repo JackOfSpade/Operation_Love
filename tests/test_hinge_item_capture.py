@@ -775,6 +775,146 @@ def test_the_deck_advancing_mid_read_leaves_no_table_behind():
     assert "deck advanced" in drv._current_items_unavailable
 
 
+def test_post_scroll_settle_keeps_a_header_transition_from_splitting_one_profile(monkeypatch):
+    """A capture frame taken while Hinge animates its sticky header is not a new card.
+
+    Before the post-scroll settle, the temporary value became `_identity_sig` and the stable
+    header on the next frame falsely hit capture_split.  The settle must happen before that
+    next frame is read, without softening the actual boundary rule.
+    """
+    class TransitionAdb(WorldAdb):
+        def __init__(self):
+            super().__init__()
+            self.settled = False
+            self._transition_seen = False
+
+        def screencap(self):
+            if self.scrolls == 0:
+                return _frame(0)
+            if self.scrolls == 1 and not self.settled and not self._transition_seen:
+                self._transition_seen = True
+                return _frame(self.scroll, header=60)  # neither chips nor stable header
+            return _frame(self.scroll, header=_HEADER_VALUE)
+
+    adb = TransitionAdb()
+    drv = _drv(adb, auto=False, openers=False, scroll_captures=3)
+
+    def _sleep(_seconds, _should_stop=None):
+        # The ordinary dwell happens before the first scroll.  The new settle is the first
+        # wait after it, and is what lets this fake UI finish its header transition.
+        if adb.scrolls:
+            adb.settled = True
+        return True
+
+    monkeypatch.setattr(drv, "_interruptible_sleep", _sleep)
+    profile = drv._capture_current()
+
+    assert profile is not None
+    assert drv._current_capture_split is False
+    assert np.all(drv._identity_sig == _HEADER_VALUE)
+
+
+def test_real_header_change_still_splits_before_the_foreign_frame_is_appended():
+    """Settling is not a relaxation: a stable foreign header remains a hard boundary."""
+    adb = WorldAdb(header_after=(2, _OTHER_HEADER_VALUE))
+    drv = _drv(adb)
+
+    assert drv._capture_current() is None
+    assert drv._current_capture_split is True
+    assert len(drv._current_sigs) == 2  # the foreign trigger was rejected before append
+    assert np.all(drv._identity_sig == _HEADER_VALUE)
+
+
+def test_stop_during_post_scroll_settle_abandons_without_another_screencap(monkeypatch):
+    """The added settle has the same hard Stop boundary as the read dwell."""
+    class CountingAdb(WorldAdb):
+        def __init__(self):
+            super().__init__()
+            self.captures = 0
+
+        def screencap(self):
+            self.captures += 1
+            return super().screencap()
+
+    adb = CountingAdb()
+    drv = _drv(adb, auto=False, openers=False, scroll_captures=3)
+    calls = 0
+
+    def _sleep(_seconds, _should_stop=None):
+        nonlocal calls
+        calls += 1
+        return calls == 1  # read dwell completes; post-scroll settle is interrupted
+
+    monkeypatch.setattr(drv, "_interruptible_sleep", _sleep)
+    assert drv._capture_current() is None
+    assert adb.scrolls == 1
+    assert adb.captures == 1
+    assert len(drv._capture_scroll_ledger) == 1
+
+
+def test_capture_split_debug_record_keeps_the_trigger_frame_and_distances():
+    """A split record must preserve the rejected frame, not only capture frame zero."""
+    class Debug:
+        def __init__(self):
+            self.calls = []
+
+        def action(self, name, **fields):
+            self.calls.append((name, fields))
+
+    drv = _drv(WorldAdb(header_after=(2, _OTHER_HEADER_VALUE)))
+    dbg = Debug()
+    drv._dbg = dbg
+
+    assert drv._capture_current() is None
+    name, fields = next(call for call in dbg.calls if call[0] == "capture_split")
+    assert name == "capture_split"
+    assert fields["before"] != fields["after"]
+    assert fields["trigger_frame_index"] == fields["captured_frames"] == 2
+    assert fields["read_scrolls"] == 2
+    assert fields["identity_dist"] >= drv.change_threshold
+    assert fields["top_dist"] >= drv.change_threshold
+    assert fields["scroll_top_state"] == scroll_top.SCROLL_TOP_REFUTED
+    assert fields["scroll_top_distance"] >= drv.change_threshold
+
+
+def test_current_profile_rewinds_the_new_card_after_a_mid_read_deck_advance():
+    """The public observe capture path must not recapture the advanced card mid-scroll.
+
+    A split is intentionally returned as ``None`` so the worker discards the mixed profile and
+    recaptures.  That recapture still has to start from Hinge's chips row: otherwise the strict
+    scroll-top gate rightly refuses enumeration as ``confirmed_not_top`` and the card falls back
+    to a truncated, unnumbered capture (the 2026-08-13 incident).
+    """
+    class RewindingWorldAdb(WorldAdb):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.reverse_swipes = 0
+
+        def swipe(self, _x1, y1, _x2, y2, **_kwargs):
+            # `_scroll_to_top` is the only test path that swipes down.  Mirror the fake
+            # transport's forward model so its settle screenshot can establish a real top.
+            if y2 > y1:
+                self.reverse_swipes += 1
+                self.scroll = max(
+                    0, self.scroll - scroll_step.step_px_for_frac((y2 - y1) / _H, _H))
+
+    adb = RewindingWorldAdb(header_after=(2, _OTHER_HEADER_VALUE))
+    drv = _drv(adb)
+    drv._session_top_done = True       # isolate the split recovery from the once-per-run pass
+
+    assert drv.current_profile() is None
+    assert drv._current_capture_split is True
+    assert adb.reverse_swipes > 0
+    assert adb.scroll == 0
+
+    profile = drv.current_profile()
+
+    assert profile is not None
+    assert profile.items
+    assert profile.items_unavailable == ""
+    assert profile.items_truncated is False
+
+
 def test_a_fresh_read_drops_the_previous_profiles_table_before_it_starts():
     """The reset that sits alongside `_current_sigs`: whatever is on screen now belongs to
     someone else, so the table describing the last person must not survive into this read even

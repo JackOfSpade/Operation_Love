@@ -368,6 +368,13 @@ _OBSERVE_LIKE_WAIT_REASONS = frozenset({"like_sheet", "like_sending"})
 # _note_observe_waiting.
 _OBSERVE_NOTICE_FLOOR_S = 2.0
 _UPSELL_DISMISS_MAX_ATTEMPTS = 3
+# Hinge animates the sticky profile header and floating controls while a read-scroll is still
+# resolving.  A capture taken immediately after the gesture can therefore lock an in-between
+# header as this profile's identity, then call the fully-rendered header a different person on
+# the next frame.  `_await_button` independently retries through 0.4s settles for the same UI
+# behavior.  This is an input-free, interruptible settle before the NEXT read frame; it is not
+# dwell/read time and must never be credited as such.
+_READ_SCROLL_SETTLE_S = 0.4
 # Bounded retries for AndroidDriver._dismiss_via_zone before it gives up (PaidUpsellStuckError)
 # rather than tapping an already-detected modal again and again. See that error's docstring.
 
@@ -2931,6 +2938,8 @@ class AndroidDriver(DatingAppDriver):
         # a stale answer. See _ocr_band_cache's own comment in __init__.
         self._ocr_band_cache = {}
         self._current_capture_split = False   # set if the deck advanced mid-capture; see the loop
+        self._capture_split_frame = None      # rejected trigger frame; retained for debug evidence
+        self._capture_split_evidence = {}     # scalar-only evidence paired with that frame
         # Doc 5.3's table dies with the profile it described. Reset HERE, alongside
         # _current_sigs and the identity anchors above and for exactly their reason: the frames
         # about to be read belong to a different person, so anything left over from the last
@@ -3000,12 +3009,39 @@ class AndroidDriver(DatingAppDriver):
             # discards and recaptures instead of scoring a chimera.
             if self._identity_sig is not None:
                 band = _band(frame, self.identity_band)
-                if (band is not None
-                        and _band_dist(band, self._identity_sig) >= self.change_threshold
-                        and (self._identity_top_sig is None
-                             or _band_dist(band, self._identity_top_sig) >= self.change_threshold)):
-                    self._current_capture_split = True
-                    break
+                if band is not None:
+                    identity_dist = _band_dist(band, self._identity_sig)
+                    top_dist = (None if self._identity_top_sig is None
+                                else _band_dist(band, self._identity_top_sig))
+                    if (identity_dist >= self.change_threshold
+                            and (top_dist is None or top_dist >= self.change_threshold)):
+                        # Preserve the exact rejected frame and the distances that made this a
+                        # boundary.  The old capture_split record saved only frame 0, so a real
+                        # card advance and a transient sticky-header animation were impossible
+                        # to distinguish after the fact.
+                        evidence = {
+                            "trigger_frame_index": len(photos),
+                            "captured_frames": len(photos),
+                            "read_scrolls": len(self._capture_scroll_ledger),
+                            "identity_dist": round(identity_dist, 3),
+                            "top_dist": None if top_dist is None else round(top_dist, 3),
+                        }
+                        try:
+                            top_verdict = confirm_scroll_top(
+                                frame, identity_band=self.identity_band)
+                        except ScrollTopError as exc:
+                            evidence["scroll_top_state"] = "unreadable"
+                            evidence["scroll_top_reason"] = str(exc)
+                        else:
+                            evidence["scroll_top_state"] = top_verdict.state
+                            evidence["scroll_top_distance"] = (
+                                None if top_verdict.distance is None
+                                else round(top_verdict.distance, 3))
+                            evidence["scroll_top_reason"] = top_verdict.reason
+                        self._capture_split_frame = frame
+                        self._capture_split_evidence = evidence
+                        self._current_capture_split = True
+                        break
             ds = _downsample(frame)                    # None if PIL/numpy unavailable or undecodable
             sig = _frame_sig(frame)
             if sig in seen:
@@ -3104,6 +3140,14 @@ class AndroidDriver(DatingAppDriver):
                     self._note_capture_aborted(len(photos))
                     return None
                 self._scroll_down_one(frac, x_frac)
+                # The dwell above intentionally happens BEFORE the read gesture: it is the
+                # time spent looking at content before moving on.  This separate wait exists
+                # solely to let Hinge finish the scroll/header animation before the next frame
+                # can become an identity anchor.  It remains stop-aware, and is deliberately
+                # not included in read_dwell_s_total.
+                if not self._interruptible_sleep(human_delay(_READ_SCROLL_SETTLE_S), should_stop):
+                    self._note_capture_aborted(len(photos))
+                    return None
         else:
             # The loop ran out its full range() without ever finding a repeated frame (the
             # signal that the profile's true bottom was reached) -- this profile has MORE
@@ -3149,8 +3193,10 @@ class AndroidDriver(DatingAppDriver):
             # here"; worker.py's _observe_loop treats it as `continue` and recaptures the card
             # that is actually on screen now (worker.py:215-216), which is exactly right.
             if self._dbg is not None and photos:
-                self._dbg.action("capture_split", before=photos[0], photos=len(photos),
-                                 profile_name=self._identity_name)
+                self._dbg.action("capture_split", before=photos[0],
+                                 after=self._capture_split_frame, photos=len(photos),
+                                 profile_name=self._identity_name,
+                                 **self._capture_split_evidence)
             print(f"{self.spec.app}: the deck advanced while reading this profile "
                   f"(captured {len(photos)} frame(s) spanning two cards); discarding and "
                   f"recapturing rather than mixing two people into one label.")
@@ -3261,6 +3307,20 @@ class AndroidDriver(DatingAppDriver):
             # the read itself completed, so the profile IS returned and worker.py's own stop
             # check on the next line decides what happens to it -- an interrupted unwind never
             # discards a complete capture, it only declines to keep scrolling.
+            self._scroll_to_top(should_stop)
+        elif self._current_capture_split:
+            # `_capture_current` stopped after the deck moved to a DIFFERENT card while it was
+            # reading.  Its forward-scroll ledger still describes how far down the screen now
+            # is, but returning None straight to the observe worker used to leave that next card
+            # scrolled.  The immediate recapture then seeded the scroll-top identity/chips
+            # anchor from the sticky header, so the affirmative top gate correctly refused to
+            # enumerate it and the eventually returned profile was truncated.  Restore the new
+            # card before the worker recaptures it, just as the ordinary completed-capture path
+            # does above.
+            #
+            # This is deliberately NOT a generic `profile is None` unwind.  A None can also
+            # mean Stop was requested or the human has a Send Like sheet open; those paths must
+            # remain input-free and leave the screen exactly where the owner left it.
             self._scroll_to_top(should_stop)
         return profile
 

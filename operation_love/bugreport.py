@@ -58,6 +58,7 @@ _RECENT_OPENERS_SHOWN = 10        # cap on _recent_openers_md rows -- see its do
 _RECENT_OPENER_TEXT_CHARS = 240   # per-opener cap so one runaway response can't blow up the report
 _RECENT_REJECTIONS_SHOWN = 10     # cap on _recent_opener_rejections_md rows -- mirrors the above
 _STALL_STRETCHES_SHOWN = 3        # cap on _stall_summary_md rows -- see its docstring
+_CAPTURE_SPLITS_SHOWN = 3          # most recent split/recovery pairs to show — see below
 _LOG_RING: deque[str] = deque(maxlen=_MAX_REPORT_LINES)
 _LOG_LOCK = threading.Lock()
 _PROCESS_START = time.time()
@@ -673,6 +674,89 @@ def _action_counts_line(lines: list[str]) -> str | None:
     return "action counts: " + " · ".join(f"{k} {v}" for k, v in counts.items())
 
 
+# ── capture-split recovery summary ─────────────────────────────────────────
+def _capture_split_summary_md(lines: list[str]) -> str:
+    """Summarise mid-read deck advances and whether their recapture completed.
+
+    ``capture_split`` is deliberately a non-error action: Hinge can advance while a profile is
+    being read, and the driver drops the mixed frames rather than poisoning a label.  Until this
+    summary, an incident report made the important follow-up question need a manual timeline
+    reconstruction: did the worker recapture the new card, or did that capture fail the
+    scroll-top gate and return a truncated, unnumbered profile?
+
+    The action carries the old-card evidence screenshot in ``before`` and, in current runs, the
+    foreign boundary-trigger frame in ``after``.  Older logs have only ``before``; report that
+    honestly rather than requiring the new field.  For every split, locate the first later
+    completed ``capture`` action in the raw file (not the display-collapsed tail), then state
+    its profile/read outcome.  Invalid JSON or malformed fields are ignored or rendered
+    conservatively: generating a bug report must never be stricter than the log.
+    """
+    records: list[tuple[int, dict]] = []
+    for index, raw in enumerate(lines):
+        try:
+            rec = json.loads(raw)
+        except Exception:  # noqa: BLE001 — best-effort diagnostic over a live JSONL file
+            continue
+        if isinstance(rec, dict):
+            records.append((index, rec))
+    splits = [(index, rec) for index, rec in records if rec.get("action") == "capture_split"]
+    if not splits:
+        return ""
+
+    out: list[str] = []
+    for index, split in splits[-_CAPTURE_SPLITS_SHOWN:]:
+        ts = _sanitize_inline(str(split.get("ts") or "unknown time"))
+        frames = split.get("captured_frames", split.get("photos"))
+        frame_text = (f" after {frames} captured frame(s)" if isinstance(frames, int)
+                      and not isinstance(frames, bool) else "")
+        evidence: list[str] = []
+        before = split.get("before")
+        after = split.get("after")
+        if before:
+            evidence.append(f"source screenshot `{_sanitize_inline(str(before))}`")
+        if after:
+            evidence.append(f"boundary-trigger screenshot `{_sanitize_inline(str(after))}`")
+        identity_dist = split.get("identity_dist")
+        top_dist = split.get("top_dist")
+        if isinstance(identity_dist, (int, float)) and not isinstance(identity_dist, bool):
+            identity_evidence = f"identity distance {identity_dist:g}"
+            if isinstance(top_dist, (int, float)) and not isinstance(top_dist, bool):
+                identity_evidence += f", scroll-top distance {top_dist:g}"
+            evidence.append(identity_evidence)
+        evidence_text = "; ".join(evidence) if evidence else "no split evidence was saved"
+        profile_name = split.get("profile_name")
+        name_text = (f"; identity read `{_sanitize_inline(str(profile_name))}`"
+                     if profile_name else "")
+
+        recovery = next(
+            (rec for later_index, rec in records
+             if later_index > index and rec.get("action") == "capture"),
+            None,
+        )
+        if recovery is None:
+            recovery_text = "no later completed capture was recorded"
+        else:
+            parts: list[str] = []
+            photos = recovery.get("photos")
+            if isinstance(photos, int) and not isinstance(photos, bool):
+                parts.append(f"{photos} photo(s)")
+            if recovery.get("capture_truncated") is True:
+                parts.append("capture truncated")
+            elif recovery.get("capture_truncated") is False:
+                parts.append("capture reached its natural end")
+            items = recovery.get("items")
+            if isinstance(items, int) and not isinstance(items, bool):
+                parts.append(f"{items} numbered item(s)")
+            unavailable = recovery.get("items_unavailable")
+            if unavailable:
+                parts.append(f"items unavailable: `{_sanitize_inline(str(unavailable))}`")
+            detail = "; ".join(parts) if parts else "no capture details were logged"
+            recovery_text = f"later capture/recovery followed: {detail}"
+        out.append(f"- `{ts}`: deck advanced mid-read{frame_text}; {evidence_text}{name_text}; "
+                   f"{recovery_text}")
+    return "\n".join(out)
+
+
 # ── stall summary ──────────────────────────────────────────────────────────
 # Filed after an observe-mode incident where an unrecognised Hinge+ paywall left
 # _await_like_resolved polling like_sheet / like_sending until the operator stopped it.
@@ -888,6 +972,10 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
             if stall:
                 out.append("  - stall summary:")
                 out.extend(f"    {line}" for line in stall.splitlines())
+            splits = _capture_split_summary_md(raw_lines)
+            if splits:
+                out.append("  - capture-split recovery:")
+                out.extend(f"    {line}" for line in splits.splitlines())
             counts_line = _action_counts_line(raw_lines)
             if counts_line:
                 out.append(f"  - {counts_line}")

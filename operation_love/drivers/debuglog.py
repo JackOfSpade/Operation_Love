@@ -37,12 +37,11 @@ class DebugLog:
         # every record's screenshot named after its own action while still collapsing the case
         # that actually causes the bloat: the same action repeating on an unchanged screen.
         self._shot_hashes: dict[tuple[str, str], str] = {}
-        # Scoped to THIS pool deliberately: rotate=False
-        # error shots are kept forever already, so nothing referencing one can ever go stale,
-        # and never populating/consulting this map for them keeps that path exactly as simple
-        # and unconditional as it was before dedup existed (see _save_shot's `if not rotate`
-        # branch, which never touches this dict in either direction).
-        self._shot_hashes: dict[str, str] = {}
+        # Scoped to THIS pool deliberately: rotate=False error shots are kept forever already,
+        # so nothing referencing one can ever go stale, and never populating/consulting this
+        # map for them keeps that path exactly as simple and unconditional as it was before
+        # dedup existed (see _save_shot's `if not rotate` branch, which never touches this dict
+        # in either direction).
         self._keep = max(1, int(keep_shots))
 
     def _save_shot(self, label: str, frame: bytes | None, *, rotate: bool = True) -> str | None:

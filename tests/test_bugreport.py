@@ -404,6 +404,58 @@ def test_debug_log_section_tails_actions_and_flags_error_shots(tmp_path):
     assert "like did not land" in md                              # actions.jsonl tail inlined
 
 
+def test_debug_log_capture_split_summary_links_boundary_evidence_and_recovery(tmp_path):
+    """A split report answers both halves of the incident: what triggered it, and did the
+    worker's next capture get back to a usable profile rather than silently falling back to a
+    truncated, unnumbered read?  The current logger stores the source/foreign frames as
+    before/after; those filenames must be surfaced without making a developer decode the tail.
+    """
+    run = tmp_path / "run_split_recovery"
+    run.mkdir(parents=True)
+    split = {
+        "ts": "2026-08-13T00:20:55", "action": "capture_split", "photos": 2,
+        "profile_name": "Ada", "before": "00001_capture_split_before.png",
+        "after": "00002_capture_split_after.png", "identity_dist": 17.95,
+        "top_dist": 15.73,
+    }
+    recovery = {
+        "ts": "2026-08-13T00:21:54", "action": "capture", "photos": 12,
+        "capture_truncated": True, "items": 0,
+        "items_unavailable": "the card is not confirmed to be at its scroll top",
+    }
+    (run / "actions.jsonl").write_text(json.dumps(split) + "\n" + json.dumps(recovery) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "capture-split recovery:" in md
+    assert "deck advanced mid-read after 2 captured frame(s)" in md
+    assert "source screenshot `00001_capture_split_before.png`" in md
+    assert "boundary-trigger screenshot `00002_capture_split_after.png`" in md
+    assert "identity distance 17.95, scroll-top distance 15.73" in md
+    assert "identity read `Ada`" in md
+    assert "later capture/recovery followed: 12 photo(s); capture truncated; 0 numbered item(s)" in md
+    assert "items unavailable: `the card is not confirmed to be at its scroll top`" in md
+
+
+def test_debug_log_capture_split_summary_says_when_no_recovery_capture_followed(tmp_path):
+    """Older logs only have the source frame, and a split need not have been followed by a
+    completed capture before Stop.  Both facts must be explicit rather than read as recovery.
+    """
+    run = tmp_path / "run_split_unrecovered"
+    run.mkdir(parents=True)
+    split = {
+        "ts": "2026-08-13T00:20:55", "action": "capture_split", "photos": 2,
+        "before": "00001_capture_split_before.png",
+    }
+    (run / "actions.jsonl").write_text(json.dumps(split) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "source screenshot `00001_capture_split_before.png`" in md
+    assert "boundary-trigger screenshot" not in md
+    assert "no later completed capture was recorded" in md
+
+
 def test_debug_log_section_handles_missing_dir():
     md = bugreport._one_debug_dir_md("hinge", {"debug_dir": "/no/such/oplove/debug/dir"})
     assert "hinge" in md and "no folder yet" in md                # graceful, no raise

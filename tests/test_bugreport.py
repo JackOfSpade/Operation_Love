@@ -404,6 +404,32 @@ def test_debug_log_section_tails_actions_and_flags_error_shots(tmp_path):
     assert "like did not land" in md                              # actions.jsonl tail inlined
 
 
+def test_debug_log_section_summarises_item_index_refusals_and_realised_steps(tmp_path):
+    """A long capture's failure must answer both questions that its first-frame-only capture
+    record cannot: which adjacent frames broke, and whether the realised step was otherwise
+    stable.  Unknown pair deltas stay absent from min/median/max rather than becoming zero.
+    """
+    run = tmp_path / "run_item_index_refused"
+    run.mkdir(parents=True)
+    refusal = {
+        "action": "item_index_refused", "reason": "no trustworthy shift",
+        "failing_pair": [34, 35], "before": "00001_item_index_refused_before.png",
+        "after": "00002_item_index_refused_after.png",
+        "steps_px": [209, None, 211, 209],
+        "refused_pairs": [{"pair": [34, 35], "status": "no_consensus", "agreeing": 4,
+                            "dissenting": 0, "eligible": 4}],
+    }
+    (run / "actions.jsonl").write_text(json.dumps(refusal) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "item-index refusals and realised-step stats:" in md
+    assert "frames 34 and 35" in md and "no trustworthy shift" in md
+    assert "realised steps (3 measured): min 209px, median 209px, max 211px" in md
+    assert "before `00001_item_index_refused_before.png`" in md
+    assert "after `00002_item_index_refused_after.png`" in md
+
+
 def test_debug_log_capture_split_summary_links_boundary_evidence_and_recovery(tmp_path):
     """A split report answers both halves of the incident: what triggered it, and did the
     worker's next capture get back to a usable profile rather than silently falling back to a

@@ -2802,14 +2802,20 @@ class AndroidDriver(DatingAppDriver):
         because an offline validation pass once drove the same capture in REVERSE order past a
         weaker one and got ten confidently wrong crops with zero failures.
         """
+        # Keep `index` outside the try so every refusal, including a dependency exception before
+        # a result exists, can leave the best evidence we have in actions.jsonl.  The logger is
+        # deliberately an observer: no failure in this diagnostic path may change the read's
+        # fail-loud indexing outcome.
+        index = None
         try:
             index = build_item_index(
                 photos, content_band=self.content_band,
                 like_template=self._template("like"), like_threshold=_LIKE_MATCH_THRESHOLD,
                 at_scroll_top=True, identity_band=self.identity_band)
             if not index.usable:
-                return ("the item index this capture produced contradicts itself, so its "
-                        "numbering cannot be trusted: " + "; ".join(index.failures))
+                return self._item_index_refused(
+                    photos, "the item index this capture produced contradicts itself, so its "
+                    "numbering cannot be trusted: " + "; ".join(index.failures), index)
             if not index.identity.known:
                 # Refused HERE rather than left for navigation, and the difference is a billed
                 # call: an index that cannot say whose profile it describes is one
@@ -2817,16 +2823,19 @@ class AndroidDriver(DatingAppDriver):
                 # from it would buy an opener for a profile that can never be targeted. The same
                 # placement argument as every other refusal in this method -- the ranker's frames
                 # are untouched, and worker.py stops before the model is asked anything.
-                return ("this capture could not be fingerprinted for identity, so a navigation "
-                        "pass could never confirm the card it counts on is this profile's: "
-                        + index.identity.reason)
+                return self._item_index_refused(
+                    photos, "this capture could not be fingerprinted for identity, so a navigation "
+                    "pass could never confirm the card it counts on is this profile's: "
+                    + index.identity.reason, index)
             payload = build_item_payload(photos, index)
             if not payload.usable:
-                return ("the item crops this capture produced are not a request the model can "
-                        "be asked to answer: " + "; ".join(payload.failures))
+                return self._item_index_refused(
+                    photos, "the item crops this capture produced are not a request the model can "
+                    "be asked to answer: " + "; ".join(payload.failures), index)
         except (ItemIndexError, ItemCropError, SegmentationError, ShiftEstimationError) as exc:
-            return (f"this capture could not be indexed into items "
-                    f"({type(exc).__name__}: {exc})")
+            return self._item_index_refused(
+                photos, f"this capture could not be indexed into items "
+                f"({type(exc).__name__}: {exc})", index)
         self._current_item_index = index
         self._current_item_payload = payload
         # Doc 5.5's bottom-up entry anchor. `photos[-1]` is the last frame the index was folded
@@ -2837,6 +2846,76 @@ class AndroidDriver(DatingAppDriver):
         # ordinary case, and a measurement rather than an assumption in every case.
         self._current_item_anchor = photos[-1] if photos else None
         return ""
+
+    def _item_index_refused(self, photos: list[bytes], reason: str, index=None) -> str:
+        """Best-effort forensic record for a refused enumeration, then return its reason.
+
+        A normal ``capture`` record intentionally saves only its first frame: that is enough to
+        identify the profile the ranker saw, but not enough to reconstruct a broken coordinate
+        pair later in a long enumeration.  ``ItemIndex`` retains that pair evidence, so preserve
+        it here while it still exists.  This helper must stay observational: `DebugLog` itself is
+        best-effort, and the outer guard also protects a future log implementation or test double
+        from ever turning a safe refusal into a live-run exception.
+        """
+        if self._dbg is None:
+            return reason
+
+        shifts = tuple(getattr(index, "shifts", ()) or ())
+        steps_px = [getattr(shift, "delta_px", None) for shift in shifts]
+        refused_pairs = []
+        failing_pair = None
+        for pair_index, shift in enumerate(shifts):
+            delta_px = getattr(shift, "delta_px", None)
+            if delta_px is not None:
+                continue
+            if failing_pair is None:
+                failing_pair = pair_index
+            states: dict[str, int] = {}
+            for strip in tuple(getattr(shift, "strips", ()) or ()):
+                state = getattr(strip, "state", None)
+                if isinstance(state, str):
+                    states[state] = states.get(state, 0) + 1
+            refused_pairs.append({
+                "pair": [pair_index, pair_index + 1],
+                "status": getattr(shift, "status", None),
+                "consensus_px": getattr(shift, "consensus_px", None),
+                "confidence": getattr(shift, "confidence", None),
+                "agreeing": getattr(shift, "agreeing", None),
+                "dissenting": getattr(shift, "dissenting", None),
+                "eligible": getattr(shift, "eligible", None),
+                "strip_states": states,
+                "reason": getattr(shift, "reason", None),
+            })
+
+        # A malformed/legacy index can lack shifts but still carry the chain's first unknown
+        # offset.  Offset j is reached by pair j-1, hence this conversion back to frame indices.
+        if failing_pair is None:
+            for offset_index, offset in enumerate(tuple(getattr(index, "offsets", ()) or ())):
+                if offset is None and offset_index:
+                    failing_pair = offset_index - 1
+                    break
+
+        before = after = None
+        if failing_pair is not None and 0 <= failing_pair and failing_pair + 1 < len(photos):
+            before, after = photos[failing_pair], photos[failing_pair + 1]
+        elif index is None and photos:
+            # An exception has no pair ledger.  Save the capture boundaries rather than claiming
+            # they are the failing pair; it is still the evidence that existed at failure time.
+            before, after = photos[0], (photos[-1] if len(photos) > 1 else None)
+
+        fields = {
+            "reason": reason,
+            "photos": len(photos),
+            "steps_px": steps_px,
+            "refused_pairs": refused_pairs,
+        }
+        if failing_pair is not None:
+            fields["failing_pair"] = [failing_pair, failing_pair + 1]
+        try:
+            self._dbg.action("item_index_refused", before=before, after=after, **fields)
+        except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run refusal
+            pass
+        return reason
 
     def _note_enumeration_truncated(self, frames: int) -> None:
         """Say out loud that an ENUMERATION read hit its ceiling without reaching the bottom.

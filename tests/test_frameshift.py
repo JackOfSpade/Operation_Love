@@ -343,11 +343,11 @@ def test_the_quorum_is_what_separates_a_measurement_from_a_refusal():
     assert _resolve(voters[:2]).status == frameshift.SHIFT_NO_CONSENSUS
 
 
-def test_confidence_counts_only_the_strips_that_could_have_seen_the_answer():
-    """A strip whose searchable range does not reach the consensus is not evidence against it —
-    it never had the chance. A strip that COULD have seen it and came back weak is. The two
-    banks below differ only in that one strip's `search` range, and that must move the
-    denominator by one."""
+def test_weak_strips_are_silence_not_confidence_dissent_even_when_in_range():
+    """A weak strip is silence about page translation, not dissent: its own content was not
+    found in frame B above the score floor. Therefore it must not enter coverage even when its
+    searchable range includes the consensus. The two banks below differ only in that range, and
+    neither weak strip gets a vote or changes the denominator."""
     voters = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 363) for i in range(3)]
 
     out_of_reach = _resolve(voters + [_strip(2000, frameshift.STRIP_WEAK, None,
@@ -355,9 +355,27 @@ def test_confidence_counts_only_the_strips_that_could_have_seen_the_answer():
     in_reach = _resolve(voters + [_strip(2000, frameshift.STRIP_WEAK, None,
                                          search=(-1000, 1000), score=0.2)])
 
-    assert out_of_reach.eligible == 3 and out_of_reach.confidence == 1.0
-    assert in_reach.eligible == 4 and in_reach.confidence == pytest.approx(0.75)
+    assert out_of_reach.eligible == in_reach.eligible == 3
+    assert out_of_reach.confidence == in_reach.confidence == 1.0
     assert out_of_reach.delta_px == in_reach.delta_px == 363
+
+
+def test_unanimous_matched_strips_measure_despite_a_majority_of_weak_strips():
+    """The corrected eligible rule must let the three-strip quorum speak for itself. More
+    strips in this bank are weak than matched, but weak means the changing content is gone from
+    frame B — silence, not an opposing measurement — so the unanimous matched strips measure.
+    """
+    matched = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 363) for i in range(3)]
+    weak = [_strip(1000 + i * 120, frameshift.STRIP_WEAK, None, score=0.2)
+            for i in range(4)]
+
+    r = _resolve(matched + weak)
+
+    assert len(weak) > len(matched)
+    assert r.status == frameshift.SHIFT_MEASURED
+    assert r.delta_px == r.consensus_px == 363
+    assert r.agreeing == r.eligible == len(matched)
+    assert r.dissenting == 0 and r.confidence == 1.0
 
 
 def test_saturation_is_measured_on_the_offset_and_not_on_pinnedness():

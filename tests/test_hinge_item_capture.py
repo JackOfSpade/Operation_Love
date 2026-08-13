@@ -23,6 +23,7 @@ Every positive is paired with a negative: for each thing the enumeration produce
 test that it is REFUSED, by name and with a reason, rather than degraded into raw frames.
 """
 import dataclasses
+import json
 import math
 import random
 
@@ -34,6 +35,7 @@ from PIL import Image
 from operation_love.drivers import (
     hinge, item_identity, item_index, scroll_step, scroll_top, segment)
 from operation_love.drivers.hinge import HingeDriver
+from operation_love.drivers.debuglog import HingeDebugLog
 
 _W, _H = 1080, 2400                        # the calibrated Pixel 7a screencap size
 _SEED = 11
@@ -660,6 +662,64 @@ def test_an_index_that_contradicts_itself_is_reported_and_never_degrades_to_raw_
     assert drv._current_item_index is None and drv._current_item_payload is None
 
 
+def test_item_index_refusal_logs_the_broken_pair_and_compact_shift_ledger(tmp_path):
+    """A broken correspondence chain used to lose the only two frames that explain it.  The
+    refusal record saves that exact pair, every realised delta (with unknown kept as null), and
+    per-refusal strip evidence; it remains an ordinary hard refusal, never a usable prefix.
+    """
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="item-index-refusal")
+    real = hinge.build_item_index
+
+    def _broken_pair(*a, **k):
+        index = real(*a, **k)
+        # The production failure shape: four strips see the same shift while nine animated /
+        # changed regions are silent.  The refusal record must preserve that distinction.
+        strips = tuple(
+            dataclasses.replace(strip, state=("matched" if i < 4 else "weak"))
+            for i, strip in enumerate(index.shifts[0].strips))
+        assert len(strips) == 13
+        first = dataclasses.replace(
+            index.shifts[0], delta_px=None, status="no_consensus", consensus_px=209,
+            confidence=0.5, agreeing=4, dissenting=0, eligible=4,
+            reason="the animation left no coordinate-space consensus", strips=strips)
+        return dataclasses.replace(
+            index, shifts=(first, *index.shifts[1:]),
+            offsets=(0, *([None] * (len(index.offsets) - 1))),
+            failures=("frames 0 and 1 could not be put in one coordinate space",))
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(hinge, "build_item_index", _broken_pair)
+        profile = drv._capture_current()
+
+    assert profile.items == ()
+    records = [json.loads(line) for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    refusal = next(rec for rec in records if rec["action"] == "item_index_refused")
+    assert refusal["failing_pair"] == [0, 1]
+    assert refusal["steps_px"][0] is None
+    assert refusal["refused_pairs"] == [{
+        "pair": [0, 1], "status": "no_consensus", "consensus_px": 209,
+        "confidence": 0.5, "agreeing": 4, "dissenting": 0, "eligible": 4,
+        "strip_states": {"matched": 4, "weak": 9},
+        "reason": "the animation left no coordinate-space consensus",
+    }]
+    assert (drv._dbg.dir / refusal["before"]).read_bytes() == profile.photos[0]
+    assert (drv._dbg.dir / refusal["after"]).read_bytes() == profile.photos[1]
+
+
+def test_item_index_refusal_diagnostics_cannot_break_the_live_refusal():
+    """DebugLog promises best-effort operation; retain that safety property even if a future
+    logger implementation (or a test double) raises before it gets to DebugLog's own guard."""
+    drv = _drv(WorldAdb())
+
+    class _ExplodingLog:
+        def action(self, *args, **kwargs):
+            raise OSError("debug disk unavailable")
+
+    drv._dbg = _ExplodingLog()
+    assert drv._item_index_refused([b"frame 0", b"frame 1"], "index refused") == "index refused"
+
+
 def test_the_index_carries_this_profiles_identity_and_navigation_can_check_it():
     """Doc 5.7's carried-forward requirement 1, at the point the table is built. The index knows
     WHOSE profile it describes, fingerprinted from the frames it was built from through the
@@ -713,13 +773,14 @@ def test_a_capture_with_no_identity_is_refused_before_a_billed_opener_call():
     assert _drv(WorldAdb())._capture_current().items
 
 
-def test_a_dependency_that_raises_becomes_the_same_stated_reason():
+def test_a_dependency_that_raises_becomes_the_same_stated_reason(tmp_path):
     """The three leaf modules raise rather than answer when they cannot look at all
     (`SegmentationError` on a frame that will not decode, `ShiftEstimationError` when no page
     space spans the capture, `ItemIndexError`/`ItemCropError` on a capture that cannot be
     indexed, including a missing cv2/numpy). None of them may take down a read whose frames the
     ranker still wants, and none of them may pass silently."""
     drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="item-index-exception")
 
     def _boom(*a, **k):
         raise segment.SegmentationError("frame 0 could not be decoded")
@@ -732,6 +793,12 @@ def test_a_dependency_that_raises_becomes_the_same_stated_reason():
     assert "SegmentationError" in profile.items_unavailable
     assert "frame 0 could not be decoded" in profile.items_unavailable
     assert profile.photos
+    records = [json.loads(line) for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    refusal = next(rec for rec in records if rec["action"] == "item_index_refused")
+    assert refusal["steps_px"] == [] and refusal["refused_pairs"] == []
+    assert "failing_pair" not in refusal
+    assert (drv._dbg.dir / refusal["before"]).read_bytes() == profile.photos[0]
+    assert (drv._dbg.dir / refusal["after"]).read_bytes() == profile.photos[-1]
 
 
 def test_a_scroll_that_cannot_be_sized_ends_the_enumeration_without_ending_the_read():

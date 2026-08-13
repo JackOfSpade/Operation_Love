@@ -8,7 +8,8 @@ to — see _capabilities_md), the config (secrets stripped — presence only,
 never a value or even a derived prefix), the live run status (phase, labels,
 ranker, per-app decisions, budget, last error), a STALL SUMMARY distilled from
 each app's on-disk actions.jsonl (the longest same-reason observe_waiting
-repeats, worst first — see _stall_summary_md), and recent log lines. Output
+repeats, worst first — see _stall_summary_md), item-index refusal pair evidence
+and realised-step ranges, and recent log lines. Output
 is markdown the owner can paste to a developer to debug. The report includes
 an instruction to improve this collector when it lacks enough context, and it
 caps output at 50k lines by dropping the oldest captured lines first.
@@ -757,6 +758,61 @@ def _capture_split_summary_md(lines: list[str]) -> str:
     return "\n".join(out)
 
 
+# ── item-index refusal summary ─────────────────────────────────────────────
+def _item_index_refusal_summary_md(lines: list[str]) -> str:
+    """Render every item-index refusal in the latest run without making a developer decode its
+    compact per-pair ledger by hand.
+
+    ``hinge._item_index_refused`` records the frames that first broke the shared page space,
+    every measured pair delta in ``steps_px``, and detail for every refused pair.  This reporter
+    derives min/median/max only from numeric measured steps: ``null`` means "unknown", never a
+    zero step.  Older or manually edited logs can omit any field; they still produce an honest
+    reason-only line rather than making a bug report fail.
+    """
+    refusals: list[dict] = []
+    for raw in lines:
+        try:
+            rec = json.loads(raw)
+        except Exception:  # noqa: BLE001 -- a partial JSONL write must not hide a later refusal
+            continue
+        if isinstance(rec, dict) and rec.get("action") == "item_index_refused":
+            refusals.append(rec)
+    if not refusals:
+        return ""
+
+    out: list[str] = []
+    for rec in refusals:
+        pair = rec.get("failing_pair")
+        if (isinstance(pair, list) and len(pair) == 2
+                and all(isinstance(v, int) and not isinstance(v, bool) for v in pair)):
+            pair_text = f"frames {pair[0]} and {pair[1]}"
+        else:
+            pair_text = "no specific failing pair recorded"
+
+        steps = rec.get("steps_px")
+        measured = [float(step) for step in steps if isinstance(step, (int, float))
+                    and not isinstance(step, bool)] if isinstance(steps, list) else []
+        if measured:
+            ordered = sorted(measured)
+            middle = len(ordered) // 2
+            median = (ordered[middle] if len(ordered) % 2 else
+                      (ordered[middle - 1] + ordered[middle]) / 2)
+            step_text = (f"realised steps ({len(measured)} measured): min {ordered[0]:g}px, "
+                         f"median {median:g}px, max {ordered[-1]:g}px")
+        else:
+            step_text = "realised-step stats unavailable (no measured pair delta was logged)"
+
+        evidence = []
+        if rec.get("before"):
+            evidence.append(f"before `{_sanitize_inline(str(rec['before']))}`")
+        if rec.get("after"):
+            evidence.append(f"after `{_sanitize_inline(str(rec['after']))}`")
+        evidence_text = "; ".join(evidence) if evidence else "no pair screenshots saved"
+        reason = _sanitize_inline(str(rec.get("reason") or "no refusal reason logged"))
+        out.append(f"- {pair_text}: `{reason}`; {step_text}; {evidence_text}")
+    return "\n".join(out)
+
+
 # ── stall summary ──────────────────────────────────────────────────────────
 # Filed after an observe-mode incident where an unrecognised Hinge+ paywall left
 # _await_like_resolved polling like_sheet / like_sending until the operator stopped it.
@@ -976,6 +1032,10 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
             if splits:
                 out.append("  - capture-split recovery:")
                 out.extend(f"    {line}" for line in splits.splitlines())
+            refusals = _item_index_refusal_summary_md(raw_lines)
+            if refusals:
+                out.append("  - item-index refusals and realised-step stats:")
+                out.extend(f"    {line}" for line in refusals.splitlines())
             counts_line = _action_counts_line(raw_lines)
             if counts_line:
                 out.append(f"  - {counts_line}")

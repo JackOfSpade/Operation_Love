@@ -61,34 +61,19 @@ then required to AGREE. Each of those choices is load-bearing:
 THE ONE THING THAT ACTUALLY DISCRIMINATES IS AGREEMENT BETWEEN STRIPS
 ---------------------------------------------------------------------
 This is the finding that shaped every threshold below, and it is worth stating before the
-constants so they are not read as a stack of quality filters.
+constants so they are not read as a stack of quality filters. A strip's peak score and its
+peak-to-runner-up separation are useful diagnostics, but neither is a correctness gate: a strip
+can correlate strongly to repeated content, and a weak strip is silence about the page
+translation, not a contrary vote. The answer is therefore the median plus an explicit count of
+the strips that independently agree with it. `_MIN_PEAK_SCORE` only removes strips that have no
+credible correspondence; `_AGREEMENT_TOLERANCE_PX`, `_MIN_AGREEING_STRIPS`, and
+`_MIN_CONFIDENCE` decide whether the remaining evidence is sufficient.
 
-Measured over the three calibration captures (145 frame pairs, 1885 strip searches), NO
-per-strip statistic separates a strip that agreed with the verified answer from one that did
-not. Over the 991 strips that produced an interior peak on a pair the estimator went on to
-measure — of which 962 agreed and 29 dissented:
-
-  * peak score. Agreeing strips span 0.750 to 1.000 (5th percentile 0.825). DISSENTING strips
-    span 0.752 to 1.000 (5th percentile 0.755, median 0.825). The two ranges are the same range.
-  * peak-to-runner-up separation. Agreeing strips go as low as 0.002 (5th percentile 0.059);
-    dissenting strips reach 0.599. The medians differ (0.454 against 0.048), so there is a
-    tendency, but any gate tight enough to catch the dissenters throws away correct strips
-    first. It is reported per strip because it is cheap and a caller may want it, and it is NOT
-    a gate.
-
-What does separate them is that the wrong ones are wrong in DIFFERENT ways while the right ones
-are right in the same way. On the 363px bot capture every pair has 7 or more strips agreeing on
-the same offset — to the PIXEL, spread zero on all 23 pairs — while the 29 dissenters across
-the whole corpus scattered over offsets 5 to 355px away from the answer and from each other. So
-the score floor's job is only to drop strips with no correspondence at all, and the ANSWER comes
-from the median plus an explicit count of who agreed with it.
-
-That is not a claim about one threshold choice. Re-run at score floors of 0.50, 0.75 and 0.90,
-the bot-scrolled capture returns the same 23 of 23 measurements and the aliasing capture refuses
-the same pairs; what moves is only how many pairs of the HOSTILE hand-scrolled capture can be
-measured at all (111, 89 and 70 of 114). An independent cross-check — do the like glyphs
-`hinge._match_glyph` finds in frame A land where the measured delta predicts in frame B, a
-signal this module never looks at — is 100% at every one of those floors.
+A current 0.50/0.75/0.90 score-floor replay after the eligible-strip correction measures
+111/112/112 of 114 hand-scroll pairs, 23/23/23 of 23 bot-scroll pairs, and 2/2/3 of 8 aliasing
+pairs. Lowering the floor is not strictly monotonic: on one hand-scroll pair, an extra low-score
+strip becomes a dissenting voter. The floor therefore controls both coverage and the evidence
+bank that is asked to agree; it cannot be described as a confidence proxy.
 
 WHY THE SEARCH LOOKS PAST THE WINDOW IT TRUSTS
 -----------------------------------------------
@@ -106,29 +91,34 @@ never a boundary value dressed up as a measurement. [corpus: the aliasing captur
 there; this measures 1299 on the strips that can still see it, on 5 of its 6 over-large pairs,
 and refuses all 6 rather than pinning at the 900px window.]
 
-WHAT THE THREE CALIBRATION CAPTURES MEASURE (validated offline, 2026-08-11)
----------------------------------------------------------------------------
-The headline is the last line of each block: a wrong delta was never returned, on any capture,
-at any threshold setting tried.
+WHAT THE THREE CALIBRATION CAPTURES MEASURE (validated offline 2026-08-11,
+re-measured after the eligible-strip correction 2026-08-13)
+--------------------------------------------------------------------------
+The headline is the last line of each block: every current-default delta with a checkable
+like glyph was independently corroborated; this module never reads that glyph signal.
 
   * `botscroll_20260811T231516Z` — profile B, bot-scrolled at the read_scroll_frac 0.16 cadence
     doc 5.10.1 recommends. 23 of 23 pairs MEASURED, no refusals. 22 of them land on 361..364 for
     a nominally constant step (median 363, matching the ledger's own 362.99 exactly) and the
-    23rd on 177, which is the short final step into the end of the profile. Confidence 0.88 at
-    worst. Like-glyph cross-check 29/29.
+    23rd on 177, which is the short final step into the end of the profile. Confidence is 1.00 on
+    every measured pair. The independent like-glyph replay is 30/30 within 4px.
   * `botscroll_20260811T225314Z` — profile B, the ALIASING cadence (production's 0.55). 6 of its
     8 pairs are refused: 5 as `SHIFT_BEYOND_WINDOW` carrying `consensus_px = 1299`, one as
     `SHIFT_NO_CONSENSUS`, and 6 of 8 with `saturated` set. The two it DOES measure are genuine —
     the profile's short final step (364) and a settled frame that did not move at all (0) —
     and both are confirmed by the like-glyph cross-check. Not one phantom number.
   * `scroll_20260811T211209Z` — profile A, hand-scrolled, the hostile case doc 5.10 measured at
-    0..787px per step with 11% of steps over 500px. 89 of 114 pairs measured, spanning -18 to
-    +787 (the doc's own 787px maximum, to the pixel). The 25 refusals are 24
-    `SHIFT_NO_CONSENSUS` and one `SHIFT_NO_EVIDENCE`, and every one of them falls in the tail
-    from pair 57 onward — the run of near-static frames over an ANIMATED card, where two
-    screencaps of the SAME position genuinely differ, which is the condition segment.py's
-    docstring already flags as invisible to any single frame. Not one refusal lands on a pair
-    where the profile was actually being scrolled. Like-glyph cross-check 130/130.
+    0..787px per step with 11% of steps over 500px. 112 of 114 pairs measured, spanning -18 to
+    +787 (the doc's own 787px maximum, to the pixel). The two refusals are one
+    `SHIFT_NO_EVIDENCE` (pair 112: all 13 strips weak) and one `SHIFT_NO_CONSENSUS` (pair 113:
+    one matched strip at -491px, below the three-strip quorum). The correction turns 23 former
+    coverage refusals into measurements; 22 are 0px in the near-static animated-card run.
+    The independent like-glyph replay is 134/134 within 4px.
+
+The old module text reported like-glyph totals of 130/130 and 29/29. The driver's current
+`hinge._match_glyph` replay instead yields 134/134 and 30/30, respectively, at the same 100% rate
+and 4px tolerance. The denominator discrepancy is unresolved (possibly glyph de-duplication or a
+different original y-band), so the old totals are not silently treated as equivalent.
 
 WHAT THIS MODULE REFUSES TO GUESS
 ---------------------------------
@@ -249,19 +239,16 @@ _TRUST_WINDOW_BAND_FRAC = 0.5
 _MIN_STRIP_STDDEV = 8.0
 
 # Correlation floor for a strip's peak. Its job is ONLY to drop strips whose content is not in
-# frame B at all — it does NOT identify a correct match, and the module docstring's
-# "THE ONE THING THAT ACTUALLY DISCRIMINATES" section has the numbers proving it cannot: over the
-# corpus, strips that agreed with the verified answer scored 0.750..1.000 and strips that
-# DISSENTED from it scored 0.752..1.000.
+# frame B at all — it does NOT identify a correct match. Agreement across independently located
+# strips, rather than an individual peak score, is the evidence this module uses to trust a delta.
 # 0.75 is not a new number: it is `hinge._LIKE_MATCH_THRESHOLD`, the floor already calibrated for
 # TM_CCOEFF_NORMED on these very frames, reused so this module does not introduce a second
 # correlation threshold free to drift from it.
-# [corpus: it sends 509 of 1885 strips to STRIP_WEAK. Varying it 0.50/0.75/0.90 changes NOTHING
-# about correctness — the bot-scrolled capture returns the same 23 of 23 measurements, the
-# aliasing capture refuses the same pairs, and the independent like-glyph cross-check stays at
-# 100% — it moves only how many pairs of the hostile hand-scrolled capture are measurable at all
-# (111 / 89 / 70 of 114). So this floor buys coverage, not accuracy, and 0.75 is the middle of a
-# range where the answer does not change.]
+# [corpus, re-measured 2026-08-13 after the eligible-strip correction: at score floors
+# 0.50/0.75/0.90, measured-pair counts are 111/112/112 of 114 hand-scroll pairs, 23/23/23 of 23
+# bot-scroll pairs, and 2/2/3 of 8 aliasing pairs. At the 0.75 default, 509 of 1885 strip
+# searches return STRIP_WEAK. The non-monotonic hand-scroll result is real: lower score floors
+# can add dissenting voters, not merely coverage.]
 _MIN_PEAK_SCORE = 0.75
 
 # How close a strip's winning offset may come to either end of its own searchable range before
@@ -325,16 +312,14 @@ _MIN_SATURATION_STRIPS = 2
 # Deliberately a coverage ratio and not an average of scores: "6 of the 7 strips that could have
 # seen this did see it" is a statement a human can check against the per-strip records, and a
 # blended score is not.
-# [corpus: in the regime this is FOR — a bot-driven scroll — the floor is never in play: the
-# 363px capture measures 0.88 at worst and 0.90 at the median, and the aliasing capture's own two
-# measurable pairs sit at 0.90 and 0.95. It only bites on the hostile hand-scrolled capture, and
-# there it is a pure coverage/caution trade with no accuracy attached: at 0.4 / 0.5 / 0.6 the
-# measured-pair count is 110 / 89 / 78 of 114 and the independent like-glyph cross-check is 100%
-# at all three. The pairs it rejects are almost all inside the animated-card run, where a third
-# of the eligible strips see a still frame and the rest cannot match their own content in the
-# next frame at all.]
-# 0.5 rather than the measurably-still-correct 0.4 because the floor is only ever exercised in
-# conditions this module was not built for, and in those the owner rule points at refusing.
+#
+# [corpus, re-measured 2026-08-13 with the current eligible rule over 145 pairs: at 0.4 / 0.5 /
+# 0.6 the measured-pair counts are unchanged — 112/114 hostile hand-scroll, 23/23 bot-scroll,
+# and 2/8 aliasing. Over SHIFT_MEASURED pairs, confidence min/median/max is 0.75/1.00/1.00 for
+# the hostile capture and 1.00/1.00/1.00 for each bot capture. The hostile floor first excludes
+# pairs at 0.8 (109/114 measured), then 0.9 (93/114) and 1.0 (89/114); both bot captures remain
+# unchanged through 1.0.]
+# 0.5 leaves room for a true coverage conflict while retaining every current-corpus measurement.
 _MIN_CONFIDENCE = 0.5
 
 # Half-width of the neighbourhood around the peak that is excluded when looking for the
@@ -707,12 +692,39 @@ def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, t
     consensus = int(round(float(np.median([s.delta_px for s in voters]))))
     agreeing = [s for s in voters if abs(s.delta_px - consensus) <= tolerance]
     dissenting = [s for s in voters if abs(s.delta_px - consensus) > tolerance]
-    # Eligible = every strip that was actually searched AND whose range contains the consensus
-    # with pin margin to spare, i.e. every strip that had a real chance to return this value as
-    # an interior peak. Strips that could not have seen it are not evidence against it; strips
-    # that could have and did not are.
+    # Eligible = every strip that LOCATED ITSELF in frame B (matched or pinned) AND whose range
+    # contains the consensus with pin margin to spare, i.e. every strip that had a real chance to
+    # return this value as an interior peak AND actually had an opinion about where it went.
+    # Strips that could not have seen it are not evidence against it; strips that could have and
+    # put the content somewhere else are.
+    #
+    # STRIP_WEAK is DELIBERATELY not in that list, and this is the 2026-08-13 correction. A weak
+    # strip is one whose own content is not anywhere in frame B's band above the score floor —
+    # that is SILENCE, not dissent. It says "what I was looking at is gone", which is a statement
+    # about the CONTENT changing (an animated card, a video prompt, a photo that finished loading
+    # between screencaps), not a statement about how far the page moved. Counting it in the
+    # denominator let one animating card outvote every strip that could actually see the scroll,
+    # so the pair was refused for lack of coverage while the strips that DID speak were unanimous
+    # to the pixel.
+    # [corpus, re-measured 2026-08-13 over the same three captures: this converts 23 of the
+    # hostile hand-scrolled capture's 25 refusals into measurements (89 -> 112 of 114 pairs), and
+    # every one of them is CORROBORATED by the independent like-glyph cross-check this module
+    # never looks at — 180 of 180 predicted heart positions land within 4px, against 134 of 134
+    # before. 22 of the 23 measure 0px, and they are the documented run of near-static frames over
+    # an animated card: an independent pixel diff puts the only changing region at rows 937..1910
+    # in every one of them, identical to the row, so "did not move" is the true answer and the old
+    # rule was refusing it. Neither bot-scrolled capture's result changes at all (23 of 23
+    # measured before and after; the aliasing capture refuses the same 6 pairs, 5 still as
+    # SHIFT_BEYOND_WINDOW).]
+    #
+    # What still stops a frame of unrelated content from being measured is `min_agreeing` and NOT
+    # this ratio: the corpus's two surviving refusals are exactly the pairs that floor catches —
+    # one with 13 weak strips and no voter at all, one where a single strip matched at -491px.
+    # And the deck ADVANCING mid-capture, the other way a bank goes mostly-weak, is not this
+    # module's to catch and never was (see "WHAT THIS MODULE DOES NOT DECIDE"): hinge.py's
+    # per-frame identity-band guard settles screen identity before these frames are ever paired.
     eligible = [s for s in strips
-                if s.state in (STRIP_MATCHED, STRIP_PINNED, STRIP_WEAK)
+                if s.state in (STRIP_MATCHED, STRIP_PINNED)
                 and s.search[0] + pin_margin < consensus < s.search[1] - pin_margin]
     confidence = len(agreeing) / len(eligible) if eligible else 0.0
     counts = (f"{len(agreeing)} of {len(eligible)} eligible strips agree within {tolerance}px "

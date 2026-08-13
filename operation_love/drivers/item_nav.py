@@ -198,12 +198,8 @@ WHAT IS NOT DONE HERE, AND WHICH LAYER OWNS IT
   * WHICH item to navigate to. The model picks it; `model_index` arrives already chosen.
   * SCREEN IDENTITY beyond the fingerprint. A paywall, a dialog or a blank framebuffer are not
     this module's to recognise. Settle `_identity_of`/`_screen_is` BEFORE calling this.
-  * STOP-AWARENESS. There is no `should_stop`, on the same terms as the rest of the auto like
-    path ("the auto path's like()/`_locate_target_heart` unwinds never receive them and so can
-    never be interrupted mid-commit", `_scroll_to_top`'s STOP paragraph). What bottom-up
-    navigation changes is the SIZE of that stop-deaf window rather than its existence: it was a
-    full rewind plus a full forward walk (~51 + up to 48 gestures), it is now 0 gestures for the
-    last item on the page and at most one walk up from wherever the read ended.
+  * STOP-AWARENESS. `should_stop`, when supplied, is checked before every screencap and upward
+    gesture. Cancellation raises ``ActionCancelled`` before further device input and never taps.
 
 THE DRIVER SURFACE THIS USES, AND NOTHING ELSE
 ------------------------------------------------
@@ -280,6 +276,7 @@ import math
 import time
 from dataclasses import dataclass
 
+from .base import ActionCancelled
 from .frameshift import ShiftEstimate, estimate_shift
 from .item_identity import IdentityError, IdentityVerdict, compare_profile_identity
 # The private helpers are imported rather than re-implemented, on `scroll_step.py`'s and
@@ -303,6 +300,10 @@ from .segment import Block, FrameSegmentation, segment_frame
 #   [corpus] the measurements those modules' docstrings carry, taken over the gitignored
 #            calibration captures. Geometry and counts only.
 # =====================================================================================
+
+# The closest known different-profile identity pair.  A navigation bound is an acceptance
+# threshold, so equality is unsafe too.
+_IDENTITY_FALSE_MATCH_DISTANCE = 2.565
 
 # How far this pass's count and the reference index may disagree about the distance from the
 # anchor heart to heart k before the disagreement is a hard stop.
@@ -383,6 +384,7 @@ _FRAME_BUDGET_SLACK = 4
 NAV_INDEX_UNUSABLE = "index_unusable"                  # the index contradicts itself
 NAV_INDEX_RELATIVE = "index_not_at_scroll_top"         # ordinals are relative: blocker 3
 NAV_ORDINAL_OUT_OF_RANGE = "ordinal_out_of_range"      # no such model item
+NAV_CALIBRATION_INVALID = "identity_calibration_invalid"  # a caller supplied no safe identity bound
 NAV_IDENTITY_MISMATCH = "identity_mismatch"            # this index describes a DIFFERENT profile
 NAV_IDENTITY_UNCONFIRMED = "identity_unconfirmed"      # whose card this is cannot be established
 NAV_ANCHOR_UNMEASURED = "entry_anchor_unmeasured"      # the screen could not be put in the index's
@@ -755,6 +757,8 @@ def _heart_in_frame(seg: FrameSegmentation, frame_y: int, tolerance: int
 
 def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                      entry_reference: bytes,
+                     identity_match_max_dist: float,
+                     should_stop=None,
                      max_frames: int | None = None,
                      crosscheck_tolerance_px: int = _CROSSCHECK_TOLERANCE_PX,
                      extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
@@ -770,6 +774,11 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
     caller who forgot it could otherwise be given a weaker anchor silently. `hinge` keeps it
     beside the index and clears the two together (`_invalidate_item_index`), so "the index is
     stale" and "the anchor is stale" cannot become different facts.
+
+    `identity_match_max_dist` is also REQUIRED. It is the measured, device-bound identity
+    acceptance ceiling: finite and positive, and strictly below this module's known 2.565
+    different-profile collision. This leaf returns a target a caller can tap, so it refuses a
+    missing, generic, or unsafe bound before taking its first screencap.
 
     `index` must be the index of the profile currently on screen, built with `at_scroll_top=True`
     from a confirmed `ScrollTopVerdict`. An index built with `at_scroll_top=False` is refused
@@ -806,6 +815,31 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
     `segment_frame`'s precedent so a validation pass can vary one without editing the module —
     not because a production caller should.
     """
+    # This helper ultimately returns a heart for its caller to tap.  It cannot safely retain a
+    # generic identity default: 3.0 admits the measured 2.565 different-profile collision.
+    # Hinge supplies its device-bound calibration, while offline callers must make their own
+    # measured bound explicit.  Validate before even a screencap so a malformed direct call has
+    # no device side effects.
+    if (isinstance(identity_match_max_dist, bool)
+            or not isinstance(identity_match_max_dist, (int, float))
+            or not math.isfinite(identity_match_max_dist)
+            or identity_match_max_dist <= 0
+            or identity_match_max_dist >= _IDENTITY_FALSE_MATCH_DISTANCE):
+        raise ItemNavigationError(
+            NAV_CALIBRATION_INVALID,
+            "refusing to navigate without a finite, positive identity_match_max_dist strictly "
+            f"below the known {_IDENTITY_FALSE_MATCH_DISTANCE} different-profile false-match "
+            "distance; a generic or "
+            "unsafe bound could turn a foreign card into a target")
+
+    def cancelled(*, frame: bytes | None = None, frame_index: int | None = None,
+                  anchor: ShiftEstimate | None = None) -> None:
+        """Stop before a capture or gesture, leaving the card untouched from this point."""
+        if should_stop is not None and should_stop():
+            raise ActionCancelled(
+                "navigation cancelled because the run is stopping; no further screencap or "
+                "scroll gesture was issued, and nothing was tapped")
+
     # --- the index, before a finger moves ------------------------------------------
     if not index.usable:
         raise ItemNavigationError(
@@ -865,10 +899,12 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
     # profile A's index over profile B's frames returned a tap target because every geometric
     # comparison this module makes passed identically on two stereotyped cards. So the question
     # asked here is not geometric.
+    cancelled()
     entry_frame = driver._screencap()
     try:
-        identity = compare_profile_identity(entry_frame, index.identity,
-                                            identity_band=driver.identity_band)
+        identity = compare_profile_identity(
+            entry_frame, index.identity, identity_band=driver.identity_band,
+            match_max_dist=identity_match_max_dist)
     except IdentityError as exc:
         # "Could not look" is kept distinct in the message and collapsed into one code, because
         # to a caller about to tap a heart it calls for exactly the action "cannot tell" does.
@@ -1100,11 +1136,13 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
         # THE ONLY GESTURE. `_scroll_up_one` requires both arguments, which is what makes the
         # `_scroll_down_one(frac)` trap — re-sampling BOTH from the behaviour policy when either
         # is None, and so silently issuing production's cadence — impossible to reach from here.
+        cancelled(frame=frames[i], frame_index=i, anchor=anchor)
         driver._scroll_up_one(step.frac, step.x_frac)
         steps.append(step)
         if dwell and dwell > 0:
             time.sleep(dwell)
 
+        cancelled(frame=frames[i], frame_index=i, anchor=anchor)
         nxt = driver._screencap()
         est = estimate_shift(frames[i], nxt, content_band=content_band,
                              trust_window_px=trust_window_px)
@@ -1172,17 +1210,13 @@ def _confirm_landing(*, heart: tuple[int, int], block: Block, index_block, index
     neither replaces the other. What must not be written is code that treats THIS function as
     having ruled any of it out.
 
-    AND THE TWO BEHIND IT ARE WEAKER THAN THAT SENTENCE SOUNDS, corrected 2026-08-12 by a second
-    validation pass. "The signature check rules out the wrong ITEM" is exact and is the whole of
-    what it does: `item_verify.verify_sheet_item` is a closed-set test over ONE payload's items,
-    with no absolute ceiling, and it was measured accepting a card belonging to a different
-    profile entirely (10 of 540; see that module's "THIS IS A CLOSED-SET TEST"). It is not a
-    backstop for a stale table. Nor is the identity gate a clean one: over six real profiles its
-    closest different-person pair measures 2.565 grey levels against a 3.0 bound, i.e. one pair in
-    fifteen MATCHES (see `item_identity._IDENTITY_MATCH_MAX_DIST`). Both fail in the same
-    direction on the same input, so they do not cover each other. Correct INVALIDATION is the
-    guard that actually holds, and the driver refusing a model item number it cannot navigate to
-    is what keeps either hole off a real send.
+    AND THE TWO BEHIND IT NEED CALIBRATION, corrected 2026-08-12 by a second validation pass.
+    Relative `item_verify` alone accepted a foreign card in 10 of 540 comparisons, and an old
+    3.0 identity bound admitted a measured different-person pair at 2.565. The production driver
+    now refuses targeted work unless it can pass a calibrated identity bound below that collision
+    and a calibrated absolute sheet-distance ceiling, in addition to this geometry and correct
+    index invalidation. This function remains only one layer and must not be treated as proof of
+    profile identity.
     """
     if abs(block.height - index_block.height) > extent_tolerance_px:
         return (f"the card under heart {index_block.heart_ordinal} is {block.height}px tall in "

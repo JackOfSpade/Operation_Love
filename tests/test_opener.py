@@ -31,7 +31,6 @@ from operation_love.opener.opener import (
     REASON_TOO_MANY_SENTENCES,
     REASON_UNDELIVERABLE_CHARS,
     REASON_UNDELIVERABLE_SEQUENCE,
-    _ANCHOR_SYSTEM,
     _SYSTEM,
     _image_media_type,
     _leading_ngram,
@@ -40,7 +39,6 @@ from operation_love.opener.opener import (
     _scaffolding_markers,
     _sentence_count,
     _strip_wrapping_quotes,
-    _system_text,
 )
 from operation_love.costing import Usage
 from operation_love.opener.service import OpenerService
@@ -455,16 +453,9 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     tests/test_config_yaml_real.py; the two are sent in the SAME request, so an edit that
     lands here and not there hands the model two contradictory style guides.
 
-    ITEM SELECTION IS THE ONE EXCEPTION, since the 2026-08-12 audit's Bug 1 fix: _SYSTEM below
-    is now the SOLE copy of the item-selection instruction. config.yaml's opener.style used to
-    carry a near-duplicate of it too, but that copy was unconditional (sent on every request
-    regardless of shape) while _SYSTEM's copy is genuinely shape-aware (_ANCHOR_SYSTEM
-    explicitly overrides it whenever the request is anchored) -- so the unconditional copy
-    contradicted OBSERVE's anchored request, which tells the model the item is already chosen.
-    Deleted from config.yaml rather than given a matching override, per doc 3.1's "duplication
-    trap": two independently-maintained shape-aware mechanisms is exactly the risk that produced
-    this bug. See tests/test_config_yaml_real.py's
-    test_shipped_opener_style_does_not_ship_the_item_selection_rule for the other half of this.
+    ITEM SELECTION is the one exception: _SYSTEM is the sole copy of the instruction. The
+    duplicate was removed from config.yaml; see
+    test_shipped_opener_style_does_not_ship_the_item_selection_rule for the other half.
     """
     lowered = _SYSTEM.lower()
     assert "90/10 framework" in _SYSTEM
@@ -670,43 +661,6 @@ def test_system_prompt_never_turns_the_five_moves_into_a_binding_menu():
             "they be stated as examples with an explicit 'write whatever does fit' out")
 
 
-def test_system_text_appends_anchor_system_only_when_anchored():
-    """_system_text is the single place that decides whether a request's systemInstruction
-    carries the anchor addendum (see GeminiOpener.generate(), which derives its own
-    `anchored` flag once and calls this for every payload). Pinned directly, independent of
-    any request-building machinery, the same way _SYSTEM's own wording is pinned above: the
-    unanchored case must stay byte-identical to plain _SYSTEM (the compatibility guarantee
-    every un-anchored request depends on -- see test_gemini_opener.py's own byte-identical
-    request test), while the anchored case must be _SYSTEM with _ANCHOR_SYSTEM appended, and
-    must say plainly that the extra image isn't part of her profile."""
-    assert _system_text(False) == _SYSTEM
-    assert _system_text(True) == _SYSTEM + _ANCHOR_SYSTEM
-    assert _system_text(True) != _SYSTEM
-    assert _system_text(True).startswith(_SYSTEM)
-    assert "is NOT part of her profile" in _system_text(True)
-
-
-def test_anchor_system_draws_both_conclusions_from_the_shared_context_premise():
-    """The anchor copy states a premise ("she reads your words directly beneath that item")
-    that has TWO conclusions, and it used to draw only one of them -- root cause #4 of the
-    over-description bug (ops/OPENER-REDESIGN.md 1.1). Stated purely as a TARGETING argument
-    it pressured the model to disambiguate INSIDE the message, i.e. to name the item so it
-    was unmistakably clear which one it meant. The second conclusion is the opposite and more
-    useful one: precisely BECAUSE she is looking at that item while she reads, naming it is
-    wasted words at best. Both halves are pinned here so a future edit cannot quietly drop
-    the one that was missing for longer."""
-    lowered = _ANCHOR_SYSTEM.lower()
-    # Conclusion 1, targeting -- unchanged by the redesign.
-    assert "when that image is present it decides what you write about" in lowered
-    assert "never on a different photo or prompt" in lowered
-    assert "never mention the app's own interface" in lowered
-    # Conclusion 2, the one that was missing.
-    assert "that same fact cuts the other way too" in lowered
-    assert "you never need to name it or describe it back to her" in lowered
-    assert "it is the premise your claim comes from, not the content of the message" in lowered
-    assert all(ord(ch) < 128 for ch in _ANCHOR_SYSTEM), "_ANCHOR_SYSTEM must be pure ASCII"
-
-
 # ---------------------------------------------------------------------------------------
 # OpenerParseError edge cases, exercised through GeminiOpener + an injected fake transport
 # (GeminiOpener is the only opener client shipped; these parsing rules live in
@@ -841,16 +795,6 @@ def test_item_index_is_refused_when_no_numbered_items_were_sent_at_all():
     assert result.item_index == ITEM_INDEX_ABSENT
 
 
-def test_the_anchor_is_not_a_numbered_item_for_the_range_check():
-    """An anchored request sends photo_count + 1 images but numbers only the photos -- the
-    anchor is deliberately outside the numbering (see _text_part's anchored wording). Counting
-    it would let the model "pick" the anchor and have that pass as a real item."""
-    payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": 2})
-    result = _opener(_Transport([(200, payload)])).generate(
-        Profile(photos=[b"a"]), style="s", anchor=b"anchor-frame")
-    assert result.item_index == ITEM_INDEX_ABSENT
-
-
 # --- index_space: the fact a bare small int cannot carry -------------------------------------
 
 def test_generate_records_which_list_the_item_index_counts():
@@ -860,11 +804,6 @@ def test_generate_records_which_list_the_item_index_counts():
     payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": 1})
     frames = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
     assert frames.index_space == INDEX_SPACE_PROFILE_PHOTOS
-
-    payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": 1})
-    anchored = _opener(_Transport([(200, payload)])).generate(
-        Profile(photos=[b"a"]), style="s", anchor=b"anchor-frame")
-    assert anchored.index_space == INDEX_SPACE_PROFILE_PHOTOS   # the anchor is not numbered
 
     payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": 1})
     items = _opener(_Transport([(200, payload)])).generate(

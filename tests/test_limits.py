@@ -81,14 +81,18 @@ def test_allow_like_ratio_reproduces_the_audited_score_blind_bug_scenario_fixed(
 # --- worker integration --------------------------------------------------
 class _Driver(DatingAppDriver):
     def __init__(self, n):
-        self.n = n; self.i = 0; self.dislikes = 0; self.closed = False
+        self.n = n
+        self.i = 0
+        self.dislikes = 0
+        self.closed = False
     def open_session(self): pass
     def next_profile(self):
         if self.i >= self.n:
             return None
-        self.i += 1; return Profile(photos=[b"x"])
+        self.i += 1
+        return Profile(photos=[b"x"])
     def out_of_profiles(self): return self.i >= self.n
-    def like(self, opener=None): pass
+    def like(self, opener=None, item_index=None, *, model_item_index=None): pass
     def dislike(self): self.dislikes += 1
     def close(self): self.closed = True
 

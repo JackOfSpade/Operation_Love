@@ -514,7 +514,7 @@ class BumbleWebDriver(PlaywrightDriver):
 
     # --- actions --------------------------------------------------------
     def like(self, opener: str | None = None, item_index: int | None = None, *,
-             model_item_index: int | None = None) -> None:
+             model_item_index: int | None = None, should_stop=None) -> None:
         # item_index is ignored: Bumble likes the whole profile (no per-photo comment). The
         # signature still tracks base.Driver.like's `int | None` (None = "nobody said which
         # item", distinct from 0 = "the first one") so no caller has to know which driver it is

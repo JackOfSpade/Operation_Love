@@ -10,12 +10,10 @@
 # bundled-node toolcache entry. `.../node/<ver>/arm64/bin` does not exist in the
 # linux/amd64 image, so every later bare `node` fails with exit 127 — including
 # act's OWN internal node invocations used to run JS actions' Main/Post steps,
-# not just user `run:` steps. Pinning PATH to the image's real x64 toolcache dir
-# fixes it for the whole job.
+# not just user `run:` steps. Pinning PATH to a stable symlink that the first
+# act-only CI step resolves to the image's real x64 toolcache dir fixes it for
+# the whole job without baking the image's current Node patch version in here.
 #
-# Re-derive with:
-#   docker run --rm --platform linux/amd64 catthehacker/ubuntu:act-latest \
-#     cat /etc/environment
-# if the image (or its bundled node version) is ever bumped. A stale value fails
-# loudly with 127 again, not silently.
---env PATH=/opt/acttoolcache/node/24.19.0/x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+# The bootstrap step runs before the first JavaScript action, so this may be a
+# dangling path for that one shell step on a freshly-pulled image.
+--env PATH=/opt/acttoolcache/node/current/x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin

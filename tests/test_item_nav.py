@@ -346,7 +346,24 @@ def _deterministic_draws():
 def _navigate(driver, model_index, index=None, reference=None, **kw):
     return item_nav.navigate_to_item(
         driver, index or _reference_index(), model_index,
-        entry_reference=_entry_reference() if reference is None else reference, **kw)
+        entry_reference=_entry_reference() if reference is None else reference,
+        identity_match_max_dist=kw.pop("identity_match_max_dist", 2.0), **kw)
+
+
+def test_navigation_requires_an_explicit_identity_calibration_bound():
+    """This leaf returns a heart a caller can tap, so it must not retain a permissive default."""
+    with pytest.raises(TypeError, match="identity_match_max_dist"):
+        item_nav.navigate_to_item(
+            FakeDriver(), _reference_index(), 1, entry_reference=_entry_reference())
+
+
+@pytest.mark.parametrize("bound", [math.nan, math.inf, -math.inf, True, 0, -1, 2.565, 3.0])
+def test_invalid_identity_calibration_refuses_before_the_first_screencap_or_gesture(bound):
+    driver = FakeDriver()
+    with pytest.raises(item_nav.ItemNavigationError) as exc:
+        _navigate(driver, 1, identity_match_max_dist=bound)
+    assert exc.value.code == item_nav.NAV_CALIBRATION_INVALID
+    assert driver.captures == 0 and driver.gestures == []
 
 
 # =====================================================================================
@@ -1336,3 +1353,24 @@ def test_the_target_carries_the_case_for_itself():
     painted = _world()[target.block_page_rows[0]:target.block_page_rows[1],
                        _CARD_X0:_CARD_X1]
     assert np.array_equal(decoded[y0:y1, _CARD_X0:_CARD_X1], painted)
+
+
+def test_stop_cancels_before_the_entry_capture_or_any_gesture():
+    """Cancellation is a normal action stop and must not even take the first screencap."""
+    driver = FakeDriver()
+    from operation_love.drivers.base import ActionCancelled
+    with pytest.raises(ActionCancelled):
+        _navigate(driver, 1, should_stop=lambda: True)
+    assert driver.captures == 0
+    assert driver.gestures == []
+
+
+def test_stop_cancels_before_the_next_navigation_gesture():
+    """A stop observed after entry processing prevents the first upward swipe."""
+    driver = FakeDriver()
+    polls = iter((False, True))
+    from operation_love.drivers.base import ActionCancelled
+    with pytest.raises(ActionCancelled):
+        _navigate(driver, 1, should_stop=lambda: next(polls))
+    assert driver.captures == 1
+    assert driver.gestures == []

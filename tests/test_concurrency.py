@@ -18,14 +18,17 @@ PRICING = {"gemini-test-model": ModelPricing(input=5.0, output=25.0)}
 
 class _Driver(DatingAppDriver):
     def __init__(self, n):
-        self.n = n; self.i = 0; self.closed = False
+        self.n = n
+        self.i = 0
+        self.closed = False
     def open_session(self): pass
     def next_profile(self):
         if self.i >= self.n:
             return None
-        self.i += 1; return Profile(photos=[b"x"])
+        self.i += 1
+        return Profile(photos=[b"x"])
     def out_of_profiles(self): return self.i >= self.n
-    def like(self, opener=None): pass
+    def like(self, opener=None, item_index=None, *, model_item_index=None): pass
     def dislike(self): pass
     def close(self): self.closed = True
 
@@ -59,8 +62,10 @@ def test_two_workers_run_concurrently_and_share_store():
     w1 = Worker("bumble", d1, _Decider(), svc, store, "r", _Pacing(), stop, mode="auto")
     w2 = Worker("hinge", d2, _Decider(), svc, store, "r", _Pacing(), stop, mode="auto")
 
-    w1.start(); w2.start()
-    w1.join(timeout=10); w2.join(timeout=10)
+    w1.start()
+    w2.start()
+    w1.join(timeout=10)
+    w2.join(timeout=10)
 
     assert not w1.is_alive() and not w2.is_alive()
     assert d1.i == 4 and d2.i == 6 and d1.closed and d2.closed
@@ -122,29 +127,36 @@ def test_one_worker_budget_exhaustion_stops_the_other_worker_before_it_likes():
     class _Spender(DatingAppDriver):
         def __init__(self, b_parked):
             self.b_parked = b_parked
-            self.i = 0; self.likes = []; self.dislikes = 0; self.closed = False
+            self.i = 0
+            self.likes = []
+            self.dislikes = 0
+            self.closed = False
         def open_session(self): pass
         def next_profile(self):
             self.b_parked.wait(timeout=5)         # act only once B is parked (determinism)
             if self.i >= 1:
                 return None
-            self.i += 1; return Profile(photos=[b"x"])
+            self.i += 1
+            return Profile(photos=[b"x"])
         def out_of_profiles(self): return False
-        def like(self, opener=None, item_index=0): self.likes.append(opener)
+        def like(self, opener=None, item_index=None, *, model_item_index=None): self.likes.append(opener)
         def dislike(self): self.dislikes += 1
         def close(self): self.closed = True
 
     class _Gated(DatingAppDriver):
         def __init__(self, stop):
-            self.stop = stop; self.parked = threading.Event()
-            self.likes = []; self.dislikes = 0; self.closed = False
+            self.stop = stop
+            self.parked = threading.Event()
+            self.likes = []
+            self.dislikes = 0
+            self.closed = False
         def open_session(self): pass
         def next_profile(self):
             self.parked.set()                     # signal B is in its loop, waiting
             self.stop.wait(timeout=5)             # released only when A exhausts -> stop set
             return Profile(photos=[b"x"])         # returns AFTER stop; worker breaks before acting
         def out_of_profiles(self): return False
-        def like(self, opener=None, item_index=0): self.likes.append(opener)
+        def like(self, opener=None, item_index=None, *, model_item_index=None): self.likes.append(opener)
         def dislike(self): self.dislikes += 1
         def close(self): self.closed = True
 
@@ -162,7 +174,8 @@ def test_one_worker_budget_exhaustion_stops_the_other_worker_before_it_likes():
     wb.start()
     assert b.parked.wait(2)                        # B is in its loop, waiting on the shared stop
     wa.start()
-    wa.join(timeout=10); wb.join(timeout=10)
+    wa.join(timeout=10)
+    wb.join(timeout=10)
 
     assert not wa.is_alive() and not wb.is_alive()
     assert stop.is_set()                           # A's exhaustion propagated to the shared event
@@ -216,14 +229,16 @@ def test_second_workers_own_stop_reason_is_published_even_though_it_never_calls_
         shared service and sets the shared stop_event (via the FIRST check, not the one
         under test here)."""
         def __init__(self):
-            self.i = 0; self.closed = False
+            self.i = 0
+            self.closed = False
         def open_session(self): pass
         def next_profile(self):
             if self.i >= 1:
                 return None
-            self.i += 1; return Profile(photos=[b"x"])
+            self.i += 1
+            return Profile(photos=[b"x"])
         def out_of_profiles(self): return False
-        def like(self, opener=None, item_index=0): pass
+        def like(self, opener=None, item_index=None, *, model_item_index=None): pass
         def dislike(self): pass
         def close(self): self.closed = True
 
@@ -233,14 +248,16 @@ def test_second_workers_own_stop_reason_is_published_even_though_it_never_calls_
         "mid-profile" (past every earlier stop_event check) at the moment the exhaustion
         becomes visible -- exactly the window the deleted check exists to catch."""
         def __init__(self):
-            self.i = 0; self.closed = False
+            self.i = 0
+            self.closed = False
         def open_session(self): pass
         def next_profile(self):
             if self.i >= 1:
                 return None
-            self.i += 1; return Profile(photos=[b"x"])
+            self.i += 1
+            return Profile(photos=[b"x"])
         def out_of_profiles(self): return False
-        def like(self, opener=None, item_index=0): pass
+        def like(self, opener=None, item_index=None, *, model_item_index=None): pass
         def dislike(self):
             assert a_exhausted.wait(timeout=5), "A never signalled exhaustion -- test is broken"
         def close(self): self.closed = True

@@ -161,9 +161,9 @@ def test_malformed_identity_band_is_rejected():
 
 # --- identity_top_name_band: OCR-only refinement of identity_band's "top" verdict ---------
 # See android_spec.py's identity_top_name_band docstring for the bug this exists to fix: a
-# pass that advanced Alina -> jessica got recorded as a scroll of Alina because identity_band
+# pass that advanced Zorva -> qelix got recorded as a scroll of Zorva because identity_band
 # alone cannot name a card at scroll-top (it shows Hinge's profile-independent filter chips
-# there instead), so the loose pixel content-match mistook jessica's card for a scroll.
+# there instead), so the loose pixel content-match mistook qelix's card for a scroll.
 
 def test_identity_top_name_band_is_accepted_alongside_identity_band():
     """A valid identity_top_name_band, declared together with identity_band (its prerequisite,
@@ -316,8 +316,8 @@ def test_hinge_spec_matches_the_original_hardcoded_defaults():
 
 
 def test_hinge_spec_carries_the_paywall_template_and_headline_band():
-    """Regression against someone dropping the out-of-free-likes paywall wiring (2026-08-11,
-    data/hinge_debug/run_20260811_011416): HINGE_SPEC must actually declare BOTH the "paywall"
+    """Regression against someone dropping the out-of-free-likes paywall wiring: HINGE_SPEC must
+    actually declare BOTH the "paywall"
     template -- hinge_upgrade_tab.png, the fixed "HingeX" tab wordmark crop AndroidDriver.
     _paywall_visible template-matches against (see that method's docstring for the measured
     0.75 threshold and the tab-chrome-not-headline-or-CTA reasoning) -- and the MEASURED
@@ -435,15 +435,21 @@ def _direct_frame(like_xy):
     return buf.tobytes()
 
 
-def test_comment_sheet_flow_types_the_opener_between_heart_and_send():
+def test_comment_sheet_flow_types_the_opener_between_heart_and_send(monkeypatch):
     heart_pt = (900, 1200)      # right of the vision side-filter (x > 0.55 * 1080)
     adb = FakeAdb([_sheet_frame(heart_pt)])
     drv = _drv(_SHEET_SPEC, adb)
-    # item_index=0 ("the opener is about the first captured frame"), which is what the live
-    # pipeline hands over for model item 1 in profile-photos space. An opener with NO item index
-    # is refused outright since 2026-08-12 -- see _like_comment_sheet and the never-substitute
-    # rule -- so passing one here keeps this test about typing rather than about targeting.
-    drv.like("great smile in photo 2", 0)
+    # This test owns only the comment-sheet dispatch/text sequence, not the calibrated live
+    # targeting proof.  Enter through the real model-item branch and replace its four explicit
+    # proof seams with fixtures: a payload, pre-tap profile confirmation, counting navigation,
+    # and post-tap sheet verification.  Production never bypasses these methods.
+    monkeypatch.setattr(drv, "_verifiable_payload", lambda index: object())
+    monkeypatch.setattr(drv, "_confirm_payload_profile", lambda index: None)
+    monkeypatch.setattr(drv, "_navigate_to_model_item",
+                        lambda index, *, should_stop=None: heart_pt)
+    monkeypatch.setattr(drv, "_verify_sheet_shows",
+                        lambda sheet, payload, index, before: None)
+    drv.like("great smile in photo 2", model_item_index=1)
 
     w, h = adb.screen_size()
     box = (int(0.5 * w), int(0.4 * h))
@@ -452,7 +458,7 @@ def test_comment_sheet_flow_types_the_opener_between_heart_and_send():
     assert adb.texts == ["great smile in photo 2"]
 
 
-def test_comment_sheet_flow_types_exactly_the_bare_opener_with_no_ui_chrome_attached():
+def test_comment_sheet_flow_types_exactly_the_bare_opener_with_no_ui_chrome_attached(monkeypatch):
     """THE WYSIWYG headline regression test (typography.fold_to_ascii / Adb.text fail-loud
     fix): what reaches Adb.text() during a live like must be EXACTLY the opener string and
     nothing else -- no hub display chrome ever gets concatenated onto it before it's typed
@@ -469,7 +475,16 @@ def test_comment_sheet_flow_types_exactly_the_bare_opener_with_no_ui_chrome_atta
     drv = _drv(_SHEET_SPEC, adb)
     opener = "Your trip to Sao Paulo looks incredible, what was the best meal there"
 
-    drv.like(opener, 0)               # 0 = "about the first captured frame"; see the test above
+    # As above, make the fixture's intended model-item proof explicit rather than reviving the
+    # retired capture-order route.  These are test seams only; the production driver executes
+    # all four calibrated targeting checks.
+    monkeypatch.setattr(drv, "_verifiable_payload", lambda index: object())
+    monkeypatch.setattr(drv, "_confirm_payload_profile", lambda index: None)
+    monkeypatch.setattr(drv, "_navigate_to_model_item",
+                        lambda index, *, should_stop=None: heart_pt)
+    monkeypatch.setattr(drv, "_verify_sheet_shows",
+                        lambda sheet, payload, index, before: None)
+    drv.like(opener, model_item_index=1)
 
     assert adb.texts == [opener]      # exact match end to end, not merely "close enough"
     sent = adb.texts[0]

@@ -136,12 +136,11 @@ nothing.
   own drift (25.009) plus the sheet's reproduction penalty (1.95) exceeds half its distance to its
   nearest neighbour (23.931). The other 17 pass, the tightest with 0.36 grey levels to spare.
 
-THIS IS A CLOSED-SET TEST AND IT CANNOT ANSWER "IS THIS EVEN THIS PROFILE"
------------------------------------------------------------------------------
+THE RELATIVE TEST IS CLOSED-SET; PRODUCTION ALSO REQUIRES AN ABSOLUTE CEILING
+--------------------------------------------------------------------------------
 Read `_SEPARATION_FRACTION` carefully: the 0.5 proves item k is the UNIQUE NEAREST of the stored
-items. It says nothing about whether the sheet is any of them. There is no absolute ceiling on the
-distance anywhere in this module, so content that is not in the payload at all only has to beat
-the payload's own internal spacing to be accepted as the item nearest it.
+items. By itself it says nothing about whether the sheet is any of them: content outside the
+payload only has to beat the payload's own internal spacing to be accepted as the nearest item.
 
   [corpus, measured end to end through the shipped driver on 2026-08-12: a stale payload for
   profile B plus a sheet rendering profile A's card returned VERIFY_MATCH, and the driver typed
@@ -149,25 +148,25 @@ the payload's own internal spacing to be accepted as the item nearest it.
   five resampling kernels; the reverse direction refused, but by only 1.118x.]
 
 Half of that was a defect and is fixed: the neighbour set was being pruned by a height filter, so
-the bound grew whenever the sheet was tall (`_compare_item`). The other half is structural and
-stays: a closed-set nearest-neighbour rule has no reject option, and giving it one means an
-ABSOLUTE grey-level ceiling, which on this corpus would have to fit into a ~3.5 grey-level gap
-measured on two profiles. That is a calibration task with the owner present, not a constant to
-pick offline, and it is not shipped.
+the bound grew whenever the sheet was tall (`_compare_item`). The other half is structural:
+`absolute_max_dist` supplies the necessary reject option, but its value must be calibrated on the
+actual device and held-out correct/foreign sheets. No guessed numeric default is shipped; the
+Hinge production path refuses targeted text unless that calibrated ceiling is configured.
 
 "NOT IN THE PAYLOAD" IS NOT ONLY ANOTHER PERSON'S CARD, EITHER. A block the index resolved as
 PARTIAL or UNCROPPABLE still carries a heart, is still tappable, and by construction has no crop,
 so it is not in `payload.items` and cannot be a reference. A tap that lands on one puts
 out-of-payload content on the sheet from the SAME profile, where an identity gate says nothing.
 The model can never choose such a block (it is not numbered), so reaching one takes a navigation
-miss; the bound above is all that stands there, and it is a relative one.
+miss. Production therefore requires both the relative bound and the calibrated absolute ceiling.
 
 SO A CALLER MUST NOT USE THIS AS THE ONLY ANSWER TO "IS THIS THE RIGHT CARD". Doc 5.3's claim
 that a stale table is "a reliability bug rather than a safety one ... the post-tap signature check
 compares the opened sheet against the wrong reference, fails, and stops the run" is MEASURABLY
 FALSE and must not be relied on again. On the auto path `hinge._confirm_payload_profile` asks
-whose profile it is before any gesture and `hinge._like_comment_sheet` refuses a model item number
-it cannot navigate to; that is what keeps this hole off a real send today.
+whose profile it is before and after the tap, requires the calibrated absolute ceiling, and
+`hinge._like_comment_sheet` refuses a model item number it cannot navigate to; those gates keep
+this hole off a real send today.
 
 AND FOR WHOEVER BUILDS DOC 5.9's OBSERVE INVERSION, one measurement that makes the same check
 cheap there: THE SHEET DOES NOT OCCLUDE THE STICKY HEADER. `HINGE_SPEC.identity_band` cuts rows
@@ -180,12 +179,10 @@ while the sheet is open.
   handed is itself checkable, and a deck advance can be refused on identity rather than on the
   pixels of a card.]
 
-That is the cheaper and stronger half of the answer, but it is not a complete one either: the
-identity gate's own closest different-person pair over six real profiles measures 2.565 grey
-levels against a 3.0 bound (`item_identity._IDENTITY_MATCH_MAX_DIST` carries the table), so it too
-false-accepts about one real pair in fifteen. The two guards fail in the same direction on the
-same input. Nobody may treat a MATCH here as evidence about whose profile is on screen, and nobody
-should treat an IDENTITY_MATCH as proof either.
+That is the cheaper and stronger half of the answer, but it is not a complete one either: an old
+3.0 identity bound false-accepted a measured different-profile pair at 2.565. Production now
+requires an operator-calibrated identity ceiling strictly below that collision and still runs
+both checks. Nobody may treat an item MATCH alone as evidence about whose profile is on screen.
 
 WHAT THIS DOES NOT DO
 ------------------------
@@ -199,6 +196,7 @@ WHAT THIS DOES NOT DO
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from .item_crops import (
@@ -234,6 +232,10 @@ _VERIFY_GRID = (64, 64)
 # rather than down. A real penalty larger than this therefore produces a stop, never an
 # acceptance, which is the direction doc 5.6's owner rule asks for.
 _SHEET_RENDER_DRIFT = 1.95
+# A ceiling at or above this measured foreign-card acceptance can no longer distinguish the
+# known wrong card.  Hinge validates the configured value too; this leaf repeats the check so a
+# direct caller cannot accidentally disable the absolute reject guard with ``inf``/``nan``.
+_SHEET_FALSE_MATCH_DISTANCE = 14.91
 
 # Half the distance to the nearest other item is the accept bound, and the 0.5 is a proof rather
 # than a tuning: `CropSignature.distance` is a scaled L1 norm, so it satisfies the triangle
@@ -651,6 +653,7 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
                       scale_tolerance: float = _SCALE_TOLERANCE,
                       separation_fraction: float = _SEPARATION_FRACTION,
                       sheet_render_drift: float = _SHEET_RENDER_DRIFT,
+                      absolute_max_dist: float | None = None,
                       **locate_kwargs) -> SheetVerdict:
     """Is the open comment sheet in `frame` showing model item `model_index`? Deterministic.
 
@@ -663,13 +666,31 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
 
     The verdict is MATCH only when the sheet's distance to item `model_index` is under
     `separation_fraction` x that item's distance to the nearest other item, measured in the same
-    window space at the same grid. By the triangle inequality that also makes it the unique
-    nearest item, so the argmin is checked as corroboration and reported either way.
+    window space at the same grid. When `absolute_max_dist` is supplied, a MATCH also has to be
+    strictly below that calibrated ceiling; closed-set separation alone cannot reject a foreign
+    card that happens to resemble every stored crop. By the triangle inequality the relative
+    test also makes it the unique nearest item, so the argmin is checked as corroboration and
+    reported either way.
 
     Raises `SheetVerificationError` when it could not look at all -- no preview on the frame, an
-    unusable payload, an out-of-range number, undecodable bytes, or missing vision extras. A
-    caller must treat that exactly as it treats a mismatch.
+    unusable payload, an out-of-range number, undecodable bytes, or missing vision extras -- or
+    when a supplied absolute ceiling is not finite/positive and strictly below the known 14.91
+    foreign-card collision. A caller must treat either case exactly as it treats a mismatch.
     """
+    # ``None`` deliberately preserves this leaf's offline relative-comparison API.  Once a
+    # caller supplies an absolute ceiling, however, it is security evidence rather than a
+    # cosmetic tolerance: NaN makes ``distance >= ceiling`` false and infinity makes it always
+    # false, both silently erasing the foreign-card guard below.
+    if absolute_max_dist is not None:
+        if (isinstance(absolute_max_dist, bool)
+                or not isinstance(absolute_max_dist, (int, float))
+                or not math.isfinite(absolute_max_dist)
+                or absolute_max_dist <= 0
+                or absolute_max_dist >= _SHEET_FALSE_MATCH_DISTANCE):
+            raise SheetVerificationError(
+                "absolute_max_dist must be a finite positive number strictly below the known "
+                f"{_SHEET_FALSE_MATCH_DISTANCE} foreign-card false-match distance")
+
     try:
         chosen = payload.item(model_index)
     except ItemCropError as exc:
@@ -770,6 +791,12 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
             f"nearest stored crop but at {mine.distance:.3f} grey levels, against a "
             f"{mine.bound:.3f} bound ({derivation}). Whatever is on the sheet is not any item "
             f"this profile was indexed with. Nothing was typed and the sheet is left open"))
+    if absolute_max_dist is not None and mine.distance >= absolute_max_dist:
+        return _verdict(VERIFY_MISMATCH, (
+            f"the like sheet is too far from model item {model_index} to confirm: "
+            f"{mine.distance:.3f} grey levels is within its relative {mine.bound:.3f} bound "
+            f"but not below the calibrated absolute {absolute_max_dist:.3f} ceiling. Nothing "
+            f"was typed and the sheet is left open"))
     return _verdict(VERIFY_MATCH, (
         f"the like sheet shows model item {model_index}: {mine.distance:.3f} grey levels from its "
         f"stored crop, against a {mine.bound:.3f} bound ({derivation}), and nearer than every "

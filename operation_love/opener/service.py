@@ -339,6 +339,20 @@ def _display_cost(cost: float | None) -> str:
 
 
 class OpenerService:
+    @property
+    def last_skip_reason(self) -> str | None:
+        """The current caller thread's most recent non-exhausting failure reason.
+
+        One service is shared by concurrent app workers.  Keeping this per thread preserves the
+        public attribute used by callers while preventing worker B from overwriting worker A's
+        just-returned reason in the small window before A publishes its status.
+        """
+        return getattr(self._call_outcome, "last_skip_reason", None)
+
+    @last_skip_reason.setter
+    def last_skip_reason(self, value: str | None) -> None:
+        self._call_outcome.last_skip_reason = value
+
     def __init__(self, client: OpenerClient | None, tracker: CostTracker, store,
                  style: str, max_attempts: int = 5):
         # BUG 2 (adversarial audit): max_attempts=0 (or negative) made range(1, max_attempts+1)
@@ -381,11 +395,16 @@ class OpenerService:
         # worker's own maybe_opener() call failing merely because the service is already
         # disabled). None until the service has actually exhausted once.
         self.exhausted_reason: str | None = None
-        # Human-readable cause of the LAST maybe_opener() call that returned None WITHOUT
+        # Per-thread outcome storage is required even though maybe_opener itself is serialized:
+        # after it releases the service lock, another worker can complete and overwrite a shared
+        # scalar before the first worker reads its reason. The property above keeps the existing
+        # caller API but binds the value to the thread that made the call.
+        self._call_outcome = threading.local()
+        # Human-readable cause of THIS THREAD'S last maybe_opener() call that returned None WITHOUT
         # exhausting the service -- an unparseable response (OpenerParseError), a per-profile
         # OpenerError, a single sub-latch HTTP 400, or a single sub-latch transient failure
-        # (see maybe_opener). Unlike exhausted_reason this is deliberately LAST-writer-wins
-        # and per-call, not first-writer-wins and run-lifetime: exhausted_reason answers "why
+        # (see maybe_opener). Unlike exhausted_reason this deliberately keeps the LAST outcome
+        # in each caller thread, not one first-writer-wins run-lifetime value: exhausted_reason answers "why
         # did the service ever stop serving openers at all", which every worker must agree on
         # forever after; this answers "why did THIS specific call just fail", which is allowed
         # (expected, even) to change from one profile to the next while the service otherwise
@@ -397,7 +416,7 @@ class OpenerService:
         # short-circuit and by every path that calls _exhaust(): those are global-exhaustion
         # causes, already carried by exhausted_reason, and must not be shadowed by whatever
         # per-call symptom happened to trigger that exhaustion.
-        self.last_skip_reason: str | None = None
+        self.last_skip_reason = None
         self._consecutive_bad_requests = 0   # streak of back-to-back 400s; see
                                               # _BAD_REQUEST_LATCH_THRESHOLD
         # Streak of back-to-back TRANSIENT failures (an unclassified exception, or a
@@ -533,7 +552,6 @@ class OpenerService:
                   f"({_display_cost(cost)}): {e}")
 
     def _apply_entropy_guard(self, run_id: str, profile: Profile, result, *,
-                             anchor: bytes | None,
                              items: ItemRequest | None,
                              should_stop: Callable[[], bool] | None,
                              skip_models: frozenset[str]) -> tuple[object, str, bool]:
@@ -645,14 +663,14 @@ class OpenerService:
             f"is unchanged."
         )
         try:
-            # `items` rides along for exactly the reason `anchor` does: the second draw is the
+            # `items` rides along because the second draw is the
             # SAME request with a different retry_hint. Dropping it here would silently switch
             # the regeneration to the raw-frame shape -- the model would be answering about a
             # different set of images, in a different index space, and whichever draw survived
             # would carry the other one's numbering. The entropy guard is about the opening
             # WORDS and must change nothing else about the request.
             second = self.client.generate(profile, self.style, retry_hint=retry_hint,
-                                          anchor=anchor, items=items, should_stop=should_stop,
+                                          items=items, should_stop=should_stop,
                                           skip_models=skip_models)
         except OpenerParseError as e:
             # Billed but unusable. Record the spend (real money, see _record_billed_draw) and
@@ -709,7 +727,6 @@ class OpenerService:
         return second, collision, True
 
     def maybe_opener(self, run_id: str, app: str, profile: Profile, *,
-                      anchor: bytes | None = None,
                       items: ItemRequest | None = None,
                       should_stop: Callable[[], bool] | None = None,
                       advisory: bool = False) -> "OpenerPick | None":
@@ -744,50 +761,14 @@ class OpenerService:
         opener.ItemRequest.from_profile() from what the driver enumerated. When present it
         REPLACES profile.photos as the model's view of her, which is the whole point: image k
         IS item k, so the number the model answers with means something. Forwarded to
-        self.client.generate(...) UNCONDITIONALLY below, exactly like anchor and for a sharper
-        version of the same reason -- a client that silently dropped this kwarg would fall back
+        self.client.generate(...) unconditionally below: a client that silently dropped this
+        kwarg would fall back
         to sending raw scroll frames, where one card appears in several frames and one frame can
         hold two cards, and the returned item number would be confidently meaningless. A
         TypeError out of the call is the correct failure there.
 
-        MUTUALLY EXCLUSIVE WITH anchor, and the client refuses a request carrying both before
-        anything is encoded or billed (see GeminiOpener.generate): the anchor IS the chosen item
-        and the numbered list asks the model to choose one. This service does not resolve that
-        by precedence and must never learn to -- callers pass one shape or the other.
-
-        **NOTHING IN PRODUCTION PASSES `anchor` ANY MORE, as of doc 5.9's observe inversion
-        (2026-08-12), and this is the honest state of that parameter.** BOTH modes now pass
-        `items`. The two callers it had are gone for two different reasons: the driver's
-        `anchored_opener` repair re-ask (doc 5.6 -- rewriting the opener to match whatever we hit
-        is a substitution, and a targeting miss is now a stop), and observe's post-heart
-        suggestion (doc 5.9 -- observe generates BEFORE the human taps, from the same crops auto
-        sends, which is the whole point of it being a canary). The anchored REQUEST-BUILDING
-        machinery below and in opener.py is deliberately left in place for one phase, so that
-        inverting observe and retiring the anchor are separately bisectable; the workflow that
-        removes it should start here and confirm the call graph rather than trusting this
-        paragraph.
-
-        Like anchor, it changes NOTHING about retries, budget, latches, or the model cascade,
-        and the same crops are reused verbatim on every attempt for this profile: what the model
-        is looking at does not change because the previous attempt's wording was rejected.
-
-        anchor (default None): a live screenshot of the app's own open like/comment screen --
-        the exact frame on the phone right now, which visually shows WHICH ONE profile item (a
-        specific photo, or a specific prompt) the comment about to be written will actually be
-        attached to and displayed underneath. Without it, the model sees only the ordinary
-        profile capture, where every photo and prompt look equally eligible, so it may ground
-        the opener in, say, a beach photo while Hinge itself attaches the resulting comment to
-        a completely different item (a dining table photo) -- producing a message that reads
-        as generated because it visibly does not match what she actually sees it under. That
-        mismatch, invisible until now, is exactly the bug this parameter exists to fix.
-        Forwarded to self.client.generate(...) UNCONDITIONALLY below, not only when it is not
-        None: a client that cannot accept this kwarg must fail LOUDLY (a TypeError out of the
-        call itself) rather than this service silently dropping the anchor and going back to
-        producing out-of-place openers -- see the call site's own comment. anchor changes
-        NOTHING about retries, budget, latches, or the model cascade: the same anchor bytes are
-        reused verbatim on every retry attempt for this profile, because what the message
-        attaches to does not change just because the previous attempt was malformed -- only
-        retry_hint (what was wrong with the previous text) varies between attempts.
+        Both auto and observe use `items`; the same crops are reused verbatim on every attempt
+        for this profile, so only `retry_hint` changes after a rejected response.
 
         should_stop (BUG 1, adversarial audit): a cheap, non-blocking "is the run stopping?"
         check -- in practice worker.py's threading.Event.is_set for the shared stop flag.
@@ -907,21 +888,13 @@ class OpenerService:
                     )
                     return None
                 try:
-                    # anchor is forwarded UNCONDITIONALLY here, not only when it is not None:
-                    # an OpenerClient implementation that cannot accept this kwarg must fail
-                    # LOUDLY (a TypeError straight out of this call) rather than this service
-                    # quietly swallowing the anchor and falling back to producing an opener
-                    # with no idea which item the comment attaches to -- the exact silent
-                    # degradation the anchor mechanism exists to prevent. See this method's
-                    # anchor docstring paragraph for what it is and why it never varies across
-                    # retries for the same profile.
-                    # items is forwarded UNCONDITIONALLY for the same reason anchor is, and the
+                    # items is forwarded unconditionally, and the
                     # cost of getting it wrong is higher: a client that quietly ignored it would
                     # send profile.photos instead, and the model's item_index would then count
                     # scroll frames while every consumer downstream reads it as an item number
                     # (doc 5.2/5.7). Loud TypeError over silent renumbering.
                     result = self.client.generate(profile, self.style, retry_hint=retry_hint,
-                                                  anchor=anchor, items=items,
+                                                  items=items,
                                                   should_stop=should_stop,
                                                   skip_models=frozenset(failed_models))
                 except OpenerAborted as e:
@@ -1179,7 +1152,7 @@ class OpenerService:
                 # written once, below, for whichever draw survives.
                 result, entropy_collision, entropy_regenerated = self._apply_entropy_guard(
                     run_id, profile, result,
-                    anchor=anchor, items=items, should_stop=should_stop,
+                    items=items, should_stop=should_stop,
                     skip_models=frozenset(failed_models))
 
                 try:
@@ -1281,11 +1254,8 @@ class OpenerService:
                 if self.tracker.budget_reached():
                     self._exhaust("run budget reached", request_stop=not advisory)
                 # Append to the ring buffer for EVERY successful call, advisory or AUTO alike
-                # -- see recent_openers' docstring in __init__ for why: this is the paper trail
-                # that lets a bug report tell an anchored generation (told which item the
-                # comment attaches to) apart from a blind one (guessing from the whole profile
-                # alone, the exact configuration that produced the reported out-of-place
-                # openers), and shows the model's own `referenced` claim alongside it.
+                # -- see recent_openers' docstring in __init__ for why: this preserves the
+                # request's item space and the model's own `referenced` claim for diagnosis.
                 #
                 # The three newer fields all exist to make a redesign VISIBLE in a bug report
                 # rather than only in a console line nobody kept: `angle` is the model's own
@@ -1316,7 +1286,6 @@ class OpenerService:
                     "ts": datetime.now().isoformat(timespec="seconds"),
                     "app": app,
                     "model": result.model,
-                    "anchored": anchor is not None,
                     "advisory": bool(advisory),
                     "index": item_index,
                     "index_space": index_space,
@@ -1351,9 +1320,8 @@ class OpenerService:
 
     def recent_openers_snapshot(self) -> list[dict]:
         """A copy of the most recent successful opener generations -- see recent_openers'
-        docstring in __init__ for exactly what each entry records and why (whether the call
-        was anchored, and the model's own `referenced` claim, are the two fields that actually
-        diagnose an out-of-place opener after the fact).
+        docstring in __init__ for exactly what each entry records and why (the request item
+        space and the model's own `referenced` claim diagnose an out-of-place opener).
 
         Returns list(self.recent_openers) under self._lock rather than handing back
         self.recent_openers itself: a bug-report reader running on another thread must never

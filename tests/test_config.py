@@ -23,6 +23,11 @@ BASE = {
                "pricing": {"gemini-3.6-flash": {"input": 5, "output": 25}}},
 }
 
+_TARGETING_GEOMETRY = {
+    "identity_band": [0.10, 0.048, 0.80, 0.094],
+    "content_band": [0.125, 0.875],
+}
+
 
 def _load(d):
     f = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
@@ -709,3 +714,73 @@ def test_shipped_hinge_and_bumble_app_blocks_pass_fraction_validation():
                                    "swipe_pass_end": [0.08, 0.52]}},
          }}
     c.validate(_load(d))   # no raise
+
+
+# --- Per-item targeting calibration: evidence-backed, fail closed at the driver --------
+
+def test_targeting_calibration_with_measured_bounds_and_evidence_passes():
+    d = {**BASE, "apps": {"hinge": {"serial": "synthetic-pixel", "targeting_calibration": {
+        "identity_match_max_dist": 2.0, "sheet_item_max_dist": 4.0,
+        "device": "synthetic-pixel", "calibrated_at": "2026-08-12", **_TARGETING_GEOMETRY,
+    }}}}
+    c.validate(_load(d))
+
+
+def test_targeting_calibration_must_be_complete_and_stay_below_known_false_accepts():
+    incomplete = {**BASE, "apps": {"hinge": {"targeting_calibration": {
+        "identity_match_max_dist": 2.0,
+    }}}}
+    _expect_error(incomplete, "targeting_calibration")
+    unsafe = {**BASE, "apps": {"hinge": {"serial": "synthetic-pixel", "targeting_calibration": {
+        "identity_match_max_dist": 2.565, "sheet_item_max_dist": 4.0,
+        "device": "synthetic-pixel", "calibrated_at": "2026-08-12", **_TARGETING_GEOMETRY,
+    }}}}
+    _expect_error(unsafe, "strictly below 2.565")
+    unsafe_sheet = {**BASE, "apps": {"hinge": {"serial": "synthetic-pixel", "targeting_calibration": {
+        "identity_match_max_dist": 2.0, "sheet_item_max_dist": 14.91,
+        "device": "synthetic-pixel", "calibrated_at": "2026-08-12", **_TARGETING_GEOMETRY,
+    }}}}
+    _expect_error(unsafe_sheet, "strictly below 14.91")
+
+
+def test_targeting_calibration_rejects_nonfinite_bounds_and_empty_evidence():
+    d = {**BASE, "apps": {"hinge": {"serial": "synthetic-pixel", "targeting_calibration": {
+        "identity_match_max_dist": 2.0, "sheet_item_max_dist": float("inf"),
+        "device": "", "calibrated_at": "2026-08-12", **_TARGETING_GEOMETRY,
+    }}}}
+    _expect_error(d, "sheet_item_max_dist")
+
+
+def test_targeting_calibration_requires_its_exact_adb_serial():
+    missing = {**BASE, "apps": {"hinge": {"targeting_calibration": {
+        "identity_match_max_dist": 2.0, "sheet_item_max_dist": 4.0,
+        "device": "synthetic-pixel", "calibrated_at": "2026-08-12", **_TARGETING_GEOMETRY,
+    }}}}
+    _expect_error(missing, "apps.hinge.serial")
+    mismatched = {**BASE, "apps": {"hinge": {"serial": "other-pixel", "targeting_calibration": {
+        "identity_match_max_dist": 2.0, "sheet_item_max_dist": 4.0,
+        "device": "synthetic-pixel", "calibrated_at": "2026-08-12", **_TARGETING_GEOMETRY,
+    }}}}
+    _expect_error(mismatched, "must exactly equal")
+
+
+def test_targeting_calibration_must_bind_the_effective_identity_and_content_bands():
+    mismatch = {**BASE, "apps": {"hinge": {
+        "serial": "synthetic-pixel", "identity_band": [0.11, 0.048, 0.80, 0.094],
+        "targeting_calibration": {
+            "identity_match_max_dist": 2.0, "sheet_item_max_dist": 4.0,
+            "device": "synthetic-pixel", "calibrated_at": "2026-08-12",
+            **_TARGETING_GEOMETRY,
+        },
+    }}}
+    _expect_error(mismatch, "must exactly equal the effective")
+    matching = {**BASE, "apps": {"hinge": {
+        "serial": "synthetic-pixel", "identity_band": [0.11, 0.048, 0.80, 0.094],
+        "content_band": [0.13, 0.87],
+        "targeting_calibration": {
+            "identity_match_max_dist": 2.0, "sheet_item_max_dist": 4.0,
+            "device": "synthetic-pixel", "calibrated_at": "2026-08-12",
+            "identity_band": [0.11, 0.048, 0.80, 0.094], "content_band": [0.13, 0.87],
+        },
+    }}}
+    c.validate(_load(matching))

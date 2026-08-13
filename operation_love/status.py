@@ -22,7 +22,6 @@ from dataclasses import asdict, dataclass, field
 _OPENER_FIELDS: dict[str, object] = {
     "opener_suggestion": None,
     "opener_referenced": None,
-    "opener_anchored": False,
     "opener_item": None,
     "opener_item_description": None,
     "opener_warning": None,
@@ -54,8 +53,7 @@ class AppStatus:
     # ran dry (a normal end of supply, nothing wrong); this one means something is ON SCREEN
     # standing BETWEEN us and the deck and the driver can name it (DatingAppDriver.
     # blocked_reason) -- the measured case being Hinge's "out of free likes for today"
-    # Hinge+ upgrade screen (2026-08-11, see ops/ANTI-BOT-RESEARCH.md and
-    # data/hinge_debug/run_20260811_011416). A graceful stop, not an error: the phone is in
+    # Hinge+ upgrade screen. A graceful stop, not an error: the phone is in
     # a perfectly normal state, nothing is broken, nothing should be retried, and the screen
     # is left exactly as found -- see worker.py's blocked-deck check for why.
     state: str = "starting"
@@ -71,15 +69,6 @@ class AppStatus:
     # text so the operator can instantly see whether the suggestion matches the photo they
     # actually hearted, rather than trusting it blind.
     opener_referenced: str | None = None
-    # VESTIGIAL as of doc 5.9's observe inversion, and kept only so the anchor path stays
-    # bisectable for one phase (the doc's own instruction: invert observe first, retire the
-    # anchor separately). It recorded whether opener_suggestion had been generated FROM the live
-    # like-screen anchor image, which was meaningful only while observe generated AFTER the human
-    # tapped. Observe now generates BEFORE the tap, from the same numbered crops auto sends, so
-    # nothing publishes True any more and the hub no longer renders it -- what replaced it is
-    # opener_item (which item the model chose) plus opener_warning (the human opened a different
-    # one). Still cleared with the rest of the set below, so it cannot go stale while it exists.
-    opener_anchored: bool = False
     # --- doc 5.9's inverted observe suggestion -----------------------------------------
     # The MODEL ITEM NUMBER the opener was written about (OpenerPick.index, 1-based over the
     # numbered crops the model was sent -- ops/OPENER-REDESIGN.md 5.1/5.7). This is the whole
@@ -87,7 +76,8 @@ class AppStatus:
     opener_item: int | None = None
     # The model's own short description of that item (OpenerPick.item_description), so the
     # operator can find it on the card without counting hearts. Display only -- nothing branches
-    # on it, and doc 5.8's coarse type cross-check is a separate, unbuilt thing.
+    # on it in status; worker.py's separate doc 5.8 coarse type cross-check may use it to
+    # withhold an unsafe AUTO action or Observe suggestion before a gesture.
     opener_item_description: str | None = None
     # Why there is NO text to type, when there is none. Set for two different situations that
     # call for the same operator action (type your own words):
@@ -119,7 +109,7 @@ class AppStatus:
     # failure) and asking every worker to stop. That invariant is deliberately broken as of
     # 2026-08-11: worker.py's blocked-deck check (see stop_kind below) now also populates
     # this field, with a driver-supplied reason like Hinge's "out of free likes for today"
-    # Hinge+ upgrade screen (data/hinge_debug/run_20260811_011416). A consumer that still
+    # Hinge+ upgrade screen. A consumer that still
     # assumes "stop_reason set" means "OpenerService" will misreport a blocked deck as a
     # quota/credit problem -- `stop_kind` is what you must branch on now, not the mere
     # presence of a reason string.

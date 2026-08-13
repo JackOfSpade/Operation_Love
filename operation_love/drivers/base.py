@@ -17,6 +17,25 @@ class DriverClosed(RuntimeError):
     """The user closed the app/browser window during a run."""
 
 
+class ActionCancelled(RuntimeError):
+    """The operator stopped an action before its next device input.
+
+    This is neither a targeting refusal nor a driver fault.  No further capture, gesture, text
+    entry, or send may occur; workers end normally without recording a decision or a failure.
+    """
+
+
+class DeckBlockedError(RuntimeError):
+    """A known screen is standing between the driver and its swipe deck.
+
+    This is a normal, operator-actionable terminal condition, not an unexpected
+    driver failure: for example, Hinge may replace the deck with its out-of-free-
+    likes upgrade screen after Send Like.  The worker catches this app-agnostic
+    type to publish its existing ``blocked`` terminal state without recording the
+    action that caused the screen to appear.
+    """
+
+
 class ItemTargetingError(RuntimeError):
     """The like could NOT be put on the item the opener was written about, so it was not put
     anywhere. Doc 5.6's hard stop, in the one shape worker.py can catch without importing a
@@ -124,6 +143,11 @@ class DatingAppDriver(ABC):
     # that ignores the callable) is worse than no flag at all.
     supports_interruptible_capture: bool = False
 
+    # Whether like() accepts a should_stop callable and honours it while doing its
+    # pre-tap navigation. Kept opt-in so existing drivers and lightweight fakes retain
+    # their public like() signature.
+    supports_interruptible_like_navigation: bool = False
+
     # Whether human_motion.think_time_s()'s per-decision "think time" (measured
     # like-vs-pass dwell asymmetry) is calibrated for THIS app's real behavior.
     # True only for Hinge, which it was actually measured on; other drivers get
@@ -149,6 +173,12 @@ class DatingAppDriver(ABC):
     # validation refuses `false` for anything running in auto mode.
     halt_on_error: bool = True
 
+    # Optional doc 5.8 capability: a concrete, crop-owning driver may expose
+    # `item_type_preflight(item_description, model_item_index) -> ItemTypePreflight`.
+    # It MUST be pure over its already-stored crop: no capture, gesture, typing, transport, or
+    # logging.  This is intentionally only documented, not supplied as a base method, so method
+    # presence remains the capability and generic drivers/test doubles need no implementation.
+
     @abstractmethod
     def open_session(self) -> None:
         """Attach to the app (launch browser / connect to emulator) and reach the swipe deck."""
@@ -170,7 +200,7 @@ class DatingAppDriver(ABC):
 
     @abstractmethod
     def like(self, opener: str | None = None, item_index: int | None = None, *,
-             model_item_index: int | None = None) -> None:
+             model_item_index: int | None = None, should_stop=None) -> None:
         """Like the current profile, optionally sending an opener message. item_index is the
         0-based index (capture order) of the photo/prompt the opener is about, so drivers that
         comment per-item (Hinge) can target it; drivers without that notion ignore it.
@@ -194,10 +224,7 @@ class DatingAppDriver(ABC):
         targets per item and cannot put the like on the item it was told to -- even after
         retrying that same item -- raises ItemTargetingError instead of liking a different one.
         Retrying the SAME item is a shaky hand and is encouraged; landing on a neighbour is a
-        wrong decision and is forbidden. There used to be an `anchored_opener` repair callback
-        here, which let a driver re-ask the model for text about whatever the tap actually landed
-        on; it was removed 2026-08-12 because repairing the TEXT does not undo spending the LIKE
-        on an item the model never chose.
+        wrong decision and is forbidden.
 
         `model_item_index` is the OTHER index space, and it is the one doc 5.6 verifies against:
         the 1-based number of the item in the numbered list the MODEL was shown
@@ -206,6 +233,11 @@ class DatingAppDriver(ABC):
         re-interpretation of `item_index`, because the two count different lists from different
         bases and a small int carrying no statement of its own space cannot be validated by the
         side that receives it -- that is exactly the bug the 2026-08-12 audit found.
+
+        `should_stop`, when a driver advertises ``supports_interruptible_like_navigation``, is
+        polled before every capture and gesture in its pre-tap item navigation. A stop is a
+        distinct navigation cancellation: no further device input is issued and nothing is
+        tapped. Workers pass it only to opt-in drivers, preserving existing driver/fake APIs.
 
         A driver that holds per-item crops for the profile on screen MUST, when given one, verify
         the like/comment screen against that item's stored crop BEFORE typing anything, and stop
@@ -216,10 +248,10 @@ class DatingAppDriver(ABC):
         THAT POST-TAP CHECK IS NOT A LICENCE TO AIM LOOSELY, and the two parameters do not
         substitute for one another. A driver given a `model_item_index` it has no way to NAVIGATE
         to must refuse before it touches the screen rather than tap something and let the check
-        sort it out: the check discriminates items within one profile's payload, and it has been
-        measured accepting a card from a DIFFERENT profile (operation_love/drivers/item_verify.py,
-        "THIS IS A CLOSED-SET TEST"). Aiming at the topmost heart and verifying afterwards is the
-        `hearts[0]` substitution with an extra step."""
+        sort it out: the relative check discriminates items within one profile's payload and was
+        measured accepting a card from a DIFFERENT profile. Concrete drivers must add their
+        calibrated absolute/profile gates; even then, aiming at the topmost heart and verifying
+        afterwards is the `hearts[0]` substitution with an extra step."""
 
     @abstractmethod
     def dislike(self) -> None:
@@ -237,8 +269,7 @@ class DatingAppDriver(ABC):
         This is a SEPARATE question from out_of_profiles(): out_of_profiles means the
         deck ran dry — a normal end of supply, nothing is wrong. blocked_reason means
         something is ON SCREEN standing BETWEEN us and the deck — the measured case
-        being Hinge's "out of free likes for today" Hinge+ paywall (2026-08-11, see
-        ops/ANTI-BOT-RESEARCH.md and data/hinge_debug/run_20260811_011416): the like
+        being Hinge's "out of free likes for today" Hinge+ paywall: the like
         was refused, the paywall came up, and nothing in the codebase recognized it, so
         the run hung polling for a decision that could never come.
 

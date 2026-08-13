@@ -450,7 +450,8 @@ def test_install_ledger_capture_snapshots_before_the_wrapped_reset():
 def test_install_ledger_capture_passes_should_stop_through():
     drv = _LedgerDriver([(0.16, 0.5)])
     probe.install_ledger_capture(drv)
-    sentinel = lambda: False
+    def sentinel():
+        return False
 
     drv._scroll_to_top(sentinel)
 

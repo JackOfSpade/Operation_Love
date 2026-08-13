@@ -74,10 +74,11 @@ from ..human_motion import tap_jitter_margin_px
 from ..perception.capture import Profile
 from .adb import SCROLL_X_JITTER_PX, Adb, AdbError, clamp_xy, scroll_x
 from .android_spec import AndroidAppSpec
-from .base import (DatingAppDriver, DriverClosed, ItemTargetingError, open_debug_log,
-                   snapshot_failure_frame)
+from .base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClosed,
+                   ItemTargetingError, open_debug_log, snapshot_failure_frame)
 from .frameshift import ShiftEstimationError
 from .item_crops import ItemCropError, build_item_payload
+from .item_type_preflight import INCONCLUSIVE, ItemTypePreflight, preflight_item_type
 from .item_identity import IdentityError, compare_profile_identity
 from .item_index import ItemIndexError, build_item_index
 from .item_nav import ItemNavigationError, navigate_to_item
@@ -90,6 +91,118 @@ from .uhid import UhidTouch, UhidUnavailable
 
 _ASSETS = Path(__file__).parent / "assets"
 
+# The closest known different-profile pair is 2.565 grey levels apart.  This is deliberately
+# local to the driver rather than a permissive default: targeted likes only run with an
+# operator-supplied, evidence-backed value strictly below it.
+_TARGETING_IDENTITY_FALSE_MATCH_DISTANCE = 2.565
+_TARGETING_SHEET_FALSE_MATCH_DISTANCE = 14.91
+_TARGETING_CALIBRATION_KEYS = frozenset({
+    "identity_match_max_dist", "sheet_item_max_dist", "device", "calibrated_at",
+    "identity_band", "content_band",
+})
+
+
+@dataclasses.dataclass(frozen=True)
+class TargetingCalibration:
+    """Measured bounds and exact crop geometry licensing a model item on one device."""
+
+    identity_match_max_dist: float
+    sheet_item_max_dist: float
+    device: str
+    calibrated_at: str
+    identity_band: tuple[float, float, float, float]
+    content_band: tuple[float, float]
+
+
+def _targeting_band(value, *, length: int) -> tuple[float, ...] | None:
+    """Normalise a stored/effective geometry band, or return None when it is unsafe to use."""
+    if not isinstance(value, (list, tuple)) or len(value) != length:
+        return None
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in value):
+        return None
+    band = tuple(float(v) for v in value)
+    if length == 4:
+        x0, y0, x1, y1 = band
+        if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+            return None
+    else:
+        y0, y1 = band
+        if not (0.0 <= y0 < y1 <= 1.0):
+            return None
+    return band
+
+
+def _parse_targeting_calibration(raw, serial: str | None, *, identity_band, content_band
+                                 ) -> tuple[TargetingCalibration | None, str | None]:
+    """Return a complete targeting calibration or the reason it cannot license a like.
+
+    Config validation gives operators a precise error.  This second check is still necessary:
+    driver tests and embedding callers may construct a Config-like object directly, bypassing
+    ``config.validate()``, and that must fail closed at the gesture boundary too.  The bound is
+    only valid for the exact ADB device serial that produced it, so the runtime check repeats
+    that binding rather than trusting a free-form evidence string.
+    """
+    if raw is None:
+        return None, "no apps.<app>.targeting_calibration mapping is configured"
+    if not isinstance(raw, dict):
+        return None, "targeting_calibration is not a mapping"
+    unknown = set(raw) - _TARGETING_CALIBRATION_KEYS
+    missing = _TARGETING_CALIBRATION_KEYS - set(raw)
+    if unknown or missing:
+        parts = []
+        if missing:
+            parts.append(f"missing {sorted(missing)}")
+        if unknown:
+            parts.append(f"unknown {sorted(unknown)}")
+        return None, f"targeting_calibration has {'; '.join(parts)}"
+    for key in ("identity_match_max_dist", "sheet_item_max_dist"):
+        value = raw[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None, f"targeting_calibration.{key} is not a number"
+        if not math.isfinite(value) or value <= 0:
+            return None, f"targeting_calibration.{key} is not finite and > 0"
+    if raw["identity_match_max_dist"] >= _TARGETING_IDENTITY_FALSE_MATCH_DISTANCE:
+        return None, (
+            "targeting_calibration.identity_match_max_dist is not strictly below "
+            f"the known {_TARGETING_IDENTITY_FALSE_MATCH_DISTANCE} false-match distance")
+    if raw["sheet_item_max_dist"] >= _TARGETING_SHEET_FALSE_MATCH_DISTANCE:
+        return None, (
+            "targeting_calibration.sheet_item_max_dist is not strictly below "
+            f"the known {_TARGETING_SHEET_FALSE_MATCH_DISTANCE} foreign-card false-match "
+            "distance")
+    for key in ("device", "calibrated_at"):
+        if not isinstance(raw[key], str) or not raw[key].strip():
+            return None, f"targeting_calibration.{key} is not nonempty evidence text"
+    if not isinstance(serial, str) or not serial:
+        return None, "targeting_calibration requires a nonempty configured ADB serial"
+    if raw["device"] != serial:
+        return None, (
+            "targeting_calibration.device does not exactly match the configured ADB serial "
+            f"({raw['device']!r} != {serial!r})")
+    calibrated_identity = _targeting_band(raw["identity_band"], length=4)
+    calibrated_content = _targeting_band(raw["content_band"], length=2)
+    effective_identity = _targeting_band(identity_band, length=4)
+    effective_content = _targeting_band(content_band, length=2)
+    if calibrated_identity is None or calibrated_content is None:
+        return None, "targeting_calibration geometry is not finite, normalised, and ordered"
+    if effective_identity is None or effective_content is None:
+        return None, "the effective targeting geometry is not finite, normalised, and ordered"
+    if calibrated_identity != effective_identity:
+        return None, (
+            "targeting_calibration.identity_band does not exactly match the effective "
+            f"identity_band ({calibrated_identity!r} != {effective_identity!r})")
+    if calibrated_content != effective_content:
+        return None, (
+            "targeting_calibration.content_band does not exactly match the effective "
+            f"content_band ({calibrated_content!r} != {effective_content!r})")
+    return TargetingCalibration(
+        identity_match_max_dist=float(raw["identity_match_max_dist"]),
+        sheet_item_max_dist=float(raw["sheet_item_max_dist"]),
+        device=raw["device"].strip(), calibrated_at=raw["calibrated_at"].strip(),
+        identity_band=calibrated_identity, content_band=calibrated_content,
+    ), None
+
 
 class HingeActionError(RuntimeError):
     """An autonomous action did not produce the expected on-screen change (stuck deck, missed
@@ -98,6 +211,16 @@ class HingeActionError(RuntimeError):
 
     Named for Hinge (the first, and so far only calibrated, Android app) but raised by
     AndroidDriver generically — any Android app's driver instance can raise it."""
+
+
+class HingeDeckBlockedError(HingeActionError, DeckBlockedError):
+    """A Hinge action reached a known blocking screen instead of completing.
+
+    Both bases are intentional: callers that already treat Hinge action failures
+    as ``HingeActionError`` remain conservative, while ``Worker`` can catch the
+    app-agnostic ``DeckBlockedError`` and report the existing graceful blocked
+    state rather than record a like Hinge refused.
+    """
 
 
 class HingeTargetingError(HingeActionError, ItemTargetingError):
@@ -249,13 +372,11 @@ _UPSELL_DISMISS_MAX_ATTEMPTS = 3
 # rather than tapping an already-detected modal again and again. See that error's docstring.
 
 # --- a BLOCKED deck (a purchase screen standing between us and the cards) ----------------
-# Added 2026-08-11 after this run: data/hinge_debug/run_20260811_011416. At 01:42:36 the owner
-# tapped the heart, wrote "Was the water freezing?" and tapped Send Like; Hinge refused the like
-# (the account was out of free likes for the day) and put its "You're out of free likes for
-# today" Hinge+ upgrade screen up instead. Nothing in this codebase recognised that screen, so
-# _await_like_resolved polled like_sheet/like_sending from 01:42:43 until the owner pressed Stop
-# by hand at 01:45:02 -- a 2m26s hang. (No label was written, which was correct: the like never
-# went out. But the run should have STOPPED, not hung.)
+# Added after an observe-mode incident: an attempted send was refused because the account had no
+# free likes remaining, and the app displayed its Hinge+ upgrade screen. Nothing in this codebase
+# recognised that screen, so _await_like_resolved kept polling like_sheet/like_sending until the
+# operator stopped it. No label was written, correctly, because the like never went out; the run
+# should nevertheless have stopped rather than hanging.
 _PAYWALL_MATCH_THRESHOLD = 0.75
 # Template-match threshold for the "paywall" role (Hinge: the "HingeX" tab wordmark -- see
 # HINGE_SPEC's templates comment for why that particular 210x76 crop and not the headline or the
@@ -420,14 +541,14 @@ HINGE_SPEC = AndroidAppSpec(
     # "top" (scroll-top, where identity_band shows the profile-independent filter-chips row
     # instead of a name -- see AndroidAppSpec.identity_top_name_band's docstring for the full
     # mechanism and _identity_of below for the resolution rule). This is the fix for the
-    # incident that motivated this field: a pass that advanced the deck from "Alina" to
-    # "jessica" was recorded as a scroll WITHIN Alina's profile, because nothing on screen at
+    # incident that motivated this field: a pass that advanced the deck from "Zorva" to
+    # "Qelix" was recorded as a scroll WITHIN Zorva's profile, because nothing on screen at
     # scroll-top could name the new card and the decision fell through to a loose content
     # match. OCR-only, never a pixel signature -- MEASURED on the real Pixel 7a on 2026-08-10 by
     # running `tesseract --psm 6` over the actual failing run's frames. Reads (all correct):
-    #   Alina, scroll-top, with the purple "shows thoughtful signals" banner -> "Alina %"
-    #   Alina, scroll-top, banner gone (content shifted up)   -> "Alina @ | @ Signals Active today"
-    #   jessica, scroll-top, with banner (three separate frames) -> "jessica &"
+    #   Zorva, scroll-top, with the purple "shows thoughtful signals" banner -> "Zorva %"
+    #   Zorva, scroll-top, banner gone (content shifted up)   -> "Zorva @ | @ Signals Active today"
+    #   Qelix, scroll-top, with banner (three separate frames) -> "Qelix &"
     # On SCROLLED frames the same band OCRs to garbage, which is safe: the check this feeds is
     # gated on the pixel verdict being genuinely "top".
     identity_top_name_band=(0.03, 0.130, 0.75, 0.250),
@@ -821,7 +942,7 @@ def _vertical_shift_match(cur, seen, *, threshold: float,
     # MEASURED evidence toward a possible future tightening of the match itself (NOT done in
     # this pass -- see the module docstring's redesign notes for why): of the 4 genuine
     # same-profile shift-match pairs observed live on the Pixel 7a while diagnosing the
-    # Alina/jessica incident, overlap_rows/band_h came out to 9/18, 11/18, 12/18, and 18/18 --
+    # Zorva/Qelix incident, overlap_rows/band_h came out to 9/18, 11/18, 12/18, and 18/18 --
     # all >= 50%, against a floor this function has always allowed of 4/18 (~22%, the
     # `band_h - 4` term below). That is suggestive that a >=50% overlap floor could reject
     # weaker, more coincidental matches without losing a real one -- but 4 samples is far too
@@ -862,16 +983,15 @@ _NAME_MATCH_RATIO = 0.6
 # false "same" costs at most a missed pass (the loop just keeps waiting; nothing is written,
 # exactly today's behaviour), while a false "new" records a PASS the human never made and
 # corrupts the taste model with a decision that did not happen. MEASURED on the real
-# incident's OCR reads: "Alina" vs a plausible misread "Alma" scores 0.67, and vs "Aiina"
-# scores 0.80 -- both MUST stay "same". The actual next profile's OCR'd token ("jessica")
-# against the stored name ("Alina") -- SequenceMatcher(None, "jessica", "alina"), the call's
-# real argument order -- scores 0.33 (VERIFIED 2026-08-10; a naive reverse-order read would
-# suggest 0.17, which is not what this code computes) -- MUST become "new" either way. 0.6
+# incident's OCR reads: "Zorva" vs plausible misreads "Zorba" and "Zorna" score 0.80 --
+# both MUST stay "same". The next profile's OCR'd token ("qelix") against the stored name
+# ("zorva") -- SequenceMatcher(None, "qelix", "zorva"), the call's real argument order --
+# scores 0.00 (as does the reverse order) -- MUST become "new". 0.6
 # sits comfortably below every observed misread and far above every observed genuine
 # difference, i.e. on the safe side of both real data points this fix was built to get right.
 #
 # Ratio alone is not enough: it was calibrated only against substitution-style misreads and
-# scores BELOW 0.6 for a plain TRUNCATION of a longer name ("Alina" read as "Al" is 0.57,
+# scores BELOW 0.6 for a plain TRUNCATION of a longer name ("Zorva" read as "Zo" is 0.57,
 # "Katherine" read as "Kat" is 0.50, as "Ka" is 0.36) -- a common tesseract failure (a partial
 # crop at the band edge, tight kerning), and truncation gets WORSE, not better, the longer the
 # stored name is. _name_token_matches below adds a prefix test specifically to close that hole
@@ -885,25 +1005,26 @@ def _name_token_matches(seen: str, stored: str) -> bool:
     Two independent tests, either is enough:
 
       1. difflib ratio >= _NAME_MATCH_RATIO -- catches substitution-style misreads
-         ("Alina"/"Aiina", "Alina"/"Alma").
+         ("Zorva"/"Zorba", "Zorva"/"Zorna").
       2. either string is a case-insensitive PREFIX of the other -- catches TRUNCATION, which
          is a common tesseract failure (a partial crop at the band edge, tight kerning) and
          scores BELOW the ratio bar for longer names (see the module comment above). A
          truncation is by definition a prefix, so this one test closes the hole in BOTH
-         directions: a truncated READ this poll ("Al" seen for a profile stored as "Alina")
-         and a truncated STORE from a bad capture-time read ("Al" was what got stored for a
-         profile actually named "Alina", so a later full "Alina" read must still match it --
+         directions: a truncated READ this poll ("Zo" seen for a profile stored as "Zorva")
+         and a truncated STORE from a bad capture-time read ("Zo" was what got stored for a
+         profile actually named "Zorva", so a later full "Zorva" read must still match it --
          otherwise the bad capture poisons the whole profile with spurious "new" verdicts).
 
     VERIFIED (2026-08-10) against every case this fix targets -- read as seen(stored)=ratio:
 
       truncated reads, both directions -- all "same" via the prefix test:
-        Al(Alina)=0.57, Kat(Katherine)=0.50, Ka(Katherine)=0.36    -- read got truncated
-        Alina(Al)=0.57, Samantha(Sam)=0.55                        -- STORED name was truncated
+        Zo(Zorva)=0.57, Kat(Katherine)=0.50, Ka(Katherine)=0.36    -- read got truncated
+        Zorva(Zo)=0.57, Samantha(Sam)=0.55                         -- STORED name was truncated
       genuine differences -- still "new" (no prefix relationship, ratio stays below bar):
-        Alina(jessica)=0.17, jessica(Alina)=0.33, Katherine(Michelle)=0.35, Alina(Signals)=0.33
+        Zorva(Qelix)=0.00, Qelix(Zorva)=0.00, Katherine(Michelle)=0.35,
+        Zorva(Signals)=0.17
       genuine same-name misreads -- unaffected, still "same" via the ratio path alone:
-        Aiina(Alina)=0.80, Alma(Alina)=0.67, Aline(Alina)=0.80, lina(Alina)=0.89
+        Zorba(Zorva)=0.80, Zorna(Zorva)=0.80, Zorla(Zorva)=0.80, orva(Zorva)=0.89
     """
     seen_cf, stored_cf = seen.casefold(), stored.casefold()
     if seen_cf and stored_cf and (seen_cf.startswith(stored_cf) or stored_cf.startswith(seen_cf)):
@@ -925,7 +1046,7 @@ _TOP_NAME_CHROME_WORDS = frozenset({
     "signals", "active", "today", "shows", "thoughtful", "age", "height", "dating", "intent",
 })
 # Words HINGE ITSELF renders in the card-header band, observed in the real reads that built
-# identity_top_name_band ("Alina @ | @ Signals Active today", jessica's "Signals ( Agev )
+# identity_top_name_band ("Zorva @ | @ Signals Active today", Qelix's "Signals ( Agev )
 # Height v" equivalent at scroll-top): none of these is ever a person's first name. Without
 # this blocklist, a frame where OCR catches the chrome text but misses the name entirely would
 # take "Signals" (say) as the candidate name, score ~0.1-0.2 against the stored name -- clearing
@@ -1110,6 +1231,7 @@ class AndroidDriver(DatingAppDriver):
     # stop-aware: a flag claiming a capability the code does not have would be worse than no
     # flag, since the worker would then believe Stop is handled when it silently is not.
     supports_interruptible_capture = True
+    supports_interruptible_like_navigation = True
 
     def __init__(self, cfg, spec: AndroidAppSpec):
         self.spec = spec
@@ -1194,6 +1316,12 @@ class AndroidDriver(DatingAppDriver):
                 f"named above in config.yaml -- leaving it broken would silently disable the "
                 f"identity anchor (or worse) for the whole run with no further warning."
             ) from exc
+        # Parse this only AFTER the effective config-overridden geometry exists.  Bounds measured
+        # over one header/content crop cannot license targeting after either crop changes.
+        self.targeting_calibration, self._targeting_calibration_unavailable = (
+            _parse_targeting_calibration(
+                app_cfg.get("targeting_calibration"), self.serial,
+                identity_band=self.identity_band, content_band=self.content_band))
         self.observe_name_ocr = bool(app_cfg.get("observe_name_ocr", True))
         self._touch_watcher: TouchWatcher | None = None   # started in open_session, closed in close()
         self._touch_watch_health_warned = False   # print the event_count==0 warning at most once/run
@@ -1716,7 +1844,7 @@ class AndroidDriver(DatingAppDriver):
                                side="right" if which == "like" else "left", **kwargs)
         return centers[0] if centers else None
 
-    def _await_button(self, which: str, tries: int = 5):
+    def _await_button(self, which: str, tries: int = 5, *, should_stop=None):
         """Locate a button by vision, retrying through short settle waits.
 
         Retries because Hinge fades the floating like/pass buttons out DURING a scroll and
@@ -1727,7 +1855,18 @@ class AndroidDriver(DatingAppDriver):
         UnlocatedControlError for why guessing is worse than stopping. The fixed coords stay
         in the spec as a calibration reference and as the anchor for tooling, but nothing
         taps them on this path."""
-        pt = _retry_until(lambda: self._locate_button(which), tries, 0.4)
+        if should_stop is None:
+            pt = _retry_until(lambda: self._locate_button(which), tries, 0.4)
+        else:
+            pt = None
+            for _ in range(max(1, tries)):
+                self._raise_if_action_cancelled(should_stop, boundary="legacy button lookup")
+                pt = self._locate_button(which)
+                if pt is not None:
+                    break
+                if not self._interruptible_sleep(human_delay(0.4), should_stop):
+                    self._raise_if_action_cancelled(should_stop,
+                                                    boundary="legacy button lookup")
         if pt is not None:
             return pt
 
@@ -2278,6 +2417,14 @@ class AndroidDriver(DatingAppDriver):
             time.sleep(min(_OBSERVE_POLL_S, remaining))
         return not should_stop()
 
+    @staticmethod
+    def _raise_if_action_cancelled(should_stop, *, boundary: str) -> None:
+        """Make Stop a hard boundary before any further autonomous device input."""
+        if should_stop is not None and should_stop():
+            raise ActionCancelled(
+                f"action cancelled because the run is stopping before {boundary}; no further "
+                "device input was issued")
+
     def _scroll_to_top(self, should_stop=None) -> bool:
         """Swipe the profile back to the top (content down) until it stops moving.
 
@@ -2320,15 +2467,12 @@ class AndroidDriver(DatingAppDriver):
         undo half-way makes that claim false, so making it anyway would be recording something
         untrue about the device.
 
-        Nothing in THIS process then goes on to act on the stale ledger — reaching this abort
-        means the stop event is set, so the observe loop breaks and the session ends (only
-        current_profile passes should_stop down here; the auto path's like()/`_locate_target_heart`
-        unwinds never receive it and so can never be interrupted mid-commit). Correctness here is
-        about not lying, and about `_note_capture_aborted` being able to tell the operator how
-        many screens down the card was actually left — not about a live caller that would
-        otherwise be misled. A phone left mid-scroll is the documented "a stop leaves the screen
-        untouched for debugging" outcome; `_ensure_session_top` is what makes the NEXT session
-        safe, since a stale ledger cannot survive process exit anyway.
+        Nothing in THIS process then goes on to act on the stale ledger.  Both capture and the
+        remaining legacy navigation caller thread their stop callback here; the caller turns the
+        abort into ``ActionCancelled`` before any later tap/text/send.  A phone left mid-scroll
+        is the documented "a stop leaves the screen untouched for debugging" outcome;
+        `_ensure_session_top` is what makes the NEXT session safe, since a stale ledger cannot
+        survive process exit anyway.
         """
         w, h = self.adb.screen_size()
         ledger = list(self._capture_scroll_ledger)
@@ -2368,6 +2512,8 @@ class AndroidDriver(DatingAppDriver):
             y_far = int(h * (0.5 + undo_frac / 2))
             x = int(w * x_frac)
             before = self._screencap()
+            if should_stop is not None and should_stop():
+                return False
             self._swipe(x, y_near, x, y_far)
             if not self._interruptible_sleep(human_delay(0.3), should_stop):
                 return False               # stop landed inside the settle wait; same rule as above
@@ -3274,7 +3420,7 @@ class AndroidDriver(DatingAppDriver):
             self._blocked_reason = reason
         return reason
 
-    def _locate_target_heart(self, item_index: int | None) -> tuple[int, int]:
+    def _locate_target_heart(self, item_index: int | None, *, should_stop=None) -> tuple[int, int]:
         """comment_sheet flow only. Locate the heart of the photo/prompt the opener is about --
         or STOP. This method never returns a DIFFERENT item's heart than the one it was asked for.
 
@@ -3321,6 +3467,7 @@ class AndroidDriver(DatingAppDriver):
         space itself, which numbers FRAMES rather than items; doc 5.6 closes it with counting
         navigation plus the post-tap crop check, and `model_item_index` is the parameter that
         turns the latter on. Nothing here can detect it, and nothing here pretends to."""
+        self._raise_if_action_cancelled(should_stop, boundary="legacy target lookup")
         sigs = getattr(self, "_current_sigs", None)
         if item_index is None:
             # Recorded whether or not we have sigs: unlike every other branch this one is not a
@@ -3328,11 +3475,13 @@ class AndroidDriver(DatingAppDriver):
             # a bug report must be able to tell those apart (HINGE-05). Not an error HERE --
             # _like_comment_sheet already refused any call that carries an opener, so what is
             # left is a plain, itemless like with nothing to misplace.
+            self._raise_if_action_cancelled(should_stop, boundary="legacy target debug capture")
             self._dbg_action("locate_target_heart", self._snap(), item_index=None,
                              outcome="no_item_named", reason="no_target_index")
-            return self._await_button("like")
+            return self._await_button("like", should_stop=should_stop)
         if item_index == 0:
-            return self._await_button("like")   # at the scroll top the topmost heart IS item 0's
+            # At the scroll top the topmost heart is item 0's.
+            return self._await_button("like", should_stop=should_stop)
         # THE FOUR REFUSALS THAT USED TO BE FALLBACKS. Each names what specifically went wrong,
         # because the operator's next move differs: a negative or out-of-range index is a caller
         # or conversion bug, an empty sig list means the profile on screen was never captured by
@@ -3354,6 +3503,7 @@ class AndroidDriver(DatingAppDriver):
         else:
             refusal = ""
         if refusal:
+            self._raise_if_action_cancelled(should_stop, boundary="legacy target debug capture")
             self._dbg_action("locate_target_heart", self._snap(), item_index=item_index,
                              outcome="stop", reason="unresolvable_target_index")
             raise HingeTargetingError(
@@ -3363,6 +3513,7 @@ class AndroidDriver(DatingAppDriver):
                 stage="navigate", intended=item_index, index_space="capture_order")
         import numpy as np
         target = sigs[item_index]
+        self._raise_if_action_cancelled(should_stop, boundary="legacy target debug capture")
         before = self._snap()
         # like() always _scroll_to_top()s right before calling this, so item_index (a capture-
         # order index counted down from the top) should need about that many scroll_up()s to
@@ -3373,14 +3524,17 @@ class AndroidDriver(DatingAppDriver):
         tries = min(self._profile_capture_limit + 1, item_index + 3)
         reason = ""
         for attempt in range(1, _TARGET_HEART_ATTEMPTS + 1):
+            self._raise_if_action_cancelled(should_stop, boundary="legacy target retry")
             if attempt > 1:
                 # Re-establish the zero point and search for THE SAME ITEM again. This is the
                 # sanctioned retry: same target, same comparison, a fresh read. `_scroll_to_top`
                 # undoes exactly the tracked scrolls the previous attempt made.
-                self._scroll_to_top()
-                time.sleep(human_delay(0.3))
+                self._scroll_to_top(should_stop)
+                if not self._interruptible_sleep(human_delay(0.3), should_stop):
+                    self._raise_if_action_cancelled(should_stop, boundary="legacy target retry")
             matched_frame_no_heart = False
             for _ in range(tries):
+                self._raise_if_action_cancelled(should_stop, boundary="legacy target capture")
                 frame = self._screencap()
                 ds = _downsample(frame)
                 if ds is not None and float(np.mean(np.abs(ds - target))) < self.change_threshold:
@@ -3390,8 +3544,10 @@ class AndroidDriver(DatingAppDriver):
                         return hearts[0]              # the referenced item's heart, now in view
                     matched_frame_no_heart = True
                     break
+                self._raise_if_action_cancelled(should_stop, boundary="legacy target scroll")
                 self._scroll_down_one()          # tracked, so the retry's _scroll_to_top() above
-                time.sleep(human_delay(self.dwell_s * 0.4))   # undoes exactly these scrolls too
+                if not self._interruptible_sleep(human_delay(self.dwell_s * 0.4), should_stop):
+                    self._raise_if_action_cancelled(should_stop, boundary="legacy target scroll")
             reason = ("heart_not_visible_on_matched_frame" if matched_frame_no_heart
                       else "target_frame_not_found")
             self._dbg_action("locate_target_heart", before, item_index=item_index,
@@ -3409,7 +3565,7 @@ class AndroidDriver(DatingAppDriver):
             f"option (ops/OPENER-REDESIGN.md 5.6).",
             stage="navigate", intended=item_index, index_space="capture_order")
 
-    def _navigate_to_model_item(self, model_item_index: int) -> tuple[int, int]:
+    def _navigate_to_model_item(self, model_item_index: int, *, should_stop=None) -> tuple[int, int]:
         """Doc 5.5's counting navigation, wired: put model item N's heart on screen and return
         the point to tap. Never taps, never substitutes, and never scrolls back to the top.
 
@@ -3450,8 +3606,11 @@ class AndroidDriver(DatingAppDriver):
         """
         index = self._current_item_index
         anchor = self._current_item_anchor
-        if index is None or anchor is None:
-            missing = ("index" if index is None else "entry anchor frame")
+        calibration = self._require_targeting_calibration(model_item_index)
+        payload = self._current_item_payload
+        if index is None or anchor is None or payload is None:
+            missing = ("index" if index is None else
+                       "entry anchor frame" if anchor is None else "numbered item payload")
             raise HingeTargetingError(
                 f"{self.spec.app}: the opener targets model item {model_item_index}, but this "
                 f"driver holds no item {missing} for the profile on screen "
@@ -3459,13 +3618,32 @@ class AndroidDriver(DatingAppDriver):
                 f"there is no way to count to that item. Nothing was tapped and the like is NOT "
                 f"sent (ops/OPENER-REDESIGN.md 5.3/5.5).",
                 stage="navigate", intended=model_item_index, index_space="model_items")
+        # `model_item_index` counts only the crops actually sent to the model.  The navigation
+        # index counts selectable blocks in the full ItemIndex, including any excluded crop.
+        # They coincide on the common all-photo profile, but treating that coincidence as an
+        # invariant silently taps a later item as soon as one selectable block is withheld.
+        # Cross through the payload's authoritative model-number -> heart-ordinal table, then
+        # locate that same ordinal in the index's selectable-block table.
+        try:
+            heart_ordinal = payload.item(model_item_index).heart_ordinal
+            if heart_ordinal is None:
+                raise ItemCropError("the numbered crop has no heart ordinal")
+            navigation_index = index.translation.index(heart_ordinal) + 1
+        except (ItemCropError, ValueError, AttributeError) as exc:
+            raise HingeTargetingError(
+                f"{self.spec.app}: model item {model_item_index} cannot be translated into the "
+                f"current item index ({exc}). Nothing was tapped and the like is NOT sent; "
+                "there is no safe substitute for a missing model-item-to-heart mapping.",
+                stage="navigate", intended=model_item_index, index_space="model_items") from exc
         # No pre-capture. `navigate_to_item`'s own first act is a screencap of the entry frame,
         # and it hands that frame back on every refusal it decides (`ItemNavigationError.frame`)
         # and the LANDING frame on success -- both of which are the frame a reader of the debug
         # log actually wants. A `_snap()` here would be a second ADB round-trip for a worse
         # picture, on every navigation, whether or not debug logging is on.
         try:
-            target = navigate_to_item(self, index, model_item_index, entry_reference=anchor)
+            target = navigate_to_item(self, index, navigation_index, entry_reference=anchor,
+                                      identity_match_max_dist=calibration.identity_match_max_dist,
+                                      should_stop=should_stop)
         except ItemNavigationError as exc:
             self._dbg_action("navigate_to_item", exc.frame, item=model_item_index,
                              outcome="stop", reason=exc.code)
@@ -3503,29 +3681,58 @@ class AndroidDriver(DatingAppDriver):
         returned False — is tolerated here rather than treated as a dead run: we dismiss it
         ourselves (same rule: never the paid option) and keep checking (HINGE-07). Only a
         modal/sheet that genuinely won't clear, or a deck that never advances, still raises — an
-        unsent like must never be mislabelled as sent (it would corrupt the taste model). Only
-        active under halt_on_error. Unlike a bare change-check, the scroll-to-top can't spoof
-        this."""
-        if not self.halt_on_error:
-            return
-        sheet_up = modal_up = False
-        for _ in range(3):        # a couple of extra passes tolerate a late-animating upsell modal
+        unsent like must never be mislabelled as sent (it would corrupt the taste model).
+
+        The *generic* sheet/advance verification remains opt-in for the human-supervised
+        ``halt_on_error=False`` mode. Paywall detection does not: Hinge's known refusal screen
+        is affirmative evidence that this particular like did NOT land, so returning normally
+        there would let even a direct driver caller record a completed action that Hinge refused.
+        Unlike a bare change-check, the scroll-to-top can't spoof this."""
+        sheet_up = modal_up = landed_candidate = False
+        for attempt in range(3):  # extra passes tolerate late-animating modals and paywalls
             frame = self._screencap()
+            # A recognised paywall is a purchase screen, so it wins over every other post-send
+            # interpretation of this frame.  In particular, do this BEFORE the late-upsell
+            # branch below: a loose dismiss-glyph match on a paid screen must not turn a
+            # read-only rejection detector into one more tap on that screen.
+            blocked = self._deck_blocked_reason(frame)
+            if blocked is not None:
+                self._blocked_reason = blocked
+                raise HingeDeckBlockedError(blocked)
+            if not self.halt_on_error:
+                # A screen change alone is NOT proof that Hinge accepted the like: the measured
+                # out-of-free-likes path closes the sheet and replaces the card with its Hinge+
+                # paywall.  This check is deliberately BEFORE the halt_on_error return: a
+                # recognised rejection is not an optional generic verification failure.
+                if attempt < 2:
+                    time.sleep(human_delay(0.6))
+                continue
             sheet_up = bool(_match_glyph(frame, self._template("confirm"), side="any", threshold=0.6))
             modal_hits = _match_glyph(frame, self._template("upsell_dismiss"), side="any", threshold=0.6)
             modal_up = bool(modal_hits)
-            if not sheet_up and not modal_up and (before is None or self._changed(before, frame)):
-                return                                # sheet/modal closed AND advanced -> sent
             if modal_up:
                 self._tap(*modal_hits[0])             # late-animating upsell -> dismiss, never the paid option
+            if sheet_up or modal_up:
+                time.sleep(human_delay(0.6))
+                continue
+            if before is not None and not self._changed(before, frame):
+                time.sleep(human_delay(0.6))
+                continue
+            # Require the apparently-advanced deck to survive one more poll. A transition frame
+            # can be both changed and free of sheet glyphs just before a paywall animates in.
+            if landed_candidate or attempt == 2:
+                return                                # stable closed sheet + advanced deck -> sent
+            landed_candidate = True
             time.sleep(human_delay(0.6))
+        if not self.halt_on_error:
+            return
         if sheet_up or modal_up:
             raise HingeActionError("like did not complete — the like sheet / upsell modal is still open")
         raise HingeActionError("like did not change the screen (missed tap or stuck)")
 
     # --- actions (NORMAL like only — never a paid upgrade) ----------------------
     def like(self, opener: str | None = None, item_index: int | None = None, *,
-             model_item_index: int | None = None) -> None:
+             model_item_index: int | None = None, should_stop=None) -> None:
         # item_index defaults to None ("nobody said which item"), NOT to 0 ("the first captured
         # frame"). See base.Driver.like and _locate_target_heart: the two are different inputs
         # and only one of them licenses attaching an opener to what gets tapped.
@@ -3539,10 +3746,18 @@ class AndroidDriver(DatingAppDriver):
         # chosen item cannot be reached or the opened sheet is not showing it. Never a different
         # item, never a rewritten opener, never a commentless like: doc 5.6's hard stop, which
         # worker.py catches by the base type and renders as a stop rather than a crash.
+        if item_index is not None and model_item_index is not None:
+            raise HingeTargetingError(
+                f"{self.spec.app}: like() received both capture-order item_index "
+                f"{item_index} and model_item_index {model_item_index}. They name different "
+                "index spaces, so the target is ambiguous. Nothing was tapped and the like is "
+                "NOT sent; supply exactly one target index.",
+                stage="preflight", intended=model_item_index, index_space="model_items")
         try:
             if self.spec.like_flow == "comment_sheet":
                 self._like_comment_sheet(opener, item_index,
-                                         model_item_index=model_item_index)
+                                         model_item_index=model_item_index,
+                                         should_stop=should_stop)
             else:
                 self._like_direct(opener, item_index, model_item_index=model_item_index)
         finally:
@@ -3555,6 +3770,34 @@ class AndroidDriver(DatingAppDriver):
             self._invalidate_item_index(
                 "the deck advanced after this like, so anything enumerated for the previous "
                 "profile no longer describes what is on screen")
+
+    def _require_targeting_calibration(self, model_item_index: int) -> TargetingCalibration:
+        """Return the evidence-backed bounds or stop before a model-selected item is touched."""
+        calibration = self.targeting_calibration
+        if calibration is not None:
+            return calibration
+        raise HingeTargetingError(
+            f"{self.spec.app}: model item {model_item_index} cannot be targeted because "
+            f"apps.{self.spec.app}.targeting_calibration is unavailable "
+            f"({self._targeting_calibration_unavailable or 'no reason was recorded'}). Nothing "
+            f"was tapped and the like is NOT sent; provide measured identity and sheet-item "
+            f"bounds, exact effective crop geometry, device, and calibrated_at evidence before "
+            f"enabling targeted likes.",
+            stage="preflight", intended=model_item_index, index_space="model_items")
+
+    def targeted_suggestion_blocker(self) -> str:
+        """Why an Observe model-item suggestion is unavailable, or ``""`` when licensed.
+
+        Observe generates before the human opens a sheet.  This pure capability lets the
+        worker refuse the provider call itself when the calibrated identity and sheet bounds
+        are absent; waiting until ``observe_item_mismatch`` would briefly expose unchecked text.
+        """
+        if self.targeting_calibration is not None:
+            return ""
+        return (f"targeted suggestion is unavailable because apps.{self.spec.app}."
+                f"targeting_calibration is unavailable "
+                f"({self._targeting_calibration_unavailable or 'no reason was recorded'}); "
+                "no opener text is offered")
 
     def _verifiable_payload(self, model_item_index: int | None):
         """The crops doc 5.6 will verify the sheet against, or None when nobody named an item.
@@ -3582,6 +3825,7 @@ class AndroidDriver(DatingAppDriver):
         """
         if model_item_index is None:
             return None
+        self._require_targeting_calibration(model_item_index)
         payload = self._current_item_payload
         if payload is None:
             raise HingeTargetingError(
@@ -3606,6 +3850,27 @@ class AndroidDriver(DatingAppDriver):
                 stage="verify", intended=model_item_index, index_space="model_items")
         return payload
 
+    def item_type_preflight(self, item_description: str, model_item_index: int) -> ItemTypePreflight:
+        """Pure doc 5.8 check against the numbered crop the model was shown.
+
+        Method presence is the optional driver capability: generic drivers deliberately do not
+        inherit a stub, so existing drivers and test doubles remain compatible.  This method
+        neither screencaps nor logs nor touches ADB; it only reads the current profile's stored
+        crop and returns INCONCLUSIVE when that evidence is unavailable.
+        """
+        payload = self._current_item_payload
+        if payload is None:
+            return ItemTypePreflight(
+                INCONCLUSIVE, "unknown", "unknown",
+                "this driver has no numbered crop for the current profile")
+        try:
+            crop = payload.item(model_item_index)
+        except ItemCropError as exc:
+            return ItemTypePreflight(
+                INCONCLUSIVE, "unknown", "unknown",
+                f"model item {model_item_index} has no readable numbered crop ({exc})")
+        return preflight_item_type(item_description, crop.image)
+
     def _confirm_payload_profile(self, model_item_index: int) -> None:
         """Is the person on screen still the person the stored crops describe? Or STOP.
 
@@ -3619,17 +3884,15 @@ class AndroidDriver(DatingAppDriver):
         crops would be stale too and the sheet comparison would fail. It does not always fail: a
         validation pass drove a stale payload for one profile against a sheet rendering another
         profile's card through this very method and got a MATCH, a typed opener and a SENT like,
-        10 times in 540 comparisons. `item_verify` is a closed-set test over one payload's items
-        with no absolute ceiling (its "THIS IS A CLOSED-SET TEST" section), so out-of-payload
-        content only has to beat that payload's own internal spacing.
+        10 times in 540 comparisons when only its relative, closed-set rule was used. Production
+        now also requires the per-device absolute ceiling, but the profile check remains an
+        independent requirement rather than assuming one calibrated metric replaces the other.
 
         AND THIS CHECK IS NOT ENOUGH ON ITS OWN EITHER, which is why both run. Over six real
-        profiles the identity band's closest different-person pair measures 2.565 grey levels
-        against a 3.0 bound, i.e. one pair in fifteen would MATCH
-        (`item_identity._IDENTITY_MATCH_MAX_DIST` carries the table). It is a strong REFUSAL
-        mechanism and a weak confirmation one. Two weak-in-the-same-direction guards do not make a
-        strong one, and neither does the pair of them make the invalidation in `_invalidate_item_index`
-        optional -- that is still the guard that actually holds.
+        profiles an old 3.0 identity bound admitted a different-person pair at 2.565. Targeted
+        work is now licensed only by a measured bound strictly below that collision. Even then,
+        the independent sheet check and correct `_invalidate_item_index` lifecycle remain
+        mandatory.
 
         IDENTITY IS NOT READABLE AT A SCROLL TOP, and that is why this is here rather than after
         the `_scroll_to_top` below: there the strip is Hinge's own filter-chips row, identical for
@@ -3651,8 +3914,10 @@ class AndroidDriver(DatingAppDriver):
                 stage="navigate", intended=model_item_index, index_space="model_items")
         frame = self._screencap()
         try:
-            verdict = compare_profile_identity(frame, index.identity,
-                                               identity_band=self.identity_band)
+            verdict = compare_profile_identity(
+                frame, index.identity, identity_band=self.identity_band,
+                match_max_dist=self._require_targeting_calibration(
+                    model_item_index).identity_match_max_dist)
         except IdentityError as exc:
             raise HingeTargetingError(
                 f"{self.spec.app}: the profile on screen could not be checked against the one "
@@ -3694,8 +3959,42 @@ class AndroidDriver(DatingAppDriver):
         # debug entry holds both sides of the tap: what was under the heart and what the sheet
         # opened on. That pair is the whole diagnosis when a verification stop has to be read back
         # a day later.
+        calibration = self._require_targeting_calibration(model_item_index)
+        index = self._current_item_index
+        if index is None:
+            raise HingeTargetingError(
+                f"{self.spec.app}: the like sheet cannot be attributed to model item "
+                f"{model_item_index}'s profile because its identity index is missing. The opener "
+                f"is NOT typed and the like is NOT sent.",
+                stage="verify", intended=model_item_index, index_space="model_items")
+        # The deck can advance between the pre-tap identity check and the sheet arriving. Check
+        # the sticky header again before the crop verifier: a closed-set item comparison may pass
+        # for a foreign card, but it cannot license typing on another person's profile.
         try:
-            verdict = verify_sheet_item(sheet, payload, model_item_index)
+            identity = compare_profile_identity(
+                sheet, index.identity, identity_band=self.identity_band,
+                match_max_dist=calibration.identity_match_max_dist)
+        except IdentityError as exc:
+            self._dbg_action("verify_sheet_identity", before, item=model_item_index,
+                             outcome="unreadable", reason=str(exc))
+            raise HingeTargetingError(
+                f"{self.spec.app}: the profile on the like sheet could not be checked against "
+                f"model item {model_item_index}'s profile ({exc}). The opener is NOT typed and "
+                f"the like is NOT sent; the sheet is left open for debugging.",
+                stage="verify", intended=model_item_index, index_space="model_items") from exc
+        self._dbg_action("verify_sheet_identity", before, item=model_item_index,
+                         outcome=identity.state, distance=identity.distance,
+                         bound=identity.match_max)
+        if not identity.matched:
+            raise HingeTargetingError(
+                f"{self.spec.app}: the like sheet is not on the profile model item "
+                f"{model_item_index} was cropped from, so the opener is NOT typed and the like "
+                f"is NOT sent. {identity.reason}",
+                stage="verify", intended=model_item_index, index_space="model_items")
+        try:
+            verdict = verify_sheet_item(
+                sheet, payload, model_item_index,
+                absolute_max_dist=calibration.sheet_item_max_dist)
         except SheetVerificationError as exc:
             self._dbg_action("verify_sheet_item", before, item=model_item_index,
                              outcome="unreadable", reason=str(exc))
@@ -3753,13 +4052,11 @@ class AndroidDriver(DatingAppDriver):
             sat 0.000 from its own profile's neighbouring scrolled frames. No extra screencap.
           * `verify_sheet_item` answers WHICH item of that profile is on the sheet.
 
-          NEITHER IS SUFFICIENT ALONE AND THEY FAIL IN THE SAME DIRECTION. Over six real profiles
-          the identity band's closest two DIFFERENT people measure 2.565 grey levels against a
-          3.0 bound, so an identity MATCH is a strong refusal and a weak confirmation; and
-          `verify_sheet_item` is a CLOSED-SET test with no absolute accept ceiling, measured
-          accepting a foreign card 10 times in 540. "Both passed" is therefore never proof.
-          What this method promises is only the contrapositive -- either one refusing is enough
-          to withhold the text -- which is exactly the promise doc 5.9 needs it to make.
+          NEITHER IS SUFFICIENT ALONE. An old 3.0 identity bound admitted a measured different
+          person at 2.565, while the relative-only sheet test accepted a foreign card 10 times in
+          540. This method therefore uses the configured identity bound and absolute sheet ceiling
+          together; either refusal withholds the text, and missing calibration blocks suggestion
+          generation before a provider call.
 
         IT NEVER RAISES AND IT NEVER STOPS THE RUN. Observe is a labelling session; ending it
         over a cosmetic display failure is the mistake the advisory plumbing already exists to
@@ -3775,6 +4072,9 @@ class AndroidDriver(DatingAppDriver):
         design, and a second writer would interleave records in the artefact a bug report is
         reconstructed from. The console line the caller prints is this check's record.
         """
+        calibration = self.targeting_calibration
+        if calibration is None:
+            return self.targeted_suggestion_blocker()
         payload = self._current_item_payload
         index = self._current_item_index
         if payload is None or index is None:
@@ -3782,8 +4082,9 @@ class AndroidDriver(DatingAppDriver):
                     f"no way to tell whether the sheet is showing item {model_item_index}: "
                     f"{self._current_items_unavailable or 'no reason was recorded'}")
         try:
-            verdict = compare_profile_identity(sheet, index.identity,
-                                               identity_band=self.identity_band)
+            verdict = compare_profile_identity(
+                sheet, index.identity, identity_band=self.identity_band,
+                match_max_dist=calibration.identity_match_max_dist)
         except IdentityError as exc:
             return (f"the profile on the like sheet could not be checked against the one item "
                     f"{model_item_index} was cropped from ({exc}), so the suggestion is not "
@@ -3796,7 +4097,9 @@ class AndroidDriver(DatingAppDriver):
             blocker = verification_blocker(payload, model_item_index)
             if blocker:
                 return blocker
-            sheet_verdict = verify_sheet_item(sheet, payload, model_item_index)
+            sheet_verdict = verify_sheet_item(
+                sheet, payload, model_item_index,
+                absolute_max_dist=calibration.sheet_item_max_dist)
         except (SheetVerificationError, ItemCropError) as exc:
             return (f"the like sheet could not be checked against model item "
                     f"{model_item_index} ({exc}), so the suggestion is not offered")
@@ -3808,7 +4111,7 @@ class AndroidDriver(DatingAppDriver):
                 f"{model_item_index}. {sheet_verdict.reason}")
 
     def _like_comment_sheet(self, opener: str | None, item_index: int | None, *,
-                            model_item_index: int | None = None) -> None:
+                            model_item_index: int | None = None, should_stop=None) -> None:
         """Hinge's flow: heart -> comment/"Send Like" sheet opens -> optionally type the
         opener into the comment box (Signals #2: the opener is sent WITH the like) -> tap
         Send -> handle a paid-upsell interstitial (never tap the paid option) -> verify.
@@ -3846,31 +4149,26 @@ class AndroidDriver(DatingAppDriver):
         NOT subsume the first of those; it was measured accepting another profile's card outright
         (see that method's docstring for the 10-of-540).
 
-        HOW THE TAP POINT IS REACHED DEPENDS ON WHICH SPACE NAMED THE ITEM, and the two do not
-        mix. A `model_item_index` with no capture-order index beside it is doc 5.5's counting
-        navigation: `_navigate_to_model_item` walks UP from where the read left the card, counting
-        hearts in reverse against the driver-owned index, and returns the chosen item's heart or
-        raises. Anything else is the legacy capture-order path (`_scroll_to_top` then
-        `_locate_target_heart`), unchanged, including the residual it states about a frame showing
-        two items at once.
+        HOW THE TAP POINT IS REACHED DEPENDS ON WHETHER a model item needs bottom-up counting.
+        A `model_item_index` with no capture-order index beside it uses doc 5.5's counting
+        navigation: `_navigate_to_model_item` walks UP from where the read left the card,
+        counting hearts in reverse against the driver-owned index.  The older capture-order
+        helper remains only for plain likes (and a defensive explicit dual-index call whose
+        post-tap model-item verifier still runs); it can never by itself license opener text.
 
-        AN OPENER WITH NO ITEM AT ALL IS REFUSED HERE, BEFORE ANY GESTURE. `item_index is None`
-        means nobody said which item; combined with text to type it is the "confident wrong send"
-        doc 5.3 forbids, so it stops with the screen untouched. Without an opener the same None is
-        perfectly legal (Hinge with `opener.enabled: false` sends a plain like), and nothing is
-        substituted because nothing was chosen."""
-        if opener and item_index is None and model_item_index is None:
-            # Not reachable from worker.py -- `_auto_loop` stops on an untranslatable pick before
-            # it calls the driver at all -- and deliberately guarded anyway: `like()` is a public
-            # driver method, and this is the one input combination that would otherwise attach
-            # real text to whatever heart happened to be topmost. Refused before the scroll, so
-            # the screen is exactly as the caller left it.
+        EVERY OPENER MUST NAME A MODEL ITEM.  Capture-order frames are not a safe targeting space:
+        one frame can contain two selectable cards, and that old branch had neither the calibrated
+        profile identity check nor a numbered-crop sheet verifier.  A caller may still send a
+        plain like with no item at all, but any text requires ``model_item_index`` and therefore
+        takes the calibrated counting-navigation/verify path below."""
+        self._raise_if_action_cancelled(should_stop, boundary="targeting preflight")
+        if opener and model_item_index is None:
             raise HingeTargetingError(
-                f"{self.spec.app}: an opener was supplied but no item index was supplied at all, "
-                f"so there is no way to know which photo or prompt the comment would attach to. "
-                f"Nothing was tapped and the like is NOT sent; attaching it to the first item "
-                f"instead is never an option (ops/OPENER-REDESIGN.md 5.3/5.6).",
-                stage="navigate", intended=None, index_space="capture_order")
+                f"{self.spec.app}: an opener was supplied without a model item index. "
+                "Capture-order targeting is retired because it cannot prove which selectable "
+                "item the sheet represents. Nothing was tapped and the like is NOT sent; a "
+                "model_item_index with calibrated identity and sheet verification is required.",
+                stage="preflight", intended=item_index, index_space="capture_order")
         payload = self._verifiable_payload(model_item_index)   # raises before anything is touched
         if payload is not None:
             # Whose profile is this, before a finger moves and while the sticky header is still
@@ -3881,9 +4179,8 @@ class AndroidDriver(DatingAppDriver):
             # The duplication is one band decode and it is the only identity gate on this path if
             # `like()` is ever called with a model item number by something that is not the
             # counting-navigation branch below -- `like()` is a public driver method, and the two
-            # guards fail in the SAME direction on the same input (doc 5.6's addendum measures
-            # the closest two different people at 2.565 grey levels against a 3.0 bound), so
-            # neither may be dropped on the grounds that the other exists.
+            # guards historically failed in the same direction on a known collision, so neither
+            # may be dropped merely because both now use calibrated bounds.
             self._confirm_payload_profile(model_item_index)
         if model_item_index is not None and item_index is None:
             # DOC 5.5'S COUNTING NAVIGATION, AND THIS IS WHERE THE HANDOVER LANDED. Until
@@ -3899,23 +4196,29 @@ class AndroidDriver(DatingAppDriver):
             # anchor that is MEASURED rather than replayed, would put the identity strip on a
             # screen where it carries no identity at all, and would cost ~51 gestures to arrive
             # somewhere the read had already been.
-            heart = self._navigate_to_model_item(model_item_index)
+            heart = self._navigate_to_model_item(model_item_index, should_stop=should_stop)
         else:
-            # The legacy capture-order path, byte-for-byte what it was: `item_index=0` beside a
-            # model item number still means "the topmost heart at the scroll top", which is a
-            # real aimed target rather than a default, and an opener with no item at all was
-            # already refused above.
-            self._scroll_to_top()
-            time.sleep(human_delay(0.4))
+            # Plain likes may still use the old generic heart lookup because no text is being
+            # attached to a model-selected item.  An unusual dual-index caller keeps the model
+            # crop/identity/sheet gates above; an opener with only a capture-order index was
+            # refused before any navigation.
+            self._scroll_to_top(should_stop)
+            self._raise_if_action_cancelled(should_stop, boundary="legacy navigation")
+            if not self._interruptible_sleep(human_delay(0.4), should_stop):
+                self._raise_if_action_cancelled(should_stop, boundary="legacy navigation")
             # Raises HingeTargetingError rather than returning a different item's heart. Anything
             # below this line is therefore working with the heart of the item the opener is about
             # -- as far as the capture-order space can tell, see that method's stated residual.
-            heart = self._locate_target_heart(item_index)
+            heart = self._locate_target_heart(item_index, should_stop=should_stop)
+        self._raise_if_action_cancelled(should_stop, boundary="heart tap")
         before = self._snap()                         # baseline AFTER navigation: the pre-tap card
+        self._raise_if_action_cancelled(should_stop, boundary="heart tap")
         self._tap(*heart)                             # opens the comment / "Send Like" sheet
-        time.sleep(human_cooldown(0.8))               # sheet animates in; you read/think
+        if not self._interruptible_sleep(human_cooldown(0.8), should_stop):
+            self._raise_if_action_cancelled(should_stop, boundary="like-sheet confirmation")
         self._await_sheet_open()                      # gate: the fixed taps below are only
                                                        # valid while the sheet is actually up
+        self._raise_if_action_cancelled(should_stop, boundary="comment entry")
         sheet = self._screencap()           # the like screen: shows the item this comment attaches to
         # DOC 5.6'S POST-TAP CHECK, AND IT IS THE FIRST THING THAT LOOKS AT THE OPEN SHEET.
         # Placed above every branch that can type: the ordering IS the guarantee ("verify, then
@@ -3932,17 +4235,35 @@ class AndroidDriver(DatingAppDriver):
             self._dbg.action("like_anchor", before=sheet, item_index=item_index,
                              model_item_index=model_item_index, verified=payload is not None)
         if opener:
+            self._raise_if_action_cancelled(should_stop, boundary="comment entry")
             self._tap_frac(self.coords["comment_box"])
-            time.sleep(human_delay(0.5))
+            if not self._interruptible_sleep(human_delay(0.5), should_stop):
+                self._raise_if_action_cancelled(should_stop, boundary="comment entry")
+            self._raise_if_action_cancelled(should_stop, boundary="text entry")
             self.adb.text(opener)                     # opener sent WITH the like (Signals #2)
-            time.sleep(human_delay(0.6))
+            if not self._interruptible_sleep(human_delay(0.6), should_stop):
+                self._raise_if_action_cancelled(should_stop, boundary="send like")
+        self._raise_if_action_cancelled(should_stop, boundary="send like")
         self._tap_frac(self.coords["send_like"])
         time.sleep(human_cooldown(0.6))               # let the send register / upsell modal animate in
+        # Sending is only an attempt until the post-send frame proves Hinge accepted it. Keep a
+        # separate attempt record because a paywall can appear only AFTER the send tap; the
+        # completed ``like`` record below must never claim that refused action landed.  This is
+        # intentionally before the Rose-modal helper: that helper may refuse a stuck paid
+        # interstitial, but the Send Like tap has already been issued and must remain diagnosable.
+        attempt_fields = dict(heart=list(heart), opener_chars=len(opener or ""),
+                              item_index=item_index, model_item_index=model_item_index,
+                              verified=payload is not None)
+        self._dbg_action("like_attempt", before, **attempt_fields)
         rose = self._handle_rose_upsell()             # paid-upsell interstitial: dismiss, NEVER pay
-        self._dbg_action("like", before, heart=list(heart), opener_chars=len(opener or ""),
-                         rose_modal=rose, item_index=item_index,
-                         model_item_index=model_item_index, verified=payload is not None)
-        self._verify_like_landed(before)
+        action_fields = {**attempt_fields, "rose_modal": rose}
+        try:
+            self._verify_like_landed(before)
+        except HingeDeckBlockedError as exc:
+            self._dbg_action("like_rejected", before, **action_fields,
+                             rejection="deck_blocked", reason=str(exc))
+            raise
+        self._dbg_action("like", before, **action_fields)
 
     def _deliver_decision(self, decision: str):
         """Issue one like/pass, by whichever gesture this app's spec calls for.
@@ -4128,7 +4449,7 @@ class AndroidDriver(DatingAppDriver):
                     matching (_vertical_shift_match) rather than treating this as a mismatch.
                     UNLESS identity_top_name_band is declared and can resolve it by OCR'ing
                     the card header instead -- see the "Layer 1b" block below, added for the
-                    incident where a pass at scroll-top (Alina -> jessica) had no name visible
+                    incident where a pass at scroll-top (Zorva -> Qelix) had no name visible
                     in identity_band and fell through to a spurious content match.
         'new'     — the band shows a DIFFERENT profile's header.
         'unknown' — no identity_band declared for this app, the frame didn't decode, or this
@@ -4544,10 +4865,10 @@ class AndroidDriver(DatingAppDriver):
         The PASS path has written a full `observe_decision` record since the observe redesign;
         the LIKE path wrote nothing at all. `observe_like_anchor` fires on INTENT (the sheet was
         detected), not on resolution, so an actions.jsonl reader could not distinguish the four
-        outcomes of an opened sheet -- sent, dismissed, stop/timeout, resync -- and a real run
-        (2026-08-10) shows exactly that: capture(jessica) -> observe_waiting ->
-        observe_like_anchor -> capture(Victoria), with no on-disk evidence that jessica was
-        liked at all. The LABEL was never at risk (worker.py stores it either way); what was
+        outcomes of an opened sheet -- sent, dismissed, stop/timeout, resync. Without this
+        record, a capture of one profile can be followed by an anchor and a capture of another,
+        with no on-disk evidence that the first profile was liked. The LABEL was never at risk
+        (worker.py stores it either way); what was
         missing was the diagnostic trail, on the rarer and higher-value of the two decisions,
         and it broke the invariant bugreport.py documents (exactly one decision record per
         capture).
@@ -5161,6 +5482,15 @@ class AndroidDriver(DatingAppDriver):
             if cur is None:                           # screen asleep mid-wait: keep watching
                 time.sleep(_OBSERVE_POLL_S)           # (never diff a black frame against base)
                 continue
+            # The screen that can make this resolver wait forever is recognisable now.  Do not
+            # make a human wait for the generic stuck-screen budget just because the paywall
+            # appeared mid-wait (after Send Like rather than between profile loops).  Memoize the
+            # exact same reason ``blocked_reason()`` would report; Worker sees it on the next loop
+            # iteration and stops as blocked without recording a decision.
+            blocked = self._deck_blocked_reason(cur)
+            if blocked is not None:
+                self._blocked_reason = blocked
+                return None, intent_notified
             # (None, ...) on expiry, never (True, ...): the caller turns a True into a LIKE
             # label, and the whole reason we are giving up is that we never saw the like land.
             # In the incident, Hinge had REFUSED it (out of free likes) -- a LIKE label here
@@ -5213,8 +5543,8 @@ class AndroidDriver(DatingAppDriver):
             # resolve in seconds. So it deliberately does NOT re-arm the budget -- unlike
             # `like_sheet` above, which re-arms it on every poll. In the incident it never
             # resolved at all, because Hinge had refused the like and silently swapped the deck
-            # for the out-of-free-likes paywall; this loop polled from 01:42:43 until the owner
-            # pressed Stop at 01:45:02.
+            # for the out-of-free-likes paywall; this loop continued until the operator stopped
+            # it.
             self._note_observe_waiting("like_sending", cur)
             time.sleep(_OBSERVE_POLL_S)
         return None, intent_notified

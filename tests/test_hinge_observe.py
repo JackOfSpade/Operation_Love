@@ -269,18 +269,11 @@ def test_like_without_opener_taps_heart_then_send():
     assert adb.texts == []                       # no comment typed
 
 
-def test_like_with_opener_types_comment_between_heart_and_send():
+def test_like_with_capture_order_opener_is_refused_before_heart_and_send():
     adb = FakeAdb([_action_frame()])
-    # item_index=0 -- "the opener is about the first captured frame", the shape the live pipeline
-    # produces for model item 1 in profile-photos space. An opener with NO item index at all is
-    # refused before any gesture since 2026-08-12 (never attach real text to whichever heart
-    # happens to be topmost); that refusal has its own test below.
-    _drv(adb).like("loved your stargazing prompt", 0)
-    heart = (937, 1600)                          # vision-located
-    box = (int(0.500 * 1080), int(0.529 * 2400))
-    send = (int(0.643 * 1080), int(0.576 * 2400))
-    assert adb.taps == [heart, box, send]
-    assert adb.texts == ["loved your stargazing prompt"]
+    with pytest.raises(hinge.HingeTargetingError, match="model item index"):
+        _drv(adb).like("loved your stargazing prompt", 0)
+    assert adb.taps == [] and adb.texts == []
 
 
 # --- observe: wait_for_decision via frame deltas ------------------------
@@ -343,14 +336,14 @@ def test_like_writes_its_own_decision_record(monkeypatch):
     """A LIKE used to write NO decision record at all: observe_decision hardcoded
     decision="pass", and the two `return True` sites logged nothing. observe_like_anchor fires
     on INTENT (a sheet was spotted), not on resolution, so an actions.jsonl reader could not
-    tell a sent like from a sheet the human opened and backed out of. A real run
-    (2026-08-10) shows exactly that hole: capture(jessica) -> observe_waiting ->
-    observe_like_anchor -> capture(Victoria), with nothing on disk proving jessica was liked."""
+    tell a sent like from a sheet the human opened and backed out of. Without a resolution
+    record, one profile's capture can be followed by an anchor and another profile's capture,
+    with nothing on disk proving the first profile was liked."""
     monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
     adb = FakeAdb([b"a", b"sheet", b"b"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
-    drv._identity_name = "jessica"
+    drv._identity_name = "profile_a"
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"b")
 
     assert drv.wait_for_decision(timeout=5.0) is True
@@ -358,7 +351,7 @@ def test_like_writes_its_own_decision_record(monkeypatch):
     decisions = [f for name, f in drv._dbg.calls if name == "observe_decision"]
     assert len(decisions) == 1
     assert decisions[0]["decision"] == "like"
-    assert decisions[0]["profile_name"] == "jessica"
+    assert decisions[0]["profile_name"] == "profile_a"
     # Layer 3 measures distance to the PASS control, so running it on a like would confidently
     # report "resync" for a tap that correctly hit the heart. An honest absence beats a wrong answer.
     assert decisions[0]["gesture"] == "not_checked"
@@ -932,15 +925,15 @@ def test_vertical_shift_match_reports_which_shift_matched_and_how_much_overlappe
 # --- observe: resolving a "top" identity verdict by OCR'ing the card header (2026-08-10) ---
 # Reported incident: at scroll-top, identity_band shows Hinge's own profile-independent
 # filter-chips row, not a name, so _identity_of could only ever say "top" -- and the decision
-# fell through to a spurious content/shift match against a DIFFERENT woman's profile (Alina's
+# fell through to a spurious content/shift match against a DIFFERENT woman's profile (Zorva's
 # pass was recorded as a scroll of her own card, when the deck had actually already advanced
-# to jessica). identity_top_name_band + _identity_of's "Layer 1b" block is the fix: it OCRs
+# to qelix). identity_top_name_band + _identity_of's "Layer 1b" block is the fix: it OCRs
 # the card header itself (which DOES carry the name even at scroll-top) to resolve "top" into
 # "same" or "new" directly. `_ocr_band` is stubbed throughout (never requires a real
 # tesseract binary) with a fake that returns text keyed on the `psm` argument, so these tests
 # also double as plumbing checks that Layer 1b really does request psm="6" for the new band.
 
-def _top_state_drv(monkeypatch, *, stored_name="Alina", **cfg):
+def _top_state_drv(monkeypatch, *, stored_name="Zorva", **cfg):
     """A driver whose pixel identity verdict is pinned to exactly 'top' -- the SAME per-call
     setup every test below needs, so only the OCR stub (and the stored name, for the
     near-miss test) differs between callers."""
@@ -958,7 +951,7 @@ def test_identity_top_name_ocr_resolves_top_to_new_when_a_different_name_is_read
     content/shift-match layers Layer 2 would otherwise fall through to."""
     drv = _top_state_drv(monkeypatch)
     monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "jessica" if psm == "6" else None)
+                        lambda frame, rect, psm="7": "qelix" if psm == "6" else None)
 
     state, _dist = drv._identity_of(b"frame")
 
@@ -970,7 +963,7 @@ def test_identity_top_name_ocr_resolves_top_to_same_when_the_stored_name_is_read
     of leaving the wait loop stuck on an inconclusive verdict."""
     drv = _top_state_drv(monkeypatch)
     monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "Alina" if psm == "6" else None)
+                        lambda frame, rect, psm="7": "Zorva" if psm == "6" else None)
 
     state, _dist = drv._identity_of(b"frame")
 
@@ -978,12 +971,12 @@ def test_identity_top_name_ocr_resolves_top_to_same_when_the_stored_name_is_read
 
 
 def test_identity_top_name_ocr_near_miss_reads_stay_same_the_false_pass_guard(monkeypatch):
-    """MEASURED calibration for _NAME_MATCH_RATIO: 'Alina' vs a plausible OCR misread 'Alma'
-    scores 0.67, and vs 'Aiina' scores 0.80 -- both MUST stay 'same', because a false 'new'
+    """MEASURED calibration for _NAME_MATCH_RATIO: 'Zorva' vs plausible OCR misreads 'Zorba'
+    and 'Zorna' scores 0.80 -- both MUST stay 'same', because a false 'new'
     here records a PASS the human never made and corrupts the taste model, while a false
     'same' only ever costs a missed wait (see _NAME_MATCH_RATIO's own module comment for the
     full asymmetry argument). Exercise both measured misreads."""
-    for misread in ("Alma", "Aiina"):
+    for misread in ("Zorba", "Zorna"):
         drv = _top_state_drv(monkeypatch)
         monkeypatch.setattr(drv, "_ocr_band",
                             lambda frame, rect, psm="7", _r=misread: _r if psm == "6" else None)
@@ -1020,7 +1013,7 @@ def test_identity_top_name_ocr_never_runs_when_the_verdict_is_not_top(monkeypatc
         return None
 
     drv = _drv(FakeAdb([b"frame"]))
-    drv._identity_name = "Alina"
+    drv._identity_name = "Zorva"
     drv._identity_sig = np.zeros((16, 64), dtype="int16")           # id_sig set
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     # band far from BOTH id_sig and top_sig -> pixel verdict is 'new' outright
@@ -1087,11 +1080,11 @@ def test_scroll_top_pass_swallowed_by_content_match_is_now_correctly_a_pass_via_
     content-match the NEXT profile's first frame closely enough that Layer 2 would swallow a
     genuine pass as "just a scroll" (dating first-photos are alike: centred face, light
     background -- see wait_for_decision's own Layer 2 comment on this weak cross-profile
-    signal). This is EXACTLY what happened on 2026-08-10: a pass from Alina to jessica was
+    signal). This is EXACTLY what happened on 2026-08-10: a pass from Zorva to qelix was
     logged as observe_scroll reason=shift_match.
 
-    Layer 1b's card-header OCR is what breaks the tie: it reads "jessica" against the stored
-    "Alina", resolves the 'top' verdict to 'new' BEFORE Layer 2 ever runs (Layer 2 is skipped
+    Layer 1b's card-header OCR is what breaks the tie: it reads "qelix" against the stored
+    "Zorva", resolves the 'top' verdict to 'new' BEFORE Layer 2 ever runs (Layer 2 is skipped
     outright once identity says 'new' -- see wait_for_decision's own comment on why), and
     wait_for_decision now correctly returns False (PASS) instead of looping forever as an
     unrecorded scroll. Without the fix (state staying 'top'), the scripted content match below
@@ -1105,8 +1098,8 @@ def test_scroll_top_pass_swallowed_by_content_match_is_now_correctly_a_pass_via_
 
     adb = FakeAdb([b"base", b"new"], advance_on_screencap=True)
     drv = _drv(adb)
-    drv._identity_name = "Alina"
-    drv._identity_sig = None              # never revealed Alina's own sticky header this capture
+    drv._identity_name = "Zorva"
+    drv._identity_sig = None              # never revealed Zorva's own sticky header this capture
     drv._identity_top_sig = chrome_sig    # the scroll-top chrome IS recognised -> pixel verdict 'top'
     drv._current_sigs = [seen_ds]
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: chrome_sig)
@@ -1114,7 +1107,7 @@ def test_scroll_top_pass_swallowed_by_content_match_is_now_correctly_a_pass_via_
     monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "jessica" if psm == "6" else None)
+                        lambda frame, rect, psm="7": "qelix" if psm == "6" else None)
 
     assert drv.wait_for_decision(timeout=5.0) is False
 
@@ -1131,12 +1124,12 @@ def test_scroll_top_pass_swallowed_by_content_match_is_now_correctly_a_pass_via_
 # false 'same' only ever costs a wait, never a wrong label.
 
 def test_identity_top_name_ocr_truncated_read_of_a_longer_name_stays_same(monkeypatch):
-    """False-PASS guard: a truncated READ this poll ('Al' for stored 'Alina', 'Kat'/'Ka' for
+    """False-PASS guard: a truncated READ this poll ('Zo' for stored 'Zorva', 'Kat'/'Ka' for
     stored 'Katherine') scores 0.57/0.50/0.36 against _NAME_MATCH_RATIO=0.6 -- below the bar,
     so without the prefix test this would have resolved 'top' straight to a false 'new' and
     recorded a PASS the human never made. A truncation is by definition a prefix of the name
     it came from, so the prefix test must catch every one of these."""
-    for stored_name, read_name in (("Alina", "Al"), ("Katherine", "Kat"), ("Katherine", "Ka")):
+    for stored_name, read_name in (("Zorva", "Zo"), ("Katherine", "Kat"), ("Katherine", "Ka")):
         drv = _top_state_drv(monkeypatch, stored_name=stored_name)
         monkeypatch.setattr(
             drv, "_ocr_band",
@@ -1151,11 +1144,11 @@ def test_identity_top_name_ocr_truncated_read_of_a_longer_name_stays_same(monkey
 
 def test_identity_top_name_ocr_stored_name_truncated_by_a_bad_capture_stays_same(monkeypatch):
     """The REVERSE direction of the same hole: a BAD CAPTURE-TIME read is what got stored as
-    self._identity_name ('Al' for a profile actually named 'Alina', 'Sam' for 'Samantha') --
+    self._identity_name ('Zo' for a profile actually named 'Zorva', 'Sam' for 'Samantha') --
     not this poll's OCR read, which is the FULL correct name. Every later full-name read must
     still resolve 'same' against that truncated stored value, or the one bad capture poisons
     the whole rest of the profile with spurious 'new' verdicts."""
-    for stored_name, read_name in (("Al", "Alina"), ("Sam", "Samantha")):
+    for stored_name, read_name in (("Zo", "Zorva"), ("Sam", "Samantha")):
         drv = _top_state_drv(monkeypatch, stored_name=stored_name)
         monkeypatch.setattr(
             drv, "_ocr_band",
@@ -1171,7 +1164,7 @@ def test_identity_top_name_ocr_stored_name_truncated_by_a_bad_capture_stays_same
 def test_identity_top_name_ocr_genuine_different_name_still_resolves_new(monkeypatch):
     """The prefix-test fix above must not neuter the original bug fix: a GENUINELY different
     name (no prefix relationship either direction, ratio well below the bar) must still
-    resolve 'top' to 'new'. Alina-vs-jessica (the actual reported incident) is already covered
+    resolve 'top' to 'new'. Zorva-vs-qelix (the pseudonymized incident) is already covered
     by test_identity_top_name_ocr_resolves_top_to_new_when_a_different_name_is_read above;
     this is the second MEASURED genuine-difference pair (Katherine/Michelle, ratio 0.35)."""
     drv = _top_state_drv(monkeypatch, stored_name="Katherine")
@@ -1215,15 +1208,15 @@ def test_name_derived_new_reproduced_on_confirm_frame_produces_a_pass(monkeypatc
     chrome_sig = np.full((16, 64), 200, dtype="int16")
     adb = FakeAdb([b"base", b"new", b"new"], advance_on_screencap=True)
     drv = _drv(adb)
-    drv._identity_name = "Alina"
-    drv._identity_sig = None              # never revealed Alina's own sticky header this capture
+    drv._identity_name = "Zorva"
+    drv._identity_sig = None              # never revealed Zorva's own sticky header this capture
     drv._identity_top_sig = chrome_sig    # the scroll-top chrome IS recognised -> pixel verdict 'top'
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: chrome_sig)
     monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     # Constant regardless of which frame/call this is -- a genuinely reproducing read.
     monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "jessica" if psm == "6" else None)
+                        lambda frame, rect, psm="7": "qelix" if psm == "6" else None)
 
     assert drv.wait_for_decision(timeout=5.0) is False
 
@@ -1240,7 +1233,7 @@ def test_name_derived_new_not_reproduced_on_confirm_frame_does_not_produce_a_pas
     chrome_sig = np.full((16, 64), 200, dtype="int16")
     adb = FakeAdb([b"base", b"new", b"new"], advance_on_screencap=True)
     drv = _drv(adb)
-    drv._identity_name = "Alina"
+    drv._identity_name = "Zorva"
     drv._identity_sig = None
     drv._identity_top_sig = chrome_sig
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: chrome_sig)
@@ -1257,7 +1250,7 @@ def test_name_derived_new_not_reproduced_on_confirm_frame_does_not_produce_a_pas
         # reproducing it on the even ones -- is exactly a misread that does not survive a
         # second independent read, on every single poll (not just the first), so this can never
         # accidentally pass by outlasting a finite scripted sequence.
-        return "jessica" if calls["n"] % 2 == 1 else None
+        return "qelix" if calls["n"] % 2 == 1 else None
 
     monkeypatch.setattr(drv, "_ocr_band", flaky_ocr)
 
@@ -1284,15 +1277,15 @@ def test_ocr_band_caches_a_repeated_identical_band_without_rerunning_tesseract(m
     monkeypatch.setattr(hinge.shutil, "which", lambda name: "/usr/bin/tesseract")
     monkeypatch.setattr(
         hinge.subprocess, "run",
-        lambda *a, **k: (calls.append(1), SimpleNamespace(stdout=b"Alina", returncode=0))[1])
+        lambda *a, **k: (calls.append(1), SimpleNamespace(stdout=b"Zorva", returncode=0))[1])
     frame = _png(value=10)
     rect = (0.0, 0.0, 1.0, 1.0)
 
     first = drv._ocr_band(frame, rect, psm="6")
     second = drv._ocr_band(frame, rect, psm="6")
 
-    assert first == "Alina"
-    assert second == "Alina"
+    assert first == "Zorva"
+    assert second == "Zorva"
     assert len(calls) == 1, f"expected exactly 1 tesseract invocation, got {len(calls)}"
 
 
@@ -1306,7 +1299,7 @@ def test_ocr_band_cache_miss_on_a_different_band_still_invokes_tesseract(monkeyp
     monkeypatch.setattr(hinge.shutil, "which", lambda name: "/usr/bin/tesseract")
     monkeypatch.setattr(
         hinge.subprocess, "run",
-        lambda *a, **k: (calls.append(1), SimpleNamespace(stdout=b"Alina", returncode=0))[1])
+        lambda *a, **k: (calls.append(1), SimpleNamespace(stdout=b"Zorva", returncode=0))[1])
     rect = (0.0, 0.0, 1.0, 1.0)
 
     drv._ocr_band(_png(value=10), rect, psm="6")
@@ -1326,7 +1319,7 @@ def test_ocr_band_cache_resets_per_profile(monkeypatch):
     monkeypatch.setattr(hinge.shutil, "which", lambda name: "/usr/bin/tesseract")
     monkeypatch.setattr(
         hinge.subprocess, "run",
-        lambda *a, **k: (calls.append(1), SimpleNamespace(stdout=b"Alina", returncode=0))[1])
+        lambda *a, **k: (calls.append(1), SimpleNamespace(stdout=b"Zorva", returncode=0))[1])
     frame = _png(value=10)
     rect = (0.0, 0.0, 1.0, 1.0)
 
@@ -2266,14 +2259,14 @@ def test_a_targeting_stop_is_the_driver_agnostic_type_the_worker_catches():
 
 
 # --- like(): never substitutes, and there is no repair callback left to substitute WITH ------
-def test_like_types_the_original_opener_when_targeting_reaches_the_item():
-    """Targeting lands on the exact item the opener was written about (index 0, the fast path),
-    so the ORIGINAL opener text is what reaches the phone. Nothing re-asks, nothing rewrites."""
+def test_like_rejects_a_capture_order_opener_before_targeting():
+    """Only a calibrated model-item number can now license text on a comment sheet."""
     adb = FakeAdb([_action_frame()])
 
-    _drv(adb).like(opener="original opener about the first photo", item_index=0)
+    with pytest.raises(hinge.HingeTargetingError, match="model item index"):
+        _drv(adb).like(opener="original opener about the first photo", item_index=0)
 
-    assert adb.texts == ["original opener about the first photo"]
+    assert adb.texts == [] and adb.taps == []
 
 
 def test_like_stops_and_sends_nothing_when_targeting_cannot_reach_the_item():
@@ -2286,7 +2279,7 @@ def test_like_stops_and_sends_nothing_when_targeting_cannot_reach_the_item():
     drv = _drv(adb)
     drv._current_sigs = [object(), object()]        # item 5 is outside the capture
 
-    with pytest.raises(hinge.HingeTargetingError):
+    with pytest.raises(hinge.HingeTargetingError, match="model item index"):
         drv.like(opener="original opener about a different item", item_index=5)
 
     assert adb.taps == []       # the heart was never tapped, so no sheet and no like
@@ -2301,7 +2294,7 @@ def test_like_refuses_an_opener_with_no_item_index_at_all_before_touching_the_sc
     "item None"."""
     adb = FakeAdb([_action_frame()])
 
-    with pytest.raises(hinge.HingeTargetingError, match="no item index was supplied at all"):
+    with pytest.raises(hinge.HingeTargetingError, match="model item index"):
         _drv(adb).like(opener="original opener about an unidentified item")
 
     assert adb.taps == [] and adb.texts == []
@@ -2358,22 +2351,26 @@ def test_verify_like_landed_dismisses_late_animating_rose_modal(monkeypatch):
     # already gave up (it wasn't visible yet at that point). _verify_like_landed must tolerate
     # that -- dismiss it itself and keep checking -- instead of treating a still-open modal as a
     # dead run and halting a perfectly-sent like.
-    calls = {"n": 0}
+    calls = {"modal": 0}
+
+    # Give the matcher logical role names instead of depending on its global invocation count.
+    # `_verify_like_landed` deliberately probes paywall before the sheet/modal glyphs now; that
+    # extra read-only probe must not change when the Rose itself arrives.
+    drv = _drv(FakeAdb([b"before", b"before", b"after"], advance_on_screencap=True),
+               halt_on_error=True)
+    monkeypatch.setattr(drv, "_template", lambda role: role)
 
     def fake_match(frame, template, side="any", threshold=0.6):
-        calls["n"] += 1
-        # iter1: sheet check (gone), modal check (not yet animated in)
-        # iter2: sheet check (gone), modal check (now up -> gets dismissed)
-        # iter3: sheet check (gone), modal check (gone, dismissed)
-        if calls["n"] == 4:
+        if template != "upsell_dismiss":             # paywall + sheet are absent throughout
+            return []
+        calls["modal"] += 1
+        # Iteration 1: not yet animated; iteration 2: up and dismissed; iteration 3: gone.
+        if calls["modal"] == 2:
             return [(5, 5)]
         return []
 
     monkeypatch.setattr(hinge, "_match_glyph", fake_match)
     monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
-
-    adb = FakeAdb([b"before", b"before", b"after"], advance_on_screencap=True)
-    drv = _drv(adb, halt_on_error=True)
 
     drv._verify_like_landed(b"before")            # must NOT raise
     assert drv._touch.taps == [(5, 5)]             # dismissed the late modal itself, never a Rose
@@ -2741,7 +2738,7 @@ def _identity_drv(monkeypatch, adb=None, **cfg):
     drv = _drv(adb or FakeAdb([b"a"]), observe_name_ocr=True, **cfg)
     drv._identity_sig = np.full((16, 64), 10, dtype="int16")     # captured profile's header
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")  # scroll-top chrome
-    drv._identity_name = "jessica"
+    drv._identity_name = "qelix"
     return drv
 
 
@@ -2783,7 +2780,7 @@ def test_ocr_can_still_rescue_a_position_shifted_header_as_same(monkeypatch):
     import numpy as np
     drv = _identity_drv(monkeypatch)
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: np.full((16, 64), 120, dtype="int16"))
-    monkeypatch.setattr(drv, "_ocr_band", lambda frame, rect: "Jessica")   # case-insensitive
+    monkeypatch.setattr(drv, "_ocr_band", lambda frame, rect: "Qelix")   # case-insensitive
 
     assert drv._identity_of(b"shifted-header")[0] == "same"
 

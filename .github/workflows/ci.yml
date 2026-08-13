@@ -27,6 +27,21 @@ jobs:
       # The ml extra downloads GBs; the runner only has ~14 GB free.
       PIP_NO_CACHE_DIR: '1'
     steps:
+      # act-local-CI only. `.actrc` puts this stable path first so act does not
+      # replace its bundled x64 Node path with a nonexistent arm64 path after
+      # setup-python's first `::add-path::`. Resolve the symlink dynamically
+      # before the first JavaScript action, because act-latest's Node patch
+      # version moves with the image. GitHub-hosted CI never runs this step.
+      - name: Resolve act's x64 Node toolcache path (act-local CI only)
+        if: ${{ env.ACT == 'true' }}
+        run: |
+          set -euo pipefail
+          [ "${ACT:-}" = "true" ] || exit 0
+          node_root=/opt/acttoolcache/node
+          node_dir="$(find "$node_root" -mindepth 1 -maxdepth 1 -type d \
+            ! -name current -print | sort -V | tail -n 1)"
+          [ -n "$node_dir" ] && [ -x "$node_dir/x64/bin/node" ]
+          ln -sfn "$node_dir" "$node_root/current"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -79,6 +94,18 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true   # advisory; never blocks the merge gate
     steps:
+      # Same act bootstrap as the test job: .actrc is global, so every job must
+      # resolve its stable Node path before its first JavaScript action.
+      - name: Resolve act's x64 Node toolcache path (act-local CI only)
+        if: ${{ env.ACT == 'true' }}
+        run: |
+          set -euo pipefail
+          [ "${ACT:-}" = "true" ] || exit 0
+          node_root=/opt/acttoolcache/node
+          node_dir="$(find "$node_root" -mindepth 1 -maxdepth 1 -type d \
+            ! -name current -print | sort -V | tail -n 1)"
+          [ -n "$node_dir" ] && [ -x "$node_dir/x64/bin/node" ]
+          ln -sfn "$node_dir" "$node_root/current"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:

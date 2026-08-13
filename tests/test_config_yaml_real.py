@@ -15,8 +15,6 @@ config.yaml that could not start was therefore fully CI-green.
 import pytest
 
 from operation_love.config import load
-from operation_love.opener.opener import GeminiOpener
-from operation_love.perception.capture import Profile
 
 
 @pytest.fixture(scope="module")
@@ -167,25 +165,10 @@ def test_shipped_opener_style_does_not_ship_the_item_selection_rule(cfg):
     (PICK THE ITEM YOURSELF / THE FAILURE TO AVOID / THE UNNUMBERED IMAGES ARE CONTEXT) and no
     longer does, on purpose.
 
-    THIS BLOCK ('opener.style') IS SENT ON EVERY REQUEST, REGARDLESS OF SHAPE -- it is the user
-    turn's STYLE GUIDE (see opener.py's _text_part), with no anchored/unanchored branching of its
-    own. An unconditional "you choose the item" instruction there directly contradicted OBSERVE's
-    anchored closing paragraph, which tells the model the item is ALREADY decided (the human
-    picked it by tapping its heart) -- so an anchored request carried two live, opposing
-    instructions about who chooses the item, in the same call, with nothing resolving the clash.
-    Confirmed by building the real request via
-    GeminiOpener._text_part(profile, cfg.opener.style, anchored=True) with this real config; see
-    test_anchored_style_guide_never_carries_the_item_selection_instruction below for that same
-    reproduction pinned as a regression test.
-
     opener.py's _SYSTEM keeps the selection criterion -- the tradeoff, the failure mode named as
     a failure, and why to use (never pick) the unnumbered context tier -- in full, compressed but
-    not abridged, pinned by tests/test_opener.py. It does not have this bug: _ANCHOR_SYSTEM is
-    only appended when the request is anchored, and it explicitly overrides _SYSTEM's own "PICK
-    THE ITEM YOURSELF" line before the model ever writes. Rather than build a second, independent
-    override mechanism for THIS block -- two shape-aware copies of the same rule is exactly doc
-    3.1's "duplication trap" that produced this bug in the first place -- the instruction now
-    lives in exactly one place, and this test pins its absence here rather than its presence.
+    not abridged, pinned by tests/test_opener.py. The instruction lives in exactly one place, and
+    this test pins its absence here rather than its presence.
     """
     style = " ".join(cfg.opener.style.lower().split())
 
@@ -198,43 +181,14 @@ def test_shipped_opener_style_does_not_ship_the_item_selection_rule(cfg):
     ):
         assert _phrase not in style, (
             f"opener.style ships the item-selection instruction again ({_phrase!r}); this "
-            "block is sent on every request regardless of shape and has no anchored/unanchored "
-            "branch of its own, so an unconditional copy here re-introduces the 2026-08-12 "
-            "audit's Bug 1 (the observe prompt contradicting itself). The selection criterion "
-            "belongs in opener.py's _SYSTEM, which IS shape-aware via _ANCHOR_SYSTEM's explicit "
-            "override -- see test_opener.py's item-selection assertions."
+            "block must not duplicate the selection rule. The selection criterion belongs in "
+            "opener.py's _SYSTEM -- see test_opener.py's item-selection assertions."
         )
 
     # Everything else the redesign shipped around it must survive untouched -- this test exists
     # to catch a regression in ONE paragraph, not to license churn on its neighbours.
     assert "connecting two separate places on her profile is the strongest" in style
     assert "a claim she can correct beats a question she has to answer" in style
-
-
-def test_anchored_style_guide_never_carries_the_item_selection_instruction(cfg):
-    """Bug 1's own reproduction, pinned as a regression test.
-
-    The audit that found Bug 1 reproduced it by building the real anchored user-turn text via
-    GeminiOpener._text_part(profile, cfg.opener.style, anchored=True) against the real shipped
-    config -- i.e. exactly what observe mode sends once the human has tapped a heart and the
-    anchor screenshot is in hand. This test is that same construction, so a future edit that
-    reintroduces an unconditional selection paragraph into opener.style (or removes the anchored
-    closing paragraph's own "write about that item only") fails here directly, rather than only
-    being caught by the style block's own isolated assertions above.
-    """
-    profile = Profile(photos=[b"fake-frame-1", b"fake-frame-2", b"fake-frame-3"])
-    opener = GeminiOpener(["gemini-test-model"], api_key="test-key")
-    text = opener._text_part(profile, cfg.opener.style, anchored=True)["text"].lower()
-
-    # The self-selection instruction must not be anywhere in the anchored request's user turn.
-    assert "pick the item yourself" not in text
-    assert "which one you write about is your choice to make" not in text
-    assert "read all of the numbered items before you choose" not in text
-
-    # The anchored closing paragraph -- the one genuinely shape-aware instruction for this
-    # request -- must still be exactly what tells the model which item it is writing about.
-    assert "your message attaches to the photo or prompt in that last image" in text
-    assert "write about that item only" in text
 
 
 def test_shipped_opener_style_ships_the_redesign_guardrails(cfg):
@@ -324,7 +278,7 @@ def test_hinge_identity_top_name_band_matches_the_measured_ocr_band(cfg):
     """apps.hinge.identity_top_name_band must carry the exact band MEASURED on real Pixel 7a
     frames on 2026-08-10 (tesseract --psm 6 read the card-header name correctly on every
     scroll-top frame tested, both banner-present and banner-gone layouts). This is what fixes
-    observe mode recording a pass that advanced Alina -> jessica as a scroll of Alina -- see
+    observe mode recording a pass that advanced Profile A -> Profile B as a scroll of Profile A -- see
     android_spec.py's identity_top_name_band docstring for the full mechanism. A drifted or
     dropped value here would silently defeat the scroll-top name check on the one platform
     that actually runs (Hinge; see live-bringup-status)."""

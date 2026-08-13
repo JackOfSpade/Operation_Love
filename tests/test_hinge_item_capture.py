@@ -815,7 +815,7 @@ def test_an_action_that_advances_the_deck_drops_the_table_even_when_it_raises(ac
         mp.setattr(HingeDriver, "_deliver_decision",
                    lambda *a, **k: (_ for _ in ()).throw(hinge.HingeActionError("boom")))
         with pytest.raises(hinge.HingeActionError):
-            drv.like("hi") if action == "like" else drv.dislike()
+            drv.like("hi", 0) if action == "like" else drv.dislike()
 
     assert drv._current_item_index is None and drv._current_item_payload is None
     assert "deck advanced" in drv._current_items_unavailable

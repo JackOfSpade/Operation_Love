@@ -237,20 +237,8 @@ _SCHEMA = {
 # unedited only per this file's own "never rewrite existing lines" convention (see
 # ops/OPENER-REDESIGN.md). config.yaml's opener.style is sent, byte-for-byte, on EVERY request
 # regardless of shape (it is the user turn's STYLE GUIDE -- see _text_part), so its unconditional
-# copy of PICK THE ITEM YOURSELF directly contradicted the anchored closing paragraph _text_part
-# appends for OBSERVE's request, which tells the model the item is ALREADY chosen (the human
-# picked it by tapping its heart). _SYSTEM below does not have that problem, because it is
-# genuinely shape-aware: _ANCHOR_SYSTEM is appended only when the request is anchored, and it
-# explicitly overrides this constant's own "PICK THE ITEM YOURSELF" sentence before the model
-# ever writes ("THIS OVERRIDES PICK THE ITEM YOURSELF ABOVE ... you do not choose one"). Building
-# a second, independent override for config.yaml's copy would leave two shape-aware mechanisms
-# doing the same job in parallel -- exactly the "duplication trap" this module's own comment
-# above (3.1) already names as the standing risk -- so the three paragraphs were deleted from
-# config.yaml instead, and _SYSTEM below is now their one remaining home. Nothing below this
-# comment changed: the compressed copy was already complete (the tradeoff, the failure mode, the
-# context tier and why to use it), so no content was lost, only the unconditional duplicate of
-# it. See tests/test_config_yaml_real.py's
-# test_shipped_opener_style_does_not_ship_the_item_selection_rule.
+# copy of PICK THE ITEM YOURSELF is intentionally kept only in this system instruction. Both
+# auto and observe now send the same numbered item crops, so one selection rule is sufficient.
 _SYSTEM = (
     "You write the opening message a man sends a woman on a dating app. Use the dating and "
     "conversational principles associated with Coach Corey Wayne's 'How to Be a 3% Man', without "
@@ -319,79 +307,6 @@ _SYSTEM = (
     "preamble, label, or surrounding quotes. Follow the style guide. Output only the structured result."
 )
 
-# Appended to _SYSTEM (never mutated in place -- see _system_text) only when generate() was
-# given an anchor screenshot. Without this, the model treats every image identically and
-# picks whichever photo or prompt it personally finds most interesting to write about; the
-# comment then gets attached, by Hinge itself, to a completely different item than the one
-# the opener describes -- the exact bug this whole anchor feature exists to fix. Kept as a
-# separate constant rather than folded into _SYSTEM directly so the un-anchored request stays
-# byte-identical to what it was before this feature existed (see _system_text).
-#
-# THE PREMISE HAS TWO CONCLUSIONS, and this text used to draw only one of them (ops/
-# OPENER-REDESIGN.md 1.1 root cause #4). "She reads your words directly beneath that item" was
-# stated purely as a TARGETING argument -- write about this item, not that one -- which
-# pressured the model to disambiguate inside the message, i.e. to name the item so it was
-# unmistakably clear which one it meant. The conclusion never drawn is the opposite and more
-# useful one: precisely BECAUSE she is looking at that item while she reads, naming it is
-# wasted words at best and reads as if we think she cannot see it at worst. Both conclusions
-# now ship together, and the targeting half is unchanged.
-#
-# Addendum 2026-08-12 (Part B): _SYSTEM now tells the model to CHOOSE the item, which on an
-# anchored request directly contradicts "the anchor decides what you write about" -- the model
-# reads both constants in the same systemInstruction, so an unstated precedence is not a
-# stylistic wrinkle but two live instructions pulling opposite ways (doc 3.1's duplication
-# lesson). Stated explicitly rather than left to be inferred from ordering, and stated HERE
-# rather than in _SYSTEM so the unanchored request keeps no trace of anchoring at all. Doc 5.1
-# drops the anchor from the prompt in both modes; until that lands this is the seam.
-_ANCHOR_SYSTEM = (
-    " ANCHORED REQUEST: this request ends with one extra image that is NOT part of her "
-    "profile. It is the app's like screen exactly as it looks on the phone right now, and the "
-    "single photo or prompt visible in it is the item your message is attached to: she reads "
-    "your words directly beneath that item. When that image is present it decides what you "
-    "write about. THIS OVERRIDES PICK THE ITEM YOURSELF ABOVE: on this request the item is "
-    "already chosen and open on the phone, so you do not choose one, and item_index simply "
-    "reports which numbered item it turned out to be. "
-    "Ground the opener in that item so it reads as a natural remark on it, never "
-    "on a different photo or prompt, and never mention the app's own interface. That same fact "
-    "cuts the other way too: because she is looking straight at that item while she reads you, "
-    "you never need to name it or describe it back to her. It is the premise your claim comes "
-    "from, not the content of the message."
-)
-
-# Placed immediately before the anchor image in _assemble_parts, not just referenced from the
-# trailing text block -- adjacency is what makes "the next image" unambiguous to a model
-# reading a flat list of parts (see _assemble_parts for the full rationale).
-_ANCHOR_LABEL = (
-    "=== THE NEXT IMAGE IS THE LIKE SCREEN, NOT A PROFILE PHOTO ===\n"
-    "It is a live screenshot of the phone with her like screen open. The one photo or prompt "
-    "shown in it is the exact item your message will be attached to and displayed underneath. "
-    "Look at it closely: it, and only it, is what your opener must be about."
-)
-
-
-def _system_text(anchored: bool) -> str:
-    """The full systemInstruction text for one request: _SYSTEM alone for an ordinary
-    profile-only request, or _SYSTEM + _ANCHOR_SYSTEM once an anchor screenshot is in play.
-
-    Kept as string concatenation rather than a single combined constant so the un-anchored
-    path stays byte-for-byte what it was before anchoring existed -- existing tests assert
-    payload["systemInstruction"]["parts"][0]["text"] == _SYSTEM, and that must keep holding
-    for every request that has no anchor image.
-
-    THE ITEM-CROP SHAPE (ItemRequest, below) IS UNANCHORED, so it gets plain _SYSTEM -- and
-    deliberately gets no extra system text of its own. The per-image ITEM/CONTEXT label
-    convention is stated in the USER turn (see _ITEM_PREAMBLE) rather than here, because
-    systemInstruction is shared with the anchored shape, where no such labels exist: a system
-    line promising "every image is preceded by its own label" would be a lie on every anchored
-    request, and doc 3.1's duplication lesson is precisely that two copies of the same claim
-    disagreeing is a real bug, not a cosmetic one. _SYSTEM's PICK THE ITEM YOURSELF paragraph
-    is already written in item terms ("the numbered images are her profile items, numbered
-    from 1 in the order they are given ... any image given WITHOUT a number is context") and
-    is true of both shapes as written, so it is unchanged by the crop migration.
-    """
-    return _SYSTEM + _ANCHOR_SYSTEM if anchored else _SYSTEM
-
-
 # ---------------------------------------------------------------------------------------
 # THE ITEM-CROP REQUEST SHAPE (ops/OPENER-REDESIGN.md 5.2 and 5.7)
 #
@@ -437,14 +352,13 @@ _ITEM_PREAMBLE = (
 
 # Appended to _ITEM_PREAMBLE only when context crops are actually being sent. Explaining a
 # label that does not appear in the request would be describing something that is not there,
-# which is the same class of small lie as the anchor copy on an unanchored request.
+# which would otherwise be a small lie about the request.
 _ITEM_PREAMBLE_CONTEXT = (
     " A label reading CONTEXT means the image directly after it has no number: read it and "
     "use what it shows, but you can never pick it."
 )
 
-# Placed immediately BEFORE the image it names, exactly like _ANCHOR_LABEL and for exactly the
-# reason in _assemble_parts' docstring: Gemini reads parts as one ordered sequence, and "the
+# Placed immediately BEFORE the image it names: Gemini reads parts as one ordered sequence, and "the
 # next image" is only unambiguous when the pointer text sits adjacent to what it points at.
 # Adjacency is what turns doc 5.2's "image k IS item k" from a fact about how we built the
 # request into a fact the model can read off the request.
@@ -1094,20 +1008,15 @@ class OpenerClient(Protocol):
     """What OpenerService requires of an opener client -- i.e. every argument the service
     actually passes, and nothing more.
 
-    `items` IS NOW DECLARED, because OpenerService threads it (doc 5.2/5.7's item-crop request
-    shape) exactly the way it threads `anchor`: unconditionally, on every call, so a client
+    `items` is declared because OpenerService threads it unconditionally on every call, so a client
     that cannot accept the kwarg fails LOUDLY with a TypeError instead of silently dropping the
     numbered crops and sending `profile.photos` in their place. That silent fallback is the one
     outcome doc 5.2 exists to prevent -- raw scroll frames cannot carry an item number, so a
     dropped `items` would give the model a numbering nothing downstream can act on.
 
-    The two image shapes are MUTUALLY EXCLUSIVE, not ordered by precedence: `anchor` IS the
-    chosen item, already open on the phone, and `items` asks the model to choose one.
-    GeminiOpener.generate refuses a request carrying both before a byte is encoded or billed.
     """
 
     def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
-                 anchor: bytes | None = None,
                  items: "ItemRequest | None" = None,
                  should_stop: Callable[[], bool] | None = None,
                  skip_models: frozenset[str] = frozenset()) -> OpenerResult: ...
@@ -1403,7 +1312,7 @@ class GeminiOpener:
         } for image in images]
 
     def _text_part(self, profile: Profile, style: str, retry_hint: str = "", *,
-                   anchored: bool = False, items: ItemRequest | None = None) -> dict[str, Any]:
+                   items: ItemRequest | None = None) -> dict[str, Any]:
         """Build the one part of the request that varies per attempt (see generate()'s "encode
         once, reuse across the cascade" note -- the image parts never depend on this).
 
@@ -1417,18 +1326,8 @@ class GeminiOpener:
 
         ``items`` is the item-crop request shape (ops/OPENER-REDESIGN.md 5.2/5.7): when it is
         present the images are one crop per profile item rather than raw scroll frames, each
-        already labelled by _assemble_parts, so the closing paragraph only has to state the
-        counts and point at the field to answer in. It is mutually exclusive with ``anchored``
-        (generate() refuses the combination before reaching here) because the two shapes
-        disagree about who chooses the item.
-
-        ``anchored`` mirrors generate()'s own flag: True once an anchor screenshot has been
-        appended after her profile photos (see generate()'s docstring for what the anchor is
-        and why it exists). When False the closing paragraph tells the model to CHOOSE one of
-        the numbered items itself (ops/OPENER-REDESIGN.md 5.1); when True it is replaced with
-        wording that tells the model the last image is not one more profile item but the live
-        like screen her comment attaches under, and that the anchor rather than its own
-        judgement decides the subject.
+        already labelled by _assemble_parts, so the closing paragraph only states the counts
+        and points at the field to answer in.
 
         HER NAME is rendered as its own labelled section, and ONLY on the item-crop shape --
         the legacy frame shapes carry her name in the pixels (every scroll frame has the
@@ -1476,7 +1375,7 @@ class GeminiOpener:
                 "Set item_index to the number of the one your opener is about. "
                 "Write the opener now.")
             closing = " ".join(sentences)
-        elif not anchored and photo_count > 0:
+        elif photo_count > 0:
             # 1-BASED, and every number in this sentence is derived from photo_count rather
             # than written out, so the range the model is told about can never disagree with
             # the number of images actually sent (ops/OPENER-REDESIGN.md 5.7).
@@ -1486,7 +1385,7 @@ class GeminiOpener:
                 "number of the one your opener is about. "
                 "Write the opener now."
             )
-        elif not anchored:
+        else:
             # photo_count == 0 and no anchor either: the request carries her profile TEXT and
             # no images at all, so there is no numbered item for the model to choose and no
             # honest number for it to return. Saying so explicitly, and naming the out-of-band
@@ -1501,64 +1400,6 @@ class GeminiOpener:
                 "this request and the profile text above is everything you have. Set "
                 f"item_index to {ITEM_INDEX_ABSENT}, which means you could not pick a numbered "
                 "item. Write the opener now."
-            )
-        elif photo_count > 0:
-            closing = (
-                f"The first {photo_count} image(s) are her profile items, numbered "
-                f"{FIRST_ITEM_INDEX} to {photo_count} in the order shown. The LAST image is the "
-                "like screen described above and is NOT one of the numbered items.\n"
-                "YOUR MESSAGE ATTACHES TO THE PHOTO OR PROMPT IN THAT LAST IMAGE. She sees it "
-                "captioned under that item, so an opener about anything else reads as if it "
-                "were written for someone else. Write about that item only, even if another "
-                "photo or prompt seems more interesting.\n"
-                "If that item is a written prompt, respond to what she actually wrote. If it "
-                "is a photo, use one concrete thing you can genuinely see in it.\n"
-                # The second conclusion of the same premise (see _ANCHOR_SYSTEM's comment, and
-                # ops/OPENER-REDESIGN.md 1.1 root cause #4). The paragraph above tells the model
-                # she is looking at this exact item, and then only ever concludes "so target it",
-                # which pushes it to name the item in the text to prove it hit the right one.
-                # Stated immediately after "use one concrete thing you can genuinely see in it"
-                # on purpose: that sentence is what the model reads last before writing, and
-                # left alone it reads as an instruction to put the visible thing IN the message.
-                "Because she is looking straight at that item while she reads you, you never "
-                "need to name it or describe it back to her. What you can see is your premise, "
-                "not your point: spend the words on a claim about it that could be wrong.\n"
-                "Ignore the app's own interface in that screenshot: the comment box, the Send "
-                "Like button, the keyboard, the icons, the name header, and any other chrome "
-                "are not hers and must never be mentioned or described.\n"
-                # ANCHORED requests are the one place item_index does not drive the tap: the
-                # anchor IS the item, already open on the phone, so this asks the model to
-                # report which numbered item shows that same thing rather than to choose one.
-                # Kept because the anchored path still exists for OBSERVE MODE -- and, since
-                # 2026-08-12, for observe mode ONLY: the driver's `anchored_opener` repair hatch,
-                # which was the other caller, is gone (doc 5.6, never rewrite the opener to match
-                # whatever we hit). Doc 5.1 drops the anchor from the prompt entirely, and doc
-                # 5.9's observe inversion is the workflow that gets to do it.
-                "Set item_index to the number of the profile item above that shows that same "
-                f"photo or prompt; if none of them does, use {ITEM_INDEX_ABSENT}.\n"
-                "Write the opener now."
-            )
-        else:
-            # photo_count == 0: no profile scroll images were captured for this profile (a
-            # capture-path failure, or simply a run that never scrolled), so the anchor is the
-            # ONLY image in the request. This needs its own wording rather than falling through
-            # to the photo_count > 0 branch above, which would render as "The first 0 image(s)
-            # are her profile items, numbered 1 to 0" -- nonsensical, and it would send the
-            # model hunting through numbered items that were never sent.
-            closing = (
-                "No profile scroll images were captured for her; the like screen image below "
-                "is the only image in this request.\n"
-                "YOUR MESSAGE ATTACHES TO THE PHOTO OR PROMPT SHOWN IN THAT IMAGE. Write about "
-                "that item only.\n"
-                "Ignore the app's own interface in that screenshot: the comment box, the Send "
-                "Like button, the keyboard, the icons, the name header, and any other chrome "
-                "are not hers and must never be mentioned or described.\n"
-                # No numbered items were sent at all, so the only honest answer is the
-                # out-of-band value -- not "1", which would claim a first item that does not
-                # exist in this request.
-                f"There are no numbered items in this request, so set item_index to "
-                f"{ITEM_INDEX_ABSENT}.\n"
-                "Write the opener now."
             )
         # "" on every legacy shape, so their text stays byte-for-byte what it was (see the
         # HER NAME paragraph in this method's docstring). Stated as a bare labelled fact with
@@ -1595,20 +1436,11 @@ class GeminiOpener:
                 "corrected opener must still carry a claim that could be wrong. Write the "
                 "corrected opener now."
             )
-            if anchored:
-                # Without this, a retry's corrective block talks only about the general HARD
-                # REJECTION rules and the style guide, and the model can drift back onto
-                # whichever photo it originally preferred -- re-anchoring it here costs one
-                # sentence and closes that gap on every retry, not just the first attempt.
-                text += (
-                    " Your message is still attached to the photo or prompt in the final image "
-                    "(the like screen); keep the corrected opener about that item."
-                )
         return {"text": text}
 
     @staticmethod
     def _assemble_parts(image_parts: list[dict[str, Any]], text_part: dict[str, Any], *,
-                        anchored: bool, items: ItemRequest | None = None) -> list[dict[str, Any]]:
+                        items: ItemRequest | None = None) -> list[dict[str, Any]]:
         """Arrange the encoded image parts, the labels (when present), and the text part into
         the final ``contents[0].parts`` list Gemini receives, in the order the model reads them.
 
@@ -1627,32 +1459,10 @@ class GeminiOpener:
         step: there is nothing to count when each image says what it is. Same lesson, and the
         same placement rule, as the anchor label below.
 
-        Unanchored with no ``items`` (or no images at all -- profile.photos == [] with no anchor
-        either): exactly today's shape, image parts followed by the text part, so a legacy
-        request is unaffected by any of this.
-
-        Anchored: the anchor is, by construction, the LAST entry of ``image_parts`` (see
-        generate(), which appends it to ``images`` after profile.photos before encoding). A
-        standalone ``{"text": _ANCHOR_LABEL}`` part is inserted immediately BEFORE that final
-        image, so the sequence reads profile photos, then the label, then the like-screen
-        image, then the trailing instructions in ``text_part``. The label is placed adjacent
-        to the image it describes rather than left to the trailing text block alone: Gemini
-        reads parts as one ordered sequence, and "the next image" is only unambiguous to the
-        model when the pointer text sits immediately next to the image it points at -- naming
-        it only in a paragraph several parts away (after profile photos, before the label
-        never existed) is exactly the ambiguity this whole feature exists to remove.
+        Without ``items`` (including no images at all), the legacy shape remains image parts
+        followed by the text part.
         """
         if items is not None:
-            if anchored:
-                # Not reachable through generate(), which refuses the combination earlier and
-                # with a fuller explanation; re-stated here because this method is also called
-                # directly by _fit_images_to_budget and is a static method a future caller
-                # could reach on its own. The two shapes contradict each other outright: the
-                # anchor decides the item, the item list asks the model to decide.
-                raise ValueError(
-                    "an item-crop request cannot also be anchored: the anchor decides the item "
-                    "and the numbered list asks the model to choose one (ops/OPENER-REDESIGN.md "
-                    "5.1/5.2)")
             if len(image_parts) != items.image_count:
                 # A length mismatch would silently shift every label past the gap, so item 4's
                 # label would sit on item 5's crop and the model's answer would be confidently
@@ -1668,14 +1478,11 @@ class GeminiOpener:
                 parts.append(image_part)
             parts.append(text_part)
             return parts
-        if not anchored or not image_parts:
-            return [*image_parts, text_part]
-        profile_parts, anchor_part = image_parts[:-1], image_parts[-1]
-        return [*profile_parts, {"text": _ANCHOR_LABEL}, anchor_part, text_part]
+        return [*image_parts, text_part]
 
     def _payload(self, profile: Profile, style: str, model: str, *,
                  image_parts: list[dict[str, Any]] | None = None,
-                 retry_hint: str = "", anchored: bool = False,
+                 retry_hint: str = "",
                  items: ItemRequest | None = None) -> dict[str, Any]:
         """Build one model's GenerateContent request. ``image_parts`` lets generate() pass
         in already-encoded photos (and, when anchored, the anchor screenshot appended after
@@ -1698,20 +1505,15 @@ class GeminiOpener:
         the kind of silent lie the anchored fallback below already refuses to tell."""
         if image_parts is not None:
             resolved_image_parts = list(image_parts)
-            resolved_anchored = anchored
             resolved_items = items
         elif items is not None:
             resolved_image_parts = self._image_parts(list(items.images))
-            resolved_anchored = False
             resolved_items = items
         else:
             resolved_image_parts = self._image_parts(profile.photos)
-            resolved_anchored = False
             resolved_items = None
-        text_part = self._text_part(profile, style, retry_hint, anchored=resolved_anchored,
-                                    items=resolved_items)
-        parts = self._assemble_parts(resolved_image_parts, text_part, anchored=resolved_anchored,
-                                     items=resolved_items)
+        text_part = self._text_part(profile, style, retry_hint, items=resolved_items)
+        parts = self._assemble_parts(resolved_image_parts, text_part, items=resolved_items)
         generation_config: dict[str, Any] = {
             "maxOutputTokens": self.max_tokens,
             "responseMimeType": "application/json",
@@ -1727,7 +1529,7 @@ class GeminiOpener:
         if thinking_config is not None:
             generation_config["thinkingConfig"] = dict(thinking_config)
         return {
-            "systemInstruction": {"parts": [{"text": _system_text(resolved_anchored)}]},
+            "systemInstruction": {"parts": [{"text": _SYSTEM}]},
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": generation_config,
         }
@@ -1736,17 +1538,12 @@ class GeminiOpener:
     def _request_size_bytes(parts: list[dict[str, Any]], system_text: str) -> int:
         """Approximate the wire size of one request against Gemini's 20MB inline-data cap:
         the base64 image payloads dominate, plus the system instruction and every text part
-        (the per-request style guide/profile text block, and, once anchoring is in play, the
-        standalone _ANCHOR_LABEL part -- see _assemble_parts). generationConfig/schema JSON
+        (the per-request style guide/profile text block and item labels). generationConfig/schema JSON
         is a few hundred fixed bytes that don't scale with photo count, so it's left out of
         the estimate -- see _MAX_INLINE_REQUEST_BYTES for the headroom that covers it.
 
-        Takes the FULLY ASSEMBLED ``parts`` list (image parts, the anchor label text part when
-        present, and the trailing text part all together) rather than images and text
-        separately, so a caller can never accidentally size a request without also sizing the
-        anchor label -- it is small, but it is still bytes actually sent on the wire, and this
-        method's whole job is to be the one place that can't drift from what generate() puts
-        in the request.
+        Takes the fully assembled parts list rather than images and text separately, so the
+        size calculation stays aligned with what generate() puts in the request.
         """
         total = len(system_text.encode("utf-8"))
         for part in parts:
@@ -1758,7 +1555,6 @@ class GeminiOpener:
 
     def _fit_images_to_budget(self, images: list[bytes], image_parts: list[dict[str, Any]],
                               text_part: dict[str, Any], system_text: str, *,
-                              anchored: bool,
                               items: ItemRequest | None = None) -> list[dict[str, Any]]:
         """Guarantee the request fits Gemini's 20MB inline-image cap, compressing only if
         it doesn't.
@@ -1769,20 +1565,8 @@ class GeminiOpener:
         silent -- we print exactly what was done so a systematically oversized capture
         pipeline is visible rather than a mysteriously smaller/blurrier opener input.
 
-        ``images`` is the same list generate() built for _image_parts: her profile photos,
-        plus the anchor screenshot appended at the end when ``anchored`` is True (no
-        ``profile`` argument is needed here -- this list is already everything there is to
-        recompress). Recompressing from THIS list rather than only her profile photos is what
-        lets the anchor image itself be shrunk under the same size pressure as everything
-        else: an anchor screenshot is a full-resolution phone capture exactly like a profile
-        photo, so leaving it out of recompression would silently exempt the single largest
-        image in an anchored request from the very budget this method exists to enforce.
-
-        Sizing uses the FULLY ASSEMBLED parts list (image parts, the standalone
-        _ANCHOR_LABEL text part when anchored, the item preamble and the per-image ITEM/CONTEXT
-        labels on an item-crop request, and the trailing text part -- see _assemble_parts), not
-        the image parts alone, so those label parts count against the budget too rather than
-        being free riders that _request_size_bytes never sees.
+        ``images`` is the same list generate() built for _image_parts. Sizing uses the fully
+        assembled parts list, including item labels and the trailing text, not image parts alone.
 
         THIS METHOD MUST NEVER DROP AN IMAGE, and that requirement gets sharper under doc 5.2,
         not softer. It compresses every image or it raises; it has no branch that sends fewer.
@@ -1794,7 +1578,7 @@ class GeminiOpener:
         capture), so this path should now essentially never fire -- which is a reason to keep
         it honest, not a reason to relax it.
         """
-        assembled = self._assemble_parts(image_parts, text_part, anchored=anchored, items=items)
+        assembled = self._assemble_parts(image_parts, text_part, items=items)
         original_size = self._request_size_bytes(assembled, system_text)
         if original_size <= _MAX_INLINE_REQUEST_BYTES:
             return image_parts
@@ -1848,8 +1632,6 @@ class GeminiOpener:
                     # is a thing the operator can actually go and look at.
                     if items is not None:
                         label = items.describe_image(index)
-                    elif anchored and index == len(images) - 1:
-                        label = "the like screen anchor image"
                     else:
                         label = f"photo index {index}"
                     raise OpenerError(
@@ -1863,8 +1645,7 @@ class GeminiOpener:
                     "data": base64.standard_b64encode(image).decode("ascii"),
                 },
             } for image in recompressed]
-            fitted_assembled = self._assemble_parts(fitted_parts, text_part, anchored=anchored,
-                                                    items=items)
+            fitted_assembled = self._assemble_parts(fitted_parts, text_part, items=items)
             new_size = self._request_size_bytes(fitted_assembled, system_text)
             if new_size <= _MAX_INLINE_REQUEST_BYTES:
                 print(f"Gemini opener: compressed {len(images)} image(s) to fit the "
@@ -1889,11 +1670,6 @@ class GeminiOpener:
                 f" ({items.item_count} numbered item crop(s) and {items.context_count} context "
                 "crop(s), not scroll frames -- crops are already the small shape, so an "
                 "oversized request here points at the capture or the crop geometry)"
-            )
-        elif anchored:
-            composition_note = (
-                " (one of these is the like screen anchor image, itself a full-resolution phone "
-                "screenshot subject to the same compression as her profile photos)"
             )
         else:
             composition_note = ""
@@ -2249,7 +2025,6 @@ class GeminiOpener:
         )
 
     def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
-                 anchor: bytes | None = None,
                  items: ItemRequest | None = None,
                  should_stop: Callable[[], bool] | None = None,
                  skip_models: frozenset[str] = frozenset()) -> OpenerResult:
@@ -2263,29 +2038,6 @@ class GeminiOpener:
         # Bumble web); only its photos go unused, deliberately and silently, because the caller
         # that has crops also still has the frames and needs them for ranking and embedding.
         #
-        # MUTUALLY EXCLUSIVE WITH anchor, and refused loudly rather than resolved by precedence.
-        # The two shapes make opposite claims about who chooses the item -- the anchor IS the
-        # choice, already open on the phone, while the numbered list asks the model to make one
-        # (doc 5.1's single call) -- so a request carrying both would have to silently demote
-        # one of them, and _ANCHOR_SYSTEM would ship a paragraph about "one extra image that is
-        # NOT part of her profile" describing an image nobody sent.
-        #
-        # THE ANCHOR PATH NOW HAS NO PRODUCTION CALLER AT ALL, AND IS DELIBERATELY LEFT INTACT
-        # FOR ONE PHASE. Doc 5.1 drops the anchor from the prompt in both modes; that is now
-        # true of the CALLERS and not yet of this module. Both of them are gone: the driver's
-        # repair hatch (hinge._like_comment_sheet re-asking against the live anchor when its own
-        # targeting missed) went on 2026-08-12, because repairing the TEXT does not undo spending
-        # the LIKE on an item the model never chose (doc 5.6, never substitute); and observe's
-        # post-heart suggestion went with doc 5.9's INVERSION the same day -- observe now
-        # generates BEFORE the human taps, from these very item crops, and the live sheet frame
-        # became the evidence its tap is CHECKED against rather than an input to the model.
-        # Removing the anchored machinery is deliberately NOT part of that inversion, so a
-        # regression in either half stays bisectable; the workflow that deletes it owns
-        # `_ANCHOR_SYSTEM`, `_ANCHOR_LABEL`, `_system_text`'s anchored branch, both anchored
-        # closing paragraphs, the anchored retry sentence, `_assemble_parts`' anchor placement,
-        # and the `anchor=` parameters on generate()/maybe_opener(). Until then both shapes
-        # work and neither leaks into the other.
-        #
         # REACHABLE FROM PRODUCTION AS OF 2026-08-12. The chain is: hinge._capture_current
         # enumerates the profile (doc 5.5's closed loop) and builds a
         # drivers.item_crops.ItemPayload; the crops, the context crops, her name and the
@@ -2296,23 +2048,6 @@ class GeminiOpener:
         # like on this shape hard-stops at worker.py's capture_order_index guard rather than
         # targeting. That is doc 5.6's workflow, and the stop is the intended behaviour until
         # it lands (never a fallback tap on item 1).
-        #
-        # anchor is a screenshot of the app's like/comment screen exactly as it is open on the
-        # phone at this instant -- captured live, right before this call, not one of her
-        # profile photos -- showing the single photo or prompt her comment will actually be
-        # attached to and displayed underneath. Without it, this method has no idea which item
-        # that will be: it picks whichever photo or prompt the model itself finds most
-        # interesting to write about, and on a Hinge like/comment screen that is frequently NOT
-        # the item the comment lands under, so the message reads as if it were written for a
-        # different photo entirely -- a stranger's compliment about a beach sunset captioned
-        # under her dining table photo. Passing anchor fixes that by grounding the opener in the
-        # one item that is provably correct, verified visually rather than guessed from scroll
-        # order. It is appended AFTER her profile photos in the image list built below, and
-        # deliberately kept OUT of the item numbering item_index uses (see _text_part's anchored
-        # wording) -- it is not one more thing to reference by number, it is the fixed target
-        # every opener must be about whenever it's present. On an anchored request item_index
-        # therefore REPORTS which numbered item the anchor turned out to be rather than
-        # CHOOSING one, which is the one case where it does not drive the tap.
         #
         # retry_hint defaults to "" (falsy): an ordinary first attempt, no correction to make.
         # When OpenerService is re-asking after a rejected attempt, it passes the specific
@@ -2364,19 +2099,6 @@ class GeminiOpener:
             # request, and neither depends on which model ends up serving it (nor on
             # retry_hint, which only ever varies the text part).
             #
-            # anchored is derived once, here, from whether a caller actually passed an anchor
-            # image -- everything downstream (the text, the system instruction, part assembly,
-            # and the budget fit) keys off this one boolean rather than re-deriving it, so the
-            # request is anchored, consistently, top to bottom, or not at all.
-            anchored = anchor is not None
-            if anchored and items is not None:
-                # Fail loud, before a single byte is encoded or billed. See this method's
-                # `items` paragraph for why precedence is not an option here.
-                raise ValueError(
-                    "Gemini opener: a request cannot carry both an anchor screenshot and an "
-                    "item-crop list. The anchor IS the chosen item (already open on the phone) "
-                    "and the numbered list asks the model to choose one "
-                    "(ops/OPENER-REDESIGN.md 5.1/5.2); pick one shape.")
             if items is not None:
                 # profile.photos is deliberately NOT included: on this shape the crops are the
                 # model's whole view of her (doc 5.7's "Not sent: ... scroll frames"), and
@@ -2385,26 +2107,21 @@ class GeminiOpener:
                 # a model that is now CHOOSING among items.
                 images = list(items.images)
             else:
-                images = list(profile.photos) + ([anchor] if anchored else [])
+                images = list(profile.photos)
             # WHAT `item_index` WILL MEAN IN THE ANSWER, derived from the payload actually being
             # built rather than assumed anywhere downstream (see the INDEX_SPACE_* constants).
             # Both travel to _parse, which needs the count for its range check and the space for
             # the result it returns.
             #
-            # The anchored shape numbers profile.photos exactly like the plain frame shape does
-            # -- the anchor is appended AFTER them and is deliberately outside the numbering
-            # (see _text_part's anchored wording) -- so its count is photo_count, not
-            # photo_count + 1. Getting that wrong in the permissive direction would let the
-            # model "pick" the anchor and have it pass the range check as a real item.
             index_space = (INDEX_SPACE_MODEL_ITEMS if items is not None
                            else INDEX_SPACE_PROFILE_PHOTOS)
             numbered_item_count = (items.item_count if items is not None
                                    else len(profile.photos))
             image_parts = self._image_parts(images)
-            text_part = self._text_part(profile, style, retry_hint, anchored=anchored, items=items)
-            system_text = _system_text(anchored)
+            text_part = self._text_part(profile, style, retry_hint, items=items)
+            system_text = _SYSTEM
             image_parts = self._fit_images_to_budget(images, image_parts, text_part, system_text,
-                                                      anchored=anchored, items=items)
+                                                      items=items)
             # SAFETY VALVE (see this method's skip_models docstring paragraph above): if the
             # caller's skip set would leave literally nothing eligible, ignore it entirely
             # rather than raising GeminiCapacityExhausted without ever trying a single model.
@@ -2443,7 +2160,7 @@ class GeminiOpener:
                     scopes[model] = self._unavailable_models[model]
                     continue
                 payload = self._payload(profile, style, model, image_parts=image_parts,
-                                        retry_hint=retry_hint, anchored=anchored, items=items)
+                                        retry_hint=retry_hint, items=items)
                 url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                        f"{quote(model, safe='-_.')}:generateContent")
                 try:

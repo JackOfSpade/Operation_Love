@@ -25,7 +25,7 @@ class _MinimalConcreteDriver(DatingAppDriver):
     # removed from the ABC on 2026-08-12 (ops/OPENER-REDESIGN.md 5.6: a driver that cannot land
     # the like on the chosen item raises ItemTargetingError instead of repairing the text against
     # whatever it hit).
-    def like(self, opener=None, item_index=0, *, model_item_index=None) -> None:
+    def like(self, opener=None, item_index=None, *, model_item_index=None) -> None:
         pass
 
     def dislike(self) -> None:

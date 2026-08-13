@@ -73,7 +73,7 @@ class _FakeDriver(DatingAppDriver):
         return None
     def out_of_profiles(self):
         return True                   # observe loop breaks immediately -> worker thread exits fast
-    def like(self, opener=None, item_index=0):
+    def like(self, opener=None, item_index=None, *, model_item_index=None):
         pass
     def dislike(self):
         pass
@@ -213,7 +213,7 @@ def test_worker_error_state_survives_shutdown_not_overwritten_to_stopped(monkeyp
             return None
         def out_of_profiles(self):
             return True
-        def like(self, opener=None, item_index=0):
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
             pass
         def dislike(self):
             pass
@@ -605,7 +605,7 @@ def test_wedged_worker_is_not_reported_as_unqualified_success(monkeypatch, tmp_p
             return None
         def out_of_profiles(self):
             return True
-        def like(self, opener=None, item_index=0):
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
             pass
         def dislike(self):
             pass
@@ -1040,7 +1040,7 @@ def test_device_lock_prevents_overlapping_runs_even_within_one_process(monkeypat
             return None
         def out_of_profiles(self):
             return True
-        def like(self, opener=None, item_index=0):
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
             pass
         def dislike(self):
             pass
@@ -1137,7 +1137,7 @@ def test_stopping_is_true_and_phase_is_stopping_before_saving_data_begins(monkey
             return None
         def out_of_profiles(self):
             return True
-        def like(self, opener=None, item_index=0):
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
             pass
         def dislike(self):
             pass
@@ -1274,7 +1274,7 @@ def test_wedged_summary_uses_the_real_join_timeout_not_a_hardcoded_30s(monkeypat
             return None
         def out_of_profiles(self):
             return True
-        def like(self, opener=None, item_index=0):
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
             pass
         def dislike(self):
             pass

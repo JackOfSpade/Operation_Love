@@ -122,16 +122,18 @@ apps:
     # re-confirmed if Hinge ships a UI update that moves the sticky header, the filter-chips
     # row, or the floating deck controls.
     identity_band: [0.10, 0.048, 0.80, 0.094]   # Hinge's sticky per-profile name header
+    # A targeted-opener calibration, when added, must record these exact effective
+    # identity_band/content_band values with its bounds and exact ADB serial. See RUNBOOK.
     # Card-header name band, consulted only when the identity_band verdict above is exactly
     # "top" (scroll-top, where identity_band shows profile-independent filter chips instead of
     # a name -- see android_spec.py's identity_top_name_band docstring for the full mechanism
-    # and the bug this fixes: a pass that advanced Alina -> jessica got recorded as a scroll of
-    # Alina because nothing on screen could name the new card). OCR-only, never a pixel
+    # and the bug this fixes: a pass that advanced Zorva -> Qelix got recorded as a scroll of
+    # Zorva because nothing on screen could name the new card). OCR-only, never a pixel
     # signature -- MEASURED on real Pixel 7a frames on 2026-08-10 by OCR'ing (tesseract --psm 6)
     # the actual failing run's screenshots. Reads (all correct):
-    #   Alina, scroll-top, with the purple "shows thoughtful signals" banner -> "Alina %"
-    #   Alina, scroll-top, banner gone (content shifted up)   -> "Alina @ | @ Signals Active today"
-    #   jessica, scroll-top, with banner (three separate frames) -> "jessica &"
+    #   Zorva, scroll-top, with the purple "shows thoughtful signals" banner -> "Zorva %"
+    #   Zorva, scroll-top, banner gone (content shifted up)   -> "Zorva @ | @ Signals Active today"
+    #   Qelix, scroll-top, with banner (three separate frames) -> "Qelix &"
     # On SCROLLED frames the same band OCRs to garbage, which is safe: this check only runs
     # when the pixel verdict is genuinely "top".
     identity_top_name_band: [0.03, 0.130, 0.75, 0.250]

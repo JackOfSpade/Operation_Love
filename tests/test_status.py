@@ -122,7 +122,7 @@ def test_a_state_transition_clears_every_opener_field_together():
 
     s = _mk()
     s.set_app("hinge", state="waiting_for_send", opener_suggestion="about her dog",
-              opener_referenced="her dog", opener_anchored=True, opener_item=3,
+              opener_referenced="her dog", opener_item=3,
               opener_item_description="the ridgeline photo", opener_warning="stale warning",
               opener_pending=True)
 
@@ -144,7 +144,7 @@ def test_set_app_does_not_autoclear_the_other_opener_fields_when_suggestion_is_n
     cannot drift."""
     s = _mk()
     s.set_app("hinge", state="waiting_for_send", opener_suggestion="about her dog",
-              opener_referenced="her dog", opener_anchored=True, opener_item=3)
+              opener_referenced="her dog", opener_item=3)
 
     # A state transition ("waiting") that WOULD normally auto-clear the whole set -- except this
     # call explicitly supplies opener_suggestion, so set_app must leave the others exactly as
@@ -154,7 +154,6 @@ def test_set_app_does_not_autoclear_the_other_opener_fields_when_suggestion_is_n
     assert app["state"] == "waiting"
     assert app["opener_suggestion"] is None          # explicitly cleared by the caller
     assert app["opener_referenced"] == "her dog"      # NOT auto-cleared -- caller opted out
-    assert app["opener_anchored"] is True             # NOT auto-cleared -- caller opted out
     assert app["opener_item"] == 3                    # NOT auto-cleared -- caller opted out
 
 

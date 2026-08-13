@@ -66,8 +66,8 @@ def _join_hub_watch_threads(timeout=3.0):
     raise AssertionError("hub-tab-stale-watch thread outlived the test")
 
 
-def _get(base, path):
-    with urllib.request.urlopen(base + path, timeout=5) as r:
+def _get(base, path, *, timeout=5):
+    with urllib.request.urlopen(base + path, timeout=timeout) as r:
         return r.status, r.read().decode()
 
 
@@ -148,8 +148,8 @@ def test_api_status_snapshot_carries_stop_kind_alongside_stop_reason():
     actually serialize AppStatus.stop_kind through the handler's own json.dumps, alongside
     stop_reason. stop_kind disambiguates stop_reason's SOURCE now that two different worker.py
     code paths populate it: OpenerService exhaustion (the original, sole source) and the
-    blocked-deck check added 2026-08-11 (Hinge's out-of-free-likes Hinge+ paywall,
-    data/hinge_debug/run_20260811_011416) -- see status.py's AppStatus.stop_kind docstring. A
+    blocked-deck check (Hinge's out-of-free-likes Hinge+ paywall) -- see status.py's
+    AppStatus.stop_kind docstring. A
     consumer that only ever saw stop_reason (older hub.html, an external tool reading this
     endpoint) would misreport a blocked deck as an opener/quota problem without this field
     actually reaching the wire."""
@@ -1099,7 +1099,7 @@ def test_hubstate_recent_openers_forwards_to_the_captured_opener_service():
     returns -- this is the real data route the bug report's 'Recent openers' section relies on."""
     class FakeOpenerService:
         def recent_openers_snapshot(self):
-            return [{"ts": "t0", "app": "hinge", "model": "gemini-2.5-flash", "anchored": True,
+            return [{"ts": "t0", "app": "hinge", "model": "gemini-2.5-flash",
                      "advisory": False, "index": 0, "referenced": "the beach photo",
                      "opener": "love the beach shot"}]
 
@@ -2038,7 +2038,10 @@ def test_bugreport_uses_hub_config_path_not_default():
     t.start()
     try:
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
-        code, md = _get(base, "/api/bugreport")
+        # First bug-report generation cold-imports optional ML diagnostics. Keep ordinary Hub
+        # endpoint tests on the 5s default, but do not make this integration assertion depend on
+        # whether those imports fit inside that same interactive-response budget under load.
+        code, md = _get(base, "/api/bugreport", timeout=15)
         assert code == 200
         assert "definitely-not-a-real-config.yaml" in md
     finally:

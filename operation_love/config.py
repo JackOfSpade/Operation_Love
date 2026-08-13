@@ -222,6 +222,152 @@ def load(path: str | Path = "config.yaml") -> Config:
 
 _LIMITS_KEYS = {"max_per_run", "max_per_day", "max_likes_per_run", "target_like_ratio"}
 
+# The closest two *different* Hinge profiles measured 2.565 grey levels apart in the
+# sticky-header identity band.  A targeting calibration must choose a strictly smaller
+# acceptance ceiling; at or above this value it can call that known foreign pair a match.
+_TARGETING_IDENTITY_FALSE_MATCH_DISTANCE = 2.565
+# The nearest measured foreign-card acceptance was 14.91.  This is an upper safety cap, not a
+# production setting: the configured value must still come from held-out measurements on the
+# actual device, but a value at or above a known false accept can never be called calibrated.
+_TARGETING_SHEET_FALSE_MATCH_DISTANCE = 14.91
+# Keep these local rather than importing HINGE_SPEC: config.py is intentionally below drivers in
+# the dependency graph.  They are the exact Hinge spec defaults and are used only to compute the
+# effective geometry when config.yaml did not override it.
+_TARGETING_HINGE_IDENTITY_BAND = (0.10, 0.048, 0.80, 0.094)
+_TARGETING_HINGE_CONTENT_BAND = (0.125, 0.875)
+_TARGETING_CALIBRATION_KEYS = {
+    "identity_match_max_dist", "sheet_item_max_dist", "device", "calibrated_at",
+    "identity_band", "content_band",
+}
+
+
+def _targeting_band(value, *, key: str, length: int) -> tuple[float, ...]:
+    """Return one normalised geometry record or reject an unusable calibration input."""
+    if not isinstance(value, (list, tuple)) or len(value) != length:
+        raise ValueError(f"{key} must be a {length}-number array/tuple (got {value!r})")
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in value):
+        raise ValueError(f"{key} must contain only finite numbers (got {value!r})")
+    result = tuple(float(v) for v in value)
+    if length == 4:
+        x0, y0, x1, y1 = result
+        valid = 0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0
+    else:
+        y0, y1 = result
+        valid = 0.0 <= y0 < y1 <= 1.0
+    if not valid:
+        raise ValueError(f"{key} must be an ordered normalised band (got {value!r})")
+    return result
+
+
+def _effective_targeting_geometry(app: str, app_cfg: dict) -> tuple[tuple[float, ...],
+                                                                       tuple[float, ...]]:
+    """The bands the Android driver will actually use for a calibrated targeted action."""
+    if app == "hinge":
+        identity = app_cfg.get("identity_band", _TARGETING_HINGE_IDENTITY_BAND)
+        content = app_cfg.get("content_band", _TARGETING_HINGE_CONTENT_BAND)
+    else:
+        # Targeted comment-sheet delivery is only implemented for Hinge today.  Requiring an
+        # explicit geometry for any future app avoids silently borrowing Hinge's measurements.
+        identity = app_cfg.get("identity_band")
+        content = app_cfg.get("content_band")
+    return (
+        _targeting_band(identity, key=f"apps.{app}.identity_band", length=4),
+        _targeting_band(content, key=f"apps.{app}.content_band", length=2),
+    )
+
+
+def _validate_targeting_calibration(cfg: Config) -> None:
+    """Validate an optional, evidence-backed per-app targeted-like calibration.
+
+    Its absence is deliberately not a config-load error: observe can still run without
+    suggestions, and a model-item like is refused by AndroidDriver before touching the phone.
+    Once an operator supplies the mapping, though, a partial or typo'd calibration is unsafe and
+    must fail at config validation rather than quietly becoming a looser default.
+    """
+    for app, app_cfg in (cfg.apps or {}).items():
+        app_cfg = app_cfg or {}
+        if "targeting_calibration" not in app_cfg:
+            continue
+        calibration = app_cfg["targeting_calibration"]
+        if not isinstance(calibration, dict):
+            raise ValueError(
+                f"Config: apps.{app}.targeting_calibration must be a mapping "
+                f"(got {type(calibration).__name__})")
+        unknown = set(calibration) - _TARGETING_CALIBRATION_KEYS
+        missing = _TARGETING_CALIBRATION_KEYS - set(calibration)
+        if unknown or missing:
+            parts = []
+            if missing:
+                parts.append(f"missing {sorted(missing)}")
+            if unknown:
+                parts.append(f"unknown {sorted(unknown)}")
+            raise ValueError(
+                f"Config: apps.{app}.targeting_calibration must carry "
+                f"{sorted(_TARGETING_CALIBRATION_KEYS)} ({'; '.join(parts)})")
+        for key in ("identity_match_max_dist", "sheet_item_max_dist"):
+            value = calibration[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"Config: apps.{app}.targeting_calibration.{key} must be a number "
+                    f"(got {value!r})")
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(
+                    f"Config: apps.{app}.targeting_calibration.{key} must be finite and > 0 "
+                    f"(got {value!r})")
+        identity_max = calibration["identity_match_max_dist"]
+        if identity_max >= _TARGETING_IDENTITY_FALSE_MATCH_DISTANCE:
+            raise ValueError(
+                f"Config: apps.{app}.targeting_calibration.identity_match_max_dist must be "
+                f"strictly below {_TARGETING_IDENTITY_FALSE_MATCH_DISTANCE}, the known "
+                f"different-profile false-match distance (got {identity_max!r})")
+        sheet_max = calibration["sheet_item_max_dist"]
+        if sheet_max >= _TARGETING_SHEET_FALSE_MATCH_DISTANCE:
+            raise ValueError(
+                f"Config: apps.{app}.targeting_calibration.sheet_item_max_dist must be "
+                f"strictly below {_TARGETING_SHEET_FALSE_MATCH_DISTANCE}, the nearest known "
+                f"foreign-card false-match distance (got {sheet_max!r})")
+        for key in ("device", "calibrated_at"):
+            value = calibration[key]
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"Config: apps.{app}.targeting_calibration.{key} must be nonempty evidence "
+                    f"text (got {value!r})")
+        # The measured bounds are only valid for the device that produced them.  `device` is
+        # deliberately the exact ADB serial, not a free-form handset description: a description
+        # cannot stop a copied calibration from licensing gestures on another phone.  Do not
+        # normalise whitespace/case here; this is an identity, so the two config values must be
+        # byte-for-byte equal.
+        serial = app_cfg.get("serial")
+        if not isinstance(serial, str) or not serial:
+            raise ValueError(
+                f"Config: apps.{app}.targeting_calibration requires a nonempty "
+                f"apps.{app}.serial exact ADB device serial")
+        if calibration["device"] != serial:
+            raise ValueError(
+                f"Config: apps.{app}.targeting_calibration.device must exactly equal "
+                f"apps.{app}.serial (got {calibration['device']!r} != {serial!r})")
+        try:
+            calibrated_identity = _targeting_band(
+                calibration["identity_band"],
+                key=f"apps.{app}.targeting_calibration.identity_band", length=4)
+            calibrated_content = _targeting_band(
+                calibration["content_band"],
+                key=f"apps.{app}.targeting_calibration.content_band", length=2)
+            effective_identity, effective_content = _effective_targeting_geometry(app, app_cfg)
+        except ValueError as exc:
+            raise ValueError(f"Config: {exc}") from exc
+        if calibrated_identity != effective_identity:
+            raise ValueError(
+                f"Config: apps.{app}.targeting_calibration.identity_band must exactly equal "
+                f"the effective apps.{app}.identity_band ({calibrated_identity!r} != "
+                f"{effective_identity!r})")
+        if calibrated_content != effective_content:
+            raise ValueError(
+                f"Config: apps.{app}.targeting_calibration.content_band must exactly equal "
+                f"the effective apps.{app}.content_band ({calibrated_content!r} != "
+                f"{effective_content!r})")
+
 # worker.py's _pace() scales human_motion.think_time_s()'s WHOLE draw (including its
 # shifted-lognormal floor: shift=1.2s for "like"/1.8s for "pass", means ~3.2s/~6.9s) by
 # swipe_delay_s / this default. Below this floor the scaled floor drops under ~0.35s and
@@ -491,6 +637,7 @@ def validate(cfg: Config) -> None:
         raise ValueError(f"Config: mode must be 'observe' or 'auto' (got {bad_modes})")
     _validate_verification(cfg)
     _validate_android_fractions(cfg)
+    _validate_targeting_calibration(cfg)
     if cfg.storage.backend not in {"bigquery", "sqlite"}:
         raise ValueError(f"Config: storage.backend must be 'bigquery' or 'sqlite' (got {cfg.storage.backend})")
     if cfg.storage.backend == "bigquery" and not (cfg.storage.bigquery or {}).get("project_id"):

@@ -122,7 +122,7 @@ def test_base_driver_with_no_platform_app_set_has_no_guard():
         def next_profile(self):
             return None
 
-        def like(self, opener=None, item_index=0):
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
             pass
 
         def dislike(self):

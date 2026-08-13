@@ -5,8 +5,8 @@ import time
 import pytest
 
 from operation_love.costing import CostTracker, ModelPricing, Usage
-from operation_love.drivers.base import (DatingAppDriver, DriverClosed,
-                                        ItemTargetingError)
+from operation_love.drivers.base import (ActionCancelled, DatingAppDriver, DeckBlockedError,
+                                        DriverClosed, ItemTargetingError)
 from operation_love.opener.opener import (
     FIRST_ITEM_INDEX,
     INDEX_SPACE_MODEL_ITEMS,
@@ -51,7 +51,7 @@ class FakeDriver(DatingAppDriver):
     # removed on 2026-08-12 (ops/OPENER-REDESIGN.md 5.6: rewriting the opener to match whatever
     # we hit is a substitution, and a targeting miss is now a stop). This signature tracks
     # base.Driver.like exactly, so a worker that started passing one again would fail here.
-    def like(self, opener=None, item_index=0, *, model_item_index=None):
+    def like(self, opener=None, item_index=None, *, model_item_index=None):
         self.likes.append(opener)
         self.like_item_indexes.append(item_index)
         # The OTHER index space, recorded separately for the same reason `like_item_indexes` is
@@ -63,6 +63,18 @@ class FakeDriver(DatingAppDriver):
     def dislike(self): self.dislikes += 1
     def out_of_profiles(self): return self.i >= len(self.cards)
     def close(self): self.closed = True
+
+
+class InterruptibleLikeDriver(FakeDriver):
+    supports_interruptible_like_navigation = True
+
+    def __init__(self, n):
+        super().__init__(n)
+        self.like_stop_callbacks = []
+
+    def like(self, opener=None, item_index=None, *, model_item_index=None, should_stop=None):
+        self.like_stop_callbacks.append(should_stop)
+        return super().like(opener, item_index, model_item_index=model_item_index)
 
 
 class ClosedDriver(FakeDriver):
@@ -80,7 +92,7 @@ class RaisingLikeDriver(FakeDriver):
         super().__init__(n)
         self.snapshotted = []
 
-    def like(self, opener=None, item_index=0, *, model_item_index=None):
+    def like(self, opener=None, item_index=None, *, model_item_index=None):
         raise RuntimeError("like did not land")
 
     def snapshot_failure(self, exc):
@@ -111,14 +123,12 @@ class FakeOpenerClient:
         self.calls = 0
         self.cost_tokens = cost_tokens
         self.should_stops = []   # records should_stop from every call -- see BUG 1's tests
-        self.anchors = []        # records anchor from every call -- see the ANCHORED_OPENER tests
         self.items = []          # records items from every call -- doc 5.2's crop request shape
-    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+    def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
                  skip_models=frozenset()):
         self.calls += 1
         self.should_stops.append(should_stop)
-        self.anchors.append(anchor)
         self.items.append(items)
         # item_index/index_space: a REALISTIC pick (the legacy frame shape's first item, in
         # the translatable profile-photos space), not the OpenerResult dataclass's own
@@ -136,11 +146,11 @@ class FakeOpenerClient:
 
 
 class SlowOpenerClient(FakeOpenerClient):
-    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+    def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
                  skip_models=frozenset()):
         time.sleep(0.05)
-        return super().generate(profile, style, retry_hint, anchor=anchor, items=items,
+        return super().generate(profile, style, retry_hint, items=items,
                                 should_stop=should_stop)
 
 
@@ -158,7 +168,7 @@ class ParseErrorOpenerClient:
     def __init__(self):
         self.calls = 0
         self.retry_hints = []
-    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+    def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
                  skip_models=frozenset()):
         self.calls += 1
@@ -172,7 +182,7 @@ class OpenerErrorOpenerClient:
     corrupt captured photo that couldn't be decoded). NOT retried by maybe_opener()."""
     def __init__(self):
         self.calls = 0
-    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+    def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
                  skip_models=frozenset()):
         self.calls += 1
@@ -184,7 +194,7 @@ class BadRequestOpenerClient:
     disable the service, only skip this one profile's opener."""
     def __init__(self):
         self.calls = 0
-    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+    def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
                  skip_models=frozenset()):
         self.calls += 1
@@ -196,7 +206,7 @@ class TransientOpenerClient:
     _TRANSIENT_LATCH_THRESHOLD, so this alone must not disable the service."""
     def __init__(self):
         self.calls = 0
-    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+    def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
                  skip_models=frozenset()):
         self.calls += 1
@@ -596,6 +606,17 @@ def test_worker_likes_with_openers():
     assert len(store.openers) == 3 and len(store.spend) == 3
 
 
+def test_worker_passes_stop_callback_only_to_interruptible_like_navigation():
+    driver = InterruptibleLikeDriver(1)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, 5), store, "style")
+    worker = _worker(driver, FakeDecider("like"), svc, store)
+    worker.run()
+    assert len(driver.like_stop_callbacks) == 1
+    assert driver.like_stop_callbacks[0].__self__ is worker.stop_event
+    assert driver.like_stop_callbacks[0]() is False
+
+
 def test_worker_skips_openers_when_driver_declines():
     # Bumble-style driver: no swipe-time opener -> never call Gemini (no wasted spend).
     driver = FakeDriver(3)
@@ -837,11 +858,9 @@ def test_observe_mode_stop_reason_is_visible_in_status_when_opener_exhausts():
 
 
 # ---------------------------------------------------------------------------------------
-# DECK_BLOCKED: worker.py's blocked-deck check, added 2026-08-11 after THE INCIDENT (see
-# data/hinge_debug/run_20260811_011416) -- Hinge's own "you're out of free likes for today"
-# Hinge+ paywall refused a like the owner sent by hand, and observe mode hung inside
-# wait_for_decision(timeout=None) for 2.5 minutes polling for a decision that could never
-# come, because nothing recognized the screen and there was no bail-out at all. Both loops
+# DECK_BLOCKED: worker.py's blocked-deck check covers Hinge's own "you're out of free likes for
+# today" Hinge+ paywall. An unrecognised paywall can leave observe mode polling inside
+# wait_for_decision(timeout=None) for a decision that cannot arrive. Both loops
 # now call driver.blocked_reason() every iteration, BEFORE out_of_profiles() (the more
 # specific, more actionable answer -- see worker.py's comment at each call site), and stop
 # the run as state="blocked"/stop_kind="deck_blocked" the moment it returns a string. This
@@ -922,6 +941,89 @@ def test_auto_mode_stops_as_blocked_and_never_acts_when_driver_reports_a_blocked
     assert driver.likes == [] and driver.dislikes == 0    # no autonomous action into a paywall
     assert store.decisions == []
     assert driver.closed
+
+
+class _BlockedAfterLikeDriver(FakeDriver):
+    """The deck is healthy until Hinge refuses Send Like and replaces it with a paywall."""
+    accepts_opener = False
+
+    def __init__(self):
+        super().__init__(1)
+        self.like_calls = 0
+
+    def blocked_reason(self):
+        return None
+
+    def like(self, opener=None, item_index=None, *, model_item_index=None):
+        self.like_calls += 1
+        raise DeckBlockedError(_PAYWALL_REASON)
+
+
+def test_auto_mode_post_send_blocked_error_records_no_rejected_like():
+    """The worker's between-profile probe cannot see a screen that only appears *after*
+    Send Like.  A driver therefore raises DeckBlockedError at that exact point; it must produce
+    the same graceful status as an already-blocked deck, without increasing counters or saving a
+    phantom decision."""
+    from operation_love.status import RunStatus
+
+    driver = _BlockedAfterLikeDriver()
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert driver.like_calls == 1
+    assert driver.likes == []
+    assert store.decisions == [] and store.labels == []
+    assert app["state"] == "blocked"
+    assert app["stop_reason"] == _PAYWALL_REASON
+    assert app["stop_kind"] == "deck_blocked"
+    assert driver.closed
+
+
+def test_worker_handles_concrete_hinge_blocked_error_without_count_store_or_failure_snapshot():
+    """The concrete Hinge error must take Worker's graceful DeckBlockedError branch.
+
+    Its HingeActionError base is intentionally retained for direct callers, so this protects the
+    multiple-inheritance order from quietly turning a known paywall into the generic error path.
+    """
+    from operation_love.drivers.hinge import HingeActionError, HingeDeckBlockedError
+    from operation_love.status import RunStatus
+
+    class ConcreteHingePaywallDriver(FakeDriver):
+        accepts_opener = False
+
+        def __init__(self):
+            super().__init__(1)
+            self.failure_snapshots = []
+
+        def blocked_reason(self):
+            return None
+
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
+            raise HingeDeckBlockedError(_PAYWALL_REASON)
+
+        def snapshot_failure(self, exc):
+            self.failure_snapshots.append(exc)
+
+    assert issubclass(HingeDeckBlockedError, DeckBlockedError)
+    assert issubclass(HingeDeckBlockedError, HingeActionError)
+    assert HingeDeckBlockedError.__mro__[:3] == (
+        HingeDeckBlockedError, HingeActionError, DeckBlockedError)
+
+    driver = ConcreteHingePaywallDriver()
+    store = FakeStore()
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="auto")
+    Worker("hinge", driver, FakeDecider("like"), None, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "blocked" and app["stop_kind"] == "deck_blocked"
+    assert app["swipes_run"] == 0
+    assert store.decisions == [] and driver.failure_snapshots == []
+    assert driver.likes == [] and driver.closed
 
 
 class _BlockedAndEmptyDriver(FakeDriver):
@@ -1642,6 +1744,32 @@ def test_auto_loop_passes_stop_event_is_set_as_should_stop_to_maybe_opener():
     assert client.should_stops == [w.stop_event.is_set]
 
 
+def test_action_cancelled_ends_auto_normally_without_a_phantom_like_or_snapshot():
+    """A Stop at the driver's action boundary is neither a targeting miss nor a crash."""
+    class CancelledLike(InterruptibleLikeDriver):
+        def __init__(self):
+            super().__init__(1)
+            self.snapshots = 0
+
+        def like(self, opener=None, item_index=None, *, model_item_index=None, should_stop=None):
+            self.like_stop_callbacks.append(should_stop)
+            raise ActionCancelled("stop before heart tap")
+
+        def snapshot_failure(self, exc):
+            self.snapshots += 1
+
+    driver = CancelledLike()
+    store = FakeStore()
+    client = FakeOpenerClient()
+    service = OpenerService(client, CostTracker(PRICING, None), store, "s")
+    worker = _worker(driver, FakeDecider("like"), service, store)
+    worker.run()
+
+    assert worker.stop_event.is_set()
+    assert driver.likes == [] and driver.snapshots == 0
+    assert store.decisions == []
+
+
 # Sentinel for "this test did not override the pick", distinct from None (which is a real
 # maybe_opener answer: "no opener for this profile").
 _UNSET = object()
@@ -1724,12 +1852,13 @@ def _settled(status, app="bumble", timeout=10.0):
     return gate
 
 
-def test_observe_suggestion_passes_stop_event_is_set_to_maybe_opener():
+def test_observe_suggestion_passes_a_run_and_card_cancellation_predicate_to_maybe_opener():
     """Pins the OTHER call site: the observe-mode suggestion -- which doc 5.9 moved from the
     post-heart callback to a thread started right after READY -- must still thread
-    should_stop=self.stop_event.is_set, not just the auto-loop path pinned above. It matters
-    MORE here than before the inversion: the call now happens on every card rather than only on
-    the ones the human hearts, so a Stop click has more in-flight calls to abort."""
+    a predicate including the run's stop event, not just the auto-loop path pinned above. It
+    matters MORE here than before the inversion: the call now happens on every card rather than
+    only on the ones the human hearts, so a Stop click (or leaving one card) has more in-flight
+    calls to abort."""
     from operation_love.status import RunStatus
 
     class ObserveDecider(FakeDecider):
@@ -1748,7 +1877,12 @@ def test_observe_suggestion_passes_stop_event_is_set_to_maybe_opener():
     w.run()
 
     assert client.calls == 1
-    assert client.should_stops == [w.stop_event.is_set]
+    # The predicate includes card-local cancellation as well as the run-level event.  This
+    # normal completion did not stop the run, but its wait-finally did cancel its card, so the
+    # callable retained by the client must now report a stop rather than leave a stale request
+    # eligible to start later.
+    assert not w.stop_event.is_set()
+    assert len(client.should_stops) == 1 and client.should_stops[0]()
 
 
 # ---------------------------------------------------------------------------------------
@@ -1997,6 +2131,149 @@ def test_observe_publishes_the_item_number_and_description_with_the_text():
     assert shown["opener_warning"] is None
 
 
+def test_observe_rejects_a_pick_in_any_non_model_item_index_space():
+    """Observe's numbered crop request can only be interpreted in model-item space.
+
+    A stale/custom producer can still hand back a legacy ``profile_photos`` pick.  AUTO has an
+    explicit capture-order branch for that legacy response, but Observe's sheet checker always
+    treats its number as a numbered crop.  Showing the text would therefore let the hub certify
+    one item while the model wrote about another, so this is a warning with no text and no sheet
+    check rather than an attempted conversion.
+    """
+    from operation_love.status import RunStatus
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
+    store = FakeStore()
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService(pick=OpenerPick(
+        "must never be offered", index=1, referenced="r",
+        index_space=INDEX_SPACE_PROFILE_PHOTOS,
+    ))
+    w = Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+               threading.Event(), mode="observe", status=status)
+    w.run()
+
+    assert driver.checked == []
+    assert all(call.get("opener_suggestion") != "must never be offered" for call in calls)
+    warned = next(call for call in calls if call.get("opener_warning"))
+    assert "unsupported index space" in warned["opener_warning"]
+    assert "profile_photos" in warned["opener_warning"]
+    assert len(store.labels) == 1 and not w.stop_event.is_set()
+
+
+def test_observe_cancelled_before_publish_never_announces_a_stale_ready_suggestion(
+        monkeypatch, capsys):
+    """Cancellation between generation and publish must suppress status *and* console advice.
+
+    The delayed wrapper creates the exact narrow interleaving: the model result has already
+    been stored under the suggestion lock, but the final publish has not acquired it yet.  The
+    worker's normal wait-finally calls ``cancel`` in that gap.  A stale ready line would survive
+    in a bug report after the card has moved on, even though the hub correctly suppresses it.
+    """
+    from operation_love.status import RunStatus
+    from operation_love.worker import _ObserveSuggestion
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    worker = Worker("bumble", _ObserveLikeIntentDriver(), _ObserveDecider(),
+                    _RecordingOpenerService(suggestion="stale advice", index=2), FakeStore(),
+                    "run1", _Pacing(), threading.Event(), mode="observe", status=status)
+    suggestion = _ObserveSuggestion(worker, _observe_card())
+    entered_publish = threading.Event()
+    release_publish = threading.Event()
+    real_publish = suggestion._publish
+
+    def pause_before_final_publish(*, announce_pick=None):
+        if announce_pick is not None:
+            entered_publish.set()
+            assert release_publish.wait(timeout=2)
+        return real_publish(announce_pick=announce_pick)
+
+    monkeypatch.setattr(suggestion, "_publish", pause_before_final_publish)
+    suggestion.start()
+    assert entered_publish.wait(timeout=2)
+    suggestion.cancel()
+    release_publish.set()
+    assert suggestion._thread is not None
+    suggestion._thread.join(timeout=2)
+    assert not suggestion._thread.is_alive()
+
+    assert "suggestion ready" not in capsys.readouterr().out
+    assert status.app_view("bumble")["app"]["opener_suggestion"] is None
+
+
+def test_observe_cancelled_queued_suggestion_never_reaches_provider_and_does_not_block_newest():
+    """Leaving card two while card one owns the shared opener lock must cost nothing for two.
+
+    The real service serializes all provider attempts under one lock.  Before cancellation was
+    composed into its ``should_stop`` predicate, a fast swiper could build a queue of daemon
+    threads: each old card waited, then made a billable request after its card was gone, before
+    discarding its answer.  This fake has the same two-stage structure (queue lock, then provider
+    boundary) and makes that interleaving deterministic.  Card three proves that the canceled
+    card does not occupy a provider turn ahead of the current card once card one releases.
+    """
+    from operation_love.worker import _ObserveSuggestion
+
+    class Driver:
+        accepts_opener = True
+
+        def observe_item_mismatch(self, sheet, model_item_index):
+            return ""
+
+    class SerializedService:
+        disabled = False
+        stop_requested = False
+        last_skip_reason = None
+
+        def __init__(self):
+            self._lock = threading.Lock()
+            self.first_at_provider = threading.Event()
+            self.second_queued = threading.Event()
+            self.release_first = threading.Event()
+            self.provider_calls = []
+
+        def maybe_opener(self, run_id, app, profile, *, items, should_stop, advisory):
+            if profile.bio == "second":
+                self.second_queued.set()
+            with self._lock:
+                # This is OpenerService.maybe_opener's before-attempt cancellation boundary.
+                if should_stop():
+                    return None
+                self.provider_calls.append(profile.bio)
+                if profile.bio == "first":
+                    self.first_at_provider.set()
+                    assert self.release_first.wait(timeout=2)
+                return OpenerPick("hello", index=1)
+
+    service = SerializedService()
+    worker = Worker("hinge", Driver(), None, service, FakeStore(), "run1", _Pacing(),
+                    threading.Event(), mode="observe")
+    first = _ObserveSuggestion(worker, _observe_card())
+    first._profile.bio = "first"
+    second = _ObserveSuggestion(worker, _observe_card())
+    second._profile.bio = "second"
+    newest = _ObserveSuggestion(worker, _observe_card())
+    newest._profile.bio = "newest"
+
+    first.start()
+    assert service.first_at_provider.wait(timeout=2)
+    second.start()
+    assert service.second_queued.wait(timeout=2)
+    second.cancel()
+    service.release_first.set()
+    assert first._thread is not None and second._thread is not None
+    first._thread.join(timeout=2)
+    second._thread.join(timeout=2)
+    assert not first._thread.is_alive() and not second._thread.is_alive()
+    assert service.provider_calls == ["first"]
+
+    newest.start()
+    assert newest._thread is not None
+    newest._thread.join(timeout=2)
+    assert not newest._thread.is_alive()
+    assert service.provider_calls == ["first", "newest"]
+
+
 def test_observe_checks_the_opened_sheet_against_the_item_the_opener_names():
     """The mismatch guard's HAPPY path, and the pin that it actually runs. The frame the driver
     hands over on the heart tap is passed to the driver's own deterministic check together with
@@ -2115,6 +2392,35 @@ def test_observe_warns_and_never_asks_when_the_capture_could_not_be_enumerated()
     assert svc.calls == [], "no numbered items means no request, never a frame-shape fallback"
     warned = next(c for c in calls if c.get("opener_warning"))
     assert warned["opener_warning"] == "the scroll top was not confirmed"
+    assert not w.stop_event.is_set() and len(store.labels) == 1
+
+
+def test_observe_targeting_readiness_gate_withholds_text_before_the_provider_call():
+    """A per-device calibration gate must run before generation, not only after sheet-open.
+
+    Otherwise unchecked opener text can sit on the hub while the human decides, then disappear
+    only after their tap.  Missing calibration is advisory in Observe: labels continue, but the
+    provider sees no request and no text is ever offered.
+    """
+    from operation_love.status import RunStatus
+
+    class _UncalibratedObserveDriver(_ObserveLikeIntentDriver):
+        def targeted_suggestion_blocker(self):
+            return "targeting_calibration is unavailable; no opener text is offered"
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _UncalibratedObserveDriver(gate=_settled(status))
+    store = FakeStore()
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService(suggestion="must never appear")
+    w = Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+               threading.Event(), mode="observe", status=status)
+    w.run()
+
+    assert svc.calls == []
+    assert all(call.get("opener_suggestion") != "must never appear" for call in calls)
+    warned = next(call for call in calls if call.get("opener_warning"))
+    assert "targeting_calibration is unavailable" in warned["opener_warning"]
     assert not w.stop_event.is_set() and len(store.labels) == 1
 
 
@@ -2316,7 +2622,6 @@ def test_observe_per_card_reset_clears_every_opener_field_from_the_previous_card
                           if c["fields"].get("state") == "waiting")["after"]
     assert card_two_reset["opener_suggestion"] is None
     assert card_two_reset["opener_referenced"] is None    # NOT left over from card 1's "her dog"
-    assert card_two_reset["opener_anchored"] is False
     assert card_two_reset["opener_item"] is None          # NOT still saying "like item 3"
     assert card_two_reset["opener_item_description"] is None
     assert card_two_reset["opener_warning"] is None
@@ -2361,7 +2666,6 @@ def test_observe_loop_finally_clears_a_still_live_suggestion_before_the_terminal
     after = finally_clear["after"]
     assert after["opener_suggestion"] is None
     assert after["opener_referenced"] is None
-    assert after["opener_anchored"] is False
     assert after["opener_item"] is None
     assert after["opener_item_description"] is None
     assert after["opener_warning"] is None
@@ -2378,19 +2682,20 @@ class _RecordingResultOpenerClient(FakeOpenerClient):
         self.opener_text = opener_text
         self.results = []
 
-    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+    def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
                  skip_models=frozenset()):
         self.calls += 1
         self.should_stops.append(should_stop)
-        self.anchors.append(anchor)
         self.items.append(items)
         # Same reasoning as FakeOpenerClient.generate() above: a realistic, translatable pick,
         # not the dataclass's own untranslatable-by-default item_index/index_space.
         result = OpenerResult(opener=self.opener_text, referenced="r",
                               usage=Usage(input_tokens=self.cost_tokens),
                               model="gemini-test-model",
-                              item_index=FIRST_ITEM_INDEX, index_space=INDEX_SPACE_PROFILE_PHOTOS)
+                              item_index=FIRST_ITEM_INDEX,
+                              index_space=(INDEX_SPACE_MODEL_ITEMS if items is not None
+                                           else INDEX_SPACE_PROFILE_PHOTOS))
         self.results.append(result)
         return result
 
@@ -2415,7 +2720,7 @@ def test_observe_suggestion_and_auto_like_type_the_identical_opener_the_client_r
     modes that issued different REQUESTS was never much of a canary: auto sent numbered crops and
     asked the model to choose, observe sent scroll frames plus an anchor and asked it to describe
     one. So this now also asserts that both modes reached the client with the SAME request shape
-    -- the crops, and no anchor -- which is the property the text-fidelity assertion rests on."""
+    -- the numbered crops -- which is the property the text-fidelity assertion rests on."""
     from operation_love.status import RunStatus
 
     weird_opener = '  Sure! Here’s a great one: "Nice antlers."  '
@@ -2452,12 +2757,11 @@ def test_observe_suggestion_and_auto_like_type_the_identical_opener_the_client_r
     assert auto_driver.likes[0] == waiting_for_send_call["opener_suggestion"]
 
     # ...and it rests on both modes having ASKED the same question. Same numbered crops, same
-    # unnumbered context, same name, and no anchor in either -- one ItemRequest each.
+    # unnumbered context and same name -- one ItemRequest each.
     assert [i.items for i in auto_client.items] == [_OBSERVE_ITEMS]
     assert [i.items for i in observe_client.items] == [_OBSERVE_ITEMS]
     assert [i.context for i in observe_client.items] == [i.context for i in auto_client.items]
     assert [i.name for i in observe_client.items] == [i.name for i in auto_client.items]
-    assert auto_client.anchors == observe_client.anchors == [None]
 
 
 class _TwoCardObserveLikeIntentDriver(FakeDriver):
@@ -2881,7 +3185,7 @@ class _TargetingMissDriver(FakeDriver):
         self._exc = ItemTargetingError(message, stage=stage, intended=intended, actual=actual,
                                        index_space=index_space)
 
-    def like(self, opener=None, item_index=0, *, model_item_index=None):
+    def like(self, opener=None, item_index=None, *, model_item_index=None):
         self.likes.append(opener)          # recorded so a test can prove it was CALLED and failed
         raise self._exc
 
@@ -2995,7 +3299,7 @@ def test_an_ordinary_driver_failure_is_still_an_error_not_a_targeting_stop():
 class _ObserveNeverLikesDriver(_ObserveLikeIntentDriver):
     """Observe-capable, and its like() is a tripwire rather than an implementation."""
 
-    def like(self, opener=None, item_index=0, *, model_item_index=None):
+    def like(self, opener=None, item_index=None, *, model_item_index=None):
         raise AssertionError("observe mode must never call driver.like()")
 
 

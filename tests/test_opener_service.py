@@ -5,6 +5,7 @@ It's exercised indirectly elsewhere; this pins its own decision branches with
 lightweight fakes (no provider SDK/network).
 """
 from types import SimpleNamespace
+import threading
 
 import pytest
 
@@ -72,11 +73,6 @@ class _Client:
     generate, which uses this same parameter to steer its cascade away from a model that
     already failed to parse for this profile.
 
-    anchors records the anchor every call was made with (None when the caller omitted it),
-    so the anchor-threading tests below can pin that maybe_opener() forwards its own anchor
-    argument to the client UNCONDITIONALLY, on every attempt including retries -- see
-    service.py's maybe_opener docstring, anchor paragraph.
-
     opener_texts, when given, scripts the OPENER TEXT of each successive SUCCESSFUL return
     (success #0 gets opener_texts[0], and the final entry repeats forever once the script runs
     out). Without it EVERY success returns the identical _Res.opener, which the entropy guard
@@ -95,7 +91,6 @@ class _Client:
         self.retry_hints = []
         self.should_stops = []
         self.skip_models_seen = []
-        self.anchors = []
         self.items = []
 
     def _success(self):
@@ -108,14 +103,13 @@ class _Client:
         self.successes += 1
         return res
 
-    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
+    def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
                  skip_models=frozenset()):
         self.calls += 1
         self.retry_hints.append(retry_hint)
         self.should_stops.append(should_stop)
         self.skip_models_seen.append(skip_models)
-        self.anchors.append(anchor)
         self.items.append(items)
         if self.exc_sequence is not None:
             step = self.exc_sequence.pop(0) if self.exc_sequence else None
@@ -605,8 +599,8 @@ def test_parse_error_returns_none_and_formats_unknown_cost_safely(capsys):
 
 
 # ---------------------------------------------------------------------------------------
-# last_skip_reason: the per-call (last-writer-wins) companion to exhausted_reason (first-
-# writer-wins, run-lifetime). It exists so a caller that must never send a like with no
+# last_skip_reason: the per-thread, per-call companion to exhausted_reason (first-writer-wins,
+# run-lifetime). It exists so a caller that must never send a like with no
 # opener (worker.py's _auto_loop) can report the ACTUAL cause of a per-call failure that
 # leaves the service otherwise healthy, instead of a generic line. See maybe_opener's and
 # last_skip_reason's own docstrings in service.py for the exact contract: set on every
@@ -616,6 +610,33 @@ def test_parse_error_returns_none_and_formats_unknown_cost_safely(capsys):
 
 def test_last_skip_reason_starts_unset():
     s = OpenerService(_Client(), _Tracker(), _Store(), "casual")
+    assert s.last_skip_reason is None
+
+
+def test_last_skip_reason_is_isolated_between_concurrent_worker_threads():
+    """A worker must read the reason for its own call after the service lock is released.
+
+    The former shared scalar was last-writer-wins across workers, so another app could replace
+    it before the first worker published its warning. The public attribute now remains local to
+    the calling thread while exhausted_reason stays deliberately global.
+    """
+    s = OpenerService(_Client(), _Tracker(), _Store(), "casual")
+    written = threading.Barrier(3)
+    reads = {}
+
+    def worker(name):
+        s.last_skip_reason = f"{name} failed"
+        written.wait()
+        reads[name] = s.last_skip_reason
+
+    threads = [threading.Thread(target=worker, args=(name,)) for name in ("hinge", "bumble")]
+    for thread in threads:
+        thread.start()
+    written.wait()
+    for thread in threads:
+        thread.join()
+
+    assert reads == {"hinge": "hinge failed", "bumble": "bumble failed"}
     assert s.last_skip_reason is None
 
 
@@ -1166,30 +1187,20 @@ def test_advisory_single_attempt_also_passes_an_empty_skip_models():
 
 
 # ---------------------------------------------------------------------------------------
-# anchor: a live screenshot of the app's own open like/comment screen, threaded through to
-# the client so the model grounds the opener in the ONE photo/prompt the comment will
-# actually be attached to instead of picking its own favourite from the profile scroll (see
-# service.py's maybe_opener docstring, anchor paragraph, and opener.py's GeminiOpener for the
-# full rationale). maybe_opener forwards anchor=anchor UNCONDITIONALLY on every attempt,
-# including retries, since what the message attaches to does not change just because the
-# previous attempt was malformed.
+# Retired anchor request shape: passing an anchor must fail before a client request is made.
 # ---------------------------------------------------------------------------------------
 
-def test_anchor_reaches_the_client_verbatim_on_a_first_attempt():
-    """The anchor bytes passed to maybe_opener() must reach client.generate() unchanged --
-    this is the whole mechanism the anchor feature depends on: if the bytes were dropped or
-    swapped en route, the model would fall back to guessing which photo/prompt the comment
-    attaches to, exactly the out-of-place-opener bug the anchor exists to fix."""
+def test_retired_anchor_argument_is_not_accepted_by_the_service():
     anchor_bytes = b"...png bytes..."
     c, t, st = _Client(), _Tracker([False, False]), _Store()
     s = OpenerService(c, t, st, "casual")
 
-    out = s.maybe_opener("r", "hinge", object(), anchor=anchor_bytes)
+    with pytest.raises(TypeError):
+        s.maybe_opener("r", "hinge", object(), anchor=anchor_bytes)
+    assert c.calls == 0
 
-    assert out.text == _Res.opener
-    assert c.anchors == [anchor_bytes]
 
-
+@pytest.mark.skip(reason="retired anchor request shape")
 def test_same_anchor_is_passed_again_on_every_retry_attempt_after_a_parse_error():
     """A malformed first response is retried (see maybe_opener's OpenerParseError branch),
     but retrying is about fixing the TEXT, not about re-deciding what the message is about --
@@ -1209,6 +1220,7 @@ def test_same_anchor_is_passed_again_on_every_retry_attempt_after_a_parse_error(
     assert c.anchors == [anchor_bytes, anchor_bytes, anchor_bytes]
 
 
+@pytest.mark.skip(reason="retired anchor request shape")
 def test_omitting_anchor_yields_none_at_the_client():
     """Every pre-existing call site (and every test above this section) omits anchor, so it
     must default to None at the client, not some other sentinel -- an OpenerClient
@@ -1237,7 +1249,6 @@ def test_item_request_is_forwarded_to_the_client_on_every_attempt():
 
     assert out.text == _Res.opener
     assert c.items == [items, items]
-    assert c.anchors == [None, None], "the two image shapes are mutually exclusive"
 
 
 def test_omitting_the_item_request_yields_none_at_the_client():
@@ -1471,37 +1482,33 @@ def test_a_result_that_states_no_index_space_yields_an_unusable_pick_not_a_guess
 # ---------------------------------------------------------------------------------------
 # recent_openers_snapshot(): the ring buffer of the most recent SUCCESSFUL opener
 # generations, independent of self.store.record_opener's permanent per-run record -- see
-# __init__'s recent_openers docstring. Records whether the call was anchored/advisory
-# alongside the model's own referenced/index/opener fields, so a bug report can tell an
-# anchored generation apart from a blind one after the fact.
+# __init__'s recent_openers docstring. Records advisory mode alongside the model's own
+# referenced/index/opener fields.
 # ---------------------------------------------------------------------------------------
 
-def test_recent_openers_snapshot_records_anchored_and_advisory_flags_with_fields_intact():
-    """One anchored AUTO call and one unanchored advisory call must produce two entries whose
-    `anchored`/`advisory` flags reflect exactly what that call was, while `referenced`,
+def test_recent_openers_snapshot_records_advisory_flags_with_fields_intact():
+    """One AUTO call and one advisory call produce entries whose `advisory` flags, `referenced`,
     `index`, and `opener` all carry through from the client's own result untouched.
 
     The two calls are given DIFFERENT opener texts on purpose (see opener_texts), so neither
     collides with the other's leading n-gram: the entropy guard now runs identically on an
     advisory call (see the 2026-08-11 correction, entropy-guard section at the bottom of this
-    file), and this test is about the anchored/advisory bookkeeping, not about collisions --
+    file), and this test is about the advisory bookkeeping, not about collisions --
     that behavior is pinned directly by the advisory entropy-guard tests below."""
     c = _Client(opener_texts=["hey, that hiking photo is great",
                               "so that lake looked freezing today"])
     t, st = _Tracker([False, False, False, False]), _Store()
     s = OpenerService(c, t, st, "casual")
 
-    s.maybe_opener("r", "hinge", object(), anchor=b"anchor-bytes")
+    s.maybe_opener("r", "hinge", object())
     s.maybe_opener("r", "bumble", object(), advisory=True)
 
     snap = s.recent_openers_snapshot()
     assert len(snap) == 2
-    anchored_entry, advisory_entry = snap
-    assert anchored_entry["anchored"] is True
-    assert anchored_entry["advisory"] is False
-    assert advisory_entry["anchored"] is False
+    auto_entry, advisory_entry = snap
+    assert auto_entry["advisory"] is False
     assert advisory_entry["advisory"] is True
-    assert anchored_entry["opener"] == "hey, that hiking photo is great"
+    assert auto_entry["opener"] == "hey, that hiking photo is great"
     assert advisory_entry["opener"] == "so that lake looked freezing today"
     for entry in snap:
         assert entry["referenced"] == _Res.referenced
@@ -1525,8 +1532,8 @@ def test_recent_openers_snapshot_records_anchored_and_advisory_flags_with_fields
     assert advisory_entry["entropy_regenerated"] is False
     # Nothing collided for the FIRST call either (the buffer was empty when it was checked),
     # and its result carried no redundancy markers.
-    assert anchored_entry["entropy_collision"] == ""
-    assert anchored_entry["entropy_regenerated"] is False
+    assert auto_entry["entropy_collision"] == ""
+    assert auto_entry["entropy_regenerated"] is False
     for entry in snap:
         assert entry["redundancy_markers"] == []
 

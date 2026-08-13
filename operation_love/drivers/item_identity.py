@@ -227,15 +227,12 @@ _IDENTITY_GRID = (64, 16)
 # already said about re-measuring, and picking a number to fit six profiles is the fitted constant
 # this repo does not ship.
 #
-# WHAT THIS MEANS FOR CALLERS, AND IT IS NOT OPTIONAL: an IDENTITY_MATCH from this gate is NOT
-# proof that the screen is the profile the index describes. It is a strong refusal mechanism -- it
-# refused 14 of 15 real cross-profile pairs and 108 of 108 navigations in the shipped matrix -- and
-# a weak confirmation one. Nothing may be BUILT on a match here that is not also defended some
-# other way. Note that `item_verify.verify_sheet_item` is not that other way: it is a closed-set
-# item discriminator and has itself been measured accepting a foreign card, so the two do not
-# cover each other's gap. The one path in this system where a like is spent
-# (`hinge._like_comment_sheet`) refuses a model item number it cannot navigate to, which is why
-# neither hole is reachable in production today.
+# WHAT THIS MEANS FOR CALLERS, AND IT IS NOT OPTIONAL: the legacy 3.0 default is diagnostic only;
+# it cannot license a targeted action. The production Hinge path supplies an operator-calibrated
+# ceiling strictly below the known 2.565 collision, rechecks identity on the opened sheet, and
+# also requires the separately calibrated absolute item-distance ceiling. Missing evidence blocks
+# AUTO before a gesture and OBSERVE before suggestion generation. Other callers using this
+# module's default still inherit the measured false-accept caveat and must not build on MATCH alone.
 #
 # CONSEQUENCE, STATED RATHER THAN DISCOVERED LATER: at this grid a redrawn header cannot be
 # tolerated. [corpus: `scroll_top.py` measured a 4px vertical layout shift on this band at 6.67

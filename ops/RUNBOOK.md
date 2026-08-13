@@ -169,6 +169,86 @@ python -m tools.hinge_inspect            # screencaps your phone; reports vision
   record a decision — the same profile remains awaiting your choice. Dry-run
   `mode: observe` and check it logs your manual decisions correctly.
 
+### Hinge targeted-opener calibration — BLOCKING before targeted text or targeted AUTO likes
+
+The completed opener redesign intentionally ships **without** numeric targeting bounds. Do not
+copy a value from an old calibration note, infer one from a nearby device, or choose a “safe
+looking” number. On the actual phone that will run Hinge, add this mapping only after the
+measurement protocol below is complete:
+
+```yaml
+apps:
+  hinge:
+    serial: <exact adb serial>
+    targeting_calibration:
+      identity_match_max_dist: <measured identity bound>
+      sheet_item_max_dist: <measured sheet-item bound>
+      device: <the exact same adb serial>
+      calibrated_at: <date/time and measurement-run reference>
+      identity_band: [<exact effective x0>, <exact effective y0>, <exact effective x1>, <exact effective y1>]
+      content_band: [<exact effective y0>, <exact effective y1>]
+```
+
+Those are the **exact** `apps.<app>.targeting_calibration` keys: no missing or additional keys.
+Both distance fields must be finite positive numbers. `device` must exactly equal the nonempty
+`apps.hinge.serial` ADB serial; it is a machine-checked binding, not free-form device evidence.
+`calibrated_at` must be nonempty evidence text, not a placeholder. `identity_match_max_dist` must be strictly less than
+the known 2.565 different-profile distance; this is a hard upper limit, not a recommended
+setting. `sheet_item_max_dist` must likewise be strictly less than the nearest known 14.91
+foreign-card false-match distance; that too is only a hard upper limit, never a setting to copy.
+`identity_band` is its four-number `[x0, y0, x1, y1]` rectangle and `content_band` is its
+two-number vertical `[y0, y1]` span. Both must be finite, ordered normalized fractions and must
+exactly equal Hinge's *effective* bands after any `apps.hinge` overrides. A calibration cannot be
+reused after either crop changes; measure and record a new one.
+The two values serve different tests and must be measured separately:
+
+- `identity_match_max_dist` is the maximum distance for the sticky-header profile-identity
+  comparison, used before navigation/tap and again on the opened comment sheet.
+- `sheet_item_max_dist` is the absolute maximum distance for the sheet preview versus the exact
+  stored numbered item, in addition to the item's closed-set nearest-item/separation test.
+- `device` is the exact ADB serial of the physical device on which the bounds were measured. Keep
+  its relevant display/app-build evidence with the private measurement ledger; `calibrated_at`
+  identifies when and which measurement run produced that evidence.
+
+#### Held-out real-device measurement protocol
+
+1. On the intended physical device, collect a calibration set and a separately collected,
+   held-out set of real profiles, captures, and opened comment sheets. Keep profile identities,
+   items, display scale, Hinge build, and capture/session references in the private measurement
+   ledger; do not commit profile images or personal data.
+2. Measure identity distances for same-profile sheet/card pairs and for deliberately different
+   profile pairs. Freeze an identity bound from the calibration set only, strictly below 2.565;
+   then apply it unchanged to the held-out set. It must produce **0 foreign-profile accepts**.
+3. Independently measure sheet-preview distances for each intended numbered item and for every
+   other item/profile available in the held-out material. Freeze a separate absolute sheet-item
+   bound from the calibration set only, then apply it unchanged to held-out sheets. It must
+   produce **0 foreign-item or foreign-profile accepts**, including when the nearest stored item
+   is otherwise attractive under the closed-set comparison.
+4. Record both accepted and refused cases, the frozen bounds, device/build evidence, timestamps,
+   item numbers, and every held-out result. A false refusal is a stop/re-measurement signal; a
+   foreign accept invalidates the bound. Do not widen either bound to recover a refusal without a
+   new calibration and fresh held-out evidence.
+
+The first supervised device session must additionally confirm all four operational checks:
+
+- **Entry anchor / scroll ledger:** begin from a confirmed profile top, enumerate the profile,
+  and inspect the bottom-up entry anchor, frame/shift ledger, item numbering, and cancellation
+  behaviour before authorizing a gesture.
+- **Item 1 non-scrolled sheet identity:** heart item 1 without scrolling, then confirm the
+  identity band remains readable on its sheet and agrees with the enumerated profile. This is the
+  edge case unavailable in the earlier scrolled-sheet measurements.
+- **Gesture transport:** on a supervised disposable profile, verify the real transport opens the
+  expected comment sheet, preserves the intended target, and leaves no unintended action after a
+  cancellation or targeting refusal.
+- **OBSERVE timing and quota:** run OBSERVE through a complete manual pass/heart/send cycle and
+  verify the hub's pre-tap timing, post-tap check, model/API quota behaviour, label persistence,
+  and rejected-send/paywall logging.
+
+Until all of this is recorded, absence of `targeting_calibration` is expected safety behaviour:
+**AUTO stops before any targeted gesture**, and **OBSERVE withholds targeted opener text while
+manual labels continue**. It is not permission to use a legacy anchored opener or a fixed first
+item fallback.
+
 > These are the items deferred to "do live, at the end." Everything they plug
 > into (capture, embed, store, ranker, openers, supervisor) already works and is
 > tested.

@@ -61,7 +61,8 @@ import uuid
 from datetime import date
 
 from .config import PacingCfg
-from .drivers.base import DatingAppDriver, DriverClosed, ItemTargetingError
+from .drivers.base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClosed,
+                           ItemTargetingError)
 from .human import human_cooldown, human_delay
 from .human_motion import think_time_s
 from .interaction import AutoSessionPolicy
@@ -79,6 +80,33 @@ _PROFILE_LOG_WIDTH = 72
 # instantly) while think_time_s supplies the measured like-vs-pass asymmetry shape.
 # Derived from PacingCfg's own default so the baseline can't drift from the config.
 _THINK_TIME_BASELINE_S = PacingCfg().swipe_delay_s
+
+
+def _item_type_preflight_mismatch(driver, pick) -> str:
+    """Return doc 5.8's mismatch reason, or ``""`` when it is safe to continue.
+
+    The capability is method-presence rather than a base-class abstract method so every existing
+    generic driver remains valid.  Its contract is pure: it must only inspect the crop it already
+    owns and may not capture, navigate, tap, or otherwise touch the phone.  A broken optional
+    implementation is deliberately treated as inconclusive; this early coarse check is an extra
+    guard, while the driver-owned post-tap verifier remains the mandatory safety mechanism.
+    """
+    # The optional driver hook owns NUMBERED ITEM crops.  A legacy profile-photo pick counts
+    # raw capture frames instead, so handing its integer to this hook would compare unrelated
+    # things and could manufacture a hard stop.  AUTO has a separate explicit legacy targeting
+    # path; this coarse model-item guard must stay out of it.
+    if getattr(pick, "index_space", None) != INDEX_SPACE_MODEL_ITEMS:
+        return ""
+    check = getattr(driver, "item_type_preflight", None)
+    if not callable(check):
+        return ""
+    try:
+        result = check(pick.item_description, pick.index)
+    except Exception:  # noqa: BLE001 — optional early check must fail open to 5.6's verifier
+        return ""
+    if getattr(result, "mismatch", False):
+        return str(getattr(result, "reason", "the crop and description disagree on item type"))
+    return ""
 
 
 class _ObserveSuggestion:
@@ -137,6 +165,11 @@ class _ObserveSuggestion:
         self._sheet = None         # the like-sheet frame the human opened, once they have
         self._pending = False      # a generation call is in flight
         self._cancelled = False
+        # This is deliberately separate from `_cancelled`/`_lock`: a provider call can be
+        # waiting on OpenerService's shared budget lock while the human has already left this
+        # card.  It needs a cheap predicate the service can observe BEFORE it spends a provider
+        # slot, without waiting for this object's display lock.
+        self._cancel_event = threading.Event()
         self._announced = None     # the last warning printed, so a republish does not repeat it
         self._thread: threading.Thread | None = None
 
@@ -203,6 +236,10 @@ class _ObserveSuggestion:
         the very stall this whole design exists to avoid. It is a daemon, it holds nothing, and
         its only remaining act is a `_publish` that returns immediately.
         """
+        # Set this first.  A generation blocked behind another card's serialized opener call
+        # can then return at `maybe_opener`'s before-attempt stop check instead of issuing a
+        # stale, billable request merely because it has not yet acquired our display lock.
+        self._cancel_event.set()
         with self._lock:
             self._cancelled = True
 
@@ -231,6 +268,18 @@ class _ObserveSuggestion:
         if not callable(getattr(worker.driver, "observe_item_mismatch", None)):
             return ("this driver cannot check which item you opened against the item a "
                     "suggestion names, and doc 5.9 forbids offering text that cannot be checked")
+        # Some drivers require measured, per-device evidence before their identity and sheet
+        # checks can license targeted text.  Ask before the provider call: checking only after
+        # the human opens a sheet would let unlicensed opener text appear on the hub meanwhile.
+        readiness = getattr(worker.driver, "targeted_suggestion_blocker", None)
+        if callable(readiness):
+            try:
+                reason = readiness()
+            except Exception as exc:  # noqa: BLE001 — an optional safety gate fails closed
+                return ("this driver's targeted-suggestion readiness check failed "
+                        f"({type(exc).__name__}: {exc}), so no opener text is offered")
+            if reason:
+                return str(reason)
         return ""
 
     def _generate(self) -> None:
@@ -238,11 +287,22 @@ class _ObserveSuggestion:
         worker = self._worker
         pick = None
         failure = None
+
+        def should_stop() -> bool:
+            return self._cancel_event.is_set() or worker.stop_event.is_set()
+
+        # Do not even join OpenerService's shared queue if the card left before this daemon got
+        # CPU time.  The service receives the same predicate below for the remaining race where
+        # cancellation happens while it is waiting on its own budget lock or inside a cooperative
+        # provider cascade.
+        if should_stop():
+            return
         try:
             pick = worker.opener_service.maybe_opener(
                 worker.run_id, worker.app, self._profile,
                 items=ItemRequest.from_profile(self._profile),
-                should_stop=worker.stop_event.is_set, advisory=True)
+                should_stop=should_stop,
+                advisory=True)
         except Exception as exc:  # noqa: BLE001 — a suggestion must never break a labelling run
             failure = f"the opener call failed ({type(exc).__name__}: {exc})"
         if pick is not None and pick.index == ITEM_INDEX_ABSENT:
@@ -252,7 +312,37 @@ class _ObserveSuggestion:
             failure = ("the model wrote an opener but named no item for it, so there is nothing "
                        "to tell you to like")
             pick = None
+        index_space = getattr(pick, "index_space", None) if pick is not None else None
+        if pick is not None and index_space != INDEX_SPACE_MODEL_ITEMS:
+            # Observe's crop request has exactly one valid numbering: its own 1-based
+            # model-item list.  `observe_item_mismatch` receives that same number and compares
+            # the opened sheet with one of those crops, so accepting a legacy capture-order
+            # value here would make the hub label/check one item while the text was generated
+            # for another.  AUTO can still route a legacy response through its explicit
+            # capture-order branch; Observe has no equivalent safe interpretation and must
+            # withhold the text.
+            failure = ("the model returned an opener in the unsupported index space "
+                       f"{index_space!r}; Observe can only verify numbered model items, "
+                       "so no opener is offered")
+            pick = None
         with self._lock:
+            # `cancel()` takes this same lock before the next capture is allowed to invalidate
+            # the driver's per-profile crops.  Run the pure crop check under it, therefore: a
+            # late model answer can never classify the NEXT person's item after this card has
+            # already left the screen.  It is safe to hold because the documented capability
+            # cannot capture, navigate, log, or otherwise touch the transport.
+            if self._cancelled:
+                return
+            if pick is not None:
+                mismatch = _item_type_preflight_mismatch(worker.driver, pick)
+                if mismatch:
+                    # Doc 5.8 is deliberately earlier than observe's sheet check: the model
+                    # chose a numbered crop whose own coarse type contradicts its description,
+                    # so this is not advice the human should receive.  Observe warns and
+                    # withholds text; AUTO makes the corresponding ItemTargetingError/stop.
+                    failure = ("the model's chosen item failed the pre-flight type check, so no "
+                               f"opener is offered: {mismatch}")
+                    pick = None
             self._pending = False
             self._pick = pick
             if pick is None:
@@ -260,19 +350,11 @@ class _ObserveSuggestion:
                     getattr(worker.opener_service, "last_skip_reason", None)
                     or getattr(worker.opener_service, "exhausted_reason", None)
                     or "no opener was produced for this card")
-            cancelled = self._cancelled
-        self._publish()
-        if pick is not None and not cancelled:
-            # The TEXT deliberately does not go to the console. The hub is the one surface that
-            # renders it, alone in its own block, because the owner's canary rule is that the
-            # string shown to type is byte-identical to what auto would send -- a second surface
-            # is a second place for our own chrome to end up flowing into it. The ITEM NUMBER is
-            # not the opener and is printed, because it is the instruction and the console is
-            # what a bug report keeps. Every warning goes out through `_publish` instead, which
-            # is the only place that can see the mismatch ones at all.
-            print(f"   💬 suggestion ready — like item {pick.index}"
-                  f"{f' ({pick.item_description})' if pick.item_description else ''}; "
-                  f"the text to type is on the hub")
+        # Announcing under `_publish`'s lock closes the cancellation race: after a cancelled
+        # generation's status update has been suppressed, it must not leave a stale "ready" line
+        # in the console/bug report.  It also prevents announcing a pick whose already-open sheet
+        # made `_display` replace the text with a mismatch warning.
+        self._publish(announce_pick=pick)
 
     def _display(self) -> dict:
         """The opener fields the hub should show right now, from both halves of the state.
@@ -320,7 +402,7 @@ class _ObserveSuggestion:
             return (f"the item you opened could not be checked against this suggestion "
                     f"({type(exc).__name__}: {exc})")
 
-    def _publish(self) -> None:
+    def _publish(self, *, announce_pick=None) -> None:
         with self._lock:
             if self._cancelled:
                 return
@@ -342,6 +424,14 @@ class _ObserveSuggestion:
             if warning and warning != self._announced:
                 self._announced = warning
                 print(f"   💬 no suggestion to type — {warning}")
+            # The text deliberately does not go to the console.  Announce only the instruction,
+            # and only while the same lock proves the suggestion is still current and visible.
+            # If the sheet check replaced it with a warning, there is intentionally nothing to
+            # announce as ready.
+            if announce_pick is not None and fields["opener_suggestion"] == announce_pick.text:
+                print(f"   💬 suggestion ready — like item {announce_pick.index}"
+                      f"{f' ({announce_pick.item_description})' if announce_pick.item_description else ''}; "
+                      f"the text to type is on the hub")
 
 
 class Worker(threading.Thread):
@@ -475,7 +565,8 @@ class Worker(threading.Thread):
         The driver's own message is appended whole. It names the app, the stage, and what the
         screen was left showing, and it is written to be read by the person walking over to the
         phone."""
-        stage = {"navigate": "reaching", "verify": "confirming"}.get(exc.stage, "targeting")
+        stage = {"preflight": "checking", "navigate": "reaching", "verify": "confirming"}.get(
+            exc.stage, "targeting")
         space = f" ({exc.index_space})" if exc.index_space else ""
         intended = "none was named" if exc.intended is None else f"item {exc.intended}{space}"
         actual = ("the run never got far enough to see what it would have hit"
@@ -540,6 +631,12 @@ class Worker(threading.Thread):
         while not self.stop_event.is_set():
             try:
                 self._observe_loop() if self.mode == "observe" else self._auto_loop()
+                return
+            except ActionCancelled:
+                # Stop is neither a failed target nor a driver fault.  The action boundary that
+                # raised this already guaranteed no further input, so end normally without a
+                # failure snapshot, invented stop reason, or decision/counter record.
+                self.stop_event.set()
                 return
             except DriverClosed as exc:
                 print(f"{exc}; Stopping run so buffered data can be saved.")
@@ -607,10 +704,9 @@ class Worker(threading.Thread):
                 # implementation (DatingAppDriver.blocked_reason) returns None for every
                 # driver but Hinge, so this is a no-op for Bumble/web.
                 #
-                # THIS IS A GRACEFUL STOP, NOT AN ERROR: the measured case (2026-08-11, see
-                # data/hinge_debug/run_20260811_011416) is Hinge's own "you're out of free
-                # likes for today" Hinge+ upgrade screen, refusing a like the owner sent by
-                # hand. The phone is in a perfectly normal state -- nothing is broken and
+                # THIS IS A GRACEFUL STOP, NOT AN ERROR: Hinge's own "you're out of free likes
+                # for today" Hinge+ upgrade screen can refuse a like. The phone is in a
+                # perfectly normal state -- nothing is broken and
                 # nothing here should be retried -- so this must NOT go through the
                 # HALT-on-unexpected exception path (that path is for something actually
                 # wrong). Before this check existed, worker.py called
@@ -934,9 +1030,8 @@ class Worker(threading.Thread):
                 # implementation (DatingAppDriver.blocked_reason) returns None for every
                 # driver but Hinge, so this is a no-op for Bumble/web.
                 #
-                # THIS IS A GRACEFUL STOP, NOT AN ERROR: the measured case (2026-08-11, see
-                # data/hinge_debug/run_20260811_011416) is Hinge's own "you're out of free
-                # likes for today" Hinge+ upgrade screen. The phone is in a perfectly normal
+                # THIS IS A GRACEFUL STOP, NOT AN ERROR: Hinge's own "you're out of free likes
+                # for today" Hinge+ upgrade screen. The phone is in a perfectly normal
                 # state -- nothing is broken and nothing here should be retried -- so this
                 # must NOT go through the HALT-on-unexpected exception path (that path is
                 # for something actually wrong). See _observe_loop's matching check for the
@@ -1270,17 +1365,45 @@ class Worker(threading.Thread):
                     # the auto flow: the LIKE still landed on an item the model never chose, and
                     # only the wording was made to agree with it after the fact. Under the owner's
                     # never-substitute rule a targeting miss is a stop, so the driver now raises
-                    # ItemTargetingError and the handler below turns it into one. Observe mode's
-                    # anchored suggestion is a DIFFERENT mechanism and is untouched: there the
-                    # human has already picked the item by tapping its heart, so the anchor is the
-                    # choice rather than a repair of one (see _wait_for_observed_decision).
+                    # ItemTargetingError and the handler below turns it into one.
                     try:
+                        # DOC 5.8: compare the model's coarse description with the exact
+                        # numbered crop it selected BEFORE any navigation or tap.  A confident
+                        # photo-vs-written disagreement means item numbering is suspect; it is
+                        # the same never-substitute stop as a targeting miss, just discovered
+                        # while the phone is still untouched.  Drivers that do not own numbered
+                        # crops simply have no optional method and pass through unchanged.
+                        mismatch = (_item_type_preflight_mismatch(self.driver, pick)
+                                    if pick is not None else "")
+                        if mismatch:
+                            raise ItemTargetingError(
+                                f"the model's chosen item failed the pre-flight type check: "
+                                f"{mismatch}. Nothing was tapped and the like is NOT sent.",
+                                stage="preflight", intended=pick.index,
+                                index_space=pick.index_space)
                         # `**targeted` is empty when there is no pick at all, which leaves BOTH
                         # index arguments at their `None` default -- "nobody said which item",
                         # which is legal precisely because there is no opener to misplace. It is
                         # deliberately not `item_index=0`: 0 is a legal first frame in the
                         # driver's space and would read as "the opener is about item 1".
-                        self.driver.like(pick.text if pick else None, **targeted)
+                        like_kwargs = dict(targeted)
+                        if getattr(self.driver, "supports_interruptible_like_navigation", False):
+                            like_kwargs["should_stop"] = self.stop_event.is_set
+                        self.driver.like(pick.text if pick else None, **like_kwargs)
+                    except DeckBlockedError as exc:
+                        # Send Like can be refused only AFTER the action started: Hinge closes
+                        # the comment sheet and puts up its out-of-free-likes paywall.  This is
+                        # a known, normal blocking screen, not an unexpected action failure;
+                        # above all it is NOT a completed like.  Stop before the counter and
+                        # record_decision calls below, preserving the exact driver-facing reason
+                        # that the between-profile blocked_reason() path already publishes.
+                        terminal_state = "blocked"
+                        stop_reason = str(exc)
+                        stop_kind = "deck_blocked"
+                        self._stat(state=terminal_state, stop_reason=stop_reason,
+                                   stop_kind=stop_kind)
+                        self.stop_event.set()
+                        break
                     except ItemTargetingError as exc:
                         # DOC 5.6'S HARD STOP. The driver could not put this like on the item the
                         # opener was written about -- either it could not reach that item, or the
@@ -1353,6 +1476,10 @@ class Worker(threading.Thread):
                     self.stop_event.set()
                 self._pace(landed_action, profile=profile, score=d.score)
                 self._maybe_session_break()
+        except ActionCancelled:
+            # This is an operator Stop observed at a driver action boundary, not an unexpected
+            # failure.  Let run() finish it normally without capturing a failure frame.
+            raise
         except Exception as exc:  # noqa: BLE001
             self._capture_failure_if_unexpected(exc)          # snapshot WHILE the transport is live
             raise                                             # (the finally below closes it)

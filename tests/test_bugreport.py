@@ -246,7 +246,7 @@ def test_status_section_stop_reason_with_pipes_and_newlines_does_not_corrupt_rep
 
 # ── stop_kind: disambiguating stop_reason's SOURCE (2026-08-11, deck-blocked addition) ──────
 # stop_reason used to have exactly one cause (OpenerService exhaustion). worker.py's blocked-
-# deck check (Hinge's out-of-free-likes Hinge+ paywall, data/hinge_debug/run_20260811_011416)
+# deck check (Hinge's out-of-free-likes Hinge+ paywall)
 # gave it a second, with its own stop_kind -- see status.py's AppStatus.stop_kind and
 # _app_diagnostics_md's own docstring for the full "which subsystem?" reasoning this rendering
 # exists to remove.
@@ -574,7 +574,7 @@ def test_debug_log_tail_surfaces_observe_decision_fields(tmp_path):
     run = tmp_path / "run_20260810_120000"
     run.mkdir(parents=True)
     capture = {"ts": "t0", "action": "capture", "photos": 6,
-               "capture_truncated": False, "identity_seen": True, "profile_name": "Jessica"}
+               "capture_truncated": False, "identity_seen": True, "profile_name": "Qelix"}
     decision = {"ts": "t1", "action": "observe_decision", "decision": "pass",
                 "top": 12.3, "bot": 1.1, "min_sig_dist": None, "shift_matched": False,
                 "capture_truncated": False, "identity": "new", "identity_dist": 22.4,
@@ -634,13 +634,13 @@ def test_debug_log_tail_collapses_repeated_observe_waiting_heartbeats(tmp_path):
     run = tmp_path / "run_20260810_203956"
     run.mkdir(parents=True)
     lines = [json.dumps({"ts": "capture0", "action": "capture", "photos": 9,
-                          "profile_name": "Victoria"})]
+                          "profile_name": "Example Profile"})]
     # 12 identical no_change heartbeats, ~15s apart -- exactly the audited-run shape.
     for i in range(12):
         lines.append(json.dumps({"ts": f"20:46:{13 + i * 15:02d}", "action": "observe_waiting",
                                   "reason": "no_change"}))
     lines.append(json.dumps({"ts": "decision0", "action": "observe_decision", "decision": "pass",
-                              "profile_name": "Victoria"}))
+                              "profile_name": "Example Profile"}))
     (run / "actions.jsonl").write_text("\n".join(lines) + "\n")
 
     md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
@@ -651,7 +651,7 @@ def test_debug_log_tail_collapses_repeated_observe_waiting_heartbeats(tmp_path):
     assert '"ts": "20:46:13-20:46:' in md
     # ...while the capture and decision either side of the run are untouched raw JSON, still
     # visibly paired (the whole point of the fix).
-    assert '"action": "capture"' in md and '"profile_name": "Victoria"' in md
+    assert '"action": "capture"' in md and '"profile_name": "Example Profile"' in md
     assert '"action": "observe_decision"' in md
 
 
@@ -724,13 +724,11 @@ def test_debug_log_section_shows_action_counts_histogram_above_the_tail(tmp_path
     assert counts_pos < tail_pos                               # directly above the inlined tail
 
 
-# ── Stall summary (§ filed against data/hinge_debug/run_20260811_011416, 2026-08-11) ────────
-# The owner tapped the heart, composed a comment, and tapped Send Like; Hinge refused it (out
-# of free likes for the day) and put its Hinge+ paywall up, which nothing recognised.
-# _await_like_resolved polled like_sheet for 2.5 minutes before the owner pressed Stop by hand.
-# actions.jsonl recorded every poll faithfully, but diagnosing the hang meant reading the ~88-
-# line tail by eye and noticing observe_waiting repeating with the same reason. These tests pin
-# _stall_summary_md's own worked example from its docstring: "longest observe stall:
+# ── Stall summary ─────────────────────────────────────────────────────────────────────────
+# An unrecognised Hinge+ paywall can leave _await_like_resolved polling like_sheet until the
+# operator stops the run. actions.jsonl records every poll, but diagnosing the hang from the
+# raw tail requires noticing observe_waiting repeating with the same reason. These tests pin
+# _stall_summary_md's worked example from its docstring: "longest observe stall:
 # reason=`like_sheet` for 1m37s (5 records)" for that exact run's repeats.
 def test_stall_summary_names_the_reason_and_its_duration_from_uncollapsed_records():
     """UNCOLLAPSED shape: individual, raw actions.jsonl lines -- one per poll, real ISO
@@ -764,17 +762,17 @@ def test_stall_summary_and_the_collapsed_tail_entry_agree_on_the_same_stall(tmp_
     (computed from the same lines but collapsed for display) must describe the SAME stall
     consistently -- same reason, same record count -- not silently disagree because one code
     path counts differently than the other."""
-    run = tmp_path / "run_20260811_011416"
+    run = tmp_path / "example_run"
     run.mkdir(parents=True)
     start = datetime.datetime(2026, 8, 11, 1, 22, 13)
     lines = [json.dumps({"ts": "2026-08-11T01:19:51", "action": "capture", "photos": 9,
-                          "profile_name": "Victoria"})]
+                          "profile_name": "Example Profile"})]
     for i in range(12):
         ts = (start + datetime.timedelta(seconds=15 * i)).isoformat()
         lines.append(json.dumps({"ts": ts, "action": "observe_waiting", "reason": "no_change"}))
     lines.append(json.dumps({"ts": (start + datetime.timedelta(seconds=15 * 11 + 5)).isoformat(),
                               "action": "observe_decision", "decision": "pass",
-                              "profile_name": "Victoria"}))
+                              "profile_name": "Example Profile"}))
     (run / "actions.jsonl").write_text("\n".join(lines) + "\n")
 
     md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
@@ -883,14 +881,14 @@ def test_status_section_handles_missing_stopping_key_gracefully():
 
 # ── Recent openers: the real OpenerService ring buffer, plumbed via HubState.recent_openers ─
 # This is the section that used to fall back to each app's live opener_suggestion/
-# opener_referenced/opener_anchored status fields (at most one row per app, no model name)
+# opener_referenced status field (at most one row per app, no model name)
 # because HubState never captured a reference to the running OpenerService. supervisor.py now
 # takes on_opener_service and hub/state.py captures it, so hub_state.recent_openers() is the
 # real thing: a snapshot of OpenerService.recent_openers_snapshot(), newest entry LAST.
 def _opener_entry(ts="2026-08-10T12:00:00", app="hinge", model="gemini-2.5-flash",
-                   anchored=True, advisory=False, index=0, referenced="the beach photo",
+                   advisory=False, index=0, referenced="the beach photo",
                    opener="hey, love the beach shot"):
-    return {"ts": ts, "app": app, "model": model, "anchored": anchored, "advisory": advisory,
+    return {"ts": ts, "app": app, "model": model, "advisory": advisory,
             "index": index, "referenced": referenced, "opener": opener}
 
 
@@ -934,19 +932,18 @@ def test_recent_openers_section_renders_newest_first_and_caps_at_the_shown_limit
     assert order == list(range(total - 1, total - 1 - bugreport._RECENT_OPENERS_SHOWN, -1))  # newest first
 
 
-def test_recent_openers_section_marks_what_the_model_was_looking_at_with_status_circles():
+def test_recent_openers_section_marks_numbered_item_crops_with_status_circles():
     """WHAT THE MODEL SAW is the whole point of this section -- it must be unmissable and use
     the owner's 🟢/🔴 status-circle convention, never a hand emoji (owner rule: hard to tell
     thumbs-up/down apart at a glance).
 
     The three states are not symmetrical, and doc 5.9's observe inversion is why. Both modes now
     send numbered item crops and NOTHING passes an anchor, so `model_items` is the strongest
-    shape this pipeline has and must not print as "blind"; the anchored wording survives only
-    for entries written before the crop shape existed, where it still means what it said."""
+    shape this pipeline has and must not print as "blind"."""
     entries = [
-        _opener_entry(index=0, anchored=True, opener="alpha"),
-        _opener_entry(index=1, anchored=False, opener="beta"),
-        _opener_entry(index=2, anchored=False, opener="gamma"),
+        _opener_entry(index=0, opener="alpha"),
+        _opener_entry(index=1, opener="beta"),
+        _opener_entry(index=2, opener="gamma"),
     ]
     entries[2]["index_space"] = "model_items"
 
@@ -956,8 +953,8 @@ def test_recent_openers_section_marks_what_the_model_was_looking_at_with_status_
     alpha_header = next(ln for ln in lines if "index: 0" in ln)
     beta_header = next(ln for ln in lines if "index: 1" in ln)
     gamma_header = next(ln for ln in lines if "index: 2" in ln)
-    assert "🟢 anchored to the live like screen" in alpha_header
-    assert "🔴 blind" in beta_header
+    assert "🔴 no numbered item crops" in alpha_header
+    assert "🔴 no numbered item crops" in beta_header
     assert "🟢 chose from numbered item crops" in gamma_header
     assert "blind" not in gamma_header       # the crop shape is the opposite of blind
     assert "👍" not in md and "👎" not in md          # never the banned hand-emoji convention

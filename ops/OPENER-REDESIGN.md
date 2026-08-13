@@ -1,5 +1,23 @@
 # Opener redesign: substance, item selection, and targeting
 
+> ## Current status — final handoff (2026-08-12)
+>
+> **The opener redesign is implemented.** Production now uses numbered, model-selected
+> items and fail-closed targeting; the former anchored-opener production path is gone.
+> The remaining operator task is a **real-device, held-out calibration** of the two
+> targeting acceptance bounds. Until that evidence is supplied, this is intentionally
+> conservative: AUTO stops before any targeted-like gesture and OBSERVE keeps targeted
+> opener text off the hub while manual labels continue. No calibration values are shipped,
+> inferred, or guessed in this repository; see `ops/RUNBOOK.md` for the required evidence
+> and measurement procedure. The historical record below is preserved as context and may
+> describe earlier incomplete states; the final addendum at the end is authoritative.
+
+> **Current driver contract (2026-08-12).** `DatingAppDriver.like` is
+> `like(opener=None, item_index=None, *, model_item_index=None, should_stop=None)`. `None` is
+> deliberately distinct from capture-order index `0`; `anchored_opener` was removed
+> and must fail loudly. Historical passages below that describe a repair callback or
+> a default index of `0` are superseded by the final 2026-08-12 addenda.
+
 Designed 2026-08-11. This is the agreed design, written down so the reasoning survives.
 
 Sequencing note up front: Part A (wording) works against today's pipeline and ships alone.
@@ -757,9 +775,7 @@ right ones.
 
 ### 5.3 Two tiers, and a driver-owned index space
 
-Confirmed from a real capture (`data/hinge_debug/run_20260811_011416/00038_observe_decision_before.png`;
-this and the two-heart frame below are live-device observations, not derivable from source, so
-the file paths are recorded here to keep them re-checkable): Hinge profiles contain a **vitals
+Confirmed from live-device observations: Hinge profiles contain a **vitals
 block** (age, job, school,
 city, languages) with **no heart**. Pure heart-delimited cropping would drop it silently, and
 it is prime Connect fuel.
@@ -910,9 +926,8 @@ bottom-right (`hinge.py:750`, enforced by `_match_glyph`'s `side="right"` filter
 a 12-iteration NMS loop; every caller then throws away everything but the first
 (`_locate_target_heart` at `hinge.py:2474`, and `_locate_button` at `hinge.py:1347-1357` does
 the same for the swipe-deck heart). The information the new design needs is already computed
-and discarded at every call site. A frame can show two hearts at once, confirmed in
-`data/hinge_debug/run_20260811_011416/00006_observe_decision_before.png`, and the
-list-returning API already handles that.
+and discarded at every call site. A frame can show two hearts at once, and the list-returning API
+already handles that.
 
 **Gutters say where each block starts and stops.** Hearts mark where a card *ends* (bottom
 right), not where the next begins, so hearts alone cannot give crop edges. Hinge cards are
@@ -3514,3 +3529,32 @@ device), 9 (no absolute accept ceiling in `verify_sheet_item`) and 10
 intact and `AppStatus.opener_anchored` is still vestigial — it is cleared with the rest of the set,
 published True by nothing and rendered by nothing), and the residual `_locate_target_heart` carries
 on the legacy capture-order path.
+
+#### Final addendum — 2026-08-12: completed redesign, calibration-gated release
+
+This addendum supersedes the preceding historical “still owed” claims without editing them.
+The redesign is complete in the production path. Navigation is **bottom-up**, using the
+enumeration ledger from the entry anchor rather than rewinding and walking a second time; it
+is cancel-aware throughout model-item navigation, so a requested stop cannot leave a new
+scroll/tap action in flight. The capture-side model/item translation is preserved end to end.
+
+The flow is deliberately asymmetric by mode. AUTO performs the pure, coarse 5.8 item-type
+preflight before device work, confirms profile identity before navigation/tap, and verifies the
+opened sheet's profile identity and selected item before it types. Sheet verification now has a
+calibrated **absolute** acceptance ceiling as well as its closed-set separation check. A failure
+at any of these targeting gates stops the targeted-like path: it never substitutes another item,
+rewrites an opener for a different card, types, or sends. Rejected sends, including a paid-upsell
+or paywall rejection, are logged as rejected rather than counted as sent.
+
+OBSERVE is inverted: it enumerates first, shows the hub which numbered item a suggestion is
+about, and lets the human choose pass or heart. Once the sheet is open, the same profile-identity
+then item check decides whether text remains visible; a mismatch or an unreadable check withholds
+the targeted opener while ordinary manual decision labels continue. The hub distinguishes a
+targeting stop from opener capacity/quota exhaustion.
+
+The obsolete `anchored_opener` repair callback and its anchored request-building machinery have
+been removed. Remaining mentions of that design are historical prose, not a fallback path. This
+release does **not** embed a numeric
+calibration or manufacture one from offline material: the two acceptance ceilings must be
+measured and recorded for the actual device before any targeted like or targeted OBSERVE text is
+licensed. `ops/RUNBOOK.md` is the operational source for that final handoff.

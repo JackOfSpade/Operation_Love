@@ -183,7 +183,7 @@ class AndroidAppSpec:
     # chrome (Hinge's "Signals / Age / Height / Dating Intent" filter-chips row) instead of the
     # person's name, which is precisely the state in which observe mode otherwise cannot tell
     # one profile from the next. This is what fixes the bug where a pass advanced the deck from
-    # "Alina" to "jessica" and got recorded as a scroll WITHIN Alina's profile: identity_band's
+    # "Zorva" to "Qelix" and got recorded as a scroll WITHIN Zorva's profile: identity_band's
     # verdict at scroll-top is the inconclusive "top" (nothing on screen names the card), so the
     # decision fell through to a loose pixel content-match that mistook the new woman's card for
     # a continuation of the old one -- see hinge.py's module docstring and _identity_of for the
@@ -192,12 +192,12 @@ class AndroidAppSpec:
     # OCR-only, deliberately -- never a pixel signature, unlike identity_band/upsell_dismiss_zone
     # above. This band's content shifts vertically depending on whether Hinge is showing its
     # per-profile "shows thoughtful signals" banner for THIS card (MEASURED on the Pixel 7a
-    # 2026-08-10: "Alina %" with the banner present vs. "Alina @ | @ Signals Active today" once
+    # 2026-08-10: "Zorva %" with the banner present vs. "Zorva @ | @ Signals Active today" once
     # the banner is gone and content shifts up) -- a fixed pixel crop over it would therefore read
     # as a MISMATCH for the very same profile depending on which layout happened to render, while
     # OCR reads the name correctly either way because it is position-tolerant within the crop
     # (tesseract --psm 6 read the name correctly on every scroll-top frame tested, both layouts,
-    # including three separate "jessica &" frames after the deck advanced).
+    # including three separate "Qelix &" frames after the deck advanced).
     #
     # None (the default) means this app declares no such band; observe mode keeps its previous
     # scroll-top behaviour (the inconclusive "top" verdict, unchanged).

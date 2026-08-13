@@ -610,3 +610,22 @@ def test_the_accept_bound_is_half_the_distance_to_the_nearest_other_item():
     verdict = item_verify.verify_sheet_item(_sheet_for(2), _payload(), 2)
     mine = next(c for c in verdict.comparisons if c.number == 2)
     assert mine.bound == pytest.approx(item_verify._SEPARATION_FRACTION * mine.nearest_other)
+
+
+def test_an_absolute_sheet_ceiling_is_required_in_addition_to_relative_separation():
+    """A foreign/unknown card can be nearest and relatively close; calibration supplies the cap."""
+    sheet, payload = _sheet_for(2), _payload()
+    relative_only = item_verify.verify_sheet_item(sheet, payload, 2)
+    assert relative_only.matched
+    capped = item_verify.verify_sheet_item(
+        sheet, payload, 2, absolute_max_dist=relative_only.distance / 2)
+    assert not capped.matched
+    assert "absolute" in capped.reason
+
+
+@pytest.mark.parametrize("ceiling", [math.nan, math.inf, -math.inf, 0, -1, 14.91, 20])
+def test_an_invalid_absolute_sheet_ceiling_is_a_verification_error_not_a_disabled_guard(ceiling):
+    """NaN/Inf and unsafe values used to make the final ``>=`` check silently false."""
+    with pytest.raises(item_verify.SheetVerificationError, match="absolute_max_dist"):
+        item_verify.verify_sheet_item(_sheet_for(2), _payload(), 2,
+                                      absolute_max_dist=ceiling)

@@ -348,8 +348,8 @@ def _app_diagnostics_md(apps: dict) -> str:
     The stop reason bullet also carries AppStatus.stop_kind (status.py) — "opener" (an
     opener-side stop: capacity exhausted, or no usable opener for this profile), "deck_blocked"
     (worker.py's blocked-deck check: DatingAppDriver.blocked_reason() found something on screen
-    standing between us and the deck, e.g. Hinge's out-of-free-likes Hinge+ paywall,
-    data/hinge_debug/run_20260811_011416, 2026-08-11), or "targeting"
+    standing between us and the deck, e.g. Hinge's out-of-free-likes Hinge+ paywall), or
+    "targeting"
     (ops/OPENER-REDESIGN.md 5.6: the like could not be put on the item its opener was written
     about, so it was not sent — the phone is left exactly as the driver stopped it). The value
     is rendered verbatim rather than mapped, so a kind added later reaches the report without
@@ -444,11 +444,11 @@ def _recent_openers_md(hub_state) -> str:
     reference to the running OpenerService (supervisor.run()'s on_opener_service callback,
     plumbed through hub/state.py's HubState.start()) and this reads its real ring buffer of
     the last several SUCCESSFUL generations (see opener/service.py's `recent_openers` deque
-    and OpenerService.recent_openers_snapshot), each with a timestamp, model id, anchored
-    flag, the model's own `referenced` claim, which profile item it attaches to (`index`),
+    and OpenerService.recent_openers_snapshot), each with a timestamp, model id, the request
+    item space, the model's own `referenced` claim, which profile item it attaches to (`index`),
     and the opener text itself. That answers the question that broke diagnosis before in
-    full: what did the model say, was it anchored to what you actually hearted, and which
-    model produced it -- not just a guess from whatever suggestion happens to still be live
+    full: what did the model say, which item space did it use, and which model produced it --
+    not just a guess from whatever suggestion happens to still be live
     on the hub right now.
 
     Dropped the old fallback (reading each app's CURRENT live suggestion off the
@@ -479,7 +479,6 @@ def _recent_openers_md(hub_state) -> str:
         ts = _sanitize_inline(str(e.get("ts") or "unknown time"))
         app = _sanitize_inline(str(e.get("app") or "?"))
         model = _sanitize_inline(str(e.get("model") or "?"))
-        anchored = bool(e.get("anchored"))
         advisory = bool(e.get("advisory"))
         index = e.get("index")
         # WHICH LIST that number counts (opener.INDEX_SPACE_*). A bare small int is
@@ -495,21 +494,11 @@ def _recent_openers_md(hub_state) -> str:
         if len(opener) > _RECENT_OPENER_TEXT_CHARS:
             opener = opener[:_RECENT_OPENER_TEXT_CHARS] + "…"
         mode_note = "advisory" if advisory else "auto"
-        # WHAT THE MODEL WAS LOOKING AT, which is the diagnostic this line has always been for.
-        # It used to be a two-way anchored/blind flag, and that reading died with doc 5.9's
-        # observe inversion: BOTH modes now send numbered item crops and NOTHING passes an
-        # anchor, so "no like-screen anchor" would print on every entry and read as a warning
-        # about the strongest request shape this pipeline has. So the shape is reported from
-        # `index_space` (the model chose from a numbered list) and the anchor flag survives only
-        # for entries written before the crop shape existed, where it still means what it said.
-        # 🟢/🔴 circles per the owner's status-indicator convention -- never a hand emoji
-        # (👍/👎 etc.), which the owner has flagged before as hard to tell apart at a glance.
+        # WHAT THE MODEL WAS LOOKING AT: request shape, not a retired live-sheet flag.
         if index_space == "model_items":
             anchor_note = "🟢 chose from numbered item crops"
-        elif anchored:
-            anchor_note = "🟢 anchored to the live like screen"
         else:
-            anchor_note = "🔴 blind — no item list and no like-screen anchor"
+            anchor_note = "🔴 no numbered item crops"
         about = f" · about: {_sanitize_inline(referenced)}" if referenced else ""
         space_note = f" ({_sanitize_inline(index_space)})" if index_space else ""
         lines.append(
@@ -685,22 +674,16 @@ def _action_counts_line(lines: list[str]) -> str | None:
 
 
 # ── stall summary ──────────────────────────────────────────────────────────
-# Filed against the exact incident this bugreport.py improvement pass exists for:
-# data/hinge_debug/run_20260811_011416 (2026-08-11). The owner tapped the heart, composed a
-# comment, and tapped Send Like; Hinge refused it (out of free likes for the day) and showed
-# its Hinge+ paywall, which nothing in the driver recognised. observe mode has no bail-out for
-# an unrecognised screen (worker.py calls wait_for_decision(timeout=None)), so
-# _await_like_resolved polled like_sheet / like_sending for 2.5 minutes until the owner pressed
-# Stop by hand. actions.jsonl recorded every one of those polls faithfully — but diagnosing the
-# hang from the raw report meant reading its ~88-line tail by eye and noticing that
-# observe_waiting kept firing with the same reason. The functions below turn that pattern into
-# one line: "longest observe stall: reason=like_sheet for 1m37s (5 records)" for that run,
-# printed at the top of the debug-log section instead of buried in it.
+# Filed after an observe-mode incident where an unrecognised Hinge+ paywall left
+# _await_like_resolved polling like_sheet / like_sending until the operator stopped it.
+# actions.jsonl recorded every poll faithfully, but diagnosing the hang from the raw report
+# meant reading its tail by eye and noticing observe_waiting repeatedly firing with the same
+# reason. The functions below turn that pattern into one summary line at the top of the
+# debug-log section.
 def _parse_action_ts(raw_ts: object) -> datetime | None:
     """Best-effort parse of an actions.jsonl "ts" field into a datetime for wall-clock
     arithmetic. Every action logger in hinge.py (_note_observe_waiting included) writes
-    datetime.now().isoformat(timespec="seconds")-shaped strings, e.g. "2026-08-11T01:42:43" —
-    see the raw lines in data/hinge_debug/run_20260811_011416/actions.jsonl. A bug report must
+    datetime.now().isoformat(timespec="seconds")-shaped strings. A bug report must
     never crash on a malformed, missing, or older-format timestamp (not a string at all, not
     ISO-parseable, the "?" placeholder _rec_ts substitutes elsewhere for a field that's plain
     absent), so every failure here returns None rather than raising. Every caller treats None
@@ -815,14 +798,9 @@ _STALL_ORDINALS = ["longest", "2nd-longest", "3rd-longest"]   # matches _STALL_S
 def _stall_summary_md(lines: list[str]) -> str:
     """STALL SUMMARY: the top `_STALL_STRETCHES_SHOWN` same-reason observe_waiting repeats in a
     run's actions.jsonl, worst first — see _stall_candidates for exactly what counts as one.
-    This is the bug-report's own self-improvement (_diagnostic_improvement_md) filed against
-    the incident it's named for: data/hinge_debug/run_20260811_011416 hung for 2.5 minutes on
-    an unrecognised Hinge paywall, and diagnosing that from the original report meant reading
-    the actions.jsonl tail by eye and noticing observe_waiting/like_sheet repeating. For that
-    exact run this renders:
-        "- longest observe stall: reason=`like_sheet` for 1m37s (5 records)"
-    turning an eyeball pattern-match over ~88 log lines into one line, surfaced at the top of
-    the debug-log section rather than requiring a developer to find it in the tail.
+    This is the bug-report's own self-improvement (_diagnostic_improvement_md), added after an
+    unrecognised Hinge paywall produced repeated observe_waiting/like_sheet records. It turns
+    an eyeball pattern-match over a log tail into one line at the top of the debug-log section.
 
     Ranked by STRETCH RECENCY FIRST (the most recent profile-wait's own repeats outrank every
     earlier one), THEN by duration/count within that -- deliberately NOT by raw duration alone

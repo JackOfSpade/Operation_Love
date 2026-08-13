@@ -35,10 +35,12 @@ class FakeObservingDriver(DatingAppDriver):
     def current_profile(self): return self.swipes[self.i][0]
     def wait_for_decision(self, timeout=120.0, should_stop=None):
         self.wait_timeouts.append(timeout)
-        liked = self.swipes[self.i][1]; self.i += 1; return liked
+        liked = self.swipes[self.i][1]
+        self.i += 1
+        return liked
     def render_busy(self, message=None): pass
     def next_profile(self): return None
-    def like(self, opener=None): pass
+    def like(self, opener=None, item_index=None, *, model_item_index=None): pass
     def dislike(self): pass
     def close(self): self.closed = True
 
@@ -79,9 +81,11 @@ class FakeStore:
     def __init__(self):
         self.labels, self.profiles, self.sources, self.decisions = [], [], [], []
     def record_profile(self, run_id, app, profile_id, liked, source="manual", **k):
-        self.profiles.append((profile_id, liked, k)); return True
+        self.profiles.append((profile_id, liked, k))
+        return True
     def add_label(self, run_id, app, liked, embedding, source="manual", profile_id="", **k):
-        self.labels.append((liked, embedding, profile_id, k)); self.sources.append(source)
+        self.labels.append((liked, embedding, profile_id, k))
+        self.sources.append(source)
     def load_labels(self): return [(liked, embedding) for liked, embedding, _, _ in self.labels]
     def record_decision(self, run_id, app, decision, score, source="auto"):
         self.decisions.append((decision, source))
@@ -92,7 +96,8 @@ class FakeStore:
 class ArchiveFailingStore(FakeStore):
     """Image archiving fails for every profile (e.g. GCS unreachable)."""
     def record_profile(self, run_id, app, profile_id, liked, source="manual", **k):
-        self.profiles.append((profile_id, liked, k)); return False
+        self.profiles.append((profile_id, liked, k))
+        return False
 
 
 class _Pacing:

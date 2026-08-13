@@ -362,10 +362,8 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                                    max_attempts=cfg.opener.max_attempts)
     if on_opener_service:
         # The hub's bug report needs the openers actually GENERATED this run -- their text,
-        # the detail each one claims to reference, and crucially whether each was anchored to
-        # the live like/comment screen -- to diagnose the exact "comment attached to the
-        # wrong photo" bug the anchor mechanism (see worker.py's _wait_for_observed_decision,
-        # opener/service.py's OpenerPick.referenced) exists to fix. A report that says only
+        # the detail each one claims to reference, and the item space each request used. A
+        # report that says only
         # `openers: 1` (RunStatus's raw call count, set below via status.set_global) cannot
         # show any of that -- only OpenerService's own ring buffer
         # (OpenerService.recent_openers_snapshot) can. Published the same way `store` is

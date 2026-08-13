@@ -506,13 +506,11 @@ missing field.
 
 ### Addendum 2026-08-11 — Hinge's out-of-free-likes paywall, and the observe hang it exposed
 
-**What happened.** Hinge observe run `run_20260811_011416`. At 01:42:36 the owner tapped the
-heart (`observe_like_anchor`), composed the comment "Was the water freezing?", and tapped Send
-Like. Hinge REFUSED the like — the account was out of free likes for the day — and put its
-"You're out of free likes for today" Hinge+ paywall on screen instead of resolving the send.
-`_await_like_resolved` kept polling `like_sheet`/`like_sending` from 01:42:43 until the owner
-pressed Stop at 01:45:02: a 2.5-minute hang. No label was written, which was correct — the like
-never went out — but the run hung instead of stopping.
+**What happened.** During an observe-mode run, Hinge refused an attempted send because the
+account had no free likes remaining and showed its Hinge+ paywall instead of resolving the send.
+`_await_like_resolved` kept polling `like_sheet`/`like_sending` until the operator stopped it.
+No label was written, correctly, because the like never went out; the run hung instead of
+stopping.
 
 The paywall is the proximate trigger, but it is not the real defect. The real defect is that
 observe mode had **no bail-out for an unrecognized screen at all**: `worker.py` calls

@@ -915,6 +915,41 @@ def test_current_profile_rewinds_the_new_card_after_a_mid_read_deck_advance():
     assert profile.items_truncated is False
 
 
+def test_next_profile_rewinds_only_a_split_then_enumerates_the_new_card():
+    """Auto leaves a successful capture at the bottom for bottom-up navigation, but a split
+    has no usable index to navigate.  Its immediate retry must therefore restore the new card
+    to Hinge's chips row first, just like observe's retry.
+    """
+    class RewindingWorldAdb(WorldAdb):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.reverse_swipes = 0
+
+        def swipe(self, _x1, y1, _x2, y2, **_kwargs):
+            if y2 > y1:
+                self.reverse_swipes += 1
+                self.scroll = max(
+                    0, self.scroll - scroll_step.step_px_for_frac((y2 - y1) / _H, _H))
+
+    adb = RewindingWorldAdb(header_after=(2, _OTHER_HEADER_VALUE))
+    drv = _drv(adb)
+    drv._session_top_done = True       # isolate recovery from the once-per-session top pass
+
+    assert drv.next_profile() is None
+    assert drv._current_capture_split is True
+    assert adb.reverse_swipes > 0
+    assert adb.scroll == 0
+
+    profile = drv.next_profile()
+
+    assert profile is not None
+    assert profile.items
+    assert profile.items_unavailable == ""
+    # Unlike `current_profile`, the successful auto read is deliberately left at bottom for
+    # counting navigation.  The recovery was split-only, not a hidden auto-path unwind.
+    assert adb.scroll > 0
+
+
 def test_a_fresh_read_drops_the_previous_profiles_table_before_it_starts():
     """The reset that sits alongside `_current_sigs`: whatever is on screen now belongs to
     someone else, so the table describing the last person must not survive into this read even

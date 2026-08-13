@@ -344,18 +344,28 @@ def test_handle_upsell_dismisses_via_zone_only_after_positive_detection():
     assert y0 * h <= ty <= y1 * h
 
 
-def test_dismiss_via_zone_point_stays_inside_the_measured_safe_band_across_many_draws():
+def test_dismiss_via_zone_point_stays_inside_the_measured_safe_band_across_many_draws(monkeypatch):
     # "Randomize per attempt" pinned as an actual distribution property, not just one sample:
     # every draw across many independent dismiss attempts must land inside the declared band,
     # with the tap-jitter envelope accounted for on the boundary closest to danger (0.34, just
     # below the sheet's own X button at 0.407-0.460 and comfortably clear of the 0.394 overlay
     # edge -- see BUMBLE_SPEC's margin arithmetic).
+    # This test deliberately makes 300 independent calls to exercise the random-coordinate
+    # distribution.  It is not a vision-matching test (the adjacent handle_rose_upsell tests
+    # cover that integration), so model a post-tap screen with no modal glyph directly.  Running
+    # OpenCV template matching on 300 synthetic 1080x2400 frames made the CI gate appear hung
+    # for minutes without increasing the safety property asserted below.
+    monkeypatch.setattr(hinge, "_match_glyph", lambda *_args, **_kwargs: [])
     x0, y0, x1, y1 = _ZONE_UPSELL_SPEC.upsell_dismiss_zone
     w, h = 1080, 2400
     margin_frac_y = tap_jitter_margin_px() / h
+    # The frames are immutable test fixtures.  Rebuilding their full-resolution synthetic
+    # OpenCV pixels for every random draw was the remaining quadratic-looking CI cost.
+    up_frame = _modal_frame()
+    down_frame = _no_modal_frame()
     points = []
     for _ in range(300):
-        adb = _ClearsAfterFirstTapAdb(_modal_frame(), _no_modal_frame())
+        adb = _ClearsAfterFirstTapAdb(up_frame, down_frame)
         drv = _drv(_ZONE_UPSELL_SPEC, adb)
         drv._dismiss_via_zone()
         assert len(adb.taps) == 1

@@ -3287,7 +3287,27 @@ class AndroidDriver(DatingAppDriver):
             return None
         if not self._session_top_done:
             self._ensure_session_top(should_stop)   # see its docstring: once per session
-        return self._capture_current(should_stop)
+        profile = self._capture_current(should_stop)
+        self._recover_capture_split(should_stop)
+        return profile
+
+    def _recover_capture_split(self, should_stop=None) -> None:
+        """Restore scroll top only after a capture proved the deck advanced mid-read.
+
+        Both public capture paths return ``None`` for a split so their workers discard the
+        mixed profile and recapture the new card.  The forward-scroll ledger still describes
+        where that new card is positioned, however.  Without this narrow recovery either path
+        would immediately seed the next capture's top/chips anchor from a sticky header and the
+        affirmative scroll-top gate would (correctly) refuse enumeration.
+
+        Do not generalise this to every ``None`` capture: an open Send Like sheet and an
+        operator Stop both intentionally return None without touching the screen.  The flag is
+        set only by the identity-proven split branch in `_capture_current`; `_scroll_to_top`
+        itself remains stop-aware, so a Stop that arrives before or during recovery issues no
+        further gesture and leaves the phone where the owner asked.
+        """
+        if self._current_capture_split:
+            self._scroll_to_top(should_stop)
 
     def current_profile(self, *, should_stop=None) -> Profile | None:
         # Observe mode's only capture path: worker.py prints "READY - swipe this profile"
@@ -3308,20 +3328,8 @@ class AndroidDriver(DatingAppDriver):
             # check on the next line decides what happens to it -- an interrupted unwind never
             # discards a complete capture, it only declines to keep scrolling.
             self._scroll_to_top(should_stop)
-        elif self._current_capture_split:
-            # `_capture_current` stopped after the deck moved to a DIFFERENT card while it was
-            # reading.  Its forward-scroll ledger still describes how far down the screen now
-            # is, but returning None straight to the observe worker used to leave that next card
-            # scrolled.  The immediate recapture then seeded the scroll-top identity/chips
-            # anchor from the sticky header, so the affirmative top gate correctly refused to
-            # enumerate it and the eventually returned profile was truncated.  Restore the new
-            # card before the worker recaptures it, just as the ordinary completed-capture path
-            # does above.
-            #
-            # This is deliberately NOT a generic `profile is None` unwind.  A None can also
-            # mean Stop was requested or the human has a Send Like sheet open; those paths must
-            # remain input-free and leave the screen exactly where the owner left it.
-            self._scroll_to_top(should_stop)
+        else:
+            self._recover_capture_split(should_stop)
         return profile
 
     def out_of_profiles(self) -> bool:

@@ -74,7 +74,7 @@ class ItemTargetingError(RuntimeError):
         self.index_space = index_space
 
 
-def open_debug_log(debug_dir: str):
+def open_debug_log(debug_dir: str, *, run_id: str | None = None):
     """Best-effort DebugLog bootstrap shared by every driver's open_session().
 
     Returns a DebugLog instance, or None if construction fails. Debug logging must
@@ -83,7 +83,7 @@ def open_debug_log(debug_dir: str):
     """
     try:
         from .debuglog import DebugLog
-        return DebugLog(debug_dir)
+        return DebugLog(debug_dir, run_id=run_id)
     except Exception as exc:  # noqa: BLE001 — logging must never break a run
         print(f"Debug log unavailable ({type(exc).__name__}: {exc}); continuing without it.")
         return None

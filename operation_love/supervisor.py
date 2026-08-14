@@ -202,7 +202,7 @@ def _abort_startup(run_id: str, status: RunStatus, cfg, store=None) -> None:
 
 def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None = None,
         on_status=None, on_store=None, on_opener_service=None, mode: str | None = None,
-        enabled_apps=None, max_per_run: int | None = None) -> None:
+        enabled_apps=None, max_per_run: int | None = None, on_worker=None) -> None:
     """Run every enabled app until stop_event is set (or the queue/rate-limit/error runs out
     the run on its own), then flush + close the store.
 
@@ -440,7 +440,10 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             driver = make_driver(app, cfg)
             w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing,
                        stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every,
-                       limiter=limiter, status=status)
+                       limiter=limiter, status=status,
+                       observe_source=app_cfg.get("observe_evidence_source", "manual"))
+            if on_worker:
+                on_worker(w)  # hub-only binding; must happen before this Worker thread starts
             print(f"{app.title()} worker mode={mode} limits={limiter.describe()}")
             workers.append(w)
             w.start()
@@ -553,7 +556,11 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                     "error", "out_of_profiles", "rate_limited", "stopped"
                 } else "stopped"
             status.set_app(app, state=app_state)
-        tail = f"openers={tracker.calls} spend=${tracker.run_spend_usd:.4f}"
+        # ``tracker.calls`` counts provider/API calls, including an Observe draft that may be
+        # passed or abandoned.  Do not present it as a sent or persisted opener in shutdown
+        # output; RunStatus retains its existing compatibility field separately.
+        tail = (f"provider_calls={tracker.calls} "
+                f"provider_spend=${tracker.run_spend_usd:.4f}")
         if save_err is not None:
             print(f"Run {run_id}: ❌ SAVE FAILED to {cfg.storage.backend} "
                   f"({type(save_err).__name__}: {save_err}) — buffered data may be incomplete; {tail}")

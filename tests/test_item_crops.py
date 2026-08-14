@@ -391,6 +391,83 @@ def test_no_item_of_a_real_capture_comes_close_to_the_band():
 # Exclusion: a mechanism, with no detector attached
 # =====================================================================================
 
+def test_photo_only_policy_demotes_a_heart_bearing_prompt_without_renumbering_hearts():
+    """A written card may keep Hinge's like heart, but it must not become a model choice.
+
+    The crop layer is where the choice list is made, so the policy receives the complete encoded
+    crop and demotes the second likeable card to readable, *unnumbered* context.  It must not
+    erase that card's heart from the navigation space: model item 2 is now page heart 3.
+    """
+    index, frames = _full()
+    seen: list[bytes] = []
+
+    def photo_only(crop: bytes) -> str | None:
+        seen.append(crop)
+        return "written prompt cards are context, never model items" if len(seen) == 2 else None
+
+    payload = item_crops.build_item_payload(frames, index, unnumber=photo_only)
+
+    assert payload.usable, payload.failures
+    assert len(seen) == 4                         # complete, heart-bearing cards only
+    assert [c.kind for c in payload.crops] == [
+        item_crops.CROP_CHROME, item_crops.CROP_ITEM, item_crops.CROP_CONTEXT,
+        item_crops.CROP_CONTEXT, item_crops.CROP_ITEM, item_crops.CROP_ITEM]
+    assert [c.number for c in payload.items] == [1, 2, 3]
+    assert [(c.page_y0, c.page_y1) for c in payload.items] == [
+        _CARD1[1:], _CARD3[1:], _CARD4[1:]]
+
+    prompt = next(c for c in payload.context if (c.page_y0, c.page_y1) == _CARD2[1:])
+    assert prompt.number is None and prompt.heart_ordinal == 2
+    assert prompt.image == seen[1] and prompt.sent
+    assert "written prompt" in prompt.reason
+    # `translation`, not ItemIndex.translation, is what the counting-navigation caller must
+    # spend after the policy has removed a heart-bearing card from the model's dense list.
+    assert index.translation == (1, 2, 3, 4)
+    assert payload.translation == (1, 3, 4)
+    assert payload.item(2).heart_ordinal == 3
+
+
+def test_photo_only_policy_refuses_a_capture_with_no_numbered_photographs():
+    """Unknown is not permission to offer a possible prompt to the model.
+
+    If every likeable crop is written or cannot confidently be called a photograph, they remain
+    available as unnumbered context but the payload is unusable: no caller can manufacture a
+    model item number and attach an opener to a prompt card.
+    """
+    index, frames = _full()
+    payload = item_crops.build_item_payload(
+        frames, index, unnumber=lambda _crop: "not confidently a photograph")
+
+    assert not payload.usable
+    assert payload.item_count == 0 and payload.translation == ()
+    prompt_cards = [c for c in payload.context if c.heart_ordinal is not None]
+    assert [c.heart_ordinal for c in prompt_cards] == [1, 2, 3, 4]
+    assert all(c.number is None and c.sent for c in prompt_cards)
+    assert all("not confidently a photograph" in c.reason for c in prompt_cards)
+    assert any("nothing for the model to choose between" in failure for failure in payload.failures)
+    with pytest.raises(item_crops.ItemCropError, match="unusable"):
+        payload.item(1)
+
+
+def test_hinge_photo_policy_requires_square_geometry_and_vetoes_written_cards():
+    rng = np.random.default_rng(991)
+    square_photo = rng.integers(0, 256, size=(256, 256, 3), dtype=np.uint8)
+    rectangular_photo = rng.integers(0, 256, size=(180, 256, 3), dtype=np.uint8)
+    written_square = np.full((256, 256, 3), 246, dtype=np.uint8)
+    for y in (70, 130):
+        cv2.putText(written_square, "PROMPT", (25, y), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8, (20, 20, 20), 2, cv2.LINE_AA)
+
+    def encoded(image):
+        ok, value = cv2.imencode(".png", image)
+        assert ok
+        return value.tobytes()
+
+    assert item_crops.unnumber_unless_confident_photo(encoded(square_photo)) is None
+    assert "photo_only" in item_crops.unnumber_unless_confident_photo(
+        encoded(rectangular_photo))
+    assert "photo_only" in item_crops.unnumber_unless_confident_photo(encoded(written_square))
+
 def test_exclusion_withholds_the_image_entirely():
     """Doc 2.4 excludes the endorsement section "entirely... because models reference what they
     are shown". So there must be no image at all, not an image the prompt asks the model to

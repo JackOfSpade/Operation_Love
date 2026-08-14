@@ -14,7 +14,7 @@ config.yaml that could not start was therefore fully CI-green.
 """
 import pytest
 
-from operation_love.config import load
+from operation_love.config import load, validate
 
 
 @pytest.fixture(scope="module")
@@ -23,10 +23,14 @@ def cfg():
 
 
 def test_config_yaml_loads_without_error(cfg):
-    """config.yaml parses and produces a valid Config object."""
+    """The shipped file parses and passes every offline startup validation."""
     assert cfg.enabled_apps                        # at least one app
     assert cfg.mode in {"observe", "auto"}
     assert cfg.budget.run_budget_usd is not None   # a run budget is set
+    # In particular, Hinge's intentionally absent targeting calibration remains a valid
+    # observe configuration: it prevents targeted suggestions at runtime, but must not turn
+    # the whole shipped application configuration into an unloadable file.
+    validate(cfg)
 
 
 def test_opener_model_has_pricing_entry(cfg):

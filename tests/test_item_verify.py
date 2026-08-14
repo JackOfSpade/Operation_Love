@@ -26,6 +26,7 @@ import numpy as np
 import pytest
 
 from operation_love.drivers import hinge, item_crops, item_index, item_verify, segment
+from operation_love.drivers.like_composer import ComposerSurface, Rect
 
 _W, _H = 1080, 2400                                    # the calibrated Pixel 7a screencap size
 _SEED = 31
@@ -175,6 +176,158 @@ def paint_sheet(crop_image: bytes, *, preview_w=_SHEET_PREVIEW_W, x0=_SHEET_PREV
 
 def _sheet_for(number: int, **kw) -> bytes:
     return paint_sheet(_payload().item(number).image, **kw)
+
+
+def _inline_surface() -> ComposerSurface:
+    preview = item_verify.locate_sheet_preview(_sheet_for(1))
+    comment = Rect(preview.x0, preview.y1 + 20, preview.x1, preview.y1 + 198)
+    send = Rect(390, comment.y1 + 15, 985, comment.y1 + 124)
+    return ComposerSurface("hinge_inline_v1", comment, send, (695, send.y0 + 50))
+
+
+def _paint_inline_reframe(crop_image: bytes, *, start: int = 37, rows: int = 933) -> bytes:
+    """Synthetic 9.134 selected-photo composer, including its removed card-heart lane.
+
+    The real Malaika regression is a complete square source card rendered as a 933-row interior
+    window above the inline controls (not the legacy bottom window).  Its profile-card heart is
+    in the source's lower-right lane; the selected preview intentionally has ordinary image
+    pixels there.  This fixture carries the same geometry without embedding a real profile.
+    """
+    card = cv2.imdecode(np.frombuffer(crop_image, np.uint8), cv2.IMREAD_COLOR)
+    source_x1 = card.shape[1] - round(card.shape[1] * item_verify._INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
+    assert 0 <= start and start + rows <= card.shape[0]
+    preview = np.full((_SHEET_PREVIEW_MAX_H, _SHEET_PREVIEW_W, 3), 145, dtype=np.uint8)
+    # The left photo area is exactly the full-width, bounded source window verifier is allowed to
+    # search.  The right side represents the layout's selected-photo control-free lane and is
+    # excluded symmetrically by the inline verifier.
+    left_w = _SHEET_PREVIEW_W - round(
+        _SHEET_PREVIEW_W * item_verify._INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
+    preview[:, :left_w] = cv2.resize(card[start:start + rows, :source_x1],
+                                     (left_w, _SHEET_PREVIEW_MAX_H),
+                                     interpolation=cv2.INTER_AREA)
+    canvas = np.full((_H, _W, 3), _SHEET_BG, dtype=np.uint8)
+    canvas[_SHEET_PREVIEW_Y0:_SHEET_PREVIEW_Y0 + _SHEET_PREVIEW_MAX_H,
+           _SHEET_PREVIEW_X0:_SHEET_PREVIEW_X0 + _SHEET_PREVIEW_W] = preview
+    ok, buf = cv2.imencode(".png", canvas)
+    assert ok
+    return buf.tobytes()
+
+
+def _inline_surface_for(frame: bytes) -> ComposerSurface:
+    preview = item_verify.locate_sheet_preview(frame)
+    comment = Rect(preview.x0, preview.y1 + 20, preview.x1, preview.y1 + 198)
+    send = Rect(390, comment.y1 + 15, 985, comment.y1 + 124)
+    return ComposerSurface("hinge_inline_v1", comment, send, (695, send.y0 + 50))
+
+
+def _fragment_legacy_wide_runs(frame: bytes) -> bytes:
+    """Make sparse bright source rows invisible to the strict 870px row-span probe.
+
+    This is the synthetic form of Tega's bright-sky image: every row still carries a 745px image
+    run, but one 145px interval never reaches 870px, so the legacy locator has no 300px run.
+    The compact composer fallback may use the 745px evidence only after the controls bind it.
+    """
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    for y in range(_SHEET_PREVIEW_Y0 + 145, _SHEET_PREVIEW_Y0 + _SHEET_PREVIEW_MAX_H, 145):
+        image[y:y + 1, 840:985] = _SHEET_BG
+    ok, buf = cv2.imencode(".png", image)
+    assert ok
+    return buf.tobytes()
+
+
+def test_inline_item_verification_requires_selected_card_above_the_detected_controls():
+    frame = _sheet_for(1)
+    assert item_verify.verify_sheet_item(
+        frame, _payload(), 1, composer_surface=_inline_surface()).matched
+
+    unrelated = ComposerSurface(
+        "hinge_inline_v1", Rect(95, 1800, 985, 1978), Rect(390, 2000, 985, 2109),
+        (695, 2050))
+    with pytest.raises(item_verify.SheetVerificationError, match="not immediately above"):
+        item_verify.verify_sheet_item(
+            frame, _payload(), 1, composer_surface=unrelated)
+
+
+def test_malaika_style_inline_reframe_uses_a_bounded_one_item_cap_without_loosening_legacy_or_wrong_cards():
+    """Regression for held-out Malaika: a correct selected photo was 6.703, above modal 3.900.
+
+    The companion controls are deliberate: an arbitrary post-tap patch, a foreign photo, and a
+    prompt-style card must not enter the new bounded origin sweep, and legacy callers continue to
+    use their original bottom-anchor/3.90 fallback.  The source card is tall enough that exactly
+    the bounded 933-row full-width reframe is required.
+    """
+    payload = _payload()
+    selected = payload.item(4)  # 1109px, so 933px leaves 176px (16%) hidden.
+    frame = _paint_inline_reframe(selected.image)
+    surface = ComposerSurface(
+        "hinge_inline_v1", Rect(95, 1112, 985, 1290), Rect(390, 1305, 985, 1414),
+        (695, 1355))
+    # With other indexed choices present, the ordinary unique-nearest proof remains the gate.
+    closed_set = item_verify.verify_sheet_item(frame, payload, 4, composer_surface=surface)
+    assert closed_set.matched, closed_set.reason
+    assert closed_set.nearest_index == 4
+    assert closed_set.comparisons[3].nearest_other is not None
+    only = dataclasses.replace(payload, crops=(dataclasses.replace(selected, number=1),))
+
+    inline = item_verify.verify_sheet_item(frame, only, 1, composer_surface=surface)
+    assert inline.matched, inline.reason
+    assert inline.distance < item_verify._INLINE_COMPOSER_ONE_ITEM_MAX_DIST
+    assert inline.bound == item_verify._INLINE_COMPOSER_ONE_ITEM_MAX_DIST
+    assert "inline composer" in inline.reason
+    assert not item_verify.verify_sheet_item(
+        frame, only, 1, composer_surface=surface,
+        absolute_max_dist=inline.distance / 2).matched
+    # The very same selected-card pixels are not evidence of the historical modal geometry.
+    assert not item_verify.verify_sheet_item(frame, only, 1).matched
+
+    # A different photo remains far from the selected preview even though the full bounded origin
+    # sweep is available; it cannot exploit the reframe search to become a false positive.
+    foreign_photo = dataclasses.replace(
+        payload, crops=(dataclasses.replace(payload.item(3), number=1),))
+    wrong_photo = item_verify.verify_sheet_item(frame, foreign_photo, 1, composer_surface=surface)
+    assert not wrong_photo.matched
+    assert wrong_photo.distance > item_verify._INLINE_COMPOSER_ONE_ITEM_MAX_DIST
+
+    # The text/prompt-shaped corpus is an independent negative control.  It is purposefully
+    # outside the photo-only model path, but verifier safety must not depend on classification.
+    prompt = dataclasses.replace(_lookalike_payload().item(2), number=1)
+    prompt_only = dataclasses.replace(_lookalike_payload(), crops=(prompt,))
+    wrong_prompt = item_verify.verify_sheet_item(frame, prompt_only, 1, composer_surface=surface)
+    assert not wrong_prompt.matched
+    assert wrong_prompt.distance > item_verify._INLINE_COMPOSER_ONE_ITEM_MAX_DIST
+
+
+def test_tega_style_bright_photo_uses_compact_locator_only_when_composer_binds_it():
+    """A fragmented wide-run must remain a legacy refusal, but verify under real controls.
+
+    This pins Tega's exact failure class without putting a real profile image in the repository:
+    bright rows split the 870px legacy runs while retaining 745px of photo on every row.  A wrong
+    photo and prompt-style crop remain outside the composer-only fallback cap.
+    """
+    payload = _payload()
+    selected = payload.item(4)
+    frame = _fragment_legacy_wide_runs(_paint_inline_reframe(selected.image))
+    with pytest.raises(item_verify.SheetVerificationError, match="no comment-sheet item preview"):
+        item_verify.locate_sheet_preview(frame)
+    surface = ComposerSurface(
+        "hinge_inline_v1", Rect(95, 1112, 985, 1290), Rect(390, 1305, 985, 1414),
+        (695, 1355))
+    only = dataclasses.replace(payload, crops=(dataclasses.replace(selected, number=1),))
+    verdict = item_verify.verify_sheet_item(frame, only, 1, composer_surface=surface)
+    assert verdict.matched, verdict.reason
+    assert "compact fallback" in verdict.preview.reason
+    assert verdict.preview == item_verify.SheetPreview(
+        _SHEET_PREVIEW_Y0, _SHEET_PREVIEW_Y0 + _SHEET_PREVIEW_MAX_H, 95, 985,
+        verdict.preview.reason)
+
+    wrong_photo = dataclasses.replace(
+        payload, crops=(dataclasses.replace(payload.item(3), number=1),))
+    assert not item_verify.verify_sheet_item(
+        frame, wrong_photo, 1, composer_surface=surface).matched
+    prompt = dataclasses.replace(_lookalike_payload().item(2), number=1)
+    prompt_only = dataclasses.replace(_lookalike_payload(), crops=(prompt,))
+    assert not item_verify.verify_sheet_item(
+        frame, prompt_only, 1, composer_surface=surface).matched
 
 
 # =====================================================================================

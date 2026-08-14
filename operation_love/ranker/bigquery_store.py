@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -36,6 +37,9 @@ _MAX_INSERT_ATTEMPTS = 5    # bounded retry so a row BigQuery keeps rejecting as
                             # can't poison its table's buffer (and everything queued
                             # behind it) forever -- see _flush_table
 
+_SCHEMA_UPDATE_ATTEMPTS = 5
+_SCHEMA_UPDATE_BACKOFF_S = 1.0
+
 _TABLES = {
     "profiles": (
         "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, liked BOOL, "
@@ -51,7 +55,12 @@ _TABLES = {
     ),
     "decisions": (
         "run_id STRING, app STRING, created_at TIMESTAMP, decision STRING, "
-        "score FLOAT64, source STRING"
+        "score FLOAT64, source STRING, profile_id STRING"
+    ),
+    "label_retractions": (
+        "correction_id STRING, run_id STRING, app STRING, source STRING, profile_id STRING, "
+        "label_created_at TIMESTAMP, decision_created_at TIMESTAMP, decision_fingerprint STRING, "
+        "reason STRING, evidence_ref STRING, created_at TIMESTAMP"
     ),
     # `angle` is the model's own free-text description of what the opener is doing (a guess, a
     # tease, a connection between two things she wrote). Telemetry only, never read back at
@@ -65,7 +74,9 @@ _TABLES = {
     # written prompt -- which is the coarse class doc 5.8's pre-flight cross-check works on.
     # Written in both auto and observe, always. Same _MIGRATIONS caveat as `angle`.
     "openers": ("run_id STRING, app STRING, created_at TIMESTAMP, model STRING, opener STRING, "
-                "referenced STRING, angle STRING, item_description STRING"),
+                "referenced STRING, angle STRING, item_description STRING, profile_id STRING, "
+                "decision STRING, decision_source STRING, decision_created_at TIMESTAMP, "
+                "model_item_index INT64"),
     # Every REJECTED opener attempt (OpenerParseError), not just the successes `openers`
     # above holds -- see opener/service.py's OpenerParseError handling and opener.py's
     # OpenerParseError docstring for reason_code/raw_opener semantics. `attempt` is the
@@ -75,6 +86,10 @@ _TABLES = {
     "opener_rejections": (
         "run_id STRING, app STRING, created_at TIMESTAMP, model STRING, attempt INT64, "
         "reason_code STRING, reason STRING, raw_opener STRING"
+    ),
+    "opener_retractions": (
+        "correction_id STRING, run_id STRING, app STRING, opener_created_at TIMESTAMP, model STRING, "
+        "opener_fingerprint STRING, reason STRING, evidence_ref STRING, created_at TIMESTAMP"
     ),
     "spend": (
         "run_id STRING, created_at TIMESTAMP, model STRING, input_tokens INT64, output_tokens INT64, "
@@ -93,14 +108,34 @@ _TABLES = {
 _MIGRATIONS = (
     "ALTER TABLE `{labels}` ADD COLUMN IF NOT EXISTS profile_id STRING;",
     "ALTER TABLE `{decisions}` ADD COLUMN IF NOT EXISTS source STRING;",
+    "ALTER TABLE `{decisions}` ADD COLUMN IF NOT EXISTS profile_id STRING;",
     "ALTER TABLE `{profiles}` ADD COLUMN IF NOT EXISTS capture_truncated BOOL;",
     "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS angle STRING;",
     "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS item_description STRING;",
+    "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS profile_id STRING;",
+    "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS decision STRING;",
+    "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS decision_source STRING;",
+    "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS decision_created_at TIMESTAMP;",
+    "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS model_item_index INT64;",
+)
+
+_MIGRATION_RE = re.compile(
+    r"^ALTER TABLE `\{(?P<table>[a-z_]+)\}` ADD COLUMN IF NOT EXISTS "
+    r"(?P<column>[A-Za-z_][A-Za-z0-9_]*) (?P<type>[^;]+);$"
 )
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _timestamp(value) -> str:
+    """Normalize a shared action timestamp for BigQuery's JSON TIMESTAMP representation."""
+    if value is None:
+        return _now()
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+    return str(value)
 
 
 def _copy_labels(labels: list[tuple[bool, list[float]]]) -> list[tuple[bool, list[float]]]:
@@ -136,6 +171,38 @@ def _day_start_job_config(start_dt: datetime):
         bigquery.ScalarQueryParameter("day_start", "TIMESTAMP", start_dt)])
 
 
+def _missing_optional_opener_retractions(exc: Exception, *, ensure: bool) -> bool:
+    """Only the known optional-table NotFound is empty; every other read error is real."""
+    return (not ensure and type(exc).__name__ == "NotFound"
+            and "opener_retractions" in str(exc))
+
+
+def _missing_dataset(exc: Exception) -> bool:
+    """Recognize only BigQuery's dataset-not-found response during schema discovery."""
+    return type(exc).__name__ == "NotFound" and "dataset" in str(exc).lower()
+
+
+def _table_update_rate_limited(exc: Exception) -> bool:
+    """The metadata-update quota is transient and BigQuery explicitly recommends retry."""
+    message = str(exc).lower()
+    return ("exceeded rate limits" in message
+            and "too many table update operations" in message)
+
+
+def _migration_parts(stmt: str) -> tuple[str, str, str]:
+    """Return the table placeholder, column name, and type from a declared migration.
+
+    Keeping ``_MIGRATIONS`` as executable SQL preserves the two-part schema rollout
+    invariant documented above. Parsing our deliberately narrow internal format lets
+    startup discover which migrations are actually needed and combine all additions for
+    one table into one metadata update.
+    """
+    match = _MIGRATION_RE.fullmatch(stmt)
+    if match is None:
+        raise ValueError(f"Unsupported BigQuery migration statement: {stmt}")
+    return match["table"], match["column"], match["type"]
+
+
 class BigQueryStore:
     def __init__(self, project_id: str, dataset: str = "operation_love",
                  location: str = "US", photo_bucket: str = "", flush_every: int = DEFAULT_FLUSH_EVERY,
@@ -148,6 +215,7 @@ class BigQueryStore:
         self.dataset = dataset
         self.location = location
         self.photo_bucket_name = photo_bucket
+        self._ensure = bool(ensure)
         self.flush_every = max(1, int(flush_every))
         if client is None:
             from google.cloud import bigquery  # lazy: only needed for real use
@@ -162,6 +230,8 @@ class BigQueryStore:
         self._dropped: dict[str, int] = {name: 0 for name in _TABLES}  # rows permanently given up on (never inserted)
         self._fail_counts: dict[str, int] = {}  # f"{table}:{row_id}" -> consecutive failed-insert attempts
         self._labels_cache: list[tuple[bool, list[float]]] | None = None
+        self._retraction_ids: set[str] = set()  # closes the streaming-read visibility gap for retries
+        self._opener_retraction_ids: set[tuple[str, str]] = set()
         self._lock = threading.RLock()  # shared across worker threads
         self._photo_bucket = self._get_or_create_photo_bucket() if ensure else self.storage_client.bucket(photo_bucket)
         if ensure:
@@ -172,16 +242,74 @@ class BigQueryStore:
         return f"{self.project_id}.{self.dataset}.{name}"
 
     def _ensure_tables(self) -> None:
-        # One multi-statement script = a single job submission instead of 5
-        # sequential round-trips, so Start isn't gated on ~5 BigQuery job latencies.
-        stmts = [f"CREATE SCHEMA IF NOT EXISTS `{self.project_id}.{self.dataset}` "
-                 f"OPTIONS(location='{self.location}');"]
-        for name, cols in _TABLES.items():
-            stmts.append(f"CREATE TABLE IF NOT EXISTS `{self._tid(name)}` ({cols});")
-        tids = {name: self._tid(name) for name in _TABLES}
-        for stmt in _MIGRATIONS:
-            stmts.append(stmt.format(**tids))
-        self.client.query("\n".join(stmts)).result()
+        """Create missing tables and apply only missing additive migrations.
+
+        BigQuery limits a standard table to five metadata updates per ten seconds.  The
+        old startup script replayed every historical ``ALTER TABLE`` on every run and,
+        after the opener telemetry additions, targeted ``openers`` seven times in one
+        script.  ``IF NOT EXISTS`` made the DDL logically idempotent but did not keep those
+        statements out of the metadata-update quota.
+
+        One INFORMATION_SCHEMA read makes the common (already-current) startup entirely
+        free of table DDL.  A legacy table receives one grouped ALTER regardless of how
+        many nullable columns it is missing; a new table is created with the current full
+        schema and therefore needs no follow-up ALTER.
+        """
+        schema_query = (
+            "SELECT table_name, column_name "
+            f"FROM `{self.project_id}.{self.dataset}.INFORMATION_SCHEMA.COLUMNS` "
+            "WHERE table_name IN ("
+            + ", ".join(f"'{name}'" for name in _TABLES)
+            + ")"
+        )
+        try:
+            rows = self.client.query(schema_query).result()
+        except Exception as exc:  # noqa: BLE001 - SDK exception is optional at import time
+            if not _missing_dataset(exc):
+                raise
+            self.client.query(
+                f"CREATE SCHEMA IF NOT EXISTS `{self.project_id}.{self.dataset}` "
+                f"OPTIONS(location='{self.location}');"
+            ).result()
+            rows = []
+
+        existing: dict[str, set[str]] = {}
+        for row in rows:
+            table = str(row["table_name"])
+            if table in _TABLES:
+                existing.setdefault(table, set()).add(str(row["column_name"]).lower())
+
+        statements: list[str] = []
+        missing_tables = [name for name in _TABLES if name not in existing]
+        for name in missing_tables:
+            statements.append(
+                f"CREATE TABLE IF NOT EXISTS `{self._tid(name)}` ({_TABLES[name]});")
+
+        additions: dict[str, list[tuple[str, str]]] = {}
+        for migration in _MIGRATIONS:
+            table, column, column_type = _migration_parts(migration)
+            if table not in missing_tables and column.lower() not in existing.get(table, set()):
+                additions.setdefault(table, []).append((column, column_type))
+        for table, columns in additions.items():
+            clauses = ",\n".join(
+                f"ADD COLUMN IF NOT EXISTS {column} {column_type}"
+                for column, column_type in columns
+            )
+            statements.append(f"ALTER TABLE `{self._tid(table)}`\n{clauses};")
+
+        if not statements:
+            return
+
+        script = "\n".join(statements)
+        for attempt in range(_SCHEMA_UPDATE_ATTEMPTS):
+            try:
+                self.client.query(script).result()
+                return
+            except Exception as exc:  # noqa: BLE001 - preserve the original SDK error
+                if (not _table_update_rate_limited(exc)
+                        or attempt == _SCHEMA_UPDATE_ATTEMPTS - 1):
+                    raise
+                time.sleep(_SCHEMA_UPDATE_BACKOFF_S * (2 ** attempt))
 
     def _get_or_create_photo_bucket(self):
         bucket = self.storage_client.bucket(self.photo_bucket_name)
@@ -227,7 +355,11 @@ class BigQueryStore:
         with self._lock:
             if self._labels_cache is not None:
                 return _copy_labels(self._labels_cache)
-            rows = self.client.query(f"SELECT liked, embedding FROM `{self._tid('labels')}`").result()
+            rows = self.client.query(
+                f"SELECT l.liked, l.embedding FROM `{self._tid('labels')}` l WHERE NOT EXISTS "
+                f"(SELECT 1 FROM `{self._tid('label_retractions')}` r WHERE r.run_id=l.run_id "
+                "AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
+                "AND r.label_created_at=l.created_at)").result()
             out = [(bool(r["liked"]), list(r["embedding"])) for r in rows]
             out.extend((bool(r["liked"]), list(r["embedding"])) for r in self._buf["labels"])
             self._labels_cache = _copy_labels(out)
@@ -241,7 +373,10 @@ class BigQueryStore:
         is therefore omitted here — the hub appends the live full-set point separately.
         Streaming-buffer rows may lag, which is fine for a historical trend."""
         rows = self.client.query(
-            f"SELECT liked, embedding FROM `{self._tid('labels')}` ORDER BY created_at"
+            f"SELECT l.liked, l.embedding FROM `{self._tid('labels')}` l WHERE NOT EXISTS "
+            f"(SELECT 1 FROM `{self._tid('label_retractions')}` r WHERE r.run_id=l.run_id "
+            "AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
+            "AND r.label_created_at=l.created_at) ORDER BY created_at"
         ).result()
         return [(bool(r["liked"]), list(r["embedding"])) for r in rows]
 
@@ -258,6 +393,346 @@ class BigQueryStore:
         for r in rows:
             return int(r["c"])
         return 0
+
+    def observe_release_persistence_summary(self, run_id: str, app: str) -> dict[str, int]:
+        """Read-only run-scoped complete-cycle counts for the Hinge AUTO release gate.
+
+        This deliberately queries only aggregate counts with bound parameters: a verifier needs
+        proof that the production store persisted *both* manual outcomes and a successful Hinge
+        opener for the Worker run, never profile IDs, embeddings, opener text, or photos.
+        Worker calls the stored pass decision ``dislike``; it maps to the operator-visible
+        ``manual_pass_decisions`` field here. ``ensure=False`` construction lets the offline
+        verifier call it without DDL/bucket changes.
+        """
+        from google.cloud import bigquery
+        job = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+            bigquery.ScalarQueryParameter("app", "STRING", app),
+        ])
+        opener_visibility = (
+            f"AND NOT EXISTS (SELECT 1 FROM `{self._tid('opener_retractions')}` r WHERE r.run_id=o.run_id "
+            "AND r.app=o.app AND r.opener_created_at=o.created_at)"
+        )
+        query = (
+            "SELECT "
+            f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app "
+            f"AND source='manual' AND liked=FALSE AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
+            "WHERE r.run_id=l.run_id AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
+            "AND r.label_created_at=l.created_at)) AS pass_labels, "
+            f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` d WHERE run_id=@run_id AND app=@app "
+            f"AND source='manual' AND decision='dislike' AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
+            "WHERE r.run_id=d.run_id AND r.app=d.app AND r.source=d.source "
+            "AND r.decision_created_at=d.created_at)) AS pass_decisions, "
+            f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app "
+            f"AND source='manual' AND liked=TRUE AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
+            "WHERE r.run_id=l.run_id AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
+            "AND r.label_created_at=l.created_at)) AS like_labels, "
+            f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` d WHERE run_id=@run_id AND app=@app "
+            f"AND source='manual' AND decision='like' AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
+            "WHERE r.run_id=d.run_id AND r.app=d.app AND r.source=d.source "
+            "AND r.decision_created_at=d.created_at)) AS like_decisions, "
+            f"(SELECT COUNT(*) FROM `{self._tid('openers')}` o WHERE run_id=@run_id AND app=@app "
+            f"{opener_visibility}) AS successful_hinge_openers"
+        )
+        try:
+            rows = self.client.query(query, job_config=job).result()
+        except Exception as exc:
+            if not _missing_optional_opener_retractions(exc, ensure=self._ensure):
+                raise
+            rows = self.client.query(query.replace(opener_visibility, ""), job_config=job).result()
+        for row in rows:
+            return {
+                "manual_pass_labels": int(row["pass_labels"]),
+                "manual_like_labels": int(row["like_labels"]),
+                "manual_pass_decisions": int(row["pass_decisions"]),
+                "manual_like_decisions": int(row["like_decisions"]),
+                "successful_hinge_openers": int(row["successful_hinge_openers"]),
+            }
+        return {
+            "manual_pass_labels": 0,
+            "manual_like_labels": 0,
+            "manual_pass_decisions": 0,
+            "manual_like_decisions": 0,
+            "successful_hinge_openers": 0,
+        }
+
+    def ai_observe_release_persistence_summary(self, run_id: str, app: str,
+                                               source: str) -> dict[str, int]:
+        """Read-only complete-cycle summary for an honest non-manual evidence source."""
+        if source not in {"external_ai_review", "automation"}:
+            raise ValueError("AI observe release source must be external_ai_review or automation")
+        from google.cloud import bigquery
+        job = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+            bigquery.ScalarQueryParameter("app", "STRING", app),
+            bigquery.ScalarQueryParameter("source", "STRING", source),
+        ])
+        opener_visibility = (
+            f"AND NOT EXISTS (SELECT 1 FROM `{self._tid('opener_retractions')}` r WHERE r.run_id=o.run_id "
+            "AND r.app=o.app AND r.opener_created_at=o.created_at)"
+        )
+        query = (
+            "SELECT "
+            f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app "
+            f"AND source=@source AND liked=FALSE AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
+            "WHERE r.run_id=l.run_id AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
+            "AND r.label_created_at=l.created_at)) AS pass_labels, "
+            f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` d WHERE run_id=@run_id AND app=@app "
+            f"AND source=@source AND decision='dislike' AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
+            "WHERE r.run_id=d.run_id AND r.app=d.app AND r.source=d.source "
+            "AND r.decision_created_at=d.created_at)) AS pass_decisions, "
+            f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app "
+            f"AND source=@source AND liked=TRUE AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
+            "WHERE r.run_id=l.run_id AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
+            "AND r.label_created_at=l.created_at)) AS like_labels, "
+            f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` d WHERE run_id=@run_id AND app=@app "
+            f"AND source=@source AND decision='like' AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
+            "WHERE r.run_id=d.run_id AND r.app=d.app AND r.source=d.source "
+            "AND r.decision_created_at=d.created_at)) AS like_decisions, "
+            f"(SELECT COUNT(*) FROM `{self._tid('openers')}` o WHERE run_id=@run_id AND app=@app "
+            f"{opener_visibility}) AS successful_hinge_openers"
+        )
+        try:
+            rows = self.client.query(query, job_config=job).result()
+        except Exception as exc:
+            if not _missing_optional_opener_retractions(exc, ensure=self._ensure):
+                raise
+            rows = self.client.query(query.replace(opener_visibility, ""), job_config=job).result()
+        for row in rows:
+            return {
+                "ai_pass_labels": int(row["pass_labels"]),
+                "ai_like_labels": int(row["like_labels"]),
+                "ai_pass_decisions": int(row["pass_decisions"]),
+                "ai_like_decisions": int(row["like_decisions"]),
+                "successful_hinge_openers": int(row["successful_hinge_openers"]),
+            }
+        return {
+            "ai_pass_labels": 0,
+            "ai_like_labels": 0,
+            "ai_pass_decisions": 0,
+            "ai_like_decisions": 0,
+            "successful_hinge_openers": 0,
+        }
+
+    def retraction_run_rows(self, run_id: str, app: str, source: str) -> dict:
+        """Read the exact, minimal committed rows needed to plan a safe correction."""
+        from google.cloud import bigquery
+        job = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+            bigquery.ScalarQueryParameter("app", "STRING", app),
+            bigquery.ScalarQueryParameter("source", "STRING", source),
+        ])
+        def fetch(table: str, columns: str, order: str) -> list[dict]:
+            try:
+                rows = self.client.query(
+                    f"SELECT {columns} FROM `{self._tid(table)}` "
+                    "WHERE run_id=@run_id AND app=@app AND source=@source " + order,
+                    job_config=job).result()
+            except Exception as exc:  # The first plan can precede creation of this new table.
+                if table == "label_retractions" and type(exc).__name__ == "NotFound":
+                    return []
+                raise
+            out = []
+            for value in rows:
+                row = dict(value)
+                for key, item in list(row.items()):
+                    if isinstance(item, datetime):
+                        row[key] = item.astimezone(timezone.utc).isoformat()
+                out.append(row)
+            return out
+        return {"run_id": run_id, "app": app, "source": source,
+                "profiles": fetch("profiles", "profile_id", "ORDER BY profile_id"),
+                "labels": fetch("labels", "profile_id, created_at, liked", "ORDER BY created_at, profile_id"),
+                "decisions": fetch("decisions", "created_at, decision, score", "ORDER BY created_at, decision, score"),
+                "retractions": fetch("label_retractions", "correction_id, profile_id, label_created_at, "
+                                      "decision_created_at, decision_fingerprint", "ORDER BY created_at, correction_id")}
+
+    def append_label_retraction(self, row: dict) -> bool:
+        """Synchronously append one idempotent tombstone after bound existence checks.
+
+        The first query protects retries by correction id; the second rejects a competing
+        correction for the exact label/legacy-decision pair.  BigQuery streaming inserts do
+        not expose database uniqueness constraints, so both checks are intentionally bound
+        and happen under this store's lock before the deterministic insert id is submitted.
+        """
+        from .retractions import RetractionRefused
+        from google.cloud import bigquery
+        correction_id = row["correction_id"]
+        # Query parameters of type TIMESTAMP are datetime objects in the BigQuery
+        # client.  The portable correction document stores RFC-3339 text so it can be
+        # hashed/reviewed; convert only at this transport boundary rather than relying
+        # on SDK-version-dependent coercion of strings.
+        try:
+            label_time = datetime.fromisoformat(str(row["label_created_at"]).replace("Z", "+00:00"))
+            decision_time = datetime.fromisoformat(str(row["decision_created_at"]).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RetractionRefused("BigQuery correction timestamps must be RFC-3339") from exc
+        job = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("correction_id", "STRING", correction_id)])
+        target_job = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("run_id", "STRING", row["run_id"]),
+            bigquery.ScalarQueryParameter("app", "STRING", row["app"]),
+            bigquery.ScalarQueryParameter("source", "STRING", row["source"]),
+            bigquery.ScalarQueryParameter("profile_id", "STRING", row["profile_id"]),
+            bigquery.ScalarQueryParameter("label_created_at", "TIMESTAMP", label_time),
+            bigquery.ScalarQueryParameter("decision_created_at", "TIMESTAMP", decision_time),
+        ])
+        with self._lock:
+            if correction_id in self._retraction_ids:
+                return False
+            if any(item.get("correction_id") == correction_id for item in self._buf["label_retractions"]):
+                return False
+            existing = list(self.client.query(
+                f"SELECT correction_id FROM `{self._tid('label_retractions')}` "
+                "WHERE correction_id=@correction_id LIMIT 1", job_config=job).result())
+            if existing:
+                return False
+            target = list(self.client.query(
+                f"SELECT correction_id FROM `{self._tid('label_retractions')}` "
+                "WHERE run_id=@run_id AND app=@app AND source=@source AND profile_id=@profile_id "
+                "AND label_created_at=@label_created_at AND decision_created_at=@decision_created_at LIMIT 1",
+                job_config=target_job).result())
+            if target:
+                raise RetractionRefused("target label/decision pair already has a different retraction")
+            payload = dict(row)
+            for key in ("label_created_at", "decision_created_at", "created_at"):
+                payload[key] = datetime.fromisoformat(str(payload[key]).replace("Z", "+00:00")).isoformat()
+            errors = self.client.insert_rows_json(self._tid("label_retractions"), [payload],
+                                                  row_ids=[correction_id])
+            if errors:
+                raise RuntimeError(f"BigQuery insert errors for label_retractions: {errors}")
+            self._written["label_retractions"] += 1
+            self._retraction_ids.add(correction_id)
+            self._labels_cache = None
+            return True
+
+    def advisory_opener_run_rows(self, run_id: str, app: str) -> dict:
+        """Read exact no-text opener identities and zero-decision proof with bound values."""
+        from .retractions import RetractionRefused, canonical_sha
+        from google.cloud import bigquery
+        job = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+            bigquery.ScalarQueryParameter("app", "STRING", app),
+        ])
+        def rows(query: str, *, optional_opener_retractions: bool = False) -> list[dict]:
+            try:
+                return [dict(value) for value in self.client.query(query, job_config=job).result()]
+            except Exception as exc:
+                # Read-only tools may predate this optional append-only table.  Do not turn an
+                # absent tombstone table into a failed audit; do re-raise every other failure.
+                if optional_opener_retractions and _missing_optional_opener_retractions(
+                        exc, ensure=self._ensure):
+                    return []
+                raise
+        opener_rows = rows(f"SELECT created_at,model,opener FROM `{self._tid('openers')}` "
+                           "WHERE run_id=@run_id AND app=@app ORDER BY created_at")
+        tombstones = rows(f"SELECT correction_id,opener_created_at,model,opener_fingerprint,reason,evidence_ref "
+                          f"FROM `{self._tid('opener_retractions')}` "
+                          "WHERE run_id=@run_id AND app=@app", optional_opener_retractions=True)
+        counts = rows(
+            "SELECT "
+            f"(SELECT COUNT(*) FROM `{self._tid('profiles')}` WHERE run_id=@run_id AND app=@app) AS profiles, "
+            f"(SELECT COUNT(*) FROM `{self._tid('profile_photos')}` WHERE run_id=@run_id AND app=@app) AS profile_photos, "
+            f"(SELECT COUNT(*) FROM `{self._tid('labels')}` WHERE run_id=@run_id AND app=@app) AS labels, "
+            f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` WHERE run_id=@run_id AND app=@app) AS decisions, "
+            f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app AND liked=TRUE "
+            f"AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r WHERE r.run_id=l.run_id "
+            "AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
+            "AND r.label_created_at=l.created_at)) AS like_labels, "
+            f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app AND liked=FALSE "
+            f"AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r WHERE r.run_id=l.run_id "
+            "AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
+            "AND r.label_created_at=l.created_at)) AS pass_labels, "
+            f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` WHERE run_id=@run_id AND app=@app AND decision='like') AS like_decisions, "
+            f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` WHERE run_id=@run_id AND app=@app AND decision='dislike') AS pass_decisions")[0]
+        def stamp(value) -> str:
+            if not isinstance(value, datetime):
+                raise RetractionRefused("BigQuery opener row has invalid created_at")
+            return value.astimezone(timezone.utc).isoformat()
+        openers = [{"created_at": stamp(row["created_at"]), "model": str(row["model"]),
+                    "opener_fingerprint": canonical_sha({"run_id": run_id, "app": app,
+                                                           "created_at": stamp(row["created_at"]),
+                                                           "model": str(row["model"]), "opener": str(row["opener"])})}
+                   for row in opener_rows]
+        return {"run_id": run_id, "app": app, "openers": openers,
+                "decisions": [{} for _ in range(int(counts["decisions"]))],
+                "preference_counts": {key: int(counts[key]) for key in
+                                      ("profiles", "profile_photos", "labels", "decisions")},
+                "effective_counts": {key: int(counts[key]) for key in
+                                     ("like_labels", "like_decisions", "pass_labels", "pass_decisions")},
+                "retractions": [{"correction_id": str(row["correction_id"]),
+                                  "opener_created_at": stamp(row["opener_created_at"]),
+                                  "model": str(row["model"]),
+                                  "opener_fingerprint": str(row["opener_fingerprint"]),
+                                  "reason": str(row["reason"]),
+                                  "evidence_ref": str(row["evidence_ref"])} for row in tombstones]}
+
+    def append_opener_retraction(self, row: dict) -> bool:
+        """Append one exact opener tombstone using bound idempotency checks."""
+        from .retractions import RetractionRefused, canonical_sha
+        from google.cloud import bigquery
+        try:
+            opener_at = datetime.fromisoformat(str(row["opener_created_at"]).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RetractionRefused("BigQuery opener correction timestamp must be RFC-3339") from exc
+        correction_id = row["correction_id"]
+        by_key = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("correction_id", "STRING", correction_id),
+            bigquery.ScalarQueryParameter("opener_created_at", "TIMESTAMP", opener_at)])
+        target = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("run_id", "STRING", row["run_id"]),
+            bigquery.ScalarQueryParameter("app", "STRING", row["app"]),
+            bigquery.ScalarQueryParameter("opener_created_at", "TIMESTAMP", opener_at),
+        ])
+        key = (correction_id, row["opener_created_at"])
+        with self._lock:
+            if key in self._opener_retraction_ids:
+                return False
+            if any(item.get("correction_id") == correction_id and
+                   item.get("opener_created_at") == row["opener_created_at"]
+                   for item in self._buf["opener_retractions"]):
+                return False
+            source = list(self.client.query(
+                f"SELECT created_at,model,opener FROM `{self._tid('openers')}` "
+                "WHERE run_id=@run_id AND app=@app AND created_at=@opener_created_at", job_config=target).result())
+            if len(source) != 1 or str(source[0]["model"]) != row["model"]:
+                raise RetractionRefused("target opener row is missing or does not match its cleanup plan")
+            source_at = source[0]["created_at"]
+            if not isinstance(source_at, datetime):
+                raise RetractionRefused("target opener row has an invalid created_at")
+            source_stamp = source_at.astimezone(timezone.utc).isoformat()
+            fingerprint = canonical_sha({"run_id": row["run_id"], "app": row["app"],
+                                         "created_at": source_stamp, "model": str(source[0]["model"]),
+                                         "opener": str(source[0]["opener"])})
+            if source_stamp != str(row["opener_created_at"]).replace("Z", "+00:00") \
+                    or fingerprint != row["opener_fingerprint"]:
+                raise RetractionRefused("target opener fingerprint no longer matches its cleanup plan")
+            by_same_plan = list(self.client.query(
+                f"SELECT correction_id,model,opener_fingerprint,reason,evidence_ref "
+                f"FROM `{self._tid('opener_retractions')}` WHERE correction_id=@correction_id "
+                "AND opener_created_at=@opener_created_at LIMIT 1", job_config=by_key).result())
+            if by_same_plan:
+                actual = dict(by_same_plan[0])
+                expected = {key: row[key] for key in actual}
+                if actual == expected:
+                    return False
+                raise RetractionRefused("correction id/opener timestamp has different cleanup data")
+            existing = list(self.client.query(
+                f"SELECT correction_id,model,opener_fingerprint,reason,evidence_ref "
+                f"FROM `{self._tid('opener_retractions')}` WHERE run_id=@run_id AND app=@app "
+                "AND opener_created_at=@opener_created_at LIMIT 1", job_config=target).result())
+            if existing:
+                raise RetractionRefused("opener row already has a different cleanup tombstone")
+            payload = dict(row)
+            payload["opener_created_at"] = opener_at.isoformat()
+            payload["created_at"] = datetime.now(timezone.utc).isoformat()
+            errors = self.client.insert_rows_json(self._tid("opener_retractions"), [payload],
+                                                  row_ids=[canonical_sha(row)])
+            if errors:
+                raise RuntimeError(f"BigQuery insert errors for opener_retractions: {errors}")
+            self._written["opener_retractions"] += 1
+            self._opener_retraction_ids.add(key)
+            return True
 
     def spend_today(self) -> float:
         """Sum of cost_usd already committed to BigQuery today (LOCAL day — same
@@ -378,16 +853,18 @@ class BigQueryStore:
                 self._labels_cache.append(label)
             self._maybe_flush("labels")
 
-    def record_decision(self, run_id, app, decision, score, source="auto"):
+    def record_decision(self, run_id, app, decision, score, source="auto", profile_id="",
+                        created_at=None):
         with self._lock:
             self._buf["decisions"].append({
-                "run_id": run_id, "app": app, "created_at": _now(),
-                "decision": decision, "score": float(score), "source": source,
+                "run_id": run_id, "app": app, "created_at": _timestamp(created_at),
+                "decision": decision, "score": float(score), "source": source, "profile_id": profile_id,
             })
             self._maybe_flush("decisions")
 
     def record_opener(self, run_id, app, model, opener, referenced, angle="",
-                      item_description=""):
+                      item_description="", *, profile_id="", decision="", decision_source="",
+                      decision_created_at=None, model_item_index=None):
         # `angle` and `item_description`: telemetry only (see the openers entry in _TABLES).
         # Both defaulted to "" so a caller that predates either still writes a valid row rather
         # than omitting the field. The live table already holds real rows, so each column got
@@ -396,7 +873,11 @@ class BigQueryStore:
             self._buf["openers"].append({
                 "run_id": run_id, "app": app, "created_at": _now(),
                 "model": model, "opener": opener, "referenced": referenced, "angle": angle,
-                "item_description": item_description,
+                "item_description": item_description, "profile_id": profile_id,
+                "decision": decision, "decision_source": decision_source,
+                "decision_created_at": (None if decision_created_at is None
+                                        else _timestamp(decision_created_at)),
+                "model_item_index": model_item_index,
             })
             self._maybe_flush("openers")
 

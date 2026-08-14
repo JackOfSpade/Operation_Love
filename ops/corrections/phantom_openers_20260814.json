@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "kind": "hinge_phantom_opener_cleanup",
+  "owner_approval": {
+    "reported_run_cleanup_approved": true,
+    "expanded_five_run_cleanup_approved": true,
+    "text": "I approve cleaning the 7 unused Hinge opener rows in runs 0da87bfda01c, 712bead758d5, a01fbcd1e9a0, ac983d1a3f6e, and f588e2fcc34c.",
+    "note": "Applied as append-only exact-row tombstones, preserving the source rows as recoverable audit evidence."
+  },
+  "scope": {
+    "project": "operation-love-2026",
+    "dataset": "operation_love",
+    "table": "openers",
+    "app": "hinge",
+    "run_ids": [
+      "0da87bfda01c",
+      "712bead758d5",
+      "a01fbcd1e9a0",
+      "ac983d1a3f6e",
+      "f588e2fcc34c"
+    ]
+  },
+  "invariant": "Committed opener rows require a corroborated Like label and decision; provider spend remains billing telemetry.",
+  "preconditions": {
+    "expected_opener_rows": 7,
+    "expected_like_decisions": 0,
+    "expected_like_labels": 0,
+    "preserve_spend_rows": true
+  },
+  "rows": [
+    {"run_id": "0da87bfda01c", "created_at": "2026-08-14 14:59:34", "model": "gemini-3.6-flash", "row_sha256": "f4f230a6efd2e999f0e024379f4feeaeb8a0b798ae81bf45e9e8dc808fe4ee8f"},
+    {"run_id": "712bead758d5", "created_at": "2026-08-10 21:40:52", "model": "gemini-3.6-flash", "row_sha256": "9d2aeaf1ad6423df91e1701ef7bf23103cbde0f54b8856a749c59e9b388543ce"},
+    {"run_id": "a01fbcd1e9a0", "created_at": "2026-08-14 11:13:54", "model": "gemini-3.7-flash", "row_sha256": "3303661f15bb6736e09b10c9edec2d3287c1e10094eda97939e8c6ef5e235e18"},
+    {"run_id": "a01fbcd1e9a0", "created_at": "2026-08-14 11:59:28", "model": "gemini-3.6-flash", "row_sha256": "a50d148aa0986524508817369d23f681d6148ec5944974fef363e3bdaa2ab34b"},
+    {"run_id": "ac983d1a3f6e", "created_at": "2026-08-14 12:42:15", "model": "gemini-3.6-flash", "row_sha256": "a6caabc5456c65d706b2096335940515d674e2ed009377e7b09e91a85cd684f4"},
+    {"run_id": "f588e2fcc34c", "created_at": "2026-08-14 10:55:04", "model": "gemini-3.7-flash", "row_sha256": "0cee42525c1779f8ac9e962652eb720319439c676b2f99e759699f707e250833"},
+    {"run_id": "f588e2fcc34c", "created_at": "2026-08-14 11:02:49", "model": "gemini-3.6-flash", "row_sha256": "7127e9dc84152a12ae291fefcaeb06014b3d7c93e4f8159a371f5f5205ac242a"}
+  ],
+  "application": {
+    "status": "applied_and_verified",
+    "applied_at": "2026-08-14T16:12:47Z",
+    "method": "append_only_exact_row_tombstones",
+    "plan_files": {
+      "0da87bfda01c": {"plan_sha256": "8b299efa5b84bf72cceb63b617b64b4f89ae5e924a092dba531424e8067a4b44", "file_sha256": "e6d733f2ea48fe37d099eafb8271cbb15084369ff0197b48ff2bc079663a7675"},
+      "712bead758d5": {"plan_sha256": "90673f1574f9ca90aab84f8a5195fee14dbd590700f9f22615fbf5a812832ef3", "file_sha256": "dc2a8500addfcec63a9c987d226ecce292f1c2f9da1e13d765e1a9dd914f09a7"},
+      "a01fbcd1e9a0": {"plan_sha256": "d0a5cc7f4b135bae0a8d48a3e04cbd5dfeac68da9f5f29f463bad5a1fe8299d4", "file_sha256": "55427226a75b9098630d3399bb38d8f8eac4e6db79e2784bb138e152d45a60b8"},
+      "ac983d1a3f6e": {"plan_sha256": "cbbe1e98beabcde3b16067e1010116a6e36772583d2b136218f7b3f78ebb5228", "file_sha256": "a3fd9157e46e7bc81b5c2e7e2589b0a5b653d04978faeb261a7bece709cc7797"},
+      "f588e2fcc34c": {"plan_sha256": "e68118b91d78926f2a1fafed99dc8618e59966b61ad86f5c5d1f63dfbd2cea8d", "file_sha256": "c97812adb098fcd9ad775e27446437544acfba063d8cb10a1dd79aa3fa1a28d9"}
+    },
+    "postcheck": {
+      "raw_source_openers": 7,
+      "opener_retractions": 7,
+      "visible_openers": 0,
+      "preserved_spend_rows": 7,
+      "opener_like_mismatches_all_hinge_runs": 0,
+      "labels_without_profile": 0,
+      "photos_without_profile": 0,
+      "retractions_without_source": 0
+    }
+  }
+}

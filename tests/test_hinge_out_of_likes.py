@@ -34,6 +34,7 @@ import pytest
 from operation_love.drivers import hinge
 from operation_love.drivers.debuglog import DebugLog
 from operation_love.drivers.hinge import AndroidDriver, HingeDeckBlockedError, HINGE_SPEC
+from operation_love.drivers.like_composer import ComposerSurface, Rect
 
 class FakeAdb:
     """Records what actually reached the phone. Same shape every other driver test file in
@@ -618,7 +619,16 @@ def _run_logged_like(monkeypatch, tmp_path, verifier):
     monkeypatch.setattr(drv, "_locate_target_heart",
                         lambda _item, should_stop=None: (100, 200))
     monkeypatch.setattr(drv, "_snap", lambda: b"before")
-    monkeypatch.setattr(drv, "_await_sheet_open", lambda: None)
+    composer_checks = iter([
+        None,
+        ComposerSurface(
+            layout_id="hinge_inline_v1",
+            comment_rect=Rect(95, 1597, 985, 1775),
+            send_rect=Rect(390, 1807, 985, 1916),
+            confirm_point=(695, 1856),
+        ),
+    ])
+    monkeypatch.setattr(drv, "_await_sheet_open", lambda **_kwargs: next(composer_checks))
     monkeypatch.setattr(drv, "_screencap", lambda **_kwargs: b"sheet")
     monkeypatch.setattr(drv, "_handle_rose_upsell", lambda: False)
     monkeypatch.setattr(drv, "_verify_like_landed", verifier)

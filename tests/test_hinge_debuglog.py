@@ -18,6 +18,14 @@ def test_action_writes_record_and_before_after_shots(tmp_path):
     assert (dl.dir / rec["after"]).read_bytes() == b"BBB"
 
 
+def test_action_can_preserve_an_identity_anchor_shot(tmp_path):
+    dl = HingeDebugLog(str(tmp_path), run_id="r")
+    dl.action("capture_split", before=b"TOP", anchor=b"ANCHOR", after=b"TRIGGER")
+
+    rec = _recs(dl)[0]
+    assert (dl.dir / rec["anchor"]).read_bytes() == b"ANCHOR"
+
+
 def test_normal_shots_rotate_but_error_shots_are_kept(tmp_path):
     dl = HingeDebugLog(str(tmp_path), run_id="r", keep_shots=4)
     dl.error("unexpected", b"CRITICAL", ValueError("boom"))   # error shot — must survive rotation

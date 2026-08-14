@@ -1,6 +1,9 @@
 """BigQueryStore tests with a fake client — no google SDK or network required."""
 import inspect
+import re
 from datetime import datetime, timezone
+
+import pytest
 
 from operation_love.costing import Usage
 from operation_love.ranker import Store
@@ -122,6 +125,237 @@ def _store(client, flush_every=25):
                          client=client, storage_client=_FakeStorage(), ensure=False)
 
 
+def _schema_rows_without(*missing: tuple[str, str]) -> list[dict[str, str]]:
+    """INFORMATION_SCHEMA rows for the current schema minus selected legacy columns."""
+    from operation_love.ranker.bigquery_store import _TABLES
+
+    excluded = set(missing)
+    return [
+        {"table_name": table, "column_name": declaration.strip().split()[0]}
+        for table, columns in _TABLES.items()
+        for declaration in columns.split(",")
+        if (table, declaration.strip().split()[0]) not in excluded
+    ]
+
+
+class _SchemaAwareBQ(_FakeBQ):
+    """Small schema-state fake used to verify repeated startup, not BigQuery itself."""
+
+    def __init__(self, *, dataset_exists=True, missing=()):
+        super().__init__()
+        self.dataset_exists = dataset_exists
+        rows = _schema_rows_without(*missing) if dataset_exists else []
+        self.schema: dict[str, set[str]] = {}
+        for row in rows:
+            self.schema.setdefault(row["table_name"], set()).add(row["column_name"])
+
+    def query(self, sql, job_config=None):
+        self.queries.append(sql)
+        self.job_configs.append(job_config)
+        if "INFORMATION_SCHEMA.COLUMNS" in sql:
+            if not self.dataset_exists:
+                class NotFound(Exception):
+                    pass
+                raise NotFound("Not found: Dataset proj:ds")
+            rows = [{"table_name": table, "column_name": column}
+                    for table, columns in self.schema.items() for column in columns]
+            return _FakeJob(rows)
+        if "CREATE SCHEMA IF NOT EXISTS" in sql:
+            self.dataset_exists = True
+            return _FakeJob()
+        for match in re.finditer(
+                r"CREATE TABLE IF NOT EXISTS `[^`]+\.(?P<table>[a-z_]+)` "
+                r"\((?P<columns>[^;]+)\);", sql):
+            self.schema.setdefault(match["table"], set()).update(
+                declaration.strip().split()[0]
+                for declaration in match["columns"].split(",")
+            )
+        for match in re.finditer(
+                r"ALTER TABLE `[^`]+\.(?P<table>[a-z_]+)`\n(?P<clauses>[^;]+);", sql):
+            self.schema.setdefault(match["table"], set()).update(
+                re.findall(r"ADD COLUMN IF NOT EXISTS ([A-Za-z_][A-Za-z0-9_]*)", match["clauses"])
+            )
+        return _FakeJob()
+
+
+def test_bigquery_observe_release_summary_is_bound_and_outcome_specific(monkeypatch):
+    """The offline AUTO gate may read aggregate counts, never rows or interpolated run IDs."""
+    client = _FakeBQ(label_rows=[{
+        "pass_labels": 1, "like_labels": 1,
+        "pass_decisions": 1, "like_decisions": 1,
+        "successful_hinge_openers": 1,
+    }])
+    store = _store(client)
+
+    class _Param:
+        def __init__(self, name, _kind, value):
+            self.name, self.value = name, value
+
+    class _Job:
+        def __init__(self, query_parameters):
+            self.query_parameters = query_parameters
+
+    import sys
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, "google.cloud", SimpleNamespace(
+        bigquery=SimpleNamespace(ScalarQueryParameter=_Param, QueryJobConfig=_Job)))
+
+    assert store.observe_release_persistence_summary("run'unsafe", "hinge") == {
+        "manual_pass_labels": 1,
+        "manual_like_labels": 1,
+        "manual_pass_decisions": 1,
+        "manual_like_decisions": 1,
+        "successful_hinge_openers": 1,
+    }
+    sql = client.queries[-1]
+    assert "run'unsafe" not in sql
+    assert "liked=FALSE" in sql and "liked=TRUE" in sql
+    assert "decision='dislike'" in sql and "decision='like'" in sql
+    assert "opener_rejections" not in sql and "spend" not in sql
+    assert [(p.name, p.value) for p in client.job_configs[-1].query_parameters] == [
+        ("run_id", "run'unsafe"), ("app", "hinge")]
+
+
+def test_read_only_summary_treats_only_missing_opener_retractions_as_empty(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    class _Param:
+        def __init__(self, name, _kind, value): self.name, self.value = name, value
+
+    class _JobConfig:
+        def __init__(self, query_parameters): self.query_parameters = query_parameters
+
+    class NotFound(Exception):
+        pass
+
+    class _MissingOptional(_FakeBQ):
+        def query(self, sql, job_config=None):
+            self.queries.append(sql)
+            self.job_configs.append(job_config)
+            if "opener_retractions" in sql:
+                raise NotFound("Not found: proj.ds.opener_retractions")
+            return _FakeJob([{
+                "pass_labels": 0, "like_labels": 0, "pass_decisions": 0,
+                "like_decisions": 0, "successful_hinge_openers": 1,
+            }])
+
+    monkeypatch.setitem(sys.modules, "google.cloud", SimpleNamespace(
+        bigquery=SimpleNamespace(ScalarQueryParameter=_Param, QueryJobConfig=_JobConfig)))
+    store = _store(_MissingOptional())
+    assert store.observe_release_persistence_summary("run", "hinge")["successful_hinge_openers"] == 1
+    assert "opener_retractions" not in store.client.queries[-1]
+
+    class _MissingRequired(_MissingOptional):
+        def query(self, sql, job_config=None):
+            raise NotFound("Not found: proj.ds.labels")
+
+    with pytest.raises(NotFound):
+        _store(_MissingRequired()).observe_release_persistence_summary("run", "hinge")
+
+
+def test_bigquery_two_opener_tombstones_are_per_row_idempotent(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from operation_love.ranker.retractions import canonical_sha
+
+    class _Param:
+        def __init__(self, name, _kind, value): self.name, self.value = name, value
+    class _JobConfig:
+        def __init__(self, query_parameters): self.query_parameters = query_parameters
+    monkeypatch.setitem(sys.modules, "google.cloud", SimpleNamespace(
+        bigquery=SimpleNamespace(ScalarQueryParameter=_Param, QueryJobConfig=_JobConfig)))
+
+    stamp_a = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    stamp_b = datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+    sources = {stamp_a: ("gemini-x", "first"), stamp_b: ("gemini-y", "second")}
+    class _RowsBQ(_FakeBQ):
+        def __init__(self):
+            super().__init__()
+            self.tombstones = []
+        def query(self, sql, job_config=None):
+            params = {item.name: item.value for item in (job_config.query_parameters or [])}
+            if "FROM `proj.ds.openers`" in sql:
+                model, opener = sources[params["opener_created_at"]]
+                return _FakeJob([{"created_at": params["opener_created_at"], "model": model, "opener": opener}])
+            if "FROM `proj.ds.opener_retractions`" in sql:
+                rows = self.tombstones
+                if "correction_id" in params:
+                    rows = [row for row in rows if row["correction_id"] == params["correction_id"]]
+                if "opener_created_at" in params:
+                    rows = [row for row in rows if row["opener_created_at"] == params["opener_created_at"].isoformat()]
+                return _FakeJob(rows)
+            return _FakeJob()
+        def insert_rows_json(self, _table, rows, row_ids=None):
+            self.tombstones.extend(rows)
+            return []
+
+    client = _RowsBQ()
+    store = _store(client)
+    for stamp, (model, opener) in sources.items():
+        row = {"correction_id": "same-plan", "run_id": "run", "app": "hinge",
+               "opener_created_at": stamp.isoformat(), "model": model,
+               "opener_fingerprint": canonical_sha({"run_id": "run", "app": "hinge",
+                   "created_at": stamp.isoformat(), "model": model, "opener": opener}),
+               "reason": "unacted", "evidence_ref": "debug"}
+        assert store.append_opener_retraction(row) is True
+    assert len(client.tombstones) == 2
+    assert store.append_opener_retraction(row) is False
+
+
+def test_bigquery_retraction_rows_normalize_timestamps_and_append_is_bound_idempotent(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    class _Param:
+        def __init__(self, name, _kind, value):
+            self.name, self.value = name, value
+
+    class _Job:
+        def __init__(self, query_parameters):
+            self.query_parameters = query_parameters
+
+    monkeypatch.setitem(sys.modules, "google.cloud", SimpleNamespace(
+        bigquery=SimpleNamespace(ScalarQueryParameter=_Param, QueryJobConfig=_Job)))
+
+    class _RowsBQ(_FakeBQ):
+        def query(self, sql, job_config=None):
+            self.queries.append(sql)
+            self.job_configs.append(job_config)
+            if "FROM `proj.ds.profiles`" in sql:
+                return _FakeJob([{"profile_id": "profile"}])
+            if "FROM `proj.ds.labels`" in sql:
+                return _FakeJob([{"profile_id": "profile", "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                                  "liked": False}])
+            if "FROM `proj.ds.decisions`" in sql:
+                return _FakeJob([{"created_at": datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+                                  "decision": "dislike", "score": 0.0}])
+            return _FakeJob([])
+
+    client = _RowsBQ()
+    store = _store(client)
+    rows = store.retraction_run_rows("run'unsafe", "hinge", "external_ai_review")
+    assert rows["labels"][0]["created_at"] == "2026-01-01T00:00:00+00:00"
+    assert "run'unsafe" not in client.queries[-1]
+    assert [(p.name, p.value) for p in client.job_configs[-1].query_parameters] == [
+        ("run_id", "run'unsafe"), ("app", "hinge"), ("source", "external_ai_review")]
+    row = {"correction_id": "c", "run_id": "run'unsafe", "app": "hinge", "source": "external_ai_review",
+           "profile_id": "profile", "label_created_at": "2026-01-01T00:00:00+00:00",
+           "decision_created_at": "2026-01-01T00:00:01+00:00", "decision_fingerprint": "fp",
+           "reason": "false", "evidence_ref": "debug#225", "created_at": "2026-01-01T00:01:00+00:00"}
+    assert store.append_label_retraction(row) is True
+    assert store.append_label_retraction(row) is False
+    target_job = next(config for sql, config in zip(client.queries, client.job_configs)
+                      if "label_created_at=@label_created_at" in sql)
+    assert [(p.name, p.value) for p in target_job.query_parameters][-2:] == [
+        ("label_created_at", datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        ("decision_created_at", datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)),
+    ]
+    inserted = client.inserted["proj.ds.label_retractions"]
+    assert inserted[0]["correction_id"] == "c"
+    assert client.row_ids["proj.ds.label_retractions"] == ["c"]
+
+
 def _declared_columns(table):
     """The column NAMES _TABLES declares for `table`, in declaration order.
 
@@ -144,6 +378,14 @@ def _declared_tables():
 
 def test_bigquery_store_conforms_to_store_protocol():
     assert isinstance(_store(_FakeBQ()), Store)
+
+
+def test_ensure_false_skips_schema_discovery_and_mutation():
+    client = _FakeBQ()
+
+    _store(client)
+
+    assert client.queries == []
 
 
 def test_load_labels_parses_and_counts():
@@ -172,12 +414,89 @@ def test_add_label_includes_profile_id():
 
 
 def test_ensure_tables_runs_decision_source_migration():
-    client = _FakeBQ()
+    client = _FakeBQ(label_rows=_schema_rows_without(
+        ("labels", "profile_id"), ("decisions", "source")))
     BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
                   storage_client=_FakeStorage(), ensure=True)
     ddl = "\n".join(client.queries)
-    assert "ALTER TABLE `proj.ds.labels` ADD COLUMN IF NOT EXISTS profile_id STRING" in ddl
-    assert "ALTER TABLE `proj.ds.decisions` ADD COLUMN IF NOT EXISTS source STRING" in ddl
+    assert "ALTER TABLE `proj.ds.labels`\nADD COLUMN IF NOT EXISTS profile_id STRING" in ddl
+    assert "ALTER TABLE `proj.ds.decisions`\nADD COLUMN IF NOT EXISTS source STRING" in ddl
+
+
+def test_ensure_tables_fresh_project_creates_current_schema_once_without_alters():
+    client = _SchemaAwareBQ(dataset_exists=False)
+
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+    first_start = "\n".join(client.queries)
+    assert "CREATE SCHEMA IF NOT EXISTS `proj.ds`" in first_start
+    for table in _declared_tables():
+        assert f"CREATE TABLE IF NOT EXISTS `proj.ds.{table}`" in first_start
+    assert "ALTER TABLE" not in first_start
+
+    before = len(client.queries)
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+    second_start = "\n".join(client.queries[before:])
+    assert "INFORMATION_SCHEMA.COLUMNS" in second_start
+    assert "CREATE SCHEMA" not in second_start
+    assert "CREATE TABLE" not in second_start
+    assert "ALTER TABLE" not in second_start
+
+
+def test_ensure_tables_groups_all_missing_opener_columns_into_one_update():
+    from operation_love.ranker.bigquery_store import _MIGRATIONS, _migration_parts
+
+    opener_columns = [column for statement in _MIGRATIONS
+                      for table, column, _kind in [_migration_parts(statement)]
+                      if table == "openers"]
+    assert len(opener_columns) > 5  # reproduces the reported per-table quota failure
+    client = _SchemaAwareBQ(missing=[("openers", column) for column in opener_columns])
+
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+    mutation = "\n".join(query for query in client.queries if "ALTER TABLE" in query)
+    assert mutation.count("ALTER TABLE `proj.ds.openers`") == 1
+    assert mutation.count("ADD COLUMN IF NOT EXISTS") == len(opener_columns)
+    for column in opener_columns:
+        assert f"ADD COLUMN IF NOT EXISTS {column} " in mutation
+
+    before = len(client.queries)
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+    second_start = "\n".join(client.queries[before:])
+    assert "CREATE TABLE" not in second_start
+    assert "ALTER TABLE" not in second_start
+
+
+def test_ensure_tables_retries_transient_table_update_quota(monkeypatch):
+    class _RateLimitedJob:
+        def result(self):
+            raise RuntimeError(
+                "Exceeded rate limits: too many table update operations for this table")
+
+    class _RateLimitedOnceBQ(_FakeBQ):
+        def __init__(self):
+            super().__init__(label_rows=_schema_rows_without(("openers", "angle")))
+            self.update_attempts = 0
+
+        def query(self, sql, job_config=None):
+            if "ALTER TABLE" not in sql:
+                return super().query(sql, job_config=job_config)
+            self.queries.append(sql)
+            self.job_configs.append(job_config)
+            self.update_attempts += 1
+            return _RateLimitedJob() if self.update_attempts == 1 else _FakeJob()
+
+    sleeps = []
+    monkeypatch.setattr("operation_love.ranker.bigquery_store.time.sleep", sleeps.append)
+    client = _RateLimitedOnceBQ()
+
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+
+    assert client.update_attempts == 2
+    assert sleeps == [1.0]
 
 
 def test_record_decision_includes_source():
@@ -286,9 +605,13 @@ def test_record_opener_signature_stays_positional_compatible_with_the_store_prot
     system of record, with no error anywhere."""
     params = inspect.signature(BigQueryStore.record_opener).parameters
     assert list(params) == ["self", "run_id", "app", "model", "opener", "referenced", "angle",
-                            "item_description"]
+                            "item_description", "profile_id", "decision", "decision_source",
+                            "decision_created_at", "model_item_index"]
     assert params["angle"].default == ""
     assert params["item_description"].default == ""
+    for name in ("profile_id", "decision", "decision_source", "decision_created_at",
+                 "model_item_index"):
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
     assert list(params) == list(inspect.signature(Store.record_opener).parameters)
 
 
@@ -324,22 +647,12 @@ def test_ensure_tables_runs_openers_angle_migration():
 
     assert "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS angle STRING;" in _MIGRATIONS
 
-    client = _FakeBQ()
+    client = _FakeBQ(label_rows=_schema_rows_without(("openers", "angle")))
     BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
                   storage_client=_FakeStorage(), ensure=True)
     ddl = "\n".join(client.queries)
-    assert "ALTER TABLE `proj.ds.openers` ADD COLUMN IF NOT EXISTS angle STRING;" in ddl
-
-    # Ordering matters inside the single multi-statement script: an ALTER submitted before its
-    # table's CREATE would fail against a brand-new project.
-    assert (ddl.index("CREATE TABLE IF NOT EXISTS `proj.ds.openers`")
-            < ddl.index("ALTER TABLE `proj.ds.openers`"))
-
-    # And every declared migration reaches the script, not just this one -- so a future column
-    # added to _MIGRATIONS can't be left unapplied by an _ensure_tables that stopped looping.
-    tids = {name: f"proj.ds.{name}" for name in _declared_tables()}
-    for stmt in _MIGRATIONS:
-        assert stmt.format(**tids) in ddl
+    assert "ALTER TABLE `proj.ds.openers`\nADD COLUMN IF NOT EXISTS angle STRING;" in ddl
+    assert "CREATE TABLE IF NOT EXISTS `proj.ds.openers`" not in ddl
 
 
 def test_ensure_tables_runs_openers_item_description_migration():
@@ -355,14 +668,13 @@ def test_ensure_tables_runs_openers_item_description_migration():
     assert ("ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS item_description STRING;"
             in _MIGRATIONS)
 
-    client = _FakeBQ()
+    client = _FakeBQ(label_rows=_schema_rows_without(("openers", "item_description")))
     BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
                   storage_client=_FakeStorage(), ensure=True)
     ddl = "\n".join(client.queries)
-    assert ("ALTER TABLE `proj.ds.openers` ADD COLUMN IF NOT EXISTS item_description STRING;"
+    assert ("ALTER TABLE `proj.ds.openers`\nADD COLUMN IF NOT EXISTS item_description STRING;"
             in ddl)
-    assert (ddl.index("CREATE TABLE IF NOT EXISTS `proj.ds.openers`")
-            < ddl.index("ADD COLUMN IF NOT EXISTS item_description"))
+    assert "CREATE TABLE IF NOT EXISTS `proj.ds.openers`" not in ddl
 
 
 def test_ensure_tables_creates_opener_rejections_table():
@@ -518,11 +830,11 @@ def test_record_profile_defaults_capture_truncated_to_false():
 
 
 def test_ensure_tables_runs_capture_truncated_migration():
-    client = _FakeBQ()
+    client = _FakeBQ(label_rows=_schema_rows_without(("profiles", "capture_truncated")))
     BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
                   storage_client=_FakeStorage(), ensure=True)
     ddl = "\n".join(client.queries)
-    assert "ALTER TABLE `proj.ds.profiles` ADD COLUMN IF NOT EXISTS capture_truncated BOOL" in ddl
+    assert "ALTER TABLE `proj.ds.profiles`\nADD COLUMN IF NOT EXISTS capture_truncated BOOL" in ddl
 
 
 def test_create_bucket_enforces_private_access():

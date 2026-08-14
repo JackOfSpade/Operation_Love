@@ -49,6 +49,11 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
         elif path == "/api/status":
             self._json(self.state.snapshot())
+        elif path == "/api/observe/checkpoint":
+            from urllib.parse import parse_qs, urlparse
+            query = parse_qs(urlparse(self.path).query)
+            self._json(self.state.observe_action_snapshot(
+                run_id=query.get("run_id", [None])[0], app=query.get("app", [None])[0]))
         elif path == "/api/config":
             self._json(self.state.config_defaults())
         elif path == "/api/eval":
@@ -123,6 +128,9 @@ class _Handler(BaseHTTPRequestHandler):
             # a stop it never performed had "worked".
             ok, msg = self.state.stop()
             self._json({"ok": ok, "msg": msg}, 200 if ok else 409)
+        elif self.path == "/api/observe/action":
+            ok, result, code = self.state.submit_observe_action(body)
+            self._json({"ok": ok, "result": result}, code)
         elif self.path == "/api/hub/open":
             start_watch = self.state.browser_client_opened(body.get("id"))
             self._json({"ok": True})

@@ -272,12 +272,13 @@ _SYSTEM = (
     "could be where she lives, and never guess her employer, her school, or her age, or identify "
     "anyone else in the photo. NEVER INVENT THE SENDER: you may not claim he has been somewhere, "
     "done something, or likes something, because you do not know his history and he has to live "
-    "with whatever you write. PICK THE ITEM YOURSELF: the numbered images are her profile items, "
+    "with whatever you write. PICK THE ITEM YOURSELF: the numbered images are her profile photos, "
     "numbered from 1 in the order they are given, and you choose which one to write about. Choose "
     "the item you have the best angle on, not the most striking picture: a plain photo you can "
     "make a real claim about beats a beautiful one you have nothing to say about, because the "
-    "item is only ever your premise and the claim is the message. THE FAILURE TO AVOID IS PICKING "
-    "AN ITEM YOU HAVE NOTHING TO SAY ABOUT, because then all that is left to write is what it "
+    "item is only ever your premise and the claim is the message. Written prompts are deliberately "
+    "absent from the numbered choices and item_index must never refer to a prompt. THE FAILURE TO "
+    "AVOID IS PICKING A PHOTO YOU HAVE NOTHING TO SAY ABOUT, because then all that is left to write is what it "
     "looks like, which is the one thing that is never allowed. Read all of the numbered items "
     "first, find the one that hands you a claim that could be wrong, and pick that one even when "
     "another item is the better picture. Set item_index "
@@ -301,7 +302,7 @@ _SYSTEM = (
     "full description of what you are reacting to and is never sent to her, so put the whole "
     "description there and keep its words out of the message, angle is your own short wording "
     "for what your opener is doing, and item_description says in a few words what the item you "
-    "picked is, a photo or a written prompt and what it shows. "
+    "picked is, a photo and what it shows. "
     "The opener field must contain only the bare message itself, "
     "with no "
     "preamble, label, or surrounding quotes. Follow the style guide. Output only the structured result."
@@ -1116,15 +1117,61 @@ def _classify_quota_exhaustion(error: GeminiAPIError) -> str:
     return "unknown"
 
 
+# Tokens that identify a 400 as a per-model THINKING CONFIG rejection rather than a generic
+# malformed request. MEASURED, live, 2026-08-13, against the real API:
+#
+#   gemini-3.7-flash + {"thinkingLevel": "minimal"}
+#   -> HTTP 400 INVALID_ARGUMENT
+#      "Thinking level MINIMAL is not supported for this model. Please retry with other
+#      thinking level."
+#
+# Every OTHER configured model accepted thinkingLevel: minimal without complaint on the same
+# run, so this is unambiguously a property of ONE model id -- exactly like a 404 -- not of the
+# request or the credentials, and generate()'s non-2xx branch treats it that way (see its 400
+# handling). GeminiAPIError carries no structured field naming the offending parameter, so the
+# match is on message text; both spellings Gemini's two model families actually use
+# (thinkingLevel on the 3.x line, thinkingBudget on 2.5 -- see _payload's own comment) are
+# included, plus the generic "thinking config"/"thinkingConfig" phrasing in case a future
+# model family's rejection message names the object rather than the field it holds.
+_THINKING_REJECTION_TOKENS = (
+    "thinking level", "thinkinglevel", "thinking_level",
+    "thinkingbudget", "thinking budget", "thinking_budget",
+    "thinkingconfig", "thinking config", "thinking_config",
+)
+
+
+def _is_thinking_config_rejection(message: str) -> bool:
+    """True when a 400's message narrowly identifies a per-model rejection of the configured
+    thinking level/budget, rather than a generic malformed-request 400.
+
+    Deliberately narrow, and matched on nothing but the fixed token set above
+    (_THINKING_REJECTION_TOKENS), case-insensitively. A generic 400 -- "Invalid JSON payload
+    received", "API key not valid", a bad enum value unrelated to thinking -- must NOT match:
+    those are properties of the request or the credentials, not of one model's declared
+    capability, and generate() must keep raising them straight to the caller exactly as before
+    (OpenerService's invalid-key latch, _is_invalid_gemini_api_key, and the ordinary-400
+    consecutive-latch all depend on an unmatched 400 still reaching `raise error`).
+    """
+    lowered = str(message or "").lower()
+    return any(token in lowered for token in _THINKING_REJECTION_TOKENS)
+
+
 _QUOTA_SCOPE_LABELS = {"day": "per-day quota", "minute": "per-minute throttle",
                        "unknown": "unclassified 429", "gone": "model unavailable",
-                       "busy": "provider 5xx", "transport": "network or timeout"}
+                       "busy": "provider 5xx", "transport": "network or timeout",
+                       "thinking": "thinking config rejected by model"}
 
 # Scopes that clear on their own without any operator action. "busy" is a provider-side 5xx
 # (503 UNAVAILABLE "this model is currently experiencing high demand" is the common one, and
 # it is genuinely per-MODEL -- observed live on gemini-3.6-flash while the rest of the
 # cascade was healthy), so it belongs with the per-minute caps rather than with the dead
 # ends: retrying shortly, or on another model right now, is the correct response to all three.
+#
+# "thinking" is deliberately NOT in this set, unlike every other per-model scope above it.
+# Every one of those clears with the passage of time or a retry; a capability rejection never
+# does -- gemini-3.7-flash will keep 400ing on thinkingLevel: minimal on every future run until
+# opener.thinking is edited for that model id, so telling the operator to "just restart" would
+# be actively wrong (same reasoning as "gone", which is also excluded here).
 _TRANSIENT_SCOPES = frozenset({"minute", "unknown", "busy", "transport"})
 
 
@@ -1134,21 +1181,27 @@ def _exhaustion_reason(scopes: Mapping[str, str]) -> str:
     This string becomes the run's stop reason in the hub, so it must not conflate the very
     different situations that can end the cascade. Each model's scope is one of: "day"
     (per-day 429, resets at midnight Pacific), "minute"/"unknown" (a transient per-minute or
-    unclassifiable 429 that clears on its own within roughly a minute), or "gone" (HTTP 404
+    unclassifiable 429 that clears on its own within roughly a minute), "gone" (HTTP 404
     NOT_FOUND -- the model id is retired / not available to this account and will NEVER come
     back mid-run; see generate()'s 404 handling and preflight()'s docstring for why a
-    startup ListModels pass cannot catch this in advance).
+    startup ListModels pass cannot catch this in advance), or "thinking" (HTTP 400 rejecting
+    this model's configured thinkingConfig -- MEASURED live, see _is_thinking_config_rejection
+    -- a per-model capability limit that also will NEVER change mid-run, but for a different
+    reason than "gone": the model id is fine, its configured thinking level/budget is not).
 
     Every model hitting its per-DAY quota means there is genuinely no opener capacity left
     until the midnight Pacific reset -- that case keeps its own message below. Every model
     coming back "gone" is the opposite kind of dead end: no amount of waiting fixes a
     retired model id, so telling the operator to wait for a reset would be actively wrong;
-    that case gets its own message too, pointing at opener.models instead of the clock.
-    Anything else (a mix of scopes, or a transient per-minute/unknown 429 in the mix) falls
-    through to the generic listing, which already assumes at least one transient cause may
-    clear on its own shortly. We still stop the run in every case (see OpenerService),
-    because sending a bare like with no opener is a worse outcome than halting; only the
-    guidance differs.
+    that case gets its own message too, pointing at opener.models instead of the clock. Every
+    model coming back "thinking" is a third, distinct dead end, sharing "gone"'s "waiting never
+    helps" property but not its cause or its fix: the model id is still valid, only its
+    thinkingConfig is wrong for it, so that case gets its own message pointing at
+    opener.thinking instead of opener.models. Anything else (a mix of scopes, or a transient
+    per-minute/unknown 429 in the mix) falls through to the generic listing, which already
+    assumes at least one transient cause may clear on its own shortly. We still stop the run in
+    every case (see OpenerService), because sending a bare like with no opener is a worse
+    outcome than halting; only the guidance differs.
     """
     if not scopes:                      # unreachable today (__init__ requires >=1 model)
         return "no configured Gemini model was available to serve the request"
@@ -1163,6 +1216,18 @@ def _exhaustion_reason(scopes: Mapping[str, str]) -> str:
         return (f"every configured Gemini model is unavailable to this account (retired or "
                 f"not found: {', '.join(scopes)}); this will not resolve on its own -- fix "
                 "opener.models to name model ids this account can actually use")
+    if all(scope == "thinking" for scope in scopes.values()):
+        # Distinct from "gone" on purpose, in the same direction: mentioning a reset time, or
+        # telling the operator to just restart, would be wrong for the identical reason it's
+        # wrong for "gone" -- but the FIX is different, because the model id itself is not the
+        # problem here. MEASURED (see _is_thinking_config_rejection's docstring):
+        # gemini-3.7-flash 400s on thinkingLevel: minimal while every OTHER configured model
+        # accepts the same value, so the fix is per-model-id thinking config, not the model
+        # list.
+        return (f"every configured Gemini model rejected its configured thinking level or "
+                f"budget ({', '.join(scopes)}); this will not resolve on its own -- fix "
+                "opener.thinking for each named model id (it is sending a thinkingLevel or "
+                "thinkingBudget that model does not support)")
     if all(scope in _TRANSIENT_SCOPES for scope in scopes.values()):
         # Nothing here is a real dead end: every model was either momentarily throttled or
         # reported a provider-side 5xx. Naming a quota reset would send the operator away
@@ -1240,6 +1305,19 @@ class GeminiOpener:
     unchanged rather than silently cascading: those are properties of the request or
     credentials, not of one model id or one flaky connection, so they would fail identically
     on every other configured model too.
+
+    ONE NARROW EXCEPTION to that last rule: a 400 whose message identifies a per-model
+    rejection of the configured thinking level/budget (see generate()'s 400 handling and
+    ``_is_thinking_config_rejection``) gets the same permanent-retirement treatment as a 404.
+    MEASURED, live, 2026-08-13: ``gemini-3.7-flash`` with ``{"thinkingLevel": "minimal"}``
+    returned HTTP 400 INVALID_ARGUMENT, "Thinking level MINIMAL is not supported for this
+    model. Please retry with other thinking level.", while every OTHER configured model
+    accepted the identical value on the same run -- so that 400, despite its status code, is
+    unambiguously a property of ONE model id's declared capability, not of the request or the
+    credentials, and must not be allowed to abort the whole cascade over one model's
+    mis-specified ``opener.thinking`` entry. Every other 400 -- an invalid API key, a
+    malformed payload, anything that does not name the thinking config -- still raises exactly
+    as before.
 
     THREAD SAFETY: instances are safe to share across worker threads. generate() acquires
     this instance's own internal lock for its full duration, so the model cascade and the
@@ -1350,7 +1428,7 @@ class GeminiOpener:
             # uses FIRST_ITEM_INDEX rather than a sample number like 3, which would name an
             # item that need not exist on a short profile.
             sentences = [
-                f"The {items.item_count} numbered image(s) above are her profile items, "
+                f"The {items.item_count} numbered image(s) above are her profile photos, "
                 f"numbered {FIRST_ITEM_INDEX} to {items.item_count}, each shown immediately "
                 f"after its own ITEM label, so the image after ITEM {FIRST_ITEM_INDEX} is item "
                 f"{FIRST_ITEM_INDEX}."
@@ -2282,6 +2360,38 @@ class GeminiOpener:
                               f"{error.status or 'server error'}; NOT blacklisting -- trying the "
                               "next configured model for this profile only (this model will be "
                               "retried first on the next profile).")
+                        continue
+                    if error.http_code == 400 and _is_thinking_config_rejection(error.message):
+                        # NARROW EXCEPTION to the "every other 4xx is a property of the request,
+                        # not the model" rule stated in this class's docstring. MEASURED, live,
+                        # 2026-08-13 (see _is_thinking_config_rejection): gemini-3.7-flash 400s
+                        # on {"thinkingLevel": "minimal"} with "Thinking level MINIMAL is not
+                        # supported for this model. Please retry with other thinking level."
+                        # while every OTHER configured model accepts the identical
+                        # generationConfig.thinkingConfig without complaint. That makes this 400
+                        # a property of THAT ONE model id's declared capability, exactly like a
+                        # 404 -- not of the request or the credentials -- so it must not be
+                        # allowed to abort the whole cascade over one model's mis-specified
+                        # opener.thinking entry. Drop just this model, permanently: unlike a
+                        # per-minute 429 or a 5xx, a capability rejection does not clear with
+                        # time or a retry, it only clears with an opener.thinking edit, so it is
+                        # retired for the rest of THIS run exactly like a 404 or a per-day 429.
+                        #
+                        # Every 400 that reaches this point WITHOUT matching still falls through
+                        # to `raise error` unchanged, immediately below -- in particular an
+                        # invalid-API-key 400 ("API key not valid...") and a generic malformed-
+                        # request 400 never contain any of _THINKING_REJECTION_TOKENS, so
+                        # OpenerService's invalid-key latch (_is_invalid_gemini_api_key) and its
+                        # ordinary-400 consecutive-latch (_BAD_REQUEST_LATCH_THRESHOLD) keep
+                        # firing exactly as they did before this branch existed.
+                        scopes[model] = "thinking"
+                        self._unavailable_models[model] = "thinking"
+                        print(f"Gemini opener: {model} returned HTTP 400 rejecting its "
+                              f"configured thinking level or budget ({error.message}); this is "
+                              "a per-model capability limit, not a property of the request, and "
+                              "will not change mid-run -- dropping it from the cascade for the "
+                              "rest of this run and trying the next configured model. Fix "
+                              "opener.thinking for this model id.")
                         continue
                     raise error
                 if not isinstance(response, Mapping):

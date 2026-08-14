@@ -140,10 +140,17 @@ extra installed.
   profiles, while the bot captures the card, watches for your final like/pass,
   stores it as a label, and **retrains the ranker live** (transitions itself
   from `defer` → ready mid-session). No autonomous actions. On Hinge, click the
-  pass **X** or a **heart**; when the heart opens its comment sheet, the hub
-  shows an opener suggestion. Type that text yourself, then tap **Send Like**.
-  A Hinge like is persisted only after that final send advances the profile;
-  dismissing the sheet leaves the same profile awaiting your decision. This is
+  pass **X** or a **heart**. Targeted opener suggestions require a measured
+  `apps.hinge.targeting_calibration`: until that setup is complete, the hub
+  withholds suggestion text but manual pass/like labels still work normally.
+  Follow the [Hinge targeted-opener calibration](ops/RUNBOOK.md#hinge-targeted-opener-calibration--blocking-before-targeted-text-or-targeted-auto-likes)
+  before expecting a suggested text; never add guessed bounds. Once calibrated,
+  the hub may show optional help for a like: this is **not a recommendation or
+  decision**. You can tap **X** to pass; if you choose to like, use the suggested
+  numbered photo and text. Written prompts are readable context but are never
+  selectable targets. Then tap **Send Like** yourself. A Hinge like is persisted only after that final send
+  advances the profile. The composer remains inline beneath the selected item;
+  hearting another item moves it, and advancing the profile clears it. This is
   how you seed your taste — from real usage, not stock images.
 - **auto** — the bot swipes for you with the learned model. Decisions are recorded
   for stats and optional limits, but are not fed back as training labels.

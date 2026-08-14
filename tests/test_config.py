@@ -28,6 +28,14 @@ _TARGETING_GEOMETRY = {
     "content_band": [0.125, 0.875],
 }
 
+_TARGETING_SCHEMA_V2 = {
+    "schema_version": 3,
+    "hinge_version_name": "9.134.0",
+    "frame_size_px": [1080, 2400],
+    "composer_layout_id": "hinge_inline_v1",
+    "item_selection_policy_id": "hinge_photos_only_v1",
+}
+
 
 def _load(d):
     f = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
@@ -221,9 +229,32 @@ def test_bad_app_mode_override():
     _expect_error(d, "observe")
 
 
-def test_valid_app_mode_override_passes():
+def test_hinge_auto_app_mode_override_requires_observe_release_evidence():
     d = {**BASE, "mode": "observe", "apps": {"hinge": {"mode": "auto"}}}
-    c.validate(_load(d))   # no raise
+    _expect_error(d, "observe_release_evidence")
+
+
+def test_nonmanual_hinge_observe_source_requires_explicit_controller_metadata():
+    d = {**BASE, "apps": {"hinge": {"observe_evidence_source": "automation"}}}
+    _expect_error(d, "ai_reviewed_observe_controller")
+    d["apps"]["hinge"]["ai_reviewed_observe_controller"] = {
+        "schema_version": 1, "source": "automation",
+        "acceptance": "I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK",
+        "executor": {"model": "gpt", "id": "controller", "version": "v1", "process": "driver"},
+    }
+    c.validate(_load(d))
+
+
+def test_nonmanual_hinge_observe_source_cannot_be_enabled_for_auto_mode():
+    d = {**BASE, "mode": "auto", "apps": {"hinge": {
+        "observe_evidence_source": "external_ai_review",
+        "ai_reviewed_observe_controller": {
+            "schema_version": 1, "source": "external_ai_review",
+            "acceptance": "I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK",
+            "executor": {"model": "gpt", "id": "controller", "version": "v1", "process": "driver"},
+        },
+    }}}
+    _expect_error(d, "only in mode observe")
 
 
 # --- budget.on_exhausted: removed 2026-08-10 (owner ruled out commentless likes) -----------
@@ -573,9 +604,9 @@ def test_halt_on_error_must_be_a_boolean():
     _expect_error(d, "must be true or false")
 
 
-def test_auto_mode_is_fine_when_halt_on_error_is_left_at_its_default():
+def test_hinge_auto_mode_still_requires_release_evidence_when_halt_default_is_safe():
     d = dict(BASE, mode="auto", apps={"hinge": {}})
-    c.validate(_load(d))   # no raise -- default is True
+    _expect_error(d, "observe_release_evidence")
 
 
 # --- enabled_apps: [] must not be silently rewritten to the default -------------------
@@ -720,46 +751,68 @@ def test_shipped_hinge_and_bumble_app_blocks_pass_fraction_validation():
 
 def test_targeting_calibration_with_measured_bounds_and_evidence_passes():
     d = {**BASE, "apps": {"hinge": {"serial": "synthetic-pixel", "targeting_calibration": {
-        "identity_match_max_dist": 2.0, "sheet_item_max_dist": 4.0,
-        "device": "synthetic-pixel", "calibrated_at": "2026-08-12", **_TARGETING_GEOMETRY,
+        "identity_match_max_dist": 2.0, "inline_item_max_dist": 4.0,
+        "device": "synthetic-pixel", "calibrated_at": "2026-08-12",
+        **_TARGETING_SCHEMA_V2, **_TARGETING_GEOMETRY,
     }}}}
     c.validate(_load(d))
 
 
 def test_targeting_calibration_must_be_complete_and_stay_below_known_false_accepts():
     incomplete = {**BASE, "apps": {"hinge": {"targeting_calibration": {
+        **_TARGETING_SCHEMA_V2,
         "identity_match_max_dist": 2.0,
     }}}}
     _expect_error(incomplete, "targeting_calibration")
     unsafe = {**BASE, "apps": {"hinge": {"serial": "synthetic-pixel", "targeting_calibration": {
-        "identity_match_max_dist": 2.565, "sheet_item_max_dist": 4.0,
-        "device": "synthetic-pixel", "calibrated_at": "2026-08-12", **_TARGETING_GEOMETRY,
+        "identity_match_max_dist": 2.565, "inline_item_max_dist": 4.0,
+        "device": "synthetic-pixel", "calibrated_at": "2026-08-12",
+        **_TARGETING_SCHEMA_V2, **_TARGETING_GEOMETRY,
     }}}}
     _expect_error(unsafe, "strictly below 2.565")
     unsafe_sheet = {**BASE, "apps": {"hinge": {"serial": "synthetic-pixel", "targeting_calibration": {
-        "identity_match_max_dist": 2.0, "sheet_item_max_dist": 14.91,
-        "device": "synthetic-pixel", "calibrated_at": "2026-08-12", **_TARGETING_GEOMETRY,
+        "identity_match_max_dist": 2.0, "inline_item_max_dist": 14.91,
+        "device": "synthetic-pixel", "calibrated_at": "2026-08-12",
+        **_TARGETING_SCHEMA_V2, **_TARGETING_GEOMETRY,
     }}}}
     _expect_error(unsafe_sheet, "strictly below 14.91")
 
 
+def test_targeting_calibration_rejects_the_legacy_six_key_mapping():
+    """Schema-v1 evidence cannot license Hinge's inline composer geometry."""
+    legacy = {
+        "identity_match_max_dist": 2.0,
+        "inline_item_max_dist": 4.0,
+        "device": "synthetic-pixel",
+        "calibrated_at": "2026-08-12",
+        **_TARGETING_GEOMETRY,
+    }
+    d = {**BASE, "apps": {"hinge": {
+        "serial": "synthetic-pixel", "targeting_calibration": legacy,
+    }}}
+    _expect_error(d, "schema_version")
+
+
 def test_targeting_calibration_rejects_nonfinite_bounds_and_empty_evidence():
     d = {**BASE, "apps": {"hinge": {"serial": "synthetic-pixel", "targeting_calibration": {
-        "identity_match_max_dist": 2.0, "sheet_item_max_dist": float("inf"),
-        "device": "", "calibrated_at": "2026-08-12", **_TARGETING_GEOMETRY,
+        "identity_match_max_dist": 2.0, "inline_item_max_dist": float("inf"),
+        "device": "", "calibrated_at": "2026-08-12",
+        **_TARGETING_SCHEMA_V2, **_TARGETING_GEOMETRY,
     }}}}
-    _expect_error(d, "sheet_item_max_dist")
+    _expect_error(d, "inline_item_max_dist")
 
 
 def test_targeting_calibration_requires_its_exact_adb_serial():
     missing = {**BASE, "apps": {"hinge": {"targeting_calibration": {
-        "identity_match_max_dist": 2.0, "sheet_item_max_dist": 4.0,
-        "device": "synthetic-pixel", "calibrated_at": "2026-08-12", **_TARGETING_GEOMETRY,
+        "identity_match_max_dist": 2.0, "inline_item_max_dist": 4.0,
+        "device": "synthetic-pixel", "calibrated_at": "2026-08-12",
+        **_TARGETING_SCHEMA_V2, **_TARGETING_GEOMETRY,
     }}}}
     _expect_error(missing, "apps.hinge.serial")
     mismatched = {**BASE, "apps": {"hinge": {"serial": "other-pixel", "targeting_calibration": {
-        "identity_match_max_dist": 2.0, "sheet_item_max_dist": 4.0,
-        "device": "synthetic-pixel", "calibrated_at": "2026-08-12", **_TARGETING_GEOMETRY,
+        "identity_match_max_dist": 2.0, "inline_item_max_dist": 4.0,
+        "device": "synthetic-pixel", "calibrated_at": "2026-08-12",
+        **_TARGETING_SCHEMA_V2, **_TARGETING_GEOMETRY,
     }}}}
     _expect_error(mismatched, "must exactly equal")
 
@@ -768,9 +821,9 @@ def test_targeting_calibration_must_bind_the_effective_identity_and_content_band
     mismatch = {**BASE, "apps": {"hinge": {
         "serial": "synthetic-pixel", "identity_band": [0.11, 0.048, 0.80, 0.094],
         "targeting_calibration": {
-            "identity_match_max_dist": 2.0, "sheet_item_max_dist": 4.0,
+            "identity_match_max_dist": 2.0, "inline_item_max_dist": 4.0,
             "device": "synthetic-pixel", "calibrated_at": "2026-08-12",
-            **_TARGETING_GEOMETRY,
+            **_TARGETING_SCHEMA_V2, **_TARGETING_GEOMETRY,
         },
     }}}
     _expect_error(mismatch, "must exactly equal the effective")
@@ -778,8 +831,9 @@ def test_targeting_calibration_must_bind_the_effective_identity_and_content_band
         "serial": "synthetic-pixel", "identity_band": [0.11, 0.048, 0.80, 0.094],
         "content_band": [0.13, 0.87],
         "targeting_calibration": {
-            "identity_match_max_dist": 2.0, "sheet_item_max_dist": 4.0,
+            "identity_match_max_dist": 2.0, "inline_item_max_dist": 4.0,
             "device": "synthetic-pixel", "calibrated_at": "2026-08-12",
+            **_TARGETING_SCHEMA_V2,
             "identity_band": [0.11, 0.048, 0.80, 0.094], "content_band": [0.13, 0.87],
         },
     }}}

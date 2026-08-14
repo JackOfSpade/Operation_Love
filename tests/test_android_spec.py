@@ -312,7 +312,11 @@ def test_hinge_spec_matches_the_original_hardcoded_defaults():
     # test_hinge_spec_carries_the_paywall_template_and_headline_band below for the dedicated
     # regression test against that specific addition being dropped.
     assert set(HINGE_SPEC.templates) == {"like", "pass", "confirm", "upsell_dismiss", "paywall"}
-    assert set(HINGE_SPEC.coords) == {"like_heart", "pass_x", "comment_box", "send_like"}
+    # Hinge's composer is vision-located after the selected-item heart tap.  Keeping either
+    # legacy modal coordinate here would silently reintroduce a fallback that lands on the card
+    # in Hinge 9.134.0's inline layout.  `_SHEET_SPEC` below deliberately retains fixed controls
+    # as coverage for the generic Android comment-sheet implementation.
+    assert set(HINGE_SPEC.coords) == {"like_heart", "pass_x"}
 
 
 def test_hinge_spec_carries_the_paywall_template_and_headline_band():

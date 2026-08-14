@@ -87,7 +87,7 @@ class FakeStore:
         self.labels.append((liked, embedding, profile_id, k))
         self.sources.append(source)
     def load_labels(self): return [(liked, embedding) for liked, embedding, _, _ in self.labels]
-    def record_decision(self, run_id, app, decision, score, source="auto"):
+    def record_decision(self, run_id, app, decision, score, source="auto", **_):
         self.decisions.append((decision, source))
     def flush(self): pass
     def close(self): pass
@@ -145,6 +145,19 @@ def test_observe_learns_from_manual_swipes_and_becomes_ready():
     assert model.decide([-2.0, -2.0])[0] == "dislike"
     assert driver.opened and driver.closed
     assert driver.wait_timeouts == [None] * 6
+
+
+def test_observe_can_durably_label_an_explicit_external_ai_review_controller_source():
+    model = PreferenceModel(min_labels=2, threshold=0.5, min_per_class=1)
+    decider = RankerDecider(FakeQuality(), FakeEmbedder(), model)
+    store = FakeStore()
+    driver = FakeObservingDriver([(_profile([2.0, 2.0]), True), (_profile([-2.0, -2.0]), False)])
+    w = Worker("bumble", driver, decider, opener_service=None, store=store, run_id="r",
+               pacing=_Pacing(), stop_event=threading.Event(), mode="observe", retrain_every=2,
+               observe_source="external_ai_review")
+    w._observe_loop()
+    assert store.sources == ["external_ai_review", "external_ai_review"]
+    assert [source for _, source in store.decisions] == ["external_ai_review", "external_ai_review"]
 
 
 def test_observe_logs_profile_text_separators(capsys):
@@ -271,7 +284,7 @@ def test_observe_skips_label_when_image_archive_fails():
 
     assert len(store.profiles) == 2          # archiving was attempted for each swipe
     assert len(store.labels) == 0            # but no label kept without its images
-    assert len(store.decisions) == 0         # and the skipped swipe records no decision
+    assert len(store.decisions) == 2         # landed actions survive optional label failures
     assert driver.closed                     # clean shutdown, not a crash/restart
 
 

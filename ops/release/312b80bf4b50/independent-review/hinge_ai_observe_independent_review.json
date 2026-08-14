@@ -1,0 +1,28 @@
+{
+  "completed": true,
+  "debug_actions_sha256": "df0ba6cd44d7dbaeebf283bfcfab14d3f72f4d3319f5dddc337d68795c996b23",
+  "human_ground_truth": false,
+  "kind": "hinge_ai_observe_independent_review",
+  "production_run_id": "312b80bf4b50",
+  "production_run_reference": "data/hinge_debug/312b80bf4b50",
+  "reviewed_at": "2026-08-14T13:12:35.876881+00:00",
+  "reviewed_event_hashes": {
+    "hub_pre_tap_published": "69c0a767e8c3a46dd5b0f16f2298970d265649592d53be013957a0a6711f4570",
+    "like": "4fd0e5120169d9c9ae0d90a2d76dbd353093a8a4a34b8d81942c63ff7ac6381e",
+    "like_anchor": "fae33c4caaf6b3274e58354bc7d72ef4ae467a8a44e0125797493f88c1293f02",
+    "pass": "abe1e5b26d026a880e335799f89554ceecd3f0e650792891115621388f098850",
+    "post_tap_item_verified": "1090dfb9cfab5a6ba107555f4516d8aea655515ca2df79e3d541bfb026e9f5ed",
+    "reviewed_like": "45f3452d005d539a693ee0fb7b51fc04fb4e8dc56f886e7d937c8a237aa01858",
+    "reviewed_like_attempt": "054c6f639323408b49b1f8407ed2d829d89f842f0e397e80154e9907e2ef177e",
+    "reviewed_open": "42bcdc888782379a831da98dadb1452061e582ed8ca5ff86888e65b14f98b52c"
+  },
+  "reviewer": {
+    "id": "terra-independent-reviewer",
+    "model": "gpt-5.6-terra",
+    "process": "codex-terra-offline-review-v1",
+    "version": "2026-08-14"
+  },
+  "schema_version": 1,
+  "source": "external_ai_review",
+  "subject_sha256": "2845e7642dcb90f135d6359907b2594e19a7031034bfdb8812c8608740216316"
+}

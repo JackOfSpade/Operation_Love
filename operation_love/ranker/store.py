@@ -32,15 +32,29 @@ CREATE TABLE IF NOT EXISTS labels (
 );
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
-    decision TEXT, score REAL, source TEXT
+    decision TEXT, score REAL, source TEXT, profile_id TEXT
+);
+CREATE TABLE IF NOT EXISTS label_retractions (
+    correction_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, app TEXT NOT NULL, source TEXT NOT NULL,
+    profile_id TEXT NOT NULL, label_created_at REAL NOT NULL, decision_created_at REAL NOT NULL,
+    decision_fingerprint TEXT NOT NULL, reason TEXT NOT NULL, evidence_ref TEXT NOT NULL,
+    created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS openers (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
-    model TEXT, opener TEXT, referenced TEXT, angle TEXT, item_description TEXT
+    model TEXT, opener TEXT, referenced TEXT, angle TEXT, item_description TEXT,
+    profile_id TEXT, decision TEXT, decision_source TEXT, decision_created_at REAL,
+    model_item_index INTEGER
 );
 CREATE TABLE IF NOT EXISTS opener_rejections (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
     model TEXT, attempt INTEGER, reason_code TEXT, reason TEXT, raw_opener TEXT
+);
+CREATE TABLE IF NOT EXISTS opener_retractions (
+    correction_id TEXT NOT NULL, run_id TEXT NOT NULL, app TEXT NOT NULL,
+    opener_created_at REAL NOT NULL, model TEXT NOT NULL, opener_fingerprint TEXT NOT NULL,
+    reason TEXT NOT NULL, evidence_ref TEXT NOT NULL, created_at REAL NOT NULL,
+    PRIMARY KEY (correction_id, opener_created_at)
 );
 CREATE TABLE IF NOT EXISTS spend (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, created_at REAL, model TEXT,
@@ -60,6 +74,11 @@ class SQLiteStore:
         self.con.executescript(_SCHEMA)
         try:
             self.con.execute("ALTER TABLE decisions ADD COLUMN source TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+        try:
+            self.con.execute("ALTER TABLE decisions ADD COLUMN profile_id TEXT")
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
@@ -89,19 +108,43 @@ class SQLiteStore:
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
+        for column, decl in (("profile_id", "TEXT"), ("decision", "TEXT"),
+                             ("decision_source", "TEXT"), ("decision_created_at", "REAL"),
+                             ("model_item_index", "INTEGER")):
+            try:
+                self.con.execute(f"ALTER TABLE openers ADD COLUMN {column} {decl}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
         self.con.commit()
         self._lock = threading.Lock()
 
     def load_labels(self) -> list[tuple[bool, list[float]]]:
         with self._lock:
-            rows = self.con.execute("SELECT liked, embedding FROM labels").fetchall()
+            rows = self.con.execute("""SELECT l.liked, l.embedding FROM labels l
+                WHERE NOT EXISTS (SELECT 1 FROM label_retractions r WHERE r.run_id=l.run_id
+                AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id
+                AND r.label_created_at=l.created_at)""").fetchall()
         return [(bool(liked), json.loads(emb)) for liked, emb in rows]
+
+    def _visible_openers_count(self, run_id: str, app: str) -> int:
+        """Count non-tombstoned openers, retaining compatibility with old test/local schemas."""
+        columns = {row[1] for row in self.con.execute("PRAGMA table_info(openers)")}
+        if "created_at" not in columns:
+            return int(self.con.execute("SELECT COUNT(*) FROM openers WHERE run_id=? AND app=?",
+                                        (run_id, app)).fetchone()[0])
+        return int(self.con.execute("""SELECT COUNT(*) FROM openers AS o WHERE o.run_id=? AND o.app=?
+            AND NOT EXISTS (SELECT 1 FROM opener_retractions AS r WHERE r.run_id=o.run_id
+            AND r.app=o.app AND r.opener_created_at=o.created_at)""", (run_id, app)).fetchone()[0])
 
     def load_labels_ordered(self) -> list[tuple[bool, list[float]]]:
         """Labels in swipe order (created_at asc) for the quality-trajectory chart."""
         with self._lock:
             rows = self.con.execute(
-                "SELECT liked, embedding FROM labels ORDER BY created_at, id").fetchall()
+                """SELECT l.liked, l.embedding FROM labels l WHERE NOT EXISTS
+                (SELECT 1 FROM label_retractions r WHERE r.run_id=l.run_id AND r.app=l.app
+                AND r.source=l.source AND r.profile_id=l.profile_id AND r.label_created_at=l.created_at)
+                ORDER BY l.created_at, l.id""").fetchall()
         return [(bool(liked), json.loads(emb)) for liked, emb in rows]
 
     def record_profile(self, run_id, app, profile_id, liked, source="manual",
@@ -126,16 +169,240 @@ class SQLiteStore:
             )
             self.con.commit()
 
-    def record_decision(self, run_id, app, decision, score, source="auto"):
+    def record_decision(self, run_id, app, decision, score, source="auto", profile_id="",
+                        created_at=None):
         with self._lock:
             self.con.execute(
-                "INSERT INTO decisions (run_id, app, created_at, decision, score, source) VALUES (?,?,?,?,?,?)",
-                (run_id, app, time.time(), decision, score, source),
+                "INSERT INTO decisions (run_id, app, created_at, decision, score, source, profile_id) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (run_id, app, time.time() if created_at is None else float(created_at), decision, score,
+                 source, profile_id),
             )
             self.con.commit()
 
+    def retraction_run_rows(self, run_id: str, app: str, source: str) -> dict:
+        """Exact minimal run rows used by the correction planner; no embeddings/photos."""
+        with self._lock:
+            labels = self.con.execute("""SELECT profile_id, created_at, liked
+                FROM labels WHERE run_id=? AND app=? AND source=? ORDER BY created_at, id""",
+                (run_id, app, source)).fetchall()
+            decisions = self.con.execute("""SELECT created_at, decision, score
+                FROM decisions WHERE run_id=? AND app=? AND source=? ORDER BY created_at, id""",
+                (run_id, app, source)).fetchall()
+            retractions = self.con.execute("""SELECT correction_id, profile_id, label_created_at,
+                decision_created_at, decision_fingerprint FROM label_retractions
+                WHERE run_id=? AND app=? AND source=? ORDER BY created_at, correction_id""",
+                (run_id, app, source)).fetchall()
+        def exact_epoch(value):
+            """A decimal spelling which round-trips SQLite's stored IEEE-754 REAL exactly.
+
+            Retraction predicates use equality, by design.  An ISO timestamp has only
+            microsecond precision and can silently leave a label live when `time.time()`
+            supplied sub-microsecond data.  ``.17g`` is the shortest safe portable
+            precision for a binary64 round-trip; retractions._timestamp / append parser
+            intentionally accept this SQLite-only planner representation.
+            """
+            return format(float(value), ".17g")
+        return {"run_id": run_id, "app": app, "source": source, "profiles": [],
+                "labels": [{"profile_id": p, "created_at": exact_epoch(t), "liked": bool(liked)}
+                           for p, t, liked in labels],
+                "decisions": [{"created_at": exact_epoch(t), "decision": d, "score": s}
+                              for t, d, s in decisions],
+                "retractions": [{"correction_id": c, "profile_id": p,
+                                  "label_created_at": exact_epoch(label_time),
+                                  "decision_created_at": exact_epoch(d),
+                                  "decision_fingerprint": f}
+                                 for c, p, label_time, d, f in retractions]}
+
+    def append_label_retraction(self, row: dict) -> bool:
+        """Append one correction using bound values.
+
+        A repeat of the exact correction id is a no-op.  A different correction aimed at
+        the same label/legacy-decision pair is refused instead of creating competing audit
+        records; the planner performs the same check, while this closes the check/append
+        window for another local process.
+        """
+        from .retractions import RetractionRefused
+        def epoch(value):
+            text = str(value)
+            try:
+                return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                # See exact_epoch above.  `float` reconstructs precisely the REAL we
+                # read from SQLite; this is not a fuzzy timestamp comparison.
+                return float(text)
+        values = (row["correction_id"], row["run_id"], row["app"], row["source"], row["profile_id"],
+                  epoch(row["label_created_at"]), epoch(row["decision_created_at"]),
+                  row["decision_fingerprint"], row["reason"], row["evidence_ref"], time.time())
+        with self._lock:
+            existing = self.con.execute("""SELECT correction_id FROM label_retractions
+                WHERE run_id=? AND app=? AND source=? AND profile_id=?
+                AND label_created_at=? AND decision_created_at=?""", values[1:7]).fetchone()
+            if existing:
+                if existing[0] == row["correction_id"]:
+                    return False
+                raise RetractionRefused("target label/decision pair already has a different retraction")
+            cur = self.con.execute("""INSERT OR IGNORE INTO label_retractions
+                (correction_id,run_id,app,source,profile_id,label_created_at,decision_created_at,
+                decision_fingerprint,reason,evidence_ref,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)""", values)
+            self.con.commit()
+        return cur.rowcount == 1
+
+    def observe_release_persistence_summary(self, run_id: str, app: str) -> dict[str, int]:
+        """Read-only run-scoped counts for the Hinge AUTO release verifier.
+
+        Return counts only — no embeddings, profile ids, or opener text leave the configured
+        store.  The release evidence is deliberately outcome-specific: a complete supervised
+        cycle must have persisted both a manual PASS and a manual LIKE, as both labels and
+        decisions, plus a successful Hinge opener.  Do not replace these with broad totals:
+        one LIKE duplicated twice is not evidence that the pass half of the cycle survived.
+
+        Worker persists a manual pass decision as ``dislike`` (the historical storage term),
+        while its label is ``liked=0``.  The public aggregate field calls this a ``pass`` so
+        release policy stays aligned with the operator-visible action.
+        """
+        with self._lock:
+            pass_labels = self.con.execute(
+                """SELECT COUNT(*) FROM labels l WHERE run_id=? AND app=? AND source='manual' AND liked=0
+                AND NOT EXISTS (SELECT 1 FROM label_retractions r WHERE r.run_id=l.run_id AND r.app=l.app
+                AND r.source=l.source AND r.profile_id=l.profile_id AND r.label_created_at=l.created_at)""",
+                (run_id, app)).fetchone()[0]
+            like_labels = self.con.execute(
+                """SELECT COUNT(*) FROM labels l WHERE run_id=? AND app=? AND source='manual' AND liked=1
+                AND NOT EXISTS (SELECT 1 FROM label_retractions r WHERE r.run_id=l.run_id AND r.app=l.app
+                AND r.source=l.source AND r.profile_id=l.profile_id AND r.label_created_at=l.created_at)""",
+                (run_id, app)).fetchone()[0]
+            pass_decisions = self.con.execute(
+                """SELECT COUNT(*) FROM decisions d WHERE run_id=? AND app=? AND source='manual' AND decision='dislike'
+                AND NOT EXISTS (SELECT 1 FROM label_retractions r WHERE r.run_id=d.run_id AND r.app=d.app
+                AND r.source=d.source AND r.decision_created_at=d.created_at)""",
+                (run_id, app)).fetchone()[0]
+            like_decisions = self.con.execute(
+                """SELECT COUNT(*) FROM decisions d WHERE run_id=? AND app=? AND source='manual' AND decision='like'
+                AND NOT EXISTS (SELECT 1 FROM label_retractions r WHERE r.run_id=d.run_id AND r.app=d.app
+                AND r.source=d.source AND r.decision_created_at=d.created_at)""",
+                (run_id, app)).fetchone()[0]
+            openers = self._visible_openers_count(run_id, app)
+        return {
+            "manual_pass_labels": int(pass_labels),
+            "manual_like_labels": int(like_labels),
+            "manual_pass_decisions": int(pass_decisions),
+            "manual_like_decisions": int(like_decisions),
+            "successful_hinge_openers": int(openers),
+        }
+
+    def ai_observe_release_persistence_summary(self, run_id: str, app: str,
+                                               source: str) -> dict[str, int]:
+        """Read-only complete-cycle counts for a declared non-manual release source."""
+        if source not in {"external_ai_review", "automation"}:
+            raise ValueError("AI observe release source must be external_ai_review or automation")
+        with self._lock:
+            pass_labels = self.con.execute(
+                """SELECT COUNT(*) FROM labels l WHERE run_id=? AND app=? AND source=? AND liked=0
+                AND NOT EXISTS (SELECT 1 FROM label_retractions r WHERE r.run_id=l.run_id AND r.app=l.app
+                AND r.source=l.source AND r.profile_id=l.profile_id AND r.label_created_at=l.created_at)""",
+                (run_id, app, source)).fetchone()[0]
+            like_labels = self.con.execute(
+                """SELECT COUNT(*) FROM labels l WHERE run_id=? AND app=? AND source=? AND liked=1
+                AND NOT EXISTS (SELECT 1 FROM label_retractions r WHERE r.run_id=l.run_id AND r.app=l.app
+                AND r.source=l.source AND r.profile_id=l.profile_id AND r.label_created_at=l.created_at)""",
+                (run_id, app, source)).fetchone()[0]
+            pass_decisions = self.con.execute(
+                """SELECT COUNT(*) FROM decisions d WHERE run_id=? AND app=? AND source=? AND decision='dislike'
+                AND NOT EXISTS (SELECT 1 FROM label_retractions r WHERE r.run_id=d.run_id AND r.app=d.app
+                AND r.source=d.source AND r.decision_created_at=d.created_at)""",
+                (run_id, app, source)).fetchone()[0]
+            like_decisions = self.con.execute(
+                """SELECT COUNT(*) FROM decisions d WHERE run_id=? AND app=? AND source=? AND decision='like'
+                AND NOT EXISTS (SELECT 1 FROM label_retractions r WHERE r.run_id=d.run_id AND r.app=d.app
+                AND r.source=d.source AND r.decision_created_at=d.created_at)""",
+                (run_id, app, source)).fetchone()[0]
+            openers = self._visible_openers_count(run_id, app)
+        return {
+            "ai_pass_labels": int(pass_labels),
+            "ai_like_labels": int(like_labels),
+            "ai_pass_decisions": int(pass_decisions),
+            "ai_like_decisions": int(like_decisions),
+            "successful_hinge_openers": int(openers),
+        }
+
+    def advisory_opener_run_rows(self, run_id: str, app: str) -> dict:
+        """Exact no-text opener identities plus effective Like/Pass proof for cleanup planning."""
+        from .retractions import canonical_sha
+        with self._lock:
+            raw = self.con.execute("SELECT created_at,model,opener FROM openers WHERE run_id=? AND app=? "
+                                   "ORDER BY created_at", (run_id, app)).fetchall()
+            existing = self.con.execute("SELECT correction_id,opener_created_at,model,opener_fingerprint,reason,evidence_ref "
+                                        "FROM opener_retractions "
+                                        "WHERE run_id=? AND app=?", (run_id, app)).fetchall()
+            def count(table):
+                return int(self.con.execute(f"SELECT COUNT(*) FROM {table} WHERE run_id=? AND app=?",
+                                            (run_id, app)).fetchone()[0])
+            def effective_labels(liked: int):
+                return int(self.con.execute(
+                    "SELECT COUNT(*) FROM labels l WHERE run_id=? AND app=? AND liked=? "
+                    "AND NOT EXISTS (SELECT 1 FROM label_retractions r WHERE r.run_id=l.run_id "
+                    "AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
+                    "AND r.label_created_at=l.created_at)", (run_id, app, liked)).fetchone()[0])
+            def decisions(decision: str):
+                return int(self.con.execute(
+                    "SELECT COUNT(*) FROM decisions WHERE run_id=? AND app=? AND decision=?",
+                    (run_id, app, decision)).fetchone()[0])
+        openers = [{"created_at": format(float(created), ".17g"), "model": str(model),
+                    "opener_fingerprint": canonical_sha({"run_id": run_id, "app": app,
+                                                           "created_at": format(float(created), ".17g"),
+                                                           "model": str(model), "opener": str(opener)})}
+                   for created, model, opener in raw]
+        return {"run_id": run_id, "app": app, "openers": openers,
+                "decisions": [{} for _ in range(count("decisions"))],
+                # SQLite is explicitly labels-only: profiles/photos are never archived here.
+                "preference_counts": {"profiles": 0, "profile_photos": 0,
+                                      "labels": count("labels"), "decisions": count("decisions")},
+                "effective_counts": {"like_labels": effective_labels(1),
+                                     "like_decisions": decisions("like"),
+                                     "pass_labels": effective_labels(0),
+                                     "pass_decisions": decisions("dislike")},
+                "retractions": [{"correction_id": row[0], "opener_created_at": format(float(row[1]), ".17g"),
+                                "model": row[2], "opener_fingerprint": row[3], "reason": row[4],
+                                "evidence_ref": row[5]}
+                               for row in existing]}
+
+    def append_opener_retraction(self, row: dict) -> bool:
+        from .retractions import RetractionRefused, canonical_sha
+        values = (row["correction_id"], row["run_id"], row["app"], float(row["opener_created_at"]),
+                  row["model"], row["opener_fingerprint"], row["reason"], row["evidence_ref"], time.time())
+        with self._lock:
+            source = self.con.execute(
+                "SELECT model,opener FROM openers WHERE run_id=? AND app=? AND created_at=?",
+                (row["run_id"], row["app"], float(row["opener_created_at"]))).fetchall()
+            if len(source) != 1 or str(source[0][0]) != row["model"]:
+                raise RetractionRefused("target opener row is missing or does not match its cleanup plan")
+            fingerprint = canonical_sha({"run_id": row["run_id"], "app": row["app"],
+                                         "created_at": format(float(row["opener_created_at"]), ".17g"),
+                                         "model": str(source[0][0]), "opener": str(source[0][1])})
+            if fingerprint != row["opener_fingerprint"]:
+                raise RetractionRefused("target opener fingerprint no longer matches its cleanup plan")
+            existing = self.con.execute(
+                "SELECT correction_id,model,opener_fingerprint,reason,evidence_ref FROM opener_retractions "
+                "WHERE run_id=? AND app=? AND opener_created_at=?",
+                (row["run_id"], row["app"], float(row["opener_created_at"]))).fetchone()
+            if existing:
+                actual = {"correction_id": existing[0], "model": existing[1],
+                          "opener_fingerprint": existing[2], "reason": existing[3],
+                          "evidence_ref": existing[4]}
+                expected = {key: row[key] for key in actual}
+                if actual == expected:
+                    return False
+                raise RetractionRefused("opener row already has a different cleanup tombstone")
+            cur = self.con.execute("INSERT OR IGNORE INTO opener_retractions "
+                "(correction_id,run_id,app,opener_created_at,model,opener_fingerprint,reason,evidence_ref,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)", values)
+            self.con.commit()
+        return cur.rowcount == 1
+
     def record_opener(self, run_id, app, model, opener, referenced, angle="",
-                      item_description=""):
+                      item_description="", *, profile_id="", decision="", decision_source="",
+                      decision_created_at=None, model_item_index=None):
         # `angle` is the model's own free-text label for what this opener is doing. Telemetry
         # only — nothing reads it back at runtime; it's here so the question "which opener
         # shapes correlate with matches" becomes answerable offline later. Defaulted so
@@ -148,9 +415,12 @@ class SQLiteStore:
         # against what the model believed it picked. Same trailing-default rule as `angle`.
         with self._lock:
             self.con.execute(
-                "INSERT INTO openers (run_id, app, created_at, model, opener, referenced,"
-                " angle, item_description) VALUES (?,?,?,?,?,?,?,?)",
-                (run_id, app, time.time(), model, opener, referenced, angle, item_description),
+                "INSERT INTO openers (run_id, app, created_at, model, opener, referenced, angle,"
+                " item_description, profile_id, decision, decision_source, decision_created_at,"
+                " model_item_index) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, app, time.time(), model, opener, referenced, angle, item_description,
+                 profile_id, decision, decision_source,
+                 None if decision_created_at is None else float(decision_created_at), model_item_index),
             )
             self.con.commit()
 

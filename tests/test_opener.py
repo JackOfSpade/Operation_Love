@@ -590,7 +590,7 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     # over-description, reachable with every Part A wording rule obeyed, because once the item
     # is chosen and no claim is available, description is the only material left. The remedy has
     # to be stated at the stage it goes wrong, i.e. pick a different item.
-    assert "the failure to avoid is picking an item you have nothing to say about" in lowered
+    assert "the failure to avoid is picking a photo you have nothing to say about" in lowered
     assert "all that is left to write is what it looks like" in lowered
 
     # --- THE CONTEXT TIER, described rather than merely permitted (doc 5.3). The unnumbered

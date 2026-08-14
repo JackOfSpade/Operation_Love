@@ -1,0 +1,36 @@
+{
+  "app": "hinge",
+  "correction_id": "2095971053795462645cb11b4b9ed68f0b7ebaf7a473cc535fe832f271963102",
+  "effective_counts": {
+    "like_decisions": 0,
+    "like_labels": 0,
+    "pass_decisions": 0,
+    "pass_labels": 0
+  },
+  "evidence_metadata": {
+    "debug_action_rows": 26,
+    "debug_actions_sha256": "07b39a1a65afe58fefab2f3eef6afbfe919373e6055a8e74d8575170660df96c",
+    "debug_decision_outcomes": [],
+    "legacy_712_evidence": false
+  },
+  "evidence_ref": "data/hinge_debug/0da87bfda01c/actions.jsonl;actions_sha256=07b39a1a65afe58fefab2f3eef6afbfe919373e6055a8e74d8575170660df96c",
+  "kind": "operation_love_advisory_opener_cleanup_plan",
+  "openers": [
+    {
+      "created_at": "2026-08-14T14:59:34.095298+00:00",
+      "model": "gemini-3.6-flash",
+      "opener_fingerprint": "ae8f1ba3f1134c4c67525ac2f5500fd2ed32426a593a1f66613f202fc6c49743"
+    }
+  ],
+  "plan_sha256": "8b299efa5b84bf72cceb63b617b64b4f89ae5e924a092dba531424e8067a4b44",
+  "preference_counts": {
+    "decisions": 0,
+    "labels": 0,
+    "profile_photos": 0,
+    "profiles": 0
+  },
+  "reason": "advisory opener generated but no corroborated decision",
+  "run_id": "0da87bfda01c",
+  "schema_version": 1,
+  "snapshot_sha256": "818c7ee99db0b0b1bdaf081c0772fa8e42f833d54b7506b9b6a7ae9a37812f7a"
+}

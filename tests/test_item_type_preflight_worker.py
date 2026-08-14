@@ -47,9 +47,9 @@ class _PreflightDriver(DatingAppDriver):
 
     def item_type_preflight(self, item_description, model_item_index):
         self.preflight_calls += 1
-        assert item_description == "a photo"
+        assert item_description == "a prompt answer"
         assert model_item_index == 1
-        return ItemTypePreflight(MISMATCH, PHOTO, WRITTEN, "synthetic cross-class mismatch")
+        return ItemTypePreflight(MISMATCH, WRITTEN, PHOTO, "model selected a written prompt")
 
     def close(self):
         self.closed = True
@@ -75,10 +75,10 @@ class _OnePickService:
     exhausted_reason = None
 
     def maybe_opener(self, *args, **kwargs):
-        return OpenerPick("hello", index=1, item_description="a photo")
+        return OpenerPick("hello", index=1, item_description="a prompt answer")
 
 
-def test_auto_preflight_mismatch_becomes_targeting_stop_before_like():
+def test_auto_refuses_a_model_pick_that_calls_a_numbered_photo_a_prompt_before_like():
     driver = _PreflightDriver()
     worker = Worker("test", driver, _LikeDecider(), _OnePickService(), _Store(), "run",
                     PacingCfg(swipe_delay_s=0), threading.Event(), mode="auto")

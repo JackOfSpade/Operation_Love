@@ -8,9 +8,10 @@ observe  — SHADOW LEARNING. You use the app's own controls on real profiles;
            On Hinge it ALSO runs auto's whole opener pipeline as a canary
            (ops/OPENER-REDESIGN.md 5.9): the capture is enumerated into numbered
            item crops, the model is asked to CHOOSE one and write the opener, and
-           the hub tells you which item to like plus the text to type — before
-           you touch anything. You still tap and still type; nothing is
-           automated for you. If you then open a DIFFERENT item than the one the
+           the hub conditionally suggests an item and text if YOU choose to
+           like — before you touch anything. It is not a recommendation or
+           decision; you still tap and still type, and nothing is automated for
+           you. If you then open a DIFFERENT item than the one the
            suggestion names, the hub replaces the opener with a warning and
            offers no text: observe honours auto's never-attach-a-comment-to-the-
            wrong-item rule by having nothing to copy, rather than by stopping.
@@ -55,7 +56,9 @@ global budget. Failures are isolated and auto-restarted with backoff.
 from __future__ import annotations
 
 import random
+import inspect
 import threading
+import time
 import traceback
 import uuid
 from datetime import date
@@ -74,12 +77,48 @@ _OBSERVE_CAPTURE_BUSY = "Capturing profile — please wait before your next deci
 _OBSERVE_PROCESSING_BUSY = "Processing — please wait before your next decision"
 _NO_PHOTO_RETRY_S = 0.5
 _PROFILE_LOG_WIDTH = 72
+# A reviewed action can refuse before it has touched a heart.  That is not a
+# human pass, an app decision, or a worker fault: the card must be retired from
+# the action bridge and read again, with no training record.  Keep this private
+# sentinel distinct from ``None`` (ordinary manual resync / stop) so the outer
+# Observe loop can report the correct cause rather than masking it as a card
+# change.
+_OBSERVE_PRE_TAP_TARGETING_REFUSED = object()
 # think_time_s() is calibrated to real measured Hinge dwell data around this many
 # seconds — pacing.swipe_delay_s scales it proportionally, so the config knob still
 # speeds up/slows down pacing (and a test fixture's swipe_delay_s=0.0 still paces
 # instantly) while think_time_s supplies the measured like-vs-pass asymmetry shape.
 # Derived from PacingCfg's own default so the baseline can't drift from the config.
 _THINK_TIME_BASELINE_S = PacingCfg().swipe_delay_s
+
+
+def _accepts_keywords(callback, *names: str) -> bool:
+    """Whether a duck-typed persistence seam accepts all named keyword arguments.
+
+    The production stores carry action lineage, while older plugins and deliberately tiny test
+    stores implement the long-standing positional protocol.  Do not discover that difference by
+    catching a ``TypeError`` from the call itself: a real store may raise TypeError *inside* its
+    implementation, which must remain a visible persistence failure after a landed action.
+    """
+    try:
+        parameters = inspect.signature(callback).parameters.values()
+    except (TypeError, ValueError):
+        # Opaque callables (C extensions/proxies) cannot be inspected.  Prefer the modern
+        # protocol; their own call error is then truthful rather than silently discarding lineage.
+        return True
+    return (any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
+            or all(name in {p.name for p in parameters} for name in names))
+
+
+def _record_decision_with_lineage(store, run_id: str, app: str, decision: str, score: float,
+                                  *, source: str, profile_id: str, created_at: float) -> None:
+    """Record a landed action, carrying lineage when its store supports the modern protocol."""
+    record = store.record_decision
+    if _accepts_keywords(record, "profile_id", "created_at"):
+        record(run_id, app, decision, score, source=source,
+               profile_id=profile_id, created_at=created_at)
+    else:
+        record(run_id, app, decision, score, source=source)
 
 
 def _item_type_preflight_mismatch(driver, pick) -> str:
@@ -112,8 +151,8 @@ def _item_type_preflight_mismatch(driver, pick) -> str:
 class _ObserveSuggestion:
     """Doc 5.9's INVERTED observe suggestion, for exactly one profile.
 
-    THE INVERSION, in one sentence: the system decides which item to like and tells the human
-    "like item 3" plus the opener, BEFORE the human taps. Until 2026-08-12 observe generated
+    THE INVERSION, in one sentence: the system chooses an item and opener for an optional like,
+    and tells the human before they tap. Until 2026-08-12 observe generated
     AFTER the tap, anchored on the sheet the human had already opened -- which made the
     suggestion right by construction, and made observe a canary for nothing: auto enumerates
     numbered crops and asks the model to CHOOSE, so the two modes issued different images, a
@@ -172,6 +211,8 @@ class _ObserveSuggestion:
         self._cancel_event = threading.Event()
         self._announced = None     # the last warning printed, so a republish does not repeat it
         self._thread: threading.Thread | None = None
+        self._release_pre_tap_recorded = False
+        self._release_post_tap_recorded = False
 
     # --- the two inputs -------------------------------------------------
     def start(self) -> "_ObserveSuggestion":
@@ -218,9 +259,9 @@ class _ObserveSuggestion:
     def sheet_closed(self) -> None:
         """The sheet went away without a send (dismissed, or resolved). Back to the instruction.
 
-        The PICK is deliberately kept: the card has not changed, so "like item 3" is still the
-        right advice and the human may well go and open item 3 next. Only the evidence about what
-        they opened is dropped.
+        The PICK is deliberately kept: the card has not changed, so the optional item/text help
+        is still current if the human decides to like. Only the evidence about what they opened
+        is dropped.
         """
         with self._lock:
             self._sheet = None
@@ -242,6 +283,27 @@ class _ObserveSuggestion:
         self._cancel_event.set()
         with self._lock:
             self._cancelled = True
+
+    def commit_if_liked(self, *, profile_id: str, decision_source: str,
+                        decision_created_at: float) -> None:
+        """Commit this card's staged advisory opener only after a real Like is confirmed.
+
+        A generated suggestion is a draft.  The Worker calls this after its decision boundary,
+        so Pass, Stop, resync, and every failed/pre-tap action leave no profile-attributable
+        opener record.  Billing telemetry is handled independently by OpenerService.
+        """
+        with self._lock:
+            pick = self._pick
+        commit = getattr(self._worker.opener_service, "commit_advisory_opener", None)
+        if pick is not None and callable(commit):
+            if _accepts_keywords(commit, "profile_id", "decision", "decision_source",
+                                 "decision_created_at"):
+                commit(pick, profile_id=profile_id, decision="like",
+                       decision_source=decision_source, decision_created_at=decision_created_at)
+            else:
+                # Older advisory-service seams still receive the same confirmed-like boundary;
+                # they simply do not persist the optional action-lineage columns.
+                commit(pick)
 
     # --- internals ------------------------------------------------------
     def _applicable(self) -> bool:
@@ -397,10 +459,19 @@ class _ObserveSuggestion:
             return ("the app's comment sheet is open but this driver could not hand over a "
                     "picture of it, so there is no way to tell which item you opened")
         try:
-            return self._worker.driver.observe_item_mismatch(self._sheet, pick.index)
+            mismatch = self._worker.driver.observe_item_mismatch(self._sheet, pick.index)
         except Exception as exc:  # noqa: BLE001 — see the class docstring: never break the run
             return (f"the item you opened could not be checked against this suggestion "
                     f"({type(exc).__name__}: {exc})")
+        if not mismatch and not self._release_post_tap_recorded:
+            record = getattr(self._worker.driver, "observe_release_fact", None)
+            if callable(record):
+                try:
+                    record("post_tap_item_verified")
+                except Exception:  # noqa: BLE001 -- debug evidence never changes observe safety
+                    pass
+            self._release_post_tap_recorded = True
+        return mismatch
 
     def _publish(self, *, announce_pick=None) -> None:
         with self._lock:
@@ -414,6 +485,34 @@ class _ObserveSuggestion:
             # no-op anyway (its status lives on the hub), so nothing is lost; what is bought is
             # that no transport is touched from two threads.
             self._worker._publish_status(state=state, **fields)
+            # This contains only the item number and is lock-safe like status publication.
+            # It lets the reviewed-action mailbox bind an approval to the one suggestion that
+            # is actually visible, without exposing a second route to the driver.
+            # ``_ObserveSuggestion`` is also a deliberately small unit-test seam.  The
+            # reviewed-action bridge is a Worker capability, not a requirement of every
+            # object that can exercise suggestion display.  Real Workers always expose this
+            # method and still publish every transition to the bridge; minimal synthetic
+            # workers may omit it without turning a harmless no-suggestion warning into an
+            # exception.
+            publish_bridge_suggestion = getattr(self._worker, "_observe_action_suggestion", None)
+            if callable(publish_bridge_suggestion):
+                publish_bridge_suggestion(
+                    getattr(self._worker, "_active_observe_action_profile_token", None),
+                    self._pick if fields["opener_suggestion"] else None)
+            if (fields["opener_suggestion"] and self._sheet is None
+                    and not self._release_pre_tap_recorded):
+                record = getattr(self._worker.driver, "observe_release_fact", None)
+                recorded = False
+                if callable(record):
+                    try:
+                        record("hub_pre_tap_published")
+                        recorded = True
+                    except Exception:  # noqa: BLE001 -- debug evidence never changes observe safety
+                        pass
+                if recorded:
+                    self._worker._observe_action_pre_tap_published(
+                        getattr(self._worker, "_active_observe_action_profile_token", None))
+                self._release_pre_tap_recorded = True
             # EVERY warning reaches the console too, and this is the only place that can do it:
             # a mismatch is not decided until both halves of the state are in, and which thread
             # completes the pair is a race. Printed once per DISTINCT warning, because a dismissed
@@ -429,7 +528,7 @@ class _ObserveSuggestion:
             # If the sheet check replaced it with a warning, there is intentionally nothing to
             # announce as ready.
             if announce_pick is not None and fields["opener_suggestion"] == announce_pick.text:
-                print(f"   💬 suggestion ready — like item {announce_pick.index}"
+                print(f"   💬 optional suggestion ready — not a recommendation: if you choose to like, use item {announce_pick.index}"
                       f"{f' ({announce_pick.item_description})' if announce_pick.item_description else ''}; "
                       f"the text to type is on the hub")
 
@@ -437,7 +536,8 @@ class _ObserveSuggestion:
 class Worker(threading.Thread):
     def __init__(self, app, driver: DatingAppDriver, decider: Decider, opener_service,
                  store, run_id, pacing, stop_event: threading.Event, mode: str = "observe",
-                 retrain_every: int = 1, limiter=None, max_restarts: int = 5, status=None):
+                 retrain_every: int = 1, limiter=None, max_restarts: int = 5, status=None,
+                 observe_source: str = "manual", observe_action_bridge=None):
         super().__init__(name=f"worker-{app}", daemon=True)
         self.app = app
         self.driver = driver
@@ -452,6 +552,22 @@ class Worker(threading.Thread):
         self.limiter = limiter
         self.max_restarts = max_restarts
         self.status = status              # optional RunStatus (live overlay/hub); None in tests
+        # Observe normally records manual choices.  The explicit non-manual values are for a
+        # separately reviewed external controller; their release verifier rejects manual rows,
+        # so this is provenance rather than a cosmetic label.
+        if observe_source not in {"manual", "external_ai_review", "automation"}:
+            raise ValueError("observe_source must be manual, external_ai_review, or automation")
+        self.observe_source = observe_source
+        # Hub requests are a mailbox, never a second device reader.  It is optional so the
+        # CLI/manual Observe path retains its existing behaviour byte-for-byte when no hub owns
+        # this worker.
+        self.observe_action_bridge = observe_action_bridge
+        self.observe_action_supported = bool(
+            mode == "observe" and app == "hinge"
+            and observe_source in {"external_ai_review", "automation"}
+            and callable(getattr(driver, "observe_pass", None))
+            and callable(getattr(driver, "observe_open_targeted_like", None))
+            and callable(getattr(driver, "observe_send_targeted_like", None)))
 
     # --- live status (overlay + hub); no-ops when status is unset ---------
     def _stat(self, **fields) -> None:
@@ -492,6 +608,47 @@ class Worker(threading.Thread):
         if callable(install):
             install(bool(self.opener_service is not None
                          and not getattr(self.opener_service, "disabled", True)))
+
+    def _bind_debug_run(self) -> None:
+        """Give an opt-in driver the immutable Worker id before it opens a debug session.
+
+        Hinge writes a transport-free first debug record from this value. Other drivers remain
+        unaffected: this optional metadata hook is not a device capability requirement.
+        """
+        bind = getattr(self.driver, "bind_debug_run", None)
+        if callable(bind):
+            bind(self.run_id)
+
+    def _announce_observe_targeting_setup(self) -> None:
+        """Explain a run-level targeted-opener prerequisite once, without blocking labels.
+
+        Hinge's model-item suggestions are deliberately withheld until its per-device targeting
+        calibration can prove that the item named before a manual tap is the item shown in the
+        later comment sheet.  The per-card warning remains useful evidence, but it is a poor
+        first explanation: an operator otherwise learns about this prerequisite only after a
+        full capture and may mistake it for a profile-specific failure.  This startup notice is
+        informational only -- observe remains a fully usable manual labelling session.
+
+        Do not call an optional driver's readiness hook when no live opener service could
+        consume it.  ``opener.enabled: false`` is an intentional run-wide choice, not a request
+        to configure targeting, and drivers without targeted suggestions must retain their
+        existing silent observe behaviour.
+        """
+        if not (getattr(self.driver, "accepts_opener", False)
+                and self.opener_service is not None
+                and not getattr(self.opener_service, "disabled", True)):
+            return
+        blocker = getattr(self.driver, "targeted_suggestion_blocker", None)
+        if not callable(blocker):
+            return
+        try:
+            reason = blocker()
+        except Exception:  # noqa: BLE001 -- an optional startup notice must not break Observe
+            return
+        if reason:
+            print(f"{self.app.title()} observe: targeted opener suggestions need setup "
+                  f"({reason}). Manual pass/like labels still work. Complete the Hinge "
+                  "targeted-opener calibration in ops/RUNBOOK.md to enable suggestions.")
 
     def _capture_failure(self, exc: BaseException) -> None:
         """Let the driver snapshot the on-screen failure state into its debug log. Called from
@@ -537,7 +694,11 @@ class Worker(threading.Thread):
         if stop_kind:
             fields["stop_kind"] = stop_kind
         self._stat(**fields)
-        self.driver.close()
+        try:
+            self.driver.close()
+        finally:
+            if self.observe_action_bridge:
+                self.observe_action_bridge.unregister(self)
 
     def _opener_stop_reason(self) -> str | None:
         """Human-readable cause of an OpenerService-triggered stop, or None if the service
@@ -608,6 +769,19 @@ class Worker(threading.Thread):
             return capture(should_stop=self.stop_event.is_set)
         return capture()
 
+    def _observe_capture_method(self) -> str:
+        """Choose the capture contract for this Observe worker, never for a caller request.
+
+        Only an explicit, non-manual bridge can retain Hinge at its indexed bottom anchor.  The
+        dedicated driver method is capability-checked so an older driver/fake remains on the
+        manual-compatible ``current_profile`` contract rather than failing at run time.
+        """
+        if (self.observe_action_bridge is not None
+                and self.observe_action_supported
+                and callable(getattr(self.driver, "current_profile_reviewed", None))):
+            return "current_profile_reviewed"
+        return "current_profile"
+
     def _block_observe_capture(self, **status_fields) -> None:
         self.driver.render_busy(_OBSERVE_CAPTURE_BUSY)
         self._stat(state="capturing", **status_fields)
@@ -622,25 +796,35 @@ class Worker(threading.Thread):
         self._stat(state="acting")
 
     def run(self) -> None:
+        def leave() -> None:
+            if self.observe_action_bridge:
+                self.observe_action_bridge.unregister(self)
+
         backoff, restarts = 2.0, 0
         # Publish the configured mode without touching the driver. In particular this must
         # happen before open_session(): if opening an auto session fails, the error banner's
         # per-app selector must not mistake the still-default AppStatus mode for "observe".
         if self.status:
             self.status.set_app(self.app, mode=self.mode)
+        self._bind_debug_run()
+        if self.observe_action_bridge:
+            self.observe_action_bridge.register(self)
         while not self.stop_event.is_set():
             try:
                 self._observe_loop() if self.mode == "observe" else self._auto_loop()
+                leave()
                 return
             except ActionCancelled:
                 # Stop is neither a failed target nor a driver fault.  The action boundary that
                 # raised this already guaranteed no further input, so end normally without a
                 # failure snapshot, invented stop reason, or decision/counter record.
                 self.stop_event.set()
+                leave()
                 return
             except DriverClosed as exc:
                 print(f"{exc}; Stopping run so buffered data can be saved.")
                 self.stop_event.set()
+                leave()
                 return
             except Exception:  # noqa: BLE001
                 # NOTE: the on-screen failure screenshot is captured INSIDE the loop's except
@@ -669,15 +853,18 @@ class Worker(threading.Thread):
                     # Publish error to hub so the banner shows the failure (not a silent stop).
                     self._stat(state="error", error=traceback.format_exc().strip().splitlines()[-1])
                     self.stop_event.set()
+                    leave()
                     return
                 restarts += 1
                 print(f"{self.app.title()} worker error (restart {restarts}/{self.max_restarts}):")
                 traceback.print_exc()
                 if restarts > self.max_restarts or self.stop_event.is_set():
                     print(f"{self.app.title()} worker giving up.")
+                    leave()
                     return
                 self.stop_event.wait(human_cooldown(min(backoff, 60)))
                 backoff *= 2
+        leave()
 
     # --- shadow learning: you decide, the bot learns --------------------
     def _observe_loop(self) -> None:
@@ -689,6 +876,7 @@ class Worker(threading.Thread):
         self._install_opener_flag()
         self.driver.open_session()
         self._stat(mode="observe")             # set mode for the hub; the loop owns per-card WAIT/SWIPE
+        self._announce_observe_targeting_setup()
         added = 0
         last_retrained = 0
         pending_error = False
@@ -718,6 +906,12 @@ class Worker(threading.Thread):
                 # screen and stops; it does not touch it.
                 blocked = self.driver.blocked_reason()
                 if blocked is not None:
+                    record = getattr(self.driver, "observe_release_fact", None)
+                    if callable(record):
+                        try:
+                            record("refusal_or_paywall_logged")
+                        except Exception:  # noqa: BLE001 -- debug proof must not affect passive stop
+                            pass
                     terminal_state = "blocked"
                     stop_reason = blocked
                     stop_kind = "deck_blocked"
@@ -730,7 +924,12 @@ class Worker(threading.Thread):
                     break
                 self._profile_separator()
                 self._block_observe_capture()                # WAIT cue for every card (capturing state)
-                profile = self._capture_profile("current_profile")   # capture the card you're viewing
+                # A reviewed bridge is the sole phone controller for this card.  It can retain
+                # Hinge's completed capture at the exact scrolled entry anchor the item index
+                # was measured on; manual Observe must keep the long-standing top-unwind
+                # contract for a person inspecting the card.  Capability-check the dedicated
+                # method so older/duck-typed drivers retain their normal capture path.
+                profile = self._capture_profile(self._observe_capture_method())
                 if self.stop_event.is_set():
                     break
                 if profile is None:
@@ -757,9 +956,14 @@ class Worker(threading.Thread):
                 # mis-attributing the next one. The suggestion fills in behind this line.
                 print("✅ READY — use the app's pass/like controls for this profile.")
                 self._warn_if_capture_truncated(profile)
+                action_card = (self.observe_action_bridge.begin_card(self)
+                               if self.observe_action_bridge and self.observe_action_supported else None)
+                self._active_observe_action_profile_token = (
+                    action_card["profile_token"] if action_card else None)
                 suggestion = _ObserveSuggestion(self, profile).start()
                 try:
-                    liked = self._wait_for_observed_decision(suggestion)
+                    liked = self._wait_for_observed_decision(
+                        suggestion, action_card["profile_token"] if action_card else None)
                 finally:
                     # Unconditional, on every exit from the wait (decision, resync, stop, raise).
                     # After this returns, nothing can publish for this card and nothing can call
@@ -767,6 +971,18 @@ class Worker(threading.Thread):
                     # the next iteration capturing a new profile and invalidating the driver's
                     # item table underneath it. See _ObserveSuggestion.cancel.
                     suggestion.cancel()
+                    if action_card:
+                        self.observe_action_bridge.end_card(self, action_card["profile_token"])
+                    self._active_observe_action_profile_token = None
+                if liked is _OBSERVE_PRE_TAP_TARGETING_REFUSED:
+                    # The reviewed bridge refused BEFORE a heart tap.  The driver may have
+                    # scrolled while proving the advertised item unreachable, but it did not
+                    # send a pass or a like; re-capture through the normal owner path rather
+                    # than manufacturing either decision.  The ``finally`` above has already
+                    # cancelled the suggestion and ended this card's capability tokens.
+                    print("Reviewed target refused before a heart tap — recapturing, nothing recorded.")
+                    self._stat(last_decision="targeting_refused")
+                    continue
                 if liked is None:                             # card changed / deck empty / stop -> recapture
                     # wait_for_decision's None return covers SEVERAL different situations, not
                     # just one (see base.py's docstring): stop requested, deck emptied, timeout,
@@ -799,16 +1015,52 @@ class Worker(threading.Thread):
                           "recapturing, nothing recorded.")
                     self._stat(last_decision="resync")
                     continue                                  # next iteration re-blocks + recaptures the card
-                if self.stop_event.is_set():
-                    break
+                # A bool here is a confirmed preference action.  Do NOT drop it merely because
+                # Stop arrived in the tiny interval after the driver/bridge returned that fact:
+                # a Hinge Like may already be server-side, and its staged advisory opener must
+                # cross the same decision boundary exactly once.  The ``liked is None`` path
+                # above remains the Stop-before-decision path and discards the draft.
+                #
+                # This is deliberately different from the check immediately after capture:
+                # there, no decision exists yet.  Here the card's action is already complete;
+                # finish its durable accounting, then the while condition ends the run before
+                # any new capture can begin.
                 # block the next decision while this one embeds (avoids mis-attribution)
                 decision = "LIKE" if liked else "PASS"
+                decision_source = getattr(self, "_observe_action_decision_source", self.observe_source)
+                self._observe_action_decision_source = self.observe_source
                 print(f"Got {decision} — processing, don't decide again yet…")
                 self._block_observe_processing()
+                # Persist the completed physical action BEFORE any optional archive/embedding
+                # work and before committing its staged opener.  A real Like/Pass remains a
+                # decision even when there is no usable face vector or the photo archive is
+                # unavailable.  Most importantly, this gives every committed opener a durable
+                # Like decision to join to: cleanup/reporting must never have to infer an action
+                # from a generated message alone.
+                #
+                # No broad try/except belongs around this call.  If durable decision storage is
+                # down after a real swipe, continuing to archive/label or commit an opener would
+                # manufacture a misleading partial history.  The normal worker failure path
+                # leaves the device snapshot and the storage error visible instead.
                 profile_id = uuid.uuid4().hex
+                decision_created_at = time.time()
+                _record_decision_with_lineage(
+                    self.store, self.run_id, self.app, "like" if liked else "dislike",
+                    1.0 if liked else 0.0, source=decision_source,
+                    profile_id=profile_id, created_at=decision_created_at)
+                if liked:
+                    # The advisory opener was only a draft until this exact physical-action
+                    # boundary.  It follows the decision row (rather than preceding it), so a
+                    # store failure cannot leave an opener claiming a Like that has no matching
+                    # durable decision.  Pass, Stop-before-decision, resync, and failed/pre-tap
+                    # bridge actions never reach either call.
+                    suggestion.commit_if_liked(profile_id=profile_id, decision_source=decision_source,
+                                               decision_created_at=decision_created_at)
+                if self.status:
+                    self.status.record_swipe(self.app, "like" if liked else "pass")
                 metadata = self._label_metadata(profile)
                 archived = self.store.record_profile(self.run_id, self.app, profile_id, liked,
-                                                     source="manual", photos=profile.photos, **metadata)
+                                                     source=decision_source, photos=profile.photos, **metadata)
                 vec = self.decider.embed(profile)
                 if vec is None:                               # no face -> not a useful label
                     self._stat(last_decision="no_face")
@@ -820,13 +1072,9 @@ class Worker(threading.Thread):
                 # happened and its photos + embedding are already committed above — Stop
                 # must end the loop AFTER this label is saved (the while-loop condition
                 # below does that without starting a NEW capture), not discard work in hand.
-                self.store.add_label(self.run_id, self.app, liked, vec, source="manual",
+                self.store.add_label(self.run_id, self.app, liked, vec, source=decision_source,
                                      profile_id=profile_id, **metadata)
-                self.store.record_decision(self.run_id, self.app,
-                                           "like" if liked else "dislike", 1.0 if liked else 0.0,
-                                           source="manual")
                 if self.status:
-                    self.status.record_swipe(self.app, "like" if liked else "pass")
                     self.status.inc_labels(1)
                 self._render()
                 # A budget/credit stop can be discovered while generating the Hinge
@@ -870,7 +1118,73 @@ class Worker(threading.Thread):
                 self.driver.render_busy(None)
                 self._finish_session(terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
 
-    def _wait_for_observed_decision(self, suggestion: "_ObserveSuggestion"):
+    def _observe_action_suggestion(self, profile_token: str | None, pick) -> None:
+        """Publish only the item binding; text stays inside the existing suggestion/status path."""
+        if profile_token and self.observe_action_bridge:
+            self.observe_action_bridge.update_suggestion(self, profile_token, pick)
+
+    def _observe_action_pre_tap_published(self, profile_token: str | None) -> None:
+        """Unlock a reviewed heart only after its hub-publication fact was written."""
+        if profile_token and self.observe_action_bridge:
+            self.observe_action_bridge.mark_pre_tap_published(self, profile_token)
+
+    def _perform_observe_action(self, action: dict, suggestion: "_ObserveSuggestion"):
+        """Run one approved action on this Worker thread at its waiting boundary."""
+        bridge = self.observe_action_bridge
+        try:
+            if self.stop_event.is_set():
+                bridge.complete(action, "aborted", "run is stopping")
+                return None
+            command = action["command"]
+            if command == "pass":
+                self.driver.observe_pass(should_stop=self.stop_event.is_set)
+                bridge.complete(action, "completed", phase="terminal")
+                self._observe_action_decision_source = self.observe_source
+                return False
+            pick = getattr(suggestion, "_pick", None)
+            if (pick is None or not getattr(pick, "text", None)
+                    or getattr(pick, "index", None) != action["item"]):
+                bridge.complete(action, "rejected", "suggestion is no longer current")
+                return "continue"
+            if command == "targeted_like_open":
+                # Hinge owns its current numbered-item index and entry anchor.  The bridge
+                # supplies only the model item number it already advertised; no screen points.
+                self.driver.observe_open_targeted_like(action["item"], should_stop=self.stop_event.is_set)
+                bridge.complete(action, "completed", phase="sheet_open")
+                return "continue"
+            if command == "send_current_suggestion":
+                # The driver re-verifies the current composer/item before typing or sending.
+                self.driver.observe_send_targeted_like(pick.text, action["item"],
+                                                       should_stop=self.stop_event.is_set)
+                bridge.complete(action, "completed", phase="terminal")
+                self._observe_action_decision_source = self.observe_source
+                return True
+            bridge.complete(action, "rejected", "unsupported command")
+            return "continue"
+        except ActionCancelled:
+            bridge.complete(action, "aborted", "run stopped before device input")
+            raise
+        except ItemTargetingError as exc:
+            # A targeting refusal at preflight/navigation is the one driver-guaranteed
+            # no-tap outcome.  In AI-reviewed Observe it is recoverable: mark this exact
+            # bridge action terminal, retire its one-card capability in the caller, and
+            # recapture.  Never turn it into a synthetic Pass and never persist a label.
+            #
+            # ``verify`` is intentionally *not* included.  That happens after the heart can
+            # have been tapped and leaves a sheet open; treating it as a benign retry could
+            # conceal a partial irreversible action.  It retains the normal fail-closed worker
+            # failure behaviour below.
+            if (action.get("command") == "targeted_like_open"
+                    and getattr(exc, "stage", "") in {"preflight", "navigate"}):
+                bridge.complete(action, "failed", f"{type(exc).__name__}: {exc}")
+                return _OBSERVE_PRE_TAP_TARGETING_REFUSED
+            bridge.complete(action, "failed", f"{type(exc).__name__}: {exc}")
+            raise
+        except Exception as exc:  # driver preserves the screen for targeting failures
+            bridge.complete(action, "failed", f"{type(exc).__name__}: {exc}")
+            raise
+
+    def _wait_for_observed_decision(self, suggestion: "_ObserveSuggestion", profile_token: str | None = None):
         """Wait for one human decision, checking their tap against the suggestion already shown.
 
         Hinge is the only current driver that exposes its intermediate comment sheet. This
@@ -899,7 +1213,8 @@ class Worker(threading.Thread):
         `stop_requested` check stays, because a DIFFERENT worker (an auto-mode app sharing this
         OpenerService) can still legitimately ask everyone to stop.
         """
-        if not getattr(self.driver, "supports_observe_like_intent", False):
+        bridge = self.observe_action_bridge if profile_token else None
+        if bridge is None and not getattr(self.driver, "supports_observe_like_intent", False):
             return self.driver.wait_for_decision(timeout=None,
                                                  should_stop=self.stop_event.is_set)
 
@@ -916,8 +1231,28 @@ class Worker(threading.Thread):
             else:
                 suggestion.sheet_closed()
 
-        return self.driver.wait_for_decision(timeout=None, should_stop=self.stop_event.is_set,
-                                             on_like_intent=on_like_intent)
+        def interrupted() -> bool:
+            return self.stop_event.is_set() or bool(bridge and bridge.has_pending(self, profile_token))
+
+        while True:
+            action = bridge.claim(self, profile_token) if bridge else None
+            if action:
+                outcome = self._perform_observe_action(action, suggestion)
+                if outcome == "continue":
+                    continue
+                return outcome
+            if not getattr(self.driver, "supports_observe_like_intent", False):
+                result = self.driver.wait_for_decision(timeout=None, should_stop=interrupted)
+            else:
+                result = self.driver.wait_for_decision(timeout=None, should_stop=interrupted,
+                                                       on_like_intent=on_like_intent)
+            if self.stop_event.is_set():
+                return None
+            # A pending command makes the driver return None through should_stop; claim it
+            # immediately instead of treating it as a manual resync/capture race.
+            if bridge and bridge.has_pending(self, profile_token):
+                continue
+            return result
 
     @staticmethod
     def _warn_if_capture_truncated(profile) -> None:
@@ -1196,9 +1531,17 @@ class Worker(threading.Thread):
                             # Raises if the payload is somehow empty-but-not-refused; that is a
                             # driver contract violation, not a condition to handle here.
                             items = ItemRequest.from_profile(profile)
+                    opener_kwargs = {"items": items, "should_stop": self.stop_event.is_set}
+                    # Stage only when both halves of the modern protocol are present.  This
+                    # preserves old third-party/test opener services whose maybe_opener method
+                    # predates the keyword (rather than crashing a landed-action loop with an
+                    # unexpected ``stage`` kwarg); OpenerService itself has both and is the only
+                    # production implementation that persists opener rows.
+                    if (callable(getattr(self.opener_service, "commit_opener", None))
+                            and _accepts_keywords(self.opener_service.maybe_opener, "stage")):
+                        opener_kwargs["stage"] = True
                     pick = (self.opener_service.maybe_opener(
-                                self.run_id, self.app, profile, items=items,
-                                should_stop=self.stop_event.is_set)
+                                self.run_id, self.app, profile, **opener_kwargs)
                             if accepts_opener and self.opener_service is not None else None)
                     # An opener call can discover that every configured provider/model is
                     # exhausted. In AUTO mode, honour its global stop BEFORE calling
@@ -1300,7 +1643,7 @@ class Worker(threading.Thread):
                         if pick.index == ITEM_INDEX_ABSENT:
                             stop_reason = (
                                 "opener generated no item number to target (the model could "
-                                "not identify which photo or prompt it was about), so there is "
+                                "not identify which numbered photo it was about), so there is "
                                 "no item to attach the comment to and the like is not sent"
                             )
                         else:
@@ -1316,7 +1659,7 @@ class Worker(threading.Thread):
                         self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
                         self.stop_event.set()
                         break
-                    # item_index lets the driver attach the comment to the photo/prompt the
+                    # item_index lets the driver attach the comment to the numbered photo the
                     # opener is actually about, not blindly the first one.
                     #
                     # THE TWO SIDES ARE IN DIFFERENT INDEX SPACES, AND THE CONVERSION IS
@@ -1447,7 +1790,30 @@ class Worker(threading.Thread):
                 # (training on the model's own prediction would create a self-reinforcing feedback
                 # loop), and do NOT record a phantom if like()/dislike() raised (e.g. a
                 # HingeActionError halt on an unsent like) and so never landed.
-                self.store.record_decision(self.run_id, self.app, d.decision, d.score, source="auto")
+                # The decision and a committed opener share this opaque per-card id and exact
+                # action timestamp. AUTO intentionally does not archive profiles as training
+                # data, so this is lineage rather than an auto training profile.
+                lineage_profile_id = uuid.uuid4().hex
+                lineage_decision_at = time.time()
+                _record_decision_with_lineage(
+                    self.store, self.run_id, self.app, d.decision, d.score, source="auto",
+                    profile_id=lineage_profile_id, created_at=lineage_decision_at)
+                if d.decision == "like":
+                    # The physical like returned successfully above, and its action row is now
+                    # durable.  Commit the staged opener only after that row: a storage failure
+                    # recording the decision must not leave an opener that downstream cleanup
+                    # could mistake for evidence of a Like.  Stop arriving between the driver
+                    # boundary and here does not matter -- the Like already landed.  Every
+                    # preflight/targeting/paywall/transport failure broke out before either the
+                    # decision or this commit.
+                    commit = getattr(self.opener_service, "commit_opener", None)
+                    if pick is not None and callable(commit):
+                        if _accepts_keywords(commit, "profile_id", "decision", "decision_source",
+                                             "decision_created_at"):
+                            commit(pick, profile_id=lineage_profile_id, decision="like",
+                                   decision_source="auto", decision_created_at=lineage_decision_at)
+                        else:
+                            commit(pick)
                 if self.status:
                     self.status.record_swipe(self.app, d.decision, d.score)
                 self._render()

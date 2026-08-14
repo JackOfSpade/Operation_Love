@@ -102,7 +102,7 @@ class _SpendStore(_Store):
     def __init__(self):
         super().__init__()
         self.rows = []
-    def record_decision(self, run_id, app, decision, score, source="auto"):
+    def record_decision(self, run_id, app, decision, score, source="auto", **_):
         with self._lock:
             self.rows.append((app, decision))
     def record_opener(self, *a, **k): pass

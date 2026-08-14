@@ -18,7 +18,7 @@ enabled_apps: [hinge]
 # observe = YOU swipe manually on real profiles; the bot learns your taste live
 #           (no autonomous swiping). Start here to seed the ranker.
 # auto    = the bot swipes for you using the model it learned.
-mode: observe               # observe | auto  (override per app under apps.<app>.mode)
+mode: auto                  # observe | auto  (override per app under apps.<app>.mode)
 
 # Per-app options (headless toggle, login profile, DOM selectors to verify live).
 apps:
@@ -100,13 +100,11 @@ apps:
     # (1080x2400) 2026-06-27. like_heart / pass_x are located by VISION at runtime (template-
     # matching the glyph) because the "Start sending likes" banner + per-profile photo heights
     # shift the heart, and the X's disc merges into white prompt backgrounds; these fractions
-    # are only the FALLBACK used when vision can't find the glyph. comment_box / send_like are
-    # fixed (the like-sheet layout is consistent); send_like is kept clear of the 🌷Rose button.
+    # are only the FALLBACK used when vision can't find the glyph. The inline comment and Send
+    # Like controls have no configured coordinates: both are structurally located afresh.
     coords:
       like_heart: [0.868, 0.667]  # FALLBACK only — heart is vision-located on the first photo
       pass_x: [0.116, 0.848]      # FALLBACK only — X is vision-located (floating, bottom-left)
-      comment_box: [0.500, 0.529] # comment field in the like sheet (calibrated)
-      send_like: [0.643, 0.576]   # "Send Like" button in the like sheet (calibrated; clear of Rose)
     # --- observe-mode decision detection (2026-08-10 redesign) ---------------------------
     # The OLD rule ("top region changed and no captured frame matches -> PASS") recorded a
     # PASS off of nothing but a manual scroll -- reported twice by the owner. These five keys
@@ -160,6 +158,40 @@ apps:
     # (see _identity_of/_ocr_band); true by default, set false to skip the extra `tesseract`
     # subprocess call on every poll once a profile's name has been captured.
     observe_name_ocr: true
+    # Hinge 9.134 inline-composer / photo-only targeting calibration. This release bound was
+    # measured from a four-profile calibration split and a separate three-profile heldout
+    # split using the explicitly accepted hybrid AI-reviewed workflow. It is a perception
+    # validated by the separate AI-reviewed production OBSERVE artifact bound below; AUTO is
+    # enabled only while both artifacts continue to match this exact device/build/frame.
+    targeting_calibration:
+      schema_version: 3
+      device: "33111JEHN04475"
+      hinge_version_name: "9.134.0"
+      frame_size_px: [1080, 2400]
+      composer_layout_id: hinge_inline_v1
+      item_selection_policy_id: hinge_photos_only_v1
+      identity_match_max_dist: 1.9721
+      inline_item_max_dist: 14.9099
+      calibrated_at: "2026-08-14T09:52:53.417382+00:00 — measured from session(s): targeting_20260814T_hybrid_alt6_calibration, targeting_20260814T_hybrid_alt7_heldout"
+      identity_band: [0.10, 0.048, 0.80, 0.094]
+      content_band: [0.125, 0.875]
+    # Explicitly accepted AI-reviewed production OBSERVE release gate. The referenced
+    # artifact binds the calibrated device/build/frame, exact debug run, independently
+    # reviewed action provenance, and persisted Pass/Like/opener evidence. It honestly
+    # records human_ground_truth=false and is distinct from the manual release gate.
+    ai_reviewed_observe_release_evidence:
+      schema_version: 1
+      acceptance: I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK
+      calibration_calibrated_at: "2026-08-14T09:52:53.417382+00:00 — measured from session(s): targeting_20260814T_hybrid_alt6_calibration, targeting_20260814T_hybrid_alt7_heldout"
+      calibration_sha256: 8df4ac29fc9282a106f665ab16ac999c529e2ff2481127c2d86fbdd137fd66da
+      device: "33111JEHN04475"
+      hinge_version_name: "9.134.0"
+      frame_size_px: [1080, 2400]
+      production_run_reference: data/hinge_debug/312b80bf4b50
+      production_run_id: 312b80bf4b50
+      verified_at: "2026-08-14T13:13:18.069677+00:00"
+      verification_file: ops/release/312b80bf4b50/release/hinge_ai_observe_release.json
+      verification_sha256: 60952f85f77f5f6ce89a825e08f2b41c7d4818d7ffc1ea7e39620d35b307c303
 
 paths:
   data_dir: ./data
@@ -230,8 +262,96 @@ opener:
   # and their free-tier 16K tokens-per-minute cap is low enough that a full 8-screenshot
   # request can hit a per-minute limit on its own -- that is fine, since a per-minute 429
   # just cascades to the next model without retiring anything.
-  models: [gemini-3.6-flash, gemini-3.5-flash, gemini-3-flash-preview, gemini-3.5-flash-lite,
-           gemini-3.1-flash-lite, gemma-4-31b-it, gemma-4-26b-a4b-it]
+  #
+  # --- Re-audit 2026-08-13 (live, against this account; re-runnable via
+  #     `python tools/gemini_model_probe.py`) ---------------------------------------------
+  # ALL SEVEN entries below were re-probed with the real request shape and all seven still
+  # returned a valid opener on {"thinkingLevel": "minimal"}. Nothing was removed.
+  #
+  # gemini-2.5-pro JOINS the 404 list: like gemini-2.5-flash and gemini-2.5-flash-lite it is
+  # still returned by ListModels with generateContent support, and still 404s NOT_FOUND on
+  # every real call ("no longer available to new users"). The lesson above holds -- ListModels
+  # is a catalog, not an entitlement -- so do not re-add any 2.5 id on the strength of it
+  # being listed.
+  #
+  # gemini-3.7-flash LEADS THE CASCADE, and is the ONE entry here admitted on inference rather
+  # than on a 200. That exception is deliberate and bounded; read this before "fixing" it.
+  # Measured 2026-08-13: version 3.7-flash-08-2026, generateContent + image + thinking:true,
+  # and a free-tier quota of exactly 20 RPD (the 429 body carries quotaValue: 20 under
+  # GenerateRequestsPerDayPerProjectPerModel-FreeTier) -- the same daily capacity as the other
+  # Flash models. It is the most capable model this account can reach, so quality-descending
+  # order puts it first.
+  #
+  # What is verified: it REJECTS {"thinkingLevel": "minimal"} with HTTP 400 INVALID_ARGUMENT,
+  # "Thinking level MINIMAL is not supported for this model. Please retry with other thinking
+  # level." That message is why its entry below is `low` and not a copy of the Gemma lines.
+  # What is NOT verified: that `low` specifically is accepted. Every attempt at low/medium/high
+  # (and thinkingBudget:0, and omitting thinkingConfig) returned 503 UNAVAILABLE "currently
+  # experiencing high demand" -- launch-week load on a model published 08-2026 -- across ~20
+  # attempts, until the 20 RPD was spent. Not one 200 was obtained on 2026-08-13.
+  #
+  # Why shipping it anyway is the right call NOW, when it would have been wrong that morning:
+  # generate() used to RAISE every 400, so a wrong thinkingConfig aborted the whole opener call
+  # and tripped OpenerService's 3-strike bad-request latch -- an unverified entry could kill a
+  # run. That is fixed: a 400 naming the thinking config is now treated like a 404, retiring
+  # only that model for the rest of the run (see _is_thinking_config_rejection and the
+  # "thinking" scope in opener.py). So every remaining failure mode is bounded and self-
+  # limiting:
+  #   * wrong thinking level -> 400 -> retired for the run: ONE wasted request per RUN
+  #   * id retired by Google -> 404 -> retired for the run: ONE wasted request per RUN
+  #   * per-day quota gone   -> 429 -> retired for the run: ONE wasted request per RUN
+  #   * 503 high demand      -> cascades WITHOUT retiring: one wasted request per PROFILE,
+  #     but 503s still count against the 20 RPD, so it self-retires within a run rather than
+  #     taxing it indefinitely.
+  # In every case the profile still gets its opener from gemini-3.6-flash on the next line;
+  # nothing is lost but one request. The upside is using the best available model whenever it
+  # is healthy. If it turns out to be persistently 503, move it below gemini-3.6-flash rather
+  # than removing it.
+  #
+  # To confirm it (quota resets midnight Pacific):
+  #   python tools/gemini_model_probe.py --models gemini-3.7-flash --include-configured --yes
+  #
+  # gemini-3.1-pro-preview: real and callable, but returned a per-DAY 429 on the very first
+  # request, i.e. the free tier grants it no usable daily capacity. Not worth a cascade slot.
+  #
+  # The `gemini-flash-latest` / `gemini-flash-lite-latest` / `gemini-pro-latest` ALIASES are
+  # deliberately unused. They are moving pointers: the backing model can change without notice,
+  # and with it the thinking field family -- which, per the note above, is a guaranteed 400 the
+  # day it moves. This list pins explicit versioned ids for the same reason preflight() exists.
+  # gemini-3.1-flash-lite-preview ADDED 2026-08-13: probed live and it returned a clean,
+  # filter-passing opener on {"thinkingLevel": "low"}. Worth noting because the published model
+  # page lists it as SHUT DOWN and it plainly is not -- the same "docs lag the account" lesson
+  # the 2.5 ids taught in the other direction. It is a separate model id from
+  # gemini-3.1-flash-lite, so it carries its OWN per-model daily bucket rather than sharing that
+  # model's -- real added capacity, not a second name for quota we already had. It is a preview
+  # id and can be retired without notice, which is acceptable for exactly the reason
+  # gemini-3-flash-preview above is: a 404 retires only that one entry for the rest of the run.
+  # BEST-EFFORT CASCADE (2026-08-13): every id this account can reach that could plausibly
+  # serve an opener is listed, quality-descending within tier. This is only safe because a
+  # 400 naming the thinking config now retires just that model for the run (opener.py's
+  # _is_thinking_config_rejection / "thinking" scope), exactly like a 404 -- so an entry that
+  # turns out to be wrong costs ONE request per RUN, not a dead run. Retired entries are
+  # skipped with no request from the second profile onward, so only the first profile of a run
+  # ever pays the discovery cost.
+  #   VERIFIED live at thinkingLevel:low -- 3.6-flash, 3.5-flash, 3-flash-preview,
+  #     3.5-flash-lite, 3.1-flash-lite, 3.1-flash-lite-preview, gemini-flash-lite-latest.
+  #   INFERRED (never returned a 200 on 2026-08-13, included on best effort) -- 3.7-flash
+  #     (503 launch load, then its 20 RPD spent), the two 3.1-pro-preview ids and
+  #     gemini-omni... see below, and gemini-flash-latest / gemini-pro-latest.
+  # The *-latest ALIASES are included deliberately despite adding NO capacity: measured, they
+  # resolve to the backing model's own quota bucket (gemini-flash-latest returned a per-day
+  # 429 with zero requests ever sent to it, exhausted in lockstep with gemini-3.7-flash). They
+  # earn their slot only as UPGRADE CATCHERS -- Google can repoint them at a newer model we do
+  # not yet know about, and we would pick it up with no config change. They sit at the BOTTOM
+  # of their tier so a pinned, verified id is always preferred over a moving pointer.
+  # gemini-omni-flash-preview is the one reachable id deliberately EXCLUDED: it is a
+  # conversational VIDEO generation model, a different modality, not a text+image opener model.
+  models: [gemini-3.7-flash, gemini-3.6-flash, gemini-3.5-flash, gemini-3-flash-preview,
+           gemini-3.1-pro-preview, gemini-3.1-pro-preview-customtools, gemini-pro-latest,
+           gemini-flash-latest,
+           gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.1-flash-lite-preview,
+           gemini-flash-lite-latest,
+           gemma-4-31b-it, gemma-4-26b-a4b-it]
   # Per-model generationConfig.thinkingConfig, passed through verbatim (see
   # GeminiOpener._payload). Thinking is ON BY DEFAULT for every model above, and thought
   # tokens are billed against max_tokens below -- an entry is REQUIRED for every model in
@@ -241,20 +361,99 @@ opener:
   # thinkingLevel (minimal/low/medium/high) rather than the older thinkingBudget (int; 0
   # disables) -- EMPIRICALLY VERIFIED: all seven accepted {"thinkingLevel": "minimal"} in a
   # live probe. Sending the wrong field name for a model's family is a guaranteed 400.
+  #
+  # --- minimal -> HIGH on the Gemini models, 2026-08-13, MEASURED --------------------------
+  # `minimal` was never a quality choice; it was a token-budget defence (thought tokens are
+  # billed against max_tokens below). ops/OPENER-REDESIGN.md treats it as a HANDICAP the design
+  # then works around in three separate places -- the "I bet" entropy collapse (:169, "no
+  # scratchpad for the model to reconsider its lead-in"), the field-order problem (:213), and
+  # the whole referenced/angle/opener schema reorder (:446, "specifically because thinkingLevel:
+  # minimal leaves the model no other scratchpad"). On the free tier the trade is backwards:
+  # REQUESTS/day are scarce and tokens are free, and every opener the rejection filters throw
+  # out costs a whole additional billed request (max_attempts below re-asks the SAME model).
+  #
+  # Measured thought tokens per request, one draw each, out of the 2048 max_tokens budget:
+  #   model                     minimal   low     medium
+  #   gemini-3.6-flash             --      719      --
+  #   gemini-3.5-flash             --      479      --
+  #   gemini-3-flash-preview       --        0      --
+  #   gemini-3.5-flash-lite         0        0     1756  <- 91% of budget
+  #   gemini-3.1-flash-lite         0      119      812
+  # ...and at `high` (one draw each, the level actually shipped):
+  #   gemini-3.5-flash-lite      1412 @2048 (STOP, ok)     1714 @16384
+  #   gemini-3.1-flash-lite      1962 @2048 -> MAX_TOKENS  2778 @16384 (STOP, ok)
+  #
+  # THE SHIPPED SETTING IS `high`, AND IT IS ONLY VALID BECAUSE max_tokens WAS RAISED TO 16384
+  # IN THE SAME CHANGE. Read max_tokens' comment below before touching either. The one-line
+  # version: at high with the old 2048 budget, gemini-3.1-flash-lite spent 1962 of 2048 tokens
+  # thinking and the JSON came back severed mid-field ( ..."opener": "I ) -- a billed request
+  # that produces nothing, then a retry, and max_attempts of those stops the run. Thought-token
+  # spend is also NOT monotonic in the level (high drew 1412 where medium drew 1756 on the same
+  # model), so no level can be assumed "small enough" for a tight budget; only real headroom is
+  # safe. Owner decision: openers are the product and thinking consumes no additional REQUESTS
+  # (the actually-scarce resource on this tier), so buy the most reasoning available and size
+  # the budget to fit it, rather than rationing reasoning to protect a budget that costs $0.
+  #
+  # HONEST LIMIT OF THE EVIDENCE: every draw at every level -- minimal, low, medium, high --
+  # passed this project's own filters (2 sentences, zero scaffolding markers, no dashes). No
+  # measurement here shows `high` writes BETTER openers than `low`; what it shows is that high
+  # is affordable once the budget fits it. The metric that would actually settle it is the
+  # rejection rate across many profiles (each rejection costs a whole billed request), which
+  # needs a far larger sample than was run. If openers regress or retries climb, `low` is the
+  # known-good fallback and the measurements above are its justification.
+  #
+  # The two Gemma models stay at `minimal` deliberately, and it is NOT an oversight: their
+  # binding free-tier constraint is the 16K TOKENS-PER-MINUTE cap noted above, not requests/day,
+  # and thought tokens count against it. Spending thinking there buys a per-minute 429 on a
+  # last-resort entry. Gemini proper is RPD-bound, so it is the tier where thinking is cheap.
+  #
+  # Forward compatibility, and the reason this is not merely a preference: gemini-3.7-flash
+  # REJECTS `minimal` outright (HTTP 400, "Thinking level MINIMAL is not supported for this
+  # model"). `low` is the one setting that works across the current six and the model queued to
+  # join them, so this change also removes a migration that was going to be forced anyway.
   thinking:
-    gemini-3.6-flash:       { thinkingLevel: minimal }
-    gemini-3.5-flash:       { thinkingLevel: minimal }
-    gemini-3-flash-preview: { thinkingLevel: minimal }
-    gemini-3.5-flash-lite:  { thinkingLevel: minimal }
-    gemini-3.1-flash-lite:  { thinkingLevel: minimal }
-    gemma-4-31b-it:         { thinkingLevel: minimal }
-    gemma-4-26b-a4b-it:     { thinkingLevel: minimal }
+    # `low`, never `minimal`: 3.7 rejects minimal outright (see the models comment above).
+    gemini-3.7-flash:             { thinkingLevel: high }
+    gemini-3.6-flash:             { thinkingLevel: high }
+    gemini-3.5-flash:             { thinkingLevel: high }
+    gemini-3-flash-preview:       { thinkingLevel: high }
+    # Pro tier + aliases: `low` on the same reasoning as the Flash models. Unverified for
+    # these five ids -- if any rejects it, that is a thinking-config 400 and the cascade
+    # retires just that model for the run (see the models comment above).
+    gemini-3.1-pro-preview:       { thinkingLevel: high }
+    gemini-3.1-pro-preview-customtools: { thinkingLevel: high }
+    gemini-pro-latest:            { thinkingLevel: high }
+    gemini-flash-latest:          { thinkingLevel: high }
+    gemini-flash-lite-latest:     { thinkingLevel: high }
+    gemini-3.5-flash-lite:        { thinkingLevel: high }
+    gemini-3.1-flash-lite:        { thinkingLevel: high }
+    gemini-3.1-flash-lite-preview: { thinkingLevel: high }
+    gemma-4-31b-it:               { thinkingLevel: minimal }
+    gemma-4-26b-a4b-it:           { thinkingLevel: minimal }
   # Raised from 400: thought tokens share this same budget (see `thinking` above), and at
   # 400 a model can burn the entire budget thinking and return finishReason=MAX_TOKENS with
   # NO text at all -- a billed call and no opener, on every profile. Output tokens are free
   # on the Google free tier, so this headroom is nearly costless; the real constraint on
   # this tier is requests/day, not tokens/request.
-  max_tokens: 2048
+  #
+  # 2048 -> 16384, 2026-08-13, COUPLED TO thinkingLevel: high ABOVE. THESE TWO MUST MOVE
+  # TOGETHER -- raising the thinking level without raising this is a MEASURED failure, not a
+  # theoretical one. gemini-3.1-flash-lite at {"thinkingLevel": "high"} with max_tokens 2048
+  # returned thoughts=1962 + candidates=71 = 2033 of 2048, finishReason=MAX_TOKENS, and the
+  # response JSON was severed mid-field:  ..."opener": "I   <- truncated exactly there.
+  # That is a billed request that yields NOTHING: _parse raises OpenerParseError, the service
+  # re-asks, and max_attempts of those in a row stops the run. The identical request at 16384
+  # completed cleanly (thoughts=2778, finishReason=STOP).
+  #
+  # Why 16384 specifically: measured high-thinking spend ranged 1412-2778 thought tokens on a
+  # SMALL synthetic 3-image profile; a real 8-screenshot capture sends far more input and can
+  # reason longer, so this leaves roughly 5x headroom over the worst observed draw. It is
+  # comfortably under every configured model's own outputTokenLimit (65536 on all twelve Gemini
+  # ids, 32768 on the two Gemma ones), so it can never itself become a 400. Output tokens are
+  # $0 on this tier and thinking consumes no additional REQUESTS, so the only real costs are
+  # latency (measured ~9-11s at high vs ~4-7s at low, well inside request_timeout_s below) and
+  # per-minute token pressure -- which is exactly why the two Gemma entries stay at `minimal`.
+  max_tokens: 16384
   # Owner rule (2026-08-10): no commentless likes, ever. A rejected AI response (bad/empty
   # opener, fails the style rules, etc.) is re-asked with a correction hint instead of being
   # sent as-is or swapped for a bare like. Free-tier REQUESTS/day are the scarce resource
@@ -496,11 +695,18 @@ budget:
   # These zero prices are ONLY for the explicitly selected Google free tier. Update every
   # Gemini row to the current paid prices before enabling Google Cloud billing.
   pricing:
+    gemini-3.7-flash:       { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
     gemini-3.6-flash:       { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
     gemini-3.5-flash:       { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
     gemini-3-flash-preview: { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
     gemini-3.5-flash-lite:  { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
     gemini-3.1-flash-lite:  { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
+    gemini-3.1-flash-lite-preview: { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
+    gemini-3.1-pro-preview: { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
+    gemini-3.1-pro-preview-customtools: { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
+    gemini-pro-latest: { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
+    gemini-flash-latest: { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
+    gemini-flash-lite-latest: { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
     gemma-4-31b-it:         { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
     gemma-4-26b-a4b-it:     { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 }
 

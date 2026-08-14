@@ -25,6 +25,7 @@ tests/test_frameshift.py uses for `_resolve`:
 Every positive is paired with a negative plus a control that proves WHICH mechanism did the
 excluding.
 """
+import dataclasses
 import math
 import subprocess
 import sys
@@ -159,6 +160,108 @@ def _full():
     return _CACHE["full"]
 
 
+def test_incremental_prefix_reuses_measurements_without_changing_the_index(monkeypatch):
+    """A growing capture must not re-segment its already hash-bound frame prefix."""
+    baseline = _full()
+    frames = [_frame(scroll) for scroll in _FULL_SCROLL]
+    real_segment = item_index.segment_frame
+    real_shift = item_index.estimate_shift
+    calls = {"segment": 0, "shift": 0}
+
+    def counted_segment(*args, **kwargs):
+        calls["segment"] += 1
+        return real_segment(*args, **kwargs)
+
+    def counted_shift(*args, **kwargs):
+        calls["shift"] += 1
+        return real_shift(*args, **kwargs)
+
+    monkeypatch.setattr(item_index, "segment_frame", counted_segment)
+    monkeypatch.setattr(item_index, "estimate_shift", counted_shift)
+    prior = None
+    for size in range(1, len(frames) + 1):
+        prior = item_index.build_item_index(
+            frames[:size], content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+            like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True,
+            identity_band=None, _prefix_index=prior)
+
+    assert prior == baseline
+    # An uncached pass at every prefix would call these 36 and 28 times respectively.
+    assert calls == {"segment": len(frames), "shift": len(frames) - 1}
+
+
+def test_one_isolated_bad_intermediate_frame_is_rebuilt_over_a_measured_bridge(monkeypatch):
+    """A single failed pair is recoverable only by discarding one real intermediate frame.
+
+    This models the reported ordinary +229px Hinge step: two strips were unanimous but below the
+    three-witness floor, so the original pair stays a refusal.  The replacement must instead be
+    a fresh, fully usable index whose direct neighbouring bridge is measured; it may not reuse
+    the failed pair's consensus or assume a two-step offset.
+    """
+    frames = [_frame(scroll) for scroll in _FULL_SCROLL]
+    failed_pair = (3, 4)
+    real_shift = item_index.estimate_shift
+
+    def one_bad_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        if (frame_a, frame_b) == (frames[failed_pair[0]], frames[failed_pair[1]]):
+            return dataclasses.replace(
+                result, delta_px=None, status=frameshift.SHIFT_NO_CONSENSUS,
+                consensus_px=None, reason="synthetic two-witness refusal")
+        return result
+
+    calls = []
+
+    def counted_one_bad_pair(frame_a, frame_b, **kwargs):
+        calls.append((frame_a, frame_b))
+        return one_bad_pair(frame_a, frame_b, **kwargs)
+
+    monkeypatch.setattr(item_index, "estimate_shift", counted_one_bad_pair)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.recovered_from_pair == failed_pair
+    assert index.recovery_bridge is not None
+    assert index.recovery_failed_shift is not None
+    assert index.recovery_failed_shift.reason == "synthetic two-witness refusal"
+    omitted = tuple(i for i in range(len(frames)) if i not in index.source_frame_indices)
+    assert omitted == (3,)                 # equal bridges choose the lower original index
+    left, right = index.recovery_bridge
+    assert right == left + 2 and omitted[0] == left + 1
+    bridge = index.shifts[left]
+    assert bridge.status == frameshift.SHIFT_MEASURED
+    assert bridge.delta_px == _STEP * 2
+    assert "without assuming an offset" in index.recovery_reason
+    # Both candidate omissions were actually measured before the deterministic choice.
+    assert (frames[2], frames[4]) in calls and (frames[3], frames[5]) in calls
+
+
+def test_frame_omission_recovery_refuses_when_no_direct_bridge_is_measured(monkeypatch):
+    """The recovery cannot turn a failed pair into a permission to drop evidence blindly."""
+    frames = [_frame(scroll) for scroll in _FULL_SCROLL]
+    real_shift = item_index.estimate_shift
+
+    def failed_pair_and_bridges(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        positions = {(frames[3], frames[4]), (frames[2], frames[4]), (frames[3], frames[5])}
+        if (frame_a, frame_b) in positions:
+            return dataclasses.replace(
+                result, delta_px=None, status=frameshift.SHIFT_NO_CONSENSUS,
+                consensus_px=None, reason="synthetic bridge refusal")
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", failed_pair_and_bridges)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert not index.usable
+    assert index.source_frame_indices == tuple(range(len(frames)))
+    assert index.recovered_from_pair is None and index.recovery_bridge is None
+
+
 def _kinds(index):
     return [b.kind for b in index.blocks]
 
@@ -181,11 +284,18 @@ def _obs(frame_index, page_y0, page_y1, *, complete=True, hearts=(), kind=None):
 
 
 def _assemble(observations, *, at_scroll_top=True, **kw):
+    """Wraps `item_index._assemble`, which returns `(blocks, failures, notes)`. Most tests here
+    only care about the first two, so `blocks, failures = _assemble(...)` still works: unpacking
+    into two names raises on a 3-tuple, so this drops `notes` for callers that did not ask for it
+    via `full=True`, rather than making every existing call site carry a third name it ignores."""
     kw.setdefault("card_x", (_CARD_X0, _CARD_X1))
     kw.setdefault("extent_tolerance_px", item_index._EXTENT_TOLERANCE_PX)
     kw.setdefault("min_item_gap_px", item_index._MIN_ITEM_GAP_PX)
     kw.setdefault("band_y0", _BAND0)
-    return item_index._assemble(list(observations), at_scroll_top=at_scroll_top, **kw)
+    full = kw.pop("full", False)
+    blocks, failures, notes = item_index._assemble(
+        list(observations), at_scroll_top=at_scroll_top, include_notes=True, **kw)
+    return (blocks, failures, notes) if full else (blocks, failures)
 
 
 # =====================================================================================
@@ -558,13 +668,86 @@ def test_two_hearts_at_one_page_position_are_a_failure_and_not_a_choice():
 def test_a_fragment_reaching_past_a_bounded_card_is_reported():
     """A sighting that overruns a card whose both edges were observed is a merged block or a
     mis-tracked frame — a fragment cannot be bigger than the thing it is a fragment of."""
-    blocks, failures = _assemble([
+    blocks, failures, notes = _assemble([
         _obs(0, 700, 1674, hearts=(1584,)),
         _obs(1, 700, 2400, complete=False),
-    ])
+    ], full=True)
 
     assert len(blocks) == 1
     assert any("cannot reach past the card that contains it" in f for f in failures), failures
+    assert notes == ()                    # one proven card is never a licence to discard data
+
+
+def test_live_f19_to_f29_bridging_shape_is_split_on_its_bounded_cards():
+    """One missed gutter must not merge two otherwise independently bounded cards.
+
+    The two incomplete sightings model the live capture: each spans the 47px gutter, while the
+    complete sightings independently establish both cards' exact extents.  The fragments are
+    excluded (with provenance), not assigned to either card or silently discarded.
+    """
+    blocks, failures, notes = _assemble([
+        # The precise live shape: f19/f20 span the missed 47px gutter; f24 independently
+        # sees BOTH cards.  The rest are the visible fragments carried across f21–f29.
+        _obs(19, 6368, 6709, complete=False),
+        _obs(20, 6368, 6941, complete=False),
+        _obs(21, 6550, 7200, complete=False),
+        _obs(22, 6550, 7466, complete=False),
+        _obs(23, 6550, 7477, hearts=(7387,)),
+        _obs(24, 6368, 6503, hearts=(6413,)),
+        _obs(24, 6550, 7477, hearts=(7387,)),
+        _obs(25, 6550, 7477, hearts=(7387,)),
+        _obs(26, 6643, 7477, complete=False),
+        _obs(27, 6906, 7477, complete=False),
+        _obs(28, 7126, 7477, complete=False),
+        _obs(29, 7358, 7477, complete=False),
+    ], full=True)
+
+    assert failures == ()
+    assert [(block.page_y0, block.page_y1) for block in blocks] == [
+        (6368, 6503), (6550, 7477)]
+    assert [block.kind for block in blocks] == [
+        item_index.ITEM_SELECTABLE, item_index.ITEM_SELECTABLE]
+    assert len(notes) == 2
+    assert all("segmentation missed the gutter" in note for note in notes)
+    assert {"frame 19", "frame 20"} == {note.split("'s")[0] for note in notes}
+
+
+def test_a_bridging_fragment_with_an_uncorroborated_heart_is_not_discarded():
+    """The split needs independent evidence for every heart it would exclude."""
+    blocks, failures, notes = _assemble([
+        _obs(23, 6368, 6503, hearts=(6413,)),
+        _obs(24, 6550, 7477, hearts=(7387,)),
+        _obs(19, 6368, 6709, complete=False, hearts=(6600,)),
+    ], full=True)
+
+    assert len(blocks) == 1
+    assert failures
+    assert notes == ()
+
+
+def test_a_fragment_that_cannot_be_placed_on_a_proven_card_is_not_discarded():
+    """A grazing fragment cannot be guessed onto either side of a proven boundary."""
+    blocks, failures, notes = _assemble([
+        _obs(23, 6368, 6503, hearts=(6413,)),
+        _obs(24, 6550, 7477, hearts=(7387,)),
+        _obs(19, 6368, 6709, complete=False),
+        _obs(20, 6503, 6555, complete=False),  # only 5px into card two: tolerance, not evidence
+    ], full=True)
+
+    assert len(blocks) == 1
+    assert failures
+    assert notes == ()
+
+
+def test_two_complete_extents_from_the_same_frame_remain_a_hard_failure():
+    """The bridge repair must not turn a genuinely self-contradictory frame into a split."""
+    blocks, failures = _assemble([
+        _obs(24, 700, 1674, hearts=(1584,)),
+        _obs(24, 700, 1684, hearts=(1594,)),
+    ])
+
+    assert len(blocks) == 1
+    assert any("self-contradictory frame" in failure for failure in failures), failures
 
 
 # =====================================================================================

@@ -72,8 +72,9 @@ streak does.
 from __future__ import annotations
 
 import threading
+import inspect
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable
 
@@ -165,6 +166,10 @@ class OpenerPick:
     # set this must not have its number converted into a tap on somebody's phone. Fail-safe
     # means "no target", not "target 1".
     index_space: str = INDEX_SPACE_MODEL_ITEMS
+    # Private, one-run staging envelope.  AUTO and Observe both commit it only after the
+    # driver's like boundary returns: a generated opener is not evidence of a landed action.
+    _staged_record: "_StagedOpenerRecord | None" = field(
+        default=None, repr=False, compare=False)
 
     @property
     def capture_order_index(self) -> int | None:
@@ -222,6 +227,19 @@ class OpenerPick:
         return None
 
 
+@dataclass(frozen=True)
+class _StagedOpenerRecord:
+    """An uncommitted, profile-attributable opener row for one pending like."""
+    run_id: str
+    app: str
+    model: str
+    opener: str
+    referenced: str
+    angle: str
+    item_description: str
+    recent_entry: dict
+
+
 # How many consecutive provider HTTP 400s to require before treating the failure
 # as permanent and latching the service disabled. A genuinely broken request (bad schema,
 # bad param) is deterministic: it re-fires on the very next call no matter which profile's
@@ -266,6 +284,38 @@ _RECENT_REJECTIONS = 12
 # which is not a fingerprint. Compared against self.recent_openers, whose own cap
 # (_RECENT_OPENERS) therefore also decides how far back the guard can see.
 _ENTROPY_NGRAM_WORDS = 4
+
+
+def _record_staged_opener(store, record: "_StagedOpenerRecord", pick: OpenerPick, *,
+                          profile_id: str, decision: str, decision_source: str,
+                          decision_created_at: object | None) -> None:
+    """Persist a committed draft with modern lineage when the store declares support for it.
+
+    OpenerService has long accepted small duck-typed stores.  The action-lineage columns are a
+    backward-compatible schema extension, not a reason for such a store to turn a real Like into
+    a failed worker run.  Signature inspection (rather than a TypeError fallback) keeps a genuine
+    store implementation error observable.
+    """
+    sink = store.record_opener
+    try:
+        parameters = inspect.signature(sink).parameters.values()
+    except (TypeError, ValueError):
+        accepts_lineage = True
+    else:
+        names = {parameter.name for parameter in parameters}
+        accepts_lineage = (any(parameter.kind is inspect.Parameter.VAR_KEYWORD
+                               for parameter in parameters)
+                           or {"profile_id", "decision", "decision_source",
+                               "decision_created_at", "model_item_index"}.issubset(names))
+    if accepts_lineage:
+        sink(record.run_id, record.app, record.model, record.opener,
+             record.referenced, record.angle, record.item_description,
+             profile_id=profile_id, decision=decision, decision_source=decision_source,
+             decision_created_at=decision_created_at,
+             model_item_index=(pick.index if pick.index != ITEM_INDEX_ABSENT else None))
+    else:
+        sink(record.run_id, record.app, record.model, record.opener,
+             record.referenced, record.angle, record.item_description)
 
 
 def _is_invalid_gemini_api_key(exc: Exception) -> bool:
@@ -424,9 +474,10 @@ class OpenerService:
         # and _TRANSIENT_LATCH_THRESHOLD for why); reset on any outcome that proves the
         # opener pipeline actually works.
         self._consecutive_transient_failures = 0
-        # Ring buffer of the most recent SUCCESSFUL opener generations (see
-        # recent_openers_snapshot), independent of self.store.record_opener's permanent
-        # per-run record. WHY THIS EXISTS: a bug report that says only "openers=1" cannot
+        # Ring buffer of the most recent COMMITTED opener records (AUTO generations, plus
+        # Observe suggestions only after a confirmed Like; see recent_openers_snapshot),
+        # mirroring self.store.record_opener's permanent per-run record. WHY THIS EXISTS: a
+        # bug report that says only "provider_calls=1" cannot
         # tell you whether that opener was about the right photo. Recording the model's own
         # `referenced` string alongside whether the call was anchored (see maybe_opener's
         # anchor parameter) is exactly the evidence needed to diagnose an out-of-place opener
@@ -436,15 +487,21 @@ class OpenerService:
         # locking -- only recent_openers_snapshot (a reader that may run on a different
         # thread, e.g. while building a bug report) takes the lock itself.
         self.recent_openers: deque[dict] = deque(maxlen=_RECENT_OPENERS)
+        # Privacy-preserving entropy scratch space.  Advisory suggestions are drafts until a
+        # real decision lands, so they must not enter the diagnostic/durable opener trail.
+        # The entropy guard still needs to avoid a run of identical outbound openings, though;
+        # retain only its normalized leading n-gram, in memory, for this process lifetime.
+        # It has no profile id, item, model, full opener, or store write.
+        self._recent_opening_ngrams: deque[str] = deque(maxlen=_RECENT_OPENERS)
         # Ring buffer of the most recent REJECTED opener attempts (OpenerParseError), mirroring
         # recent_openers above but for the other outcome. WHY THIS EXISTS: self.store.
-        # record_opener_rejection is the durable per-run record, but a bug report (see
+        # record_opener_rejection is the durable per-run AUTO record, but a bug report (see
         # bugreport.py's Recent opener rejections section) needs this data WITHOUT a BigQuery
         # round-trip, exactly like recent_openers exists so the report doesn't have to query
         # self.store.record_opener's table either. Appended in the OpenerParseError branch of
-        # maybe_opener below, for EVERY rejected attempt (including the final one that
-        # exhausts a profile's retries) regardless of whether persisting to self.store
-        # succeeded -- this in-memory copy must not depend on the store being reachable.
+        # maybe_opener below for every AUTO rejected attempt (including the final one that
+        # exhausts retries), regardless of whether persistence succeeds. Observe drafts
+        # deliberately keep no profile-attributable rejection trail.
         # "Attempt" is exact: an unusable ENTROPY REGENERATION draw (see _apply_entropy_guard)
         # is deliberately absent from both this buffer and the store's ledger, because that
         # draw never gated a send, and counting it would inflate the very guard-firing rate
@@ -491,16 +548,15 @@ class OpenerService:
 
     def _leading_ngram_collision(self, opener: str) -> str:
         """The leading n-gram this opener SHARES with one already produced this run, or "" when
-        it opens with words we have not used yet. Pure lookup over self.recent_openers (the ring
-        buffer that already exists for bug reports -- see its docstring in __init__); it decides
-        nothing on its own, _apply_entropy_guard below owns every consequence.
+        it opens with words we have not used yet. Pure lookup over a bounded, in-memory n-gram
+        scratch buffer; it decides nothing on its own, _apply_entropy_guard below owns every
+        consequence.
 
-        Deliberately NOT filtered by app, and deliberately counting ADVISORY entries: the
-        fingerprint this guard exists to avoid is "every message this account sends opens the
-        same way", and neither a woman comparing screenshots with a friend nor an anti-bot
-        heuristic cares which of our workers produced which line. Observe-mode suggestions
-        belong in that population too, because the human retypes and sends them verbatim (see
-        the observe-opener canary rule) -- they are real sent messages, not drafts.
+        Deliberately NOT filtered by app, and it includes advisory n-grams: the fingerprint this
+        guard exists to avoid is "every message this account sends opens the same way", and
+        neither a woman comparing screenshots with a friend nor an anti-bot heuristic cares
+        which worker produced a line.  Advisory text remains a non-durable draft until a Like,
+        but its n-gram is sufficient for the run-local anti-repetition check.
 
         The n-gram is recomputed from each entry's stored text rather than cached in the entry:
         the buffer is bounded at _RECENT_OPENERS, so this is a dozen string compares, and
@@ -510,16 +566,17 @@ class OpenerService:
         ngram = _leading_ngram(opener, _ENTROPY_NGRAM_WORDS)
         if not ngram:
             return ""
-        for entry in self.recent_openers:
-            if _leading_ngram(str(entry.get("opener") or ""), _ENTROPY_NGRAM_WORDS) == ngram:
-                return ngram
+        if ngram in self._recent_opening_ngrams:
+            return ngram
         return ""
 
     def _record_billed_draw(self, run_id: str, model: str, usage, *, note: str) -> None:
         """Track + persist the spend of a billed opener call whose text is NOT the one being
-        sent: the draft the entropy guard threw away, or a regeneration draw that came back
-        unparseable. A discarded draw is no less billed than a sent one, and this service's
-        entire budget contract rests on every real call being recorded exactly once.
+        sent.
+
+        Spend is billing telemetry, rather than a preference/card decision.  It remains durable
+        for every real provider call, including a discarded Observe draft, so run/day budgets
+        never under-report actual usage.
 
         Deliberately does NOT call _exhaust on an unpriceable model, unlike every other
         tracker.record() call site in this file -- the entropy guard's contract is that it can
@@ -729,17 +786,18 @@ class OpenerService:
     def maybe_opener(self, run_id: str, app: str, profile: Profile, *,
                       items: ItemRequest | None = None,
                       should_stop: Callable[[], bool] | None = None,
-                      advisory: bool = False) -> "OpenerPick | None":
+                      advisory: bool = False, stage: bool = False) -> "OpenerPick | None":
         """Return an OpenerPick (text + the MODEL ITEM INDEX the opener is about and the item
         to like -- 1-based, see OpenerPick), or None (disabled / budget
         reached / out of credit / permanent provider error / every retry attempt used up /
         a per-profile OpenerError / a single sub-latch 400 or transient failure / the run
         stopping via should_stop).
 
-        advisory (default False -- unchanged AUTO-mode behavior): True for Hinge's observe-
-        mode post-heart suggestion (see worker.py's on_like_intent), where the opener is only
-        DISPLAYED next to the app's own comment sheet -- the human retypes and sends it (or
-        their own words) themselves. Two consequences follow directly from that:
+        advisory (default False -- unchanged AUTO-mode behavior): True for Hinge's pre-action
+        Observe suggestion (see worker.py's _ObserveSuggestion). It is a private draft until a
+        confirmed Like: manual Observe may display it for a person, while the reviewed bridge
+        may send that exact current draft only after its own sheet checks. Two consequences
+        follow directly from its advisory role:
           1. Exactly ONE attempt is made (effective_max_attempts becomes 1 regardless of
              self.max_attempts): a human is sitting there waiting on this call, so a multi-
              attempt retry storm is a UX problem here, not a spend-protecting safeguard --
@@ -748,12 +806,12 @@ class OpenerService:
              instead of the default request_stop=True. disabled/exhausted_reason are still
              set exactly as for an AUTO exhaustion (so a systematically broken model/prompt
              still stops burning quota on further suggestions), but stop_requested is left
-             alone: an advisory suggestion failing is COSMETIC (the human keeps swiping and
-             typing their own messages with the app's own controls either way), and ending
-             the whole observe session over it would sacrifice the session's entire purpose
-             (collecting real training labels) for something that was never going to touch
-             automation. See worker.py's _wait_for_observed_decision for the call site and
-             this class's own _exhaust() for the matching request_stop plumbing.
+             alone: an advisory suggestion failing is COSMETIC (the person or reviewed
+             controller can still make a preference action without this draft), and ending
+             the whole Observe session over it would sacrifice the session's entire purpose
+             (collecting real training labels) for something that was never going to force an
+             action. See worker.py's _ObserveSuggestion for the call site and this class's
+             own _exhaust() for the matching request_stop plumbing.
 
         items (default None): ops/OPENER-REDESIGN.md 5.2/5.7's item-crop request shape -- one
         cropped image per numbered profile item, the unnumbered context crops after them, her
@@ -961,24 +1019,26 @@ class OpenerService:
                     # loose. Guarded exactly like record_spend just above: a store outage
                     # must never take down opener generation, the one invariant this whole
                     # file exists to protect.
-                    try:
-                        self.store.record_opener_rejection(
-                            run_id, app, e.model, attempt, e.reason_code, str(e), e.raw_opener)
-                    except Exception as store_exc:  # noqa: BLE001
-                        print(f"Warning: failed to persist opener rejection record: {store_exc}")
+                    if not advisory:
+                        try:
+                            self.store.record_opener_rejection(
+                                run_id, app, e.model, attempt, e.reason_code, str(e), e.raw_opener)
+                        except Exception as store_exc:  # noqa: BLE001
+                            print(f"Warning: failed to persist opener rejection record: {store_exc}")
                     # In-memory mirror of the row just above, independent of the store call's
                     # success -- see recent_rejections' docstring in __init__ for why this
                     # exists (the bug report's Recent opener rejections section reads this,
                     # not the store, exactly like recent_openers/recent_openers_snapshot).
-                    self.recent_rejections.append({
-                        "ts": datetime.now().isoformat(timespec="seconds"),
-                        "app": app,
-                        "model": e.model,
-                        "attempt": attempt,
-                        "reason_code": e.reason_code,
-                        "reason": str(e),
-                        "raw_opener": e.raw_opener,
-                    })
+                    if not advisory:
+                        self.recent_rejections.append({
+                            "ts": datetime.now().isoformat(timespec="seconds"),
+                            "app": app,
+                            "model": e.model,
+                            "attempt": attempt,
+                            "reason_code": e.reason_code,
+                            "reason": str(e),
+                            "raw_opener": e.raw_opener,
+                        })
 
                     if self.disabled:
                         # _exhaust() already ran above (the unpriceable-model guard) -- the
@@ -1227,6 +1287,7 @@ class OpenerService:
                     print(f"Opener: the opener being sent restates "
                           f"{len(redundancy_markers)} word(s) from its own `referenced` note "
                           f"({'; '.join(redundancy_markers)}). Logged only, never a rejection.")
+                staged_for_action = advisory or stage
                 try:
                     self.store.record_spend(run_id, result.model, result.usage, cost)
                     # angle and item_description ride along as the 6th and 7th POSITIONAL
@@ -1240,12 +1301,9 @@ class OpenerService:
                     # which is a misleading thing to print about an AttributeError on
                     # `referenced` (the spend row above it was already written fine).
                     #
-                    # item_description is persisted for the same reason `angle` is (doc 5.7:
-                    # "auto ignores and logs it"): it is the model's own account of WHAT it
-                    # picked, so a wrong-item report months later can be checked against what
-                    # the model believed it was writing about without re-running anything.
-                    self.store.record_opener(run_id, app, result.model, result.opener,
-                                             referenced, angle, item_description)
+                    if not staged_for_action:
+                        self.store.record_opener(run_id, app, result.model, result.opener,
+                                                 referenced, angle, item_description)
                 except Exception as e:  # noqa: BLE001
                     # Spend was already tracked in-memory by CostTracker (or deliberately
                     # marked unrecoverable above); store failure is non-fatal.
@@ -1253,9 +1311,9 @@ class OpenerService:
                           f"({_display_cost(cost)}): {e}")
                 if self.tracker.budget_reached():
                     self._exhaust("run budget reached", request_stop=not advisory)
-                # Append to the ring buffer for EVERY successful call, advisory or AUTO alike
-                # -- see recent_openers' docstring in __init__ for why: this preserves the
-                # request's item space and the model's own `referenced` claim for diagnosis.
+                # A diagnostic opener entry is committed only for AUTO, or later for a confirmed
+                # Observe Like.  An advisory suggestion is a draft and must not make an
+                # abandoned profile look acted-on in a bug report.
                 #
                 # The three newer fields all exist to make a redesign VISIBLE in a bug report
                 # rather than only in a console line nobody kept: `angle` is the model's own
@@ -1282,10 +1340,13 @@ class OpenerService:
                 # read: it names the list "index" counts, which is the one fact a bare small
                 # integer cannot carry and whose absence is what let the two spaces be confused
                 # in the first place.
-                self.recent_openers.append({
+                recent_entry = {
                     "ts": datetime.now().isoformat(timespec="seconds"),
                     "app": app,
                     "model": result.model,
+                    # This remains an advisory-generation record even though it is appended
+                    # only after a confirmed Like.  The flag describes how the opener was
+                    # produced (Observe vs AUTO), not whether the staged row was committed.
                     "advisory": bool(advisory),
                     "index": item_index,
                     "index_space": index_space,
@@ -1296,15 +1357,23 @@ class OpenerService:
                     "entropy_collision": entropy_collision,
                     "entropy_regenerated": entropy_regenerated,
                     "opener": result.opener,
-                })
+                }
+                if not staged_for_action:
+                    self.recent_openers.append(recent_entry)
+                ngram = _leading_ngram(result.opener, _ENTROPY_NGRAM_WORDS)
+                if ngram:
+                    self._recent_opening_ngrams.append(ngram)
                 # Positional, matching OpenerPick's field order: text, index (the MODEL ITEM
                 # INDEX now -- see that dataclass's docstring), referenced, angle,
                 # item_description. `index_space` is passed by KEYWORD rather than as a sixth
                 # positional: it is the field that makes `index` interpretable at all, and a
                 # bare trailing string in a five-argument positional call is exactly the kind
                 # of thing a later edit drops or reorders without noticing.
+                staged = (_StagedOpenerRecord(
+                    run_id, app, result.model, result.opener, referenced, angle,
+                    item_description, recent_entry) if staged_for_action else None)
                 return OpenerPick(result.opener, item_index, referenced, angle, item_description,
-                                  index_space=index_space)
+                                  index_space=index_space, _staged_record=staged)
             # Unreachable in practice: __init__ now rejects any max_attempts that isn't an
             # int >= 1 (see BUG 2), so range(1, effective_max_attempts + 1) -- 1 for an advisory
             # call, self.max_attempts otherwise -- always yields at least one iteration, and
@@ -1318,8 +1387,35 @@ class OpenerService:
             # is ever broken by a future edit.
             return None  # pragma: no cover
 
+    def commit_opener(self, pick: OpenerPick, *, profile_id: str = "", decision: str = "like",
+                      decision_source: str = "", decision_created_at: object | None = None) -> bool:
+        """Persist one staged AUTO/Observe opener after a landed Like, exactly once.
+
+        This is intentionally a separate, explicit commit from generation: neither opening a
+        profile nor generating a suggestion says that the account acted.  Pass, Stop, resync,
+        and every pre-tap refusal simply drop the in-memory envelope with the card.
+        """
+        with self._lock:
+            record = getattr(pick, "_staged_record", None)
+            if record is None:
+                return False
+            try:
+                _record_staged_opener(
+                    self.store, record, pick, profile_id=profile_id, decision=decision,
+                    decision_source=decision_source, decision_created_at=decision_created_at)
+            except Exception as exc:  # noqa: BLE001 -- a store outage must not erase a real Like
+                print(f"Warning: failed to persist committed opener after landed like: {exc}")
+                return False
+            self.recent_openers.append(dict(record.recent_entry))
+            pick._staged_record = None
+            return True
+
+    def commit_advisory_opener(self, pick: OpenerPick, **lineage) -> bool:
+        """Compatibility alias for Observe callers; commit semantics are now generic."""
+        return self.commit_opener(pick, **lineage)
+
     def recent_openers_snapshot(self) -> list[dict]:
-        """A copy of the most recent successful opener generations -- see recent_openers'
+        """A copy of the most recent committed opener records -- see recent_openers'
         docstring in __init__ for exactly what each entry records and why (the request item
         space and the model's own `referenced` claim diagnose an out-of-place opener).
 
@@ -1349,12 +1445,12 @@ class OpenerService:
         retry attempt failing) reaches here with the default request_stop=True.
 
         request_stop=False is for an ADVISORY call only (see maybe_opener's advisory
-        parameter): a Hinge observe-mode suggestion that a human retypes and sends
-        themselves has no automation behind it for a bad response to threaten, so ending the
-        whole observe session over it would sacrifice the session's entire purpose (real
-        training labels) for something purely cosmetic -- the owner's rule is "stop the
-        AUTOMATION", and observe has none. disabled/exhausted_reason are still set exactly
-        as for an AUTO exhaustion (a systematically broken model/prompt must still stop
+        parameter): a Hinge Observe draft is still pre-action, so a bad response cannot
+        justify forcing the session itself to stop. Ending the whole Observe session over it
+        would sacrifice real training labels for something purely cosmetic -- the owner's rule
+        is "stop the AUTOMATION", and a draft has not made an action.
+        disabled/exhausted_reason are still set exactly as for an AUTO exhaustion (a
+        systematically broken model/prompt must still stop
         burning further quota on suggestions no one will ever see used), and this method
         remains first-writer-wins for exhausted_reason regardless of which kind of call gets
         there first -- only the stop_requested side effect is conditional.

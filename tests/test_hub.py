@@ -1124,6 +1124,49 @@ def test_hubstate_recent_openers_swallows_a_raising_service():
     assert st.recent_openers() == []
 
 
+def test_hubstate_freezes_opener_telemetry_when_a_run_finishes(monkeypatch):
+    """The report remains diagnostic after shutdown without retaining the service itself.
+
+    This is the exact lifecycle that used to lose the ring buffers: HubState's target finally
+    cleared _opener_service after supervisor.run returned, so the terminal status could say
+    ``openers=1`` while Recent openers incorrectly said none.  The fake keeps nested data too,
+    proving the retained value is a detached copy rather than a reference into the service.
+    """
+    import operation_love.hub as hub
+
+    class FakeOpenerService:
+        def __init__(self):
+            self.openers = [{"ts": "t1", "app": "hinge", "opener": "hello",
+                             "nested": ["marker"]}]
+            self.rejections = [{"ts": "t2", "app": "hinge", "reason_code": "bad_json"}]
+
+        def recent_openers_snapshot(self):
+            return list(self.openers)
+
+        def recent_rejections_snapshot(self):
+            return list(self.rejections)
+
+    service = FakeOpenerService()
+
+    def completed_run(_config_path, *, on_opener_service=None, **_kwargs):
+        on_opener_service(service)
+
+    monkeypatch.setattr(hub.supervisor, "run", completed_run)
+    st = HubState("config.yaml")
+    ok, _ = st.start()
+    assert ok is True
+    assert st.wait_for_run(timeout=5) is True
+
+    with st._lock:
+        assert st._opener_service is None
+    assert st.recent_openers() == [{"ts": "t1", "app": "hinge", "opener": "hello",
+                                    "nested": ["marker"]}]
+    assert st.recent_opener_rejections() == [
+        {"ts": "t2", "app": "hinge", "reason_code": "bad_json"}]
+    service.openers[0]["nested"].append("changed after shutdown")
+    assert st.recent_openers()[0]["nested"] == ["marker"]
+
+
 def test_wait_for_run_honors_timeout():
     # Ctrl-C quit gives the run a bounded wait so a wedged worker can't hang quit forever.
     st = HubState("config.yaml")
@@ -1201,7 +1244,7 @@ def _observe_status_script(snap: dict) -> str:
     )
 
 
-def test_observe_banner_uses_click_language_and_replaces_it_with_hinge_opener():
+def test_observe_banner_uses_explicit_pass_or_like_language_and_replaces_it_with_hinge_opener():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     waiting = {
@@ -1210,7 +1253,7 @@ def test_observe_banner_uses_click_language_and_replaces_it_with_hinge_opener():
     }
     ordinary = _run_node(_observe_status_script(waiting))
     assert ordinary["display"] == "block"
-    assert "click pass X or heart" in ordinary["html"]
+    assert "tap X to pass, or tap a heart to like" in ordinary["html"]
     assert "swipe" not in ordinary["html"].lower()
 
     # Hinge uses the physically labelled X/heart controls; other platforms may not.
@@ -1220,7 +1263,7 @@ def test_observe_banner_uses_click_language_and_replaces_it_with_hinge_opener():
     }
     generic = _run_node(_observe_status_script(other_app))
     assert "use the app's pass or like control" in generic["html"]
-    assert "click pass X or heart" not in generic["html"]
+    assert "tap X to pass" not in generic["html"]
     assert "swipe" not in generic["html"].lower()
 
     # Text comes from an AI response and must remain text, never markup in the hub.
@@ -1234,8 +1277,22 @@ def test_observe_banner_uses_click_language_and_replaces_it_with_hinge_opener():
     suggestion = _run_node(_observe_status_script(with_sheet))
     assert "then tap Send Like in Hinge" in suggestion["html"]
     assert "I like &lt;your prompt&gt; &amp; &quot;this&quot;" in suggestion["html"]
-    assert "click pass X or heart" not in suggestion["html"]
+    assert "tap X to pass" not in suggestion["html"]
     assert "<your prompt>" not in suggestion["html"]
+
+    # A malformed/legacy status without an item must still make the conditional role clear;
+    # it must never render the grammatical but misleading "if you choose to like, use, then".
+    pre_tap_without_item = {
+        "running": True,
+        "status": {"apps": {"hinge": {
+            "app": "hinge", "mode": "observe", "state": "waiting",
+            "opener_suggestion": "A safe fallback",
+        }}},
+    }
+    missing_item = _run_node(_observe_status_script(pre_tap_without_item))
+    assert "Optional — not a recommendation" in missing_item["html"]
+    assert "if you choose to like, type exactly this" in missing_item["html"]
+    assert "if you choose to like, use, then" not in missing_item["html"]
 
     # An unavailable opener provider must not expose the internal waiting_for_send state
     # or leave the person without a next action; they can write their own opener instead.
@@ -1333,12 +1390,9 @@ def test_observe_banner_opener_row_escapes_html_metacharacters_without_altering_
     assert "Nice &lt;ears&gt; &amp; &quot;antlers&quot;, right?" in html
 
 
-def test_observe_banner_leads_with_which_item_to_like():
-    """DOC 5.9's INVERSION, at the surface the operator actually reads. The system now chooses
-    the item and the human is TOLD which one, before they tap -- so "like item 3" is the first
-    thing to do and must lead the box, with the model's own description of that item beside it
-    so it can be found without counting hearts (doc 5.7's "observe displays it" for
-    item_description, which until the inversion was rendered nowhere).
+def test_observe_banner_shows_the_selected_item_after_a_heart_is_open():
+    """Once the sheet is open, direct copy identifies the selected item and keeps the opener
+    in its own canary row. The conditional pre-tap wording belongs only to `waiting`.
 
     The canary rule still binds: the instruction is hub chrome and must stay OUT of the opener's
     own row, which is asserted structurally here rather than by looking for the text anywhere in
@@ -1356,14 +1410,14 @@ def test_observe_banner_leads_with_which_item_to_like():
     }
     html = _run_node(_observe_status_script(snap))["html"]
 
-    assert "like item 3" in html
+    assert "item 3 selected" in html
     assert "the ridgeline photo" in html
-    m = re.search(r'then type exactly this</div>\s*<div[^>]*>(.*?)</div>\s*<div[^>]*>(.*?)</div>',
+    m = re.search(r'type exactly this</div>\s*<div[^>]*>(.*?)</div>\s*<div[^>]*>(.*?)</div>',
                   html, re.S)
     assert m, f"expected heading -> opener block -> chrome block structure, got:\n{html}"
     opener_row, chrome_row = m.group(1), m.group(2)
     assert opener_row == "Based on that ridgeline I'm going to guess Norway"
-    assert "like item 3" not in opener_row      # the instruction is chrome, never inline with it
+    assert "item 3" not in opener_row           # the instruction is chrome, never inline with it
     assert "the mountain behind her" in chrome_row
 
 
@@ -1388,15 +1442,16 @@ def test_observe_banner_keeps_the_pass_option_visible_while_a_suggestion_is_up()
     deciding = {"running": True,
                 "status": {"apps": {"hinge": dict(app, state="waiting")}}}
     html = _run_node(_observe_status_script(deciding))["html"]
-    assert "like item 3" in html                       # the instruction still leads
+    assert "Optional — not a recommendation" in html   # the suggestion is not a verdict
+    assert "if you choose to like, use item 3" in html  # its item is conditional help
     assert "🟢" in html                                 # ...and it is still their turn
-    assert "click pass X or heart" in html             # ...and passing is still on the table
+    assert "tap X to pass, or tap the heart on item 3 to like" in html
     assert "then tap Send Like in Hinge" not in html   # no sheet is open yet
     m = re.search(r'then type exactly this</div>\s*<div[^>]*>(.*?)</div>\s*<div[^>]*>(.*?)</div>',
                   html, re.S)
     assert m, f"expected heading -> opener block -> chrome block structure, got:\n{html}"
     assert m.group(1) == "Based on that ridgeline I'm going to guess Norway"
-    assert "click pass X or heart" in m.group(2)       # chrome, never inline with the opener
+    assert "tap X to pass, or tap the heart on item 3 to like" in m.group(2)
 
     # Once the sheet IS open the choice has been made, so the cue becomes the send instruction
     # and the pass wording goes away -- offering "pass X" under an open comment sheet would be
@@ -1405,14 +1460,14 @@ def test_observe_banner_keeps_the_pass_option_visible_while_a_suggestion_is_up()
                "status": {"apps": {"hinge": dict(app, state="waiting_for_send")}}}
     html2 = _run_node(_observe_status_script(sending))["html"]
     assert "then tap Send Like in Hinge" in html2
-    assert "click pass X or heart" not in html2
+    assert "tap X to pass" not in html2
 
     # Non-Hinge apps keep the generic control wording they already had in the plain GO cue.
     other = {"running": True, "status": {"apps": {"bumble": dict(
         app, app="bumble", state="waiting")}}}
     html3 = _run_node(_observe_status_script(other))["html"]
     assert "use the app's pass or like control" in html3
-    assert "click pass X or heart" not in html3
+    assert "tap X to pass" not in html3
 
 
 def test_observe_banner_replaces_the_opener_with_a_warning_on_a_mismatch():
@@ -1448,7 +1503,7 @@ def test_observe_banner_replaces_the_opener_with_a_warning_on_a_mismatch():
     deciding = {"running": True, "status": {"apps": {"hinge": dict(
         snap["status"]["apps"]["hinge"], state="waiting")}}}
     out_deciding = _run_node(_observe_status_script(deciding))
-    assert "🟢 your call: click pass X or heart" in out_deciding["html"]
+    assert "🟢 your call: tap X to pass, or tap a heart to like" in out_deciding["html"]
     assert "you opened item 5" in out_deciding["html"]
     assert "type exactly this" not in out_deciding["html"]
 
@@ -1467,6 +1522,36 @@ def test_observe_banner_replaces_the_opener_with_a_warning_on_a_mismatch():
         "opener_warning": '<img src=x onerror="alert(1)">'}}}}
     out3 = _run_node(_observe_status_script(hostile))
     assert "<img" not in out3["html"] and "&lt;img" in out3["html"]
+
+
+def test_observe_banner_names_missing_hinge_targeting_calibration_as_setup():
+    """A missing calibration is run-level setup, not a profile-specific suggestion failure.
+
+    The driver includes the detailed reason for diagnosis, while this surface supplies the
+    operator-facing consequence and the fact that Observe still records manual labels.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node not available on this machine")
+    snap = {
+        "running": True,
+        "status": {"apps": {"hinge": {
+            "app": "hinge", "mode": "observe", "state": "waiting",
+            "opener_warning": (
+                "apps.hinge.targeting_calibration is unavailable "
+                "(no apps.<app>.targeting_calibration mapping is configured)"),
+        }}},
+    }
+    html = _run_node(_observe_status_script(snap))["html"]
+    assert "targeted opener setup required" in html
+    assert "manual pass/like labels still work" in html.lower()
+    assert "ops/RUNBOOK.md" in html
+    assert "no suggestion to type" not in html
+
+    sending = {"running": True, "status": {"apps": {"hinge": dict(
+        snap["status"]["apps"]["hinge"], state="waiting_for_send")}}}
+    sending_html = _run_node(_observe_status_script(sending))["html"]
+    assert "type your own opener, then tap Send Like" in sending_html
+    assert "click pass X or heart" not in sending_html
 
 
 def test_observe_banner_offers_no_text_to_type_when_a_warning_and_an_opener_arrive_together():
@@ -1519,7 +1604,7 @@ def test_observe_banner_keeps_the_go_cue_while_the_suggestion_is_still_being_wri
     }
     out = _run_node(_observe_status_script(pending))
     assert "🟢" in out["html"]                        # still GO: they may act right now
-    assert "click pass X or heart" in out["html"]
+    assert "tap X to pass, or tap a heart to like" in out["html"]
     assert "wait a moment for a suggestion" in out["html"]
 
     settled = {
@@ -1620,7 +1705,7 @@ def test_observe_banner_replaces_every_go_cue_with_a_stop_box_while_stopping():
                    "apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting"}}},
     }
     out3 = _run_node(_observe_status_script(not_stopping))
-    assert "click pass X or heart" in out3["html"]
+    assert "tap X to pass, or tap a heart to like" in out3["html"]
     assert "stopping — do not swipe" not in out3["html"]
 
 
@@ -1950,6 +2035,15 @@ def test_hub_auto_volume_control_defaults_to_unlimited():
     assert re.search(r'\bchecked(?:\s|=|>)', tag.group(0)), (
         "the shipped config is uncapped, so a normal hub start must not silently add a cap"
     )
+
+
+def test_hub_defaults_to_observe_even_when_config_defaults_to_auto():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fn = _extract_js_function(_PAGE, "initialHubMode")
+    assert _run_node(fn + "\nconsole.log(JSON.stringify(initialHubMode()));\n") == "observe"
+    assert "$('#mode').value = initialHubMode()" in _PAGE
+    assert "$('#mode').value = cfg.mode" not in _PAGE
 
 
 def test_hub_start_handler_posts_explicit_unlimited_override():

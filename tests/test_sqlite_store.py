@@ -56,6 +56,56 @@ def test_sqlite_add_label_persists_profile_id(tmp_path):
         store.close()
 
 
+def test_sqlite_observe_release_summary_requires_distinct_manual_pass_and_like_records(tmp_path):
+    """Release proof is aggregate-only but cannot conflate two likes with a complete cycle."""
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.add_label("r", "hinge", False, [0.1], source="manual")
+        store.add_label("r", "hinge", True, [0.2], source="manual")
+        store.record_decision("r", "hinge", "dislike", 0.0, source="manual")
+        store.record_decision("r", "hinge", "like", 1.0, source="manual")
+        store.record_opener("r", "hinge", "gemini-x", "hi", "photo")
+
+        assert store.observe_release_persistence_summary("r", "hinge") == {
+            "manual_pass_labels": 1,
+            "manual_like_labels": 1,
+            "manual_pass_decisions": 1,
+            "manual_like_decisions": 1,
+            "successful_hinge_openers": 1,
+        }
+    finally:
+        store.close()
+
+
+def test_sqlite_retraction_excludes_only_bound_label_and_decision_from_loads_and_release(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.con.execute("INSERT INTO labels VALUES (NULL,?,?,?,?,?,?,?,?)",
+                          ("r", "hinge", 10.0, 0, "manual", "[0.1]", 0, "false-profile"))
+        store.con.execute("INSERT INTO labels VALUES (NULL,?,?,?,?,?,?,?,?)",
+                          ("r", "hinge", 20.0, 1, "manual", "[0.2]", 0, "good-profile"))
+        # Name columns so this historical fixture remains valid as optional lineage fields are
+        # appended to the decisions schema.
+        store.con.execute("INSERT INTO decisions (run_id,app,created_at,decision,score,source) "
+                          "VALUES (?,?,?,?,?,?)",
+                          ("r", "hinge", 11.0, "dislike", 0.0, "manual"))
+        store.con.execute("INSERT INTO decisions (run_id,app,created_at,decision,score,source) "
+                          "VALUES (?,?,?,?,?,?)",
+                          ("r", "hinge", 21.0, "like", 1.0, "manual"))
+        store.con.execute("""INSERT INTO label_retractions VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                          ("correction", "r", "hinge", "manual", "false-profile", 10.0, 11.0,
+                           "fingerprint", "false controller action", "debug#225", 30.0))
+        store.con.commit()
+        assert store.load_labels() == [(True, [0.2])]
+        assert store.load_labels_ordered() == [(True, [0.2])]
+        assert store.observe_release_persistence_summary("r", "hinge") == {
+            "manual_pass_labels": 0, "manual_like_labels": 1,
+            "manual_pass_decisions": 0, "manual_like_decisions": 1,
+            "successful_hinge_openers": 0}
+    finally:
+        store.close()
+
+
 def test_sqlite_migrates_legacy_labels_profile_id_column(tmp_path):
     db = tmp_path / "store.db"
     con = sqlite3.connect(db)
@@ -163,7 +213,8 @@ def test_sqlite_openers_table_has_the_expected_columns_in_order(tmp_path):
     try:
         cols = [row[1] for row in store.con.execute("PRAGMA table_info(openers)").fetchall()]
         assert cols == ["id", "run_id", "app", "created_at", "model", "opener",
-                        "referenced", "angle", "item_description"]
+                        "referenced", "angle", "item_description", "profile_id", "decision",
+                        "decision_source", "decision_created_at", "model_item_index"]
     finally:
         store.close()
 
@@ -184,6 +235,45 @@ def test_sqlite_record_opener_persists_item_description_as_its_own_column(tmp_pa
             "SELECT referenced, angle, item_description FROM openers").fetchone()
         assert row == ("Photo of her on a ridgeline", "guess the world",
                        "a photo, her on a ridge")
+    finally:
+        store.close()
+
+
+def test_sqlite_opener_lineage_binds_the_landed_like_and_model_item(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_decision("run", "hinge", "like", 1.0, source="manual",
+                              profile_id="profile-1", created_at=12.5)
+        store.record_opener("run", "hinge", "gemini-x", "hello", "photo", profile_id="profile-1",
+                            decision="like", decision_source="manual", decision_created_at=12.5,
+                            model_item_index=3)
+        assert store.con.execute(
+            "SELECT profile_id,decision,decision_source,decision_created_at,model_item_index FROM openers"
+        ).fetchone() == ("profile-1", "like", "manual", 12.5, 3)
+        assert store.con.execute("SELECT profile_id,created_at FROM decisions").fetchone() == ("profile-1", 12.5)
+    finally:
+        store.close()
+
+
+def test_sqlite_persists_opener_action_lineage_with_the_landed_like(tmp_path):
+    """A committed opener has an explicit, queryable decision identity rather than a heuristic."""
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        action_at = 1234.5
+        store.record_decision("r", "hinge", "like", 0.9, source="auto",
+                              profile_id="action-1", created_at=action_at)
+        store.record_opener("r", "hinge", "gemini-x", "hello", "her photo", "teasing",
+                            "a photo", profile_id="action-1", decision="like",
+                            decision_source="auto", decision_created_at=action_at,
+                            model_item_index=3)
+
+        decision = store.con.execute(
+            "SELECT profile_id, created_at, decision FROM decisions").fetchone()
+        opener = store.con.execute(
+            "SELECT profile_id, decision, decision_source, decision_created_at, model_item_index "
+            "FROM openers").fetchone()
+        assert decision == ("action-1", action_at, "like")
+        assert opener == ("action-1", "like", "auto", action_at, 3)
     finally:
         store.close()
 

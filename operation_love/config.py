@@ -1,6 +1,8 @@
 """Load and validate config.yaml into typed objects."""
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -108,6 +110,41 @@ class Config:
 
 
 _BUDGET_KEYS = {"run_budget_usd", "day_budget_usd", "pricing"}
+
+# AUTO may only consume a Hinge targeting calibration after a separate production OBSERVE run
+# has exercised the Worker/hub/store path on that exact device/build.  Keep this separate from
+# targeting_calibration: a numeric bound is a perception license, not evidence that the full
+# operational pipeline behaved correctly.
+_OBSERVE_RELEASE_EVIDENCE_KEYS = {
+    "schema_version", "calibration_calibrated_at", "calibration_sha256", "device",
+    "hinge_version_name", "frame_size_px", "production_run_reference", "production_run_id",
+    "verification_file", "verification_sha256", "verified_at",
+}
+_OBSERVE_RELEASE_ARTIFACT_KEYS = {
+    "schema_version", "kind", "completed", "calibration_calibrated_at",
+    "calibration_sha256", "device", "hinge_version_name", "frame_size_px",
+    "production_run_reference", "production_run_id", "debug_actions_sha256", "store_persistence_evidence_sha256",
+    "provider_store_evidence_sha256", "observe_control_evidence_sha256", "verified_at",
+}
+
+# This is intentionally a *different* config/artifact namespace from the long-standing
+# supervised-manual release gate above.  An AI-driven OBSERVE release may be useful when the
+# owner has explicitly accepted that mode's circular-risk tradeoff, but it must never look like
+# a completed human cycle (or silently broaden the manual artifact's meaning).
+_AI_OBSERVE_RELEASE_EVIDENCE_KEYS = {
+    "schema_version", "acceptance", "calibration_calibrated_at", "calibration_sha256",
+    "device", "hinge_version_name", "frame_size_px", "production_run_reference",
+    "production_run_id", "verification_file", "verification_sha256", "verified_at",
+}
+_AI_OBSERVE_RELEASE_ARTIFACT_KEYS = {
+    "schema_version", "kind", "completed", "human_ground_truth", "source", "acceptance",
+    "calibration_calibrated_at", "calibration_sha256", "device", "hinge_version_name",
+    "frame_size_px", "production_run_reference", "production_run_id", "debug_actions_sha256",
+    "store_persistence_evidence_sha256", "provider_store_evidence_sha256",
+    "automation_provenance_sha256", "independent_review_sha256", "verified_at",
+}
+_AI_OBSERVE_RELEASE_ACCEPTANCE = "I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK"
+_AI_OBSERVE_CONTROLLER_KEYS = {"schema_version", "source", "acceptance", "executor"}
 
 
 def _section(cls, name: str, raw_section):
@@ -236,7 +273,9 @@ _TARGETING_SHEET_FALSE_MATCH_DISTANCE = 14.91
 _TARGETING_HINGE_IDENTITY_BAND = (0.10, 0.048, 0.80, 0.094)
 _TARGETING_HINGE_CONTENT_BAND = (0.125, 0.875)
 _TARGETING_CALIBRATION_KEYS = {
-    "identity_match_max_dist", "sheet_item_max_dist", "device", "calibrated_at",
+    "schema_version", "hinge_version_name", "frame_size_px", "composer_layout_id",
+    "item_selection_policy_id",
+    "identity_match_max_dist", "inline_item_max_dist", "device", "calibrated_at",
     "identity_band", "content_band",
 }
 
@@ -305,7 +344,26 @@ def _validate_targeting_calibration(cfg: Config) -> None:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration must carry "
                 f"{sorted(_TARGETING_CALIBRATION_KEYS)} ({'; '.join(parts)})")
-        for key in ("identity_match_max_dist", "sheet_item_max_dist"):
+        if type(calibration["schema_version"]) is not int or calibration["schema_version"] != 3:
+            raise ValueError(
+                f"Config: apps.{app}.targeting_calibration.schema_version must be the exact "
+                f"integer 3 (got {calibration['schema_version']!r})")
+        if calibration["composer_layout_id"] != "hinge_inline_v1":
+            raise ValueError(
+                f"Config: apps.{app}.targeting_calibration.composer_layout_id must be "
+                f"'hinge_inline_v1' (got {calibration['composer_layout_id']!r})")
+        if calibration["item_selection_policy_id"] != "hinge_photos_only_v1":
+            raise ValueError(
+                f"Config: apps.{app}.targeting_calibration.item_selection_policy_id must be "
+                "'hinge_photos_only_v1' "
+                f"(got {calibration['item_selection_policy_id']!r})")
+        frame_size = calibration["frame_size_px"]
+        if (not isinstance(frame_size, (list, tuple)) or len(frame_size) != 2
+                or any(type(v) is not int or v <= 0 for v in frame_size)):
+            raise ValueError(
+                f"Config: apps.{app}.targeting_calibration.frame_size_px must be two positive "
+                f"integers (got {frame_size!r})")
+        for key in ("identity_match_max_dist", "inline_item_max_dist"):
             value = calibration[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(
@@ -321,13 +379,13 @@ def _validate_targeting_calibration(cfg: Config) -> None:
                 f"Config: apps.{app}.targeting_calibration.identity_match_max_dist must be "
                 f"strictly below {_TARGETING_IDENTITY_FALSE_MATCH_DISTANCE}, the known "
                 f"different-profile false-match distance (got {identity_max!r})")
-        sheet_max = calibration["sheet_item_max_dist"]
+        sheet_max = calibration["inline_item_max_dist"]
         if sheet_max >= _TARGETING_SHEET_FALSE_MATCH_DISTANCE:
             raise ValueError(
-                f"Config: apps.{app}.targeting_calibration.sheet_item_max_dist must be "
+                f"Config: apps.{app}.targeting_calibration.inline_item_max_dist must be "
                 f"strictly below {_TARGETING_SHEET_FALSE_MATCH_DISTANCE}, the nearest known "
                 f"foreign-card false-match distance (got {sheet_max!r})")
-        for key in ("device", "calibrated_at"):
+        for key in ("device", "calibrated_at", "hinge_version_name"):
             value = calibration[key]
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(
@@ -367,6 +425,222 @@ def _validate_targeting_calibration(cfg: Config) -> None:
                 f"Config: apps.{app}.targeting_calibration.content_band must exactly equal "
                 f"the effective apps.{app}.content_band ({calibrated_content!r} != "
                 f"{effective_content!r})")
+
+
+def _canonical_sha256(value) -> str:
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")).hexdigest()
+
+
+def _validate_hinge_auto_release_evidence(cfg: Config) -> None:
+    """Require a verified production-OBSERVE artifact before Hinge AUTO can start.
+
+    This runs only for an enabled Hinge app whose effective mode is AUTO.  Observe deliberately
+    remains allowed with a targeting calibration but without this evidence so the required
+    production validation can actually be performed.
+    """
+    if "hinge" not in cfg.enabled_apps:
+        return
+    app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
+    if app_cfg.get("mode", cfg.mode) != "auto":
+        return
+    calibration = app_cfg.get("targeting_calibration")
+    if not isinstance(calibration, dict):
+        raise ValueError(
+            "Config: Hinge AUTO requires apps.hinge.targeting_calibration and separately "
+            "verified apps.hinge.observe_release_evidence; run production OBSERVE first")
+    raw = app_cfg.get("observe_release_evidence")
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "Config: Hinge AUTO is blocked until apps.hinge.observe_release_evidence is an "
+            "exact verified production-OBSERVE mapping")
+    unknown = set(raw) - _OBSERVE_RELEASE_EVIDENCE_KEYS
+    missing = _OBSERVE_RELEASE_EVIDENCE_KEYS - set(raw)
+    if unknown or missing:
+        raise ValueError(
+            "Config: apps.hinge.observe_release_evidence must carry exactly "
+            f"{sorted(_OBSERVE_RELEASE_EVIDENCE_KEYS)} (missing {sorted(missing)}, "
+            f"unknown {sorted(unknown)})")
+    if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
+        raise ValueError("Config: apps.hinge.observe_release_evidence.schema_version must be integer 1")
+    expected_sha = _canonical_sha256(calibration)
+    if raw["calibration_calibrated_at"] != calibration.get("calibrated_at"):
+        raise ValueError("Config: observe_release_evidence.calibration_calibrated_at does not bind this calibration")
+    if raw["calibration_sha256"] != expected_sha:
+        raise ValueError("Config: observe_release_evidence.calibration_sha256 does not bind this calibration")
+    for key in ("device", "hinge_version_name"):
+        if raw[key] != calibration.get(key):
+            raise ValueError(f"Config: observe_release_evidence.{key} does not bind this calibration")
+    if raw["frame_size_px"] != calibration.get("frame_size_px"):
+        raise ValueError("Config: observe_release_evidence.frame_size_px does not bind this calibration")
+    for key in ("production_run_reference", "production_run_id", "verification_file", "verification_sha256", "verified_at"):
+        if not isinstance(raw[key], str) or not raw[key].strip():
+            raise ValueError(f"Config: observe_release_evidence.{key} must be nonempty text")
+    if Path(raw["production_run_reference"]).name != raw["production_run_id"]:
+        raise ValueError("Config: observe_release_evidence production_run_reference does not bind production_run_id")
+    evidence_path = Path(raw["verification_file"])
+    if evidence_path.is_absolute():
+        raise ValueError("Config: observe_release_evidence.verification_file must be a repo-relative local path")
+    root = Path.cwd().resolve()
+    resolved = (root / evidence_path).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Config: observe_release_evidence.verification_file escapes the repository") from exc
+    try:
+        content = resolved.read_bytes()
+    except OSError as exc:
+        raise ValueError(
+            f"Config: observe_release_evidence verification artifact is unreadable: {resolved}") from exc
+    if hashlib.sha256(content).hexdigest() != raw["verification_sha256"]:
+        raise ValueError("Config: observe_release_evidence.verification_sha256 does not match its artifact")
+    try:
+        artifact = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Config: observe_release_evidence artifact is not JSON") from exc
+    if not isinstance(artifact, dict) or set(artifact) != _OBSERVE_RELEASE_ARTIFACT_KEYS:
+        raise ValueError("Config: observe_release_evidence artifact has an invalid exact schema")
+    if artifact["schema_version"] != 1 or artifact["kind"] != "hinge_production_observe_release":
+        raise ValueError("Config: observe_release_evidence artifact has unsupported schema/kind")
+    if artifact["completed"] is not True:
+        raise ValueError("Config: observe_release_evidence artifact is incomplete")
+    for key in ("calibration_calibrated_at", "calibration_sha256", "device",
+                "hinge_version_name", "frame_size_px", "production_run_reference",
+                "production_run_id", "verified_at"):
+        if artifact[key] != raw[key]:
+            raise ValueError(f"Config: observe_release_evidence artifact disagrees on {key}")
+    for key in ("debug_actions_sha256", "store_persistence_evidence_sha256",
+                "provider_store_evidence_sha256", "observe_control_evidence_sha256"):
+        value = artifact[key]
+        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+            raise ValueError(f"Config: observe_release_evidence artifact {key} is not a SHA-256 digest")
+
+
+def _validate_hinge_ai_reviewed_auto_release_evidence(cfg: Config) -> None:
+    """Validate the explicitly accepted, non-manual Hinge OBSERVE release artifact.
+
+    This does not relax or reinterpret ``observe_release_evidence``.  It validates the
+    separately named artifact emitted by ``tools.hinge_observe_ai_release`` and rejects any
+    attempt to describe automated evidence as human ground truth.
+    """
+    app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
+    raw = app_cfg.get("ai_reviewed_observe_release_evidence")
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "Config: Hinge AUTO is blocked until ai_reviewed_observe_release_evidence is an "
+            "exact explicitly accepted AI-reviewed production-OBSERVE mapping")
+    unknown = set(raw) - _AI_OBSERVE_RELEASE_EVIDENCE_KEYS
+    missing = _AI_OBSERVE_RELEASE_EVIDENCE_KEYS - set(raw)
+    if unknown or missing:
+        raise ValueError(
+            "Config: apps.hinge.ai_reviewed_observe_release_evidence must carry exactly "
+            f"{sorted(_AI_OBSERVE_RELEASE_EVIDENCE_KEYS)} (missing {sorted(missing)}, "
+            f"unknown {sorted(unknown)})")
+    if raw["schema_version"] != 1:
+        raise ValueError("Config: ai_reviewed_observe_release_evidence.schema_version must be integer 1")
+    if raw["acceptance"] != _AI_OBSERVE_RELEASE_ACCEPTANCE:
+        raise ValueError("Config: AI-reviewed Hinge AUTO release requires the exact explicit acceptance token")
+    calibration = app_cfg.get("targeting_calibration")
+    if not isinstance(calibration, dict):
+        raise ValueError("Config: Hinge AUTO requires apps.hinge.targeting_calibration before release evidence")
+    if raw["calibration_calibrated_at"] != calibration.get("calibrated_at"):
+        raise ValueError("Config: AI-reviewed release evidence does not bind this calibration timestamp")
+    if raw["calibration_sha256"] != _canonical_sha256(calibration):
+        raise ValueError("Config: AI-reviewed release evidence does not bind this calibration hash")
+    for key in ("device", "hinge_version_name", "frame_size_px"):
+        if raw[key] != calibration.get(key):
+            raise ValueError(f"Config: AI-reviewed release evidence {key} does not bind this calibration")
+    for key in ("production_run_reference", "production_run_id", "verification_file",
+                "verification_sha256", "verified_at"):
+        if not isinstance(raw[key], str) or not raw[key].strip():
+            raise ValueError(f"Config: ai_reviewed_observe_release_evidence.{key} must be nonempty text")
+    if Path(raw["production_run_reference"]).name != raw["production_run_id"]:
+        raise ValueError("Config: AI-reviewed release production_run_reference does not bind production_run_id")
+    evidence_path = Path(raw["verification_file"])
+    if evidence_path.is_absolute():
+        raise ValueError("Config: AI-reviewed release verification_file must be a repo-relative local path")
+    root = Path.cwd().resolve()
+    resolved = (root / evidence_path).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Config: AI-reviewed release verification_file escapes the repository") from exc
+    try:
+        content = resolved.read_bytes()
+    except OSError as exc:
+        raise ValueError("Config: AI-reviewed release verification artifact is unreadable") from exc
+    if hashlib.sha256(content).hexdigest() != raw["verification_sha256"]:
+        raise ValueError("Config: AI-reviewed release verification_sha256 does not match its artifact")
+    try:
+        artifact = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Config: AI-reviewed release artifact is not JSON") from exc
+    if not isinstance(artifact, dict) or set(artifact) != _AI_OBSERVE_RELEASE_ARTIFACT_KEYS:
+        raise ValueError("Config: AI-reviewed release artifact has an invalid exact schema")
+    if artifact["schema_version"] != 1 or artifact["kind"] != "hinge_ai_reviewed_production_observe_release":
+        raise ValueError("Config: AI-reviewed release artifact has unsupported schema/kind")
+    if artifact["completed"] is not True:
+        raise ValueError("Config: AI-reviewed release artifact is incomplete")
+    if artifact["human_ground_truth"] is not False:
+        raise ValueError("Config: AI-reviewed release artifact must honestly declare human_ground_truth=false")
+    if artifact["source"] not in {"external_ai_review", "automation"}:
+        raise ValueError("Config: AI-reviewed release artifact source must be external_ai_review or automation")
+    for key in ("acceptance", "calibration_calibrated_at", "calibration_sha256", "device",
+                "hinge_version_name", "frame_size_px", "production_run_reference",
+                "production_run_id", "verified_at"):
+        if artifact[key] != raw[key]:
+            raise ValueError(f"Config: AI-reviewed release artifact disagrees on {key}")
+    for key in ("debug_actions_sha256", "store_persistence_evidence_sha256",
+                "provider_store_evidence_sha256", "automation_provenance_sha256",
+                "independent_review_sha256"):
+        value = artifact[key]
+        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+            raise ValueError(f"Config: AI-reviewed release artifact {key} is not a SHA-256 digest")
+
+
+def _validate_hinge_auto_release_gate(cfg: Config) -> None:
+    """Select exactly one release-gate provenance mode; legacy manual validator stays intact."""
+    if "hinge" not in cfg.enabled_apps:
+        return
+    app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
+    if app_cfg.get("mode", cfg.mode) != "auto":
+        return
+    manual = app_cfg.get("observe_release_evidence")
+    ai_reviewed = app_cfg.get("ai_reviewed_observe_release_evidence")
+    if manual is not None and ai_reviewed is not None:
+        raise ValueError(
+            "Config: Hinge AUTO requires exactly one release gate: manual observe_release_evidence "
+            "or explicitly accepted ai_reviewed_observe_release_evidence, never both")
+    if ai_reviewed is not None:
+        _validate_hinge_ai_reviewed_auto_release_evidence(cfg)
+    else:
+        _validate_hinge_auto_release_evidence(cfg)
+
+
+def _validate_hinge_ai_observe_controller(cfg: Config) -> None:
+    """Require an explicit controller declaration before OBSERVE stores non-manual labels."""
+    if "hinge" not in cfg.enabled_apps:
+        return
+    app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
+    source = app_cfg.get("observe_evidence_source", "manual")
+    if source == "manual":
+        return
+    if source not in {"external_ai_review", "automation"}:
+        raise ValueError("Config: apps.hinge.observe_evidence_source must be manual, external_ai_review, or automation")
+    if app_cfg.get("mode", cfg.mode) != "observe":
+        raise ValueError("Config: non-manual Hinge OBSERVE evidence source is allowed only in mode observe")
+    controller = app_cfg.get("ai_reviewed_observe_controller")
+    if not isinstance(controller, dict) or set(controller) != _AI_OBSERVE_CONTROLLER_KEYS:
+        raise ValueError("Config: non-manual Hinge OBSERVE requires an exact ai_reviewed_observe_controller mapping")
+    if controller.get("schema_version") != 1 or controller.get("source") != source:
+        raise ValueError("Config: ai_reviewed_observe_controller must bind schema version and evidence source")
+    if controller.get("acceptance") != _AI_OBSERVE_RELEASE_ACCEPTANCE:
+        raise ValueError("Config: non-manual Hinge OBSERVE requires the exact explicit acceptance token")
+    executor = controller.get("executor")
+    if not isinstance(executor, dict) or set(executor) != {"model", "id", "version", "process"}:
+        raise ValueError("Config: ai_reviewed_observe_controller.executor must carry exact model/id/version/process")
+    if any(not isinstance(executor.get(k), str) or not executor[k].strip() for k in executor):
+        raise ValueError("Config: ai_reviewed_observe_controller.executor values must be nonempty text")
 
 # worker.py's _pace() scales human_motion.think_time_s()'s WHOLE draw (including its
 # shifted-lognormal floor: shift=1.2s for "like"/1.8s for "pass", means ~3.2s/~6.9s) by
@@ -638,6 +912,8 @@ def validate(cfg: Config) -> None:
     _validate_verification(cfg)
     _validate_android_fractions(cfg)
     _validate_targeting_calibration(cfg)
+    _validate_hinge_ai_observe_controller(cfg)
+    _validate_hinge_auto_release_gate(cfg)
     if cfg.storage.backend not in {"bigquery", "sqlite"}:
         raise ValueError(f"Config: storage.backend must be 'bigquery' or 'sqlite' (got {cfg.storage.backend})")
     if cfg.storage.backend == "bigquery" and not (cfg.storage.bigquery or {}).get("project_id"):

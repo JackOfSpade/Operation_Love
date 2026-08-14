@@ -116,6 +116,11 @@ real people's profiles and never leave `ops/calibration/`.
     DISTINCT frames, so no frame contributes two items and the duplication doc 5.2 warns about
     cannot arise. `payload.translation == index.translation == (1..9)`, since nothing was
     excluded. `truncated` False.
+  * **PHOTO-ONLY AMENDMENT, 2026-08-13.** Applying `hinge_photos_only_v1` to that same byte-exact
+    corpus yields six numbered 974x974 photos and demotes all three written prompt cards
+    (974x756 / 974x685) to unnumbered context. The production translation is therefore
+    `(1, 3, 4, 6, 8, 9)`: prompt hearts 2, 5 and 7 stay in page space but can never be chosen.
+    The nine-item figures above are the pre-policy measurement retained as historical evidence.
   * **Size, doc 5.2's "crops are also smaller and fewer than the frames they came from".**
     Measured: 10 crops totalling 8.53MB of PNG against the capture's 24 frames totalling
     37.15MB, i.e. 4.4x smaller and comfortably inside `opener._MAX_INLINE_REQUEST_BYTES`.
@@ -275,6 +280,12 @@ CROP_EXCLUDED = "excluded"        # policy says do not show it; NO image is ever
 CROP_CHROME = "chrome"            # Hinge's scroll-top header, already outside both index spaces
 CROP_UNCROPPABLE = "uncroppable"  # no frame ever bounded it end to end, so there is no crop that
                                   # is not a fragment: reported with its page position, not sent
+
+# Hinge policy: only a confidently photographic card may enter the numbered/model-selectable
+# list. The identifier is recorded by targeting calibration so a geometry bound cannot silently
+# outlive the classifier/policy that decided which physical hearts its item numbers can name.
+PHOTO_ONLY_POLICY_ID = "hinge_photos_only_v1"
+EXCLUSION_NON_PHOTO = "photo_only"
 
 # The reason string doc 2.4's block is dropped under, named so the eventual detector, the debug
 # log and any operator override all spell it the same way. There is deliberately NO detector for
@@ -650,6 +661,35 @@ def exclude_page_rows(spans: Sequence[tuple[int, int]], *, reason: str = EXCLUSI
     return _exclude
 
 
+def unnumber_unless_confident_photo(image: bytes) -> str | None:
+    """Return no reason only for Hinge's measured square photographic card.
+
+    On the real 9.134.0 corpus all six photos are exactly 974x974; the three heart-bearing prompt
+    cards are 974x756 / 974x685 and independently classify WRITTEN. The generic pixel classifier
+    intentionally calls quiet photos UNKNOWN, so it is used here as a prompt veto rather than as
+    the sole source of photo recall. A card must have Hinge's square photo geometry *and* must not
+    classify WRITTEN. This runs before numbering; demoted cards remain readable unnumbered context
+    and retain their heart ordinals.
+    """
+    from .item_type_preflight import WRITTEN, classify_crop
+
+    item_type = classify_crop(image)
+    try:
+        cv2, np = _require_vision()
+        decoded = cv2.imdecode(np.frombuffer(image, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+    except ItemCropError:
+        decoded = None
+    if decoded is not None:
+        height, width = decoded.shape
+    else:
+        height = width = 0
+    square_tolerance = max(4, round(max(width, height) * 0.01))
+    if item_type != WRITTEN and width > 0 and abs(width - height) <= square_tolerance:
+        return None
+    return (f"{EXCLUSION_NON_PHOTO}: crop classified as {item_type}; only a confidently "
+            f"photographic square card may be numbered or selected (crop {width}x{height})")
+
+
 def _band_height(index: ItemIndex) -> int:
     """The analysed band's height in rows — the tallest thing any single frame can contain.
 
@@ -863,6 +903,7 @@ def _decoder(frames: Sequence[bytes], cv2, np):
 
 def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
                        exclude: Callable[[IndexedBlock], str | None] | None = None,
+                       unnumber: Callable[[bytes], str | None] | None = None,
                        image_format: str = _CROP_IMAGE_FORMAT,
                        signature_grid: tuple[int, int] = _SIGNATURE_GRID) -> ItemPayload:
     """Turn an item index and the frames it was built from into the model's numbered image list.
@@ -871,11 +912,17 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
     index's coordinates are meaningless against any other capture, and the length and per-frame
     size are both checked rather than trusted.
 
-    `exclude` is doc 2.4's policy hook: given a block, return the REASON it must not be shown, or
+    `exclude` is doc 2.4's geometry policy hook: given a block, return the REASON it must not be shown, or
     None to show it. Excluded blocks get no image at all, so they cannot reach the model by
     accident, and their heart ordinals are untouched — see the module docstring on doc 5.3's index
     trap, and `exclude_page_rows` for a ready-made predicate. The default shows everything the
     index resolved, which is what both calibration captures needed.
+
+    `unnumber` is the selection-policy twin. It sees complete encoded bytes only for
+    heart-bearing selectable blocks, after cropping but before numbering. A returned reason
+    demotes the crop to readable, unnumbered context and retains the original heart ordinal.
+    Hinge supplies `unnumber_unless_confident_photo`; generic callers keep the historical
+    all-selectable policy.
 
     Raises `ItemCropError` when there is nothing to crop or no way to crop it: an UNUSABLE index
     (doc 5.3's hard stop, inherited rather than re-derived), a frame list that does not match the
@@ -982,6 +1029,12 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
                       image=image, signature=signature, signature_drift=drift,
                       drift_frames=drift_frames)
 
+        if block.kind == ITEM_SELECTABLE and unnumber is not None:
+            reason = unnumber(image)
+            if reason is not None:
+                crops.append(ItemCrop(kind=CROP_CONTEXT, number=None, reason=reason, **common))
+                continue
+
         if block.kind == ITEM_SELECTABLE:
             number += 1
             crops.append(ItemCrop(
@@ -1001,8 +1054,9 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
         # Rule four. An empty numbered list is not a request the model can answer, and shipping
         # one would spend a call to be told so.
         failures.append(
-            f"no selectable item survived to be numbered, from {len(index.blocks)} indexed "
-            "block(s) — there is nothing for the model to choose between")
+            f"no policy-approved selectable item survived to be numbered, from "
+            f"{len(index.blocks)} indexed block(s) — there is nothing for the model to choose "
+            "between")
 
     _fill_nearest_item_distance(crops)
     return ItemPayload(

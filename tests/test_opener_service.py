@@ -139,13 +139,15 @@ class _Store:
     def __init__(self):
         self.spend = []
         self.openers = []
+        self.opener_kwargs = []
         self.rejections = []
 
     def record_spend(self, *a):
         self.spend.append(a)
 
-    def record_opener(self, *a):
+    def record_opener(self, *a, **kw):
         self.openers.append(a)
+        self.opener_kwargs.append(kw)
 
     def record_opener_rejection(self, *a):
         self.rejections.append(a)
@@ -1099,6 +1101,73 @@ def test_advisory_success_is_unaffected():
     assert s.disabled is False and s.stop_requested is False
 
 
+def test_advisory_draft_keeps_billing_but_writes_no_opener_or_rejection_rows():
+    """A generated Observe suggestion can be abandoned without either a Pass or Like.  Its
+    provider call remains durable billing telemetry, but must leave no durable or reportable
+    profile/opener accounting behind.  AUTO retains the ordinary durable path."""
+    success_store = _Store()
+    success = OpenerService(_Client(), _Tracker([False]), success_store, "casual")
+    assert success.maybe_opener("r", "hinge", object(), advisory=True) is not None
+    assert len(success_store.spend) == 1
+    assert success_store.openers == []
+    assert success.recent_openers_snapshot() == []
+
+    rejection_store = _Store()
+    rejected = OpenerService(
+        _Client(exc=OpenerParseError("bad JSON", "usage", "gemini-x")),
+        _Tracker([False]), rejection_store, "casual")
+    assert rejected.maybe_opener("r", "hinge", object(), advisory=True) is None
+    assert len(rejection_store.spend) == 1
+    assert rejection_store.openers == []
+    assert rejection_store.rejections == []
+    assert rejected.recent_rejections_snapshot() == []
+
+
+def test_confirmed_like_commits_staged_advisory_opener_exactly_once():
+    """The durable opener row is tied to the confirmed Like boundary, not generation.  A
+    repeated commit is harmless and cannot duplicate an opener record."""
+    store = _Store()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+
+    pick = service.maybe_opener("run", "hinge", object(), advisory=True)
+    assert pick is not None
+    assert store.openers == []
+    assert service.recent_openers_snapshot() == []
+
+    assert service.commit_advisory_opener(pick) is True
+    assert len(store.openers) == 1
+    assert len(service.recent_openers_snapshot()) == 1
+    assert service.recent_openers_snapshot()[0]["advisory"] is True
+    assert service.commit_advisory_opener(pick) is False
+    assert len(store.openers) == 1
+
+
+def test_committed_opener_carries_exact_landed_action_lineage():
+    store = _Store()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+    pick = service.maybe_opener("run", "hinge", object(), advisory=True)
+
+    assert service.commit_advisory_opener(
+        pick, profile_id="profile-opaque", decision="like", decision_source="manual",
+        decision_created_at=123.0) is True
+    assert store.opener_kwargs == [{
+        "profile_id": "profile-opaque", "decision": "like", "decision_source": "manual",
+        "decision_created_at": 123.0, "model_item_index": 2,
+    }]
+
+
+def test_staged_auto_opener_is_not_committed_until_the_landed_like_boundary():
+    """AUTO passes stage=True; a generated string alone is never an acted-on opener row."""
+    store = _Store()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
+    assert pick is not None
+    assert len(store.spend) == 1
+    assert store.openers == [] and service.recent_openers_snapshot() == []
+    assert service.commit_opener(pick) is True
+    assert len(store.openers) == 1 and len(service.recent_openers_snapshot()) == 1
+
+
 def test_advisory_default_is_false_so_every_existing_call_site_is_unaffected():
     """Sanity pin: advisory defaults to False, so every pre-existing call in this file (and
     every AUTO-mode call site in worker.py) keeps today's max_attempts-retries-then-stops
@@ -1347,13 +1416,10 @@ def test_item_description_is_populated_from_the_client_result_and_persisted():
     assert s.recent_openers_snapshot()[0]["item_description"] == _Res.item_description
 
 
-def test_item_description_is_recorded_identically_on_an_advisory_call():
-    """Doc 5.7's reason for requiring this field in both modes is structural, not cosmetic: a
-    mode-dependent schema would mean auto and observe issue DIFFERENT requests, which destroys
-    the canary property that makes observe worth having (the opener a human sees must be
-    byte-identical to what auto would have sent). So nothing on this path may branch on
-    `advisory` -- the same lesson the entropy guard learned the hard way in the 2026-08-11
-    correction, pinned here before the observe inversion can reintroduce it."""
+def test_advisory_item_description_is_transient_until_a_real_decision():
+    """Observe must generate the same item-aware request as AUTO, but a suggestion by itself
+    is not a dating decision.  It therefore returns the complete pick for the live UI while
+    leaving no durable opener or diagnostic profile trail behind; billing remains separate."""
     c, t, st = _Client(), _Tracker([False, False, False, False]), _Store()
     s = OpenerService(c, t, st, "casual")
 
@@ -1361,9 +1427,11 @@ def test_item_description_is_recorded_identically_on_an_advisory_call():
     advisory = s.maybe_opener("r", "hinge", object(), advisory=True)
 
     assert advisory.item_description == auto.item_description == _Res.item_description
-    assert st.openers[0][6] == st.openers[1][6] == _Res.item_description
-    assert [e["item_description"] for e in s.recent_openers_snapshot()] \
-        == [_Res.item_description] * 2
+    assert [row[6] for row in st.openers] == [_Res.item_description]
+    # The advisory draft collides with AUTO's leading n-gram, so its one entropy redraw is
+    # a second real provider call; billing records all three calls without recording the draft.
+    assert len(st.spend) == 3
+    assert [e["item_description"] for e in s.recent_openers_snapshot()] == [_Res.item_description]
 
 
 def test_angle_defaults_to_empty_string_when_the_client_result_has_no_such_attribute():
@@ -1486,15 +1554,10 @@ def test_a_result_that_states_no_index_space_yields_an_unusable_pick_not_a_guess
 # referenced/index/opener fields.
 # ---------------------------------------------------------------------------------------
 
-def test_recent_openers_snapshot_records_advisory_flags_with_fields_intact():
-    """One AUTO call and one advisory call produce entries whose `advisory` flags, `referenced`,
-    `index`, and `opener` all carry through from the client's own result untouched.
-
-    The two calls are given DIFFERENT opener texts on purpose (see opener_texts), so neither
-    collides with the other's leading n-gram: the entropy guard now runs identically on an
-    advisory call (see the 2026-08-11 correction, entropy-guard section at the bottom of this
-    file), and this test is about the advisory bookkeeping, not about collisions --
-    that behavior is pinned directly by the advisory entropy-guard tests below."""
+def test_recent_openers_snapshot_excludes_unacted_advisory_suggestions():
+    """The diagnostic trail follows real decisions, not drafts.  Advisory suggestions retain
+    just a process-local n-gram for duplicate-opening protection and never expose the profile
+    detail or message through the bug-report snapshot."""
     c = _Client(opener_texts=["hey, that hiking photo is great",
                               "so that lake looked freezing today"])
     t, st = _Tracker([False, False, False, False]), _Store()
@@ -1504,38 +1567,21 @@ def test_recent_openers_snapshot_records_advisory_flags_with_fields_intact():
     s.maybe_opener("r", "bumble", object(), advisory=True)
 
     snap = s.recent_openers_snapshot()
-    assert len(snap) == 2
-    auto_entry, advisory_entry = snap
+    assert len(snap) == 1
+    auto_entry = snap[0]
     assert auto_entry["advisory"] is False
-    assert advisory_entry["advisory"] is True
     assert auto_entry["opener"] == "hey, that hiking photo is great"
-    assert advisory_entry["opener"] == "so that lake looked freezing today"
-    for entry in snap:
-        assert entry["referenced"] == _Res.referenced
-        # The ring buffer's "index" key kept its NAME and changed its MEANING: it is the
-        # 1-based MODEL ITEM INDEX now (doc 5.1/5.7), carried through unshifted from the
-        # client's own result. `item_description` beside it is what makes an entry written
-        # after this change distinguishable from one written before, in a bug report.
-        assert entry["index"] == _Res.item_index
-        assert entry["item_description"] == _Res.item_description
-        # The model's own account of what its opener was doing rides along too -- a bug report
-        # showing an out-of-place opener is much easier to read when it says the model thought
-        # it was "guessing where the hike was" than when it shows the message alone.
-        assert entry["angle"] == _Res.angle
-    # Neither call's opener collides with the other's leading n-gram (that is the whole point of
-    # giving them different texts above), so the guard -- which now runs identically on the
-    # ADVISORY call too, see the 2026-08-11 correction -- genuinely finds nothing to regenerate
-    # on either one. This is "the guard ran and found no collision", not "the guard was skipped";
-    # the case where an advisory call DOES collide and DOES regenerate is pinned directly by the
-    # advisory entropy-guard tests at the bottom of this file.
-    assert advisory_entry["entropy_collision"] == ""
-    assert advisory_entry["entropy_regenerated"] is False
-    # Nothing collided for the FIRST call either (the buffer was empty when it was checked),
-    # and its result carried no redundancy markers.
+    assert auto_entry["referenced"] == _Res.referenced
+    # The ring buffer's "index" key kept its NAME and changed its MEANING: it is the
+    # 1-based MODEL ITEM INDEX now (doc 5.1/5.7), carried through unshifted from the
+    # client's own result. `item_description` beside it is what makes an entry written
+    # after this change distinguishable from one written before, in a bug report.
+    assert auto_entry["index"] == _Res.item_index
+    assert auto_entry["item_description"] == _Res.item_description
+    assert auto_entry["angle"] == _Res.angle
     assert auto_entry["entropy_collision"] == ""
     assert auto_entry["entropy_regenerated"] is False
-    for entry in snap:
-        assert entry["redundancy_markers"] == []
+    assert auto_entry["redundancy_markers"] == []
 
 
 def test_recent_openers_snapshot_is_capped_and_drops_the_oldest():

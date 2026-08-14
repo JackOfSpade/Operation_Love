@@ -228,6 +228,10 @@ def test_worker_error_state_survives_shutdown_not_overwritten_to_stopped(monkeyp
     monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
     monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _ErrorDriver())
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    # This test deliberately drives the post-validation AUTO worker error path.  The Hinge
+    # release gate has its own artifact/config coverage; bypass only that prerequisite here so
+    # the synthetic driver can reach the shutdown-state behavior this fixture exists to test.
+    monkeypatch.setattr(sup.cfg_mod, "_validate_hinge_auto_release_evidence", lambda cfg: None)
     _patch_no_adb(monkeypatch)
 
     captured = {}
@@ -263,6 +267,8 @@ def test_normal_terminal_reason_survives_successful_save(monkeypatch, tmp_path, 
     monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
     monkeypatch.setattr(sup, "Worker", _TerminalWorker)
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    # This is a terminal-state preservation test, not a release-evidence integration test.
+    monkeypatch.setattr(sup.cfg_mod, "_validate_hinge_auto_release_evidence", lambda cfg: None)
     _patch_no_adb(monkeypatch)
     captured = {}
     sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
@@ -638,6 +644,9 @@ def test_wedged_worker_is_not_reported_as_unqualified_success(monkeypatch, tmp_p
     assert any(a["state"] == "wedged" for a in snap["apps"].values())
     out = capsys.readouterr().out
     assert "✅ all data saved" not in out
+    assert "provider_calls=" in out
+    assert "provider_spend=$" in out
+    assert "openers=" not in out
 
 
 # --- registry guard: run() rejects an unrunnable platform selection up front ---------------

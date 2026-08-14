@@ -1,0 +1,1731 @@
+"""Hermetic safety tests for the targeted-opener calibration harness.
+
+The real inputs are private dating-profile screenshots.  These tests deliberately use only
+small synthetic records and replace the two vision pipelines at the boundary of ``measure``;
+the safety protocol (splits, ceilings, frozen held-out bounds, and emitted YAML) is what this
+file verifies.
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+import io
+import hashlib
+import inspect
+import json
+import re
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from tools import hinge_calibrate as cal
+from operation_love.drivers.item_identity import ProfileIdentity
+from operation_love.drivers.like_composer import ComposerDetectionError, ComposerSurface, Rect
+from operation_love.drivers.scroll_top import ScrollTopVerdict
+
+
+_IDENTITY_BAND = (0.10, 0.048, 0.80, 0.094)
+_CONTENT_BAND = (0.125, 0.875)
+
+
+class _Cfg:
+    apps = {"hinge": {"serial": "PIXEL-TEST"}}
+
+
+class _InertDriver:
+    """The only driver shape measure may need: no ADB or touch methods exist here."""
+
+    def __init__(self, _cfg):
+        self.identity_band = _IDENTITY_BAND
+        self.content_band = _CONTENT_BAND
+
+    def _template(self, name):
+        assert name in {"like", "confirm"}
+        return object()
+
+
+def _session(tmp_path, name, split, profile_ids, *, identity_band=_IDENTITY_BAND,
+             content_band=_CONTENT_BAND, serial="PIXEL-TEST"):
+    directory = tmp_path / name
+    directory.mkdir()
+    profiles = [cal._ProfileData(
+        i, pid, [b"card"],
+        [(cal._automated_composer_items_for_ordinal(i)[0], b"pre", b"composer")],
+        b"advance", b"advance-identity")
+                for i, pid in enumerate(profile_ids, 1)]
+    return cal._SessionData(
+        dir=directory, split=split, device_serial=serial, identity_band=identity_band,
+        content_band=content_band, profiles=profiles,
+        manifest={"device": _device(serial), "operational_checks": _checks(directory)},
+    )
+
+
+def _device(serial="PIXEL-TEST"):
+    return {"serial": serial, "model": "Synthetic Pixel", "display_w": 1080,
+            "display_h": 2400, "density": 420, "hinge_package": "co.hinge.app",
+            "hinge_version_name": "1.0"}
+
+
+def _checks(directory: Path | None = None, *, confirmed=True):
+    evidence = "synthetic-run-42"
+    if confirmed and directory is not None:
+        record = {
+            "kind": "hinge_supervised_observe_only_check",
+            "evidence_scope": cal._PRELIMINARY_OBSERVE_SCOPE,
+            "completed": True,
+        }
+        record["evidence_sha256"] = cal._canonical_json_digest(record)
+        path = directory / "observe_check.json"
+        path.write_text(json.dumps(record))
+        evidence = str(path)
+    return {
+        key: {"confirmed": confirmed, "evidence": evidence if confirmed else None,
+              "recorded_utc": "2026-08-13T12:00:00+00:00" if confirmed else None}
+        for key in cal._OPERATIONAL_CHECKS
+    }
+
+
+def _write_operational_evidence(directory: Path, *, device: dict,
+                                identity_band=_IDENTITY_BAND) -> Path:
+    """Small, real PNG recorder-v2 artifact for measure's evidence-gate seams."""
+    from PIL import Image
+
+    directory.mkdir()
+    raws = []
+    for value in range(1, len(cal._OPERATIONAL_EVIDENCE_ROLES) + 1):
+        frame = io.BytesIO()
+        Image.new("RGB", (device["display_w"], device["display_h"]), (value, value, value)).save(frame, "PNG")
+        raws.append(frame.getvalue())
+    frames = []
+    for ordinal, role in enumerate(cal._OPERATIONAL_EVIDENCE_ROLES, 1):
+        name = f"{ordinal:05d}.png"
+        raw = raws[ordinal - 1]
+        (directory / name).write_bytes(raw)
+        frames.append({"file": name, "sha256": hashlib.sha256(raw).hexdigest(), "role": role,
+                       "captured_utc": "2026-08-13T12:00:00+00:00"})
+    composer = {"layout_id": cal._COMPOSER_LAYOUT_ID,
+                "comment_rect": {"x0": 1, "y0": 2, "x1": 3, "y1": 4},
+                "send_rect": {"x0": 5, "y0": 6, "x1": 7, "y1": 8}, "confirm_point": [6, 7]}
+    top = {"state": "confirmed_top", "distance": 0.0, "reason": "top", "grid": [16, 4]}
+    sticky = {"state": "confirmed_not_top", "distance": 20.0, "reason": "sticky", "grid": [16, 4]}
+    analyses = {
+        "confirmed_top_item1_pre": {"scroll_top": top},
+        "composer_initial_autofocused": {
+            "composer": composer, "scroll_top": sticky},
+        "composer_stable_autofocused": {
+            "composer": composer, "scroll_top": sticky},
+        "other_item_composer_moved": {"composer": composer},
+        "item1_profile_identity": {"fingerprint": [10, 10], "grid": [64, 16],
+                                    "frame_index": 1, "reason": "corroborated"},
+        "new_profile_top_clear": {
+            "scroll_top": top, "composer_absent": True},
+        "new_sticky_identity": {
+            "scroll_top": sticky, "fingerprint": [30, 30], "grid": [64, 16],
+            "distance_from_item1_profile": 20.0},
+    }
+    manifest = {
+        "tool_version": cal._OPERATIONAL_EVIDENCE_TOOL_VERSION,
+        "completed": True, "interrupted": False, "device": device,
+        "frame_size_px": [device["display_w"], device["display_h"]],
+        "identity_band": list(identity_band), "composer_layout_id": cal._COMPOSER_LAYOUT_ID,
+        "config_binding": {"serial": device["serial"], "identity_band": list(identity_band),
+                           "composer_layout_id": cal._COMPOSER_LAYOUT_ID,
+                           "hinge_package": device["hinge_package"]},
+        "new_profile_min_identity_distance": cal._IDENTITY_FALSE_MATCH_DISTANCE,
+        "start_utc": "2026-08-13T12:00:00+00:00", "end_utc": "2026-08-13T12:01:00+00:00",
+        "frame_count": len(frames), "frames": frames, "analyses": analyses, "failure": None,
+    }
+    manifest["evidence_sha256"] = cal._canonical_json_digest(manifest)
+    path = directory / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    return path
+
+
+def _wire_operational_replay(monkeypatch, path: Path):
+    manifest = json.loads(path.read_text())
+    by_raw = {(path.parent / rec["file"]).read_bytes(): ordinal
+              for ordinal, rec in enumerate(manifest["frames"])}
+    surface = ComposerSurface(cal._COMPOSER_LAYOUT_ID, Rect(1, 2, 3, 4), Rect(5, 6, 7, 8), (6, 7))
+    top = ScrollTopVerdict("confirmed_top", 0.0, "top", _IDENTITY_BAND, (16, 4), 3.0, 9.0)
+    sticky = ScrollTopVerdict("confirmed_not_top", 20.0, "sticky", _IDENTITY_BAND, (16, 4), 3.0, 9.0)
+    monkeypatch.setattr(cal.hinge_mod, "_load_template", lambda _name: object())
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda raw, **_kw: top if by_raw[raw] in (0, 4) else sticky)
+    def locate(raw, *_args, **_kw):
+        if by_raw[raw] == 4:
+            raise ComposerDetectionError("absent")
+        return surface
+    monkeypatch.setattr(cal, "locate_inline_composer", locate)
+    identity = ProfileIdentity(fingerprint=(10, 10), band=_IDENTITY_BAND, grid=(64, 16),
+                               frame_index=1, scroll_top_distance=20.0, reason="corroborated")
+    monkeypatch.setattr(cal, "capture_profile_identity", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(cal, "band_fingerprint", lambda *_a, **_kw: (30, 30))
+
+
+def _samples(prefix, values):
+    """A representative and inline-composer fingerprint for each synthetic profile."""
+    out = []
+    for number, (card, composer) in enumerate(values, 1):
+        out.extend((cal._IdentitySample(f"{prefix}{number}", "representative", (card,)),
+                    cal._IdentitySample(f"{prefix}{number}", "composer:1", (composer,))))
+    return out
+
+
+def _record(kind, distance, *, profile="p", item=1, against="q", against_item=1):
+    return cal._InlineDistanceRecord(kind, profile, item, against, against_item, distance)
+
+
+def _top_verdict(state: str, reason: str = "test"):
+    return SimpleNamespace(
+        state=state,
+        confirmed=state == "confirmed_top",
+        refuted=state == "confirmed_not_top",
+        reason=reason,
+    )
+
+
+class _HybridRewindDriver:
+    """Small transport double: only the visual-rewind surface is available."""
+
+    def __init__(self, frames):
+        self.frames = list(frames)
+        self.position = 0
+        self.adb = self
+        self.reverse_steps = []
+
+    def screencap(self):
+        return self.frames[min(self.position, len(self.frames) - 1)]
+
+    def _scroll_up_one(self, frac, x_frac):
+        self.reverse_steps.append((frac, x_frac))
+        if self.position < len(self.frames) - 1:
+            self.position += 1
+
+
+def _rewind_driver_plan(monkeypatch):
+    planned = SimpleNamespace(frac=0.16, x_frac=0.47, spacing_px=700)
+    calls = []
+    monkeypatch.setattr(
+        cal, "_plan_card_scroll",
+        lambda frame, **kwargs: (calls.append((frame, kwargs)) or (planned, 700)))
+    return calls, planned
+
+
+def test_hybrid_rewind_recovers_a_mid_profile_without_scroll_ledger(monkeypatch):
+    """The entry top is visually driven, not replayed from process-local history."""
+    driver = _HybridRewindDriver([b"mid-profile", b"top"])
+    calls, planned = _rewind_driver_plan(monkeypatch)
+    monkeypatch.setattr(
+        cal, "confirm_scroll_top",
+        lambda frame, **_kw: _top_verdict(
+            "confirmed_top" if frame == b"top" else "confirmed_not_top"))
+
+    top = cal._rewind_automated_profile_to_confirmed_top(
+        driver, ordinal=4, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=0.8)
+
+    assert top == b"top"
+    assert driver.reverse_steps == [(planned.frac, planned.x_frac)]
+    assert len(calls) == 1
+    planned_frame, planned_kwargs = calls[0]
+    assert planned_frame == b"mid-profile"
+    assert planned_kwargs["content_band"] == _CONTENT_BAND
+    assert planned_kwargs["like_threshold"] == 0.8
+    assert planned_kwargs["profile_min_spacing_px"] is None
+
+
+def test_hybrid_rewind_at_confirmed_top_issues_no_gesture(monkeypatch):
+    driver = _HybridRewindDriver([b"top"])
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_args, **_kw: _top_verdict("confirmed_top"))
+    monkeypatch.setattr(cal, "_plan_card_scroll",
+                        lambda *_args, **_kw: pytest.fail("top needs no scroll plan"))
+
+    assert cal._rewind_automated_profile_to_confirmed_top(
+        driver, ordinal=1, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=0.8) == b"top"
+    assert driver.reverse_steps == []
+
+
+def test_hybrid_rewind_refuses_unknown_before_a_gesture(monkeypatch):
+    driver = _HybridRewindDriver([b"unknown"])
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_args, **_kw: _top_verdict("unknown", "ambiguous strip"))
+
+    with pytest.raises(cal._CaptureAbort, match="unconfirmed scroll-top state"):
+        cal._rewind_automated_profile_to_confirmed_top(
+            driver, ordinal=1, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+    assert driver.reverse_steps == []
+
+
+def test_hybrid_rewind_refuses_an_unplannable_or_stalled_refuted_frame(monkeypatch):
+    driver = _HybridRewindDriver([b"mid"])
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_args, **_kw: _top_verdict("confirmed_not_top", "sticky"))
+    monkeypatch.setattr(cal, "_plan_card_scroll",
+                        lambda *_args, **_kw: (_ for _ in ()).throw(
+                            cal.ScrollStepError("no safe step")))
+
+    with pytest.raises(cal._CaptureAbort, match="could not plan a guarded upward scroll"):
+        cal._rewind_automated_profile_to_confirmed_top(
+            driver, ordinal=1, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+    assert driver.reverse_steps == []
+
+    calls, _planned = _rewind_driver_plan(monkeypatch)
+    with pytest.raises(cal._CaptureAbort, match="rewind stalled"):
+        cal._rewind_automated_profile_to_confirmed_top(
+            driver, ordinal=1, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+    assert len(calls) == 1 and len(driver.reverse_steps) == 1
+
+
+def test_hybrid_rewind_has_a_hard_visual_gesture_budget(monkeypatch):
+    driver = _HybridRewindDriver([b"mid-0", b"mid-1", b"mid-2"])
+    calls, _planned = _rewind_driver_plan(monkeypatch)
+    monkeypatch.setattr(cal, "_MAX_AUTOMATED_TOP_REWIND_STEPS", 2)
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_args, **_kw: _top_verdict("confirmed_not_top", "sticky"))
+
+    with pytest.raises(cal._CaptureAbort, match="exceeded its bounded 2-gesture budget"):
+        cal._rewind_automated_profile_to_confirmed_top(
+            driver, ordinal=1, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+
+    assert len(driver.reverse_steps) == len(calls) == 2
+
+
+def test_every_automated_profile_enters_through_the_visual_rewind(monkeypatch, tmp_path):
+    class Driver:
+        identity_band = _IDENTITY_BAND
+        content_band = _CONTENT_BAND
+
+        def _template(self, _name):
+            return object()
+
+    calls = []
+
+    def stop_at_entry(_driver, **kwargs):
+        calls.append(kwargs)
+        raise cal._CaptureAbort("entry gate reached")
+
+    monkeypatch.setattr(cal, "_rewind_automated_profile_to_confirmed_top", stop_at_entry)
+    with pytest.raises(cal._CaptureAbort, match="entry gate reached"):
+        cal._capture_one_profile_unattended(
+            Driver(), tmp_path, ordinal=7, frame_counter=0, frames_meta=[],
+            used_profile_ids=set())
+
+    assert len(calls) == 1
+    assert calls[0]["ordinal"] == 7
+    assert calls[0]["identity_band"] == _IDENTITY_BAND
+    assert calls[0]["content_band"] == _CONTENT_BAND
+    assert calls[0]["like_threshold"] == cal.hinge_mod._LIKE_MATCH_THRESHOLD
+
+
+@pytest.mark.parametrize("item_number", [1, 3], ids=["odd-profile-photo-1", "even-profile-photo-3"])
+def test_calibration_only_pass_allows_composer_offscreen_after_edge_back_then_uses_guarded_transport(
+        monkeypatch, item_number):
+    """The special composer route is narrow and never delegates to public `dislike()`.
+
+    Production Pass correctly requires the ordinary deck pair of glyphs.  On the live Hinge
+    surface, edge-back hides the keyboard *and restores the old scroll offset*, so the verified
+    composer can be completely offscreen while the floating Pass X returns.  The identity header
+    is the post-edge invariant, rather than a made-up absolute composer position.
+    """
+    focused = ComposerSurface(cal._COMPOSER_LAYOUT_ID, Rect(80, 1150, 1000, 1290),
+                              Rect(390, 1300, 985, 1420), (690, 1360))
+    identity = ProfileIdentity((7,), _IDENTITY_BAND, (1, 1), 1, 20.0, "known",
+                               agreeing_frames=2)
+
+    class _Adb:
+        def __init__(self):
+            self.state = "focused"
+
+        def screen_size(self):
+            return 1080, 2400
+
+        def screencap(self):
+            return self.state.encode()
+
+    class _Driver:
+        dwell_s = 0.0
+
+        def __init__(self):
+            self.adb = _Adb()
+            self.calls = []
+
+        def _swipe(self, *args):
+            self.calls.append(("swipe", args))
+            assert self.adb.state == "focused"
+            self.adb.state = "composer-offscreen"
+
+        def _await_button(self, which):
+            self.calls.append(("await", which))
+            assert which == "pass" and self.adb.state == "composer-offscreen"
+            return 130, 2040
+
+        def _locate_button(self, which):
+            self.calls.append(("locate", which))
+            assert which == "pass" and self.adb.state == "composer-offscreen"
+            return 133, 2041
+
+        def _tap(self, *point):
+            self.calls.append(("tap", point))
+            assert point == (133, 2041)
+            self.adb.state = "new-top"
+
+        def _observe_deck_ready(self, frame):
+            return frame == b"new-top"
+
+        def dislike(self):
+            pytest.fail("calibration composer Pass must not weaken/delegate to HingeDriver.dislike")
+
+    driver = _Driver()
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(
+        cal, "locate_inline_composer",
+        lambda frame, *_args, **_kw: (
+            focused if frame == b"focused"
+            else (_ for _ in ()).throw(ComposerDetectionError("composer absent"))))
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_args, **_kw: SimpleNamespace(matched=True, reason="matched"))
+    monkeypatch.setattr(
+        cal, "confirm_scroll_top",
+        lambda frame, **_kw: SimpleNamespace(confirmed=frame == b"new-top",
+                                               refuted=frame != b"new-top", reason="top"))
+    monkeypatch.setattr(cal, "band_fingerprint", lambda *_args, **_kw: (7,))
+
+    advance, trace = cal._automated_pass_from_verified_composer(
+        driver, frame=b"focused", confirm_template=object(), payload=SimpleNamespace(),
+        item_number=item_number, identity=identity, identity_band=_IDENTITY_BAND)
+
+    assert advance == b"new-top"
+    # A focused composer first gets a read-only Pass-locator probe; its absence then takes the
+    # one guarded edge-back route.  The probe is not a gesture and cannot hit Send Like.
+    assert [name for name, _args in driver.calls] == ["locate", "swipe", "await", "locate", "tap"]
+    assert trace["transport"] == ["HingeDriver._swipe(android_edge_back)",
+                                  "HingeDriver._await_button(pass)",
+                                  "HingeDriver._locate_button(pass)", "HingeDriver._tap"]
+    assert trace["predicates"]["post_edge_same_profile_sticky_header_verified"] is True
+    assert trace["predicates"]["post_edge_composer_reverified"] is False
+    assert trace["predicates"]["post_edge_composer_visibility"] == "not_required_may_be_offscreen"
+    assert trace["predicates"]["new_profile_top_confirmed"] is True
+    assert trace["pre_frame_sha256"] == hashlib.sha256(b"focused").hexdigest()
+    assert trace["post_frame_sha256"] == hashlib.sha256(b"new-top").hexdigest()
+
+
+def test_abort_cleanup_discards_structural_composer_when_item_verification_refuses(monkeypatch):
+    """A false-negative item comparison must not strand an unsent composer or tap Send Like."""
+    surface = ComposerSurface(cal._COMPOSER_LAYOUT_ID, Rect(80, 1150, 1000, 1290),
+                              Rect(390, 1300, 985, 1420), (690, 1360))
+    identity = ProfileIdentity((7,), _IDENTITY_BAND, (1, 1), 1, 20.0, "known",
+                               agreeing_frames=2)
+
+    class _Adb:
+        def __init__(self): self.state = "composer"
+        def screen_size(self): return 1080, 2400
+        def screencap(self): return self.state.encode()
+
+    class _Driver:
+        dwell_s = 0.0
+        def __init__(self): self.adb, self.calls = _Adb(), []
+        def _swipe(self, *_args):
+            self.calls.append("edge_back")
+            self.adb.state = "composer-offscreen"
+        def _await_button(self, which):
+            self.calls.append(("await", which))
+            return 130, 2040
+        def _locate_button(self, which):
+            self.calls.append(("locate", which))
+            return 133, 2041
+        def _tap(self, *point):
+            self.calls.append(("tap", point))
+            self.adb.state = "new-top"
+        def _observe_deck_ready(self, frame): return frame == b"new-top"
+
+    driver = _Driver()
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(
+        cal, "locate_inline_composer",
+        lambda frame, *_a, **_kw: surface if frame == b"composer" else (
+            (_ for _ in ()).throw(ComposerDetectionError("composer offscreen"))))
+    # This is precisely the incident path: Hinge rendered an inline composer, but the item's
+    # bounded image comparison refused.  The cleanup may discard, never certify, this profile.
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_a, **_kw: SimpleNamespace(matched=False, reason="render drift"))
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda frame, **_kw: SimpleNamespace(confirmed=frame == b"new-top",
+                                                              refuted=frame != b"new-top", reason="top"))
+    monkeypatch.setattr(cal, "band_fingerprint", lambda *_a, **_kw: (7,))
+
+    recovery = cal._recover_automated_abort_from_open_composer(
+        driver, frame=b"composer", confirm_template=object(), payload=SimpleNamespace(),
+        item_number=1, identity=identity, identity_band=_IDENTITY_BAND,
+        failure_stage="post_tap_composer_or_item_verification_refused")
+
+    assert recovery["outcome"] == "cleared"
+    assert recovery["calibration_evidence"] is False
+    assert recovery["selected_item_verified_before_cleanup"] is False
+    assert recovery["send_like_tapped"] is False
+    assert recovery["cleanup_trace"]["predicates"]["send_like_tapped"] is False
+    assert recovery["cleanup_trace"]["predicates"]["inline_composer_and_selected_photo_verified_before_action"] is False
+    # The composer is already unfocused and exposes a stable floating Pass.  Cleanup must not
+    # issue Android back here: on the live surface that can leave Hinge for the launcher.
+    assert driver.calls == [("locate", "pass"), ("locate", "pass"), ("tap", (133, 2041))]
+    assert recovery["cleanup_trace"]["predicates"]["edge_back_transport_performed"] is False
+    assert recovery["cleanup_trace"]["predicates"]["unfocused_composer_pass_visible_before_edge_back"] is True
+
+
+def test_abort_cleanup_refuses_without_an_current_structural_composer(monkeypatch):
+    """A remembered earlier composer can never authorize an abort-time gesture."""
+    class _Driver:
+        def __init__(self): self.touches = 0
+        def _swipe(self, *_args): self.touches += 1
+
+    monkeypatch.setattr(cal, "locate_inline_composer",
+                        lambda *_a, **_kw: (_ for _ in ()).throw(
+                            ComposerDetectionError("not a composer")))
+    recovery = cal._recover_automated_abort_from_open_composer(
+        _Driver(), frame=b"unknown", confirm_template=object(), payload=SimpleNamespace(),
+        item_number=3,
+        identity=ProfileIdentity((7,), _IDENTITY_BAND, (1, 1), 1, 20.0, "known",
+                                 agreeing_frames=2),
+        identity_band=_IDENTITY_BAND, failure_stage="post_tap_composer_or_item_verification_refused")
+    assert recovery["outcome"] == "not_cleared"
+    assert "no supported inline composer" in recovery["refusal"]
+
+
+def test_abort_cleanup_refuses_wrong_identity_before_any_edge_or_pass_gesture(monkeypatch):
+    surface = ComposerSurface(cal._COMPOSER_LAYOUT_ID, Rect(80, 1150, 1000, 1290),
+                              Rect(390, 1300, 985, 1420), (690, 1360))
+    identity = ProfileIdentity((7,), _IDENTITY_BAND, (1, 1), 1, 20.0, "known",
+                               agreeing_frames=2)
+
+    class _Adb:
+        def screen_size(self): return 1080, 2400
+        def screencap(self): return b"wrong-profile"
+
+    class _Driver:
+        dwell_s = 0.0
+        def __init__(self): self.adb, self.touches = _Adb(), []
+        def _swipe(self, *_args): self.touches.append("edge_back")
+        def _locate_button(self, *_args): self.touches.append("locate")
+        def _tap(self, *_args): self.touches.append("tap")
+
+    driver = _Driver()
+    monkeypatch.setattr(cal, "locate_inline_composer", lambda *_a, **_kw: surface)
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_a, **_kw: SimpleNamespace(matched=False, reason="drift"))
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_a, **_kw: _top_verdict("confirmed_not_top", "sticky"))
+    monkeypatch.setattr(cal, "band_fingerprint", lambda *_a, **_kw: (99,))
+
+    recovery = cal._recover_automated_abort_from_open_composer(
+        driver, frame=b"wrong-profile", confirm_template=object(), payload=SimpleNamespace(),
+        item_number=1, identity=identity, identity_band=_IDENTITY_BAND,
+        failure_stage="post_tap_composer_or_item_verification_refused")
+
+    assert recovery["outcome"] == "not_cleared"
+    assert "different or unstable profile" in recovery["refusal"]
+    assert driver.touches == []
+
+
+def test_post_pass_settle_accepts_a_ready_top_without_an_extra_edge_back(monkeypatch):
+    class _Adb:
+        def screen_size(self): return 1080, 2400
+        def screencap(self): return b"top"
+
+    class _Driver:
+        dwell_s = 0.0
+        adb = _Adb()
+        def _observe_deck_ready(self, frame): return frame == b"top"
+        def _swipe(self, *_args): pytest.fail("valid ordinary top needs no modal recovery")
+
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_a, **_kw: _top_verdict("confirmed_top"))
+    monkeypatch.setattr(cal, "locate_inline_composer",
+                        lambda *_a, **_kw: (_ for _ in ()).throw(ComposerDetectionError("absent")))
+    settled, trace = cal._settle_automated_post_pass_to_top(
+        _Driver(), frame=b"top", confirm_template=object(), identity_band=_IDENTITY_BAND)
+    assert settled == b"top"
+    assert trace["modal_edge_back_used"] is False
+
+
+def test_post_pass_settle_uses_one_edge_back_for_top_looking_promo_then_requires_deck(monkeypatch):
+    class _Adb:
+        state = b"promo"
+        def screen_size(self): return 1080, 2400
+        def screencap(self): return self.state
+
+    class _Driver:
+        dwell_s = 0.0
+        def __init__(self): self.adb, self.swipes = _Adb(), 0
+        def _observe_deck_ready(self, frame): return frame == b"new-top"
+        def _swipe(self, *_args):
+            self.swipes += 1
+            self.adb.state = b"new-top"
+
+    driver = _Driver()
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_a, **_kw: _top_verdict("confirmed_top"))
+    monkeypatch.setattr(cal, "locate_inline_composer",
+                        lambda *_a, **_kw: (_ for _ in ()).throw(ComposerDetectionError("absent")))
+    settled, trace = cal._settle_automated_post_pass_to_top(
+        driver, frame=b"promo", confirm_template=object(), identity_band=_IDENTITY_BAND)
+    assert settled == b"new-top"
+    assert driver.swipes == 1
+    assert trace["modal_edge_back_used"] is True
+
+
+def test_post_pass_settle_refuses_after_one_edge_back_when_ordinary_deck_is_still_missing(monkeypatch):
+    class _Adb:
+        state = b"promo"
+        def screen_size(self): return 1080, 2400
+        def screencap(self): return self.state
+
+    class _Driver:
+        dwell_s = 0.0
+        def __init__(self): self.adb, self.swipes = _Adb(), 0
+        def _observe_deck_ready(self, _frame): return False
+        def _swipe(self, *_args):
+            self.swipes += 1
+            self.adb.state = b"still-promo"
+
+    driver = _Driver()
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_a, **_kw: _top_verdict("confirmed_top"))
+    monkeypatch.setattr(cal, "locate_inline_composer",
+                        lambda *_a, **_kw: (_ for _ in ()).throw(ComposerDetectionError("absent")))
+    with pytest.raises(cal._CaptureAbort, match="ordinary new profile top"):
+        cal._settle_automated_post_pass_to_top(
+            driver, frame=b"promo", confirm_template=object(), identity_band=_IDENTITY_BAND)
+    assert driver.swipes == 1
+
+
+def test_preaction_skip_uses_public_dislike_and_records_distinct_retry(monkeypatch):
+    identity = ProfileIdentity((7,), _IDENTITY_BAND, (1, 1), 1, 20.0, "known",
+                               agreeing_frames=2)
+
+    class _Adb:
+        state = b"top"
+        def screencap(self): return self.state
+
+    class _Driver:
+        dwell_s = 0.0
+        def __init__(self): self.adb, self.dislikes, self.taps = _Adb(), 0, 0
+        def _template(self, _name): return object()
+        def dislike(self):
+            self.dislikes += 1
+            self.adb.state = b"advanced-top"
+        def _scroll_down_one(self, *_args): self.adb.state = b"next-sticky"
+        def _tap(self, *_args): self.taps += 1
+
+    driver = _Driver()
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal, "_rewind_automated_profile_to_confirmed_top",
+                        lambda *_a, **_kw: b"top")
+    monkeypatch.setattr(cal, "locate_inline_composer",
+                        lambda *_a, **_kw: (_ for _ in ()).throw(ComposerDetectionError("absent")))
+    monkeypatch.setattr(cal, "_settle_automated_post_pass_to_top",
+                        lambda *_a, **_kw: (b"advanced-top", {
+                            "modal_edge_back_used": False, "ordinary_deck_ready": True}))
+    monkeypatch.setattr(cal, "_plan_card_scroll",
+                        lambda *_a, **_kw: (SimpleNamespace(frac=.1, x_frac=.5), None))
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda frame, **_kw: _top_verdict(
+                            "confirmed_not_top" if frame == b"next-sticky" else "confirmed_top"))
+    monkeypatch.setattr(cal, "band_fingerprint", lambda *_a, **_kw: (99,))
+    monkeypatch.setattr(cal, "fingerprint_distance", lambda *_a, **_kw: 20.0)
+
+    record = cal._skip_automated_profile_before_heart(
+        driver, ordinal=2,
+        reason=cal._PreActionProfileRetry("pre_heart_navigation_refused", "navigation refused"),
+        identity=identity, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=.8)
+    assert driver.dislikes == 1
+    assert driver.taps == 0
+    assert record["transport"] == "HingeDriver.dislike"
+    assert record["predicates"]["new_profile_identity_distinct"] is True
+
+
+def test_preaction_skip_reviewer_nonapproval_never_calls_public_dislike(monkeypatch):
+    identity = ProfileIdentity((7,), _IDENTITY_BAND, (1, 1), 1, 20.0, "known",
+                               agreeing_frames=2)
+
+    class _Driver:
+        dwell_s = 0.0
+        def _template(self, _name): return object()
+        def dislike(self): pytest.fail("non-approved checkpoint must not advance the profile")
+
+    class _Gate:
+        def checkpoint(self, *_args, **_kwargs): return {"decision": "retry"}
+
+    monkeypatch.setattr(cal, "_rewind_automated_profile_to_confirmed_top",
+                        lambda *_a, **_kw: b"top")
+    monkeypatch.setattr(cal, "locate_inline_composer",
+                        lambda *_a, **_kw: (_ for _ in ()).throw(ComposerDetectionError("absent")))
+    with pytest.raises(cal._CaptureAbort, match="did not approve"):
+        cal._skip_automated_profile_before_heart(
+            _Driver(), ordinal=1,
+            reason=cal._PreActionProfileRetry("target_unavailable_or_incomplete_index", "missing"),
+            identity=identity, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=.8, review_gate=_Gate())
+
+
+def test_calibration_only_pass_refuses_a_wrong_profile_header_after_edge_back(monkeypatch):
+    surface = ComposerSurface(cal._COMPOSER_LAYOUT_ID, Rect(80, 1150, 1000, 1290),
+                              Rect(390, 1300, 985, 1420), (690, 1360))
+    identity = ProfileIdentity((7,), _IDENTITY_BAND, (1, 1), 1, 20.0, "known",
+                               agreeing_frames=2)
+
+    class _Adb:
+        state = "composer"
+
+        def screen_size(self):
+            return 1080, 2400
+
+        def screencap(self):
+            return self.state.encode()
+
+    class _Driver:
+        dwell_s = 0.0
+
+        def __init__(self):
+            self.adb = _Adb()
+
+        def _swipe(self, *_args):
+            self.adb.state = "wrong-header"
+
+        def _await_button(self, _which):
+            pytest.fail("Pass must not be located for a mismatched profile header")
+
+    monkeypatch.setattr(cal, "locate_inline_composer", lambda *_args, **_kw: surface)
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_args, **_kw: SimpleNamespace(matched=True, reason="matched"))
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_args, **_kw: SimpleNamespace(confirmed=False, refuted=True,
+                                                               reason="sticky"))
+    monkeypatch.setattr(cal, "band_fingerprint", lambda *_args, **_kw: (99,))
+
+    with pytest.raises(cal._CaptureAbort, match="different or unstable profile header"):
+        cal._automated_pass_from_verified_composer(
+            _Driver(), frame=b"composer", confirm_template=object(), payload=SimpleNamespace(),
+            item_number=3, identity=identity, identity_band=_IDENTITY_BAND)
+
+
+def test_calibration_only_pass_refuses_when_pass_disappears_after_edge_back(monkeypatch):
+    surface = ComposerSurface(cal._COMPOSER_LAYOUT_ID, Rect(80, 1150, 1000, 1290),
+                              Rect(390, 1300, 985, 1420), (690, 1360))
+    identity = ProfileIdentity((7,), _IDENTITY_BAND, (1, 1), 1, 20.0, "known",
+                               agreeing_frames=2)
+
+    class _Adb:
+        state = "composer"
+
+        def screen_size(self):
+            return 1080, 2400
+
+        def screencap(self):
+            return self.state.encode()
+
+    class _Driver:
+        dwell_s = 0.0
+
+        def __init__(self):
+            self.adb = _Adb()
+            self.tapped = False
+
+        def _swipe(self, *_args):
+            self.adb.state = "composer-offscreen"
+
+        def _await_button(self, which):
+            assert which == "pass"
+            return 130, 2040
+
+        def _locate_button(self, which):
+            assert which == "pass"
+            return None
+
+        def _tap(self, *_args):
+            self.tapped = True
+
+    driver = _Driver()
+    monkeypatch.setattr(cal, "locate_inline_composer",
+                        lambda frame, *_args, **_kw: (
+                            surface if frame == b"composer"
+                            else (_ for _ in ()).throw(ComposerDetectionError("offscreen"))))
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_args, **_kw: SimpleNamespace(matched=True, reason="matched"))
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_args, **_kw: SimpleNamespace(confirmed=False, refuted=True,
+                                                               reason="sticky"))
+    monkeypatch.setattr(cal, "band_fingerprint", lambda *_args, **_kw: (7,))
+
+    with pytest.raises(cal._CaptureAbort, match="Pass X disappeared"):
+        cal._automated_pass_from_verified_composer(
+            driver, frame=b"composer", confirm_template=object(), payload=SimpleNamespace(),
+            item_number=3, identity=identity, identity_band=_IDENTITY_BAND)
+    assert driver.tapped is False
+
+
+def _successful_measure_seams(monkeypatch, tmp_path, *, held_identity=None,
+                              held_inline_records=None, serial="PIXEL-TEST"):
+    calibration = _session(tmp_path, "targeting_20260813T120000Z", "calibration", ["a", "b"],
+                           serial=serial)
+    heldout = _session(tmp_path, "targeting_20260813T130000Z", "heldout", ["c", "d"],
+                       serial=serial)
+    sessions = {"cal": calibration, "held": heldout}
+    operational = _write_operational_evidence(tmp_path / "operational", device=_device(serial))
+    _wire_operational_replay(monkeypatch, operational)
+    for session in sessions.values():
+        for key in ("item_1_inline_composer_identity", "gesture_transport"):
+            session.manifest["operational_checks"][key]["evidence"] = str(operational)
+    monkeypatch.setattr(cal.cfg_mod, "load",
+                        lambda _path: SimpleNamespace(apps={"hinge": {"serial": serial}}))
+    monkeypatch.setattr(cal, "HingeDriver", _InertDriver)
+    monkeypatch.setattr(cal, "_load_session", lambda raw: sessions[str(raw)])
+    # The measure-focused tests replace every heavyweight evidence pipeline at its boundary.
+    # Preliminary observe-artifact validation has its own byte/hash tests in
+    # test_hinge_observe_check.py; keep these seams about bound freezing/held-out behavior.
+    monkeypatch.setattr(cal, "_preliminary_observe_check_reference_reason", lambda _ref: None)
+    monkeypatch.setattr(cal, "_entry_anchor_reference_reason", lambda *_args, **_kw: None)
+    monkeypatch.setattr(cal, "_validate_profile_advance_clears", lambda *_args, **_kw: None)
+    monkeypatch.setattr(cal, "fingerprint_distance", lambda a, b: abs(a[0] - b[0]))
+
+    calibration_identity = _samples("cal", [(20, 20.4), (22, 22.4)])
+    held_identity = held_identity or _samples("held", [(0, 0.4), (3, 3.4)])
+    monkeypatch.setattr(
+        cal, "_profile_identity_samples",
+        lambda profiles, **_kw: calibration_identity if profiles[0].profile_id == "a" else held_identity,
+    )
+
+    monkeypatch.setattr(cal, "_build_profile_payloads", lambda profiles, **_kw: profiles)
+    calibration_inline = [_record("own_intended", 1), _record("own_intended", 2),
+                         _record("own_foreign_item", 8)]
+    held_inline_records = held_inline_records or [
+        _record("own_intended", 1), _record("foreign_profile", 8)]
+    monkeypatch.setattr(
+        cal, "_inline_distance_records",
+        lambda profiles, **_kw: calibration_inline if profiles[0].profile_id == "a" else held_inline_records,
+    )
+    return argparse.Namespace(config="does-not-exist.yaml", sessions=["cal", "held"]), calibration, heldout
+
+
+def test_measure_requires_collective_photo_depth_coverage_for_multi_profile_split(tmp_path):
+    profiles = [cal._ProfileData(i, f"p{i}", [], [(1, b"pre", b"composer")], b"clear", b"identity")
+                for i in (1, 2)]
+
+    with pytest.raises(cal._MeasureRefused, match="lacks composer evidence"):
+        cal._require_collective_target_depths(profiles, split="calibration")
+
+
+def test_operational_recorder_v2_requires_hashed_frames_and_exact_auto_focused_schema(monkeypatch,
+                                                                                       tmp_path):
+    device = _device()
+    path = _write_operational_evidence(tmp_path / "operational", device=device)
+    _wire_operational_replay(monkeypatch, path)
+
+    assert cal._operational_evidence_reference_reason(
+        str(path.parent), expected_device=device, identity_band=_IDENTITY_BAND) is None
+
+    manifest = json.loads(path.read_text())
+    manifest["frames"][1]["role"] = "composer_focused"
+    body = dict(manifest)
+    body.pop("evidence_sha256")
+    manifest["evidence_sha256"] = cal._canonical_json_digest(body)
+    path.write_text(json.dumps(manifest))
+    reason = cal._operational_evidence_reference_reason(
+        str(path), expected_device=device, identity_band=_IDENTITY_BAND)
+    assert reason is not None
+    assert "wrongly ordered" in reason
+
+
+def test_operational_recorder_replays_hashed_frames_and_rejects_rehashed_analysis_tampering(
+        monkeypatch, tmp_path):
+    device = _device()
+    path = _write_operational_evidence(tmp_path / "operational", device=device)
+    _wire_operational_replay(monkeypatch, path)
+    manifest = json.loads(path.read_text())
+    manifest["analyses"]["new_sticky_identity"]["distance_from_item1_profile"] = 99.0
+    body = dict(manifest)
+    body.pop("evidence_sha256")
+    manifest["evidence_sha256"] = cal._canonical_json_digest(body)
+    path.write_text(json.dumps(manifest))
+
+    reason = cal._operational_evidence_reference_reason(
+        str(path), expected_device=device, identity_band=_IDENTITY_BAND)
+    assert reason is not None
+    assert "do not exactly match pure replay" in reason
+
+
+def test_operational_recorder_v1_or_unhashed_assertion_is_never_measure_evidence(tmp_path):
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    path = legacy / "manifest.json"
+    path.write_text(json.dumps({"tool_version": "1", "completed": True}))
+
+    reason = cal._operational_evidence_reference_reason(
+        str(path), expected_device=_device(), identity_band=_IDENTITY_BAND)
+    assert reason is not None
+    assert "unsupported" in reason
+    assert cal._operational_evidence_reference_reason(
+        "operator-says-it-worked", expected_device=_device(), identity_band=_IDENTITY_BAND) is not None
+
+
+def test_entry_anchor_operational_reference_must_name_this_session_ledger(tmp_path):
+    session_dir = tmp_path / "capture"
+    session_dir.mkdir()
+    ledger = session_dir / cal._ENTRY_ANCHOR_LEDGER_FILE
+    ledger.write_text("{}")
+    session = SimpleNamespace(dir=session_dir)
+
+    assert cal._entry_anchor_reference_reason(session, str(session_dir)) is None
+    assert cal._entry_anchor_reference_reason(session, "operator-says-entry-is-good") is not None
+
+
+def test_measure_success_prints_exact_calibration_mapping_and_full_ledger(monkeypatch, tmp_path, capsys):
+    args, _calibration, heldout = _successful_measure_seams(monkeypatch, tmp_path)
+
+    cal._cmd_measure(args)
+
+    output = capsys.readouterr().out
+    yaml_body = output.split("\napps:\n", 1)[1].split("\n==============================================================================", 1)[0]
+    block = cal.yaml.safe_load("apps:\n" + yaml_body)["apps"]["hinge"]["targeting_calibration"]
+    assert list(block) == ["schema_version", "device", "hinge_version_name", "frame_size_px",
+                           "composer_layout_id", "item_selection_policy_id",
+                           "identity_match_max_dist", "inline_item_max_dist",
+                           "calibrated_at", "identity_band", "content_band"]
+    assert block["schema_version"] == 3
+    assert block["hinge_version_name"] == "1.0"
+    assert block["frame_size_px"] == [1080, 2400]
+    assert block["composer_layout_id"] == "hinge_inline_v1"
+    assert block["item_selection_policy_id"] == "hinge_photos_only_v1"
+    assert block["device"] == "PIXEL-TEST"
+    assert re.search(r"20\d\d-\d\d-\d\dT", block["calibrated_at"])
+    assert "placeholder" not in block["calibrated_at"].lower()
+
+    ledger = json.loads((heldout.dir / "measurement_ledger.json").read_text())
+    assert ledger["identity"]["frozen_bound"] == 1.0
+    assert ledger["inline"]["frozen_bound"] == 5.0
+    # What is applied to held-out and recorded is exactly what the owner is asked to paste.
+    assert block["identity_match_max_dist"] == ledger["identity"]["frozen_bound"]
+    assert block["inline_item_max_dist"] == ledger["inline"]["frozen_bound"]
+    assert ledger["identity"]["heldout"]["ok"] is True
+    assert ledger["inline"]["heldout"]["ok"] is True
+    # The ledger retains both things the bounds accept and the alternatives they refuse.
+    assert ledger["identity"]["heldout"]["same_profile_pairs"]
+    assert ledger["identity"]["heldout"]["different_profile_pairs"]
+    assert ledger["inline"]["heldout"]["intended"]
+    assert ledger["inline"]["heldout"]["foreign"]
+
+
+@pytest.mark.parametrize(
+    ("samples", "ceiling"),
+    [
+        (_samples("p", [(0, cal._IDENTITY_FALSE_MATCH_DISTANCE),
+                         (10, 11)]), cal._IDENTITY_FALSE_MATCH_DISTANCE),
+    ],
+)
+def test_identity_bound_at_hard_ceiling_is_refused(monkeypatch, samples, ceiling):
+    monkeypatch.setattr(cal, "fingerprint_distance", lambda a, b: abs(a[0] - b[0]))
+    bound, report = cal._freeze_identity_bound(samples)
+    assert bound is None
+    assert report["max_same_profile_distance"] >= ceiling
+
+
+def test_inline_bound_at_hard_ceiling_is_refused():
+    records = [_record("own_intended", cal._INLINE_FALSE_MATCH_DISTANCE),
+               _record("own_foreign_item", 30)]
+    bound, report = cal._freeze_inline_bound(records)
+    assert bound is None
+    assert report["max_intended_distance"] >= cal._INLINE_FALSE_MATCH_DISTANCE
+
+
+def test_nonseparable_calibration_refuses_without_yaml(monkeypatch, tmp_path, capsys):
+    args, _calibration, _heldout = _successful_measure_seams(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cal, "_profile_identity_samples",
+        lambda profiles, **_kw: (_samples("x", [(0, 4), (3, 7)])
+                                 if profiles[0].profile_id == "a"
+                                 else _samples("held", [(20, 20.2), (25, 25.2)])))
+    monkeypatch.setattr(cal, "fingerprint_distance", lambda a, b: abs(a[0] - b[0]))
+
+    with pytest.raises(SystemExit) as exc:
+        cal._cmd_measure(args)
+    assert exc.value.code != 0
+    captured = capsys.readouterr()
+    assert "not separable" in captured.err
+    assert "targeting_calibration:" not in captured.out
+
+
+@pytest.mark.parametrize(
+    ("held_identity", "held_inline", "signal"),
+    [
+        (_samples("held", [(0, 0.1), (0.5, 0.6)]), None, "different-profile"),
+        (_samples("held", [(0, 5), (8, 9)]), None, "false refusal"),
+        (None, [_record("own_intended", 1), _record("foreign_profile", 3)], "foreign-item"),
+        (None, [_record("own_intended", 6), _record("foreign_profile", 8)], "false refusal"),
+    ],
+    ids=["foreign_profile_accept", "identity_false_refusal", "foreign_item_accept", "inline_false_refusal"],
+)
+def test_heldout_failure_refuses_and_never_prints_yaml(monkeypatch, tmp_path, capsys,
+                                                        held_identity, held_inline, signal):
+    args, _calibration, _heldout = _successful_measure_seams(
+        monkeypatch, tmp_path, held_identity=held_identity, held_inline_records=held_inline)
+
+    with pytest.raises(SystemExit) as exc:
+        cal._cmd_measure(args)
+    assert exc.value.code != 0
+    captured = capsys.readouterr()
+    assert signal in captured.err.lower()
+    assert "targeting_calibration:" not in captured.out
+
+
+@pytest.mark.parametrize("splits", [(["calibration"],), (["heldout"],)])
+def test_missing_calibration_or_heldout_split_is_refused(monkeypatch, tmp_path, capsys, splits):
+    split = splits[0][0]
+    session = _session(tmp_path, "only", split, ["a", "b"])
+    monkeypatch.setattr(cal.cfg_mod, "load", lambda _path: _Cfg())
+    monkeypatch.setattr(cal, "HingeDriver", _InertDriver)
+    monkeypatch.setattr(cal, "_load_session", lambda _raw: session)
+
+    with pytest.raises(SystemExit) as exc:
+        cal._cmd_measure(argparse.Namespace(config="x", sessions=["only"]))
+    assert exc.value.code != 0
+    assert "each split" in capsys.readouterr().err.lower()
+
+
+def test_profile_id_shared_between_splits_is_refused(monkeypatch, tmp_path, capsys):
+    calibration = _session(tmp_path, "cal", "calibration", ["same"])
+    heldout = _session(tmp_path, "held", "heldout", ["same"])
+    monkeypatch.setattr(cal.cfg_mod, "load", lambda _path: _Cfg())
+    monkeypatch.setattr(cal, "HingeDriver", _InertDriver)
+    monkeypatch.setattr(cal, "_load_session", lambda raw: {"cal": calibration, "held": heldout}[str(raw)])
+
+    with pytest.raises(SystemExit):
+        cal._cmd_measure(argparse.Namespace(config="x", sessions=["cal", "held"]))
+    assert "both the calibration and held-out" in capsys.readouterr().err.lower()
+
+
+def test_session_band_mismatch_is_refused_before_any_measurement(monkeypatch, tmp_path, capsys):
+    bad_band = (0.10, 0.05, 0.80, 0.094)
+    session = _session(tmp_path, "cal", "calibration", ["a"], identity_band=bad_band)
+    monkeypatch.setattr(cal.cfg_mod, "load", lambda _path: _Cfg())
+    monkeypatch.setattr(cal, "HingeDriver", _InertDriver)
+    monkeypatch.setattr(cal, "_load_session", lambda _raw: session)
+
+    with pytest.raises(SystemExit):
+        cal._cmd_measure(argparse.Namespace(config="x", sessions=["cal"]))
+    assert "does not exactly match" in capsys.readouterr().err.lower()
+
+
+def test_sessions_with_different_effective_bands_are_refused(monkeypatch, tmp_path, capsys):
+    calibration = _session(tmp_path, "cal", "calibration", ["a"], identity_band=_IDENTITY_BAND)
+    heldout = _session(tmp_path, "held", "heldout", ["b"], content_band=(0.12, 0.875))
+    monkeypatch.setattr(cal.cfg_mod, "load", lambda _path: _Cfg())
+    monkeypatch.setattr(cal, "HingeDriver", _InertDriver)
+    monkeypatch.setattr(cal, "_load_session", lambda raw: {"cal": calibration, "held": heldout}[str(raw)])
+
+    with pytest.raises(SystemExit):
+        cal._cmd_measure(argparse.Namespace(config="x", sessions=["cal", "held"]))
+    assert "does not exactly match" in capsys.readouterr().err.lower()
+
+
+def test_load_session_refuses_changed_frame_bytes(tmp_path):
+    data = b"original synthetic frame"
+    frame = tmp_path / "00001.png"
+    frame.write_bytes(b"changed synthetic frame")
+    manifest = {
+        "tool_version": cal._TOOL_VERSION, "interrupted": False, "split": "calibration",
+        "identity_band": list(_IDENTITY_BAND), "content_band": list(_CONTENT_BAND),
+        "device": _device(), "requested_profiles": 1,
+        "calibration_schema_version": 3, "composer_layout_id": "hinge_inline_v1",
+        "item_selection_policy_id": "hinge_photos_only_v1",
+        "frame_size_px": [1080, 2400],
+        "profiles": [{"ordinal": 1, "profile_id": "p", "card_scroll_frames": 1,
+                      "composer_items": [1], "profile_advance_cleared_composer": True,
+                      "profile_advance_identity_mismatched": True}],
+        "operational_checks": _checks(), "frame_count": 5,
+        "frames": [
+            {"file": frame.name, "sha256": hashlib.sha256(data).hexdigest(),
+             "profile_ordinal": 1, "profile_id": "p", "role": "card_scroll",
+             "item_number": None},
+            {"file": "00002.png", "sha256": hashlib.sha256(b"pre").hexdigest(),
+             "profile_ordinal": 1, "profile_id": "p", "role": "target_pre", "item_number": 1},
+            {"file": "00003.png", "sha256": hashlib.sha256(b"composer").hexdigest(),
+             "profile_ordinal": 1, "profile_id": "p", "role": "composer_open", "item_number": 1},
+            {"file": "00004.png", "sha256": hashlib.sha256(b"advance").hexdigest(),
+             "profile_ordinal": 1, "profile_id": "p", "role": "profile_advance_clear", "item_number": None},
+            {"file": "00005.png", "sha256": hashlib.sha256(b"advance identity").hexdigest(),
+             "profile_ordinal": 1, "profile_id": "p", "role": "profile_advance_identity", "item_number": None},
+        ],
+    }
+    (tmp_path / "00002.png").write_bytes(b"pre")
+    (tmp_path / "00003.png").write_bytes(b"composer")
+    (tmp_path / "00004.png").write_bytes(b"advance")
+    (tmp_path / "00005.png").write_bytes(b"advance identity")
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+
+    with pytest.raises(RuntimeError, match="sha256 mismatch"):
+        cal._load_session(tmp_path)
+
+
+def test_identity_fingerprints_always_use_production_grid(monkeypatch):
+    seen = []
+    known = SimpleNamespace(known=True, fingerprint=(1,), reason="ok")
+    monkeypatch.setattr(cal, "capture_profile_identity",
+                        lambda _frames, **kw: seen.append(kw["grid"]) or known)
+    monkeypatch.setattr(cal, "band_fingerprint",
+                        lambda _frame, **kw: seen.append(kw["grid"]) or (2,))
+    profile = cal._ProfileData(1, "p", [b"card"], [(1, b"pre", b"composer")], b"advance",
+                               b"advance-identity")
+
+    cal._profile_identity_samples([profile], identity_band=_IDENTITY_BAND)
+    assert seen == [cal._IDENTITY_GRID, cal._IDENTITY_GRID]
+
+
+def test_measure_source_policy_has_no_device_io_raw_injection_or_fixed_sleep():
+    source = Path(cal.__file__).read_text()
+    tree = ast.parse(source)
+    measure_source = inspect.getsource(cal._cmd_measure)
+    assert ".open_session(" not in measure_source
+    assert ".screencap(" not in measure_source
+    assert ".adb." not in measure_source
+
+    raw_input_calls = []
+    bare_sleeps = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "shell":
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    if re.search(r"\binput\s+(?:tap|swipe)\b", arg.value):
+                        raw_input_calls.append(arg.value)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "sleep":
+            if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, (int, float)):
+                bare_sleeps.append(node.args[0].value)
+    assert not raw_input_calls
+    assert not bare_sleeps
+    # The command writes only its private evidence ledger, never a config mapping.
+    assert measure_source.count(".write_text(") == 1
+    assert "ledger_path.write_text" in measure_source
+
+
+def _write_complete_manifest(directory, *, interrupted=False, requested_profiles=1,
+                             profiles=None, checks=None):
+    """Small on-disk completed session accepted by every schema check before a mutation."""
+    profiles = profiles or [{"ordinal": 1, "profile_id": "p", "card_scroll_frames": 1,
+                             "composer_items": [1], "profile_advance_cleared_composer": True,
+                             "profile_advance_identity_mismatched": True}]
+    checks = _checks(directory) if checks is None else checks
+    card, pre, composer, advance, advance_identity = (
+        b"synthetic card", b"synthetic pre", b"synthetic composer", b"synthetic advance",
+        b"synthetic advance identity")
+    (directory / "00001.png").write_bytes(card)
+    (directory / "00002.png").write_bytes(pre)
+    (directory / "00003.png").write_bytes(composer)
+    (directory / "00004.png").write_bytes(advance)
+    (directory / "00005.png").write_bytes(advance_identity)
+    manifest = {
+        "tool_version": cal._TOOL_VERSION, "interrupted": interrupted,
+        "calibration_schema_version": 3, "composer_layout_id": "hinge_inline_v1",
+        "item_selection_policy_id": "hinge_photos_only_v1",
+        "frame_size_px": [1080, 2400],
+        "split": "calibration", "identity_band": list(_IDENTITY_BAND),
+        "content_band": list(_CONTENT_BAND), "device": _device(),
+        "requested_profiles": requested_profiles, "profiles": profiles,
+        "operational_checks": checks, "frame_count": 5,
+        "frames": [
+            {"file": "00001.png", "sha256": hashlib.sha256(card).hexdigest(),
+             "profile_ordinal": 1, "profile_id": "p", "role": "card_scroll",
+             "item_number": None},
+            {"file": "00002.png", "sha256": hashlib.sha256(pre).hexdigest(),
+             "profile_ordinal": 1, "profile_id": "p", "role": "target_pre", "item_number": 1},
+            {"file": "00003.png", "sha256": hashlib.sha256(composer).hexdigest(),
+             "profile_ordinal": 1, "profile_id": "p", "role": "composer_open", "item_number": 1},
+            {"file": "00004.png", "sha256": hashlib.sha256(advance).hexdigest(),
+             "profile_ordinal": 1, "profile_id": "p", "role": "profile_advance_clear", "item_number": None},
+            {"file": "00005.png", "sha256": hashlib.sha256(advance_identity).hexdigest(),
+             "profile_ordinal": 1, "profile_id": "p", "role": "profile_advance_identity", "item_number": None},
+        ],
+    }
+    # The completed v3 session is also bound to the automatic, offline-only entry-anchor
+    # replay.  Keep this synthetic fixture structurally identical to a capture: the ledger
+    # names the exact card byte sequence, while the manifest authenticates the ledger bytes.
+    ledger = {
+        "schema_version": cal._ENTRY_ANCHOR_LEDGER_SCHEMA_VERSION,
+        "kind": "hinge_entry_anchor_offline_replay",
+        "tool_version": cal._TOOL_VERSION,
+        "created_utc": "2026-08-13T12:00:00+00:00",
+        "offline_only": True,
+        "phone_input_issued": False,
+        "runtime_targeting_calibration_emitted": False,
+        "profiles": [{
+            "ordinal": 1,
+            "profile_id_sha256": hashlib.sha256(b"p").hexdigest(),
+            "source_card_frames": [{
+                "file": "00001.png", "sha256": hashlib.sha256(card).hexdigest()}],
+            "confirmed_top": True,
+            "index_complete": True,
+            "index_reached_end": True,
+            "index_heart_translation": [1],
+            "photo_only_translation": [1],
+            "offline_replay_identity_ceiling": 1.0,
+            "offline_replay_identity_entry_distance": 0.0,
+            "cancellation_before_capture": True,
+            "cancellation_replay_capture_calls": 0,
+            "cancellation_replay_scroll_up_calls": 0,
+            "targets": [{
+                "photo_model_item": 1,
+                "heart_ordinal": 1,
+                "index_model_item": 1,
+                "entry_anchor_delta_px": 0,
+                "entry_offset_px": 0,
+                "landing_frame_sha256": hashlib.sha256(card).hexdigest(),
+                "landing_frame_index": 0,
+                "landing_page_offset_px": 0,
+                "hearts_counted": 1,
+                "crosscheck_max_disagreement_px": 0,
+                "replay_scroll_steps": 0,
+                "replay_shift_deltas_px": [],
+            }],
+        }],
+    }
+    ledger_path = directory / cal._ENTRY_ANCHOR_LEDGER_FILE
+    ledger_path.write_text(json.dumps(ledger))
+    manifest["entry_anchor_ledger"] = {
+        "file": ledger_path.name,
+        "sha256": hashlib.sha256(ledger_path.read_bytes()).hexdigest(),
+    }
+    (directory / "manifest.json").write_text(json.dumps(manifest))
+    return manifest
+
+
+@pytest.mark.parametrize(
+    ("interrupted", "requested_profiles", "profiles", "message"),
+    [
+        (True, 1, None, "interrupted, partial"),
+        (False, 2, [{"ordinal": 1, "profile_id": "p", "composer_items": [1],
+                     "profile_advance_cleared_composer": True,
+                     "profile_advance_identity_mismatched": True}], "partial session"),
+    ],
+    ids=["interrupted", "requested_but_incomplete"],
+)
+def test_load_session_refuses_interrupted_or_partial_capture(tmp_path, interrupted,
+                                                             requested_profiles, profiles, message):
+    _write_complete_manifest(tmp_path, interrupted=interrupted, requested_profiles=requested_profiles,
+                             profiles=profiles)
+    with pytest.raises(RuntimeError, match=message):
+        cal._load_session(tmp_path)
+
+
+def test_load_session_refuses_duplicate_profile_id_within_one_session(tmp_path):
+    _write_complete_manifest(
+        tmp_path, requested_profiles=2,
+        profiles=[{"ordinal": 1, "profile_id": "same", "card_scroll_frames": 1,
+                   "composer_items": [1], "profile_advance_cleared_composer": True,
+                   "profile_advance_identity_mismatched": True},
+                  {"ordinal": 2, "profile_id": "same", "card_scroll_frames": 1,
+                   "composer_items": [1], "profile_advance_cleared_composer": True,
+                   "profile_advance_identity_mismatched": True}],
+    )
+    with pytest.raises(RuntimeError, match="duplicated"):
+        cal._load_session(tmp_path)
+
+
+def test_load_session_accepts_one_exact_completed_attempt(tmp_path):
+    _write_complete_manifest(tmp_path)
+    session = cal._load_session(tmp_path)
+    assert session.split == "calibration"
+    assert [(p.profile_id, len(p.card_frames), len(p.composer_pairs))
+            for p in session.profiles] == [("p", 1, 1)]
+
+
+def test_load_session_refuses_entry_anchor_ledger_for_different_card_bytes(tmp_path):
+    manifest = _write_complete_manifest(tmp_path)
+    ledger_path = tmp_path / cal._ENTRY_ANCHOR_LEDGER_FILE
+    ledger = json.loads(ledger_path.read_text())
+    ledger["profiles"][0]["source_card_frames"][0]["sha256"] = "0" * 64
+    ledger_path.write_text(json.dumps(ledger))
+    manifest["entry_anchor_ledger"]["sha256"] = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+
+    with pytest.raises(RuntimeError, match="does not bind the exact manifest"):
+        cal._load_session(tmp_path)
+
+
+def test_entry_anchor_replay_cancels_before_it_captures_or_scrolls(monkeypatch):
+    card = b"synthetic card"
+    index = SimpleNamespace(
+        usable=True, complete=True, reached_end=True, translation=(1,),
+        identity=SimpleNamespace(known=True, fingerprint=(1,)),
+    )
+    payload = SimpleNamespace(
+        usable=True, translation=(1,), items=[SimpleNamespace(number=1, heart_ordinal=1)],
+    )
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_args, **_kw: SimpleNamespace(confirmed=True, reason="top"))
+    monkeypatch.setattr(cal, "build_item_index", lambda *_args, **_kw: index)
+    monkeypatch.setattr(cal, "build_item_payload", lambda *_args, **_kw: payload)
+    monkeypatch.setattr(cal, "band_fingerprint", lambda *_args, **_kw: (1,))
+    monkeypatch.setattr(cal, "fingerprint_distance", lambda *_args, **_kw: 0.0)
+
+    def fake_navigate(replay, _index, _model_item, *, should_stop=None, **_kw):
+        if should_stop is not None:
+            assert should_stop() is True
+            raise cal.ActionCancelled("operator cancelled")
+        return SimpleNamespace(
+            anchor=SimpleNamespace(delta_px=0), entry_offset=0, frame=card, frame_index=0,
+            page_offset=0, hearts_counted=1, agreement_px=0, steps=(), shifts=(),
+        )
+
+    monkeypatch.setattr(cal, "navigate_to_item", fake_navigate)
+    report = cal._entry_anchor_profile_report(
+        ordinal=1, profile_id="private profile", card_frames=[card],
+        frame_records=[{"file": "00001.png", "sha256": hashlib.sha256(card).hexdigest()}],
+        identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND, like_template=object(),
+        like_threshold=0.75)
+
+    assert report["confirmed_top"] is True
+    assert report["index_complete"] is True
+    assert report["photo_only_translation"] == [1]
+    assert report["cancellation_before_capture"] is True
+    assert report["cancellation_replay_capture_calls"] == 0
+    assert report["cancellation_replay_scroll_up_calls"] == 0
+    assert report["targets"][0]["landing_frame_sha256"] == hashlib.sha256(card).hexdigest()
+
+
+def test_verify_entry_anchor_refuses_unmanifested_pngs_without_constructing_driver(
+        monkeypatch, tmp_path, capsys):
+    root = tmp_path / "ops" / "calibration" / "targeting_unmanifested"
+    root.mkdir(parents=True)
+    (root / "00001.png").write_bytes(b"private but unclassified")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cal, "HingeDriver",
+                        lambda _cfg: pytest.fail("unmanifested input must fail before driver construction"))
+
+    with pytest.raises(SystemExit):
+        cal._cmd_verify_entry_anchor(
+            argparse.Namespace(session="ops/calibration/targeting_unmanifested", config="x"))
+    assert "refusing to reconstruct" in capsys.readouterr().err
+
+
+def test_verify_entry_anchor_source_never_opens_a_device_session():
+    source = inspect.getsource(cal._cmd_verify_entry_anchor)
+    assert ".open_session(" not in source
+    assert ".adb." not in source
+
+
+def test_load_session_requires_terminal_next_profile_identity_evidence(tmp_path):
+    manifest = _write_complete_manifest(tmp_path)
+    manifest["profiles"][0].pop("profile_advance_identity_mismatched")
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+
+    with pytest.raises(RuntimeError, match="identity-mismatch evidence"):
+        cal._load_session(tmp_path)
+
+
+def test_load_session_refuses_reordered_manifest_frames(tmp_path):
+    manifest = _write_complete_manifest(tmp_path)
+    manifest["frames"].reverse()
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(RuntimeError, match="original contiguous capture sequence"):
+        cal._load_session(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda manifest: manifest["frames"].__setitem__(1, {
+            **manifest["frames"][1], "role": "sheet"}), "unknown frame role"),
+        (lambda manifest: manifest["frames"].__setitem__(2, {
+            **manifest["frames"][2], "role": "target_pre"}), "persistent-composer sequence"),
+        (lambda manifest: manifest["frames"].__setitem__(3, {
+            **manifest["frames"][3], "role": "composer_open", "item_number": 1}),
+         "persistent-composer sequence"),
+        (lambda manifest: manifest["frames"].__setitem__(4, {
+            **manifest["frames"][4], "role": "composer_open", "item_number": 1}),
+         "persistent-composer sequence"),
+    ],
+    ids=["legacy_sheet_role", "missing_composer_open", "missing_advance_clear",
+         "missing_advance_identity"],
+)
+def test_load_session_refuses_legacy_or_incomplete_persistent_composer_roles(tmp_path, mutate, message):
+    manifest = _write_complete_manifest(tmp_path)
+    mutate(manifest)
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(RuntimeError, match=message):
+        cal._load_session(tmp_path)
+
+
+def test_duplicate_profile_id_within_same_split_is_refused(monkeypatch, tmp_path, capsys):
+    calibration = _session(tmp_path, "cal", "calibration", ["same", "same"])
+    heldout = _session(tmp_path, "held", "heldout", ["other"])
+    monkeypatch.setattr(cal.cfg_mod, "load", lambda _path: _Cfg())
+    monkeypatch.setattr(cal, "HingeDriver", _InertDriver)
+    monkeypatch.setattr(cal, "_load_session",
+                        lambda raw: {"cal": calibration, "held": heldout}[str(raw)])
+
+    with pytest.raises(SystemExit):
+        cal._cmd_measure(argparse.Namespace(config="x", sessions=["cal", "held"]))
+    assert "duplicated within the calibration split" in capsys.readouterr().err.lower()
+
+
+def test_measure_refuses_without_all_operational_check_evidence(monkeypatch, tmp_path, capsys):
+    args, calibration, heldout = _successful_measure_seams(monkeypatch, tmp_path)
+    calibration.manifest["operational_checks"] = _checks(confirmed=False)
+    heldout.manifest["operational_checks"] = _checks(confirmed=False)
+
+    with pytest.raises(SystemExit):
+        cal._cmd_measure(args)
+    assert "operational checks" in capsys.readouterr().err.lower()
+
+
+def test_measure_refuses_probable_cross_split_profile_reuse_under_new_label(
+        monkeypatch, tmp_path, capsys):
+    args, _calibration, _heldout = _successful_measure_seams(monkeypatch, tmp_path)
+    calibration = _samples("cal-label", [(0, 0.2), (2, 2.2)])
+    heldout = _samples("different-label", [(0, 0.2), (8, 8.2)])
+    monkeypatch.setattr(
+        cal, "_profile_identity_samples",
+        lambda profiles, **_kw: calibration if profiles[0].profile_id == "a" else heldout)
+    with pytest.raises(SystemExit):
+        cal._cmd_measure(args)
+    assert "same real profile may have been reused" in capsys.readouterr().err.lower()
+
+
+@pytest.mark.parametrize("bad_distance", [None, float("nan"), float("inf"), -1],
+                         ids=["none", "nan", "infinity", "negative"])
+def test_invalid_identity_distance_refuses_instead_of_erasing_guard(monkeypatch, bad_distance):
+    samples = _samples("p", [(0, 0), (2, 2)])
+    monkeypatch.setattr(cal, "fingerprint_distance", lambda _a, _b: bad_distance)
+    with pytest.raises(cal._MeasureRefused, match="invalid distance"):
+        cal._freeze_identity_bound(samples)
+
+
+@pytest.mark.parametrize("bad_distance", [None, float("nan")], ids=["none", "nan"])
+def test_unavailable_or_invalid_inline_distance_refuses(monkeypatch, bad_distance):
+    payload = SimpleNamespace(items=[SimpleNamespace(number=1)])
+    profile = cal._ProfilePayload("p", payload, [(1, b"pre", b"composer")])
+    comparison = SimpleNamespace(number=1, distance=bad_distance, reason="synthetic unavailable")
+    monkeypatch.setattr(cal, "locate_inline_composer", lambda *_args, **_kw:
+                        SimpleNamespace(layout_id=cal._COMPOSER_LAYOUT_ID))
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_args, **_kw: SimpleNamespace(comparisons=[comparison]))
+    with pytest.raises(cal._MeasureRefused):
+        cal._inline_distance_records([profile], confirm_template=object())
+
+
+def test_measure_refuses_a_truncated_item_index(monkeypatch):
+    profile = cal._ProfileData(1, "p", [b"card"], [(1, b"pre", b"composer")], b"advance",
+                               b"advance-identity")
+    index = SimpleNamespace(usable=True, complete=False, at_scroll_top=True,
+                            reached_end=False, partial=(), failures=(), selectable=(1,))
+    monkeypatch.setattr(cal, "build_item_index", lambda *_args, **_kw: index)
+    with pytest.raises(cal._MeasureRefused, match="complete profile"):
+        cal._build_profile_payloads(
+            [profile], content_band=_CONTENT_BAND, identity_band=_IDENTITY_BAND,
+            like_template=object(), like_threshold=0.75)
+
+
+def test_identity_foreign_distance_equal_to_bound_is_an_invalid_accept(monkeypatch):
+    monkeypatch.setattr(cal, "fingerprint_distance", lambda a, b: abs(a[0] - b[0]))
+    samples = _samples("p", [(0, 0), (1, 1)])
+    ok, _message, detail = cal._apply_identity_bound(samples, 1.0)
+    assert ok is False
+    assert detail["foreign_accepts"]
+
+
+def test_safe_yaml_round_trip_preserves_serial_with_yaml_metacharacters(monkeypatch, tmp_path, capsys):
+    serial = "Pixel: # burner [A]"
+    args, _calibration, _heldout = _successful_measure_seams(monkeypatch, tmp_path, serial=serial)
+    cal._cmd_measure(args)
+    yaml_body = capsys.readouterr().out.split("\napps:\n", 1)[1].split("\n==============================================================================", 1)[0]
+    block = cal.yaml.safe_load("apps:\n" + yaml_body)["apps"]["hinge"]["targeting_calibration"]
+    assert block["device"] == serial
+
+
+def test_capture_output_outside_private_calibration_root_is_refused(tmp_path, capsys):
+    with pytest.raises(SystemExit) as exc:
+        cal._capture_out_dir(str(tmp_path))
+    assert exc.value.code != 0
+    assert "must stay under" in capsys.readouterr().err
+
+
+def test_retry_discards_staged_frames_before_committing_the_completed_attempt(monkeypatch, tmp_path):
+    class _Adb:
+        def __init__(self):
+            self.frames = iter([
+                b"bad top", b"good top", b"pre", b"composer", b"advanced",
+                b"advanced identity",
+            ])
+
+        def screencap(self):
+            return next(self.frames)
+
+    class _Driver:
+        identity_band = _IDENTITY_BAND
+        content_band = _CONTENT_BAND
+        dwell_s = 0.1
+        adb = _Adb()
+
+        def _template(self, _name):
+            return object()
+
+    inputs = iter(["first", "1", "", "", "second", "1", "", "", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda frame, **_kw: SimpleNamespace(
+                            confirmed=frame in {b"good top", b"advanced"},
+                            refuted=frame == b"advanced identity", reason="not top"))
+    monkeypatch.setattr(cal, "capture_profile_identity",
+                        lambda *_args, **_kw: SimpleNamespace(known=True, frame_index=0,
+                                                               agreeing_frames=1, fingerprint=(0,), reason="ok"))
+    monkeypatch.setattr(cal, "band_fingerprint", lambda *_args, **_kw: (10,))
+    monkeypatch.setattr(cal, "fingerprint_distance", lambda *_args, **_kw: 10.0)
+    monkeypatch.setattr(cal, "build_item_index",
+                        lambda *_args, **_kw: SimpleNamespace(usable=True, complete=True,
+                                                               selectable=[1], failures=[]))
+    monkeypatch.setattr(cal, "build_item_payload",
+                        lambda *_args, **_kw: SimpleNamespace(
+                            usable=True, items=[SimpleNamespace(number=1)], failures=[]))
+
+    monkeypatch.setattr(cal, "locate_inline_composer",
+                        lambda frame, *_args, **_kw: (
+                            (_ for _ in ()).throw(cal.ComposerDetectionError("not open"))
+                            if frame == b"advanced" else SimpleNamespace(layout_id=cal._COMPOSER_LAYOUT_ID)))
+
+    frames_meta = []
+    meta, counter = cal._capture_one_profile(
+        _Driver(), tmp_path, ordinal=1, frame_counter=0, frames_meta=frames_meta,
+        used_profile_ids=set())
+    assert meta["profile_id"] == "second"
+    assert counter == 5
+    assert [rec["profile_id"] for rec in frames_meta] == ["second"] * 5
+    assert [rec["role"] for rec in frames_meta] == [
+        "card_scroll", "target_pre", "composer_open", "profile_advance_clear",
+        "profile_advance_identity"]
+    assert sorted(path.name for path in tmp_path.glob("*.png")) == [
+        "00001.png", "00002.png", "00003.png", "00004.png", "00005.png"]
+
+
+def test_capture_moves_persistent_composer_between_items_without_a_dismissal(monkeypatch, tmp_path):
+    class _Adb:
+        def __init__(self):
+            self.frames = iter([b"top", b"pre-1", b"composer-1", b"pre-2", b"composer-2",
+                                b"advanced", b"advanced identity"])
+
+        def screencap(self):
+            return next(self.frames)
+
+    class _Driver:
+        identity_band = _IDENTITY_BAND
+        content_band = _CONTENT_BAND
+        dwell_s = 0.1
+        adb = _Adb()
+
+        def _template(self, _name):
+            return object()
+
+    prompts = []
+    inputs = iter(["p", "1,2", "", "", "", "", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": prompts.append(prompt) or next(inputs))
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda frame, **_kw: SimpleNamespace(
+                            confirmed=frame != b"advanced identity",
+                            refuted=frame == b"advanced identity", reason="top"))
+    monkeypatch.setattr(cal, "capture_profile_identity",
+                        lambda *_args, **_kw: SimpleNamespace(known=True, frame_index=0,
+                                                               agreeing_frames=1, fingerprint=(0,), reason="ok"))
+    monkeypatch.setattr(cal, "band_fingerprint", lambda *_args, **_kw: (10,))
+    monkeypatch.setattr(cal, "fingerprint_distance", lambda *_args, **_kw: 10.0)
+    monkeypatch.setattr(cal, "build_item_index",
+                        lambda *_args, **_kw: SimpleNamespace(usable=True, complete=True,
+                                                               selectable=[1, 2], failures=[]))
+    monkeypatch.setattr(cal, "build_item_payload",
+                        lambda *_args, **_kw: SimpleNamespace(
+                            usable=True,
+                            items=[SimpleNamespace(number=1), SimpleNamespace(number=2)],
+                            failures=[]))
+    monkeypatch.setattr(cal, "locate_inline_composer",
+                        lambda frame, *_args, **_kw: (
+                            (_ for _ in ()).throw(cal.ComposerDetectionError("gone"))
+                            if frame == b"advanced" else SimpleNamespace(layout_id=cal._COMPOSER_LAYOUT_ID)))
+
+    frames_meta = []
+    driver = _Driver()
+    meta, _counter = cal._capture_one_profile(
+        driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=frames_meta,
+        used_profile_ids=set())
+    assert meta["composer_items"] == [1, 2]
+    assert [rec["role"] for rec in frames_meta] == [
+        "card_scroll", "target_pre", "composer_open", "target_pre", "composer_open",
+        "profile_advance_clear", "profile_advance_identity"]
+    assert not any("dismiss/cancel" in prompt.lower() for prompt in prompts)
+
+
+def test_capture_card_scan_passes_only_the_prior_exact_index_prefix(monkeypatch, tmp_path):
+    class _Adb:
+        def __init__(self):
+            self.frames = iter([b"top", b"scroll", b"pre", b"composer", b"advanced",
+                                b"advanced identity"])
+
+        def screencap(self):
+            return next(self.frames)
+
+    class _Driver:
+        identity_band = _IDENTITY_BAND
+        content_band = _CONTENT_BAND
+        dwell_s = 0.0
+        adb = _Adb()
+
+        def _template(self, _name):
+            return object()
+
+        def _scroll_down_one(self, frac, x_frac):
+            self.scroll_args = (frac, x_frac)
+
+    inputs = iter(["p", "1", "", "", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_delay", lambda *_args: 0.0)
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda frame, **_kw: SimpleNamespace(
+                            confirmed=frame in {b"top", b"advanced"},
+                            refuted=frame in {b"scroll", b"advanced identity"}, reason="ok"))
+    identity = SimpleNamespace(known=True, frame_index=1, agreeing_frames=2, fingerprint=(0,), reason="ok")
+    monkeypatch.setattr(cal, "capture_profile_identity", lambda *_args, **_kw: identity)
+    monkeypatch.setattr(cal, "band_fingerprint", lambda *_args, **_kw: (10,))
+    monkeypatch.setattr(cal, "fingerprint_distance", lambda *_args, **_kw: 10.0)
+    indexes = []
+    prefixes = []
+
+    def build(frames, **kwargs):
+        prefixes.append(kwargs["_prefix_index"])
+        indexes.append(SimpleNamespace(usable=True, complete=len(frames) == 2,
+                                       selectable=[1], failures=[]))
+        return indexes[-1]
+
+    monkeypatch.setattr(cal, "build_item_index", build)
+    monkeypatch.setattr(cal, "build_item_payload",
+                        lambda *_args, **_kw: SimpleNamespace(
+                            usable=True, items=[SimpleNamespace(number=1)], failures=[]))
+    planned = SimpleNamespace(frac=0.1, x_frac=0.5, spacing_px=780)
+    plan_calls = []
+    monkeypatch.setattr(
+        cal, "_plan_card_scroll",
+        lambda frame, **kw: (plan_calls.append((frame, kw)) or (planned, 780)))
+    monkeypatch.setattr(cal, "locate_inline_composer",
+                        lambda frame, *_args, **_kw: (
+                            (_ for _ in ()).throw(cal.ComposerDetectionError("gone"))
+                            if frame == b"advanced" else SimpleNamespace(layout_id=cal._COMPOSER_LAYOUT_ID)))
+
+    frames_meta = []
+    driver = _Driver()
+    meta, _counter = cal._capture_one_profile(
+        driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=frames_meta,
+        used_profile_ids=set())
+
+    assert meta["card_scroll_frames"] == 2
+    assert len(indexes) == 2
+    # The second scan is allowed to reuse only the exact prior result; the indexer itself
+    # hash-validates that its source frames remain the current list's prefix.
+    assert prefixes == [None, indexes[0]]
+    # Calibration capture spends the alias-safe plan, including its lane, rather than sampling a
+    # convenient fixed fraction.  The replay is then checking the same safety envelope that
+    # produced the recorded frames.
+    assert len(plan_calls) == 1
+    frame, kwargs = plan_calls[0]
+    assert frame == b"top"
+    assert kwargs["content_band"] == _CONTENT_BAND
+    assert kwargs["like_threshold"] == cal.hinge_mod._LIKE_MATCH_THRESHOLD
+    assert kwargs["profile_min_spacing_px"] is None
+    assert driver.scroll_args == (planned.frac, planned.x_frac)
+
+
+def test_capture_refuses_before_an_unplanned_card_scroll(monkeypatch, tmp_path):
+    """A frame that cannot produce an alias-safe plan is a retry, never a probe gesture.
+
+    This is the capture-side counterpart to `item_nav`'s post-gesture overshoot refusal.  It
+    prevents creating another complete-looking card sequence which an exact offline replay must
+    later reject because its recorded hop was larger than the local spacing allowed.
+    """
+    class _Adb:
+        def screencap(self):
+            return b"top"
+
+    class _Driver:
+        identity_band = _IDENTITY_BAND
+        content_band = _CONTENT_BAND
+        dwell_s = 0.0
+        adb = _Adb()
+
+        def _template(self, _name):
+            return object()
+
+        def _scroll_down_one(self, *_args):
+            pytest.fail("unsafe card frame must not produce a scroll gesture")
+
+    inputs = iter(["p", "1", "", "n"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_args, **_kw: SimpleNamespace(confirmed=True, reason="top"))
+    monkeypatch.setattr(cal, "capture_profile_identity",
+                        lambda *_args, **_kw: SimpleNamespace(known=True, reason="ok"))
+    monkeypatch.setattr(cal, "build_item_index",
+                        lambda *_args, **_kw: SimpleNamespace(usable=False, complete=False,
+                                                               failures=["incomplete"]))
+    monkeypatch.setattr(cal, "_plan_card_scroll",
+                        lambda *_args, **_kw: (_ for _ in ()).throw(
+                            cal.ScrollStepError("local spacing permits no safe step")))
+
+    with pytest.raises(cal._CaptureAbort, match="declined to retry"):
+        cal._capture_one_profile(
+            _Driver(), tmp_path, ordinal=1, frame_counter=0, frames_meta=[],
+            used_profile_ids=set())
+
+
+def test_terminal_advance_evidence_refuses_an_unconfirmed_top(monkeypatch):
+    profile = cal._ProfileData(1, "p", [b"card"], [(1, b"pre", b"composer")], b"advance",
+                               b"advance-identity")
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_args, **_kw: SimpleNamespace(confirmed=False, reason="not top"))
+    with pytest.raises(cal._MeasureRefused, match="not a confirmed profile top"):
+        cal._validate_profile_advance_clears(
+            [profile], identity_band=_IDENTITY_BAND, confirm_template=object())
+
+
+def test_terminal_advance_evidence_refuses_same_profile_identity(monkeypatch):
+    profile = cal._ProfileData(1, "p", [b"card"], [(1, b"pre", b"composer")], b"advance",
+                               b"advance-identity")
+    monkeypatch.setattr(
+        cal, "confirm_scroll_top",
+        lambda frame, **_kw: SimpleNamespace(
+            confirmed=frame == b"advance", refuted=frame == b"advance-identity", reason="ok"))
+    monkeypatch.setattr(
+        cal, "locate_inline_composer",
+        lambda *_args, **_kw: (_ for _ in ()).throw(cal.ComposerDetectionError("gone")))
+    monkeypatch.setattr(
+        cal, "capture_profile_identity",
+        lambda *_args, **_kw: SimpleNamespace(known=True, fingerprint=(1,), reason="ok"))
+    monkeypatch.setattr(cal, "band_fingerprint", lambda *_args, **_kw: (1,))
+    monkeypatch.setattr(cal, "fingerprint_distance",
+                        lambda *_args, **_kw: cal._IDENTITY_FALSE_MATCH_DISTANCE)
+
+    with pytest.raises(cal._MeasureRefused, match="same-profile scroll"):
+        cal._validate_profile_advance_clears(
+            [profile], identity_band=_IDENTITY_BAND, confirm_template=object())

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +44,10 @@ class DebugLog:
         # dedup existed (see _save_shot's `if not rotate` branch, which never touches this dict
         # in either direction).
         self._keep = max(1, int(keep_shots))
+        # Observe suggestions can publish from their provider thread while the device thread is
+        # waiting for a manual decision. Release-evidence facts share this log, so guard the
+        # filename counter, rotating-shot index and JSONL append as one operation.
+        self._lock = threading.RLock()
 
     def _save_shot(self, label: str, frame: bytes | None, *, rotate: bool = True) -> str | None:
         if not frame:
@@ -104,23 +109,28 @@ class DebugLog:
             pass
 
     def action(self, name: str, *, before: bytes | None = None,
-               after: bytes | None = None, **fields) -> None:
-        rec = {"ts": datetime.now().isoformat(timespec="seconds"), "action": name, **fields}
-        b = self._save_shot(f"{name}_before", before)
-        a = self._save_shot(f"{name}_after", after)
-        if b:
-            rec["before"] = b
-        if a:
-            rec["after"] = a
-        self._write(rec)
+               after: bytes | None = None, anchor: bytes | None = None, **fields) -> None:
+        with self._lock:
+            rec = {"ts": datetime.now().isoformat(timespec="seconds"), "action": name, **fields}
+            b = self._save_shot(f"{name}_before", before)
+            a = self._save_shot(f"{name}_after", after)
+            anchor_name = self._save_shot(f"{name}_anchor", anchor)
+            if b:
+                rec["before"] = b
+            if a:
+                rec["after"] = a
+            if anchor_name:
+                rec["anchor"] = anchor_name
+            self._write(rec)
 
     def error(self, name: str, frame: bytes | None, exc: BaseException) -> None:
-        rec = {"ts": datetime.now().isoformat(timespec="seconds"), "action": name,
-               "error": f"{type(exc).__name__}: {exc}"}
-        shot = self._save_shot(f"{name}_error", frame, rotate=False)   # kept forever (never rotated)
-        if shot:
-            rec["screenshot"] = shot
-        self._write(rec)
+        with self._lock:
+            rec = {"ts": datetime.now().isoformat(timespec="seconds"), "action": name,
+                   "error": f"{type(exc).__name__}: {exc}"}
+            shot = self._save_shot(f"{name}_error", frame, rotate=False)   # kept forever (never rotated)
+            if shot:
+                rec["screenshot"] = shot
+            self._write(rec)
 
 
 HingeDebugLog = DebugLog          # backward-compat alias (older imports / tests)

@@ -1,0 +1,27 @@
+{
+  "app": "hinge",
+  "correction_id": "7a2c9558f05974ca005a8c26c15146bb7ba99f1400d01ca4a43d7c9f1d1daa3a",
+  "decision_created_at": "2026-08-14T12:05:17.641077+00:00",
+  "decision_fingerprint": "d6d452d2f5b2f900d0903a5b8c74ccc1a534885462f135e740535548e0593662",
+  "evidence_metadata": {
+    "debug_actions_sha256": "99f3829f7290b162cda863be049f4412e276dc6889eda3e77de09ad30f348e38",
+    "debug_decision_outcomes": [
+      "pass",
+      "pass",
+      "pass"
+    ],
+    "debug_row": 225,
+    "debug_row_sha256": "7fb3fd76cdc6548d3950af69abc224aa6bd8ab03b19637d2442c036d60c43f03"
+  },
+  "evidence_ref": "data/hinge_debug/a01fbcd1e9a0/actions.jsonl#row=225;actions_sha256=99f3829f7290b162cda863be049f4412e276dc6889eda3e77de09ad30f348e38;row_sha256=7fb3fd76cdc6548d3950af69abc224aa6bd8ab03b19637d2442c036d60c43f03",
+  "kind": "operation_love_label_retraction_plan",
+  "label_created_at": "2026-08-14T12:05:17.372069+00:00",
+  "label_ordinal": 2,
+  "plan_sha256": "810137e5ebc27ccb7595c127cb14889e5620863dd0f44379494b1444d75510fa",
+  "profile_id": "c6a2ce3aec1a414c96c853ac87a8a29a",
+  "reason": "external controller moved same profile during OBSERVE wait",
+  "run_id": "a01fbcd1e9a0",
+  "schema_version": 1,
+  "snapshot_sha256": "85d22508229c9a4526ebf27b9a5ec428a14afd3a5d82da58a209e9dce95af1f2",
+  "source": "external_ai_review"
+}

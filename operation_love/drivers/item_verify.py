@@ -1,4 +1,10 @@
-"""Is the comment sheet that just opened showing the item the model actually chose?
+"""Is the selected card above Hinge's inline composer the item the model actually chose?
+
+The public ``Sheet*`` names are retained for compatibility, but the screenshots originally
+described as a separate sheet were the same selected-card reflow Hinge 9.134.0 now exposes
+unambiguously inline. Geometry alone is therefore only a crop locator. Production supplies an
+independently detected ``ComposerSurface`` and this module requires card -> input -> CTA topology
+before that geometry can license text.
 
 ops/OPENER-REDESIGN.md 5.6 asks for exactly one thing here, and this module is only that:
 
@@ -253,6 +259,33 @@ _SEPARATION_FRACTION = 0.5
 # on the same frames: at most 0.9 grey levels.]
 _SCALE_TOLERANCE = 0.02
 
+# Hinge 9.134's inline composer can reframe a selected square photo vertically before putting
+# the comment controls below it. The source crop remains complete; what changes is which interior
+# strip is visible, so the legacy modal's bottom-anchor assumption is not valid there. A compositor
+# may hide at most this fraction of the source photo in total; beyond that we refuse rather than
+# turn verification into an arbitrary image-patch search.
+_INLINE_REFRAME_MAX_HIDDEN_FRACTION = 0.22
+_INLINE_REFRAME_ORIGIN_SAMPLES = 49
+# The ordinary profile card draws its heart over the photo's lower-right corner. Hinge removes
+# that control from the selected inline preview, so comparison excludes the fixed control lane on
+# BOTH source and preview. This is verification-only; the model crop remains unchanged.
+_INLINE_REFRAME_RIGHT_CONTROL_FRACTION = 0.18
+# This is deliberately separate from ``_SHEET_RENDER_DRIFT``.  The latter is the measured
+# legacy/modal reproduction penalty and must not grow when Hinge changes only the inline
+# selected-photo renderer.  The first two held-out, full-crop inline renders after 9.134's
+# reframe change measured 3.729 (Shai) and 6.703 (Malaika) at this module's 64x64 grid.  7.00 is
+# the smallest tenth-level ceiling above both, while the reciprocal held-out cards measured
+# 58.758 and 61.552.  It is used ONLY for the one-item fallback: a multi-item payload continues
+# to require the triangle-inequality/unique-nearest separation proof below.  Production also
+# supplies its independently frozen ``absolute_max_dist``; this ceiling cannot relax that guard.
+_INLINE_COMPOSER_ONE_ITEM_MAX_DIST = 7.00
+# Some selected photographs contain a large near-white/sky region.  The legacy row-background
+# locator quite properly cannot call those rows part of an image (they are indistinguishable from
+# the page), which fragments a real 856px preview into a 200px run.  This compact fallback is
+# available only after an independently detected composer supplies the field/CTA geometry.  It
+# still requires a substantial image run bound to the independently detected comment field.
+_INLINE_COMPACT_MIN_WIDTH_FRACTION = 0.78
+
 # --- the preview locator's geometry ---------------------------------------------------
 # All [corpus, 6 real sheets]; see the module docstring's layout section for the full table.
 
@@ -501,6 +534,35 @@ def locate_sheet_preview(frame: bytes, *,
                 f"indented to column {x0}"))
 
 
+def _locate_inline_compact_preview(frame: bytes, composer_surface, *, cv2, np) -> SheetPreview:
+    """Recover an inline selected photo whose bright pixels defeat the legacy row-span locator.
+
+    This is deliberately private and is called only by ``verify_sheet_item(...,
+    composer_surface=...)`` after the ordinary locator has refused.  It is not a lower threshold
+    for a generic screen: the independently detected comment field and CTA bind its horizontal
+    placement, and it retains the legacy 300px height requirement.  A profile screen cannot
+    manufacture that evidence without first passing the composer detector and topology check.
+    """
+    comment = getattr(composer_surface, "comment_rect", None)
+    if comment is None:
+        raise SheetVerificationError(
+            "the supplied inline-composer surface has no comment rectangle for compact preview lookup")
+    slack = max(8, round(comment.width * 0.03))
+    minimum_width = round(comment.width * _INLINE_COMPACT_MIN_WIDTH_FRACTION)
+    try:
+        preview = locate_sheet_preview(
+            frame, min_width_px=minimum_width, min_height_px=_PREVIEW_MIN_HEIGHT_PX,
+            margin_px=comment.x0, margin_tolerance_px=slack)
+    except SheetVerificationError as exc:
+        raise SheetVerificationError(
+            "no compact inline selected-photo preview after the normal preview locator refused: "
+            f"the composer-bound {minimum_width}px probe also refused ({exc})") from exc
+    return SheetPreview(
+        y0=preview.y0, y1=preview.y1, x0=preview.x0, x1=preview.x1,
+        reason=(f"inline-composer compact fallback: {preview.reason}; minimum width "
+                f"{minimum_width}px bound to comment x={comment.x0}..{comment.x1}"))
+
+
 def _decode_crop(crop_bytes: bytes, number: int, cv2, np):
     """The stored crop as one greyscale array, decoded exactly the way `signature_of` decodes.
 
@@ -533,7 +595,8 @@ def _decode_crop(crop_bytes: bytes, number: int, cv2, np):
 
 
 def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
-                  grid: tuple[int, int], scale_tolerance: float, cv2, np):
+                  grid: tuple[int, int], scale_tolerance: float, cv2, np,
+                  inline_reframe: bool = False):
     """One item measured against the sheet: its swept distance, its window, and its reference.
 
     Returns `(distance_or_None, window_px, reference_signature, reason)`. The reference is the
@@ -552,32 +615,98 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
     it must not depend on how tall the sheet in front of us happens to be.
     """
     crop_height, crop_width = int(gray.shape[0]), int(gray.shape[1])
+    source_x1 = crop_width
+    if inline_reframe:
+        source_x1 -= round(crop_width * _INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
+        if source_x1 <= round(crop_width * 0.70):
+            return (None, 0, None,
+                    "inline composer verification would leave too little source width after "
+                    "excluding the profile-card heart control lane")
+        crop_width = source_x1
     scale = crop_width / preview.width
     window_px = int(round(preview.height * scale))
     tolerance = max(1, int(round(window_px * scale_tolerance)))
 
-    def _window(rows: int) -> CropSignature:
-        return _signature_from_gray(gray[crop_height - rows:crop_height], grid=grid, cv2=cv2,
-                                    np=np)
+    def _window(rows: int, *, start: int | None = None) -> CropSignature:
+        # The historical sheet exposes the bottom of a card.  Inline composer reframe mode
+        # supplies an explicit source start below; both routes still use the exact same
+        # grayscale/signature implementation.
+        if start is None:
+            start = crop_height - rows
+        return _signature_from_gray(gray[start:start + rows, :source_x1], grid=grid,
+                                    cv2=cv2, np=np)
 
     # As much of this card as the sheet would be able to show. For a card at least as tall as the
     # window that is the bottom `window_px` rows; for a shorter one it is the whole card, which is
     # the same rule with the same `min` the line below already applied.
-    reference = _window(min(window_px, crop_height))
+    reference_rows = min(window_px, crop_height)
+    # Neighbour separation must not depend on which candidate happens to fit THIS screenshot.
+    # Keep one deterministic centered reference for each item; only intended-item distance may
+    # search the tightly bounded inline reframe offsets below.
+    reference = _window(reference_rows, start=(crop_height - reference_rows) // 2
+                        if inline_reframe else None)
     if window_px - tolerance > crop_height:
         return (None, window_px, reference,
                 f"the sheet is rendering {window_px}px of card and item {crop.number} is only "
                 f"{crop_height}px tall, so this item cannot be what is on screen (it still bounds "
                 f"every other item)")
 
-    best = None
-    for candidate in range(window_px - tolerance, window_px + tolerance + 1):
+    if not inline_reframe:
+        best = None
+        for candidate in range(window_px - tolerance, window_px + tolerance + 1):
+            if not 0 < candidate <= crop_height:
+                continue
+            distance = sheet.distance(_window(candidate))
+            best = distance if best is None else min(best, distance)
+        return (best, window_px, reference,
+                f"bottom {window_px}px of a {crop_height}px crop, swept +-{tolerance}px")
+
+    # This is deliberately not a generic patch search. Every candidate keeps the full card
+    # width and all but a bounded edge strip, and a changed layout that hides more than 22% of
+    # the source simply fails. It exists only for a structurally proven inline composer; the
+    # normal modal comparison above retains bottom anchoring exactly.
+    nominal_hidden = crop_height - window_px
+    if nominal_hidden > round(crop_height * _INLINE_REFRAME_MAX_HIDDEN_FRACTION):
+        return (None, window_px, reference,
+                f"inline composer preview would hide {nominal_hidden}px of this {crop_height}px "
+                f"crop, above the {_INLINE_REFRAME_MAX_HIDDEN_FRACTION:.0%} reframe limit")
+    best_distance = None
+    best_start = None
+    best_rows = None
+    # The old corpus needed only a 2% scale tolerance. Nine evenly spaced heights retain that
+    # envelope while bounding this compositor-only check to roughly 9×49 full-width windows per
+    # item rather than exhaustively trying every row/height combination.
+    height_lo = window_px - tolerance
+    height_hi = window_px + tolerance
+    height_step = max(1, math.ceil((height_hi - height_lo) / 8))
+    candidates = list(range(height_lo, height_hi + 1, height_step))
+    if window_px not in candidates:
+        candidates.append(window_px)
+    if height_hi not in candidates:
+        candidates.append(height_hi)
+    for candidate in candidates:
         if not 0 < candidate <= crop_height:
             continue
-        distance = sheet.distance(_window(candidate))
-        best = distance if best is None else min(best, distance)
-    return (best, window_px, reference,
-            f"bottom {window_px}px of a {crop_height}px crop, swept +-{tolerance}px")
+        max_start = crop_height - candidate
+        if max_start > round(crop_height * _INLINE_REFRAME_MAX_HIDDEN_FRACTION):
+            continue
+        step = max(1, math.ceil(max_start / max(1, _INLINE_REFRAME_ORIGIN_SAMPLES - 1)))
+        starts = list(range(0, max_start + 1, step))
+        if starts[-1] != max_start:
+            starts.append(max_start)
+        for start in starts:
+            candidate_reference = _window(candidate, start=start)
+            distance = sheet.distance(candidate_reference)
+            if best_distance is None or distance < best_distance:
+                best_distance = distance
+                best_start = start
+                best_rows = candidate
+    if best_distance is None:
+        return (None, window_px, reference,
+                "inline composer reframe offered no bounded full-width source window")
+    return (best_distance, window_px, reference,
+            f"inline reframe rows {best_start}..{best_start + best_rows} of a {crop_height}px "
+            f"crop, width-derived {window_px}px swept +-{tolerance}px")
 
 
 def verification_blocker(payload: ItemPayload, model_index: int, *,
@@ -654,6 +783,7 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
                       separation_fraction: float = _SEPARATION_FRACTION,
                       sheet_render_drift: float = _SHEET_RENDER_DRIFT,
                       absolute_max_dist: float | None = None,
+                      composer_surface=None,
                       **locate_kwargs) -> SheetVerdict:
     """Is the open comment sheet in `frame` showing model item `model_index`? Deterministic.
 
@@ -698,7 +828,37 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
             f"cannot verify model item {model_index} against this payload: {exc}") from exc
 
     cv2, np = _require_vision()
-    preview = locate_sheet_preview(frame, **locate_kwargs)
+    try:
+        preview = locate_sheet_preview(frame, **locate_kwargs)
+    except SheetVerificationError:
+        # Do not lower the public/legacy locator's evidence threshold.  Hinge's compact inline
+        # selected photo can contain enough near-white pixels to make a real image look like a
+        # sequence of short row runs; only a separately proven composer may bind the stricter
+        # compact inference below to its actual controls.
+        if composer_surface is None:
+            raise
+        preview = _locate_inline_compact_preview(frame, composer_surface, cv2=cv2, np=np)
+    if composer_surface is not None:
+        # Hinge 9.134 moved this UI inline.  The legacy preview geometry remains useful for
+        # content comparison, but no longer proves by itself that a composer exists: an ordinary
+        # card can share the same inset.  Bind the selected-card crop to an independently
+        # detected composer and require the measured card -> field -> CTA topology.
+        comment = getattr(composer_surface, "comment_rect", None)
+        send = getattr(composer_surface, "send_rect", None)
+        if comment is None or send is None:
+            raise SheetVerificationError(
+                "the supplied inline-composer surface has no comment/send rectangles")
+        width_slack = max(8, round(preview.width * 0.03))
+        gap = comment.y0 - preview.y1
+        max_gap = max(40, round(preview.height * 0.25))
+        controls_gap = send.y0 - comment.y1
+        if (abs(preview.x0 - comment.x0) > width_slack
+                or abs(preview.x1 - comment.x1) > width_slack
+                or not 0 <= gap <= max_gap
+                or not 0 <= controls_gap <= max(60, round(comment.height * 0.40))):
+            raise SheetVerificationError(
+                "the selected-card preview is not immediately above the independently detected "
+                "inline comment field and Send Like CTA")
     try:
         sheet = signature_of(frame, y0=preview.y0, y1=preview.y1, x0=preview.x0, x1=preview.x1,
                              grid=grid)
@@ -707,12 +867,33 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
             f"the sheet's item preview at rows {preview.y0}..{preview.y1}, columns "
             f"{preview.x0}..{preview.x1} could not be reduced to a signature: {exc}") from exc
 
+    comparison_preview = preview
+    if composer_surface is not None:
+        # The profile-card heart is an overlaid control, not photo content. The selected inline
+        # preview correctly omits it, so cut that fixed right lane from both representations
+        # before comparing. Preserve ``preview`` itself in the verdict as the full inspected
+        # geometry/audit record.
+        right_lane = round(preview.width * _INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
+        if preview.width - right_lane <= round(preview.width * 0.70):
+            raise SheetVerificationError(
+                "inline selected-photo preview leaves too little width after excluding the "
+                "profile-card heart-control lane")
+        comparison_preview = SheetPreview(
+            y0=preview.y0, y1=preview.y1, x0=preview.x0, x1=preview.x1 - right_lane,
+            reason=preview.reason + "; inline right control lane excluded")
+        try:
+            sheet = signature_of(frame, y0=comparison_preview.y0, y1=comparison_preview.y1,
+                                 x0=comparison_preview.x0, x1=comparison_preview.x1, grid=grid)
+        except ItemCropError as exc:
+            raise SheetVerificationError(
+                "the inline selected-photo content rect could not be reduced to a signature") from exc
+
     measured: list[tuple] = []
     for crop in payload.items:
         gray = _decode_crop(crop.image, crop.number, cv2, np)
         distance, window_px, reference, reason = _compare_item(
-            crop, gray, preview, sheet, grid=grid, scale_tolerance=scale_tolerance, cv2=cv2,
-            np=np)
+            crop, gray, comparison_preview, sheet, grid=grid, scale_tolerance=scale_tolerance, cv2=cv2,
+            np=np, inline_reframe=(composer_surface is not None))
         measured.append((crop, distance, window_px, reference, reason, int(gray.shape[0])))
 
     # EVERY numbered item, without exception. An item too short to be the rendered window is still
@@ -730,12 +911,14 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
         # which is what makes the nearest match unique). With none -- a one-item list, or one
         # where every other item is too short to be what the sheet is rendering -- there is no
         # separation to halve, so the only quantity left is what a CORRECT reading costs, and the
-        # same fraction scales it UP instead. No second constant, and the same shape of statement:
-        # accept within a small multiple of the noise a correct reading carries. [corpus: that
-        # puts the fallback bound at 2 x 1.95 = 3.90 against the >=51.7 grey levels a DIFFERENT
-        # card measured on the four real sheets, i.e. 14x of margin.]
+        # same fraction scales it UP instead.  Legacy/modal mode retains that historic rule.  A
+        # structurally proven inline composer has a distinct Hinge renderer/reframe and therefore
+        # uses its own held-out one-item ceiling; it never widens a multi-item relative proof.
+        # Production's independently calibrated absolute ceiling remains a second, stricter cap.
         bound = (separation_fraction * nearest_other if nearest_other is not None
                  else (sheet_render_drift + (crop.signature_drift or 0.0)) / separation_fraction)
+        if composer_surface is not None and nearest_other is None:
+            bound = _INLINE_COMPOSER_ONE_ITEM_MAX_DIST
         comparisons.append(ItemComparison(
             number=crop.number, distance=distance, window_px=window_px, crop_px=crop_px,
             nearest_other=nearest_other, bound=bound, reason=reason))
@@ -782,9 +965,11 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
     derivation = (
         f"{separation_fraction:g} x its {mine.nearest_other:.3f} distance to the nearest other "
         f"item" if mine.nearest_other is not None else
-        f"the sheet's own {sheet_render_drift:.2f} reproduction noise plus this crop's "
-        f"{chosen.signature_drift or 0.0:.3f} drift over {separation_fraction:g}, there being no "
-        f"other item to bound against")
+        (f"the inline composer's independently held-out {mine.bound:.2f} one-item render ceiling, "
+         f"there being no other item to bound against" if composer_surface is not None else
+         f"the sheet's own {sheet_render_drift:.2f} reproduction noise plus this crop's "
+         f"{chosen.signature_drift or 0.0:.3f} drift over {separation_fraction:g}, there being no "
+         f"other item to bound against"))
     if mine.distance >= mine.bound:
         return _verdict(VERIFY_MISMATCH, (
             f"the like sheet does not show model item {model_index}: item {model_index} is the "

@@ -5,12 +5,14 @@ down once the last browser tab goes away.
 """
 from __future__ import annotations
 
+import copy
 import threading
 import time
 
 from .. import config as cfg_mod
 from .. import platforms
 from .. import supervisor
+from ..observe_actions import ObserveActionBridge
 
 # Chrome (and others) throttle setInterval in a hidden tab to ~once/minute after 5min hidden —
 # very plausible during a real run (owner watching the phone/Playwright window, or the display
@@ -53,10 +55,17 @@ class HubState:
         self._eval_cold_event: threading.Event | None = None  # cold-start single-flight
         self._live_store = None             # the running supervisor's store (live in-memory labels)
         self._opener_service = None         # the running supervisor's OpenerService (recent_openers_snapshot for the bug report)
+        # Plain, detached copies from the most recently completed run.  The live service owns
+        # locks and references to a store which supervisor.run() closes during shutdown, so the
+        # hub must never keep that object merely to make a later bug report nicer.  Freeze its
+        # two diagnostic rings just before dropping the reference instead.
+        self._completed_openers: list[dict] = []
+        self._completed_opener_rejections: list[dict] = []
         self._browser_clients: dict[str, float] = {}
         self._closed_browser_clients: dict[str, float] = {}
         self._browser_shutdown_requested = False
         self._browser_stale_watch_active = False
+        self._observe_actions = ObserveActionBridge()
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -90,6 +99,11 @@ class HubState:
             self._error = None
             self._live_store = None
             self._opener_service = None
+            # A new run supersedes the last run's diagnostic paper trail immediately.  While
+            # it is active, reports must not accidentally present prior-run opener text as if
+            # it belonged to the card currently on screen.
+            self._completed_openers = []
+            self._completed_opener_rejections = []
             stop = self._stop
 
             def _capture(st):
@@ -109,6 +123,7 @@ class HubState:
                     supervisor.run(self.config_path, stop_event=stop, on_status=_capture,
                                    on_store=_capture_store,
                                    on_opener_service=_capture_opener_service,
+                                   on_worker=self._bind_observe_worker,
                                    mode=mode, enabled_apps=apps, max_per_run=max_per_run)
                 except (Exception, SystemExit) as exc:  # noqa: BLE001
                     # supervisor.run raises SystemExit (a BaseException, not Exception) for a
@@ -120,6 +135,11 @@ class HubState:
                     with self._lock:
                         self._error = f"{type(exc).__name__}: {exc}"
                 finally:
+                    # Snapshot before forgetting the live service, but retain only data.  In
+                    # particular, do not keep an OpenerService after supervisor has closed its
+                    # store: a completed-run report must be useful without reading a torn-down
+                    # object (or retaining its locks/client/store).
+                    self._freeze_completed_opener_telemetry()
                     with self._lock:
                         self._live_store = None   # supervisor closed it on exit; don't read a dead store
                         self._opener_service = None   # same reason: don't read a torn-down object after the supervisor tore the run down
@@ -262,35 +282,78 @@ class HubState:
             "status": snap,
         }
 
-    def recent_openers(self) -> list[dict]:
-        """The openers generated this run, newest LAST, or [] when no run is/was active."""
-        with self._lock:
-            svc = self._opener_service
-        # getattr, not a plain attribute access: a duck-typed/older OpenerService (or a test
-        # double that doesn't bother implementing this) must degrade to "no data" rather than
-        # crash a bug report — the one caller of this method — over a missing method.
-        snapshot_fn = getattr(svc, "recent_openers_snapshot", None)
+    def observe_action_snapshot(self, *, run_id: str | None = None, app: str | None = None) -> dict:
+        return self._observe_actions.snapshot(run_id=run_id, app=app)
+
+    def submit_observe_action(self, body: dict) -> tuple[bool, dict, int]:
+        return self._observe_actions.submit(body)
+
+    def _bind_observe_worker(self, worker) -> None:
+        # Called by supervisor before Thread.start(), so no hub request can observe a half-bound
+        # worker.  The worker subsequently registers itself at run entry as a harmless idempotent
+        # backstop for direct/test construction.
+        worker.observe_action_bridge = self._observe_actions
+        worker.observe_action_supported = bool(
+            worker.mode == "observe" and worker.app == "hinge"
+            and getattr(worker, "observe_source", "manual") in {"external_ai_review", "automation"}
+            and callable(getattr(worker.driver, "observe_pass", None))
+            and callable(getattr(worker.driver, "observe_open_targeted_like", None))
+            and callable(getattr(worker.driver, "observe_send_targeted_like", None)))
+        self._observe_actions.register(worker)
+
+    @staticmethod
+    def _service_snapshot(service, method_name: str) -> list[dict]:
+        """Return a detached diagnostic ring from ``service``, or [] on any bad hand-off.
+
+        OpenerService itself returns a list while holding its own lock.  ``deepcopy`` here is
+        deliberate: its entries contain nested telemetry lists, and the completed-run cache
+        must not share any mutable object with an object about to be torn down.
+        """
+        snapshot_fn = getattr(service, method_name, None)
         if snapshot_fn is None:
             return []
         try:
-            return snapshot_fn()
-        except Exception:  # noqa: BLE001 — never raise into a bug report; see this method's docstring
+            rows = snapshot_fn()
+            if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+                return []
+            return copy.deepcopy(rows)
+        except Exception:  # noqa: BLE001 — diagnostics must never break the hub
             return []
 
-    def recent_opener_rejections(self) -> list[dict]:
-        """The REJECTED opener attempts this run, newest LAST, or [] when no run is/was
-        active -- same shape and same reasoning as recent_openers above, just reading
-        OpenerService.recent_rejections_snapshot instead of recent_openers_snapshot (see
-        opener/service.py's recent_rejections docstring in __init__)."""
+    def _freeze_completed_opener_telemetry(self) -> None:
+        """Detach final opener/rejection snapshots without retaining the live service."""
+        with self._lock:
+            service = self._opener_service
+        openers = self._service_snapshot(service, "recent_openers_snapshot")
+        rejections = self._service_snapshot(service, "recent_rejections_snapshot")
+        with self._lock:
+            # start() cannot replace a still-running target thread, but retain this identity
+            # guard so a future lifecycle change cannot publish one run's rows into another.
+            if self._opener_service is service:
+                self._completed_openers = openers
+                self._completed_opener_rejections = rejections
+
+    def recent_openers(self) -> list[dict]:
+        """Committed opener records from the active or most recently completed run.
+
+        A completed run uses the detached snapshot made during HubState's shutdown hand-off;
+        this method never reads a torn-down OpenerService.
+        """
         with self._lock:
             svc = self._opener_service
-        snapshot_fn = getattr(svc, "recent_rejections_snapshot", None)
-        if snapshot_fn is None:
-            return []
-        try:
-            return snapshot_fn()
-        except Exception:  # noqa: BLE001 — never raise into a bug report; see this method's docstring
-            return []
+            completed = copy.deepcopy(self._completed_openers)
+        return self._service_snapshot(svc, "recent_openers_snapshot") if svc is not None else completed
+
+    def recent_opener_rejections(self) -> list[dict]:
+        """Committed rejected-opener records from the active or last completed run.
+
+        Same detached-snapshot contract as recent_openers(), using OpenerService's rejection
+        ring rather than retaining a shut-down service object.
+        """
+        with self._lock:
+            svc = self._opener_service
+            completed = copy.deepcopy(self._completed_opener_rejections)
+        return self._service_snapshot(svc, "recent_rejections_snapshot") if svc is not None else completed
 
     def config_defaults(self) -> dict:
         try:

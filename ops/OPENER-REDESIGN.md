@@ -18,6 +18,16 @@
 > and must fail loudly. Historical passages below that describe a repair callback or
 > a default index of `0` are superseded by the final 2026-08-12 addenda.
 
+> **Photo-only targeting amendment (2026-08-13).** The owner contract now permits the system
+> to choose and tap photos only, never written prompt cards. Hinge's payload builder demotes
+> every non-square or confidently written selectable crop to readable, unnumbered context before
+> the model call. Dense model photo numbers retain a translation to the original page-heart
+> ordinals, so skipping prompt hearts cannot shift a later photo's tap. The current 9.134.0
+> corpus measures six 974x974 photos and three written prompt cards at 974x756 / 974x685; the
+> resulting translation is `(1, 3, 4, 6, 8, 9)`. Calibration schema 3 binds this behavior as
+> `hinge_photos_only_v1`. Historical passages below that say every photo or prompt is selectable
+> describe the superseded policy, not the current product contract.
+
 Designed 2026-08-11. This is the agreed design, written down so the reasoning survives.
 
 Sequencing note up front: Part A (wording) works against today's pipeline and ships alone.

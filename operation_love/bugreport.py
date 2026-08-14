@@ -11,7 +11,9 @@ each app's on-disk actions.jsonl (the longest same-reason observe_waiting
 repeats, worst first — see _stall_summary_md), item-index refusal pair evidence
 and realised-step ranges, and recent log lines. Output
 is markdown the owner can paste to a developer to debug. The report includes
-an instruction to improve this collector when it lacks enough context, and it
+an explicit reporter-follow-up section when its human description is too brief
+to provide expected/actual behaviour or a reproduction path, alongside an
+instruction to improve this collector when it lacks enough context, and it
 caps output at 50k lines by dropping the oldest captured lines first.
 
 The hub serves it at GET /api/bugreport; install_log_capture() (called by the
@@ -26,6 +28,7 @@ import importlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -60,6 +63,8 @@ _RECENT_OPENER_TEXT_CHARS = 240   # per-opener cap so one runaway response can't
 _RECENT_REJECTIONS_SHOWN = 10     # cap on _recent_opener_rejections_md rows -- mirrors the above
 _STALL_STRETCHES_SHOWN = 3        # cap on _stall_summary_md rows -- see its docstring
 _CAPTURE_SPLITS_SHOWN = 3          # most recent split/recovery pairs to show — see below
+_MIN_ACTIONABLE_DESCRIPTION_CHARS = 20
+_ITEM_INDEX_REASON_INLINE_LIMIT = 360
 _LOG_RING: deque[str] = deque(maxlen=_MAX_REPORT_LINES)
 _LOG_LOCK = threading.Lock()
 _PROCESS_START = time.time()
@@ -102,13 +107,20 @@ class _Tee:
 
 
 def install_log_capture() -> None:
-    """Tee stdout/stderr into the ring so reports include recent logs. Idempotent."""
+    """Tee stdout/stderr into the ring so reports include recent logs. Idempotent.
+
+    Test runners, notebooks, and process supervisors can replace ``sys.stdout`` or
+    ``sys.stderr`` after startup.  A process-global installed flag alone is therefore not
+    enough: it would say capture is active while writes are going to a newer, unwrapped stream.
+    Check the live streams independently on every call, avoiding nested tees when they are
+    already wrapped and restoring capture when either one has been replaced.
+    """
     global _installed
-    if _installed:
-        return
     _installed = True
-    sys.stdout = _Tee(sys.stdout)
-    sys.stderr = _Tee(sys.stderr)
+    if not isinstance(sys.stdout, _Tee):
+        sys.stdout = _Tee(sys.stdout)
+    if not isinstance(sys.stderr, _Tee):
+        sys.stderr = _Tee(sys.stderr)
 
 
 def recent_logs(limit: int = 120) -> list[str]:
@@ -302,6 +314,30 @@ def _diagnostic_improvement_md() -> str:
     )
 
 
+def _reporter_follow_up_md(description: str) -> str:
+    """Explain precisely which human-side evidence is absent from a terse report.
+
+    Runtime snapshots can tell us what the app was doing, but cannot infer what the
+    operator expected to happen or the interaction that made them report a problem.
+    A one-word description (the real report that prompted this addition was simply
+    ``bug``) leaves every captured log line compatible with both a defect and normal
+    observe-mode waiting. Do not pretend this is recoverable from telemetry: call it
+    out, and make the requested follow-up bounded and copy/paste-friendly.
+
+    This is deliberately a conservative length check rather than keyword guessing.
+    A short description cannot contain all of expected behaviour, observed behaviour,
+    triggering action, and recurrence/timing; a longer description is allowed through
+    unchanged because only its author can judge whether it is sufficient.
+    """
+    if len(_sanitize_inline(description)) >= _MIN_ACTIONABLE_DESCRIPTION_CHARS:
+        return "- Reporter description is present; runtime diagnostics are captured below."
+    return (
+        "- ⚠️ The report description is too brief to diagnose from telemetry alone.\n"
+        "- Add: the expected result; the actual result; the last action or steps that led "
+        "to it; the phone/app screen shown; and whether it repeats (with an approximate time)."
+    )
+
+
 def _config_md(config_path: str) -> str:
     try:
         from . import config as cfg_mod
@@ -336,6 +372,15 @@ def _sanitize_inline(text: str) -> str:
     _app_diagnostics_md), which is exactly why that section exists instead of a wide table
     column."""
     return " ".join(text.split()).replace("`", "'")
+
+
+def _compact_item_index_refusal_text(value: object) -> str:
+    """Replace only an oversized item-index geometry wall with a clear pointer."""
+    text = _sanitize_inline(str(value))
+    if "item index" not in text.lower() or len(text) <= _ITEM_INDEX_REASON_INLINE_LIMIT:
+        return text
+    return (text[:_ITEM_INDEX_REASON_INLINE_LIMIT].rstrip() +
+            "… (full geometry is in the item-index summary below)")
 
 
 def _app_diagnostics_md(apps: dict) -> str:
@@ -378,7 +423,7 @@ def _app_diagnostics_md(apps: dict) -> str:
             # reformat of what was already there.
             kind = a.get("stop_kind")
             kind_label = f"`{_sanitize_inline(str(kind))}`" if kind else "unlabelled"
-            lines.append(f"- ⚠️ **{name}** stop reason: `{_sanitize_inline(str(reason))}` "
+            lines.append(f"- ⚠️ **{name}** stop reason: `{_compact_item_index_refusal_text(reason)}` "
                          f"(kind: {kind_label})")
         err = a.get("error")
         if err:
@@ -386,6 +431,56 @@ def _app_diagnostics_md(apps: dict) -> str:
     if not lines:
         return ""
     return "\n".join(["", "**Stop reasons / errors:**", *lines])
+
+
+def _hub_guidance_md(apps: dict) -> str:
+    """Render the *current* per-app guidance the hub is showing, not only its coarse state.
+
+    ``state=waiting`` is intentionally broad: it can mean a person is simply reading a card,
+    that an advisory opener is still being generated, or that the safety gate withheld a
+    suggestion altogether.  The latter was the important fact in the owner-filed ``bug?``
+    report, but the old bug report rendered only the word ``waiting`` even though the hub had
+    already displayed "no suggestion to type" and its reason.  That made an expected safety
+    refusal look indistinguishable from a stalled worker.
+
+    These fields are a snapshot of the hub state, not a new device read: say that explicitly
+    rather than pretending the reporter's phone is being inspected while the markdown is
+    assembled.  All text fields originate outside this module (model output or driver/provider
+    messages), so they use the same one-line/backtick-safe sanitiser as stop reasons.  In
+    particular, this remains diagnostic-only and never exposes a credential value.
+    """
+    lines: list[str] = []
+    for name, app in apps.items():
+        if not isinstance(app, dict):
+            continue
+        state = str(app.get("state") or "unknown")
+        mode = str(app.get("mode") or "")
+        prefix = f"- **{_sanitize_inline(str(name))}**"
+        if mode == "observe" and state == "waiting":
+            lines.append(f"{prefix}: hub says READY for a manual pass/like; no decision has "
+                         "been recorded for the current card.")
+        elif mode == "observe" and state == "waiting_for_send":
+            lines.append(f"{prefix}: hub says a like/comment sheet is open; waiting for Send "
+                         "Like or dismissal, with no decision recorded yet.")
+
+        warning = app.get("opener_warning")
+        if warning:
+            lines.append(f"{prefix}: ⚠️ no suggestion to type — "
+                         f"`{_compact_item_index_refusal_text(warning)}`")
+        elif app.get("opener_pending"):
+            lines.append(f"{prefix}: advisory suggestion generation is still pending; this does "
+                         "not block a manual pass/like.")
+        elif app.get("opener_suggestion"):
+            item = app.get("opener_item")
+            item_note = f" for item {item}" if item is not None else ""
+            desc = app.get("opener_item_description")
+            desc_note = (f" ({_sanitize_inline(str(desc))})" if desc else "")
+            reference = app.get("opener_referenced")
+            reference_note = (f" about `{_sanitize_inline(str(reference))}`"
+                              if reference else "")
+            lines.append(f"{prefix}: advisory suggestion is currently shown{item_note}"
+                         f"{desc_note}{reference_note}.")
+    return "\n".join(lines)
 
 
 def _status_md(hub_state) -> str:
@@ -401,11 +496,28 @@ def _status_md(hub_state) -> str:
         return "\n".join(lines)
     ready = "ready" if st["ranker_ready"] else "defer"
     cap = f" / ${st['budget_cap']:.2f}" if st.get("budget_cap") is not None else ""
+    # These are intentionally separate ledgers.  ``labels`` is the whole ranker's loaded
+    # dataset, while AppStatus.swipes_run is the count of actual preference decisions made in
+    # THIS run.  CostTracker.calls/spend are provider/billing telemetry: an Observe suggestion
+    # can legitimately incur those without the owner sending a like or recording a label.
+    apps = st.get("apps") or {}
+    decisions = sum(
+        int(a.get("swipes_run", 0))
+        for a in apps.values()
+        if isinstance(a, dict) and isinstance(a.get("swipes_run", 0), int)
+    )
     lines += [
         f"- phase: {st.get('phase')} · mode: {st.get('mode')}",
-        f"- labels: {st['labels']} / {st['min_labels']} ({ready})",
-        f"- budget: ${st['budget_spent']:.2f}{cap} · openers: {st.get('openers', 0)}",
+        f"- labels: {st['labels']} / {st['min_labels']} ({ready}) "
+        "(ranker dataset total, not this run)",
+        f"- preference decisions recorded this run: {decisions}",
+        f"- provider / billing telemetry: {st.get('openers', 0)} model response(s) · "
+        f"tracked spend: ${st['budget_spent']:.2f}{cap}",
     ]
+    if decisions == 0:
+        lines.append("- No pass/like preference decision was recorded. A generated Observe "
+                     "suggestion or its provider cost is not a profile, photo, label, or "
+                     "decision record.")
     # `stopping` (RunStatus.snapshot(), status.py) marks a stop that's been requested but hasn't
     # unwound yet -- distinct from `phase == "stopped"`, which only appears once it actually has.
     # Read with .get() rather than st["stopping"]: this field is landing in a concurrent change,
@@ -419,7 +531,6 @@ def _status_md(hub_state) -> str:
         "| app | mode | state | last | score | decisions |",
         "|---|---|---|---|---|---|",
     ]
-    apps = st.get("apps") or {}
     for name, a in apps.items():
         score = "" if a.get("last_score") is None else f"{a['last_score']:.2f}"
         lines.append(f"| {name} | {a.get('mode','')} | {a.get('state','')} "
@@ -427,6 +538,9 @@ def _status_md(hub_state) -> str:
     diag = _app_diagnostics_md(apps)
     if diag:
         lines.append(diag)
+    guidance = _hub_guidance_md(apps)
+    if guidance:
+        lines.extend(["", "**Current hub guidance (snapshot, not a new phone read):**", guidance])
     return "\n".join(lines)
 
 
@@ -472,7 +586,8 @@ def _recent_openers_md(hub_state) -> str:
         return "- (no hub — run via `python -m operation_love hub` for live run status)"
     entries = hub_state.recent_openers()
     if not entries:
-        return "- (no openers generated yet this run, or no run is active)"
+        return ("- (no committed opener records in the active/last run; an unacted Observe "
+                "suggestion is intentionally absent)")
     newest_first = list(reversed(entries))[:_RECENT_OPENERS_SHOWN]   # ring buffer is newest-LAST
     lines = []
     for e in newest_first:
@@ -509,7 +624,8 @@ def _recent_openers_md(hub_state) -> str:
             f"  > {_sanitize_inline(opener)}"
         )
     if not lines:
-        return "- (no openers generated yet this run, or no run is active)"
+        return ("- (no committed opener records in the active/last run; an unacted Observe "
+                "suggestion is intentionally absent)")
     return "\n".join(lines)
 
 
@@ -535,7 +651,7 @@ def _recent_opener_rejections_md(hub_state) -> str:
         return "- (no hub — run via `python -m operation_love hub` for live run status)"
     entries = hub_state.recent_opener_rejections()
     if not entries:
-        return "- (no opener rejections recorded this run, or no run is active)"
+        return "- (no committed opener rejections in the active/last run)"
     newest_first = list(reversed(entries))[:_RECENT_REJECTIONS_SHOWN]   # ring buffer is newest-LAST
     lines = []
     for e in newest_first:
@@ -713,8 +829,15 @@ def _capture_split_summary_md(lines: list[str]) -> str:
         evidence: list[str] = []
         before = split.get("before")
         after = split.get("after")
+        anchor = split.get("anchor")
         if before:
             evidence.append(f"source screenshot `{_sanitize_inline(str(before))}`")
+        if anchor:
+            anchor_text = f"identity-anchor screenshot `{_sanitize_inline(str(anchor))}`"
+            anchor_index = split.get("identity_anchor_frame_index")
+            if isinstance(anchor_index, int) and not isinstance(anchor_index, bool):
+                anchor_text += f" (frame {anchor_index})"
+            evidence.append(anchor_text)
         if after:
             evidence.append(f"boundary-trigger screenshot `{_sanitize_inline(str(after))}`")
         identity_dist = split.get("identity_dist")
@@ -724,6 +847,12 @@ def _capture_split_summary_md(lines: list[str]) -> str:
             if isinstance(top_dist, (int, float)) and not isinstance(top_dist, bool):
                 identity_evidence += f", scroll-top distance {top_dist:g}"
             evidence.append(identity_evidence)
+        if "identity_anchor_confirmed" in split:
+            evidence.append("identity anchor " + (
+                "confirmed" if split.get("identity_anchor_confirmed") else "still provisional"))
+        if "content_match" in split:
+            evidence.append("adjacent content " + (
+                "aligned" if split.get("content_match") else "did not align"))
         evidence_text = "; ".join(evidence) if evidence else "no split evidence was saved"
         profile_name = split.get("profile_name")
         name_text = (f"; identity read `{_sanitize_inline(str(profile_name))}`"
@@ -750,7 +879,7 @@ def _capture_split_summary_md(lines: list[str]) -> str:
                 parts.append(f"{items} numbered item(s)")
             unavailable = recovery.get("items_unavailable")
             if unavailable:
-                parts.append(f"items unavailable: `{_sanitize_inline(str(unavailable))}`")
+                parts.append(f"items unavailable: `{_compact_item_index_refusal_text(unavailable)}`")
             detail = "; ".join(parts) if parts else "no capture details were logged"
             recovery_text = f"later capture/recovery followed: {detail}"
         out.append(f"- `{ts}`: deck advanced mid-read{frame_text}; {evidence_text}{name_text}; "
@@ -790,15 +919,41 @@ def _item_index_refusal_summary_md(lines: list[str]) -> str:
             pair_text = "no specific failing pair recorded"
 
         steps = rec.get("steps_px")
-        measured = [float(step) for step in steps if isinstance(step, (int, float))
-                    and not isinstance(step, bool)] if isinstance(steps, list) else []
-        if measured:
-            ordered = sorted(measured)
+        numbered = [(i, float(step)) for i, step in enumerate(steps)
+                    if isinstance(step, (int, float)) and not isinstance(step, bool)] \
+            if isinstance(steps, list) else []
+        measured = [step for _i, step in numbered]
+        trailing_saturation = None
+        cadence = numbered
+        # A final short gesture is the natural signature of a scroll clamping at the card's
+        # bottom.  It is not a mid-capture spacing anomaly, so describe it separately rather
+        # than letting it poison min/median/max for the ordinary cadence.
+        if len(numbered) >= 4 and numbered[-1][0] == len(steps) - 1:
+            prior = [value for _i, value in numbered[:-1]]
+            ordered_prior = sorted(prior)
+            middle_prior = len(ordered_prior) // 2
+            prior_median = (ordered_prior[middle_prior] if len(ordered_prior) % 2 else
+                            (ordered_prior[middle_prior - 1] + ordered_prior[middle_prior]) / 2)
+            if numbered[-1][1] < prior_median * 0.25:
+                trailing_saturation = numbered[-1]
+                cadence = numbered[:-1]
+        cadence_values = [step for _i, step in cadence]
+        if cadence_values:
+            ordered = sorted(cadence_values)
             middle = len(ordered) // 2
             median = (ordered[middle] if len(ordered) % 2 else
                       (ordered[middle - 1] + ordered[middle]) / 2)
-            step_text = (f"realised steps ({len(measured)} measured): min {ordered[0]:g}px, "
+            label = "realised steps" if trailing_saturation is None else "main realised cadence"
+            step_text = (f"{label} ({len(cadence_values)} measured): min {ordered[0]:g}px, "
                          f"median {median:g}px, max {ordered[-1]:g}px")
+            if trailing_saturation is not None:
+                step_text += (f"; trailing scroll saturation at step {trailing_saturation[0]} "
+                              f"was {trailing_saturation[1]:g}px")
+            small = [(i, value) for i, value in cadence if value < median * 0.5]
+            if small:
+                step_text += ("; mid-run small-step anomalies" if len(small) > 1
+                              else "; mid-run small-step anomaly")
+                step_text += " at " + ", ".join(f"step {i}={value:g}px" for i, value in small[:4])
         else:
             step_text = "realised-step stats unavailable (no measured pair delta was logged)"
 
@@ -807,10 +962,71 @@ def _item_index_refusal_summary_md(lines: list[str]) -> str:
             evidence.append(f"before `{_sanitize_inline(str(rec['before']))}`")
         if rec.get("after"):
             evidence.append(f"after `{_sanitize_inline(str(rec['after']))}`")
+        saved = rec.get("evidence_frames")
+        if isinstance(saved, list):
+            names = [f"`{_sanitize_inline(str(name))}`" for name in saved[:8] if name]
+            if names:
+                evidence.append("saved capture evidence " + ", ".join(names))
+        sidecar = rec.get("evidence_sidecar")
+        if sidecar:
+            evidence.append(f"geometry sidecar `{_sanitize_inline(str(sidecar))}`")
         evidence_text = "; ".join(evidence) if evidence else "no pair screenshots saved"
         reason = _sanitize_inline(str(rec.get("reason") or "no refusal reason logged"))
-        out.append(f"- {pair_text}: `{reason}`; {step_text}; {evidence_text}")
+        regions = sorted(set(re.findall(r"page rows\s+(\d+\.\.\d+)", reason)))
+        frame_numbers = []
+        for match in re.finditer(r"\bframe(?:s)?\s+(\d+)(?:\s+and\s+(\d+))?", reason):
+            frame_numbers.extend(value for value in match.groups() if value is not None)
+        frames = sorted(set(frame_numbers), key=int)
+        geometry = []
+        if regions:
+            geometry.append("distinct page regions " + ", ".join(regions[:8]))
+        if frames:
+            geometry.append("cited frames " + ", ".join(frames[:8]))
+        compact_geometry = "; ".join(geometry) if geometry else "no structured geometry cited"
+        # This is the one deliberate full rendering.  Other report sections/tail records use a
+        # pointer so an incident's repeated prose cannot dominate the whole report.
+        out.append(f"- {pair_text}: {compact_geometry}; {step_text}; {evidence_text}. "
+                   f"Full refusal: `{reason}`")
     return "\n".join(out)
+
+
+def _item_index_repair_summary_md(lines: list[str]) -> str:
+    """Show conservative usable-index repairs, with both source and local frame coordinates."""
+    notes: list[str] = []
+    for raw in lines:
+        try:
+            rec = json.loads(raw)
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(rec, dict) or rec.get("action") != "item_index_repaired":
+            continue
+        for note in rec.get("notes", ()) if isinstance(rec.get("notes"), list) else ():
+            if isinstance(note, str):
+                clean = _sanitize_inline(note)
+                if clean and clean not in notes:
+                    notes.append(clean)
+    if not notes:
+        return ""
+    shown = notes[:8]
+    suffix = f"; {len(notes) - len(shown)} more distinct repair note(s) in actions.jsonl" if len(notes) > len(shown) else ""
+    return "\n".join(f"- `{note}`" for note in shown) + suffix
+
+
+def _compact_debug_tail_line(raw: str) -> str:
+    """Keep raw JSON useful while avoiding another full copy of a long refusal wall."""
+    try:
+        rec = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return raw
+    if not isinstance(rec, dict):
+        return raw
+    if rec.get("action") == "item_index_refused" and rec.get("reason"):
+        rec["reason"] = _compact_item_index_refusal_text(rec["reason"])
+    elif rec.get("action") == "capture" and rec.get("items_unavailable"):
+        rec["items_unavailable"] = _compact_item_index_refusal_text(rec["items_unavailable"])
+    elif rec.get("action") == "item_index_repaired" and rec.get("notes"):
+        rec["notes"] = ["see item-index conservative repairs summary above"]
+    return json.dumps(rec)
 
 
 # ── stall summary ──────────────────────────────────────────────────────────
@@ -980,6 +1196,112 @@ def _stall_summary_md(lines: list[str]) -> str:
     return "\n".join(out)
 
 
+_OBSERVE_WAIT_EXPLANATIONS = {
+    "no_change": "the frame has not visibly changed since this card became READY; no manual "
+                 "pass/like has been proven",
+    "same": "the screen changed within the same captured profile (for example, a manual "
+            "scroll), not to a proven next card",
+    "scroll": "the movement matched a manual scroll within the captured profile, not a "
+              "pass/like decision",
+    "not_deck_ready": "the screen changed, but a stable swipe deck has not yet been proven",
+    "not_settled": "a possible next deck card was seen once but did not yet pass the settle "
+                   "recheck",
+    "like_sheet": "the app's like/comment sheet is visibly open; it is waiting for Send Like "
+                  "or dismissal",
+    "like_sending": "the like sheet closed, but the app has not yet shown a stable next card",
+}
+
+
+def _action_records(lines: list[str]) -> list[dict]:
+    """Best-effort parsed records in file order; malformed partial JSONL is ignored."""
+    records: list[dict] = []
+    for raw in lines:
+        try:
+            rec = json.loads(raw)
+        except Exception:  # noqa: BLE001 -- a report must survive an in-progress append
+            continue
+        if isinstance(rec, dict):
+            records.append(rec)
+    return records
+
+
+def _record_time(rec: dict) -> str:
+    return _sanitize_inline(str(rec.get("ts") or "unknown time"))
+
+
+def _latest_observe_context_md(lines: list[str], run: Path) -> str:
+    """Turn the newest observe trace into the answer a terse report actually needs.
+
+    The raw JSON tail is retained below as forensic evidence, but a report should not require a
+    developer to reverse-engineer the latest capture -> READY -> wait sequence from it.  This
+    deliberately describes the *latest logged evidence*, rather than claiming it is a fresh
+    screenshot of the phone at report-generation time.  That distinction matters if logging has
+    stopped or the file belongs to an earlier run.
+    """
+    records = _action_records(lines)
+    if not records:
+        return ""
+    latest = records[-1]
+    action = _sanitize_inline(str(latest.get("action") or "unknown action"))
+    out = [f"- latest logged action: `{action}` at `{_record_time(latest)}`"]
+
+    if latest.get("action") != "observe_waiting":
+        return "\n".join(out)
+
+    # Only the final contiguous observe_waiting records are a still-open wait.  An earlier
+    # stretch followed by a decision/capture was resolved and must not be presented as current.
+    wait: list[dict] = []
+    for rec in reversed(records):
+        if rec.get("action") != "observe_waiting":
+            break
+        wait.append(rec)
+    wait.reverse()
+    reason = latest.get("reason")
+    reason_text = _sanitize_inline(str(reason or "not recorded"))
+    explanation = _OBSERVE_WAIT_EXPLANATIONS.get(
+        reason if isinstance(reason, str) else "",
+        "the driver is still observing and has not logged a proven manual decision",
+    )
+    out.append(f"- current logged observe state: waiting (`{reason_text}`) — {explanation}.")
+    if len(wait) > 1:
+        out.append(f"- this unresolved wait began at `{_record_time(wait[0])}` and has "
+                   f"{len(wait)} heartbeat record(s), latest at `{_record_time(latest)}`.")
+    else:
+        out.append("- this is the first logged waiting heartbeat for the unresolved wait.")
+
+    # The immediately preceding capture is the most useful reproduction context: it says what
+    # was successfully read before the app entered READY, without inventing a current screen.
+    before_wait = records[:len(records) - len(wait)]
+    capture = next((rec for rec in reversed(before_wait) if rec.get("action") == "capture"), None)
+    if capture is not None:
+        bits: list[str] = []
+        if capture.get("profile_name"):
+            bits.append(f"identity read `{_sanitize_inline(str(capture['profile_name']))}`")
+        photos = capture.get("photos")
+        if isinstance(photos, int) and not isinstance(photos, bool):
+            bits.append(f"{photos} captured photo(s)")
+        items = capture.get("items")
+        if isinstance(items, int) and not isinstance(items, bool):
+            bits.append(f"{items} numbered item(s)")
+        if capture.get("items_unavailable"):
+            bits.append("numbered items unavailable: `"
+                        f"{_compact_item_index_refusal_text(capture['items_unavailable'])}`")
+        detail = "; ".join(bits) if bits else "no capture detail was logged"
+        out.append(f"- last capture before this wait (`{_record_time(capture)}`): {detail}.")
+
+    shot = next((latest.get(key) for key in ("before", "after", "screenshot")
+                 if latest.get(key)), None)
+    if shot:
+        shot_text = _sanitize_inline(str(shot))
+        availability = "present" if (run / str(shot)).is_file() else "not present (possibly rotated)"
+        out.append(f"- screen evidence for that waiting verdict: `{shot_text}` ({availability}).")
+    else:
+        out.append("- no screenshot filename was recorded with the latest waiting verdict.")
+    out.append("- reproduction sequence from the log: capture completed → READY/manual decision "
+               "prompt → no pass/like record yet → current observe wait above.")
+    return "\n".join(out)
+
+
 def _debug_log_md(config_path: str) -> str:
     """Surface the on-disk action/screenshot debug log (Hinge's silent auto-mode logging) so the
     report points a developer straight at a failure: the latest run folder, the tail of its
@@ -1028,6 +1350,10 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
             if stall:
                 out.append("  - stall summary:")
                 out.extend(f"    {line}" for line in stall.splitlines())
+            observe_context = _latest_observe_context_md(raw_lines, run)
+            if observe_context:
+                out.append("  - latest observe context (logged evidence, not a new phone read):")
+                out.extend(f"    {line}" for line in observe_context.splitlines())
             splits = _capture_split_summary_md(raw_lines)
             if splits:
                 out.append("  - capture-split recovery:")
@@ -1036,10 +1362,15 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
             if refusals:
                 out.append("  - item-index refusals and realised-step stats:")
                 out.extend(f"    {line}" for line in refusals.splitlines())
+            repairs = _item_index_repair_summary_md(raw_lines)
+            if repairs:
+                out.append("  - item-index conservative repairs:")
+                out.extend(f"    {line}" for line in repairs.splitlines())
             counts_line = _action_counts_line(raw_lines)
             if counts_line:
                 out.append(f"  - {counts_line}")
-            tail = _collapse_action_tail(raw_lines, _DEBUG_ACTION_TAIL)
+            tail = [_compact_debug_tail_line(line)
+                    for line in _collapse_action_tail(raw_lines, _DEBUG_ACTION_TAIL)]
             if tail:
                 out.append("  - actions.jsonl (tail):\n```\n" + "\n".join(tail) + "\n```")
         else:
@@ -1074,7 +1405,12 @@ def _logs_md(max_lines: int) -> str:
 
     body_lines = prefix
     if available_body_lines > 0:
-        body_lines += logs[-available_body_lines:]
+        # The exact long refusal is already rendered once in the on-disk item-index summary.
+        # Console logs mirror that same sentence, so retain their timestamp/context but replace
+        # only an oversized geometry wall with the same explicit pointer.  Short/ordinary logs
+        # remain byte-for-byte unchanged.
+        body_lines += [_compact_item_index_refusal_text(line)
+                       for line in logs[-available_body_lines:]]
     return "```\n" + "\n".join(body_lines) + "\n```"
 
 
@@ -1111,6 +1447,7 @@ def build_report(hub_state=None, description: str = "", config_path: str = "conf
     head = (
         f"# Operation Love — Bug Report\n_Generated {now}_\n\n"
         f"## What happened\n{desc}\n\n"
+        f"## Reporter follow-up\n{_safe_section(_reporter_follow_up_md, description or '')}\n\n"
         f"## Build\n{_safe_section(_build_md)}\n\n"
         f"## System\n{_safe_section(_system_md)}\n\n"
         f"## Dependencies\n{_safe_section(_deps_md)}\n\n"

@@ -19,12 +19,33 @@ def _ring_bodies():
 def test_report_has_core_sections():
     md = bugreport.build_report(None, description="it broke")
     for h in ["# Operation Love — Bug Report", "## What happened", "it broke",
-              "## Build", "## System", "## Dependencies", "## Capabilities", "## Config",
+              "## Reporter follow-up", "## Build", "## System", "## Dependencies", "## Capabilities", "## Config",
               "## Secrets", "## Diagnostic improvement", "## Run status", "## Recent openers",
               "## Recent opener rejections",
               "## Debug log (on-disk actions + screenshots)", "## Recent logs"]:
         assert h in md, f"missing section: {h}"
     assert "improve `operation_love/bugreport.py`" in md
+
+
+def test_reporter_follow_up_makes_a_one_word_description_actionable():
+    md = bugreport.build_report(None, description="bug")
+
+    assert "## Reporter follow-up" in md
+    assert "description is too brief to diagnose from telemetry alone" in md
+    assert "expected result" in md
+    assert "actual result" in md
+    assert "last action or steps" in md
+    assert "whether it repeats" in md
+
+
+def test_reporter_follow_up_does_not_falsely_flag_a_substantive_description():
+    md = bugreport.build_report(
+        None,
+        description="After I tap Pass, the card stays visible instead of advancing.",
+    )
+
+    assert "Reporter description is present" in md
+    assert "description is too brief" not in md
 
 
 def test_unset_key_shows_unset():
@@ -50,6 +71,19 @@ def test_log_capture_roundtrip():
     print("OPLOVE_TEST_LOGLINE_marker")
     assert any("OPLOVE_TEST_LOGLINE_marker" in line for line in bugreport.recent_logs())
     assert "OPLOVE_TEST_LOGLINE_marker" in bugreport.build_report(None)
+
+
+def test_log_capture_reinstalls_after_the_host_replaces_stdout(monkeypatch):
+    """The installed flag must not outlive the stream wrapper it is meant to describe."""
+    replacement = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", replacement)
+
+    bugreport.install_log_capture()
+    print("OPLOVE_REPLACED_STDOUT_marker")
+
+    assert isinstance(sys.stdout, bugreport._Tee)
+    assert replacement.getvalue() == "OPLOVE_REPLACED_STDOUT_marker\n"
+    assert any("OPLOVE_REPLACED_STDOUT_marker" in line for line in bugreport.recent_logs())
 
 
 def test_tee_keeps_multi_arg_print_as_one_line():
@@ -135,6 +169,32 @@ def test_status_section_healthy_run_has_no_diagnostics_section():
     # must not appear at all -- not as an empty heading, not as a stray blank bullet list.
     md = bugreport.build_report(_FakeHub())
     assert "Stop reasons / errors" not in md
+
+
+class _ObserveWarningHub:
+    """The report must preserve the hub's actual no-suggestion explanation, rather than
+    reducing an intentional safety refusal to the ambiguous word ``waiting``."""
+    WARNING = "item index refused | no trustworthy shift\n`do not offer text`"
+
+    def snapshot(self):
+        return {"running": True, "error": None, "status": {
+            "phase": "live", "mode": "observe", "running": True, "labels": 12,
+            "min_labels": 40, "ranker_ready": False, "labels_needed": 28,
+            "budget_spent": 0.0, "budget_cap": 5.0, "openers": 0,
+            "apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting",
+                                "last_decision": None, "last_score": None, "swipes_run": 0,
+                                "opener_warning": self.WARNING, "opener_pending": False}}}}
+
+
+def test_status_section_surfaces_current_observe_no_suggestion_guidance_safely():
+    md = bugreport.build_report(_ObserveWarningHub())
+
+    assert "Current hub guidance (snapshot, not a new phone read)" in md
+    assert "READY for a manual pass/like; no decision has been recorded" in md
+    assert "no suggestion to type" in md
+    assert "item index refused | no trustworthy shift 'do not offer text'" in md
+    assert _ObserveWarningHub.WARNING not in md
+    assert not any(line.strip() == "`do not offer text`" for line in md.splitlines())
 
 
 class _StoppedHub:
@@ -404,6 +464,33 @@ def test_debug_log_section_tails_actions_and_flags_error_shots(tmp_path):
     assert "like did not land" in md                              # actions.jsonl tail inlined
 
 
+def test_debug_log_section_explains_latest_observe_wait_and_reproduction_context(tmp_path):
+    """A vague report must say what the latest evidence actually proves: this card captured,
+    then became READY, then received no observed decision -- not merely "waiting"."""
+    run = tmp_path / "run_observe_context"
+    run.mkdir(parents=True)
+    (run / "00002_observe_waiting_before.png").write_bytes(b"screen")
+    capture = {"ts": "2026-08-14T13:20:24", "action": "capture", "photos": 38,
+               "profile_name": "Anita", "items": 0,
+               "items_unavailable": "item index could not be trusted"}
+    wait_1 = {"ts": "2026-08-14T13:21:04", "action": "observe_waiting",
+              "reason": "no_change"}
+    wait_2 = {"ts": "2026-08-14T13:21:19", "action": "observe_waiting",
+              "reason": "no_change", "before": "00002_observe_waiting_before.png"}
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, [capture, wait_1, wait_2])) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "latest observe context (logged evidence, not a new phone read):" in md
+    assert "current logged observe state: waiting (`no_change`)" in md
+    assert "frame has not visibly changed" in md
+    assert "unresolved wait began at `2026-08-14T13:21:04` and has 2 heartbeat record(s)" in md
+    assert "identity read `Anita`; 38 captured photo(s); 0 numbered item(s)" in md
+    assert "numbered items unavailable: `item index could not be trusted`" in md
+    assert "00002_observe_waiting_before.png` (present)" in md
+    assert "capture completed → READY/manual decision prompt → no pass/like record yet" in md
+
+
 def test_debug_log_section_summarises_item_index_refusals_and_realised_steps(tmp_path):
     """A long capture's failure must answer both questions that its first-frame-only capture
     record cannot: which adjacent frames broke, and whether the realised step was otherwise
@@ -430,6 +517,62 @@ def test_debug_log_section_summarises_item_index_refusals_and_realised_steps(tmp
     assert "after `00002_item_index_refused_after.png`" in md
 
 
+def test_item_index_summary_keeps_long_geometry_once_and_separates_trailing_saturation(tmp_path):
+    """The full refusal is useful once; repeating it in capture context and raw tail turns a
+    report into a wall.  A final clamp step is also not evidence of unstable mid-run spacing."""
+    run = tmp_path / "run_item_index_compact"
+    run.mkdir(parents=True)
+    reason = ("the item index this capture produced contradicts itself: frame 19 sees page rows "
+              "6368..6709 while frame 20 bounded page rows 6368..6503; " + "geometry detail " * 80)
+    capture = {"action": "capture", "photos": 37, "items": 0, "items_unavailable": reason}
+    refusal = {
+        "action": "item_index_refused", "reason": reason,
+        "steps_px": [240, 250, 245, 15],
+        "evidence_frames": ["item_index_refused_deadbeef_frame_19.png"],
+        "evidence_sidecar": "item_index_refused_deadbeef_evidence.json",
+    }
+    repaired = {"action": "item_index_repaired", "notes": [
+        "source frame 20 (index frame 19)'s sighting spans the proven card boundary",
+        "source frame 20 (index frame 19)'s sighting spans the proven card boundary",
+    ]}
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, [capture, refusal, repaired])) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert md.count(bugreport._sanitize_inline(reason)) == 1
+    assert "distinct page regions 6368..6503, 6368..6709" in md
+    assert "cited frames 19, 20" in md
+    assert "saved capture evidence `item_index_refused_deadbeef_frame_19.png`" in md
+    assert "geometry sidecar `item_index_refused_deadbeef_evidence.json`" in md
+    assert "main realised cadence (3 measured): min 240px, median 245px, max 250px" in md
+    assert "trailing scroll saturation at step 3 was 15px" in md
+    assert "item-index conservative repairs:" in md
+    assert md.count("source frame 20 (index frame 19)") == 1
+
+
+def test_recent_logs_points_to_an_oversized_item_index_wall_already_shown_in_summary(tmp_path):
+    """The console mirrors a driver refusal, but the report must keep its one full copy in
+    the structured item-index summary rather than printing the geometry wall again at the end."""
+    run = tmp_path / "run_item_index_recent_logs"
+    run.mkdir(parents=True)
+    reason = ("the item index this capture produced contradicts itself: frame 19 sees page rows "
+              "6368..6709 while frame 20 bounded page rows 6368..6503; " + "geometry detail " * 80)
+    refusal = {"action": "item_index_refused", "reason": reason, "steps_px": [240, 250, 245, 15]}
+    (run / "actions.jsonl").write_text(json.dumps(refusal) + "\n")
+    bugreport._LOG_RING.clear()
+    bugreport._LOG_RING.append("14:05:22 hinge: no numbered item list — " + reason)
+    try:
+        report_parts = (bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+                        + "\n## Recent logs\n" + bugreport._logs_md(10))
+    finally:
+        bugreport._LOG_RING.clear()
+
+    assert report_parts.count(bugreport._sanitize_inline(reason)) == 1
+    recent_logs = report_parts.split("## Recent logs\n", 1)[1]
+    assert reason not in recent_logs
+    assert "full geometry is in the item-index summary below" in recent_logs
+
+
 def test_debug_log_capture_split_summary_links_boundary_evidence_and_recovery(tmp_path):
     """A split report answers both halves of the incident: what triggered it, and did the
     worker's next capture get back to a usable profile rather than silently falling back to a
@@ -441,6 +584,8 @@ def test_debug_log_capture_split_summary_links_boundary_evidence_and_recovery(tm
     split = {
         "ts": "2026-08-13T00:20:55", "action": "capture_split", "photos": 2,
         "profile_name": "Ada", "before": "00001_capture_split_before.png",
+        "anchor": "00002_capture_split_anchor.png", "identity_anchor_frame_index": 1,
+        "identity_anchor_confirmed": False, "content_match": False,
         "after": "00002_capture_split_after.png", "identity_dist": 17.95,
         "top_dist": 15.73,
     }
@@ -456,9 +601,12 @@ def test_debug_log_capture_split_summary_links_boundary_evidence_and_recovery(tm
     assert "capture-split recovery:" in md
     assert "deck advanced mid-read after 2 captured frame(s)" in md
     assert "source screenshot `00001_capture_split_before.png`" in md
+    assert "identity-anchor screenshot `00002_capture_split_anchor.png` (frame 1)" in md
     assert "boundary-trigger screenshot `00002_capture_split_after.png`" in md
     assert "identity distance 17.95, scroll-top distance 15.73" in md
     assert "identity read `Ada`" in md
+    assert "identity anchor still provisional" in md
+    assert "adjacent content did not align" in md
     assert "later capture/recovery followed: 12 photo(s); capture truncated; 0 numbered item(s)" in md
     assert "items unavailable: `the card is not confirmed to be at its scroll top`" in md
 
@@ -993,7 +1141,8 @@ def test_recent_openers_section_handles_empty_list_gracefully():
     """Either no run has ever started, or one is live but hasn't generated an opener yet --
     either way [] is not an error and must render a graceful explanatory line."""
     md = bugreport._recent_openers_md(_FakeHubOpeners([]))
-    assert "no openers generated" in md
+    assert "no committed opener records" in md
+    assert "unacted Observe suggestion" in md
 
 
 def test_recent_openers_section_renders_newest_first_and_caps_at_the_shown_limit():
@@ -1130,7 +1279,31 @@ def test_recent_opener_rejections_section_handles_no_hub_gracefully():
 
 def test_recent_opener_rejections_section_handles_empty_list_gracefully():
     md = bugreport._recent_opener_rejections_md(_FakeHubRejections([]))
-    assert "no opener rejections recorded" in md
+    assert "no committed opener rejections" in md
+
+
+def test_status_separates_zero_preference_decisions_from_provider_billing_telemetry():
+    """An unacted Observe suggestion can cost a provider call without being a swipe/label.
+
+    This is deliberately a report-level test: the desired fix is not to hide a real provider
+    charge, but to prevent a returning operator from reading it as an unwanted profile decision.
+    """
+    class _NoDecisionChargedHub:
+        def snapshot(self):
+            return {"running": False, "error": None, "status": {
+                "phase": "stopped", "mode": "observe", "running": False,
+                "labels": 351, "min_labels": 40, "ranker_ready": True,
+                "budget_spent": 0.01, "budget_cap": 5.0, "openers": 1,
+                "apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "stopped",
+                                     "last_decision": None, "last_score": None,
+                                     "swipes_run": 0, "error": None,
+                                     "stop_reason": None}}}}
+
+    md = bugreport._status_md(_NoDecisionChargedHub())
+    assert "labels: 351 / 40 (ready) (ranker dataset total, not this run)" in md
+    assert "preference decisions recorded this run: 0" in md
+    assert "provider / billing telemetry: 1 model response(s)" in md
+    assert "No pass/like preference decision was recorded" in md
 
 
 def test_recent_opener_rejections_section_renders_newest_first_and_caps_at_the_shown_limit():

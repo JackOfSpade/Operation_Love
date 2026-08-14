@@ -1,0 +1,24 @@
+{
+  "acceptance": "I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK",
+  "automation_provenance_sha256": "2845e7642dcb90f135d6359907b2594e19a7031034bfdb8812c8608740216316",
+  "calibration_calibrated_at": "2026-08-14T09:52:53.417382+00:00 \u2014 measured from session(s): targeting_20260814T_hybrid_alt6_calibration, targeting_20260814T_hybrid_alt7_heldout",
+  "calibration_sha256": "8df4ac29fc9282a106f665ab16ac999c529e2ff2481127c2d86fbdd137fd66da",
+  "completed": true,
+  "debug_actions_sha256": "df0ba6cd44d7dbaeebf283bfcfab14d3f72f4d3319f5dddc337d68795c996b23",
+  "device": "33111JEHN04475",
+  "frame_size_px": [
+    1080,
+    2400
+  ],
+  "hinge_version_name": "9.134.0",
+  "human_ground_truth": false,
+  "independent_review_sha256": "e7244ae68da4f42664dfd02cdb91a796598ed6ab53b9e23b36f558035c9667e5",
+  "kind": "hinge_ai_reviewed_production_observe_release",
+  "production_run_id": "312b80bf4b50",
+  "production_run_reference": "data/hinge_debug/312b80bf4b50",
+  "provider_store_evidence_sha256": "449dc75a183f699c7ad4554644ff260e1ffd99f71f2608e1c80b2cda5a8b8938",
+  "schema_version": 1,
+  "source": "external_ai_review",
+  "store_persistence_evidence_sha256": "15f863a984d3457bd5e3fb2f130233a6611d61fcdfc6d96b0dbcd088f628c351",
+  "verified_at": "2026-08-14T13:13:18.069677+00:00"
+}

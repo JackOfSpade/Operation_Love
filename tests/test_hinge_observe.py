@@ -37,12 +37,31 @@ def _png(value=0, size=(24, 24)):
     return buf.getvalue()
 
 
-def _action_frame(heart_xy=(937, 1600), x_xy=(125, 2035), confirm_xy=(540, 1300)):
-    """A decodable frame with the like-heart, pass-X, and comment-sheet 'confirm' glyphs
-    pasted at known spots, so the driver's vision locator finds them — exercises the real
-    action path, not the fallback. The confirm glyph is what lets _await_sheet_open() (the
-    gate that confirms the comment sheet actually opened before the driver taps the FIXED
-    comment_box / send_like coordinates) succeed from a single scripted frame.
+_INLINE_COMMENT = (95, 1597, 985, 1775)
+_INLINE_SEND = (390, 1807, 985, 1916)
+_INLINE_CONFIRM = (695, 1856)
+
+
+def _paint_inline_composer(canvas):
+    """Paint the independently required input, CTA, and shipped confirmation glyph."""
+    x0, y0, x1, y1 = _INLINE_COMMENT
+    canvas[y0:y0 + 2, x0:x1] = 222
+    canvas[y1 - 2:y1, x0:x1] = 222
+    x0, y0, x1, y1 = _INLINE_SEND
+    canvas[y0:y1, x0:x1] = 228
+    glyph = hinge._load_template("hinge_send_like.png")
+    height, width = glyph.shape
+    x, y = _INLINE_CONFIRM
+    canvas[y - height // 2:y - height // 2 + height,
+           x - width // 2:x - width // 2 + width] = glyph
+
+
+def _action_frame(heart_xy=(937, 1600), x_xy=(125, 2035)):
+    """A deck frame plus a structurally valid inline composer.
+
+    The Hinge inline layout is not proven by copied ``Send Like`` text: these fixtures paint the
+    measured input outline, filled CTA, and glyph together so the real detector returns safe
+    coordinates. Heart/pass glyphs remain independent deck evidence.
 
     The heart glyph is HINGE_SPEC.templates["like"] (hinge_like_button.png), not a hardcoded
     filename — it must always be whatever the real spec currently wires to the "like" role, or
@@ -51,12 +70,11 @@ def _action_frame(heart_xy=(937, 1600), x_xy=(125, 2035), confirm_xy=(540, 1300)
     heart — see the templates dict comment on HINGE_SPEC in hinge.py)."""
     import cv2
     import numpy as np
-    rng = np.random.default_rng(1)
-    canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
+    canvas = np.full((2400, 1080), 249, dtype=np.uint8)
+    _paint_inline_composer(canvas)
     for name, (cx, cy) in (
         (hinge.HINGE_SPEC.templates["like"], heart_xy),
         ("hinge_pass_x.png", x_xy),
-        ("hinge_send_like.png", confirm_xy),
     ):
         t = hinge._load_template(name)
         th, tw = t.shape
@@ -282,7 +300,7 @@ def test_like_without_opener_taps_heart_then_send():
     adb = FakeAdb([_action_frame()])             # constant frame -> _scroll_to_top stops at once
     _drv(adb).like()
     heart = (937, 1600)                          # heart located by vision on the first photo
-    send = (int(0.643 * 1080), int(0.576 * 2400))   # "Send Like" — calibrated fixed coord
+    send = _INLINE_CONFIRM                          # vision-located inline Send Like glyph
     assert adb.taps == [heart, send]
     assert adb.texts == []                       # no comment typed
 
@@ -711,6 +729,128 @@ class _FakeDbg:
         self.calls.append((name, fields))
 
 
+def test_reviewed_observe_pass_emits_a_verified_frame_bound_decision(monkeypatch):
+    drv = _drv(FakeAdb([b"before", b"after"]), halt_on_error=True)
+    drv._dbg = _FakeDbg()
+    monkeypatch.setattr(drv, "_snap", lambda: b"before")
+    monkeypatch.setattr(drv, "_deliver_decision", lambda _kind: (12, 34))
+    monkeypatch.setattr(drv, "_interruptible_sleep", lambda *_a, **_k: True)
+    verified = []
+    monkeypatch.setattr(drv, "_verify_progress", lambda before, kind: verified.append((before, kind)))
+
+    drv.observe_pass()
+
+    assert verified == [(b"before", "dislike")]
+    decisions = [fields for name, fields in drv._dbg.calls if name == "observe_decision"]
+    assert decisions == [{"decision": "pass", "reviewed": True, "x": [12, 34],
+                          "gesture": drv.spec.decide_gesture}]
+
+
+def test_reviewed_capture_keeps_its_real_index_anchor_while_manual_capture_unwinds(monkeypatch):
+    """The bridge starts where the index was measured; manual Observe remains top-facing."""
+    profile = object()
+
+    reviewed = _drv(FakeAdb([b"unused"]))
+    reviewed_top_calls = []
+    monkeypatch.setattr(reviewed, "_ensure_session_top",
+                        lambda _stop=None: reviewed_top_calls.append("top"))
+    monkeypatch.setattr(reviewed, "_capture_current", lambda _stop=None: profile)
+    monkeypatch.setattr(reviewed, "_scroll_to_top",
+                        lambda *_a, **_k: pytest.fail("reviewed capture must not rewind"))
+    assert reviewed.current_profile_reviewed() is profile
+    assert reviewed_top_calls == ["top"]
+
+    manual = _drv(FakeAdb([b"unused"]))
+    manual._session_top_done = True
+    calls = []
+    monkeypatch.setattr(manual, "_capture_current", lambda _stop=None: profile)
+    monkeypatch.setattr(manual, "_scroll_to_top",
+                        lambda *_a, **_k: calls.append("unwind") or True)
+    assert manual.current_profile() is profile
+    assert calls == ["unwind"]
+
+
+def test_reviewed_send_does_not_fabricate_sending_for_ready_next_card(monkeypatch):
+    drv = _drv(FakeAdb([b"ready-next"]))
+    drv._dbg = _FakeDbg()
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
+    monkeypatch.setattr(drv, "_is_current_profile_frame", lambda *_a, **_k: False)
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda _frame: True)
+
+    assert not drv._record_reviewed_like_sending_if_observed(b"before")
+    assert not [name for name, _fields in drv._dbg.calls if name == "observe_waiting"]
+
+
+def test_reviewed_open_commits_anchor_and_verification_fact_inside_its_lease(monkeypatch):
+    drv = _drv(FakeAdb([b"sheet"]))
+    drv._dbg = _FakeDbg()
+    payload = object()
+    monkeypatch.setattr(drv, "_verifiable_payload", lambda _item: payload)
+    monkeypatch.setattr(drv, "_confirm_payload_profile", lambda _item: None)
+    monkeypatch.setattr(drv, "_navigate_to_model_item", lambda _item, **_k: (12, 34))
+    monkeypatch.setattr(drv, "_snap", lambda: b"before")
+    monkeypatch.setattr(drv, "_tap", lambda *_point: None)
+    monkeypatch.setattr(drv, "_interruptible_sleep", lambda *_a, **_k: True)
+    monkeypatch.setattr(drv, "_await_sheet_open", lambda: None)
+    monkeypatch.setattr(drv, "_verify_sheet_shows", lambda *_a, **_k: None)
+
+    drv.observe_open_targeted_like(3)
+
+    names = [name for name, _fields in drv._dbg.calls]
+    assert names.index("observe_like_anchor") < names.index("observe_release_post_tap_item_verified")
+    assert names.index("observe_release_post_tap_item_verified") < names.index("observe_reviewed_open")
+
+
+def test_observe_release_facts_are_transport_free_exact_debug_rows(tmp_path):
+    """Worker/provider release facts must be append-only, never a hidden screencap.
+
+    This uses the production DebugLog rather than a loose mock so the assertion also catches
+    the original ``_dbg_action(name)`` regression: _dbg_action requires its positional
+    ``before`` argument and therefore raises before it can append any row.
+    """
+    import json
+
+    class NoCaptureAdb(FakeAdb):
+        def __init__(self):
+            super().__init__([b"unused"])
+            self.capture_calls = 0
+
+        def screencap(self):
+            self.capture_calls += 1
+            raise AssertionError("observe_release_fact must not use ADB screencap")
+
+    from operation_love.drivers.debuglog import HingeDebugLog
+
+    adb = NoCaptureAdb()
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="release-facts")
+
+    for fact in ("hub_pre_tap_published", "post_tap_item_verified",
+                 "refusal_or_paywall_logged"):
+        drv.observe_release_fact(fact)
+
+    rows = [json.loads(line) for line in
+            (tmp_path / "release-facts" / "actions.jsonl").read_text().splitlines()]
+    assert [row["action"] for row in rows] == [
+        "observe_release_hub_pre_tap_published",
+        "observe_release_post_tap_item_verified",
+        "observe_release_refusal_or_paywall_logged",
+    ]
+    assert all(set(row) == {"ts", "action"} for row in rows)
+    assert adb.capture_calls == 0
+
+
+def test_observe_release_fact_without_debug_log_remains_transport_free():
+    """Debug-disabled production runs keep the same harmless no-op semantics."""
+    class NoCaptureAdb(FakeAdb):
+        def screencap(self):
+            raise AssertionError("observe_release_fact must not use ADB screencap")
+
+    drv = _drv(NoCaptureAdb([b"unused"]))
+    assert drv._dbg is None
+    drv.observe_release_fact("hub_pre_tap_published")
+
+
 def test_wait_for_decision_records_pass_diagnostics_in_the_debug_log(monkeypatch):
     """The bug report that motivated this fix had NO actions.jsonl entry explaining why a PASS
     was recorded -- just a bare 'Got PASS' in the console log. A silent pixel-only PASS verdict
@@ -824,6 +964,29 @@ def test_identity_match_keeps_waiting_despite_an_unmatched_manual_scroll(monkeyp
 
     assert drv.wait_for_decision(timeout=0.05) is None
     assert adb.taps == [] and adb.swipes == 0             # never touched the device either
+
+
+def test_external_current_profile_or_scroll_refuses_during_observe_wait():
+    """A hybrid controller must not read-scroll the phone underneath a Worker wait.
+
+    This is the production failure behind the false Malaika PASS: a second controller called
+    current_profile(), whose normal trailing _scroll_to_top changed the first driver's identity
+    anchor mid-wait. The shared per-device lease refuses both the public path and the private
+    unwind escape hatch before either can take a screencap or issue a swipe.
+    """
+    worker_adb = FakeAdb([b"worker"])
+    controller_adb = FakeAdb([b"controller"])
+    worker = _drv(worker_adb)
+    controller = _drv(controller_adb)
+
+    with worker._observe_input_lease("wait_for_decision"):
+        with pytest.raises(hinge.HingeActionError, match="already owned"):
+            controller.current_profile()
+        with pytest.raises(hinge.HingeActionError, match="already owned"):
+            controller._scroll_to_top()
+
+    assert controller_adb.i == 0
+    assert controller_adb.swipes == 0
 
 
 def test_identity_new_profile_plus_deck_ready_and_settle_confirms_a_pass(monkeypatch):
@@ -1988,19 +2151,18 @@ def test_handle_rose_upsell_noop_when_no_modal():
     assert adb.taps == []
 
 
-def _like_flow_frame_with_modal(heart_xy=(937, 1600), confirm_xy=(540, 1300), modal_xy=(420, 2197)):
+def _like_flow_frame_with_modal(heart_xy=(937, 1600), modal_xy=(420, 2197)):
     """A decodable frame carrying the heart glyph (so the heart tap is vision-located), the
-    comment-sheet 'confirm' glyph (so _await_sheet_open's gate finds the sheet actually up),
+    structurally confirmed inline composer (so its detector finds safe controls),
     AND the Rose-upsell 'Send Like anyway' glyph (so the same scripted frame also drives the
     post-send upsell dismissal) -- lets a single frame exercise the FULL like() path end to
     end, unlike the old vision-miss-then-fallback shortcut this replaces."""
     import cv2
     import numpy as np
-    rng = np.random.default_rng(9)
-    canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
+    canvas = np.full((2400, 1080), 249, dtype=np.uint8)
+    _paint_inline_composer(canvas)
     for name, (cx, cy) in (
         (hinge.HINGE_SPEC.templates["like"], heart_xy),
-        ("hinge_send_like.png", confirm_xy),
         ("hinge_send_like_anyway.png", modal_xy),
     ):
         t = hinge._load_template(name)
@@ -2674,6 +2836,27 @@ def test_screencap_recovers_from_a_single_blank_frame():
     good = _noisy_png()
     adb = FakeAdb([_png(0), good], advance_on_screencap=True)
     assert _drv(adb)._screencap() == good
+
+
+def test_screencap_retry_still_enforces_v2_calibrated_frame_size():
+    """A blank first frame cannot bypass the geometry check on the recovered frame."""
+    calibration = {
+        "schema_version": 3,
+        "device": "pixel",
+        "hinge_version_name": "9.134.0",
+        "frame_size_px": [1080, 2400],
+        "composer_layout_id": "hinge_inline_v1",
+        "item_selection_policy_id": "hinge_photos_only_v1",
+        "identity_match_max_dist": 2.0,
+        "inline_item_max_dist": 10.0,
+        "calibrated_at": "synthetic",
+        "identity_band": list(hinge.HINGE_SPEC.identity_band),
+        "content_band": list(hinge.HINGE_SPEC.content_band),
+    }
+    adb = FakeAdb(
+        [_png(0), _noisy_png(size=(720, 1600))], advance_on_screencap=True)
+    with pytest.raises(hinge.HingeActionError, match="does not match schema-v3"):
+        _drv(adb, targeting_calibration=calibration)._screencap()
 
 
 def test_screencap_passes_normal_frames_through_unchanged():

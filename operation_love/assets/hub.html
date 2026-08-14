@@ -113,6 +113,10 @@ async function postJSON(u,b){ const r = await fetch(u,{method:'POST',headers:{'C
 // must not carry a hardcoded app list that could drift out of sync with it.
 let cfg = {kinds:[], all_apps:[], enabled_apps:[], mode:'observe', selected:null};
 let sel = {kind:null, app:null};
+// The hub is an operator-facing safety boundary: opening it starts in Observe even when
+// config.yaml is set to auto for non-hub/CLI runs. Auto remains available as an explicit
+// selection, but a page load or refresh must never pre-select autonomous decisions.
+function initialHubMode(){ return 'observe'; }
 // Previous tick's `running` (see renderGlobal/shouldClearHint below) -- tracked across
 // polls so #hint clears only on the TRANSITION into !running, never merely because the
 // page happens to load, or re-render, while no run is active.
@@ -240,8 +244,8 @@ function renderSwipe(snap){
   // that cannot enumerate) loses the 🟢 turn-taking cue entirely for its whole length. Same two
   // cues, same wording, as the box above and as the no-suggestion fallbacks below, so the three
   // teach one thing: there is nothing to copy, and the decision is still yours.
-  const openerWarnBox = (warning, next) => `<div style="${css.wait};border-radius:10px;padding:12px 14px;margin-top:8px">
-<div style="font-weight:700;font-size:15px">🔴 no suggestion to type</div>
+  const openerWarnBox = (title, warning, next) => `<div style="${css.wait};border-radius:10px;padding:12px 14px;margin-top:8px">
+<div style="font-weight:700;font-size:15px">${title}</div>
 <div style="margin-top:4px;font-weight:400;font-size:12px;opacity:.9">${escHtml(warning)}</div>
 <div style="margin-top:6px;font-weight:400;font-size:12px;opacity:.8">${next}</div>
 </div>`;
@@ -259,11 +263,16 @@ function renderSwipe(snap){
     // the first place. The worker publishes opener_warning or opener_suggestion, never both, so
     // the branch below is a belt on top of that rather than a precedence rule.
     const warning = typeof a.opener_warning === 'string' ? a.opener_warning.trim() : '';
+    // Missing Hinge targeting calibration is a run-level setup prerequisite, unlike an
+    // ordinary per-card mismatch or an unavailable provider.  Name it as setup so an operator
+    // does not treat repeated safe withholdings as a mysterious card-level error.  The detail
+    // still comes from the driver and remains escaped in openerWarnBox.
+    const needsTargetingSetup = a.app === 'hinge' && warning.includes('targeting_calibration');
     // Hoisted out of the 'waiting' branch below because the opener branch needs it too now:
     // since doc 5.9's inversion a suggestion is published BEFORE the human taps, i.e. during
     // the very window this sentence describes. Hinge has physically labelled X/heart controls;
     // other platforms may not.
-    const controls = a.app === 'hinge' ? 'click pass X or heart'
+    const controls = a.app === 'hinge' ? 'tap X to pass, or tap a heart to like'
                                        : "use the app's pass or like control";
     // Intercepts every GO-producing branch below (opener suggestion, waiting_for_send,
     // plain waiting) with one honest stop-coloured box instead -- see `stopping` above for
@@ -274,16 +283,23 @@ function renderSwipe(snap){
     if(stopping && (opener || warning || st==='waiting_for_send' || st==='waiting')) {
       return box('wait', `🔴 ${app}: stopping — do not swipe, this decision will not be recorded`);
     }
-    if(warning) return openerWarnBox(warning, st === 'waiting_for_send'
-      ? 'type your own opener, then tap Send Like'
-      : `🟢 your call: ${controls}`);
+    if(warning) return openerWarnBox(
+      needsTargetingSetup ? '🔴 targeted opener setup required' : '🔴 no suggestion to type',
+      warning,
+      needsTargetingSetup
+        ? (st === 'waiting_for_send'
+          ? 'type your own opener, then tap Send Like. Manual pass/like labels still work; complete the Hinge targeted-opener calibration in ops/RUNBOOK.md to enable suggestions.'
+          : `🟢 your call: ${controls}. Manual pass/like labels still work; complete the Hinge targeted-opener calibration in ops/RUNBOOK.md to enable suggestions.`)
+        : (st === 'waiting_for_send'
+          ? 'type your own opener, then tap Send Like'
+          : `🟢 your call: ${controls}`));
     if(opener) {
       // TWO ROWS OF CHROME, AND NEITHER MAY TOUCH THE OPENER ITSELF (owner rule: the string
       // shown here must be byte-identical to what auto would type, so our own words never share
-      // a line with it -- see openerBox). The HEADING carries the instruction the inversion
-      // produces, "like item 3", because that is what the operator acts on first and it must not
-      // be buried in a dimmer sub-line. opener_item_description is the model's own words for
-      // that item, so it can be found on the card without counting hearts.
+      // a line with it -- see openerBox). Before a heart, the HEADING makes the item conditional
+      // help rather than a decision; after the sheet opens it directly identifies the selected
+      // item. Either way opener_item_description is the model's own words for that item, so it
+      // can be found on the card without counting hearts.
       //
       // opener_referenced (the model's one-line statement of which DETAIL the opener reacts to)
       // stays in the lower row: since the inversion it is no longer the operator's only defence
@@ -293,21 +309,31 @@ function renderSwipe(snap){
       const aboutSub = referenced ? `about: ${escHtml(referenced)} · ` : '';
       const item = Number.isInteger(a.opener_item) ? a.opener_item : null;
       const desc = typeof a.opener_item_description === 'string' ? a.opener_item_description.trim() : '';
-      const heading = item === null ? '💬 type exactly this'
-        : `💬 like item ${item}${desc ? ` — ${escHtml(desc)}` : ''}, then type exactly this`;
+      // Before a heart is tapped this is conditional help, not a verdict on the profile. Once
+      // the inline sheet is open, the human has already chosen to like, so use direct send copy.
+      const itemLabel = item === null ? '' : ` item ${item}${desc ? ` — ${escHtml(desc)}` : ''}`;
+      const heading = st === 'waiting_for_send'
+        ? (item === null ? '💬 selected item — type exactly this'
+                         : `💬 item ${item} selected${desc ? ` — ${escHtml(desc)}` : ''} — type exactly this`)
+        : (item === null
+          ? '💬 Optional — not a recommendation: if you choose to like, type exactly this'
+          : `💬 Optional — not a recommendation: if you choose to like, use${itemLabel}, then type exactly this`);
       // THE DECISION IS STILL THE HUMAN'S, AND THE PRE-TAP WINDOW IS WHERE THAT HAS TO BE SAID.
       // Before the inversion a suggestion could only appear AFTER the heart tap (state
       // 'waiting_for_send'), so it never competed with the 🟢 GO cue that tells the operator it
       // is their turn and that PASSING is one of the two things they may do. It is published
       // before the tap now, and this branch runs ahead of the 'waiting' branch below, so
-      // without this the whole decision window rendered as "like item 3 ... then tap Send Like
-      // in Hinge" -- no circle, no X, and an instruction about a sheet that is not open yet --
-      // in the one mode whose entire output is the owner's own like/pass labels. The suggestion
-      // says which item to comment on IF they like her; it is not the decision, and a hub that
-      // reads like an order to like would bias the labels the ranker is trained on.
+      // without this the whole decision window rendered as an order to like and send -- no
+      // circle, no X, and an instruction about a sheet that is not open yet -- in the one mode
+      // whose entire output is the owner's own like/pass labels. The suggestion says which item
+      // to comment on IF they like her; it is not the decision, and a hub that reads like an
+      // order to like would bias the labels the ranker is trained on.
+      const likeThisItem = a.app === 'hinge' && item !== null
+        ? `tap X to pass, or tap the heart on item ${item} to like`
+        : controls;
       const chrome = st === 'waiting_for_send'
         ? `${aboutSub}then tap Send Like in Hinge`
-        : `${aboutSub}🟢 your call: ${controls}`;
+        : `${aboutSub}🟢 your call: ${likeThisItem}`;
       return openerBox(opener, heading, chrome);
     }
     // The sheet is open and there is nothing to type. Two reasons, and the operator's next move
@@ -711,7 +737,7 @@ $('#bugdl').onclick = async () => {
 
 (async () => {
   const c = await getJSON('/api/config');
-  if(!c.error){ cfg = Object.assign(cfg, c); $('#mode').value = cfg.mode; $('#sub').textContent = `control hub · storage: ${cfg.backend}`; }
+  if(!c.error){ cfg = Object.assign(cfg, c); $('#mode').value = initialHubMode(); $('#sub').textContent = `control hub · storage: ${cfg.backend}`; }
   syncModeUI();
   sel = initialSelection(cfg);
   renderPlatforms();

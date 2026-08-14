@@ -26,6 +26,7 @@ import dataclasses
 import json
 import math
 import random
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -143,6 +144,20 @@ _HEADER_VALUE = 128
 # change_threshold, which is what makes it read as "the deck advanced mid-read".
 _OTHER_HEADER_VALUE = 30
 
+_TARGETING_CALIBRATION = {
+    "schema_version": 3,
+    "hinge_version_name": "9.134.0",
+    "frame_size_px": [1080, 2400],
+    "composer_layout_id": "hinge_inline_v1",
+    "item_selection_policy_id": "hinge_photos_only_v1",
+    "identity_match_max_dist": 2.0,
+    "inline_item_max_dist": 10.0,
+    "device": "pixel",
+    "calibrated_at": "2026-08-12",
+    "identity_band": list(hinge.HINGE_SPEC.identity_band),
+    "content_band": list(hinge.HINGE_SPEC.content_band),
+}
+
 _WORLD = None
 _FRAMES: dict[tuple, bytes] = {}
 
@@ -176,6 +191,26 @@ def _frame(scroll: int, *, at_top: bool | None = None, header=_HEADER_VALUE) -> 
     return _FRAMES[key]
 
 
+def _foreign_frame(scroll: int, *, at_top: bool | None = None,
+                   header=_OTHER_HEADER_VALUE) -> bytes:
+    """A different profile: same app chrome/geometry, unrelated scrolling content."""
+    gray = cv2.imdecode(np.frombuffer(_frame(scroll, at_top=at_top, header=header), np.uint8),
+                        cv2.IMREAD_GRAYSCALE)
+    gray[_BAND0:_BAND1] = 255 - gray[_BAND0:_BAND1]
+    # A different profile still has Hinge's selectable heart controls. Re-stamp the fixed app
+    # glyph after changing the card pixels so the recovery/index assertions remain realistic.
+    th, tw = _TEMPLATE.shape
+    for page_y in _HEART_PAGE_Y:
+        cy = page_y - scroll
+        y0 = cy - th // 2
+        x0 = _HEART_CX - tw // 2
+        if _BAND0 <= y0 and y0 + th <= _BAND1:
+            gray[y0:y0 + th, x0:x0 + tw] = _TEMPLATE
+    ok, buf = cv2.imencode(".png", gray)
+    assert ok
+    return buf.tobytes()
+
+
 class WorldAdb:
     """A phone made of arithmetic: it serves windows of the world and moves by exactly what the
     transport model says a `frac` delivers, including its measured 21px touch slop.
@@ -203,6 +238,8 @@ class WorldAdb:
         return ["pixel"]
 
     def shell(self, command="", **_):
+        if command.startswith("dumpsys package "):
+            return "versionName=9.134.0\n"
         return ""
 
     def screencap(self):
@@ -210,6 +247,8 @@ class WorldAdb:
         if self._header_after is not None and self.scrolls >= self._header_after[0]:
             header = self._header_after[1]
         at_top = self._at_top if self._at_top is not None else (self.scroll == 0)
+        if self._header_after is not None and self.scrolls >= self._header_after[0]:
+            return _foreign_frame(self.scroll, at_top=at_top, header=header)
         return _frame(self.scroll, at_top=at_top, header=header)
 
     def tap(self, x, y):
@@ -229,7 +268,7 @@ class WorldAdb:
         self.texts.append(s)
 
 
-def _drv(adb, *, auto=True, openers=True, **cfg):
+def _drv(adb, *, auto=True, openers=True, targeting_calibration=True, **cfg):
     """A HingeDriver over the fake world, with the two session hooks a Worker installs.
 
     `auto` stands in for Worker._auto_loop's set_auto_session_policy (policy None keeps the read
@@ -238,8 +277,12 @@ def _drv(adb, *, auto=True, openers=True, **cfg):
     too, so `openers` is what that turns on now, standing in for the set_opener_enabled call BOTH
     loops make. `openers=False` is therefore the way to ask for an ordinary, non-enumerating
     read, in either mode."""
+    app_cfg = {"serial": "pixel", "halt_on_error": False, **cfg}
+    if targeting_calibration:
+        app_cfg["targeting_calibration"] = _TARGETING_CALIBRATION
+
     class C:
-        apps = {"hinge": {"serial": "pixel", "halt_on_error": False, **cfg}}
+        apps = {"hinge": app_cfg}
     d = HingeDriver(C())
     d._adb = adb
     d._touch = adb            # touches route through the (fake) transport
@@ -252,6 +295,11 @@ def _drv(adb, *, auto=True, openers=True, **cfg):
 @pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch):
     monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
+    # This synthetic world's grayscale noise cards carry geometry, not semantic photo/prompt
+    # evidence.  The real classifier has its own pixel tests and the crop layer has explicit
+    # photo-only numbering tests; keep these capture/navigation tests focused on their declared
+    # geometry by labelling every synthetic selectable card a photo.
+    monkeypatch.setattr(hinge, "unnumber_unless_confident_photo", lambda _crop: None)
     # The sticky-header OCR is a subprocess call to tesseract; it is not what this file tests,
     # and stubbing it also lets the name assertions below be exact.
     monkeypatch.setattr(HingeDriver, "_ocr_band", lambda self, *a, **k: "Ada")
@@ -314,6 +362,24 @@ def test_auto_capture_enumerates_the_profile_into_numbered_crops():
     assert profile.name == "Ada"
     assert profile.items_truncated is False
     assert profile.items_unavailable == ""
+
+
+def test_hinge_numbers_only_policy_approved_photos_and_preserves_prompt_heart(monkeypatch):
+    seen = 0
+
+    def photo_only(_crop):
+        nonlocal seen
+        seen += 1
+        return "synthetic written prompt" if seen == 2 else None
+
+    monkeypatch.setattr(hinge, "unnumber_unless_confident_photo", photo_only)
+    drv = _drv(WorldAdb())
+    profile = drv._capture_current()
+
+    assert len(profile.items) == 3
+    assert drv._current_item_payload.translation == (1, 3, 4)
+    prompt = next(c for c in drv._current_item_payload.context if c.heart_ordinal == 2)
+    assert prompt.number is None and prompt.sent and "written prompt" in prompt.reason
     assert all(isinstance(crop, bytes) and crop for crop in profile.items + profile.item_context)
 
 
@@ -603,6 +669,40 @@ def test_openers_disabled_does_not_enumerate_and_says_so_rather_than_going_quiet
     assert observing._profile_capture_limit == observing.scroll_captures
 
 
+@pytest.mark.parametrize("auto", [False, True], ids=("observe", "auto"))
+def test_missing_targeting_calibration_skips_unusable_enumeration_in_every_mode(
+        monkeypatch, auto):
+    """An enabled provider is not a consumer when targeted text can never be licensed.
+
+    The reported run spent 33 fine-cadence frames enumerating eight items, then the observe
+    readiness gate rejected every suggestion because this calibration was absent. The capture
+    must stay at the ordinary ceiling and state why no item payload was built.  The blocker is
+    intentionally mode-independent: AUTO must also fail before the expensive top confirmation
+    or index builder, leaving the worker's existing ``items_unavailable`` hard-stop to withhold
+    a targeted like rather than discovering the missing calibration after it has read the card.
+    """
+    adb = WorldAdb()
+    drv = _drv(adb, auto=auto, targeting_calibration=False)
+
+    def enumeration_must_not_start(*_args, **_kwargs):
+        raise AssertionError("missing targeting calibration must block before enumeration")
+
+    # Gesture cadence alone would show that enumeration *usually* did not happen.  These two
+    # tripwires pin the more important guarantee: neither its scroll-top round trip nor its
+    # item-index construction may run at all once the configuration has already ruled out a
+    # usable model-item action.
+    monkeypatch.setattr(drv, "_confirm_enumeration_top", enumeration_must_not_start)
+    monkeypatch.setattr(drv, "_index_captured_items", enumeration_must_not_start)
+
+    profile = drv._capture_current()
+
+    assert profile.photos
+    assert profile.items == () and profile.item_context == ()
+    assert "targeting_calibration" in profile.items_unavailable
+    assert drv._profile_capture_limit == drv.scroll_captures
+    assert {frac for frac, _lane in adb.gestures} == {drv.read_scroll_frac}
+
+
 def test_openers_enabled_by_default_preserves_every_other_enumeration_test():
     """set_opener_enabled defaults to True (a driver nobody calls it on -- an older caller, a
     test double -- keeps enumerating exactly as it did before this hook existed), and this is the
@@ -614,7 +714,8 @@ def test_openers_enabled_by_default_preserves_every_other_enumeration_test():
     now has to say so, which is why tools/hinge_bot_scroll_probe.py calls set_opener_enabled(False)
     explicitly instead of getting it from never having been an auto session."""
     class C:
-        apps = {"hinge": {"serial": "pixel", "halt_on_error": False}}
+        apps = {"hinge": {"serial": "pixel", "halt_on_error": False,
+                          "targeting_calibration": _TARGETING_CALIBRATION}}
     drv = HingeDriver(C())          # deliberately NOT through _drv: nobody calls the hook here
     drv._adb = drv._touch = WorldAdb()
     assert drv._openers_enabled is True
@@ -718,6 +819,159 @@ def test_item_index_refusal_diagnostics_cannot_break_the_live_refusal():
 
     drv._dbg = _ExplodingLog()
     assert drv._item_index_refused([b"frame 0", b"frame 1"], "index refused") == "index refused"
+
+
+def test_item_index_refusal_saves_at_most_eight_source_mapped_frames_and_bounded_sidecar(tmp_path):
+    """The actual cited capture frames, not just a pair thumbnail, make a later refusal
+    diagnosable; the dossier stays bounded even when a malformed reason cites every frame."""
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="item-index-dossier")
+
+    class _Edge:
+        observed = True
+
+    class _Block:
+        y0, y1, complete = 20, 60, True
+        top, bottom = _Edge(), _Edge()
+        hearts = ((900, 42),)
+
+    class _Seg:
+        blocks = (_Block(),)
+
+    class _Index:
+        frames = (_Seg(),) * 11
+        source_frame_indices = tuple(range(11))
+        offsets = tuple(i * 100 for i in range(11))
+        shifts = ()
+        failures = ()
+
+    photos = [f"frame-{i}".encode() for i in range(11)]
+    reason = "; ".join(f"frame {i} contributed contradictory geometry" for i in range(11))
+    assert drv._item_index_refused(photos, reason, _Index()) == reason
+
+    records = [json.loads(line) for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    refusal = next(rec for rec in records if rec["action"] == "item_index_refused")
+    assert len(refusal["evidence_frames"]) == 8
+    assert all("_frame_" in name for name in refusal["evidence_frames"])
+    sidecar = json.loads((drv._dbg.dir / refusal["evidence_sidecar"]).read_text())
+    assert len(sidecar["frames"]) == 8
+    frame = sidecar["frames"][0]
+    assert {"local_frame_index", "source_frame_index", "offset_px", "blocks"} <= set(frame)
+    assert frame["blocks"][0]["frame_rows"] == [20, 60]
+    assert frame["blocks"][0]["page_rows"] == [20, 60]
+    assert frame["blocks"][0]["complete"] is True
+    assert frame["blocks"][0]["top_observed"] is True
+    assert frame["blocks"][0]["bottom_observed"] is True
+    assert frame["blocks"][0]["hearts"] == {
+        "frame_rows": [[900, 42]], "page_rows": [[900, 42]],
+    }
+
+
+def test_item_index_refusal_filesystem_evidence_failure_cannot_break_the_live_refusal(
+        monkeypatch, tmp_path):
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="item-index-dossier-disk-failure")
+    monkeypatch.setattr(Path, "write_bytes", lambda *_a, **_k: (_ for _ in ()).throw(OSError("full")))
+    assert drv._item_index_refused([b"first", b"last"], "frame 0 is unusable") == "frame 0 is unusable"
+
+
+def test_item_index_repair_notes_log_original_capture_frame_after_omission_recovery():
+    drv = _drv(WorldAdb())
+
+    class _Debug:
+        calls = []
+
+        def action(self, name, **fields):
+            self.calls.append((name, fields))
+
+    class _Index:
+        frames = (object(), object(), object())
+        source_frame_indices = (0, 2, 3)
+        notes = ("frame 1's sighting at page rows 600..900 spans a proven boundary",)
+
+    debug = _Debug()
+    drv._dbg = debug
+    photos = [b"zero", b"one", b"two", b"three"]
+    drv._record_item_index_notes(photos, _Index())
+
+    assert debug.calls == [("item_index_repaired", {
+        "before": b"two",
+        "notes": ["source frame 2 (index frame 1)'s sighting at page rows 600..900 spans a proven boundary"],
+        "note_frames": [{"local_frame_index": 1, "source_frame_index": 2}],
+        "source_frame_indices": [0, 2, 3],
+    })]
+
+
+@pytest.mark.parametrize(
+    ("source_indices", "bridge", "expected_omitted", "expected_before", "expected_after"),
+    [((0, 2, 3), (0, 2), [1], b"zero", b"two"),
+     ((0, 1, 3), (1, 3), [2], b"one", b"three")],
+    ids=("omit_first_failed_frame", "omit_second_failed_frame"))
+def test_item_index_recovery_log_uses_the_actual_omitted_side_and_keeps_failure_evidence(
+        source_indices, bridge, expected_omitted, expected_before, expected_after):
+    """Either side of a failed pair can be the bad intermediate frame, not just its second."""
+    drv = _drv(WorldAdb())
+
+    class _Debug:
+        calls = []
+
+        def action(self, name, **fields):
+            self.calls.append((name, fields))
+
+    class _FailedShift:
+        status = "no_consensus"
+        reason = "two exact witnesses, below quorum"
+        agreeing = 2
+        dissenting = 1
+        eligible = 2
+
+    class _RecoveredIndex:
+        source_frame_indices = source_indices
+        recovered_from_pair = (1, 2)
+        recovery_bridge = bridge
+        recovery_failed_shift = _FailedShift()
+        recovery_reason = "fresh bridge measured"
+
+    debug = _Debug()
+    drv._dbg = debug
+    photos = [b"zero", b"one", b"two", b"three"]
+    drv._record_item_index_recovery(photos, _RecoveredIndex())
+
+    assert debug.calls == [("item_index_recovered", {
+        "before": expected_before, "after": expected_after, "recovered_from_pair": [1, 2],
+        "omitted_frame_indices": expected_omitted, "recovery_bridge": list(bridge),
+        "original_status": "no_consensus", "original_reason": "two exact witnesses, below quorum",
+        "original_agreeing": 2, "original_dissenting": 1, "original_eligible": 2,
+        "recovery_reason": "fresh bridge measured",
+    })]
+
+
+def test_recovered_index_crops_only_the_exact_rebuilt_frame_sequence(monkeypatch):
+    """An omitted frame must not offset every later crop onto the wrong source image."""
+    drv = _drv(WorldAdb())
+    photos = [b"zero", b"one", b"two", b"three"]
+    seen = []
+
+    class _Index:
+        usable = True
+        frames = (object(), object(), object())
+        source_frame_indices = (0, 2, 3)
+        identity = type("Identity", (), {"known": True, "reason": "ok"})()
+        recovered_from_pair = None
+        recovery_bridge = None
+
+    payload = type("Payload", (), {"usable": True})()
+    monkeypatch.setattr(hinge, "build_item_index", lambda *_args, **_kwargs: _Index())
+
+    def crop_only_indexed_frames(frames, index, **_kwargs):
+        seen.append((list(frames), index))
+        return payload
+
+    monkeypatch.setattr(hinge, "build_item_payload", crop_only_indexed_frames)
+
+    assert drv._index_captured_items(photos) == ""
+    assert seen == [([b"zero", b"two", b"three"], drv._current_item_index)]
+    assert drv._current_item_payload is payload
 
 
 def test_the_index_carries_this_profiles_identity_and_navigation_can_check_it():
@@ -881,6 +1135,46 @@ def test_post_scroll_settle_keeps_a_header_transition_from_splitting_one_profile
     assert np.all(drv._identity_sig == _HEADER_VALUE)
 
 
+def test_transient_anchor_then_stable_header_on_same_profile_does_not_split():
+    """Regression for the 2026-08-13 Shuman false capture_split.
+
+    The transition survives the settle and becomes the first identity candidate. On the next
+    read frame the real sticky header appears, but the scrolling content still aligns with the
+    previous frame and proves this is one card. The candidate is replaced, then confirmed.
+    """
+    class SlowTransitionAdb(WorldAdb):
+        def screencap(self):
+            if self.scrolls == 0:
+                return _frame(0)
+            if self.scrolls == 1:
+                return _frame(self.scroll, header=60)
+            return _frame(self.scroll, header=_HEADER_VALUE)
+
+    class Debug:
+        def __init__(self):
+            self.calls = []
+
+        def action(self, name, **fields):
+            self.calls.append((name, fields))
+
+    adb = SlowTransitionAdb()
+    drv = _drv(adb, auto=False, openers=False, scroll_captures=5)
+    dbg = Debug()
+    drv._dbg = dbg
+
+    profile = drv._capture_current()
+
+    assert profile is not None
+    assert drv._current_capture_split is False
+    assert drv._identity_anchor_confirmed is True
+    assert np.all(drv._identity_sig == _HEADER_VALUE)
+    replacement = next(fields for name, fields in dbg.calls
+                       if name == "identity_anchor_replaced")
+    assert replacement["old_anchor_frame_index"] == 1
+    assert replacement["new_anchor_frame_index"] == 2
+    assert replacement["content_overlap_rows"] > 0
+
+
 def test_real_header_change_still_splits_before_the_foreign_frame_is_appended():
     """Settling is not a relaxation: a stable foreign header remains a hard boundary."""
     adb = WorldAdb(header_after=(2, _OTHER_HEADER_VALUE))
@@ -936,12 +1230,16 @@ def test_capture_split_debug_record_keeps_the_trigger_frame_and_distances():
     name, fields = next(call for call in dbg.calls if call[0] == "capture_split")
     assert name == "capture_split"
     assert fields["before"] != fields["after"]
+    assert fields["anchor"] != fields["after"]
     assert fields["trigger_frame_index"] == fields["captured_frames"] == 2
     assert fields["read_scrolls"] == 2
     assert fields["identity_dist"] >= drv.change_threshold
     assert fields["top_dist"] >= drv.change_threshold
     assert fields["scroll_top_state"] == scroll_top.SCROLL_TOP_REFUTED
     assert fields["scroll_top_distance"] >= drv.change_threshold
+    assert fields["identity_anchor_frame_index"] == 1
+    assert fields["identity_anchor_confirmed"] is False
+    assert fields["content_match"] is False
 
 
 def test_current_profile_rewinds_the_new_card_after_a_mid_read_deck_advance():

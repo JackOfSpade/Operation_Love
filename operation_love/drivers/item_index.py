@@ -154,10 +154,11 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
 """
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
-from .frameshift import ShiftEstimate, estimate_shift
+from .frameshift import SHIFT_MEASURED, ShiftEstimate, estimate_shift
 from .item_identity import ProfileIdentity, capture_profile_identity
 # `_GUTTER_PX` / `_GUTTER_TOLERANCE_PX` are imported rather than re-declared, on frameshift.py's
 # precedent: that window is already measured-and-cited in segment.py, it is what CUT the blocks
@@ -377,6 +378,27 @@ class ItemIndex:
     tail_gap_px: int | None
     failures: tuple[str, ...]
     identity: ProfileIdentity
+    # The frame positions from the caller's original capture that were actually folded.  This is
+    # normally ``range(len(frames))``.  An isolated bad pair may be recovered by dropping either
+    # offending intermediate frame and measuring a direct bridge instead; the crop layer must use
+    # the same reduced sequence, never the original sequence shifted by one position.
+    source_frame_indices: tuple[int, ...] = ()
+    recovered_from_pair: tuple[int, int] | None = None
+    recovery_bridge: tuple[int, int] | None = None
+    recovery_failed_shift: ShiftEstimate | None = None
+    recovery_reason: str | None = None
+    # One string per sighting `_split_on_bounded_cards` excluded while resolving `blocks` — never
+    # silent, on the owner's standing rule that no fallback or degradation happens without being
+    # visible. A sighting only ever gets excluded when it BRIDGES two cards the group's own
+    # complete sightings already proved are separate (the frame-19/20 shape: segment.py missed a
+    # gutter in that one frame and emitted a single block spanning both cards), and excluding it
+    # is what keeps `_resolve_group`'s disagreement check from reading that bridge as two cards
+    # contradicting each other. `notes` is where an operator finds out it happened — a note names
+    # the frame, its page rows, and the proven boundary it spanned, so the missed gutter can be
+    # traced back to a specific frame rather than only showing up as "the index came out usable
+    # with a gap in the evidence". Empty on any index nothing was excluded from, which includes
+    # every `ItemIndex` this repo's other test suites hand-build without passing it.
+    notes: tuple[str, ...] = ()
 
     @property
     def usable(self) -> bool:
@@ -618,21 +640,56 @@ def _resolve_group(group: Sequence[BlockObservation], *, tolerance: int,
         for other in complete:
             if (abs(other.page_y0 - page_y0) > tolerance
                     or abs(other.page_y1 - page_y1) > tolerance):
+                # Naming the FRAME-LOCAL rows alongside the page rows is what lets an operator go
+                # find the actual pixels: page rows are only meaningful relative to this capture's
+                # own offsets, frame rows are what is really on screen in `frames[frame_index]`.
+                if other.frame_index == rep.frame_index:
+                    if other.page_y0 < page_y1 and page_y0 < other.page_y1:
+                        # segment.py emits disjoint blocks within one frame.  Overlapping complete
+                        # extents from it are therefore a genuine frame-local contradiction, not
+                        # the external bridging shape handled by `_split_on_bounded_cards`.
+                        origin = (
+                            f"both sightings are frame {rep.frame_index}'s own and their "
+                            "extents overlap — segment.py's blocks are disjoint within one "
+                            "frame, so this is a self-contradictory frame")
+                    else:
+                        # The confusing live shape: one frame bounded two separate cards, then a
+                        # missed gutter in another frame bridged them into this overlap group.
+                        origin = (
+                            f"both sightings are frame {rep.frame_index}'s own but their "
+                            "extents are disjoint: one frame bounded two separate cards, folded "
+                            "into this one group by a gutter missed in some OTHER frame — not "
+                            f"frame {rep.frame_index} disagreeing with itself")
+                else:
+                    origin = "both observed both edges, so one of them is wrong"
                 failures.append(
                     f"frames {rep.frame_index} and {other.frame_index} disagree about the block "
                     f"at page rows {page_y0}..{page_y1}: {page_y1 - page_y0}px against "
-                    f"{other.height}px ({other.page_y0}..{other.page_y1}). Both observed both "
-                    "edges, so one of them is wrong; averaging them would produce an extent "
-                    "neither frame saw")
+                    f"{other.height}px ({other.page_y0}..{other.page_y1}) — frame "
+                    f"{rep.frame_index} saw its own frame rows {rep.frame_y0}..{rep.frame_y1}, "
+                    f"frame {other.frame_index} saw frame rows {other.frame_y0}..{other.frame_y1}"
+                    f". {origin}; averaging them would produce an extent neither frame saw")
         for other in observations:
             if other.complete:
                 continue
             if other.page_y0 < page_y0 - tolerance or other.page_y1 > page_y1 + tolerance:
+                if other.frame_index == rep.frame_index:
+                    # Segment.py's blocks are disjoint within one frame, so a frame contributing
+                    # both the bounding sighting and an overrunning fragment to one group should
+                    # not happen — spelled out rather than left to read as an ordinary cross-frame
+                    # gutter miss, because it is a different and more surprising kind of fault.
+                    origin = (
+                        f"both are frame {rep.frame_index}'s own sightings, which should never "
+                        "happen — segment.py's blocks are disjoint within one frame, so this is "
+                        "not an ordinary missed gutter but a self-contradictory frame")
+                else:
+                    origin = "either a gutter was missed or these two sightings are not the same block"
                 failures.append(
                     f"frame {other.frame_index} sees page rows {other.page_y0}..{other.page_y1} "
-                    f"where the block was bounded at {page_y0}..{page_y1} — a fragment cannot "
-                    "reach past the card that contains it, so either a gutter was missed or "
-                    "these two sightings are not the same block")
+                    f"(its own frame rows {other.frame_y0}..{other.frame_y1}) where the block was "
+                    f"bounded at {page_y0}..{page_y1} by frame {rep.frame_index} (frame rows "
+                    f"{rep.frame_y0}..{rep.frame_y1}) — a fragment cannot reach past the card "
+                    f"that contains it, so {origin}")
     else:
         page_y0 = min(o.page_y0 for o in observations)
         page_y1 = max(o.page_y1 for o in observations)
@@ -720,10 +777,129 @@ def _scroll_top_evidence(topmost: IndexedBlock, band_y0: int) -> bool:
     return any(o.frame_y0 > band_y0 for o in topmost.observations)
 
 
+def _split_on_bounded_cards(group: Sequence[BlockObservation], *, tolerance: int,
+                            ) -> tuple[list[list[BlockObservation]], list[str]]:
+    """Split ONE `_overlap_groups` group on a card boundary the group's OWN complete sightings
+    prove exists, when a bridging fragment has folded two real cards into it.
+
+    This is the fix for a live capture `_overlap_groups`'s docstring did not anticipate. Its
+    "two distinct blocks are `_MIN_ITEM_GAP_PX` apart by construction" assumption holds for every
+    sighting segment.py reports ON ITS OWN — but two adjacent Hinge cards (page rows 6368..6503
+    and 6550..7477, a 47px gutter between) had their shared gutter MISSED in exactly two frames
+    (19 and 20 of a 37-frame scroll), each of which then emitted one bottom-clipped block spanning
+    both cards — 6368..6709 and 6368..6941, `complete=False` because the analysed band cut them
+    off before either card's own bottom. Those two fragments overlap BOTH cards, so
+    `_overlap_groups`'s transitive chaining folded every sighting of both cards into one group,
+    and `_resolve_group` went on to report every sighting of the second card as contradicting the
+    first card's extent, which it had picked as the group's representative.
+
+    The fix is not to weaken `_overlap_groups` — chaining by raw overlap is exactly right for the
+    ordinary case of one card sliding through a series of scroll windows, and loosening it would
+    reopen the door doc 5.10's phantom item came through. It is to look again, AFTER folding, at
+    what the group's own STRONGEST evidence says: a sighting is `complete` only when segment.py
+    saw the block bounded by its own gutter- or corner-window on both ends (`EDGE_CARD_CORNER` /
+    the analogous gutter edge in segment.py), which is corner-corroborated positive evidence that
+    a card boundary is really there. A frame that merely failed to report a gutter — the bridging
+    fragment's failure mode — is absence of evidence, not evidence of anything. Positive evidence
+    wins: folding the COMPLETE sightings alone through the very same `_overlap_groups` sweep
+    answers "how many cards did this group's strongest evidence actually see", because sightings
+    of one true card agree within `tolerance` and land together, while sightings of two distinct
+    cards are at least `_MIN_ITEM_GAP_PX` apart and land in separate groups. And it is still never
+    an average: every sub-group returned here is resolved by `_resolve_group` exactly as an
+    ungrouped block is, from a single frame's own observation, never a blend of two.
+
+    Returns `([group], [])` — behaviour BYTE-IDENTICAL to before this function existed — whenever
+    there is nothing proven to split on: fewer than two complete sightings, or the complete
+    sightings all land in one `_overlap_groups(complete)` card (the ordinary case of a card seen
+    complete more than once). That is also the fallback the moment this pass meets something it
+    does not understand: a fragment that overlaps NONE of the proven cards by more than
+    `tolerance`, or an excluded fragment's heart that no surviving sighting of its own proven card
+    corroborates (see the heart-safety loop below). In both cases the whole, unsplit group is
+    handed back so `_resolve_group`'s existing loud refusal fires on it, rather than this pass
+    guessing where the evidence it cannot place belongs.
+    """
+    group = list(group)
+    complete = [o for o in group if o.complete]
+    if len(complete) < 2:
+        return [group], []
+
+    cards = _overlap_groups(complete)
+    if len(cards) <= 1:
+        return [group], []
+
+    # Each proven card's extent is the hull of ITS OWN complete sightings — several independent
+    # corner-corroborated measurements of the same card, which is what folding them found, not a
+    # blend across the boundary this split exists to find.
+    proven = [(min(o.page_y0 for o in card), max(o.page_y1 for o in card), card) for card in cards]
+    proven.sort(key=lambda p: p[0])          # page order, so the returned subgroups are too
+
+    def overlap_px(o: BlockObservation, y0: int, y1: int) -> int:
+        return max(0, min(o.page_y1, y1) - max(o.page_y0, y0))
+
+    # Assign every non-complete sighting to the proven card(s) it overlaps by MORE than
+    # `tolerance` — a real overlap-LENGTH test, not endpoint containment, so a fragment that only
+    # grazes a card's edge within chain slack is not mistaken for evidence about that card.
+    fragments = [o for o in group if not o.complete]
+    assigned: dict[int, int] = {}
+    excluded: set[int] = set()
+    for i, frag in enumerate(fragments):
+        hits = [c for c, (y0, y1, _) in enumerate(proven) if overlap_px(frag, y0, y1) > tolerance]
+        if not hits:
+            return [group], []
+        if len(hits) == 1:
+            assigned[i] = hits[0]
+        else:
+            excluded.add(i)          # overlaps 2+ proven cards: the frame-19/20 bridging shape
+
+    # HEART SAFETY. `heart_ordinal` and selectability are downstream of every heart this module
+    # sees, so dropping an excluded sighting must never quietly drop a heart nothing else reports.
+    # Every heart on an excluded sighting must fall inside a proven card's extent, and some
+    # SURVIVING sighting actually assigned to that same card — a complete one, or a fragment that
+    # overlapped only it — must independently report a heart at the same page row. Anything short
+    # of that and the split backs out entirely, leaving `_resolve_group`'s ordinary ambiguous- or
+    # fragment-past-a-bound failure to fire on the group as a whole rather than this pass silently
+    # discarding evidence it could not corroborate.
+    for i in excluded:
+        frag = fragments[i]
+        for _x, y in frag.hearts:
+            card_idx = next((c for c, (y0, y1, _) in enumerate(proven)
+                             if y0 - tolerance <= y <= y1 + tolerance), None)
+            if card_idx is None:
+                return [group], []
+            y0, y1, complete_sightings = proven[card_idx]
+            surviving = list(complete_sightings) + [
+                fragments[j] for j, c in assigned.items() if c == card_idx]
+            if not any(abs(hy - y) <= tolerance for s in surviving for _hx, hy in s.hearts):
+                return [group], []
+
+    subgroups = [
+        list(complete_sightings) + [fragments[i] for i, c in assigned.items() if c == idx]
+        for idx, (_y0, _y1, complete_sightings) in enumerate(proven)]
+
+    # One note per excluded sighting, worded for an operator to act on: which frame, what it saw,
+    # and which proven boundary it bridged — that boundary IS the gutter segmentation missed.
+    notes = []
+    for i in sorted(excluded):
+        frag = fragments[i]
+        hits = [c for c, (y0, y1, _) in enumerate(proven) if overlap_px(frag, y0, y1) > tolerance]
+        boundary = " and ".join(f"{proven[c][0]}..{proven[c][1]}" for c in hits)
+        notes.append(
+            f"frame {frag.frame_index}'s sighting at page rows {frag.page_y0}..{frag.page_y1} "
+            f"(frame rows {frag.frame_y0}..{frag.frame_y1}) spans the proven card boundary "
+            f"between {boundary}: segmentation missed the gutter between them in this frame, so "
+            "the fragment was excluded rather than folded into either card")
+
+    return subgroups, notes
+
+
 def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
               card_x: tuple[int, int], extent_tolerance_px: int, min_item_gap_px: int,
-              band_y0: int) -> tuple[tuple[IndexedBlock, ...], tuple[str, ...]]:
-    """Sightings in page space -> the ordered block list, the two index spaces, and the failures.
+              band_y0: int, include_notes: bool = False,
+              ) -> (tuple[tuple[IndexedBlock, ...], tuple[str, ...]]
+                    | tuple[tuple[IndexedBlock, ...], tuple[str, ...], tuple[str, ...]]):
+    """Sightings in page space -> the ordered block list, the two index spaces, the failures, and
+    the notes — sightings `_split_on_bounded_cards` excluded on the way, reported rather than
+    silently dropped.
 
     Split out from `build_item_index` because it is pure arithmetic over `BlockObservation`
     records — no image data, no cv2, no frames — so the whole decision surface (folding,
@@ -735,12 +911,20 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
     only by `_scroll_top_evidence`, and only when `at_scroll_top` is asserted.
     """
     failures: list[str] = []
+    notes: list[str] = []
     blocks: list[IndexedBlock] = []
     for group in _overlap_groups(observations):
-        block, group_failures = _resolve_group(
-            group, tolerance=extent_tolerance_px, card_x=card_x)
-        blocks.append(block)
-        failures.extend(group_failures)
+        # `_split_on_bounded_cards` is a no-op — `[group], []` — on every group this module could
+        # already fold correctly; it only does work when the group's own complete sightings prove
+        # it actually holds two (or more) cards a bridging fragment merged. See its docstring for
+        # the live capture that made this necessary.
+        subgroups, split_notes = _split_on_bounded_cards(group, tolerance=extent_tolerance_px)
+        notes.extend(split_notes)
+        for subgroup in subgroups:
+            block, group_failures = _resolve_group(
+                subgroup, tolerance=extent_tolerance_px, card_x=card_x)
+            blocks.append(block)
+            failures.extend(group_failures)
 
     # THE SCROLL-TOP EVIDENCE CHECK. The caller's assertion cannot be verified here, but it can
     # be CONTRADICTED, and an unchallenged false assertion is the one error that produces a
@@ -811,7 +995,8 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
             model_index = model
         blocks[i] = replace(block, heart_ordinal=heart_ordinal, model_index=model_index)
 
-    return tuple(blocks), tuple(failures)
+    result = (tuple(blocks), tuple(failures))
+    return (*result, tuple(notes)) if include_notes else result
 
 
 def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, float],
@@ -820,7 +1005,9 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
                      trust_window_px: int | None = None,
                      extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
                      min_item_gap_px: int = _MIN_ITEM_GAP_PX,
-                     end_tail_gap_px: int = _END_TAIL_GAP_PX) -> ItemIndex:
+                     end_tail_gap_px: int = _END_TAIL_GAP_PX,
+                     _prefix_index: ItemIndex | None = None,
+                     _allow_frame_omission_recovery: bool = True) -> ItemIndex:
     """Fold an ordered run of scroll frames into ONE list of the profile's items.
 
     `frames` are consecutive screencaps of the SAME profile, earliest first, captured while
@@ -893,14 +1080,91 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             "no frames to index: an empty capture is a capture failure, and returning an empty "
             "item list for it would read as 'this profile has no items'")
 
-    segmentations = tuple(
-        segment_frame(frame, content_band=content_band, like_template=like_template,
-                      like_threshold=like_threshold)
-        for frame in frames)
-    shifts = tuple(
-        estimate_shift(frames[i], frames[i + 1], content_band=content_band,
-                       trust_window_px=trust_window_px)
-        for i in range(len(frames) - 1))
+    # `_prefix_index` is intentionally private: the supervised calibration reader is the only
+    # caller that grows one frame list by one frame at a time.  Reuse only measurements whose
+    # exact source bytes are still this call's prefix.  The complete page fold below is STILL
+    # rerun over every frame, so all coverage/identity/refusal decisions have exactly the same
+    # inputs and result as an uncached call; this only avoids decoding and matching old pixels
+    # again.  A mismatch falls back to the ordinary full analysis rather than making a best
+    # effort out of a stale prefix.
+    prefix_count = 0
+    if _prefix_index is not None and len(_prefix_index.frames) < len(frames):
+        candidate_count = len(_prefix_index.frames)
+        if all(
+            seg.frame_digest == hashlib.sha256(frame).hexdigest()
+            for seg, frame in zip(_prefix_index.frames, frames[:candidate_count], strict=True)
+        ):
+            prefix_count = candidate_count
+
+    if prefix_count:
+        segmentations = _prefix_index.frames + tuple(
+            segment_frame(frame, content_band=content_band, like_template=like_template,
+                          like_threshold=like_threshold)
+            for frame in frames[prefix_count:])
+        shifts = _prefix_index.shifts + tuple(
+            estimate_shift(frames[i], frames[i + 1], content_band=content_band,
+                           trust_window_px=trust_window_px)
+            for i in range(prefix_count - 1, len(frames) - 1))
+    else:
+        segmentations = tuple(
+            segment_frame(frame, content_band=content_band, like_template=like_template,
+                          like_threshold=like_threshold)
+            for frame in frames)
+        shifts = tuple(
+            estimate_shift(frames[i], frames[i + 1], content_band=content_band,
+                           trust_window_px=trust_window_px)
+            for i in range(len(frames) - 1))
+
+    # An ordinary read can contain one unusable *intermediate* frame while both of its neighbours
+    # still correspond.  Do not turn two votes into a shift, and do not manufacture an offset:
+    # test each frame in that pair as the possible bad intermediate capture, then require a fresh
+    # direct bridge and a fully usable rebuild over the remaining real frames.  The omitted-frame
+    # provenance below makes that reduction visible to every caller, including the crop layer.
+    failed_pairs = [i for i, shift in enumerate(shifts) if shift.delta_px is None]
+    has_segmentation_failure = any(seg.failures for seg in segmentations)
+    if (_allow_frame_omission_recovery and not has_segmentation_failure
+            and len(failed_pairs) == 1):
+        failed_pair = failed_pairs[0]
+        candidates: list[tuple[tuple[float, float, float, int], int, ItemIndex]] = []
+        # Test BOTH frames in the failed pair as the possible bad intermediate capture.  Each
+        # candidate is valid only when it has a neighbour on both sides; omitting frame 0 would
+        # also invalidate the caller's affirmative scroll-top proof.  ``build_item_index`` below
+        # remeasures the bridge and revalidates every later page-level invariant with recursion
+        # disabled, so neither original pair's consensus nor an assumed sum ever enters the
+        # recovered coordinate space.
+        for omitted in (failed_pair, failed_pair + 1):
+            if not 0 < omitted < len(frames) - 1:
+                continue
+            reduced_frames = tuple(frame for i, frame in enumerate(frames) if i != omitted)
+            recovered = build_item_index(
+                reduced_frames, content_band=content_band, like_template=like_template,
+                like_threshold=like_threshold, at_scroll_top=at_scroll_top,
+                identity_band=identity_band, trust_window_px=trust_window_px,
+                extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
+                end_tail_gap_px=end_tail_gap_px, _allow_frame_omission_recovery=False)
+            bridge = (omitted - 1, omitted + 1)
+            # The source index shifts by one after the omission, but the bridge always starts at
+            # the original left neighbour.  ``usable`` also rules out any other broken pair.
+            bridge_shift = recovered.shifts[bridge[0]] if recovered.usable else None
+            if bridge_shift is not None and bridge_shift.status == SHIFT_MEASURED:
+                candidates.append((
+                    (bridge_shift.agreeing, bridge_shift.confidence,
+                     -bridge_shift.dissenting, -omitted), omitted, recovered))
+        if candidates:
+            # Most independent agreement wins; stable secondary keys make an audit replay choose
+            # the same reduction when both bridges are sound.
+            _score, omitted, recovered = max(candidates, key=lambda candidate: candidate[0])
+            bridge = (omitted - 1, omitted + 1)
+            return replace(
+                recovered,
+                source_frame_indices=tuple(i for i in range(len(frames)) if i != omitted),
+                recovered_from_pair=(failed_pair, failed_pair + 1), recovery_bridge=bridge,
+                recovery_failed_shift=shifts[failed_pair],
+                recovery_reason=(
+                    f"frame {omitted} was omitted after frames {failed_pair} and "
+                    f"{failed_pair + 1} had no trustworthy shift; the fresh direct bridge from "
+                    f"frame {bridge[0]} to frame {bridge[1]} and the complete rebuilt index "
+                    "both passed without assuming an offset"))
 
     failures: list[str] = []
     for i, seg in enumerate(segmentations):
@@ -920,11 +1184,12 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         # forgot to check `usable`, and the missing items are precisely the ones the run would
         # then misnumber.
         blocks: tuple[IndexedBlock, ...] = ()
+        notes: tuple[str, ...] = ()
     else:
-        blocks, assembly_failures = _assemble(
+        blocks, assembly_failures, notes = _assemble(
             _observations(segmentations, offsets), at_scroll_top=at_scroll_top, card_x=card_x,
             extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
-            band_y0=segmentations[0].band[0])
+            band_y0=segmentations[0].band[0], include_notes=True)
         failures.extend(assembly_failures)
 
     placed = [(seg, off) for seg, off in zip(segmentations, offsets) if off is not None]
@@ -942,7 +1207,8 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
     return ItemIndex(
         blocks=blocks, frames=segmentations, shifts=shifts, offsets=tuple(offsets),
         page_span=page_span, at_scroll_top=at_scroll_top, reached_end=reached_end,
-        tail_gap_px=tail_gap, failures=tuple(failures), identity=identity)
+        tail_gap_px=tail_gap, failures=tuple(failures), identity=identity,
+        source_frame_indices=tuple(range(len(frames))), notes=notes)
 
 
 def _tail(last: FrameSegmentation, *, end_tail_gap_px: int) -> tuple[bool, int | None]:

@@ -1,0 +1,64 @@
+{
+  "completed": true,
+  "debug_actions_sha256": "df0ba6cd44d7dbaeebf283bfcfab14d3f72f4d3319f5dddc337d68795c996b23",
+  "device": "33111JEHN04475",
+  "events": [
+    {
+      "index": 4,
+      "name": "pass",
+      "row_sha256": "abe1e5b26d026a880e335799f89554ceecd3f0e650792891115621388f098850"
+    },
+    {
+      "index": 14,
+      "name": "hub_pre_tap_published",
+      "row_sha256": "69c0a767e8c3a46dd5b0f16f2298970d265649592d53be013957a0a6711f4570"
+    },
+    {
+      "index": 22,
+      "name": "like_anchor",
+      "row_sha256": "fae33c4caaf6b3274e58354bc7d72ef4ae467a8a44e0125797493f88c1293f02"
+    },
+    {
+      "index": 23,
+      "name": "post_tap_item_verified",
+      "row_sha256": "1090dfb9cfab5a6ba107555f4516d8aea655515ca2df79e3d541bfb026e9f5ed"
+    },
+    {
+      "index": 24,
+      "name": "reviewed_open",
+      "row_sha256": "42bcdc888782379a831da98dadb1452061e582ed8ca5ff86888e65b14f98b52c"
+    },
+    {
+      "index": 33,
+      "name": "reviewed_like_attempt",
+      "row_sha256": "054c6f639323408b49b1f8407ed2d829d89f842f0e397e80154e9907e2ef177e"
+    },
+    {
+      "index": 34,
+      "name": "like",
+      "row_sha256": "4fd0e5120169d9c9ae0d90a2d76dbd353093a8a4a34b8d81942c63ff7ac6381e"
+    },
+    {
+      "index": 35,
+      "name": "reviewed_like",
+      "row_sha256": "45f3452d005d539a693ee0fb7b51fc04fb4e8dc56f886e7d937c8a237aa01858"
+    }
+  ],
+  "executor": {
+    "id": "codex-root",
+    "model": "gpt-5.6-sol",
+    "process": "codex-live-observe-controller-v1",
+    "version": "2026-08-14"
+  },
+  "frame_size_px": [
+    1080,
+    2400
+  ],
+  "hinge_version_name": "9.134.0",
+  "human_ground_truth": false,
+  "kind": "hinge_ai_observe_action_provenance",
+  "production_run_id": "312b80bf4b50",
+  "production_run_reference": "data/hinge_debug/312b80bf4b50",
+  "schema_version": 1,
+  "source": "external_ai_review"
+}

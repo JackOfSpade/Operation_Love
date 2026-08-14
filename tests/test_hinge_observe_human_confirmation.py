@@ -66,20 +66,27 @@ def _hinge(adb):
 
 
 def _sheet_frame():
-    """A real, template-detectable Hinge Send Like sheet frame.
+    """A structurally valid, template-detectable Hinge inline-composer frame.
 
-    The intent callback is deliberately gated on seeing Hinge's own confirmation
-    glyph, not merely any bottom-half animation.  Supplying the glyph here keeps
-    this regression on that safe production path.
+    The intent callback is deliberately gated on the whole composer: Hinge's own
+    confirmation glyph inside a filled CTA, with the wide outlined comment input
+    immediately above it.  Painting every independent proof keeps this regression
+    on the same fail-closed production path as Hinge 9.134.0 rather than allowing
+    a copied ``Send Like`` phrase to count as human intent.
     """
     import cv2
     import numpy as np
 
-    canvas = np.full((2400, 1080), 120, dtype=np.uint8)
+    canvas = np.full((2400, 1080), 249, dtype=np.uint8)
+    comment = (95, 1597, 985, 1775)
+    send = (390, 1807, 985, 1916)
+    canvas[comment[1]:comment[1] + 2, comment[0]:comment[2]] = 222
+    canvas[comment[3] - 2:comment[3], comment[0]:comment[2]] = 222
+    canvas[send[1]:send[3], send[0]:send[2]] = 228
     template = hinge._load_template("hinge_send_like.png")
     assert template is not None
     height, width = template.shape
-    x, y = 540, 1300
+    x, y = 695, 1856
     canvas[y - height // 2:y - height // 2 + height,
            x - width // 2:x - width // 2 + width] = template
     ok, encoded = cv2.imencode(".png", canvas)

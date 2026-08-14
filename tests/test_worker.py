@@ -223,7 +223,7 @@ class FakeStore:
         return True
     def add_label(self, run_id, app, liked, embedding, source="manual", profile_id="", **k):
         self.labels.append((app, profile_id, liked, k))
-    def record_decision(self, run_id, app, decision, score, source="auto"):
+    def record_decision(self, run_id, app, decision, score, source="auto", **_):
         self.decisions.append((app, decision, source))
     # Signature mirrors ranker/store.py's real record_opener EXACTLY, both trailing
     # parameters included: angle="" (doc 3.4/3.5: the model's free-text account of what its
@@ -235,7 +235,7 @@ class FakeStore:
     # count assertion failing further down. Keeping the parameters explicit means the
     # mismatch is at least visible in the traceback when it happens again.
     def record_opener(self, run_id, app, model, opener, referenced, angle="",
-                      item_description=""):
+                      item_description="", **_):
         self.openers.append(opener)
     def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener):
         self.rejections.append((app, model, attempt, reason_code, reason, raw_opener))
@@ -253,6 +253,20 @@ class _Pacing:
 def _worker(driver, decider, service, store):
     return Worker("bumble", driver, decider, service, store, "run1", _Pacing(),
                   threading.Event(), mode="auto")
+
+
+def test_worker_binds_opt_in_driver_debug_to_its_exact_run_id_before_opening():
+    class BindingDriver(FakeDriver):
+        def __init__(self):
+            super().__init__(0)
+            self.bound_run_id = None
+
+        def bind_debug_run(self, run_id):
+            self.bound_run_id = run_id
+
+    driver = BindingDriver()
+    _worker(driver, FakeDecider(), None, FakeStore())._bind_debug_run()
+    assert driver.bound_run_id == "run1"
 
 
 # --- OpenerService (global budget) --------------------------------------
@@ -604,6 +618,111 @@ def test_worker_likes_with_openers():
     _worker(driver, FakeDecider("like"), svc, store).run()
     assert driver.likes == ["hi 1", "hi 2", "hi 3"]
     assert len(store.openers) == 3 and len(store.spend) == 3
+
+
+def test_auto_stages_then_commits_an_opener_only_after_like_returns():
+    driver = FakeDriver(1)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+    assert driver.likes == ["hi 1"]
+    assert len(store.openers) == 1 and len(svc.recent_openers_snapshot()) == 1
+
+
+def test_auto_persists_landed_decision_before_committing_its_staged_opener():
+    """A durable opener must always have a preceding durable Like decision to join to.
+
+    This ordering is the cleanup/reporting invariant: generation is only a draft, a returned
+    driver.like is the physical boundary, and decision storage establishes the acted-on fact
+    before the draft becomes an opener row.
+    """
+    events = []
+
+    class OrderedStore(FakeStore):
+        def record_decision(self, *args, **kwargs):
+            events.append("decision")
+            kwargs.pop("profile_id", None)
+            kwargs.pop("created_at", None)
+            return super().record_decision(*args, **kwargs)
+
+        def record_opener(self, *args, **kwargs):
+            events.append("opener")
+            for key in ("profile_id", "decision", "decision_source", "decision_created_at",
+                        "model_item_index"):
+                kwargs.pop(key, None)
+            return super().record_opener(*args, **kwargs)
+
+    driver = FakeDriver(1)
+    store = OrderedStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert events == ["decision", "opener"]
+    assert store.decisions == [("bumble", "like", "auto")]
+    assert store.openers == ["hi 1"]
+
+
+def test_auto_keeps_legacy_opener_service_without_stage_keyword_compatible():
+    """The stage/commit protocol is additive; an old injected service must not crash AUTO."""
+    class LegacyService:
+        disabled = False
+        stop_requested = False
+
+        def maybe_opener(self, run_id, app, profile, *, items=None, should_stop=None):
+            return OpenerPick("legacy opener", index=1,
+                              index_space=INDEX_SPACE_PROFILE_PHOTOS)
+
+        def commit_opener(self, pick, **_):
+            raise AssertionError("legacy service must not receive a staged commit")
+
+    driver = FakeDriver(1)
+    store = FakeStore()
+    Worker("bumble", driver, FakeDecider("like"), LegacyService(), store, "run1", _Pacing(),
+           threading.Event(), mode="auto").run()
+
+    assert driver.likes == ["legacy opener"]
+    assert store.decisions == [("bumble", "like", "auto")]
+
+
+def test_auto_targeting_failure_leaves_staged_opener_uncommitted():
+    driver = _TargetingMissDriver(1)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+    assert store.openers == [] and svc.recent_openers_snapshot() == []
+
+
+def test_auto_post_send_paywall_leaves_staged_opener_uncommitted():
+    class _PaywallWithOpener(_BlockedAfterLikeDriver):
+        accepts_opener = True
+    driver = _PaywallWithOpener()
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+    assert store.openers == [] and svc.recent_openers_snapshot() == []
+
+
+def test_auto_generic_like_failure_leaves_staged_opener_uncommitted():
+    driver = RaisingLikeDriver(1)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+    assert store.openers == [] and svc.recent_openers_snapshot() == []
+
+
+def test_auto_commits_staged_opener_when_stop_arrives_after_like_lands():
+    stop = threading.Event()
+    class _LandedThenStop(FakeDriver):
+        def like(self, *args, **kwargs):
+            super().like(*args, **kwargs)
+            stop.set()
+    driver = _LandedThenStop(1)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(), stop,
+           mode="auto").run()
+    assert driver.likes == ["hi 1"]
+    assert len(store.openers) == 1 and len(svc.recent_openers_snapshot()) == 1
 
 
 def test_worker_passes_stop_callback_only_to_interruptible_like_navigation():
@@ -1930,6 +2049,7 @@ class _RecordingOpenerService:
         self.item_description = item_description
         self.pick = pick
         self.calls = []
+        self.committed = []
         self.state_during_call = None
 
     def maybe_opener(self, run_id, app, profile, *, anchor=None, items=None,
@@ -1944,6 +2064,10 @@ class _RecordingOpenerService:
             return self.pick
         return OpenerPick(self.suggestion, index=self.index, referenced=self.referenced,
                           item_description=self.item_description)
+
+    def commit_advisory_opener(self, pick, **_):
+        self.committed.append(pick)
+        return True
 
 
 def test_observe_suggestion_passes_advisory_true():
@@ -1967,6 +2091,93 @@ def test_observe_suggestion_passes_advisory_true():
            threading.Event(), mode="observe", status=status).run()
 
     assert svc.calls and svc.calls[0]["advisory"] is True
+    assert len(svc.committed) == 1
+
+
+def test_confirmed_observe_like_commits_before_a_concurrent_stop():
+    """Stop before a decision drops the advisory draft; Stop *after* a confirmed Like may not.
+
+    The driver/bridge has already returned ``True`` at this boundary, so the account action is
+    complete even if the hub's Stop request wins the next scheduler timeslice.  The worker must
+    commit the staged opener and persist the preference, then end without capturing another
+    card.  Before the guard in _observe_loop was removed this exact timing lost both records.
+    """
+    class StopAfterConfirmedDecisionWorker(Worker):
+        def _wait_for_observed_decision(self, suggestion, profile_token=None):
+            deadline = time.monotonic() + 2.0
+            while suggestion._pick is None and time.monotonic() < deadline:
+                time.sleep(0.002)
+            assert suggestion._pick is not None, "the staged advisory opener never arrived"
+            # Model a Stop click immediately after the driver has structurally verified and
+            # returned a Like, before _observe_loop starts its persistence section.
+            self.stop_event.set()
+            return True
+
+    driver = _ObserveLikeIntentDriver()
+    store = FakeStore()
+    svc = _RecordingOpenerService()
+    stop = threading.Event()
+    StopAfterConfirmedDecisionWorker(
+        "bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(), stop,
+        mode="observe").run()
+
+    assert stop.is_set()
+    assert len(svc.committed) == 1
+    assert store.decisions == [("bumble", "like", "manual")]
+    assert len(store.profiles) == len(store.labels) == 1
+    assert driver.i == 0  # current_profile served exactly one card; Stop started no new read
+
+
+@pytest.mark.parametrize(
+    ("embedding", "archive_ok"),
+    [(None, True), ([0.1, 0.2], False)],
+    ids=["no_face", "archive_failed"],
+)
+def test_observe_landed_like_has_decision_before_opener_when_optional_label_work_fails(
+        embedding, archive_ok):
+    """A real reviewed Like is an action even when it cannot become a training label.
+
+    The old order committed its opener first and only wrote a decision after archive/embed/
+    label work.  Both early-return paths consequently left a true action looking like a phantom
+    opener.  Decision persistence is now the common action boundary, with the staged opener
+    immediately after it; only the optional training record may be absent.
+    """
+    from operation_love.status import RunStatus
+
+    events = []
+
+    class OrderedStore(FakeStore):
+        def record_decision(self, *args, **kwargs):
+            events.append("decision")
+            kwargs.pop("profile_id", None)
+            kwargs.pop("created_at", None)
+            return super().record_decision(*args, **kwargs)
+
+        def record_profile(self, *args, **kwargs):
+            events.append("profile")
+            super().record_profile(*args, **kwargs)
+            return archive_ok
+
+    class OrderedSuggestionService(_RecordingOpenerService):
+        def commit_advisory_opener(self, pick, **_):
+            events.append("opener")
+            return super().commit_advisory_opener(pick)
+
+    class OptionalLabelDecider(_ObserveDecider):
+        def embed(self, profile):
+            return embedding
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
+    store = OrderedStore()
+    svc = OrderedSuggestionService()
+    Worker("bumble", driver, OptionalLabelDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    assert events[:2] == ["decision", "opener"]
+    assert store.decisions == [("bumble", "like", "manual")]
+    assert len(svc.committed) == 1
+    assert store.labels == []
 
 
 def test_auto_loop_like_call_does_not_pass_advisory():
@@ -2007,6 +2218,51 @@ def test_observe_publishes_ready_before_the_suggestion_is_even_requested():
     # suggestion) and would be a lie now.
     assert svc.state_during_call == "waiting"
     assert svc.calls, "the suggestion must actually have been requested"
+
+
+def test_observe_publishes_an_optional_opener_without_consulting_the_ranker():
+    """Observe suggestions are conditional writing help, not ranker verdicts.
+
+    A cold or negative ranker must neither suppress the advisory request nor decide the card.
+    The human's pass below is deliberately recorded as the outcome, while the suggestion is
+    still requested and published before that manual action.
+    """
+    from operation_love.status import RunStatus
+
+    class RankerMustNotDecide:
+        def __init__(self):
+            self.decide_calls = 0
+
+        def decide(self, profile):
+            self.decide_calls += 1
+            raise AssertionError("observe must not ask the ranker to decide")
+
+        def embed(self, profile):
+            return [0.1, 0.2]
+
+        def retrain(self, store):
+            return True
+
+    class PassingDriver(_ObserveLikeIntentDriver):
+        def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
+            if self.gate is not None:
+                self.gate()
+            return False
+
+    status = RunStatus("run1", ["bumble"], min_labels=99, mode="observe")
+    calls = _record_state_transitions(status)
+    driver = PassingDriver(gate=_settled(status))
+    decider = RankerMustNotDecide()
+    store = FakeStore()
+    svc = _RecordingOpenerService(suggestion="optional hello", index=2)
+
+    Worker("bumble", driver, decider, svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    assert decider.decide_calls == 0
+    assert len(svc.calls) == 1
+    assert any(call.get("opener_suggestion") == "optional hello" for call in calls)
+    assert store.decisions == [("bumble", "dislike", "manual")]
 
 
 def _record_state_transitions(status):
@@ -2395,7 +2651,7 @@ def test_observe_warns_and_never_asks_when_the_capture_could_not_be_enumerated()
     assert not w.stop_event.is_set() and len(store.labels) == 1
 
 
-def test_observe_targeting_readiness_gate_withholds_text_before_the_provider_call():
+def test_observe_targeting_readiness_gate_withholds_text_before_the_provider_call(capsys):
     """A per-device calibration gate must run before generation, not only after sheet-open.
 
     Otherwise unchecked opener text can sit on the hub while the human decides, then disappear
@@ -2422,6 +2678,10 @@ def test_observe_targeting_readiness_gate_withholds_text_before_the_provider_cal
     warned = next(call for call in calls if call.get("opener_warning"))
     assert "targeting_calibration is unavailable" in warned["opener_warning"]
     assert not w.stop_event.is_set() and len(store.labels) == 1
+    startup = capsys.readouterr().out
+    assert startup.count("targeted opener suggestions need setup") == 1
+    assert "Manual pass/like labels still work" in startup
+    assert "ops/RUNBOOK.md" in startup
 
 
 def test_observe_says_nothing_at_all_on_an_app_that_has_no_opener_feature():

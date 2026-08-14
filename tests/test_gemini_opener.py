@@ -28,6 +28,7 @@ from operation_love.opener.opener import (
     _ITEM_PREAMBLE_CONTEXT,
     _SCHEMA,
     _SYSTEM,
+    _is_thinking_config_rejection,
 )
 from operation_love.perception.capture import Profile
 
@@ -1149,7 +1150,7 @@ def test_item_crop_request_labels_every_image_and_sends_no_scroll_frames():
          "STYLE GUIDE:\nbe curious\n\n"
          "HER NAME:\nSarah\n\n"
          "HER PROFILE TEXT:\nWeekend potter\n\n"
-         "The 2 numbered image(s) above are her profile items, numbered 1 to 2, each shown "
+         "The 2 numbered image(s) above are her profile photos, numbered 1 to 2, each shown "
          "immediately after its own ITEM label, so the image after ITEM 1 is item 1. "
          "The 1 image(s) labelled CONTEXT carry no number: use what they show if it helps, "
          "but never pick one. "
@@ -1198,7 +1199,7 @@ def test_item_crop_request_without_context_omits_every_mention_of_context():
          "STYLE GUIDE:\nbe curious\n\n"
          "HER NAME:\nSarah\n\n"
          "HER PROFILE TEXT:\nWeekend potter\n\n"
-         "The 3 numbered image(s) above are her profile items, numbered 1 to 3, each shown "
+         "The 3 numbered image(s) above are her profile photos, numbered 1 to 3, each shown "
          "immediately after its own ITEM label, so the image after ITEM 1 is item 1. "
          "Set item_index to the number of the one your opener is about. Write the opener now."),
     ]
@@ -1964,3 +1965,149 @@ def test_legacy_profile_photo_request_is_flat_and_uses_the_shared_system_prompt(
     assert "text" in parts[2]
     lower = (system_text + parts[2]["text"]).lower()
     assert "like screen" not in lower
+
+
+# ---------------------------------------------------------------------------------------
+# 400 THINKING CONFIG REJECTION -- a per-model capability rejection must not take the rest of
+# the cascade with it. This is the narrow exception to "every other 4xx raises straight to the
+# caller" (see GeminiOpener's class docstring and generate()'s 400 handling).
+#
+# EMPIRICAL FINDING, live, 2026-08-13, against the real API: gemini-3.7-flash with
+# generationConfig.thinkingConfig = {"thinkingLevel": "minimal"} returned
+#
+#   HTTP 400 INVALID_ARGUMENT
+#   "Thinking level MINIMAL is not supported for this model. Please retry with other
+#   thinking level."
+#
+# while every OTHER configured model accepted the identical thinkingLevel on the same run --
+# so this 400, despite its status code, is a property of ONE model id's declared capability,
+# exactly like a 404, not of the request or the credentials. See _is_thinking_config_rejection.
+# ---------------------------------------------------------------------------------------
+
+def _thinking_rejected(message="Thinking level MINIMAL is not supported for this model. "
+                                "Please retry with other thinking level."):
+    return (400, {"error": {"code": 400, "status": "INVALID_ARGUMENT", "message": message}})
+
+
+@pytest.mark.parametrize("message", [
+    "Thinking level MINIMAL is not supported for this model. Please retry with other "
+    "thinking level.",
+    "Invalid value at 'generation_config.thinking_config.thinking_level'",
+    "thinkingBudget is not supported for this model",
+    "Thinking budget exceeds the maximum allowed for this model",
+], ids=["measured_gemini_3_7_flash_message", "thinking_config_field_path_underscored",
+        "thinkingBudget_camel_case", "thinking_budget_words"])
+def test_is_thinking_config_rejection_matches_thinking_related_400_messages(message):
+    """The measured message verbatim, plus the thinkingBudget spelling variant the 2.5 model
+    family actually uses (see _payload's own comment on thinkingLevel vs. thinkingBudget), must
+    all be recognized as a thinking-config rejection."""
+    assert _is_thinking_config_rejection(message) is True
+
+
+@pytest.mark.parametrize("message", [
+    "Invalid JSON payload received. Unknown name \"foo\": Cannot find field.",
+    "API key not valid. Please pass a valid API key.",
+], ids=["generic_malformed_json_payload", "invalid_api_key"])
+def test_is_thinking_config_rejection_does_not_match_generic_400_messages(message):
+    """THE GUARD AGAINST OVER-MATCHING: a generic malformed-request 400 and an invalid-API-key
+    400 must never be mistaken for a thinking-config rejection -- both are properties of the
+    request/credentials, not of one model's capability, and must keep raising straight to the
+    caller (see the cascade tests below)."""
+    assert _is_thinking_config_rejection(message) is False
+
+
+def test_thinking_config_400_retires_model_and_second_model_serves_same_profile(capsys):
+    """A thinking-config 400 must not be raised straight to the caller (that would kill every
+    other configured model too) -- it retires only the model whose thinking config was
+    rejected, and the cascade proceeds to the next configured model for this same profile."""
+    transport = _Transport([_thinking_rejected(), (200, _success())])
+    opener = _opener(transport, models=("gemini-first", "gemini-second"))
+
+    result = opener.generate(Profile(bio="first"), style="s")
+
+    assert result.model == "gemini-second"
+    assert _model_calls(transport) == ["gemini-first", "gemini-second"]
+    output = capsys.readouterr().out
+    assert "gemini-first" in output and "400" in output
+    assert "thinking level or budget" in output
+    assert "dropping it from the cascade" in output
+    assert "test-key" not in output
+
+
+def test_thinking_config_400_retired_model_is_skipped_entirely_on_the_next_profile():
+    """Like a per-day 429 or a 404, a thinking-config 400 permanently retires the model for the
+    rest of THIS run: the next profile must skip straight past it without even making a
+    request."""
+    transport = _Transport([_thinking_rejected(), (200, _success()), (200, _success())])
+    opener = _opener(transport, models=("gemini-first", "gemini-second"))
+
+    opener.generate(Profile(bio="first"), style="s")
+    second = opener.generate(Profile(bio="second"), style="s")
+
+    assert second.model == "gemini-second"
+    assert _model_calls(transport) == ["gemini-first", "gemini-second", "gemini-second"]
+
+
+def test_generic_400_still_raises_and_does_not_cascade():
+    """The end-to-end guard against over-matching: a 400 whose message carries no
+    thinking-related token must still raise GeminiAPIError straight to the caller and must NOT
+    cascade to the next model -- exactly the behavior this branch must leave untouched for
+    every 400 it does not recognize."""
+    transport = _Transport([(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT",
+                                              "message": "Invalid JSON payload received. "
+                                              "Unknown name \"foo\": Cannot find field."}})])
+    with pytest.raises(GeminiAPIError) as exc_info:
+        _opener(transport, models=("gemini-first", "gemini-second")).generate(Profile(), style="s")
+    assert exc_info.value.http_code == 400
+    assert len(transport.calls) == 1        # never cascaded to gemini-second
+
+
+def test_invalid_api_key_400_still_raises_so_the_service_latch_is_unaffected():
+    """OpenerService's immediate-latch path (_is_invalid_gemini_api_key) depends on this exact
+    400 reaching the caller unchanged -- it must not be swept up by the new thinking-config
+    branch just because it shares the same HTTP status code."""
+    transport = _Transport([(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT",
+                                              "message": "API key not valid. Please pass a "
+                                              "valid API key."}})])
+    with pytest.raises(GeminiAPIError) as exc_info:
+        _opener(transport, models=("gemini-first", "gemini-second")).generate(Profile(), style="s")
+    assert "api key not valid" in exc_info.value.message.lower()
+    assert len(transport.calls) == 1        # never cascaded
+
+
+def test_all_thinking_config_400_raises_capacity_exhausted_naming_opener_thinking():
+    """When EVERY configured model rejects its configured thinking config, the message must
+    point at fixing opener.thinking -- and, like the all-404 case, must NOT suggest waiting for
+    a quota reset or a plain restart, because neither ever fixes a capability rejection: the
+    model will keep 400ing on the same thinkingConfig until opener.thinking is edited."""
+    transport = _Transport([_thinking_rejected(), _thinking_rejected()])
+    with pytest.raises(GeminiCapacityExhausted) as exc_info:
+        _opener(transport, models=("gemini-first", "gemini-second")).generate(Profile(), style="s")
+    reason = str(exc_info.value)
+    assert "opener.thinking" in reason
+    assert "gemini-first" in reason and "gemini-second" in reason
+    assert "midnight Pacific" not in reason
+    assert "restart" not in reason.lower()
+    assert "wait" not in reason.lower()
+
+
+def test_mixed_thinking_and_404_cascade_reports_both_scopes_distinctly():
+    """A cascade that falls through with one model's thinking config rejected and another
+    actually gone (404) must report each under its OWN scope, not collapse them -- they call
+    for different operator fixes (opener.thinking vs. opener.models)."""
+    transport = _Transport([_thinking_rejected(), _not_found()])
+    with pytest.raises(GeminiCapacityExhausted) as exc_info:
+        _opener(transport, models=("gemini-first", "gemini-second")).generate(Profile(), style="s")
+    reason = str(exc_info.value)
+    assert "gemini-first (thinking config rejected by model)" in reason
+    assert "gemini-second (model unavailable)" in reason
+
+
+def test_thinking_config_400_printed_line_never_contains_the_api_key(capsys):
+    """House rule: no operator-facing print line may ever contain the API key, even though the
+    error message itself (echoed verbatim from Gemini) never carries it either."""
+    transport = _Transport([_thinking_rejected(), (200, _success())])
+    _opener(transport, models=("gemini-first", "gemini-second")).generate(Profile(), style="s")
+    output = capsys.readouterr().out
+    assert "gemini-first" in output           # names the model that was retired
+    assert "test-key" not in output

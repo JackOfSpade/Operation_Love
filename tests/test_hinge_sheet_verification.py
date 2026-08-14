@@ -20,12 +20,39 @@ from operation_love.drivers import (
 from operation_love.drivers.frameshift import ShiftEstimationError
 from operation_love.drivers.base import ActionCancelled
 from operation_love.drivers.hinge import HingeActionError, HingeDriver, HingeTargetingError
+from operation_love.drivers.like_composer import ComposerSurface, Rect
 from operation_love.drivers.scroll_top import band_fingerprint
 from operation_love.drivers.segment import SegmentationError
 
 _W, _H = 1080, 2400
 _CARD_W, _CARD_H = 974, 900
-_SHEET_BG, _PREVIEW_X0, _PREVIEW_W, _PREVIEW_Y0 = 250, 95, 890, 236
+_SHEET_BG, _PREVIEW_X0, _PREVIEW_W, _PREVIEW_Y0 = 250, 95, 890, 650
+_COMMENT_RECT = Rect(95, 1597, 985, 1775)
+_SEND_RECT = Rect(390, 1807, 985, 1916)
+_CONFIRM_POINT = (695, 1856)
+_COMPOSER_SURFACE = ComposerSurface(
+    layout_id="hinge_inline_v1", comment_rect=_COMMENT_RECT, send_rect=_SEND_RECT,
+    confirm_point=_CONFIRM_POINT)
+_CONFIRM_TEMPLATE = hinge._load_template("hinge_send_like.png")
+assert _CONFIRM_TEMPLATE is not None, "the inline-composer fixture needs Hinge's shipped glyph"
+
+
+def _calibration(**overrides):
+    values = {
+        "schema_version": 3,
+        "hinge_version_name": "9.134.0",
+        "frame_size_px": [_W, _H],
+        "composer_layout_id": "hinge_inline_v1",
+        "item_selection_policy_id": "hinge_photos_only_v1",
+        "identity_match_max_dist": 2.0,
+        "inline_item_max_dist": 10.0,
+        "device": "pixel",
+        "calibrated_at": "2026-08-12",
+        "identity_band": list(hinge.HINGE_SPEC.identity_band),
+        "content_band": list(hinge.HINGE_SPEC.content_band),
+    }
+    values.update(overrides)
+    return values
 
 
 def _card(seed: int) -> bytes:
@@ -42,12 +69,26 @@ def _card(seed: int) -> bytes:
 
 
 def _sheet(card: bytes) -> bytes:
-    """A comment sheet rendering `card` at the measured preview geometry."""
+    """A selected item plus Hinge's structurally verified inline composer.
+
+    This leaves the identity strip and item pixels intact while drawing the two independent
+    controls the driver now requires before it may tap text/send coordinates.
+    """
     image = cv2.imdecode(np.frombuffer(card, np.uint8), cv2.IMREAD_COLOR)
     height = int(round(image.shape[0] * _PREVIEW_W / image.shape[1]))
     canvas = np.full((_H, _W, 3), _SHEET_BG, dtype=np.uint8)
     canvas[_PREVIEW_Y0:_PREVIEW_Y0 + height, _PREVIEW_X0:_PREVIEW_X0 + _PREVIEW_W] = cv2.resize(
         image, (_PREVIEW_W, height), interpolation=cv2.INTER_AREA)
+    canvas[_COMMENT_RECT.y0:_COMMENT_RECT.y0 + 2,
+           _COMMENT_RECT.x0:_COMMENT_RECT.x1] = 222
+    canvas[_COMMENT_RECT.y1 - 2:_COMMENT_RECT.y1,
+           _COMMENT_RECT.x0:_COMMENT_RECT.x1] = 222
+    canvas[_SEND_RECT.y0:_SEND_RECT.y1, _SEND_RECT.x0:_SEND_RECT.x1] = 228
+    glyph_h, glyph_w = _CONFIRM_TEMPLATE.shape
+    x, y = _CONFIRM_POINT
+    canvas[y - glyph_h // 2:y - glyph_h // 2 + glyph_h,
+           x - glyph_w // 2:x - glyph_w // 2 + glyph_w] = cv2.cvtColor(
+               _CONFIRM_TEMPLATE, cv2.COLOR_GRAY2BGR)
     ok, buf = cv2.imencode(".png", canvas)
     assert ok
     return buf.tobytes()
@@ -94,6 +135,8 @@ class SheetAdb:
         return ["pixel"]
 
     def shell(self, command="", **_):
+        if "dumpsys package" in command:
+            return "versionName=9.134.0\n"
         return ""
 
     def screencap(self):
@@ -186,17 +229,14 @@ def _driver(adb, monkeypatch, *, payload=None, unavailable="", identity_frame=No
     class C:
         apps = {"hinge": {
             "serial": "pixel", "halt_on_error": False,
-            **({"targeting_calibration": {
-                "identity_match_max_dist": 2.0, "sheet_item_max_dist": 10.0,
-                "device": "pixel", "calibrated_at": "2026-08-12",
-                "identity_band": list(hinge.HINGE_SPEC.identity_band),
-                "content_band": list(hinge.HINGE_SPEC.content_band),
-            }} if targeting_calibration else {}),
+            **({"targeting_calibration": _calibration()} if targeting_calibration else {}),
         }}
 
     driver = HingeDriver(C())
     driver._adb = adb
     driver._touch = adb
+    driver._targeting_runtime_version_name = "9.134.0"
+    driver._targeting_runtime_frame_size = (_W, _H)
     driver._current_item_payload = payload
     driver._current_items_unavailable = unavailable
     # The index behind the crops, carrying whose profile they came from. Fingerprinted off the
@@ -218,8 +258,10 @@ def _driver(adb, monkeypatch, *, payload=None, unavailable="", identity_frame=No
     # asked for or raises, so there is no second "and this is actually the wrong one" flag left.
     monkeypatch.setattr(HingeDriver, "_locate_target_heart",
                         lambda self, index, should_stop=None: (540, 1200))
-    monkeypatch.setattr(HingeDriver, "_await_sheet_open",
-                        lambda self, tries=5: adb.calls.append("await_sheet"))
+    def await_composer(self, tries=5):
+        adb.calls.append("await_sheet")
+        return _COMPOSER_SURFACE
+    monkeypatch.setattr(HingeDriver, "_await_sheet_open", await_composer)
     monkeypatch.setattr(HingeDriver, "_handle_rose_upsell", lambda self, tries=2: False)
     # Model-item tests in this file exercise verification/order rather than the closed-loop
     # navigator (which has its own synthetic suite).  Supplying an anchor opts into this simple
@@ -242,6 +284,7 @@ def test_a_matching_sheet_is_verified_before_the_opener_is_typed():
         driver.like("two sentences, no dashes", model_item_index=1)
     assert adb.texts == ["two sentences, no dashes"]
     assert adb.calls.index("await_sheet") < adb.calls.index("text")
+    assert adb.taps[1:] == [_COMMENT_RECT.center, _CONFIRM_POINT]
 
 
 def test_missing_targeting_calibration_refuses_a_model_item_before_any_gesture():
@@ -260,7 +303,7 @@ def test_targeting_calibration_is_parsed_and_used_for_model_item_likes():
         driver = _driver(adb, mp, payload=_payload(), anchor=b"fixture anchor")
         assert driver.targeting_calibration is not None
         assert driver.targeting_calibration.identity_match_max_dist == 2.0
-        assert driver.targeting_calibration.sheet_item_max_dist == 10.0
+        assert driver.targeting_calibration.inline_item_max_dist == 10.0
         driver.like("an opener", model_item_index=1)
     assert adb.texts == ["an opener"]
 
@@ -294,6 +337,7 @@ def test_stop_after_the_sheet_opens_prevents_text_and_send():
         def sheet_opened(_self, tries=5):
             adb.calls.append("await_sheet")
             stopped["now"] = True
+            return _COMPOSER_SURFACE
 
         mp.setattr(HingeDriver, "_await_sheet_open", sheet_opened)
         with pytest.raises(ActionCancelled):
@@ -333,12 +377,8 @@ def test_runtime_parser_rejects_a_known_unsafe_sheet_ceiling_even_without_config
     """Embedding callers can construct a Config-like object directly; the gesture gate repeats
     the known false-accept caps rather than trusting that config.validate ran elsewhere."""
     class C:
-        apps = {"hinge": {"serial": "pixel", "targeting_calibration": {
-            "identity_match_max_dist": 2.0, "sheet_item_max_dist": 14.91,
-            "device": "pixel", "calibrated_at": "2026-08-12",
-            "identity_band": list(hinge.HINGE_SPEC.identity_band),
-            "content_band": list(hinge.HINGE_SPEC.content_band),
-        }}}
+        apps = {"hinge": {"serial": "pixel", "targeting_calibration": _calibration(
+            inline_item_max_dist=14.91)}}
 
     driver = HingeDriver(C())
     assert driver.targeting_calibration is None
@@ -347,12 +387,7 @@ def test_runtime_parser_rejects_a_known_unsafe_sheet_ceiling_even_without_config
 
 def test_runtime_parser_refuses_a_calibration_for_another_adb_serial():
     class C:
-        apps = {"hinge": {"serial": "other-pixel", "targeting_calibration": {
-            "identity_match_max_dist": 2.0, "sheet_item_max_dist": 10.0,
-            "device": "pixel", "calibrated_at": "2026-08-12",
-            "identity_band": list(hinge.HINGE_SPEC.identity_band),
-            "content_band": list(hinge.HINGE_SPEC.content_band),
-        }}}
+        apps = {"hinge": {"serial": "other-pixel", "targeting_calibration": _calibration()}}
 
     driver = HingeDriver(C())
     assert driver.targeting_calibration is None
@@ -365,12 +400,7 @@ def test_runtime_parser_refuses_calibration_when_effective_geometry_changes():
         apps = {"hinge": {
             "serial": "pixel",
             "identity_band": [0.11, 0.048, 0.80, 0.094],
-            "targeting_calibration": {
-                "identity_match_max_dist": 2.0, "sheet_item_max_dist": 10.0,
-                "device": "pixel", "calibrated_at": "2026-08-12",
-                "identity_band": list(hinge.HINGE_SPEC.identity_band),
-                "content_band": list(hinge.HINGE_SPEC.content_band),
-            },
+            "targeting_calibration": _calibration(),
         }}
 
     driver = HingeDriver(C())
@@ -384,12 +414,8 @@ def test_runtime_parser_accepts_calibration_bound_to_effective_geometry_override
             "serial": "pixel",
             "identity_band": [0.11, 0.048, 0.80, 0.094],
             "content_band": [0.13, 0.87],
-            "targeting_calibration": {
-                "identity_match_max_dist": 2.0, "sheet_item_max_dist": 10.0,
-                "device": "pixel", "calibrated_at": "2026-08-12",
-                "identity_band": [0.11, 0.048, 0.80, 0.094],
-                "content_band": [0.13, 0.87],
-            },
+            "targeting_calibration": _calibration(
+                identity_band=[0.11, 0.048, 0.80, 0.094], content_band=[0.13, 0.87]),
         }}
 
     driver = HingeDriver(C())
@@ -459,7 +485,7 @@ def test_a_sheet_that_cannot_be_read_at_all_stops_the_run_rather_than_typing():
         with pytest.raises(HingeActionError) as exc:
             driver.like("an opener", model_item_index=1)
     assert adb.texts == []
-    assert "could not be checked" in str(exc.value)
+    assert "inline composer changed" in str(exc.value)
 
 
 # =====================================================================================

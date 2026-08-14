@@ -528,7 +528,7 @@ class _ObserveSuggestion:
             # If the sheet check replaced it with a warning, there is intentionally nothing to
             # announce as ready.
             if announce_pick is not None and fields["opener_suggestion"] == announce_pick.text:
-                print(f"   💬 optional suggestion ready — not a recommendation: if you choose to like, use item {announce_pick.index}"
+                print(f"   💬 optional suggestion ready: if you choose to like, use item {announce_pick.index}"
                       f"{f' ({announce_pick.item_description})' if announce_pick.item_description else ''}; "
                       f"the text to type is on the hub")
 

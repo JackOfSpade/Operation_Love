@@ -316,8 +316,8 @@ function renderSwipe(snap){
         ? (item === null ? '💬 selected item — type exactly this'
                          : `💬 item ${item} selected${desc ? ` — ${escHtml(desc)}` : ''} — type exactly this`)
         : (item === null
-          ? '💬 Optional — not a recommendation: if you choose to like, type exactly this'
-          : `💬 Optional — not a recommendation: if you choose to like, use${itemLabel}, then type exactly this`);
+          ? '💬 Optional: if you choose to like, type exactly this'
+          : `💬 Optional: if you choose to like, use${itemLabel}, then type exactly this`);
       // THE DECISION IS STILL THE HUMAN'S, AND THE PRE-TAP WINDOW IS WHERE THAT HAS TO BE SAID.
       // Before the inversion a suggestion could only appear AFTER the heart tap (state
       // 'waiting_for_send'), so it never competed with the 🟢 GO cue that tells the operator it

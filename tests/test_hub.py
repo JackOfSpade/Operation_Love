@@ -1290,7 +1290,7 @@ def test_observe_banner_uses_explicit_pass_or_like_language_and_replaces_it_with
         }}},
     }
     missing_item = _run_node(_observe_status_script(pre_tap_without_item))
-    assert "Optional — not a recommendation" in missing_item["html"]
+    assert "Optional:" in missing_item["html"]
     assert "if you choose to like, type exactly this" in missing_item["html"]
     assert "if you choose to like, use, then" not in missing_item["html"]
 
@@ -1442,7 +1442,7 @@ def test_observe_banner_keeps_the_pass_option_visible_while_a_suggestion_is_up()
     deciding = {"running": True,
                 "status": {"apps": {"hinge": dict(app, state="waiting")}}}
     html = _run_node(_observe_status_script(deciding))["html"]
-    assert "Optional — not a recommendation" in html   # the suggestion is not a verdict
+    assert "Optional:" in html   # the suggestion is not a verdict
     assert "if you choose to like, use item 3" in html  # its item is conditional help
     assert "🟢" in html                                 # ...and it is still their turn
     assert "tap X to pass, or tap the heart on item 3 to like" in html

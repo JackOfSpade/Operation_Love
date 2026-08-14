@@ -151,15 +151,30 @@ _FINGERPRINT_GRID = (16, 4)
 # capture, and its frame 115 (where the human had advanced the deck and the next card was back at
 # its own top). Two different profiles, three sessions, one array.]
 #
-# This is Hinge chrome, not profile content, and the invariance above is the evidence: a strip
-# that is byte-identical across two different people cannot be carrying anything about either.
-# Re-measure it only from a frame confirmed at scroll-top with the owner present.
-_SCROLL_TOP_BAND_FINGERPRINT = (
+# The filter-chips row variants, as `_FINGERPRINT_GRID` grey levels in row-major order.
+# Variant 1: `( Compatible ) Active today Dating Intent ...` (calibration corpus baseline)
+_SCROLL_TOP_BAND_FINGERPRINT_COMPATIBLE = (
     254, 254, 254, 254, 254, 255, 255, 255, 255, 255, 254, 254, 254, 254, 254, 254,
     254, 251, 251, 250, 251, 250, 233, 232, 232, 249, 252, 251, 251, 250, 252, 252,
     248, 244, 236, 239, 249, 238, 236, 239, 240, 237, 246, 235, 236, 243, 248, 250,
     245, 240, 186, 191, 239, 242, 215, 193, 229, 239, 242, 192, 188, 222, 245, 251,
 )
+
+# Variant 2: `( Age v ) Height v Dating Intent ...` (filter-selected layout)
+_SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT = (
+    254, 255, 255, 255, 255, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254,
+    253, 237, 232, 231, 243, 253, 251, 251, 250, 251, 253, 251, 251, 250, 251, 251,
+    240, 236, 237, 242, 235, 248, 236, 236, 240, 247, 250, 239, 234, 242, 237, 238,
+    237, 233, 185, 222, 236, 248, 207, 182, 214, 237, 253, 224, 190, 196, 198, 196,
+)
+
+_SCROLL_TOP_BAND_FINGERPRINTS: tuple[tuple[int, ...], ...] = (
+    _SCROLL_TOP_BAND_FINGERPRINT_COMPATIBLE,
+    _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT,
+)
+
+# Maintained for backwards compatibility:
+_SCROLL_TOP_BAND_FINGERPRINT = _SCROLL_TOP_BAND_FINGERPRINT_COMPATIBLE
 
 # At or below this mean-abs distance (0..255) from the fingerprint, the band IS the filter-chips
 # row and the frame is CONFIRMED at scroll top.
@@ -316,7 +331,7 @@ def band_fingerprint(frame: bytes, *, identity_band: tuple[float, float, float, 
 
 def confirm_scroll_top(frame: bytes, *,
                        identity_band: tuple[float, float, float, float] | None,
-                       fingerprint: Sequence[int] = _SCROLL_TOP_BAND_FINGERPRINT,
+                       fingerprint: Sequence[int] | Sequence[Sequence[int]] = _SCROLL_TOP_BAND_FINGERPRINTS,
                        grid: tuple[int, int] = _FINGERPRINT_GRID,
                        confirm_max: float = _CONFIRM_MAX_DIST,
                        refute_min: float = _REFUTE_MIN_DIST) -> ScrollTopVerdict:
@@ -332,7 +347,8 @@ def confirm_scroll_top(frame: bytes, *,
 
     `fingerprint`, `grid` and the two bounds are calibration constants with measured defaults,
     exposed on `segment_frame`'s precedent so a validation pass — or a test with a synthetic
-    band — can vary one without editing the module.
+    band — can vary one without editing the module. When multiple candidate fingerprints are
+    configured, the nearest matching filter-chips variant determines the distance.
 
     PRECONDITION, and it is not a formality: this must be a screen already established to be a
     Hinge profile. `SCROLL_TOP_REFUTED` says "this strip is not the filter-chips row", which only
@@ -348,10 +364,19 @@ def confirm_scroll_top(frame: bytes, *,
             "'cannot tell' band, so every distance would be classified and the third outcome "
             "this gate exists for could never be reached")
     expected = grid[0] * grid[1]
-    if len(fingerprint) != expected:
-        raise ScrollTopError(
-            f"fingerprint has {len(fingerprint)} values but grid {grid} needs {expected} — one "
-            "of the two is stale, and comparing them would compare different geometries")
+
+    if isinstance(fingerprint, (list, tuple)) and fingerprint and isinstance(fingerprint[0], (list, tuple)):
+        candidates = list(fingerprint)
+    elif fingerprint == _SCROLL_TOP_BAND_FINGERPRINT:
+        candidates = list(_SCROLL_TOP_BAND_FINGERPRINTS)
+    else:
+        candidates = [fingerprint]
+
+    for fp in candidates:
+        if len(fp) != expected:
+            raise ScrollTopError(
+                f"fingerprint has {len(fp)} values but grid {grid} needs {expected} — one "
+                "of the two is stale, and comparing them would compare different geometries")
 
     if identity_band is None:
         return ScrollTopVerdict(
@@ -361,7 +386,7 @@ def confirm_scroll_top(frame: bytes, *,
                     "requires cannot be read at all — this is 'cannot tell', never 'at top'"))
 
     seen = band_fingerprint(frame, identity_band=identity_band, grid=grid)
-    dist = fingerprint_distance(seen, fingerprint)
+    dist = min(fingerprint_distance(seen, fp) for fp in candidates)
 
     if dist <= confirm_max:
         return ScrollTopVerdict(
@@ -388,7 +413,7 @@ def confirm_scroll_top(frame: bytes, *,
 
 def require_scroll_top(frame: bytes, *,
                        identity_band: tuple[float, float, float, float] | None,
-                       fingerprint: Sequence[int] = _SCROLL_TOP_BAND_FINGERPRINT,
+                       fingerprint: Sequence[int] | Sequence[Sequence[int]] = _SCROLL_TOP_BAND_FINGERPRINTS,
                        grid: tuple[int, int] = _FINGERPRINT_GRID,
                        confirm_max: float = _CONFIRM_MAX_DIST,
                        refute_min: float = _REFUTE_MIN_DIST) -> ScrollTopVerdict:

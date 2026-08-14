@@ -876,7 +876,11 @@ def _capture_split_summary_md(lines: list[str]) -> str:
                 parts.append("capture reached its natural end")
             items = recovery.get("items")
             if isinstance(items, int) and not isinstance(items, bool):
-                parts.append(f"{items} numbered item(s)")
+                item_context = recovery.get("item_context")
+                context_suffix = (f", {item_context} context crop(s)"
+                                  if isinstance(item_context, int) and not isinstance(item_context, bool)
+                                  else "")
+                parts.append(f"{items} numbered item(s){context_suffix}")
             unavailable = recovery.get("items_unavailable")
             if unavailable:
                 parts.append(f"items unavailable: `{_compact_item_index_refusal_text(unavailable)}`")
@@ -922,7 +926,6 @@ def _item_index_refusal_summary_md(lines: list[str]) -> str:
         numbered = [(i, float(step)) for i, step in enumerate(steps)
                     if isinstance(step, (int, float)) and not isinstance(step, bool)] \
             if isinstance(steps, list) else []
-        measured = [step for _i, step in numbered]
         trailing_saturation = None
         cadence = numbered
         # A final short gesture is the natural signature of a scroll clamping at the card's
@@ -1282,7 +1285,11 @@ def _latest_observe_context_md(lines: list[str], run: Path) -> str:
             bits.append(f"{photos} captured photo(s)")
         items = capture.get("items")
         if isinstance(items, int) and not isinstance(items, bool):
-            bits.append(f"{items} numbered item(s)")
+            item_context = capture.get("item_context")
+            context_suffix = (f", {item_context} context crop(s)"
+                              if isinstance(item_context, int) and not isinstance(item_context, bool)
+                              else "")
+            bits.append(f"{items} numbered item(s){context_suffix}")
         if capture.get("items_unavailable"):
             bits.append("numbered items unavailable: `"
                         f"{_compact_item_index_refusal_text(capture['items_unavailable'])}`")

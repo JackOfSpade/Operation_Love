@@ -382,3 +382,18 @@ def test_the_default_grid_and_reference_are_used_when_the_caller_names_neither()
     implicit = scroll_top.confirm_scroll_top(frame, identity_band=_IB)
 
     assert implicit == explicit
+
+
+def test_all_shipped_fingerprint_variants_match_grid_and_are_in_range():
+    for fp in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS:
+        assert len(fp) == _GRID[0] * _GRID[1] == 64
+        assert all(isinstance(v, int) and 0 <= v <= 255 for v in fp)
+
+
+def test_either_shipped_variant_confirms_scroll_top_under_default_matching(monkeypatch):
+    for fp in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS:
+        arr = np.array(fp, dtype="uint8").reshape(_GRID[1], _GRID[0])
+        monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+        verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+        assert verdict.confirmed is True
+        assert verdict.distance == 0.0

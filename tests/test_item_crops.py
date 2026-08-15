@@ -21,7 +21,8 @@ import cv2
 import numpy as np
 import pytest
 
-from operation_love.drivers import hinge, item_crops, item_identity, item_index, segment
+from operation_love.drivers import (
+    hinge, item_crops, item_identity, item_index, item_type_preflight, segment)
 
 _W, _H = 1080, 2400                        # the calibrated Pixel 7a screencap size
 _SEED = 21
@@ -449,10 +450,13 @@ def test_photo_only_policy_refuses_a_capture_with_no_numbered_photographs():
         payload.item(1)
 
 
-def test_hinge_photo_policy_requires_square_geometry_and_vetoes_written_cards():
+def test_hinge_photo_policy_ignores_geometry_and_vetoes_only_written_cards():
     rng = np.random.default_rng(991)
     square_photo = rng.integers(0, 256, size=(256, 256, 3), dtype=np.uint8)
-    rectangular_photo = rng.integers(0, 256, size=(180, 256, 3), dtype=np.uint8)
+    landscape_photo = rng.integers(0, 256, size=(180, 256, 3), dtype=np.uint8)
+    # A quiet portrait crop is deliberately UNKNOWN, not PHOTO.  It must still be selectable:
+    # UNKNOWN is an honest lack of type evidence, not permission to renumber it out of the list.
+    portrait_unknown = np.full((256, 180, 3), (130, 105, 80), dtype=np.uint8)
     written_square = np.full((256, 256, 3), 246, dtype=np.uint8)
     for y in (70, 130):
         cv2.putText(written_square, "PROMPT", (25, y), cv2.FONT_HERSHEY_SIMPLEX,
@@ -464,9 +468,33 @@ def test_hinge_photo_policy_requires_square_geometry_and_vetoes_written_cards():
         return value.tobytes()
 
     assert item_crops.unnumber_unless_confident_photo(encoded(square_photo)) is None
-    assert "photo_only" in item_crops.unnumber_unless_confident_photo(
-        encoded(rectangular_photo))
+    assert item_crops.unnumber_unless_confident_photo(encoded(landscape_photo)) is None
+    assert (item_type_preflight.classify_crop(encoded(portrait_unknown))
+            == item_type_preflight.UNKNOWN)
+    assert item_crops.unnumber_unless_confident_photo(encoded(portrait_unknown)) is None
     assert "photo_only" in item_crops.unnumber_unless_confident_photo(encoded(written_square))
+
+
+def test_hinge_photo_policy_keeps_non_square_unknown_cards_numbered_in_page_order(monkeypatch):
+    """A late square photo cannot become item 1 by demoting all earlier non-square photos.
+
+    The synthetic profile's four heart-bearing cards are 974px wide but 900, 760, 1000, and
+    820px tall.  Force the policy's deliberately inconclusive classifier outcome: the contract
+    under test is that UNKNOWN is not an eligibility rejection.  All four must remain numbered
+    in page order.
+    """
+    monkeypatch.setattr(item_type_preflight, "classify_crop",
+                        lambda _image: item_type_preflight.UNKNOWN)
+    index, frames = _full()
+    payload = item_crops.build_item_payload(
+        frames, index, unnumber=item_crops.unnumber_unless_confident_photo)
+
+    assert payload.usable, payload.failures
+    assert [crop.number for crop in payload.items] == [1, 2, 3, 4]
+    assert [(crop.page_y0, crop.page_y1) for crop in payload.items] == [
+        _CARD1[1:], _CARD2[1:], _CARD3[1:], _CARD4[1:]]
+    assert payload.translation == (1, 2, 3, 4)
+
 
 def test_exclusion_withholds_the_image_entirely():
     """Doc 2.4 excludes the endorsement section "entirely... because models reference what they

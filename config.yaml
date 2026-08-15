@@ -152,11 +152,11 @@ apps:
     # optional extra layer. Flip to true only on a device where
     # `python -m tools.touch_selftest` actually prints TAP/DRAG lines while you touch.
     observe_touch_watch: false
-    # Best-effort OCR (via the host's `tesseract` binary, if installed) of the identity band,
-    # to corroborate the pixel signature with the actual printed name -- position-tolerant
-    # where the pixel band is not. Never load-bearing and never persisted to the label store
-    # (see _identity_of/_ocr_band); true by default, set false to skip the extra `tesseract`
-    # subprocess call on every poll once a profile's name has been captured.
+    # OCR (via the host's `tesseract` binary, if installed) of the identity/card-header bands.
+    # A matching name safely vetoes a transient pixel mismatch; a different name at scroll top
+    # must reproduce on two frames before PASS. OCR is never sufficient to write a label and is
+    # never persisted to the label store, but disabling it can leave real scroll-top advances
+    # unresolved on this device because touch watching is unavailable. Keep true here.
     observe_name_ocr: true
     # Hinge 9.134 inline-composer / photo-only targeting calibration. This release bound was
     # measured from a four-profile calibration split and a separate three-profile heldout

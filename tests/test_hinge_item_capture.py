@@ -27,6 +27,7 @@ import json
 import math
 import random
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -402,6 +403,53 @@ def test_the_driver_keeps_the_index_and_the_translation_table_the_profile_does_n
     assert not hasattr(profile, "translation")
     assert profile.items == tuple(c.image for c in payload.items)
     assert profile.item_context == tuple(c.image for c in payload.context)
+
+
+def test_capture_debug_manifest_preserves_page_order_and_model_to_heart_mapping():
+    """A report must explain which physical crop became model item N without storing more
+    profile imagery.  In particular, dense numbering after a policy demotion must never make a
+    later photo look like it was the first card on the page.
+    """
+    class Debug:
+        def __init__(self):
+            self.calls = []
+
+        def action(self, name, **fields):
+            self.calls.append((name, fields))
+
+    drv = _drv(WorldAdb())
+    debug = Debug()
+    drv._dbg = debug
+
+    profile = drv._capture_current()
+
+    assert profile is not None
+    capture = next(fields for name, fields in debug.calls if name == "capture")
+    assert capture["item_translation"] == [1, 2, 3, 4]
+    numbered = [row for row in capture["item_manifest"] if row["model_item"] is not None]
+    assert [row["model_item"] for row in numbered] == [1, 2, 3, 4]
+    assert [row["heart_ordinal"] for row in numbered] == [1, 2, 3, 4]
+    assert [row["page_rows"] for row in numbered] == sorted(
+        (row["page_rows"] for row in numbered), key=lambda rows: rows[0])
+    assert all(row["source_frame_index"] is not None for row in numbered)
+    assert all(len(row["crop_sha256"]) == 16 for row in numbered)
+
+
+def test_capture_debug_manifest_translates_repaired_local_frame_to_original_source_frame():
+    """An isolated-frame index repair removes one local frame. Manifest provenance must name
+    the original capture frame, not silently report the compacted index position."""
+    crop = SimpleNamespace(
+        kind="item", number=1, heart_ordinal=3, frame_index=1,
+        page_y0=600, page_y1=900, width=974, height=300,
+        image=b"numbered crop", reason="item 1")
+    payload = SimpleNamespace(crops=(crop,))
+    index = SimpleNamespace(source_frame_indices=(0, 2, 3))
+
+    manifest = HingeDriver._item_payload_debug_manifest(payload, index)
+
+    assert manifest[0]["source_frame_index"] == 2
+    assert manifest[0]["model_item"] == 1
+    assert manifest[0]["heart_ordinal"] == 3
 
 
 def test_the_crops_are_crops_and_not_the_frames_they_came_from():

@@ -550,6 +550,40 @@ def test_item_index_summary_keeps_long_geometry_once_and_separates_trailing_satu
     assert md.count("source frame 20 (index frame 19)") == 1
 
 
+def test_debug_report_surfaces_item_numbering_manifest_and_compacts_raw_tail(tmp_path):
+    """A count like 1 item / 10 context crops cannot reveal that a late crop was densely
+    renamed item 1.  Preserve the model-to-heart/page mapping without duplicating the full
+    manifest in the raw JSON tail.
+    """
+    run = tmp_path / "run_item_manifest"
+    run.mkdir(parents=True)
+    capture = {
+        "ts": "t0", "action": "capture", "photos": 36, "items": 1,
+        "item_context": 1, "item_translation": [7],
+        "item_manifest": [
+            {"kind": "context", "model_item": None, "heart_ordinal": 1,
+             "source_frame_index": 2, "page_rows": [300, 995],
+             "crop_size": [974, 695], "crop_sha256": "aaaa1111bbbb2222",
+             "reason": "photo_only: rectangular crop demoted"},
+            {"kind": "item", "model_item": 1, "heart_ordinal": 7,
+             "source_frame_index": 31, "page_rows": [7000, 7974],
+             "crop_size": [974, 974], "crop_sha256": "cccc3333dddd4444",
+             "reason": "item 1 (heart 7 on the page)"},
+        ],
+    }
+    (run / "actions.jsonl").write_text(json.dumps(capture) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "item-numbering manifest (non-image capture provenance):" in md
+    assert "model item → page heart translation: `[7]`" in md
+    assert "unnumbered context: page heart 1; source frame 2; page rows 300..995" in md
+    assert "crop 974x695" in md and "rectangular crop demoted" in md
+    assert "model item 1: page heart 7; source frame 31; page rows 7000..7974" in md
+    assert '"item_manifest": "see item-numbering manifest above"' in md
+    assert md.count("aaaa1111bbbb2222") == 1
+
+
 def test_recent_logs_points_to_an_oversized_item_index_wall_already_shown_in_summary(tmp_path):
     """The console mirrors a driver refusal, but the report must keep its one full copy in
     the structured item-index summary rather than printing the geometry wall again at the end."""
@@ -804,12 +838,19 @@ def test_debug_log_tail_surfaces_observe_decision_fields(tmp_path):
     decision = {"ts": "t1", "action": "observe_decision", "decision": "pass",
                 "top": 12.3, "bot": 1.1, "min_sig_dist": None, "shift_matched": False,
                 "capture_truncated": False, "identity": "new", "identity_dist": 22.4,
+                "identity_name_read": "Qelix", "identity_name_verdict": "new",
+                "confirm_identity": "new", "confirm_identity_dist": 22.2,
+                "confirm_identity_name_read": "Qelix",
+                "confirm_identity_name_verdict": "new",
                 "profile_name": "Amanda", "gesture": "tap_pass", "watcher": True}
     (run / "actions.jsonl").write_text(json.dumps(capture) + "\n" + json.dumps(decision) + "\n")
 
     md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
     assert '"action": "capture"' in md and '"action": "observe_decision"' in md
-    for field in ('"identity": "new"', '"identity_dist": 22.4', '"profile_name": "Amanda"',
+    for field in ('"identity": "new"', '"identity_dist": 22.4',
+                  '"identity_name_read": "Qelix"', '"confirm_identity": "new"',
+                  '"confirm_identity_dist": 22.2',
+                  '"confirm_identity_name_read": "Qelix"', '"profile_name": "Amanda"',
                   '"gesture": "tap_pass"', '"watcher": true'):
         assert field in md, f"missing {field}"
 

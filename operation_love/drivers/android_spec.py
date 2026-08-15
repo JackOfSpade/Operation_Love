@@ -173,9 +173,9 @@ class AndroidAppSpec:
     # matches the captured profile is still the same card, never a decision -- this is what
     # fixes the bug where a human scrolling to read a profile (Hinge Signals behavior #1) got
     # recorded as a PASS with no tap of any kind (see the observe-mode redesign notes at the top
-    # of hinge.py). None means this app has no such anchor; observe mode then falls back to the
-    # legacy content-only match -- the same precedent as _require_deck_confirmed skipping its
-    # check when a spec declares no glyph templates.
+    # of hinge.py). None means this app has no positive identity anchor. Content matching can
+    # still recognise a scroll and prevent a false label, but an otherwise ambiguous manual
+    # PASS remains unresolved rather than falling back to "changed and unrecognised" proof.
 
     identity_top_name_band: tuple[float, float, float, float] | None = None
     # Normalised (x0, y0, x1, y1) of the app's own CARD HEADER name as rendered when the card
@@ -199,8 +199,8 @@ class AndroidAppSpec:
     # (tesseract --psm 6 read the name correctly on every scroll-top frame tested, both layouts,
     # including three separate "Qelix &" frames after the deck advanced).
     #
-    # None (the default) means this app declares no such band; observe mode keeps its previous
-    # scroll-top behaviour (the inconclusive "top" verdict, unchanged).
+    # None (the default) means this app declares no such band; a scroll-top identity stays the
+    # inconclusive "top" verdict and cannot by itself authorize a PASS label.
 
     paywall_headline_band: tuple[float, float, float, float] | None = None
     # Normalised (x0, y0, x1, y1) crop of Hinge's "You're out of free likes for today" Hinge+

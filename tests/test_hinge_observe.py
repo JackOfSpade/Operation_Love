@@ -314,21 +314,30 @@ def test_like_with_capture_order_opener_is_refused_before_heart_and_send():
 
 # --- observe: wait_for_decision via frame deltas ------------------------
 def test_pass_detected_on_card_advance(monkeypatch):
-    # The new rule requires POSITIVE proof of a different, deck-ready, settled card (not
-    # just "changed and unrecognised") before concluding PASS -- see the redesign notes on
-    # wait_for_decision. These raw, non-PNG fake frames can never satisfy the real glyph
-    # template match _observe_deck_ready performs, so the test supplies that evidence
-    # directly, the same way test_like_detected_sheet_then_advance already does for the
-    # like-sheet path above.
+    # PASS requires a positive different identity on both the candidate and its settle frame,
+    # in addition to deck readiness. Raw fake frames have no such pixels by themselves, so give
+    # this focused positive-path test explicit old/new identity bands.
+    import numpy as np
     adb = FakeAdb([b"a", b"b"], advance_on_screencap=True)
     drv = _drv(adb)
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    new_sig = np.full((16, 64), 250, dtype="int16")
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     assert drv.wait_for_decision(timeout=5.0) is False
 
 
 def test_waits_until_a_change_then_pass(monkeypatch):
+    import numpy as np
     adb = FakeAdb([b"a", b"a", b"b"], advance_on_screencap=True)
     drv = _drv(adb)
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    new_sig = np.full((16, 64), 250, dtype="int16")
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)  # deck-ready evidence -- see above
     assert drv.wait_for_decision(timeout=None) is False
 
@@ -394,11 +403,17 @@ def test_like_writes_its_own_decision_record(monkeypatch):
 
 
 def test_dismissed_like_sheet_is_recorded_but_never_as_a_decision(monkeypatch):
+    import numpy as np
     monkeypatch.setattr(hinge, "_split_diff",
                         _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0), (50.0, 50.0)))
     adb = FakeAdb([b"a", b"sheet", b"a", b"c"])
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    new_sig = np.full((16, 64), 250, dtype="int16")
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"c" else old_sig)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     # A real, matchable Send Like glyph while the sheet is up, gone once it is dismissed --
     # this is what separates a genuine dismissal from the sibling test below. Counted rather
@@ -411,12 +426,12 @@ def test_dismissed_like_sheet_is_recorded_but_never_as_a_decision(monkeypatch):
 
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", _sheet_visible)
 
-    assert drv.wait_for_decision(timeout=5.0) is False       # the later advance is the pass
+    assert drv.wait_for_decision(timeout=0.2) is None        # no stable positive new identity
 
     names = [name for name, _f in drv._dbg.calls]
     assert "observe_like_dismissed" in names                 # the backed-out sheet left a trace...
     decisions = [f for name, f in drv._dbg.calls if name == "observe_decision"]
-    assert [d["decision"] for d in decisions] == ["pass"]     # ...but was never counted as one
+    assert decisions == []                                      # ...and no label was guessed
 
 
 def test_bottom_delta_with_no_sheet_is_not_logged_as_a_dismissed_like(monkeypatch):
@@ -424,19 +439,26 @@ def test_bottom_delta_with_no_sheet_is_not_logged_as_a_dismissed_like(monkeypatc
     toast, or a keyboard dismissal produces the same delta. Recording those as a dismissed like
     sheet would assert something nobody ever observed, in the log you read specifically to find
     out what the human did."""
+    import numpy as np
     monkeypatch.setattr(hinge, "_split_diff",
                         _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0), (50.0, 50.0)))
     adb = FakeAdb([b"a", b"snackbar", b"a", b"c"])
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    new_sig = np.full((16, 64), 250, dtype="int16")
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"c" else old_sig)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: False)   # never a sheet
 
-    assert drv.wait_for_decision(timeout=5.0) is False
+    assert drv.wait_for_decision(timeout=0.2) is None
 
     names = [name for name, _f in drv._dbg.calls]
     assert "observe_bottom_delta" in names
     assert "observe_like_dismissed" not in names
+    assert not [name for name, _f in drv._dbg.calls if name == "observe_decision"]
 
 
 def test_like_sheet_wait_emits_a_heartbeat_instead_of_going_silent(monkeypatch):
@@ -527,7 +549,8 @@ def test_waiting_notice_logs_the_frame_the_verdict_came_from(monkeypatch):
 
 
 def test_cancelled_like_then_pass(monkeypatch):
-    # sheet up, reverts to the SAME card (cancelled), then a real advance (pass)
+    # Sheet up then reverts to the same card. Without a stable positive new identity afterward,
+    # the conservative observer must not guess either a LIKE or a PASS.
     monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0), (50.0, 50.0)))
     adb = FakeAdb([b"a", b"sheet", b"a", b"c"])
     drv = _drv(adb)
@@ -535,7 +558,7 @@ def test_cancelled_like_then_pass(monkeypatch):
     # new rule requires positive proof of a settled deck-ready card (these raw fake frames
     # never satisfy the real glyph template match) before it will conclude PASS at all.
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
-    assert drv.wait_for_decision(timeout=5.0) is False
+    assert drv.wait_for_decision(timeout=0.2) is None
 
 
 # --- session lifecycle + device loss -----------------------------------
@@ -591,6 +614,11 @@ def test_wait_for_decision_ignores_scroll(monkeypatch):
     # (use 24x24 arrays of ones to simulate valid downsampled images)
     import numpy as np
     drv._current_sigs = [np.ones((24, 24)), np.ones((24, 24)) * 2]
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    new_sig = np.full((16, 64), 250, dtype="int16")
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"c" else old_sig)
 
     # Mock _downsample to return our simulated signatures
     def mock_downsample(frame, size=24):
@@ -712,6 +740,11 @@ def test_wait_for_decision_ignores_a_scroll_between_capture_stops_but_still_catc
     adb = FakeAdb([b"a", b"mid", b"new"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._current_sigs = [seen0]
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    new_sig = np.full((16, 64), 250, dtype="int16")
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"new" else old_sig)
     # Deck-ready evidence for "new" -- see test_pass_detected_on_card_advance's comment: the
     # new rule requires positive proof of a settled deck-ready card (these raw fake frames
     # never satisfy the real glyph template match) before it will conclude PASS at all.
@@ -861,6 +894,11 @@ def test_wait_for_decision_records_pass_diagnostics_in_the_debug_log(monkeypatch
     drv._dbg = _FakeDbg()
     drv._current_sigs = [np.ones((24, 24))]
     drv._current_capture_truncated = False
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    new_sig = np.full((16, 64), 250, dtype="int16")
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"new" else old_sig)
     monkeypatch.setattr(
         hinge, "_downsample",
         lambda frame, size=24: np.ones((24, 24)) if frame == b"a" else np.full((24, 24), 220.0))
@@ -876,6 +914,9 @@ def test_wait_for_decision_records_pass_diagnostics_in_the_debug_log(monkeypatch
     assert decisions[0]["shift_matched"] is False
     assert decisions[0]["capture_truncated"] is False
     assert decisions[0]["top"] == 15.0 and decisions[0]["bot"] == 15.0
+    assert decisions[0]["identity"] == "new"
+    assert decisions[0]["confirm_identity"] == "new"
+    assert decisions[0]["confirm_identity_dist"] is not None
 
 
 def test_observe_scroll_shift_match_record_carries_sig_index_shift_overlap_rows_and_name_read(
@@ -1103,16 +1144,10 @@ def test_vertical_shift_match_reports_which_shift_matched_and_how_much_overlappe
     assert overlap2 > 0        # still a real (best-effort) overlap count, not a placeholder
 
 
-# --- observe: resolving a "top" identity verdict by OCR'ing the card header (2026-08-10) ---
-# Reported incident: at scroll-top, identity_band shows Hinge's own profile-independent
-# filter-chips row, not a name, so _identity_of could only ever say "top" -- and the decision
-# fell through to a spurious content/shift match against a DIFFERENT woman's profile (Zorva's
-# pass was recorded as a scroll of her own card, when the deck had actually already advanced
-# to qelix). identity_top_name_band + _identity_of's "Layer 1b" block is the fix: it OCRs
-# the card header itself (which DOES carry the name even at scroll-top) to resolve "top" into
-# "same" or "new" directly. `_ocr_band` is stubbed throughout (never requires a real
-# tesseract binary) with a fake that returns text keyed on the `psm` argument, so these tests
-# also double as plumbing checks that Layer 1b really does request psm="6" for the new band.
+# --- observe: card-header OCR resolves scroll-top, and vetoes transient pixel-new ------------
+# At scroll-top identity_band contains profile-independent filter chips. The card-header OCR
+# crop can resolve a different name there, but that path must reproduce on a second frame before
+# PASS; when pixels already say ``new``, a nonmatch never strengthens that weaker evidence.
 
 def _top_state_drv(monkeypatch, *, stored_name="Zorva", **cfg):
     """A driver whose pixel identity verdict is pinned to exactly 'top' -- the SAME per-call
@@ -1127,9 +1162,8 @@ def _top_state_drv(monkeypatch, *, stored_name="Zorva", **cfg):
 
 
 def test_identity_top_name_ocr_resolves_top_to_new_when_a_different_name_is_read(monkeypatch):
-    """The positive fix: a clean read of a DIFFERENT name at scroll-top must resolve the
-    otherwise-inconclusive 'top' verdict straight to 'new', without ever consulting the
-    content/shift-match layers Layer 2 would otherwise fall through to."""
+    """At measured scroll-top geometry, a clean different name resolves the generic top
+    signature to a candidate ``new``; wait_for_decision separately requires it twice."""
     drv = _top_state_drv(monkeypatch)
     monkeypatch.setattr(drv, "_ocr_band",
                         lambda frame, rect, psm="7": "qelix" if psm == "6" else None)
@@ -1182,16 +1216,12 @@ def test_identity_top_name_ocr_all_chrome_words_stays_top_inconclusive(monkeypat
     assert state == "top"
 
 
-def test_identity_top_name_ocr_never_runs_when_the_verdict_is_not_top(monkeypatch):
-    """Gated on state == 'top' specifically: on a SCROLLED frame the same crop is photo
-    content and OCRs to garbage (measured), so this must never be consulted for 'new',
-    'same', or 'unknown' -- only the pixel/content layers above it decide those."""
+def test_identity_top_name_ocr_vetoes_a_pixel_new_when_the_stored_name_is_read(monkeypatch):
+    """The card header closes the incident's exact hole: a transition can make the thin
+    identity band look pixel-``new``, but reading the captured name is positive same-card proof.
+    A nonmatch remains inert; only this matching direction may override the pixels."""
     import numpy as np
     psms_seen = []
-
-    def fake_ocr(frame, rect, psm="7"):
-        psms_seen.append(psm)
-        return None
 
     drv = _drv(FakeAdb([b"frame"]))
     drv._identity_name = "Zorva"
@@ -1199,12 +1229,35 @@ def test_identity_top_name_ocr_never_runs_when_the_verdict_is_not_top(monkeypatc
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     # band far from BOTH id_sig and top_sig -> pixel verdict is 'new' outright
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: np.full((16, 64), 99, dtype="int16"))
-    monkeypatch.setattr(drv, "_ocr_band", fake_ocr)
+    def matching_ocr(frame, rect, psm="7"):
+        psms_seen.append(psm)
+        return "Zorva" if psm == "6" else None
+
+    monkeypatch.setattr(drv, "_ocr_band", matching_ocr)
+
+    state, _dist = drv._identity_of(b"frame")
+
+    assert state == "same"
+    assert "6" in psms_seen
+
+
+def test_identity_top_name_ocr_nonmatch_does_not_strengthen_pixel_new(monkeypatch):
+    """The additional OCR read for a pixel-``new`` transition has only one safe direction:
+    a stored-name match vetoes it. A nonmatch leaves the pixel verdict untouched rather than
+    declaring a second, OCR-derived reason to label a PASS."""
+    import numpy as np
+    drv = _drv(FakeAdb([b"frame"]))
+    drv._identity_name = "Zorva"
+    drv._identity_sig = np.zeros((16, 64), dtype="int16")
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: np.full((16, 64), 99, dtype="int16"))
+    monkeypatch.setattr(drv, "_ocr_band",
+                        lambda frame, rect, psm="7": "qelix" if psm == "6" else None)
 
     state, _dist = drv._identity_of(b"frame")
 
     assert state == "new"
-    assert "6" not in psms_seen     # the card-header band (psm="6") was never consulted
+    assert drv._identity_top_name_verdict is None
 
 
 def test_identity_top_name_ocr_skipped_when_observe_name_ocr_is_off(monkeypatch):
@@ -1255,23 +1308,8 @@ def test_identity_top_name_ocr_skipped_when_band_not_declared(monkeypatch):
 
 def test_scroll_top_pass_swallowed_by_content_match_is_now_correctly_a_pass_via_name_ocr(
         monkeypatch):
-    """THE regression test for the reported incident, named so that is obvious. At
-    scroll-top, identity_band alone can only ever say 'top' (Hinge's own chrome renders
-    there, not a name) -- and the previous profile's captured signatures can coincidentally
-    content-match the NEXT profile's first frame closely enough that Layer 2 would swallow a
-    genuine pass as "just a scroll" (dating first-photos are alike: centred face, light
-    background -- see wait_for_decision's own Layer 2 comment on this weak cross-profile
-    signal). This is EXACTLY what happened on 2026-08-10: a pass from Zorva to qelix was
-    logged as observe_scroll reason=shift_match.
-
-    Layer 1b's card-header OCR is what breaks the tie: it reads "qelix" against the stored
-    "Zorva", resolves the 'top' verdict to 'new' BEFORE Layer 2 ever runs (Layer 2 is skipped
-    outright once identity says 'new' -- see wait_for_decision's own comment on why), and
-    wait_for_decision now correctly returns False (PASS) instead of looping forever as an
-    unrecorded scroll. Without the fix (state staying 'top'), the scripted content match below
-    WOULD have been taken as a scroll -- that's the whole point of choosing signatures 1 apart
-    on a 0..255 scale, well under change_threshold=9.0.
-    """
+    """A repeatedly read different name at scroll-top gives the real-advance path a positive
+    ``new`` identity on both frames, before Layer 2 can swallow a lookalike new card as scroll."""
     import numpy as np
     chrome_sig = np.full((16, 64), 200, dtype="int16")
     seen_ds = np.ones((24, 24), dtype="int16") * 50
@@ -1343,11 +1381,8 @@ def test_identity_top_name_ocr_stored_name_truncated_by_a_bad_capture_stays_same
 
 
 def test_identity_top_name_ocr_genuine_different_name_still_resolves_new(monkeypatch):
-    """The prefix-test fix above must not neuter the original bug fix: a GENUINELY different
-    name (no prefix relationship either direction, ratio well below the bar) must still
-    resolve 'top' to 'new'. Zorva-vs-qelix (the pseudonymized incident) is already covered
-    by test_identity_top_name_ocr_resolves_top_to_new_when_a_different_name_is_read above;
-    this is the second MEASURED genuine-difference pair (Katherine/Michelle, ratio 0.35)."""
+    """The top-name path stays able to distinguish a real top-of-next-card from generic
+    scroll-top chrome; the two-frame PASS gate is what makes that candidate safe."""
     drv = _top_state_drv(monkeypatch, stored_name="Katherine")
     monkeypatch.setattr(drv, "_ocr_band",
                         lambda frame, rect, psm="7": "Michelle" if psm == "6" else None)
@@ -1372,44 +1407,39 @@ def test_identity_top_name_ocr_short_candidate_token_never_becomes_new(monkeypat
     assert state == "top"
 
 
-# --- observe: Layer 1b hole 1c -- a name-derived 'new' must reproduce before it is acted on --
-# A pixel-verified 'new' is near-unambiguous (measured separation ~0 vs ~18 -- see _identity_of
-# module comments). A name-derived 'new' (Layer 1b's OCR of the card header) is a noisier
-# signal being given identical trust by the plain `confirm_identity_state != "same"` check
-# alone. wait_for_decision now additionally requires, ONLY when the first frame's 'new' came
-# from Layer 1b (self._identity_top_name_verdict == "new"), that the independent confirm-frame
-# read 0.5s later ALSO says 'new' -- a mere 'top' is no longer good enough to corroborate it.
+# --- observe: PASS needs stable positive identity-new evidence on BOTH frames ----------------
+def test_transient_pixel_new_followed_by_scroll_top_never_produces_a_pass(monkeypatch):
+    """Exact regression for f192396916e8.
 
-def test_name_derived_new_reproduced_on_confirm_frame_produces_a_pass(monkeypatch):
-    """Positive case: the confirm frame -- captured independently, 0.5s later -- ALSO resolves
-    'new' via the same Layer 1b OCR path. That is the cheapest available corroboration and
-    wait_for_decision correctly reports PASS (the negative case, not reproduced, is the test
-    right below)."""
+    A manual scroll can put the thin sticky-header band in an in-between rendering which is
+    neither the captured header nor the filter-chip signature. The old `!= "same"` confirm
+    gate accepted that one-poll pixel ``new`` plus a settled ``top`` as PASS. Neither frame
+    positively proves a different profile twice, so this must remain an unlabeled wait.
+    """
     import numpy as np
-    chrome_sig = np.full((16, 64), 200, dtype="int16")
-    adb = FakeAdb([b"base", b"new", b"new"], advance_on_screencap=True)
-    drv = _drv(adb)
-    drv._identity_name = "Zorva"
-    drv._identity_sig = None              # never revealed Zorva's own sticky header this capture
-    drv._identity_top_sig = chrome_sig    # the scroll-top chrome IS recognised -> pixel verdict 'top'
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: chrome_sig)
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    top_sig = np.full((16, 64), 200, dtype="int16")
+    transition_sig = np.full((16, 64), 100, dtype="int16")
+    adb = FakeAdb([b"base", b"transition", b"top"], advance_on_screencap=True)
+    drv = _drv(adb, observe_name_ocr=False)
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = top_sig
+    drv._dbg = _FakeDbg()
+    monkeypatch.setattr(
+        hinge, "_band",
+        lambda frame, rect: {b"base": old_sig, b"transition": transition_sig,
+                             b"top": top_sig}[frame])
     monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
-    # Constant regardless of which frame/call this is -- a genuinely reproducing read.
-    monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "qelix" if psm == "6" else None)
+    monkeypatch.setattr(drv, "_changed", lambda a, b: False)
 
-    assert drv.wait_for_decision(timeout=5.0) is False
+    assert drv.wait_for_decision(timeout=0.2) is None
+    assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
 
 
-def test_name_derived_new_not_reproduced_on_confirm_frame_does_not_produce_a_pass(monkeypatch):
-    """Negative case: the confirm-frame OCR read fails to reproduce 'new' (comes back
-    inconclusive 'top' instead, e.g. a one-off garbled tesseract read) on every poll.
-    wait_for_decision must never resolve this to a PASS -- it keeps watching and times out
-    instead, exactly like any other unresolved wait. (A SYSTEMATIC misread -- e.g. a crop
-    boundary that is consistently off, not a one-off garble -- WOULD reproduce identically and
-    this check would not catch it; that failure mode is what the prefix rule in
-    _name_token_matches covers instead, see the hole-1 tests above.)"""
+def test_name_derived_new_reproduced_on_confirm_frame_produces_a_pass(monkeypatch):
+    """The genuine scroll-top advance path remains valid when the independently captured
+    confirm frame also resolves a different card-header name to ``new``."""
     import numpy as np
     chrome_sig = np.full((16, 64), 200, dtype="int16")
     adb = FakeAdb([b"base", b"new", b"new"], advance_on_screencap=True)
@@ -1420,22 +1450,10 @@ def test_name_derived_new_not_reproduced_on_confirm_frame_does_not_produce_a_pas
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: chrome_sig)
     monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
-    calls = {"n": 0}
+    monkeypatch.setattr(drv, "_ocr_band",
+                        lambda frame, rect, psm="7": "qelix" if psm == "6" else None)
 
-    def flaky_ocr(frame, rect, psm="7"):
-        if psm != "6":
-            return None
-        calls["n"] += 1
-        # Odd calls are each poll's FIRST _identity_of (the 'cur' check); even calls are the
-        # settle/confirm re-check 0.5s later. Naming the new profile on odd calls only -- never
-        # reproducing it on the even ones -- is exactly a misread that does not survive a
-        # second independent read, on every single poll (not just the first), so this can never
-        # accidentally pass by outlasting a finite scripted sequence.
-        return "qelix" if calls["n"] % 2 == 1 else None
-
-    monkeypatch.setattr(drv, "_ocr_band", flaky_ocr)
-
-    assert drv.wait_for_decision(timeout=0.2) is None
+    assert drv.wait_for_decision(timeout=5.0) is False
 
 
 # --- observe: Layer 1b hole 3 (informational) -- bound _ocr_band's tesseract cost with a cache
@@ -2889,9 +2907,19 @@ def test_wait_for_decision_does_not_raise_when_screen_sleeps():
 
 def test_wait_for_decision_resumes_after_the_screen_comes_back(monkeypatch):
     """Asleep, then the owner wakes it and swipes -> the decision is still detected."""
-    adb = FakeAdb([_png(0), _noisy_png(lo=10, hi=60), _noisy_png(lo=150, hi=250)],
+    import numpy as np
+    asleep = _png(0)
+    woken = _noisy_png(lo=10, hi=60)
+    advanced = _noisy_png(lo=150, hi=250)
+    adb = FakeAdb([asleep, woken, advanced],
                   advance_on_screencap=True)
     drv = _drv(adb)
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    new_sig = np.full((16, 64), 250, dtype="int16")
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band",
+                        lambda frame, rect: new_sig if frame == advanced else old_sig)
     # Deck-ready evidence for the final frame -- see test_pass_detected_on_card_advance's
     # comment: these noise frames carry no real glyph for _observe_deck_ready to match.
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)

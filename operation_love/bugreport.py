@@ -209,9 +209,10 @@ def _deps_md() -> str:
 # device NAME is not a secret, but this never becomes a place to grow raw device output.
 def _tesseract_md() -> str:
     path = shutil.which("tesseract")
-    return (f"- tesseract: {path or 'absent'} — best-effort profile-name OCR (identity "
-            f"corroboration only, see hinge.py's _ocr_band) degrades silently to the "
-            f"pixel-signature-only identity anchor when absent; never load-bearing")
+    return (f"- tesseract: {path or 'absent'} — profile-name OCR (see hinge.py's _ocr_band) "
+            f"can veto a transient pixel mismatch and must confirm a different scroll-top "
+            f"name twice; when absent, identity safety remains fail-closed but a real advance "
+            f"may stay unresolved")
 
 
 def _opencv_md() -> str:
@@ -1015,6 +1016,63 @@ def _item_index_repair_summary_md(lines: list[str]) -> str:
     return "\n".join(f"- `{note}`" for note in shown) + suffix
 
 
+def _item_manifest_summary_md(lines: list[str]) -> str:
+    """Explain how page crops became dense model item numbers.
+
+    Counts alone hid the incident where an ordinary rectangular first photo was among ten
+    context crops and the last square photo became the sole survivor named ``item 1``.  New
+    capture records retain a bounded, non-image manifest; surface its page/heart/model mapping
+    once and compact the duplicate copy in the raw tail below.
+    """
+    capture = None
+    for rec in _action_records(lines):
+        if rec.get("action") == "capture" and isinstance(rec.get("item_manifest"), list):
+            capture = rec
+    if capture is None:
+        return ""
+    manifest = [row for row in capture["item_manifest"] if isinstance(row, dict)]
+    if not manifest:
+        return ""
+    translation = capture.get("item_translation")
+    out = []
+    if isinstance(translation, list):
+        out.append("- model item → page heart translation: `"
+                   + _sanitize_inline(json.dumps(translation)) + "`")
+    for row in manifest[:24]:
+        number = row.get("model_item")
+        kind = _sanitize_inline(str(row.get("kind") or "unknown"))
+        label = f"model item {number}" if isinstance(number, int) and not isinstance(number, bool) \
+            else f"unnumbered {kind}"
+        bits = []
+        heart = row.get("heart_ordinal")
+        if isinstance(heart, int) and not isinstance(heart, bool):
+            bits.append(f"page heart {heart}")
+        source = row.get("source_frame_index")
+        if isinstance(source, int) and not isinstance(source, bool):
+            bits.append(f"source frame {source}")
+        page_rows = row.get("page_rows")
+        if (isinstance(page_rows, list) and len(page_rows) == 2
+                and all(isinstance(value, int) and not isinstance(value, bool)
+                        for value in page_rows)):
+            bits.append(f"page rows {page_rows[0]}..{page_rows[1]}")
+        crop_size = row.get("crop_size")
+        if (isinstance(crop_size, list) and len(crop_size) == 2
+                and all(isinstance(value, int) and not isinstance(value, bool)
+                        for value in crop_size)):
+            bits.append(f"crop {crop_size[0]}x{crop_size[1]}")
+        digest = row.get("crop_sha256")
+        if digest:
+            bits.append(f"sha256 `{_sanitize_inline(str(digest))}`")
+        reason = row.get("reason")
+        if reason:
+            bits.append(f"reason `{_sanitize_inline(str(reason))}`")
+        detail = "; ".join(bits) if bits else "no provenance detail logged"
+        out.append(f"- {label}: {detail}")
+    if len(manifest) > 24:
+        out.append(f"- {len(manifest) - 24} more manifest row(s) retained in actions.jsonl")
+    return "\n".join(out)
+
+
 def _compact_debug_tail_line(raw: str) -> str:
     """Keep raw JSON useful while avoiding another full copy of a long refusal wall."""
     try:
@@ -1027,6 +1085,8 @@ def _compact_debug_tail_line(raw: str) -> str:
         rec["reason"] = _compact_item_index_refusal_text(rec["reason"])
     elif rec.get("action") == "capture" and rec.get("items_unavailable"):
         rec["items_unavailable"] = _compact_item_index_refusal_text(rec["items_unavailable"])
+    if rec.get("action") == "capture" and rec.get("item_manifest"):
+        rec["item_manifest"] = "see item-numbering manifest above"
     elif rec.get("action") == "item_index_repaired" and rec.get("notes"):
         rec["notes"] = ["see item-index conservative repairs summary above"]
     return json.dumps(rec)
@@ -1373,6 +1433,10 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
             if repairs:
                 out.append("  - item-index conservative repairs:")
                 out.extend(f"    {line}" for line in repairs.splitlines())
+            manifest = _item_manifest_summary_md(raw_lines)
+            if manifest:
+                out.append("  - item-numbering manifest (non-image capture provenance):")
+                out.extend(f"    {line}" for line in manifest.splitlines())
             counts_line = _action_counts_line(raw_lines)
             if counts_line:
                 out.append(f"  - {counts_line}")

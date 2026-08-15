@@ -588,10 +588,11 @@ HINGE_SPEC = AndroidAppSpec(
     # instead). change_threshold is 9.0, so the separation is unambiguous. x1 stops at 0.80 to
     # keep the "..." overflow button out of the band.
     identity_band=(0.10, 0.048, 0.80, 0.094),
-    # Card-header NAME band, consulted only when identity_band's own verdict above is exactly
-    # "top" (scroll-top, where identity_band shows the profile-independent filter-chips row
-    # instead of a name -- see AndroidAppSpec.identity_top_name_band's docstring for the full
-    # mechanism and _identity_of below for the resolution rule). This is the fix for the
+    # Card-header NAME band, consulted when identity_band says "top" (to resolve the
+    # profile-independent filter-chips row) or "new" (only to let a matching stored name veto
+    # a transient pixel mismatch -- never to strengthen the mismatch). See
+    # AndroidAppSpec.identity_top_name_band and _identity_of for the full asymmetric rule. This
+    # is the fix for the
     # incident that motivated this field: a pass that advanced the deck from "Zorva" to
     # "Qelix" was recorded as a scroll WITHIN Zorva's profile, because nothing on screen at
     # scroll-top could name the new card and the decision fell through to a loose content
@@ -1609,12 +1610,13 @@ class AndroidDriver(DatingAppDriver):
         self._touch = self._make_touch()              # genuine UHID touches; adb input fallback
         self._observe_ready = True                    # only True once fully open (touch ready too)
         if self.observe_name_ocr and shutil.which("tesseract") is None:
-            # Best-effort only (see _ocr_band) -- the sticky-header PIXEL signature is the
-            # authoritative identity anchor either way, so a missing binary degrades the
-            # observe-mode name log/OCR corroboration, never the core PASS guarantee. One
-            # line, once, so it's visible without being noisy on every profile.
-            print("profile-name OCR unavailable (tesseract not on PATH); identity still "
-                  "enforced by the sticky-header signature.")
+            # A missing OCR binary cannot weaken the false-PASS guarantee: unresolved identity
+            # stays waiting. It can reduce recall, however, because a real next card at scroll
+            # top has generic filter-chip pixels and needs two matching different-name reads to
+            # become a positive `new/new` decision. One line, once, so that conservative stall
+            # is diagnosable rather than looking like a silent detector failure.
+            print("profile-name OCR unavailable (tesseract not on PATH); identity safety still "
+                  "holds, but a scroll-top card advance may remain unresolved.")
         if self.observe_touch_watch and not self._auto_session:
             # Gesture corroboration (layer 3), OBSERVE SESSIONS ONLY -- see self._auto_session
             # in __init__. Its whole job is to prove a HUMAN pressed something, which only
@@ -3081,6 +3083,42 @@ class AndroidDriver(DatingAppDriver):
         self._current_item_anchor = photos[-1] if photos else None
         return ""
 
+    @staticmethod
+    def _item_payload_debug_manifest(payload, index) -> list[dict]:
+        """Non-image provenance for every indexed crop, in page order.
+
+        A bare ``items=1, item_context=10`` capture record cannot explain which physical
+        card survived policy filtering, which heart it maps to, or why the other crops were
+        left unnumbered.  Keep that mapping in actions.jsonl without saving any additional
+        profile imagery: hashes identify repeated crop bytes, while page/frame coordinates and
+        the policy reason explain the numbering decision.
+
+        Best-effort by construction.  This is diagnostic metadata written after the payload is
+        already valid; a malformed legacy/test-double crop must never break a live capture.
+        """
+        try:
+            source_indices = tuple(getattr(index, "source_frame_indices", ()) or ())
+            manifest: list[dict] = []
+            for crop in payload.crops:
+                local_frame = crop.frame_index
+                source_frame = local_frame
+                if (isinstance(local_frame, int) and 0 <= local_frame < len(source_indices)):
+                    source_frame = source_indices[local_frame]
+                manifest.append({
+                    "kind": crop.kind,
+                    "model_item": crop.number,
+                    "heart_ordinal": crop.heart_ordinal,
+                    "source_frame_index": source_frame,
+                    "page_rows": [crop.page_y0, crop.page_y1],
+                    "crop_size": [crop.width, crop.height],
+                    "crop_sha256": (hashlib.sha256(crop.image).hexdigest()[:16]
+                                    if crop.image is not None else None),
+                    "reason": crop.reason,
+                })
+            return manifest
+        except Exception:  # noqa: BLE001 — diagnostics never alter a successful capture
+            return []
+
     def _record_item_index_recovery(self, photos: list[bytes], index) -> None:
         """Log an already-verified isolated-frame recovery without affecting the result.
 
@@ -3817,6 +3855,12 @@ class AndroidDriver(DatingAppDriver):
                              # found" without re-running any vision.
                              items=(payload.item_count if payload is not None else 0),
                              item_context=(payload.context_count if payload is not None else 0),
+                             item_translation=(list(payload.translation)
+                                               if payload is not None else []),
+                             item_manifest=(self._item_payload_debug_manifest(
+                                 payload, self._current_item_index)
+                                 if payload is not None and self._current_item_index is not None
+                                 else []),
                              items_unavailable=self._current_items_unavailable or None,
                              # "BUG 3" fix: only present (and only ever < photos) when this read
                              # raised the enumeration ceiling and the ranker's copy was thinned
@@ -5236,13 +5280,13 @@ class AndroidDriver(DatingAppDriver):
         behavior to which band happens to be which shape today, instead of to a measured fact
         the caller already knows.
 
-        NEVER load-bearing: the pixel-band signature `_identity_of` computes from `_band` is
-        the authoritative identity anchor on its own. This exists only because a pixel
-        signature is POSITION-sensitive (a header that shifts a few px between frames reads
-        as a mismatch) where a name string is not -- so when both names are available they
-        corroborate the pixel check with something more tolerant. Any failure here (no
-        `tesseract` on PATH, a decode error, a garbled read, a timeout) returns None and the
-        caller falls straight back to the pixel band; this method must never raise.
+        NEVER sufficient on its own to write a label: the pixel/deck/settle gates still apply,
+        and a different card-header name must reproduce on the independent confirm frame. OCR
+        is nevertheless load-bearing for *recall* when a real next card lands at scroll top:
+        the pixel band then contains profile-independent filter chips and cannot positively say
+        who is shown. Any failure here (no `tesseract` on PATH, decode error, garbled read,
+        timeout) returns None; the caller keeps waiting rather than weakening the false-PASS
+        guarantee. This method must never raise.
 
         MEMOIZED, bounded to `_OCR_BAND_CACHE_MAX` entries, keyed on `(rect, psm, sha1(frame))`.
         MEASURED on this machine 2026-08-10: ~103ms per call at psm 7 (the sticky identity_band)
@@ -5308,7 +5352,7 @@ class AndroidDriver(DatingAppDriver):
             text = self._OCR_NAME_RE.sub("", result.stdout.decode("utf-8", "replace"))
             cleaned = " ".join(text.split())
             value = cleaned or None
-        except Exception:  # noqa: BLE001 — OCR is best-effort, never load-bearing
+        except Exception:  # noqa: BLE001 — OCR failure must stay fail-closed, never raise
             value = None
         self._ocr_band_cache[cache_key] = value
         if len(self._ocr_band_cache) > self._OCR_BAND_CACHE_MAX:
@@ -5417,33 +5461,31 @@ class AndroidDriver(DatingAppDriver):
                 if stored and seen and seen == stored:
                     state = "same"
 
-        # Layer 1b: resolve a "top" verdict by OCR'ing the CARD HEADER, not the identity band.
+        # Layer 1b: OCR the CARD HEADER. It can resolve a verified scroll-top chrome state,
+        # and it can veto a pixel-derived ``new`` when it sees the stored name.
         #
-        # This is the actual fix for the reported incident: at scroll-top, identity_band shows
-        # Hinge's own profile-independent filter-chips row ("Signals / Age / Height / Dating
-        # Intent"), not a name -- so the pixel logic above can only ever say "top", and the
-        # OCR corroboration just above reads that SAME band, so it inherits the same blind
-        # spot. The card header lower down on screen DOES carry the name even at scroll-top
-        # (see AndroidAppSpec.identity_top_name_band's docstring for the measured geometry and
-        # the two on-screen layouts it was read from) -- this is the one place in the file that
-        # consults it.
+        # At scroll-top identity_band shows Hinge's profile-independent filter chips, rather
+        # than a name.  The card header lower down does carry the name there.  It is also useful
+        # when a scroll/header transition has left the thin pixel identity band in a transient
+        # state that reads as ``new``: seeing the captured name in the card header is positive
+        # evidence that this is still the current profile and must veto that pixel verdict.
         #
-        # Gated on ALL of state == "top" / observe_name_ocr / a stored name / a declared band:
+        # Gated on state in {"top", "new"} / observe_name_ocr / a stored name / a declared
+        # band:
         #
-        #   state == "top" specifically (not "unknown", not "new") -- that verdict means the
-        #   pixel band positively matched the app's own scroll-top chrome, i.e. we are
-        #   DEMONSTRABLY looking at a card's scroll-top, which is exactly the screen state
-        #   identity_top_name_band was measured against. On a SCROLLED frame this same crop is
-        #   photo content, not header text, and OCRs to garbage (measured) -- consulting it
-        #   there could only inject noise into a state ("new"/"unknown") that already has a
-        #   more reliable signal or none at all.
+        #   ``top`` is the geometry this crop was measured against, so an actual different-name
+        #   candidate there may resolve the otherwise generic scroll-top pixels to ``new``.
+        #   ``new`` is included only for the asymmetric, safe direction: a matching stored name
+        #   vetoes a potentially transient pixel mismatch. On a scrolled frame the crop can be
+        #   photo content and OCR can be garbage, so a NON-match is deliberately ignored when
+        #   the pixels already said ``new``; it never strengthens that verdict.
         #
         #   observe_name_ocr / self._identity_name / identity_top_name_band all being set is
         #   the same "nothing to work with, don't pretend otherwise" guard the OCR
         #   corroboration above already applies: no stored name means nothing to compare
         #   against, and no declared band means this app was never measured for one (None is
         #   the default -- see that field's docstring).
-        if (state == "top" and self.observe_name_ocr and self._identity_name
+        if (state in {"top", "new"} and self.observe_name_ocr and self._identity_name
                 and self.identity_top_name_band is not None):
             text = self._ocr_band(frame, self.identity_top_name_band, psm="6")
             self._identity_top_name_read = text
@@ -5459,19 +5501,11 @@ class AndroidDriver(DatingAppDriver):
                 if stored and any(_name_token_matches(tok, stored) for tok in tokens):
                     state = "same"
                     self._identity_top_name_verdict = "same"
-                else:
-                    # No token matched the stored name closely enough. Only conclude "new" if
-                    # there is an actual NAME CANDIDATE left after removing Hinge's own chrome
-                    # words (see _TOP_NAME_CHROME_WORDS) AND that candidate has at least 3
-                    # alphabetic characters. The chrome-word filter alone is not enough: a read
-                    # that caught nothing but chrome (the name itself went unread, e.g. cut off
-                    # or misrecognised as something not alphabetic) can still leave behind a
-                    # 1-2 character speckle token ("l", "@", OCR noise the >=2-char token regex
-                    # let through) that is not chrome-listed but is also never a usable name --
-                    # taking it as "the different person's name" would be a FALSE PASS on pure
-                    # noise. Either failure mode -- no candidate at all, or only a noise-length
-                    # one -- proves nothing about who is on screen and must stay "top"
-                    # (inconclusive), not be promoted to a false "new".
+                elif state == "top":
+                    # The scroll-top geometry is the one this crop was measured against, so a
+                    # candidate different name can identify a real advance. It is still only a
+                    # first observation: wait_for_decision requires a second ``new`` read
+                    # before it can produce a PASS.
                     candidate = next(
                         (tok for tok in tokens
                          if tok.casefold() not in _TOP_NAME_CHROME_WORDS
@@ -5480,11 +5514,9 @@ class AndroidDriver(DatingAppDriver):
                     if candidate is not None:
                         state = "new"
                         self._identity_top_name_verdict = "new"
-                        # A name-derived "new" is a noisier signal than a pixel-derived one
-                        # (measured separation ~0 vs ~18) and is NOT trusted alone -- see
-                        # wait_for_decision's confirm-frame corroboration requirement, gated on
-                        # this verdict, for why a second independent read is required before
-                        # this can become a PASS.
+                # When the original pixel state was ``new``, a nonmatch might just be OCR of
+                # photo content. It deliberately does nothing: only a matching stored name can
+                # override pixels in that direction.
         # RESIDUAL LIMITATION, stated plainly: two consecutive profiles sharing one first name
         # still OCR to the same token here and still read as "same" -- this layer, like the
         # identity-band pixel check above it, only ever holds a FIRST name, so it cannot
@@ -6032,14 +6064,11 @@ class AndroidDriver(DatingAppDriver):
             # tap of any kind, recorded as a PASS). Layers 2/3 below only ever CORROBORATE an
             # identity-proven advance; neither can override a 'same' verdict here.
             identity_state, identity_dist = self._identity_of(cur)
-            # Captured immediately, into a LOCAL, because self._identity_top_name_verdict is
-            # reset on every _identity_of call -- including the confirm-frame call further
-            # below -- and would otherwise no longer describe THIS frame's verdict by the time
-            # the settle/confirm block reads it. See that block's own comment for why this
-            # distinction (pixel-derived 'new' vs name-derived 'new') matters.
-            first_new_is_name_derived = (
-                identity_state == "new" and self._identity_top_name_verdict == "new"
-            )
+            # `_identity_of` resets its OCR provenance on every call, including the confirm
+            # call below. Preserve this frame's read now so the decision/resync record says
+            # whether header OCR rescued (or was unable to rescue) the pixel verdict.
+            identity_name_read = self._identity_top_name_read
+            identity_name_verdict = self._identity_top_name_verdict
             if identity_state == "same":
                 base = cur                            # scroll within the SAME profile -> keep waiting
                 self._observe_recognized()            # identity named this card: recognised
@@ -6151,29 +6180,23 @@ class AndroidDriver(DatingAppDriver):
             confirm = self._screencap(on_blank="none")
             if confirm is None:
                 continue                              # can't confirm blind -- re-poll
-            confirm_identity_state = self._identity_of(confirm)[0]
-            # A name-derived 'new' (Layer 1b's OCR of the card header, at scroll-top) is a
-            # noisier signal than a pixel-derived one -- see _identity_of's Layer 1b comment
-            # for the measured ~0-vs-~18 separation the pixel band gets that a fuzzy-matched
-            # name string never can. A transient misread (garbled tesseract output on one
-            # frame) must not by itself be able to write a label, so when the FIRST frame's
-            # 'new' verdict came from Layer 1b, the confirm frame -- captured independently,
-            # 0.5s later -- must ALSO read 'new' by the same OCR path; a mere 'top' (identity
-            # simply not resolved this time) is no longer good enough to corroborate it, even
-            # though 'top' passes the plain `!= "same"` test below on its own. This is the
-            # cheapest available corroboration: a second, independent read of the same claim.
-            # Honesty about its limits: a SYSTEMATIC misread -- a crop boundary that is
-            # consistently off, not a one-off garble -- will reproduce identically on the
-            # confirm frame too and this check will not catch it. That failure mode is what
-            # the prefix rule in _name_token_matches covers instead (a truncated read is a
-            # prefix of the real name and matches 'same' regardless of how many times it
-            # reproduces); this check only ever guards against a NON-reproducing misread.
+            confirm_identity_state, confirm_identity_dist = self._identity_of(confirm)
+            confirm_identity_name_read = self._identity_top_name_read
+            confirm_identity_name_verdict = self._identity_top_name_verdict
+            # A PASS label demands a positive, stable different-profile identity, not merely
+            # two frames that failed to match the captured profile. In particular, Hinge fades
+            # the filter chips/sticky header during a manual scroll; that transient band can be
+            # just over the 9.0 pixel threshold and read ``new`` for one poll, while a later
+            # scroll-top frame is only ``top``/``unknown``. Treating `!= "same"` as proof here
+            # recorded exactly that manual read as a PASS. Requiring `new` on BOTH independently
+            # captured frames makes the safe error a missed/resync decision, never a label on
+            # the wrong person's profile.
             proven = (
                 not self._observe_like_sheet_visible(confirm)
                 and self._observe_deck_ready(confirm)
                 and not self._changed(cur, confirm)
-                and confirm_identity_state != "same"
-                and (not first_new_is_name_derived or confirm_identity_state == "new")
+                and identity_state == "new"
+                and confirm_identity_state == "new"
             )
             if not proven:
                 self._note_observe_waiting("not_settled", confirm)
@@ -6199,6 +6222,13 @@ class AndroidDriver(DatingAppDriver):
                 capture_truncated=getattr(self, "_current_capture_truncated", None),
                 identity=identity_state,
                 identity_dist=None if identity_dist is None else round(identity_dist, 2),
+                identity_name_read=identity_name_read,
+                identity_name_verdict=identity_name_verdict,
+                confirm_identity=confirm_identity_state,
+                confirm_identity_dist=(None if confirm_identity_dist is None
+                                       else round(confirm_identity_dist, 2)),
+                confirm_identity_name_read=confirm_identity_name_read,
+                confirm_identity_name_verdict=confirm_identity_name_verdict,
                 profile_name=self._identity_name, gesture=verdict, watcher=self.observe_touch_watch,
             )
             if verdict == "resync":

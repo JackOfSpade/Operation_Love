@@ -480,6 +480,31 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "describing what is in the photo can never be wrong" in lowered
     assert "she is not checking whether you have eyes" in lowered
     assert "the thing you can see may be your premise. it may never be your point" in lowered
+    # Bug report 2026-08-15: an observation-deck photo produced a three-hop story about
+    # climbing stairs, jelly legs and beating a target time. Falsifiability is not permission
+    # to fabricate the premise. Keep one evidence-bound inference while preserving playful
+    # guesses directly licensed by a visible or stated fact.
+    assert "evidence boundary, one hop only" in lowered
+    assert "the premise must be plainly visible in the item or explicitly stated" in lowered
+    assert "never stack guesses" in lowered
+    assert "unseen action, route, effort, goal, cause, or sequence" in lowered
+    assert "an observation deck does not mean she climbed stairs or had a target time" in lowered
+    assert "being on a summit does not mean she hiked there" in lowered
+    assert "choose a different claim or a different item" in lowered
+    # One-hop alone is insufficient: feeding a goat -> cleaning its barn can be phrased as one
+    # inference while still depending on an implausibly specific ownership/routine backstory.
+    assert "calibrate the guess: a hedge does not rescue a far-fetched premise" in lowered
+    assert "natural under most ordinary explanations of the scene" in lowered
+    assert "not only under one special backstory" in lowered
+    assert "ownership, employment, a routine, a responsibility, or a relationship" in lowered
+    assert "feeding one goat does not mean she owns it, works on a farm" in lowered
+    assert "it may be a wild encounter on a trail" in lowered
+    assert "guess about the interaction the evidence shows, not an unshown life story" in lowered
+    assert "you became its favorite person the second the snacks came out" in lowered
+    assert "traceability test" in lowered
+    assert "she should instantly see which visible or stated clue led you there" in lowered
+    assert "how did you possibly get that from this?" in lowered
+    assert "the inference is too remote and you have fantasized a backstory" in lowered
     # The premise the whole rule rests on, and the only reason it can be unconditional (doc
     # 1.2): on Hinge a like-with-comment is ALWAYS displayed attached to its item.
     assert ("shared context rule: your message is displayed directly under the exact photo "

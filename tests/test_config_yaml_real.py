@@ -135,6 +135,36 @@ def test_shipped_opener_style_ships_the_unbluffable_claim_rule(cfg):
     assert "she is not checking whether you have eyes" in style
     assert "may be your premise. it may never be your point" in style
     assert "test it by covering the photo: if nothing is left, start over" in style
+    # Bug report 2026-08-15: a deck photo licensed a made-up staircase, exertion and target
+    # time. The model may make one uncertain inference; it may not invent facts to serve as
+    # premises for further guesses.
+    assert "evidence boundary, one hop only" in style
+    assert "the premise must be plainly visible in the item or explicitly stated" in style
+    assert "never stack guesses" in style
+    assert "unseen action, route, effort, goal, cause, or before and after sequence" in style
+    assert "an observation deck does not mean she climbed stairs or had a target time" in style
+    assert "a summit does not mean she hiked there" in style
+    assert "your legs were jelly after climbing all those stairs" in style
+    assert "choose a different claim or a different item" in style
+    # One-hop is necessary but not sufficient: a single-photo inference can still assume an
+    # implausibly specific backstory. Pin evidence-proportional calibration and the reporter's
+    # goat/barn counterexample.
+    assert "calibrate the guess: a hedge does not rescue a far fetched premise" in style
+    assert "natural under most ordinary explanations of the scene" in style
+    assert "if it works only under one special backstory, do not use it" in style
+    assert "ownership, employment, a routine, a responsibility, or a relationship" in style
+    assert "feeding one goat does not mean she owns it, works on a farm" in style
+    assert "spent the day cleaning a barn" in style
+    assert "it could be a wild encounter on a trail" in style
+    assert "guess about the interaction the evidence shows, not an unshown life story" in style
+    assert "confidently wrong is playful only when the guess was reasonable" in style
+    assert "you became its favorite person the second the snacks came out" in style
+    assert "traceability test" in style
+    assert "she should instantly see which visible or stated clue led you to that angle" in style
+    assert "the path from clue to guess must be obvious without an explanation" in style
+    assert "how did you possibly see it that way?" in style
+    assert "fantasized a backstory from minimal evidence" in style
+    assert "reasoning she can recognize at a glance" in style
     # The grounding sentence and its new second half must stay adjacent: the sentence alone is
     # root cause #1 from doc 1.1, and it is only safe with this clause attached.
     assert "exactly one concrete detail" in style
@@ -158,7 +188,8 @@ def test_shipped_opener_style_frames_the_five_moves_as_non_binding_examples(cfg)
     assert "never shoehorn" in style
     assert "guess something from the evidence and commit to it" in style
     assert "say something you know that the item brought to mind" in style
-    assert "claim something outside the frame: what she felt, what it cost, what happened next" in style
+    assert "make one direct inference outside the frame, licensed by what is visible or stated" in style
+    assert "claim something outside the frame: what she felt, what it cost, what happened next" not in style
     assert "tease her, good naturedly, about something the evidence licenses" in style
     assert "connect two things she said in different places on her profile" in style
     assert "connecting two separate places on her profile is the strongest" in style

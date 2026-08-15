@@ -65,6 +65,19 @@ def _hinge(adb):
     return driver
 
 
+def _pin_identity_advance(driver, monkeypatch, next_card):
+    """Give a synthetic sheet->next-card flow the same two-frame positive identity evidence
+    production observe mode requires before it may persist a LIKE."""
+    import numpy as np
+
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    new_sig = np.full((16, 64), 250, dtype="int16")
+    driver._identity_sig = old_sig
+    driver._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band",
+                        lambda frame, _rect: new_sig if frame == next_card else old_sig)
+
+
 def _sheet_frame():
     """A structurally valid, template-detectable Hinge inline-composer frame.
 
@@ -192,7 +205,9 @@ def test_hinge_observe_reports_sheet_intent_before_manual_send_without_touching_
         # resolving.
         return polls > 200
 
-    result = _hinge(adb).wait_for_decision(
+    driver = _hinge(adb)
+    _pin_identity_advance(driver, monkeypatch, next_card)
+    result = driver.wait_for_decision(
         timeout=None, should_stop=stop_after_budget,
         on_like_intent=lambda active, anchor: callbacks.append((active, anchor)))
 
@@ -231,7 +246,9 @@ def test_hinge_observe_waits_through_closed_sending_state_until_ready_deck(monke
         # ceiling that only trips on a genuine "never resolves" regression.
         return polls > 200
 
-    assert _hinge(adb).wait_for_decision(
+    driver = _hinge(adb)
+    _pin_identity_advance(driver, monkeypatch, next_card)
+    assert driver.wait_for_decision(
         timeout=None, should_stop=stop_after_budget,
         on_like_intent=lambda active, anchor: callbacks.append((active, anchor))) is True
     assert callbacks == [(True, sheet), (False, None)]
@@ -305,6 +322,7 @@ def test_hinge_observe_waits_through_keyboard_motion_until_send_like_closes(monk
     )
     adb = _Adb([b"card", b"sheet", b"typing", b"next-card"])
     driver = _hinge(adb)
+    _pin_identity_advance(driver, monkeypatch, b"next-card")
     monkeypatch.setattr(driver, "_observe_like_sheet_visible",
                         lambda frame: frame in {b"sheet", b"typing"})
     monkeypatch.setattr(driver, "_observe_deck_ready", lambda frame: frame == b"next-card")
@@ -380,7 +398,9 @@ def test_hinge_observe_broken_callback_does_not_break_observation_but_failure_is
     def broken_callback(active, anchor):
         raise ValueError("suggestion renderer exploded")
 
-    result = _hinge(adb).wait_for_decision(
+    driver = _hinge(adb)
+    _pin_identity_advance(driver, monkeypatch, next_card)
+    result = driver.wait_for_decision(
         timeout=None, should_stop=stop_after_budget, on_like_intent=broken_callback)
 
     assert result is True             # observation still resolves the real decision

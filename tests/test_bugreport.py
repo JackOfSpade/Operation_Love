@@ -491,6 +491,27 @@ def test_debug_log_section_explains_latest_observe_wait_and_reproduction_context
     assert "capture completed → READY/manual decision prompt → no pass/like record yet" in md
 
 
+def test_debug_log_section_explains_like_candidate_without_claiming_a_sheet(tmp_path):
+    """A bottom-delta candidate is specifically NOT evidence that a composer opened or
+    closed. The report must preserve that distinction from `like_sending`."""
+    run = tmp_path / "run_like_candidate"
+    run.mkdir(parents=True)
+    records = [
+        {"ts": "2026-08-14T21:54:36", "action": "observe_waiting",
+         "reason": "like_candidate"},
+        {"ts": "2026-08-14T21:54:51", "action": "observe_waiting",
+         "reason": "like_candidate"},
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "current logged observe state: waiting (`like_candidate`)" in md
+    assert "bottom-only screen change looked like a possible like" in md
+    assert "no Send Like sheet was observed" in md
+    assert "sheet closed" not in md
+
+
 def test_debug_log_section_summarises_item_index_refusals_and_realised_steps(tmp_path):
     """A long capture's failure must answer both questions that its first-frame-only capture
     record cannot: which adjacent frames broke, and whether the realised step was otherwise

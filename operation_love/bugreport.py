@@ -1309,6 +1309,8 @@ _OBSERVE_WAIT_EXPLANATIONS = {
     "not_deck_ready": "the screen changed, but a stable swipe deck has not yet been proven",
     "not_settled": "a possible next deck card was seen once but did not yet pass the settle "
                    "recheck",
+    "like_candidate": "a bottom-only screen change looked like a possible like, but no Send "
+                      "Like sheet was observed; no manual decision has been proven",
     "like_sheet": "the app's like/comment sheet is visibly open; it is waiting for Send Like "
                   "or dismissal",
     "like_sending": "the like sheet closed, but the app has not yet shown a stable next card",

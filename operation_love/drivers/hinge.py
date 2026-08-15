@@ -441,9 +441,10 @@ class PaidUpsellStuckError(HingeActionError):
 
 
 _OBSERVE_POLL_S = 0.35     # internal sampling cadence for your manual tap (not app-facing)
-# The _note_observe_waiting reasons that describe an OPEN LIKE SHEET rather than an
-# unclassifiable screen. They repeat on the slower _OBSERVE_LIKE_NOTICE_S cadence and get
-# their own wording -- see that method.
+# The _note_observe_waiting reasons that describe a VERIFIED compose/send state rather than an
+# unclassifiable screen. They repeat on the slower _OBSERVE_LIKE_NOTICE_S cadence and get their
+# own wording -- see that method. ``like_candidate`` is deliberately NOT here: no composer was
+# observed in that state, so it is neither a human-paced draft nor a confirmed app send.
 _OBSERVE_LIKE_WAIT_REASONS = frozenset({"like_sheet", "like_sending"})
 # Minimum gap between ANY two waiting notices, including ones with different reasons -- the
 # backstop against a flapping screen turning the heartbeat into a firehose. See
@@ -5770,11 +5771,12 @@ class AndroidDriver(DatingAppDriver):
         profile), `scroll` (layer 2 recognised this as a scroll, not a card change), `no_change`
         (nothing has moved since the last poll yet), `not_deck_ready` (the card changed but the
         next screen isn't confirmed ready), `not_settled` (deck-ready once, but the settle
-        recheck hasn't agreed yet), `like_sheet` (the human has a like sheet open and is
-        composing), `like_sending` (the sheet closed and Hinge is still resolving the send) --
-        so a human reading the console or actions.jsonl mid-run gets the SAME vocabulary this
-        file's own comments already use for these states, not a fresh set of words to map back
-        onto them.
+        recheck hasn't agreed yet), `like_candidate` (a bottom-only change occurred but no
+        composer was observed), `like_sheet` (the human has a like sheet open and is composing),
+        `like_sending` (a VERIFIED sheet closed and Hinge is still resolving the send) -- so a
+        human reading the console or actions.jsonl mid-run gets the SAME vocabulary this file's
+        own comments already use for these states, not a fresh set of words to map back onto
+        them.
 
         The two like-sheet reasons repeat on the slower _OBSERVE_LIKE_NOTICE_S cadence and get
         their own wording: they are not "nothing could be classified", they are a state this
@@ -5822,6 +5824,16 @@ class AndroidDriver(DatingAppDriver):
             print(f"{self.spec.app}: still watching -- {detail} (reason={reason}). Nothing is "
                   f"recorded until this resolves. If it stays like this with the phone showing "
                   f"something else, check the phone, or press Stop.")
+        elif reason == "like_candidate":
+            # Do not borrow `like_sending`'s wording here.  This state is reached from a
+            # bottom-only pixel delta before a structurally verified composer has ever been
+            # observed; asserting that a sheet "closed" was the misleading diagnostic in the
+            # Hayley false-LIKE report.  It uses the ordinary (15s) cadence above because it is
+            # not a human-paced compose state and has no confirmed app send to wait for.
+            print(f"{self.spec.app}: still watching -- a bottom-only change looks like a possible "
+                  f"like, but no Send Like sheet has been observed (reason=like_candidate). "
+                  f"Nothing is recorded unless the sheet is actually seen and a new card is "
+                  f"proved. If it repeats, check the phone, or press Stop.")
         else:
             # "no_change" is the one reason that means the screen has NOT moved at all, so it
             # must not be announced as "the screen changed" -- an operator who just tapped X and
@@ -5872,6 +5884,10 @@ class AndroidDriver(DatingAppDriver):
             "capture_truncated": getattr(self, "_current_capture_truncated", None),
             "profile_name": self._identity_name,
             "gesture": "not_checked", "watcher": self.observe_touch_watch,
+            # A bottom-only delta is only a candidate.  Keep the evidence that promoted it
+            # (or did not) beside every resolution record so a later report can distinguish a
+            # verified composer dismissal from a benign scroll/toast candidate.
+            "sheet_seen": sheet_seen,
         }
         if top is not None:
             fields["top"] = round(top, 2)
@@ -6528,8 +6544,57 @@ class AndroidDriver(DatingAppDriver):
                     return False, intent_notified     # genuinely back on the current profile
                 if (ready and not confirm_current and self._observe_deck_ready(confirm)
                         and not self._changed(cur, confirm)):
-                    return True, intent_notified      # stable, non-current, ready next deck card
-            # Closed sheet but no current card and no ready deck = Hinge is still processing.
+                    # A bottom-only delta is deliberately only a *candidate*: a manual read
+                    # scroll, snackbar, keyboard transition, or other bottom chrome movement
+                    # can all satisfy it.  It may wake this resolver so a composer that is
+                    # still animating in can be observed on a later poll, but it must NEVER
+                    # become a LIKE merely because a later steady deck frame does not happen
+                    # to match one of the capture-time downsampled frames.  The latter is the
+                    # exact false-LIKE path from the 2026-08-14 Hayley incident.
+                    #
+                    # `intent_notified` flips only after `_observe_like_sheet_visible` has
+                    # structurally found Hinge's inline input + CTA + Send Like glyph.  No
+                    # sheet evidence means no human like evidence.  Return None (worker
+                    # resyncs and records no preference) rather than False: False asserts a
+                    # dismissal of a sheet we never observed, while True would invent a LIKE.
+                    if not intent_notified:
+                        self._dbg_action(
+                            "observe_resync", base,
+                            reason="like_candidate_without_observed_sheet",
+                            sheet_seen=False,
+                            profile_name=self._identity_name,
+                            current=False,
+                            deck_ready=True,
+                        )
+                        return None, False
+
+                    # An observed composer establishes intent/opening, not a completed send.
+                    # A stable deck is still not enough to prove it belongs to a DIFFERENT
+                    # profile: a dismissed sheet followed by a manual scroll can make the old
+                    # card look ready, and a same-first-name next card is ambiguous to this
+                    # driver's identity anchor.  Reuse the PASS path's affirmative two-frame
+                    # identity rule.  Without an anchor there is no way to distinguish that
+                    # dismissal-plus-scroll sequence, so fail closed there too.  A missed LIKE
+                    # is recoverable; assigning it to the profile held before this wait is not.
+                    identity_state, _identity_dist = self._identity_of(cur)
+                    confirm_identity_state, _confirm_identity_dist = self._identity_of(confirm)
+                    if identity_state == "new" and confirm_identity_state == "new":
+                        return True, True              # observed sheet -> stable, proven new deck
+                    self._dbg_action(
+                        "observe_resync", base,
+                        reason=("like_send_identity_unavailable" if self._identity_sig is None
+                                else "like_send_identity_unproven"),
+                        sheet_seen=True,
+                        profile_name=self._identity_name,
+                        identity=identity_state,
+                        confirm_identity=confirm_identity_state,
+                        current=False,
+                        deck_ready=True,
+                    )
+                    return None, True
+            # A closed VERIFIED sheet but no current card and no ready deck = Hinge is still
+            # processing.  Without that proof this is only a bottom-delta candidate (often a
+            # human read-scroll), and must not claim a sheet closed or a send is in progress.
             # Keep observing; a timeout is unresolved, never a false cancellation/label.
             #
             # The OTHER half of the watchdog's asymmetry, and the exact state the 2026-08-11
@@ -6539,7 +6604,8 @@ class AndroidDriver(DatingAppDriver):
             # resolved at all, because Hinge had refused the like and silently swapped the deck
             # for the out-of-free-likes paywall; this loop continued until the operator stopped
             # it.
-            self._note_observe_waiting("like_sending", cur)
+            self._note_observe_waiting(
+                "like_sending" if intent_notified else "like_candidate", cur)
             time.sleep(_OBSERVE_POLL_S)
         return None, intent_notified
 

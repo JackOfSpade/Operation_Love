@@ -369,10 +369,17 @@ class _ScriptedDiff:
 
 
 def test_like_detected_sheet_then_advance(monkeypatch):
-    # bottom-only change (sheet up), then a stable ready deck -> like sent
+    # A structurally observed sheet, then a stable identity-proven new deck -> like sent.
     monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
     adb = FakeAdb([b"a", b"sheet", b"b"], advance_on_screencap=True)
     drv = _drv(adb)
+    import numpy as np
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    new_sig = np.full((16, 64), 250, dtype="int16")
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"b")
     assert drv.wait_for_decision(timeout=5.0) is True
 
@@ -389,6 +396,13 @@ def test_like_writes_its_own_decision_record(monkeypatch):
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
     drv._identity_name = "profile_a"
+    import numpy as np
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    new_sig = np.full((16, 64), 250, dtype="int16")
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"b")
 
     assert drv.wait_for_decision(timeout=5.0) is True
@@ -400,6 +414,7 @@ def test_like_writes_its_own_decision_record(monkeypatch):
     # Layer 3 measures distance to the PASS control, so running it on a like would confidently
     # report "resync" for a tap that correctly hit the heart. An honest absence beats a wrong answer.
     assert decisions[0]["gesture"] == "not_checked"
+    assert decisions[0]["sheet_seen"] is True
 
 
 def test_dismissed_like_sheet_is_recorded_but_never_as_a_decision(monkeypatch):
@@ -459,6 +474,100 @@ def test_bottom_delta_with_no_sheet_is_not_logged_as_a_dismissed_like(monkeypatc
     assert "observe_bottom_delta" in names
     assert "observe_like_dismissed" not in names
     assert not [name for name, _f in drv._dbg.calls if name == "observe_decision"]
+
+
+def test_unobserved_bottom_delta_stable_ready_deck_resyncs_never_likes(monkeypatch):
+    """Exact 2026-08-14 regression: a read-scroll can look like a candidate sheet,
+    then land on a stable deck frame that does not match a capture-time signature.  Without a
+    positively observed inline composer, that is ambiguous and MUST be an unlabeled resync.
+    """
+    monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (0.0, 0.0)))
+    adb = FakeAdb([b"base", b"scroll", b"processing", b"steady"], advance_on_screencap=True)
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+    import numpy as np
+    identity = np.full((16, 64), 10, dtype="int16")
+    captured_content = np.full((24, 24), 10, dtype="int16")
+    scrolled_content = np.full((24, 24), 200, dtype="int16")
+    drv._identity_sig = identity
+    drv._identity_top_sig = np.full((16, 64), 150, dtype="int16")
+    drv._current_sigs = [captured_content]
+    # Pin the actual Hayley failure mechanism rather than bypassing it: the sticky name still
+    # says "same", but a manual scroll at an uncaptured offset misses the coarse full-frame
+    # content signatures, so require_content=True returns False and the old code called it a
+    # new, ready deck.
+    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect: identity)
+    monkeypatch.setattr(hinge, "_downsample", lambda *_a, **_k: scrolled_content)
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"steady")
+    wait_reasons = []
+    monkeypatch.setattr(drv, "_note_observe_waiting",
+                        lambda reason, _frame: wait_reasons.append(reason))
+
+    assert drv._is_current_profile_frame(b"steady") is True
+    assert drv._is_current_profile_frame(b"steady", require_content=True) is False
+
+    assert drv.wait_for_decision(timeout=5.0) is None
+    assert wait_reasons == ["like_candidate"]
+
+    resyncs = [fields for name, fields in drv._dbg.calls if name == "observe_resync"]
+    assert resyncs == [{"reason": "like_candidate_without_observed_sheet",
+                        "sheet_seen": False, "profile_name": None,
+                        "current": False, "deck_ready": True}]
+    assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
+
+
+def test_observed_sheet_needs_identity_proven_new_deck_when_anchor_exists(monkeypatch):
+    """A real composer does not license a label if an available identity anchor still says
+    the deck is the old profile.  This includes the same-first-name/content-ambiguous case;
+    resyncing is safer than assigning a LIKE to the profile held before the sheet opened.
+    """
+    monkeypatch.setattr(hinge, "_split_diff",
+                        _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
+    adb = FakeAdb([b"base", b"sheet", b"steady"], advance_on_screencap=True)
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+    import numpy as np
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect: old_sig)
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
+    monkeypatch.setattr(drv, "_is_current_profile_frame", lambda *_a, **_k: False)
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"steady")
+
+    assert drv.wait_for_decision(timeout=5.0) is None
+
+    resyncs = [fields for name, fields in drv._dbg.calls if name == "observe_resync"]
+    assert resyncs == [{"reason": "like_send_identity_unproven", "sheet_seen": True,
+                        "profile_name": None, "identity": "same",
+                        "confirm_identity": "same", "current": False,
+                        "deck_ready": True}]
+    assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
+
+
+def test_observed_sheet_without_identity_anchor_resyncs_never_likes(monkeypatch):
+    """A real composer proves the human opened it, but not that they sent it.  Without a
+    captured identity anchor a dismissal followed by a manual scroll is indistinguishable from
+    a new card, so the result must stay unlabeled.
+    """
+    monkeypatch.setattr(hinge, "_split_diff",
+                        _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
+    adb = FakeAdb([b"base", b"sheet", b"steady"], advance_on_screencap=True)
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
+    monkeypatch.setattr(drv, "_is_current_profile_frame", lambda *_a, **_k: False)
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"steady")
+
+    assert drv.wait_for_decision(timeout=5.0) is None
+
+    resyncs = [fields for name, fields in drv._dbg.calls if name == "observe_resync"]
+    assert resyncs == [{"reason": "like_send_identity_unavailable", "sheet_seen": True,
+                        "profile_name": None, "identity": "unknown",
+                        "confirm_identity": "unknown", "current": False,
+                        "deck_ready": True}]
+    assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
 
 
 def test_like_sheet_wait_emits_a_heartbeat_instead_of_going_silent(monkeypatch):
@@ -675,6 +784,12 @@ def test_like_sheet_not_misread_as_scroll(monkeypatch):
     adb = FakeAdb([b"a", b"sheet", b"b"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._current_sigs = [sig]            # advance frame b"b" doesn't match -> genuine new profile
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    new_sig = np.full((16, 64), 250, dtype="int16")
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"b")
     assert drv.wait_for_decision(timeout=5.0) is True   # LIKE
 
@@ -1579,6 +1694,33 @@ def test_note_observe_waiting_prints_a_plain_actionable_status_line(monkeypatch,
     out = capsys.readouterr().out
     assert "not_deck_ready" in out
     assert "Stop" in out
+
+
+def test_like_candidate_wait_is_truthful_and_uses_the_normal_notice_cadence(monkeypatch, capsys):
+    """No composer has been seen in this state, so it must not inherit either the wording or
+    slower human-compose/send cadence of `like_sheet` / `like_sending`."""
+    clock = [1_000.0]
+    monkeypatch.setattr(hinge.time, "monotonic", lambda: clock[0])
+    drv = _drv(FakeAdb([b"x"]))
+    drv._dbg = _FakeDbg()
+    drv._observe_last_notice = 0.0
+    drv._observe_last_reason = None
+
+    drv._note_observe_waiting("like_candidate")
+    clock[0] += hinge.AndroidDriver._OBSERVE_WAIT_NOTICE_S - 1.0
+    drv._note_observe_waiting("like_candidate")
+
+    records = [fields for name, fields in drv._dbg.calls if name == "observe_waiting"]
+    assert [record["reason"] for record in records] == ["like_candidate"]
+    out = capsys.readouterr().out
+    assert "possible like" in out
+    assert "no Send Like sheet has been observed" in out
+    assert "sheet closed" not in out
+
+    clock[0] += 1.0
+    drv._note_observe_waiting("like_candidate")
+    records = [fields for name, fields in drv._dbg.calls if name == "observe_waiting"]
+    assert [record["reason"] for record in records] == ["like_candidate", "like_candidate"]
 
 
 def test_wait_for_decision_resets_the_waiting_rate_limiter_at_the_start_of_every_call():

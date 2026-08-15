@@ -122,14 +122,21 @@ _SCHEMA = {
             "type": "string",
             "description": "What you are reacting to, described in full: the exact photo or "
                            "prompt detail your claim comes from. THIS FIELD IS NEVER SENT TO "
-                           "HER. Put the whole description here so it does not leak into the "
-                           "opener, and do not reuse its words in the opener.",
+                           "HER. Record only what is visibly shown or explicitly stated, not "
+                           "an action or backstory you inferred. Put the whole description "
+                           "here so it does not leak into the opener, and do not reuse its "
+                           "words in the opener.",
         },
         "angle": {
             "type": "string",
             "description": "In your own words, what your opener is doing: what you are "
-                           "guessing, claiming, teasing about, or connecting. Free text, not a "
-                           "fixed list of choices. Recorded for analysis only, never sent to her.",
+                           "guessing, claiming, teasing about, or connecting. Name the one "
+                           "direct inference from the visible or stated premise and make sure "
+                           "it remains natural under the ordinary competing explanations of "
+                           "the scene. The clue-to-guess path must be immediately recognizable "
+                           "to her; do not use one invented fact as the premise for another. "
+                           "Free text, not a fixed list of choices. Recorded for analysis only, "
+                           "never sent to her.",
         },
         "item_description": {
             "type": "string",
@@ -251,7 +258,23 @@ _SYSTEM = (
     "ONE RULE: your opener must contain a claim that could be wrong. Describing what is in the "
     "photo can never be wrong, which is exactly why it proves nothing; she is not checking "
     "whether you have eyes. The thing you can see may be your premise. It may never be your "
-    "point. Make one clear, positive, profile-specific bid, then leave room for her reply. A "
+    "point. EVIDENCE BOUNDARY, ONE HOP ONLY: the premise must be plainly visible in the item "
+    "or explicitly stated in her profile. From it you may make one playful, uncertain inference. "
+    "Never stack guesses by inventing an unseen action, route, effort, goal, cause, or sequence "
+    "as the premise for another claim. Being at an observation deck does not mean she climbed "
+    "stairs or had a target time, just as being on a summit does not mean she hiked there. If "
+    "the opener needs that hidden bridge, choose a different claim or a different item. "
+    "CALIBRATE THE GUESS: a hedge does not rescue a far-fetched premise. The claim should sound "
+    "natural under most ordinary explanations of the scene, not only under one special backstory. "
+    "Never infer ownership, employment, a routine, a responsibility, or a relationship merely "
+    "from proximity in one photo. Feeding one goat does not mean she owns it, works on a farm, "
+    "or spent the day cleaning a barn; it may be a wild encounter on a trail. Guess about the "
+    "interaction the evidence shows, not an unshown life story. A calibrated opener for that "
+    "photo is: You became its favorite person the second the snacks came out. TRACEABILITY "
+    "TEST: even if the conclusion is wrong, she should instantly see which visible or stated "
+    "clue led you there. If her reaction would be 'how did you possibly get that from this?', "
+    "the inference is too remote and you have fantasized a backstory. Make "
+    "one clear, positive, profile-specific bid, then leave room for her reply. A "
     "claim she can correct beats a question she has to answer: a question is allowed as the "
     "second beat after a real claim, never as the whole message. "
     "Questions should invite positive, fun conversation, not form an interview. "
@@ -1511,7 +1534,15 @@ class GeminiOpener:
                 "the hard rule against em dashes and hyphens, and ground the opener in one "
                 "concrete detail from her profile text or photos. That detail is your "
                 "premise, not your point: never name it or describe it back to her. The "
-                "corrected opener must still carry a claim that could be wrong. Write the "
+                "corrected opener must still carry a claim that could be wrong, but it may "
+                "make only one direct inference from that visible or stated premise. Never "
+                "stack guesses or invent a hidden action, route, effort, goal, cause, or "
+                "sequence as a bridge to the claim. The guess must also remain natural under "
+                "the ordinary competing explanations of the scene; a hedge does not rescue "
+                "a far-fetched premise or an invented ownership, job, routine, responsibility, "
+                "or relationship. She must be able to recognize the visible or stated clue "
+                "that led to the guess immediately, without reverse-engineering your logic. "
+                "Write the "
                 "corrected opener now."
             )
         return {"text": text}

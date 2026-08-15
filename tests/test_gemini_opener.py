@@ -1035,6 +1035,14 @@ def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     assert "premise" in lower and "point" in lower
     assert "never name it or describe it back to her" in lower
     assert "must still carry a claim that could be wrong" in lower
+    assert "only one direct inference from that visible or stated premise" in lower
+    assert "never stack guesses" in lower
+    assert "hidden action, route, effort, goal, cause, or sequence" in lower
+    assert "natural under the ordinary competing explanations of the scene" in lower
+    assert "a hedge does not rescue a far-fetched premise" in lower
+    assert "invented ownership, job, routine, responsibility, or relationship" in lower
+    assert "recognize the visible or stated clue that led to the guess immediately" in lower
+    assert "without reverse-engineering your logic" in lower
 
 
 def test_retry_hint_reaches_the_second_model_after_a_429_cascade(capsys):

@@ -147,10 +147,12 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
   * SCREEN IDENTITY. `usable is True` is not "this is a Hinge profile" — it inherits that
     caveat wholesale from segment.py, where the out-of-likes paywall returns a clean result.
     Settle `_identity_of`/`_screen_is` BEFORE capturing.
-  * Whether a card is ANIMATED. Two screencaps of the same position over animated content
-    differ, which segment.py flags as invisible to one frame and which frameshift measured as
-    the entire refusal tail of the hand-scrolled capture. It surfaces here as a broken chain,
-    which is a refusal, not a wrong answer.
+  * Whether a card is ANIMATED. Two screencaps of the same position over animated content can
+    differ. Frameshift still refuses ordinary measurements below its three-strip quorum. This
+    layer can repair one narrowly bounded two- or three-pair animation run only when an exact
+    two-strip alternative is independently fixed by several observed card/heart landmarks and
+    the complete page rebuild is contradiction-free; every other animation shape remains a
+    broken-chain refusal, never a guessed answer.
 """
 from __future__ import annotations
 
@@ -158,13 +160,20 @@ import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
-from .frameshift import SHIFT_MEASURED, ShiftEstimate, estimate_shift
+from .frameshift import (
+    _AGREEMENT_TOLERANCE_PX, SHIFT_MEASURED, SHIFT_NO_CONSENSUS, STRIP_MATCHED,
+    ShiftEstimate, estimate_shift,
+)
 from .item_identity import ProfileIdentity, capture_profile_identity
 # `_GUTTER_PX` / `_GUTTER_TOLERANCE_PX` are imported rather than re-declared, on frameshift.py's
 # precedent: that window is already measured-and-cited in segment.py, it is what CUT the blocks
 # this module folds, and a second copy would be free to drift away from it.
 from .segment import (
     _GUTTER_PX, _GUTTER_TOLERANCE_PX, EDGE_CARD_CORNER, FrameSegmentation, segment_frame)
+# `_MAX_STEP_PX` is borrowed for the same reason: the ceiling on ONE read gesture is measured and
+# cited in scroll_step.py, and it is the gesture that produced the frames folded here, so a
+# second copy of it would be free to drift away from the step the reader actually makes.
+from .scroll_step import _MAX_STEP_PX
 
 
 # =====================================================================================
@@ -192,12 +201,62 @@ from .segment import (
 #              is a correct measurement rather than an error to accumulate.
 # The ceiling is what matters more than the floor: it must stay far below HALF of
 # `_MIN_ITEM_GAP_PX` (47/2 = 23), or two genuinely distinct blocks could be reconciled into one.
-# 8 is under a third of that.
+# 8 is under half of that.
 #
 # Exceeding it is never absorbed silently in either direction — too-large a disagreement becomes
 # a `failures` entry, and a fragment that drifts out of overlap with its own block becomes the
 # `_MIN_ITEM_GAP_PX` failure below. Both are loud.
 _EXTENT_TOLERANCE_PX = 8
+
+# A direct bridge over one omitted transient frame spans TWO ordinary capture steps.  It still
+# has to be independently measured and the complete reduced index still has to validate, but its
+# accumulated alignment slack can be one pixel wider than a normal adjacent-frame chain:
+#   [live capture 2026-08-15] both pairs around one frame fell below frameshift's three-witness
+#              floor, while the direct bridge had 4/4 agreement.  That bridge placed the shared
+#              bounded card 9px past the extent measured on the other side; the ordinary 8px
+#              bound rejected the otherwise clean rebuild as a phantom second heart.
+# Keep this recovery-only.  `_EXTENT_TOLERANCE_PX` also derives item_nav's independently measured
+# 16px cross-check bound; widening that would admit a known different-profile pair at 218px.
+# Nine remains far below the 47px minimum real gutter, and its doubled slack remains below it.
+_RECOVERY_EXTENT_TOLERANCE_PX = 9
+
+# How far a layout-corroborated two-strip cluster may sit from an already-MEASURED majority
+# before overriding it is refused.  This is the one part of the repair that discards evidence
+# frameshift's quorum accepted, so it is the one that has to justify itself hardest.
+#
+# The FLOOR is derived, and the derivation is what makes the override safe rather than merely
+# bounded: it is one pixel past `_EXTENT_TOLERANCE_PX`, i.e. the smallest per-step error the page
+# fold cannot already absorb.  That single fact rules the dangerous band out twice over:
+#   * BELOW it a repair is unnecessary.  [measured 2026-08-15, over the seven-frame synthetic read
+#     in tests/test_item_index.py: a wrong measured shift of 1..8px injected at ANY one of the 7
+#     pairs still yields a usable index whose block count and translation are IDENTICAL to the
+#     clean build; from 9px every pair refuses.]  Accumulated chain error cancels between two
+#     sightings of the same card, because both inherit the same chain prefix -- so a sub-tolerance
+#     step error never grows into a fold disagreement, however long the read.
+#   * BELOW it a wrong repair is also undetectable.  The caller's probe rejects a proposal by
+#     re-running the ordinary assembly, and an error the assembly tolerates by design produces no
+#     contradiction to reject.  So the old 4px floor admitted exactly the corrections that could
+#     only ever turn a correct answer into a wrong one, never rescue a capture.
+# Above the floor both properties invert: the raw value would have refused the whole capture, and
+# a wrong override contradicts the fold loudly enough for the probe to throw the repair away.
+#
+# The floor stored here is the one for a fold at the DEFAULT tolerance.  `_layout_repaired_shift`
+# re-derives it from whatever tolerance its own call folds at, because the frame-omission rebuild
+# uses `_RECOVERY_EXTENT_TOLERANCE_PX` instead -- the reasoning above is about the fold actually
+# in use, so pinning the floor to the default would reintroduce the absorbed-and-undetectable
+# band on exactly that path.
+#
+# The CEILING is not derived and is deliberately conservative: it is the reproduced animation's
+# 10px correction with a little room, not a measured limit.  Refusing past it costs a capture
+# (fail-closed), so leave it alone until a labelled corpus of animation runs says otherwise --
+# and note nothing yet measures how often an ordinary strip bank holds a coincidental two-vote
+# cluster this far from a correct majority.
+_MAJORITY_OVERRIDE_PX = (_EXTENT_TOLERANCE_PX + 1, 12)
+
+# `_MAX_STEP_PX` (imported above) bounds a layout-supported repair: the reader targets about one
+# third of the locally observed card spacing, so a repair must still fit inside one ordinary read
+# step.  It is never a back door for a large jump that frameshift deliberately refused outside its
+# 900px trust window.
 
 # The smallest page-row gap that can separate two DISTINCT blocks. Derived, not chosen: within a
 # single frame segment.py only ever cuts on a background run inside its gutter window or on a
@@ -220,10 +279,11 @@ _MIN_ITEM_GAP_PX = min(_GUTTER_PX) - _GUTTER_TOLERANCE_PX
 _END_TAIL_GAP_PX = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
 
 # Logged with every refusal dossier.  This is not a compatibility switch; it is a human-readable
-# name for the loaded decision surface, paired with a hash of the actual in-memory splitter code
-# by hinge.py.  The pair distinguishes "the current source replays cleanly" from "the long-lived
+# name for the loaded decision surface, paired by hinge.py with hashes of the actual in-memory
+# indexer decision path and splitter.  Those values distinguish "the current source replays
+# cleanly" from "the long-lived
 # worker was still executing an older indexer" without trusting the working tree alone.
-ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v2"
+ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v3"
 
 
 # =====================================================================================
@@ -398,6 +458,17 @@ class ItemIndex:
     recovered_from_pairs: tuple[tuple[int, int], ...] = ()
     recovery_failed_shifts: tuple[ShiftEstimate, ...] = ()
     recovery_reason: str | None = None
+    # Original frameshift evidence replaced by a layout-assisted acceptance.  This is never a
+    # hidden quorum relaxation: the effective shift's reason and this immutable provenance both
+    # preserve the raw two-strip evidence for a later audit.
+    layout_repaired_shifts: tuple[tuple[int, ShiftEstimate], ...] = ()
+    # The per-chain extent slack this index's blocks were ACTUALLY folded at.  A second pass that
+    # cross-checks this index has to sum its own slack with this one's, and the frame-omission
+    # recovery deliberately builds at `_RECOVERY_EXTENT_TOLERANCE_PX` rather than the default --
+    # so a consumer that assumed the default would set a bound one pixel too tight for exactly
+    # the indexes that were hardest to build.  Recording it keeps that derivation honest instead
+    # of duplicating the assumption in each consumer (see `item_nav._CROSSCHECK_TOLERANCE_PX`).
+    extent_tolerance_px: int = _EXTENT_TOLERANCE_PX
     # One string per sighting `_split_on_bounded_cards` excluded while resolving `blocks` — never
     # silent, on the owner's standing rule that no fallback or degradation happens without being
     # visible. A sighting only ever gets excluded when it BRIDGES two cards the group's own
@@ -519,6 +590,163 @@ class ItemIndex:
                 "ordinal to return. Re-index from an affirmatively confirmed top "
                 "(scroll_top.confirm_scroll_top) instead")
         return self.block_for(model_index).heart_ordinal
+
+
+def _matched_delta_clusters(shift: ShiftEstimate) -> tuple[tuple[int, tuple[int, ...]], ...]:
+    """The disjoint, within-frameshift-tolerance clusters among usable strip votes.
+
+    ``frameshift`` intentionally has the final word on an ordinary strip-only measurement.  This
+    helper merely exposes its *two*-witness alternatives for the much narrower layout check
+    below.  Chaining adjacent values is deliberate: votes at 0, 3 and 6px form one three-voter
+    component, just as a median of 3 accepts all three; treating either edge pair as a separate
+    two-voter cluster would manufacture a repair candidate out of overlapping evidence.
+    """
+    deltas = sorted(s.delta_px for s in shift.strips
+                    if s.state == STRIP_MATCHED and s.delta_px is not None)
+    clusters: list[list[int]] = []
+    for delta in deltas:
+        if clusters and delta - clusters[-1][-1] <= _AGREEMENT_TOLERANCE_PX:
+            clusters[-1].append(delta)
+        else:
+            clusters.append([delta])
+    return tuple(
+        (int(round(sum(cluster) / len(cluster))), tuple(cluster))
+        for cluster in clusters if len(cluster) == 2
+    )
+
+
+def _structural_landmarks(before: FrameSegmentation, after: FrameSegmentation,
+                          ) -> tuple[tuple[str, int], ...]:
+    """Independent same-type landmark deltas that physically fit one read-scroll.
+
+    A top/bottom edge is used only when its own frame observed it; a heart is a separately
+    detected glyph.  We pair like with like across every pair of blocks because the index does
+    not yet know which blocks correspond -- that is exactly the question the candidate shift is
+    answering.  The later candidate check requires several of these pairings and more than one
+    landmark type, so coincidental repeated gutters alone cannot repair a shift.
+    """
+    landmarks: list[tuple[str, int]] = []
+    for kind, attr in (("top", "top"), ("bottom", "bottom")):
+        left = [getattr(block, attr).y for block in before.blocks
+                if getattr(block, attr).observed]
+        right = [getattr(block, attr).y for block in after.blocks
+                 if getattr(block, attr).observed]
+        landmarks.extend((kind, a - b) for a in left for b in right
+                         if 0 <= a - b <= _MAX_STEP_PX)
+    left_hearts = [heart for block in before.blocks for heart in block.hearts]
+    right_hearts = [heart for block in after.blocks for heart in block.hearts]
+    landmarks.extend(("heart", ay - by) for ax, ay in left_hearts for bx, by in right_hearts
+                     if abs(ax - bx) <= 2 and 0 <= ay - by <= _MAX_STEP_PX)
+    return tuple(landmarks)
+
+
+def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: FrameSegmentation,
+                           shift: ShiftEstimate, *,
+                           extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
+                           ) -> tuple[ShiftEstimate, str | None]:
+    """Return a strictly layout-corroborated two-strip repair, or the original shift.
+
+    This does *not* relax ``frameshift``.  It may only rescue a no-consensus result, or replace
+    an actually different measured majority, when exactly two NCC strips form an alternative
+    cluster and three independently segmented landmarks of at least two kinds locate that exact
+    candidate.  More than one passing cluster is ambiguity, hence no repair.
+    """
+    if shift.status not in (SHIFT_NO_CONSENSUS, SHIFT_MEASURED):
+        return shift, None
+
+    candidates = _matched_delta_clusters(shift)
+    if not candidates:
+        return shift, None
+    landmarks = _structural_landmarks(before, after)
+    passing: list[tuple[int, tuple[int, ...], tuple[tuple[str, int], ...]]] = []
+    for candidate, voters in candidates:
+        if not 0 < candidate <= _MAX_STEP_PX:
+            continue
+        corroborating = tuple((kind, delta) for kind, delta in landmarks
+                               if abs(delta - candidate) <= _AGREEMENT_TOLERANCE_PX)
+        if len(corroborating) >= 3 and len({kind for kind, _delta in corroborating}) >= 2:
+            passing.append((candidate, voters, corroborating))
+    if len(passing) != 1:
+        return shift, None
+
+    candidate, voters, corroborating = passing[0]
+    # A normal measurement already selected this answer.  Do not emit a cosmetic repair merely
+    # because its own two strips appear in a larger measured cluster.
+    if shift.status == SHIFT_MEASURED:
+        if shift.delta_px == candidate:
+            return shift, None
+        # A measured majority may be overridden only for the observed animation shape: its
+        # layout-supported two-strip cluster is materially different, but still close enough to
+        # be ordinary capture drift rather than a different card.  The enclosing run check below
+        # prevents one stray pair from becoming an exception to frameshift's quorum.
+        # The floor tracks THIS call's fold tolerance rather than the module default, because the
+        # frame-omission rebuild deliberately folds at `_RECOVERY_EXTENT_TOLERANCE_PX`.  Deriving
+        # it per call is what keeps `_MAJORITY_OVERRIDE_PX`'s justification -- "one pixel past
+        # what the fold already absorbs" -- true on that path too, instead of only on the default
+        # one.  A tolerance at or above the ceiling simply empties the window, which is the right
+        # answer: a fold that absorbs that much never needs a majority overridden at all.
+        correction = abs(shift.delta_px - candidate)
+        if not extent_tolerance_px + 1 <= correction <= _MAJORITY_OVERRIDE_PX[1]:
+            return shift, None
+
+    types = ", ".join(sorted({kind for kind, _delta in corroborating}))
+    old = (f"{shift.status} {shift.delta_px:+d}px" if shift.delta_px is not None
+           else shift.status)
+    repaired = replace(
+        shift, delta_px=candidate, consensus_px=candidate, status=SHIFT_MEASURED,
+        agreeing=len(voters), dissenting=max(0, shift.eligible - len(voters)),
+        confidence=(len(voters) / shift.eligible if shift.eligible else 0.0),
+        reason=(
+            f"layout-assisted acceptance from {old}: exactly two independent NCC strips "
+            f"({', '.join(f'{value:+d}px' for value in voters)}) form +{candidate}px; "
+            f"{len(corroborating)} observed structural landmark pairings across {types} "
+            f"also land within {_AGREEMENT_TOLERANCE_PX}px (one-step maximum {_MAX_STEP_PX}px)"))
+    note = (
+        f"frame {pair_index}'s pair with frame {pair_index + 1}: layout-assisted shift from {old} "
+        f"to +{candidate}px using exactly two NCC strips {list(voters)} plus "
+        f"{len(corroborating)} structural landmark pairings across {types}")
+    return repaired, note
+
+
+def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
+                               shifts: Sequence[ShiftEstimate], *,
+                               extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
+                               ) -> tuple[tuple[ShiftEstimate, ...], tuple[str, ...],
+                                          tuple[tuple[int, ShiftEstimate], ...]]:
+    """Propose one bounded animation run, never an isolated layout repair.
+
+    A real animation affects neighbouring capture pairs, whereas a coincidental two-strip match
+    is normally isolated.  Exactly one maximal run of two or three candidates is therefore the
+    only admissible shape, and it must include a raw no-consensus pair.  The caller still runs a
+    complete ordinary page assembly before committing this proposal.
+    """
+    repaired: list[ShiftEstimate] = []
+    notes: list[str | None] = []
+    for i, (before, after, shift) in enumerate(zip(segmentations[:-1], segmentations[1:], shifts,
+                                                     strict=True)):
+        result, note = _layout_repaired_shift(i, before, after, shift,
+                                              extent_tolerance_px=extent_tolerance_px)
+        repaired.append(result)
+        notes.append(note)
+
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for i, note in enumerate(notes + [None]):
+        if note is not None and start is None:
+            start = i
+        elif note is None and start is not None:
+            runs.append((start, i))
+            start = None
+    if len(runs) != 1:
+        return tuple(shifts), (), ()
+    start, end = runs[0]
+    if not 2 <= end - start <= 3:
+        return tuple(shifts), (), ()
+    indices = tuple(range(start, end))
+    if not any(shifts[i].status == SHIFT_NO_CONSENSUS for i in indices):
+        return tuple(shifts), (), ()
+    return (tuple(repaired), tuple(note for note in notes[start:end] if note is not None),
+            tuple((i, shifts[i]) for i in indices))
 
 
 def _frame_offsets(shifts: Sequence[ShiftEstimate]) -> tuple[list[int | None], list[str]]:
@@ -1108,11 +1336,17 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             prefix_count = candidate_count
 
     if prefix_count:
+        # A cached prefix may itself have used the layout-assisted path.  Its effective shifts
+        # are safe results, but the raw evidence must be replayed here so the extended capture
+        # re-applies the same bounded-run gate and retains provenance instead of silently
+        # treating a synthetic acceptance as an ordinary frameshift quorum.
+        prefix_raw_shifts = dict(getattr(_prefix_index, "layout_repaired_shifts", ()) or ())
         segmentations = _prefix_index.frames + tuple(
             segment_frame(frame, content_band=content_band, like_template=like_template,
                           like_threshold=like_threshold)
             for frame in frames[prefix_count:])
-        shifts = _prefix_index.shifts + tuple(
+        shifts = tuple(prefix_raw_shifts.get(i, shift)
+                       for i, shift in enumerate(_prefix_index.shifts)) + tuple(
             estimate_shift(frames[i], frames[i + 1], content_band=content_band,
                            trust_window_px=trust_window_px)
             for i in range(prefix_count - 1, len(frames) - 1))
@@ -1125,6 +1359,25 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             estimate_shift(frames[i], frames[i + 1], content_band=content_band,
                            trust_window_px=trust_window_px)
             for i in range(len(frames) - 1))
+
+    # `frameshift` keeps its own three-strip quorum unchanged.  Only after the independent
+    # segmenter has produced card edges and heart glyphs may a bounded animation-shaped run
+    # *propose* an alternative.  Commit it only if the entire ordinary assembly succeeds at this
+    # call's extent bound (8px by default); no omitted frames or best-effort prefix is involved.
+    raw_shifts = shifts
+    shifts, repair_notes, layout_repaired_shifts = _repair_shifts_from_layout(
+        segmentations, shifts, extent_tolerance_px=extent_tolerance_px)
+    if repair_notes:
+        probe_offsets, probe_chain_failures = _frame_offsets(shifts)
+        probe_failures: tuple[str, ...] = ()
+        if not probe_chain_failures and not any(seg.failures for seg in segmentations):
+            _probe_blocks, probe_failures, _probe_notes = _assemble(
+                _observations(segmentations, probe_offsets), at_scroll_top=at_scroll_top,
+                card_x=segmentations[0].card_x, extent_tolerance_px=extent_tolerance_px,
+                min_item_gap_px=min_item_gap_px, band_y0=segmentations[0].band[0],
+                include_notes=True)
+        if probe_chain_failures or probe_failures or any(seg.failures for seg in segmentations):
+            shifts, repair_notes, layout_repaired_shifts = raw_shifts, (), ()
 
     # An ordinary read can contain one unusable *intermediate* frame while both of its neighbours
     # still correspond.  That produces either one failed pair (only one side was damaged) or two
@@ -1158,7 +1411,8 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
                 reduced_frames, content_band=content_band, like_template=like_template,
                 like_threshold=like_threshold, at_scroll_top=at_scroll_top,
                 identity_band=identity_band, trust_window_px=trust_window_px,
-                extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
+                extent_tolerance_px=max(extent_tolerance_px, _RECOVERY_EXTENT_TOLERANCE_PX),
+                min_item_gap_px=min_item_gap_px,
                 end_tail_gap_px=end_tail_gap_px, _allow_frame_omission_recovery=False)
             bridge = (omitted - 1, omitted + 1)
             # The source index shifts by one after the omission, but the bridge always starts at
@@ -1208,12 +1462,13 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         # forgot to check `usable`, and the missing items are precisely the ones the run would
         # then misnumber.
         blocks: tuple[IndexedBlock, ...] = ()
-        notes: tuple[str, ...] = ()
+        notes: tuple[str, ...] = repair_notes
     else:
-        blocks, assembly_failures, notes = _assemble(
+        blocks, assembly_failures, assembly_notes = _assemble(
             _observations(segmentations, offsets), at_scroll_top=at_scroll_top, card_x=card_x,
             extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
             band_y0=segmentations[0].band[0], include_notes=True)
+        notes = repair_notes + assembly_notes
         failures.extend(assembly_failures)
 
     placed = [(seg, off) for seg, off in zip(segmentations, offsets) if off is not None]
@@ -1232,7 +1487,9 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         blocks=blocks, frames=segmentations, shifts=shifts, offsets=tuple(offsets),
         page_span=page_span, at_scroll_top=at_scroll_top, reached_end=reached_end,
         tail_gap_px=tail_gap, failures=tuple(failures), identity=identity,
-        source_frame_indices=tuple(range(len(frames))), notes=notes)
+        source_frame_indices=tuple(range(len(frames))), notes=notes,
+        layout_repaired_shifts=layout_repaired_shifts,
+        extent_tolerance_px=extent_tolerance_px)
 
 
 def _tail(last: FrameSegmentation, *, end_tail_gap_px: int) -> tuple[bool, int | None]:

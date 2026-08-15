@@ -911,6 +911,7 @@ def test_item_index_refusal_saves_at_most_eight_source_mapped_frames_and_bounded
     runtime = refusal["item_index_runtime"]
     assert runtime["algorithm_id"] == item_index.ITEM_INDEX_ALGORITHM_ID
     assert runtime["module_path"].endswith("operation_love/drivers/item_index.py")
+    assert len(runtime["indexer_code_sha256"]) == 64
     assert len(runtime["splitter_code_sha256"]) == 64
     sidecar = json.loads((drv._dbg.dir / refusal["evidence_sidecar"]).read_text())
     assert sidecar["schema_version"] == 2
@@ -928,6 +929,102 @@ def test_item_index_refusal_saves_at_most_eight_source_mapped_frames_and_bounded
     assert frame["blocks"][0]["hearts"] == {
         "frame_rows": [[900, 42]], "page_rows": [[900, 42]],
     }
+
+
+def test_item_index_runtime_provenance_hashes_loaded_indexer_not_worktree_source(
+        monkeypatch, tmp_path):
+    """An imported indexer is what a refusal ran, not whatever its file contains now."""
+    baseline = hinge._item_index_runtime_provenance()
+    assert len(baseline["indexer_code_sha256"]) == 64
+
+    # A source path/content change alone cannot alter code already loaded into this process.
+    source_copy = tmp_path / "item_index.py"
+    source_copy.write_text("before import-time code")
+    monkeypatch.setattr(item_index, "__file__", str(source_copy))
+    from_source_path = hinge._item_index_runtime_provenance()
+    source_copy.write_text("edited after import; executable code is still unchanged")
+    after_worktree_edit = hinge._item_index_runtime_provenance()
+    assert from_source_path["indexer_code_sha256"] == baseline["indexer_code_sha256"]
+    assert after_worktree_edit["indexer_code_sha256"] == baseline["indexer_code_sha256"]
+
+    # In contrast, a live helper replacement changes behavior and must be visible.  `_assemble`
+    # is an explicit member of the indexer fingerprint, so no source reload is needed to prove it.
+    def changed_assemble(*_args, **_kwargs):
+        return (), (), ()
+
+    monkeypatch.setattr(item_index, "_assemble", changed_assemble)
+    helper_changed = hinge._item_index_runtime_provenance()
+    assert helper_changed["indexer_code_sha256"] != baseline["indexer_code_sha256"]
+
+    # Loaded calibration globals are part of the same contract, rather than an invisible
+    # behavioural input outside the code-object digest.
+    monkeypatch.setattr(item_index, "_MAX_STEP_PX", item_index._MAX_STEP_PX + 1)
+    calibration_changed = hinge._item_index_runtime_provenance()
+    assert calibration_changed["indexer_code_sha256"] != helper_changed["indexer_code_sha256"]
+
+
+def test_item_index_runtime_provenance_reaches_the_helpers_below_its_leaf_dependencies(
+        monkeypatch):
+    """Naming the stages explicitly stopped one call-frame short of the real deciders.
+
+    `segment_frame`, `estimate_shift` and `capture_profile_identity` are thin orchestrators. The
+    row classifier, the strip matcher and the scroll-top confirmer beneath them decide as much of
+    a refusal as anything in `item_index`, and hashing only the three entry points left a process
+    running a changed row classifier reporting a byte-identical fingerprint — the same blind spot
+    the digest exists to close, moved one level down.
+    """
+    from operation_love.drivers import frameshift
+
+    baseline = hinge._item_index_runtime_provenance()["indexer_code_sha256"]
+
+    def changed(*_args, **_kwargs):
+        raise AssertionError("never called; only its code object is fingerprinted")
+
+    # One helper per cross-module dependency, each private to a module `item_index` only ever
+    # reaches THROUGH its named leaf.
+    for module, name in ((segment, "_classify_rows"),
+                         (frameshift, "_resolve"),
+                         (item_identity, "confirm_scroll_top")):
+        assert hasattr(module, name), f"{module.__name__}.{name} moved; pick its replacement"
+        with monkeypatch.context() as patched:
+            patched.setattr(module, name, changed)
+            assert hinge._item_index_runtime_provenance()["indexer_code_sha256"] != baseline, (
+                f"a changed {module.__name__}.{name} must not report an unchanged indexer")
+    assert hinge._item_index_runtime_provenance()["indexer_code_sha256"] == baseline
+
+    # An unused import must still not make the fingerprint drift: the walk follows what the
+    # loaded code actually reads, rather than sweeping each module.
+    monkeypatch.setattr(item_index, "_an_unused_helper", changed, raising=False)
+    assert hinge._item_index_runtime_provenance()["indexer_code_sha256"] == baseline
+
+
+def test_item_index_runtime_provenance_survives_a_self_referential_global(monkeypatch):
+    """Diagnostics must degrade to a value, never to an absent dict on a live refusal.
+
+    The whole body is wrapped in a blanket ``except``, so an unbounded walk into a container that
+    contains itself would not raise — it would quietly return all-None provenance for a refusal
+    that most needs to say which code produced it.
+    """
+    baseline = hinge._item_index_runtime_provenance()
+    assert baseline["indexer_code_sha256"] is not None
+
+    # `_MAX_STEP_PX` is read inside a function BODY, so it reaches the globals walk. Prove that
+    # here rather than assuming it: a constant that only supplies a keyword default would NOT
+    # reach it (those are captured off the loaded function's `__defaults__`, where a post-import
+    # rebinding correctly changes nothing), and this test would then pass without exercising
+    # anything at all.
+    with monkeypatch.context() as patched:
+        patched.setattr(item_index, "_MAX_STEP_PX", item_index._MAX_STEP_PX + 1)
+        assert (hinge._item_index_runtime_provenance()["indexer_code_sha256"]
+                != baseline["indexer_code_sha256"]), "pick a global the walk actually reads"
+
+    cyclic: dict = {"frames": 3}
+    cyclic["self"] = cyclic
+    monkeypatch.setattr(item_index, "_MAX_STEP_PX", cyclic)
+
+    provenance = hinge._item_index_runtime_provenance()
+    assert provenance["indexer_code_sha256"] is not None
+    assert provenance["algorithm_id"] == item_index.ITEM_INDEX_ALGORITHM_ID
 
 
 def test_item_index_refusal_filesystem_evidence_failure_cannot_break_the_live_refusal(

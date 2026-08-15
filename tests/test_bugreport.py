@@ -525,8 +525,9 @@ def test_debug_log_section_summarises_item_index_refusals_and_realised_steps(tmp
         "after": "00002_item_index_refused_after.png",
         "steps_px": [209, None, 211, 209],
         "item_index_runtime": {
-            "algorithm_id": "bounded-card-split-v2",
+            "algorithm_id": "bounded-card-split-v3",
             "module_path": "/repo/operation_love/drivers/item_index.py",
+            "indexer_code_sha256": "b" * 64,
             "splitter_code_sha256": "a" * 64,
         },
         "refused_pairs": [{"pair": [34, 35], "status": "no_consensus", "agreeing": 4,
@@ -541,8 +542,9 @@ def test_debug_log_section_summarises_item_index_refusals_and_realised_steps(tmp
     assert "realised steps (3 measured): min 209px, median 209px, max 211px" in md
     assert "before `00001_item_index_refused_before.png`" in md
     assert "after `00002_item_index_refused_after.png`" in md
-    assert "algorithm `bounded-card-split-v2`" in md
+    assert "algorithm `bounded-card-split-v3`" in md
     assert "loaded module `/repo/operation_love/drivers/item_index.py`" in md
+    assert "in-memory indexer `bbbbbbbbbbbb`" in md
     assert "in-memory splitter `aaaaaaaaaaaa`" in md
 
 
@@ -619,6 +621,123 @@ def test_debug_report_surfaces_item_numbering_manifest_and_compacts_raw_tail(tmp
             "edges=0.31, panel=false, text=false`" in md)
     assert '"item_manifest": "see item-numbering manifest above"' in md
     assert md.count("aaaa1111bbbb2222") == 1
+
+
+def test_debug_report_marks_prior_manifest_when_latest_capture_refused(tmp_path):
+    """A prior card's item table is useful evidence, never the current refused card's table."""
+    run = tmp_path / "run_prior_item_manifest"
+    run.mkdir(parents=True)
+    refusal_reason = ("the item index this capture produced contradicts itself: frames 7 and 8 "
+                      "could not be put in one coordinate space; " + "geometry detail " * 80)
+    successful = {
+        "ts": "2026-08-15T06:10:25", "action": "capture", "profile_name": "Winnie",
+        "items": 1, "item_translation": [1],
+        "item_manifest": [{
+            "kind": "item", "model_item": 1, "heart_ordinal": 1,
+            "source_frame_index": 0, "page_rows": [553, 1527],
+            "crop_size": [974, 974], "crop_sha256": "prior-winnie-crop",
+            "reason": "item 1 (heart 1 on the page)",
+        }],
+    }
+    refused = {
+        "ts": "2026-08-15T06:17:55", "action": "capture", "profile_name": "Shannon",
+        "items": 0, "item_translation": [], "item_manifest": [],
+        "items_unavailable": refusal_reason,
+    }
+    (run / "actions.jsonl").write_text(
+        json.dumps(successful) + "\n"
+        + json.dumps({"action": "item_index_refused", "reason": refusal_reason}) + "\n"
+        + json.dumps(refused) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert ("prior successful capture at `2026-08-15T06:10:25` for profile `Winnie`" in md)
+    assert ("latest capture at `2026-08-15T06:17:55` for profile `Shannon` had no numbered "
+            "manifest; items unavailable: `" +
+            bugreport._compact_item_index_refusal_text(refusal_reason) + "`" in md)
+    assert "model item → page heart translation: `[1]`" in md
+    assert "prior-winnie-crop" in md
+    assert md.count(bugreport._sanitize_inline(refusal_reason)) == 1
+    assert "full geometry is in the item-index summary below" in md
+    # Only the successful capture points at the summary; the refused capture's empty manifest
+    # remains raw evidence of why its own item table is absent.
+    assert md.count('"item_manifest": "see item-numbering manifest above"') == 1
+    assert '"item_manifest": []' in md
+
+
+def test_debug_report_marks_prior_manifest_when_the_next_read_was_stopped(tmp_path):
+    """A Stop mid-read writes `capture_aborted` and NO capture record at all.
+
+    The 2026-08-15 report is the live shape: Mariya captured six items, the operator pressed Stop
+    eleven frames into Julia, and the manifest section then printed Mariya's page/heart numbers
+    directly under Julia's story with nothing saying so. An abandoned read ends a profile exactly
+    as a refusal does, so it has to reach this warning by the same route.
+    """
+    run = tmp_path / "run_stopped_next_read"
+    run.mkdir(parents=True)
+    successful = {
+        "ts": "2026-08-15T11:46:57", "action": "capture", "profile_name": "Mariya",
+        "items": 1, "item_translation": [1],
+        "item_manifest": [{
+            "kind": "item", "model_item": 1, "heart_ordinal": 1,
+            "source_frame_index": 0, "page_rows": [517, 1491],
+            "crop_size": [974, 974], "crop_sha256": "prior-mariya-crop",
+            "reason": "item 1 (heart 1 on the page)",
+        }],
+    }
+    aborted = {"ts": "2026-08-15T12:08:33", "action": "capture_aborted", "frames": 11,
+               "read_scrolls": 11, "profile_name": "Julia"}
+    (run / "actions.jsonl").write_text(
+        json.dumps(successful) + "\n" + json.dumps(aborted) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "prior successful capture at `2026-08-15T11:46:57` for profile `Mariya`" in md
+    assert ("the read that followed it was abandoned at `2026-08-15T12:08:33` for profile "
+            "`Julia` on Stop after 11 frame(s), so it has no manifest of its own and none of "
+            "the numbers below describe it" in md)
+    assert "prior-mariya-crop" in md
+    # A Stop is not a refusal, so it must not borrow the refusal wording or invent a reason.
+    assert "had no numbered manifest" not in md
+    assert "items unavailable" not in md
+
+
+def test_only_the_expanded_captures_manifest_is_replaced_by_a_pointer_to_it(tmp_path):
+    """The tail says "see the manifest above", and exactly one manifest is ever above.
+
+    A run that captured several profiles inside the tail window has several manifest-bearing
+    records but only the LAST one's table is expanded. Pointing every one of them at "above"
+    tells a reader that an earlier capture's rows are the ones printed, which is the same
+    misdirection as showing a stale table with no provenance line at all.
+    """
+    run = tmp_path / "run_two_manifests"
+    run.mkdir(parents=True)
+
+    def capture(ts, name, sha):
+        return {"ts": ts, "action": "capture", "profile_name": name, "items": 1,
+                "item_translation": [1],
+                "item_manifest": [{"kind": "item", "model_item": 1, "heart_ordinal": 1,
+                                   "source_frame_index": 0, "page_rows": [517, 1491],
+                                   "crop_size": [974, 974], "crop_sha256": sha,
+                                   "reason": "item 1 (heart 1 on the page)"}]}
+
+    (run / "actions.jsonl").write_text(
+        json.dumps(capture("2026-08-15T11:20:01", "Ellie", "ellie-crop")) + "\n"
+        + json.dumps({"ts": "2026-08-15T11:30:00", "action": "observe_decision",
+                      "decision": "like", "profile_name": "Ellie"}) + "\n"
+        + json.dumps(capture("2026-08-15T11:46:57", "Mariya", "mariya-crop")) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    # The expanded table is the latest capture's, so only that record may point at it...
+    assert md.count('"item_manifest": "see item-numbering manifest above"') == 1
+    assert "mariya-crop" in md
+    # ...and the earlier capture says where its own rows actually live.
+    assert ('"item_manifest": "1 manifest row(s) in actions.jsonl; the expanded table above '
+            'belongs to a different capture"' in md)
+    assert "ellie-crop" not in md
+    # Both captures succeeded, so there is no stale-manifest warning to raise.
+    assert "prior successful capture" not in md
 
 
 def test_recent_logs_points_to_an_oversized_item_index_wall_already_shown_in_summary(tmp_path):

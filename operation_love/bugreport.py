@@ -981,12 +981,16 @@ def _item_index_refusal_summary_md(lines: list[str]) -> str:
         if isinstance(runtime, dict):
             algorithm = runtime.get("algorithm_id")
             module_path = runtime.get("module_path")
+            indexer_hash = runtime.get("indexer_code_sha256")
             splitter_hash = runtime.get("splitter_code_sha256")
             runtime_bits = []
             if algorithm:
                 runtime_bits.append(f"algorithm `{_sanitize_inline(str(algorithm))}`")
             if module_path:
                 runtime_bits.append(f"loaded module `{_sanitize_inline(str(module_path))}`")
+            if indexer_hash:
+                runtime_bits.append(
+                    f"in-memory indexer `{_sanitize_inline(str(indexer_hash))[:12]}`")
             if splitter_hash:
                 runtime_bits.append(
                     f"in-memory splitter `{_sanitize_inline(str(splitter_hash))[:12]}`")
@@ -1034,6 +1038,22 @@ def _item_index_repair_summary_md(lines: list[str]) -> str:
     return "\n".join(f"- `{note}`" for note in shown) + suffix
 
 
+def _manifest_capture(lines: list[str]) -> dict | None:
+    """The ONE capture whose item manifest the summary section expands.
+
+    The raw-tail compactor has to reach the same answer this section displays. It replaces a
+    manifest with a pointer to the table "above", and a run that captured several profiles inside
+    the tail window has several manifest-bearing records but only ever ONE expanded table -- so a
+    pointer on any other record names a table that is not that capture's.
+    """
+    capture = None
+    for rec in _action_records(lines):
+        if (rec.get("action") == "capture"
+                and isinstance(rec.get("item_manifest"), list) and rec.get("item_manifest")):
+            capture = rec
+    return capture
+
+
 def _item_manifest_summary_md(lines: list[str]) -> str:
     """Explain how page crops became dense model item numbers.
 
@@ -1042,12 +1062,14 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
     capture records retain a bounded, non-image manifest; surface its page/heart/model mapping
     once and compact the duplicate copy in the raw tail below.
     """
-    capture = None
-    for rec in _action_records(lines):
-        if (rec.get("action") == "capture"
-                and isinstance(rec.get("item_manifest"), list)
-                and rec.get("item_manifest")):
-            capture = rec
+    # Both action names END a profile read: `capture` writes whatever the index produced (an
+    # empty manifest when it refused), and `capture_aborted` is the Stop path, which by design
+    # writes no `capture` record at all.  Reading only the former is what let the 2026-08-15
+    # report print a previous profile's item table directly under a card the run never finished
+    # reading -- with no warning, because the abort was invisible to this scan.
+    attempts = [rec for rec in _action_records(lines)
+                if rec.get("action") in ("capture", "capture_aborted")]
+    capture = _manifest_capture(lines)
     if capture is None:
         return ""
     manifest = [row for row in capture["item_manifest"] if isinstance(row, dict)]
@@ -1055,6 +1077,48 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
         return ""
     translation = capture.get("item_translation")
     out = []
+    # A refusal capture deliberately writes ``item_manifest=[]``.  Keep the immediately prior
+    # successful mapping useful for comparison, but never let its page numbers appear to describe
+    # the current card.  The raw-tail compactor's "see ... above" pointer remains accurate because
+    # this explicit provenance line lives in the same manifest section.
+    latest_capture = attempts[-1] if attempts else None
+    # Compared by VALUE, not identity: `_manifest_capture` parses the same lines independently,
+    # so the record it returns is an equal dict rather than the same object as the one in
+    # `attempts`. An identity test here reads every successful capture as a stale one.
+    if latest_capture is not None and latest_capture != capture:
+        aborted = latest_capture.get("action") == "capture_aborted"
+        prior_bits = ["prior successful capture"]
+        prior_ts = capture.get("ts")
+        if prior_ts:
+            prior_bits.append(f"at `{_sanitize_inline(str(prior_ts))}`")
+        prior_profile = capture.get("profile_name")
+        if prior_profile:
+            prior_bits.append(f"for profile `{_sanitize_inline(str(prior_profile))}`")
+        latest_bits = ["the read that followed it was abandoned" if aborted
+                       else "the latest capture"]
+        latest_ts = latest_capture.get("ts")
+        if latest_ts:
+            latest_bits.append(f"at `{_sanitize_inline(str(latest_ts))}`")
+        latest_profile = latest_capture.get("profile_name")
+        if latest_profile:
+            latest_bits.append(f"for profile `{_sanitize_inline(str(latest_profile))}`")
+        if aborted:
+            # A Stop is not a failure to diagnose, so this says so plainly rather than borrowing
+            # the refusal wording.  The frame count is the useful part: it says how far into the
+            # read the Stop landed, which is also how far down the card was left scrolled.
+            frames = latest_capture.get("frames")
+            depth = (f" after {_sanitize_inline(str(frames))} frame(s)"
+                     if isinstance(frames, int) else "")
+            out.append("- ⚠️ " + " ".join(prior_bits) + " — the manifest below belongs to it; "
+                       + " ".join(latest_bits) + f" on Stop{depth}, so it has no manifest of its "
+                       "own and none of the numbers below describe it")
+        else:
+            latest_reason = latest_capture.get("items_unavailable")
+            reason_text = (
+                f"; items unavailable: `{_compact_item_index_refusal_text(latest_reason)}`"
+                if latest_reason else "; no items_unavailable reason was logged")
+            out.append("- ⚠️ " + " ".join(prior_bits) + " — the manifest below belongs to it; "
+                       + " ".join(latest_bits) + " had no numbered manifest" + reason_text)
     if isinstance(translation, list):
         out.append("- model item → page heart translation: `"
                    + _sanitize_inline(json.dumps(translation)) + "`")
@@ -1116,8 +1180,14 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
     return "\n".join(out)
 
 
-def _compact_debug_tail_line(raw: str) -> str:
-    """Keep raw JSON useful while avoiding another full copy of a long refusal wall."""
+def _compact_debug_tail_line(raw: str, expanded: dict | None = None) -> str:
+    """Keep raw JSON useful while avoiding another full copy of a long refusal wall.
+
+    ``expanded`` is the one capture record whose manifest the section above actually printed
+    (`_manifest_capture`).  Only that record may be replaced with a pointer to it; every other
+    manifest-bearing capture in the tail is summarised in place, because its own table is NOT
+    above.  Passing nothing keeps the record's manifest raw rather than guessing.
+    """
     try:
         rec = json.loads(raw)
     except Exception:  # noqa: BLE001
@@ -1129,7 +1199,13 @@ def _compact_debug_tail_line(raw: str) -> str:
     elif rec.get("action") == "capture" and rec.get("items_unavailable"):
         rec["items_unavailable"] = _compact_item_index_refusal_text(rec["items_unavailable"])
     if rec.get("action") == "capture" and rec.get("item_manifest"):
-        rec["item_manifest"] = "see item-numbering manifest above"
+        if expanded is not None and rec == expanded:
+            rec["item_manifest"] = "see item-numbering manifest above"
+        else:
+            rows = len(rec["item_manifest"]) if isinstance(rec["item_manifest"], list) else 0
+            rec["item_manifest"] = (
+                f"{rows} manifest row(s) in actions.jsonl; the expanded table above belongs to a "
+                f"different capture")
     elif rec.get("action") == "item_index_repaired" and rec.get("notes"):
         rec["notes"] = ["see item-index conservative repairs summary above"]
     return json.dumps(rec)
@@ -1629,7 +1705,7 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
             counts_line = _action_counts_line(raw_lines)
             if counts_line:
                 out.append(f"  - {counts_line}")
-            tail = [_compact_debug_tail_line(line)
+            tail = [_compact_debug_tail_line(line, _manifest_capture(raw_lines))
                     for line in _collapse_action_tail(raw_lines, _DEBUG_ACTION_TAIL)]
             if tail:
                 out.append("  - actions.jsonl (tail):\n```\n" + "\n".join(tail) + "\n```")

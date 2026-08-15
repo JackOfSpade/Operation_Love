@@ -725,6 +725,34 @@ def test_an_item_too_short_to_be_the_sheet_still_bounds_every_other_item():
     assert min(pairwise) == pytest.approx(by_number[2].nearest_other)
 
 
+def test_a_sheet_nothing_could_be_measured_against_says_so_instead_of_naming_item_none():
+    """The operator reads this sentence verbatim on the hub and in the console.
+
+    The 2026-08-15 observe run printed "The nearest stored item is None" — the bare Python value,
+    which reads as an item NAMED None rather than as "no item in this payload could be compared
+    with the sheet at all". Both facts are refusals, but only one of them is true here, and a
+    refusal the operator misreads is the failure this project spends its refusals to avoid.
+    """
+    payload = _lookalike_payload()
+    # Both survivors are too short to be what this sheet renders, so nothing is measurable.
+    unmeasurable = dataclasses.replace(payload, crops=(
+        dataclasses.replace(payload.item(3), number=1),
+        dataclasses.replace(payload.item(4), number=2)))
+    verdict = item_verify.verify_sheet_item(_foreign_sheet(), unmeasurable, 1)
+
+    assert verdict.state == item_verify.VERIFY_MISMATCH
+    assert verdict.nearest_index is None
+    assert [c.distance for c in verdict.comparisons] == [None, None]
+    assert verdict.reason.endswith("No stored item could be measured against this sheet either")
+    assert "is None" not in verdict.reason
+
+    # ...and with a measurable neighbour the sentence still names it, which is the other fact.
+    named = item_verify.verify_sheet_item(_foreign_sheet(), payload, 3)
+    assert named.state == item_verify.VERIFY_MISMATCH
+    assert named.nearest_index is not None
+    assert named.reason.endswith(f"The nearest stored item is {named.nearest_index}")
+
+
 def test_a_card_that_is_not_in_the_payload_at_all_is_refused_by_every_number():
     """The failure this closes, end to end: a sheet showing a card from ANOTHER PROFILE.
 

@@ -318,6 +318,12 @@ _IDENTITY_FALSE_MATCH_DISTANCE = 2.565
 # on any ordinal is 0px against this 16 — though that replay reproduces the index's own frames,
 # so it measures that the comparison is correctly ANCHORED rather than how much slack a live
 # second pass needs. The 16 is the derivation above, not that measurement.]
+#
+# This constant is the value for an index built at the DEFAULT extent tolerance, which is the
+# common case and the one the derivation above describes.  `navigate_to_item` re-derives the sum
+# per index, because `item_index`'s frame-omission recovery deliberately folds its blocks at
+# `_RECOVERY_EXTENT_TOLERANCE_PX` instead: for such an index the true worst case is 9 + 8, and a
+# fixed 16 here would hard-stop a navigation whose two passes actually agreed.
 _CROSSCHECK_TOLERANCE_PX = 2 * _EXTENT_TOLERANCE_PX
 
 # How far this pass's own page origin may sit from the index's before the ASCENDING anchor is a
@@ -760,7 +766,7 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                      identity_match_max_dist: float,
                      should_stop=None,
                      max_frames: int | None = None,
-                     crosscheck_tolerance_px: int = _CROSSCHECK_TOLERANCE_PX,
+                     crosscheck_tolerance_px: int | None = None,
                      extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
                      anchor_residual_px: int = _ENTRY_ANCHOR_RESIDUAL_PX,
                      trust_window_px: int | None = None,
@@ -839,6 +845,16 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             raise ActionCancelled(
                 "navigation cancelled because the run is stopping; no further screencap or "
                 "scroll gesture was issued, and nothing was tapped")
+
+    # The bound is the SUM of the two chains' slack (see `_CROSSCHECK_TOLERANCE_PX`), and only
+    # one of those two is this module's own. The other belongs to the index in hand, which the
+    # frame-omission recovery deliberately builds at a wider tolerance than the default — so
+    # reading it off the index is what keeps the derivation true for a recovered index instead of
+    # leaving it one pixel short and hard-stopping a navigation that agreed all along. An
+    # explicit argument still wins, for the calibration passes that vary one bound at a time.
+    if crosscheck_tolerance_px is None:
+        crosscheck_tolerance_px = (
+            getattr(index, "extent_tolerance_px", _EXTENT_TOLERANCE_PX) + _EXTENT_TOLERANCE_PX)
 
     # --- the index, before a finger moves ------------------------------------------
     if not index.usable:

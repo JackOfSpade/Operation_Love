@@ -36,6 +36,7 @@ read's own last frame. Two consequences for this file, both deliberate:
     comparison in the ascending half would simply never fire, which is the failure mode the two
     of them exist to prevent — so neither is tested only through the other.
 """
+import dataclasses
 import math
 import random
 
@@ -528,6 +529,40 @@ def test_a_navigation_that_rewinds_fails_loudly_rather_than_working_expensively(
     # ...and a real navigation over the same double completes, so what is being pinned is that
     # nothing on the path calls them rather than that the double is broken.
     assert _navigate(FakeDriver(), 1).heart_ordinal == 1
+
+
+def test_the_crosscheck_bound_sums_this_pass_and_the_indexs_own_extent_slack(monkeypatch):
+    """`_CROSSCHECK_TOLERANCE_PX` is the SUM of two chains' slack, and only one chain is ours.
+
+    The other belongs to the index in hand. `item_index`'s frame-omission recovery deliberately
+    folds its blocks at `_RECOVERY_EXTENT_TOLERANCE_PX` (9) rather than the default 8, so a fixed
+    `2 * _EXTENT_TOLERANCE_PX` bound is one pixel short for exactly the indexes that were hardest
+    to build: worst case 9 + 8 = 17 against a 16px bound, which hard-stops a navigation whose two
+    passes actually agreed. Read the slack off the index instead of assuming it.
+    """
+    seen: list[int] = []
+    real = item_nav._count_disagrees
+
+    def capture(*args, **kwargs):
+        seen.append(kwargs["tolerance"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(item_nav, "_count_disagrees", capture)
+
+    assert _navigate(FakeDriver(), 1).heart_ordinal == 1
+    assert seen and set(seen) == {2 * item_index._EXTENT_TOLERANCE_PX}
+
+    seen.clear()
+    recovered = dataclasses.replace(
+        _reference_index(), extent_tolerance_px=item_index._RECOVERY_EXTENT_TOLERANCE_PX)
+    assert _navigate(FakeDriver(), 1, index=recovered).heart_ordinal == 1
+    assert seen and set(seen) == {
+        item_index._RECOVERY_EXTENT_TOLERANCE_PX + item_index._EXTENT_TOLERANCE_PX}
+
+    # An explicit argument still wins, for a calibration pass varying one bound at a time.
+    seen.clear()
+    _navigate(FakeDriver(), 1, index=recovered, crosscheck_tolerance_px=21)
+    assert seen and set(seen) == {21}
 
 
 def test_the_step_is_sized_against_this_profiles_own_measured_spacing():

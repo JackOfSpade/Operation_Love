@@ -119,34 +119,193 @@ def _item_index_runtime_provenance() -> dict[str, str | None]:
     """Fingerprint the item-index implementation this process is actually executing.
 
     A git hash or source-file hash describes the working tree, not a long-lived Python process:
-    either can change after imports are cached.  Reach the splitter through the loaded
-    ``build_item_index`` function's globals and hash its in-memory code object.  This remains
-    diagnostic-only and deliberately tolerates monkeypatched/test callables with no splitter.
+    either can change after imports are cached.  The old splitter-only digest therefore left a
+    particularly bad blind spot: a process could be running a changed builder, shift repair, or
+    page assembler while reporting the same runtime fingerprint.  Hash the loaded builder, every
+    project function it TRANSITIVELY reaches, and the simple calibration values those loaded
+    functions read.
+
+    The closure is what makes this honest.  Naming the stages explicitly still stopped at
+    `segment_frame`, `estimate_shift` and `capture_profile_identity`, which are thin
+    orchestrators: the row classifier, the strip matcher and the scroll-top confirmer beneath
+    them decide as much of a refusal as anything in `item_index`, and swapping one left the
+    digest byte-identical -- the same blind spot one call-frame down.  Following function-valued
+    globals rather than sweeping each module keeps the original property that an imported but
+    UNUSED helper cannot make the fingerprint drift.  Functions outside this project (stdlib,
+    third-party) are recorded by identity rather than hashed, so a rebinding is still visible
+    without pinning the digest to somebody else's bytecode.
+
+    This intentionally hashes *code objects*, not source files.  Editing a checkout after this
+    process imported ``item_index`` must not make its diagnostics claim that the running code
+    changed; monkeypatching a loaded helper, on the other hand, must.  The provenance remains
+    best-effort and deliberately tolerates a test callable whose globals do not look like the
+    production item-index module.
     """
     try:
         build = build_item_index
         namespace = getattr(build, "__globals__", {})
         splitter = namespace.get("_split_on_bounded_cards")
-        code = getattr(splitter, "__code__", None)
         source = namespace.get("__file__")
         if isinstance(source, str):
             try:
                 source = str(Path(source).resolve())
             except Exception:  # noqa: BLE001 -- provenance is best-effort diagnostics
                 pass
+
+        # The SEEDS of the walk below, not the whole of it.  They stay explicit so that a stage
+        # disappearing from the module is itself a digest change (see `missing`), and so a
+        # monkeypatched helper is hashed even when it lives in a test module the closure would
+        # otherwise decline to follow.
+        callable_names = (
+            "build_item_index",
+            "_matched_delta_clusters", "_structural_landmarks", "_layout_repaired_shift",
+            "_repair_shifts_from_layout", "_frame_offsets", "_observations",
+            "_overlap_groups", "_heart_clusters", "_resolve_group",
+            "_scroll_top_evidence", "_split_on_bounded_cards", "_assemble", "_tail",
+            "segment_frame", "estimate_shift", "capture_profile_identity",
+        )
+
+        def nested_names(code) -> set[str]:
+            """Global names a code object or one of its nested comprehensions reads."""
+            names = set(getattr(code, "co_names", ()))
+            for constant in getattr(code, "co_consts", ()):
+                if isinstance(constant, type(code)):
+                    names.update(nested_names(constant))
+            return names
+
+        unsupported = object()
+
+        def canonical_value(value, depth: int = 0):
+            """A stable marshal-able form for values that can change indexer behaviour.
+
+            The depth ceiling is a guard, not a calibration: a self-referential container would
+            otherwise recurse until `RecursionError`, and the blanket ``except`` below would turn
+            one awkward global into a wholly absent provenance dict on a live refusal.
+            """
+            if depth > 8:
+                return unsupported
+            if value is None or isinstance(value, (bool, int, float, str, bytes)):
+                return (type(value).__name__, value)
+            if isinstance(value, tuple):
+                values = tuple(canonical_value(item, depth + 1) for item in value)
+                return ("tuple", values) if unsupported not in values else unsupported
+            if isinstance(value, frozenset):
+                values = [canonical_value(item, depth + 1) for item in value]
+                if unsupported in values:
+                    return unsupported
+                return ("frozenset", tuple(sorted(values, key=marshal.dumps)))
+            if isinstance(value, dict):
+                values = [(canonical_value(key, depth + 1), canonical_value(item, depth + 1))
+                          for key, item in value.items()]
+                if any(unsupported in pair for pair in values):
+                    return unsupported
+                return ("dict", tuple(sorted(values, key=lambda pair: marshal.dumps(pair[0]))))
+            return unsupported
+
+        project = __name__.split(".", 1)[0]
+
+        def qualified(obj, fallback: str) -> str:
+            return (f"{getattr(obj, '__module__', '?')}."
+                    f"{getattr(obj, '__qualname__', getattr(obj, '__name__', fallback))}")
+
+        def is_ours(obj) -> bool:
+            module = getattr(obj, "__module__", None)
+            return isinstance(module, str) and (module == project
+                                                or module.startswith(project + "."))
+
+        functions: dict[str, object] = {}   # qualified name -> loaded function, hashed in full
+        foreign: dict[str, str] = {}        # reading site -> identity of a function we do not own
+        missing: list[str] = []             # seed stages this namespace no longer has at all
+        pending: list[object] = []
+
+        def consider(obj, *, seed: bool = False) -> bool:
+            """Track a function whose code decides an index result.
+
+            A seed is hashed wherever it lives, which is what makes a monkeypatched stage
+            visible.  Anything discovered by the walk is followed only when it is ours.
+            """
+            if getattr(obj, "__code__", None) is None:
+                return False
+            if not seed and not is_ours(obj):
+                return False
+            key = qualified(obj, "?")
+            if key not in functions:
+                functions[key] = obj
+                pending.append(obj)
+            return True
+
+        seen_globals: dict[str, object] = {}
+        for name in callable_names:
+            candidate = build if name == "build_item_index" else namespace.get(name)
+            if not consider(candidate, seed=True):
+                missing.append(name)
+
+        while pending:
+            current = pending.pop()
+            current_globals = getattr(current, "__globals__", {})
+            for global_name in nested_names(current.__code__):
+                if global_name not in current_globals:
+                    continue
+                value = current_globals[global_name]
+                if consider(value):
+                    continue
+                # Qualify by reading namespace: dependencies can live in another module with a
+                # same-named calibration constant.
+                key = f"{getattr(current, '__module__', '?')}.{global_name}"
+                if getattr(value, "__code__", None) is not None:
+                    foreign[key] = qualified(value, global_name)
+                    continue
+                encoded = canonical_value(value)
+                if encoded is not unsupported:
+                    seen_globals[key] = encoded
+
+        # The algorithm label is part of the human/audit contract even though it is not itself a
+        # branch in the builder.  It is normally already collected above, but make that guarantee
+        # explicit for monkeypatched builder functions with sparse globals.
+        algorithm_id = namespace.get("ITEM_INDEX_ALGORITHM_ID")
+        encoded_algorithm = canonical_value(algorithm_id)
+        if encoded_algorithm is not unsupported:
+            seen_globals["item_index.ITEM_INDEX_ALGORITHM_ID"] = encoded_algorithm
+
+        # Every section is sorted and tagged, so the digest depends only on WHAT was reached, not
+        # on the order the walk happened to reach it in -- across processes and hash seeds alike.
+        digest = hashlib.sha256(b"operation-love.item-indexer-runtime-v2\0")
+        for name in sorted(missing):
+            digest.update(b"missing\0" + name.encode("utf-8", "replace") + b"\0")
+        for key in sorted(functions):
+            function = functions[key]
+            digest.update(b"code\0" + key.encode("utf-8", "replace") + b"\0"
+                          + marshal.dumps(function.__code__))
+            defaults = (getattr(function, "__defaults__", None),
+                        getattr(function, "__kwdefaults__", None))
+            encoded_defaults = canonical_value(defaults)
+            if encoded_defaults is not unsupported:
+                digest.update(b"defaults\0" + marshal.dumps(encoded_defaults))
+            else:
+                digest.update(b"defaults-unserializable\0")
+        for key in sorted(foreign):
+            digest.update(b"foreign\0" + key.encode("utf-8", "replace") + b"\0"
+                          + foreign[key].encode("utf-8", "replace") + b"\0")
+        for key in sorted(seen_globals):
+            digest.update(b"global\0" + key.encode("utf-8", "replace") + b"\0"
+                          + marshal.dumps(seen_globals[key]))
+
         return {
-            "algorithm_id": namespace.get("ITEM_INDEX_ALGORITHM_ID"),
+            "algorithm_id": algorithm_id,
             "build_callable": (
                 f"{getattr(build, '__module__', '?')}."
                 f"{getattr(build, '__qualname__', getattr(build, '__name__', '?'))}"),
             "module_path": source if isinstance(source, str) else None,
+            "indexer_code_sha256": digest.hexdigest(),
             "splitter_code_sha256": (
-                hashlib.sha256(marshal.dumps(code)).hexdigest() if code is not None else None),
+                hashlib.sha256(marshal.dumps(getattr(splitter, "__code__", None))).hexdigest()
+                if getattr(splitter, "__code__", None) is not None else None),
         }
     except Exception:  # noqa: BLE001 -- diagnostics must never alter a live refusal
         return {
             "algorithm_id": None, "build_callable": None,
-            "module_path": None, "splitter_code_sha256": None,
+            "module_path": None, "indexer_code_sha256": None,
+            "splitter_code_sha256": None,
         }
 
 # A second controller must never turn an active OBSERVE wait into its own read-and-unwind

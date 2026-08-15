@@ -144,6 +144,22 @@ def _index(scrolls, *, at_scroll_top, **kw):
         identity_band=kw.pop("identity_band", None), **kw)
 
 
+def _shift_with_votes(base, votes, *, status, delta=None):
+    """A hand-controlled frameshift result over otherwise-real synthetic frame geometry."""
+    strips = [dataclasses.replace(strip, state=frameshift.STRIP_WEAK, delta_px=None)
+              for strip in base.strips]
+    for i, vote in enumerate(votes):
+        strips[i] = dataclasses.replace(
+            strips[i], state=frameshift.STRIP_MATCHED, delta_px=vote, score=0.99)
+    return dataclasses.replace(
+        base, strips=tuple(strips), status=status, delta_px=delta, consensus_px=delta,
+        agreeing=(sum(abs(vote - delta) <= 3 for vote in votes) if delta is not None else 0),
+        dissenting=(sum(abs(vote - delta) > 3 for vote in votes) if delta is not None else 0),
+        eligible=len(votes), confidence=(1.0 if delta is None else
+                                         sum(abs(vote - delta) <= 3 for vote in votes) / len(votes)),
+        reason="synthetic strip-bank evidence")
+
+
 # Scroll offsets: a full read from the top of the profile to past its last card, at the cadence
 # doc 5.10.1 validated. Frame 0 sits at world row 0 so its band opens on the page background
 # above card 1; the last frame clears card 4's bottom by 334 rows.
@@ -297,6 +313,50 @@ def test_one_transient_frame_can_recover_both_adjacent_refused_pairs(monkeypatch
     assert "pairs 3/4, 4/5" in index.recovery_reason
 
 
+def test_transient_frame_recovery_allows_measured_bridge_alignment_slack(monkeypatch):
+    """A strong direct bridge may carry a little more drift than an ordinary one-step chain.
+
+    The reported 2026-08-15 capture had two adjacent two-witness refusals around one frame.  Its
+    direct neighbour bridge was independently measured by 4/4 eligible strips, but put the
+    shared bounded card 9px past the extent seen on the other side.  That is still far inside a
+    real Hinge gutter and must be absorbed as chain slack; rejecting the complete rebuild loses
+    every item even though the recovery used no refused consensus or assumed offset.
+    """
+    frames = [_frame(scroll) for scroll in _FULL_SCROLL]
+    real_shift = item_index.estimate_shift
+    refused = {(frames[3], frames[4]), (frames[4], frames[5])}
+    bridge = (frames[3], frames[5])
+
+    def transient_middle_with_drifted_bridge(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        if (frame_a, frame_b) in refused:
+            return dataclasses.replace(
+                result, delta_px=None, status=frameshift.SHIFT_NO_CONSENSUS,
+                consensus_px=None, reason="synthetic transient-frame refusal")
+        if (frame_a, frame_b) == bridge:
+            return dataclasses.replace(
+                result, delta_px=result.delta_px + 9, consensus_px=result.consensus_px + 9,
+                reason="synthetic measured bridge with 9px alignment slack")
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", transient_middle_with_drifted_bridge)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.source_frame_indices == (0, 1, 2, 3, 5, 6, 7)
+    assert index.recovery_bridge == (3, 5)
+    assert index.shifts[3].status == frameshift.SHIFT_MEASURED
+    assert index.shifts[3].delta_px == _STEP * 2 + 9
+    assert item_index._EXTENT_TOLERANCE_PX == 8
+    assert item_index._RECOVERY_EXTENT_TOLERANCE_PX == 9
+    assert item_index._RECOVERY_EXTENT_TOLERANCE_PX * 2 < item_index._MIN_ITEM_GAP_PX
+    # The widened slack is a property of THIS index, and a second pass cross-checking it has to
+    # add its own to this one rather than assume the default (see item_nav's crosscheck bound).
+    assert index.extent_tolerance_px == item_index._RECOVERY_EXTENT_TOLERANCE_PX
+
+
 def test_two_adjacent_refusals_still_fail_when_the_direct_bridge_refuses(monkeypatch):
     """Two adjacent failures identify a candidate frame; they do not authorize dropping it."""
     frames = [_frame(scroll) for scroll in _FULL_SCROLL]
@@ -319,6 +379,209 @@ def test_two_adjacent_refusals_still_fail_when_the_direct_bridge_refuses(monkeyp
     assert not index.usable
     assert index.source_frame_indices == tuple(range(len(frames)))
     assert index.recovered_from_pairs == () and index.recovery_bridge is None
+
+
+def test_layout_assisted_animation_run_repairs_two_refusals_and_wrong_measured_majority(monkeypatch):
+    """Three neighbouring pair failures are repaired only as one layout-proven animation run.
+
+    This is the saved-capture shape in synthetic form: a 2/2 refusal, a 2/3 refusal, and a
+    wrong three-strip majority whose two dissenting strips are the ones card geometry proves.
+    The original frameshift quorum remains untouched; the index carries all three raw estimates.
+    """
+    frames = [_frame(_STEP * i) for i in range(5)]
+    real_shift = item_index.estimate_shift
+
+    def animated_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(4) if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair == 0:  # exactly two agreeing strips: raw no-consensus
+            return _shift_with_votes(result, [_STEP, _STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+        if pair == 1:  # exactly two agree, one different matched strip: still raw no-consensus
+            return _shift_with_votes(result, [_STEP, _STEP, _STEP - 16],
+                                     status=frameshift.SHIFT_NO_CONSENSUS)
+        if pair == 2:  # raw three-strip majority is wrong by ten pixels; two stable strips win
+            return _shift_with_votes(result, [_STEP - 10, _STEP - 10, _STEP - 10, _STEP, _STEP],
+                                     status=frameshift.SHIFT_MEASURED, delta=_STEP - 10)
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", animated_pair)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert [shift.delta_px for shift in index.shifts[:3]] == [_STEP, _STEP, _STEP]
+    assert len(index.layout_repaired_shifts) == 3
+    assert [raw.status for _pair, raw in index.layout_repaired_shifts] == [
+        frameshift.SHIFT_NO_CONSENSUS, frameshift.SHIFT_NO_CONSENSUS, frameshift.SHIFT_MEASURED]
+    assert index.layout_repaired_shifts[2][1].delta_px == _STEP - 10
+    assert len(index.notes) >= 3
+    assert all("layout-assisted" in note for note in index.notes[:3])
+
+
+@pytest.mark.parametrize("landmarks", [
+    # Not enough independent pairings, even though two landmark kinds agree.
+    (("top", 363), ("bottom", 363)),
+    # Three pairings from one kind are not independent enough.
+    (("top", 363), ("top", 363), ("top", 363)),
+])
+def test_layout_assisted_pair_requires_three_landmarks_across_two_types(monkeypatch, landmarks):
+    before = item_index.segment_frame(_frame(0), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+                                      like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+    after = item_index.segment_frame(_frame(_STEP), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+                                     like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+    raw = _shift_with_votes(
+        item_index.estimate_shift(_frame(0), _frame(_STEP), content_band=_CONTENT_BAND),
+        [_STEP, _STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: landmarks)
+    repaired, note = item_index._layout_repaired_shift(0, before, after, raw)
+    assert repaired is raw and note is None
+
+
+def test_layout_assisted_pair_rejects_large_or_ambiguous_two_strip_candidates(monkeypatch):
+    before = item_index.segment_frame(_frame(0), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+                                      like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+    after = item_index.segment_frame(_frame(_STEP), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+                                     like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+    base = item_index.estimate_shift(_frame(0), _frame(_STEP), content_band=_CONTENT_BAND)
+
+    too_large = _shift_with_votes(base, [400, 400], status=frameshift.SHIFT_NO_CONSENSUS)
+    monkeypatch.setattr(item_index, "_structural_landmarks",
+                        lambda *_: (("top", 400), ("bottom", 400), ("heart", 400)))
+    repaired, note = item_index._layout_repaired_shift(0, before, after, too_large)
+    assert repaired is too_large and note is None
+
+    ambiguous = _shift_with_votes(base, [300, 300, 363, 363], status=frameshift.SHIFT_NO_CONSENSUS)
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", 300), ("bottom", 300), ("heart", 300),
+        ("top", 363), ("bottom", 363), ("heart", 363)))
+    repaired, note = item_index._layout_repaired_shift(0, before, after, ambiguous)
+    assert repaired is ambiguous and note is None
+
+
+def test_layout_assisted_repair_rejects_isolated_runs_and_small_or_large_overrides(monkeypatch):
+    """`_MAJORITY_OVERRIDE_PX` must stay a DERIVED floor, and the floor is a hard boundary.
+
+    A correction the page fold already absorbs (<= `_EXTENT_TOLERANCE_PX`) must never override a
+    measured majority: it is both unnecessary (the fold cancels it) and undetectable (the caller's
+    probe has nothing to reject). One pixel past that, at `_EXTENT_TOLERANCE_PX + 1`, is the
+    smallest correction the fold cannot already absorb, so it is the first one allowed through.
+    """
+    frames = [_frame(_STEP * i) for i in range(3)]
+    segmentations = tuple(item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    base = item_index.estimate_shift(frames[0], frames[1], content_band=_CONTENT_BAND)
+    isolated = _shift_with_votes(base, [_STEP, _STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+    ordinary = item_index.estimate_shift(frames[1], frames[2], content_band=_CONTENT_BAND)
+    repaired, notes, raw = item_index._repair_shifts_from_layout(segmentations, (isolated, ordinary))
+    assert repaired == (isolated, ordinary) and notes == () and raw == ()
+
+    # The floor must be derived from `_EXTENT_TOLERANCE_PX`, never a hardcoded literal that could
+    # silently drift out of sync with the tolerance it exists to sit one pixel past.
+    assert item_index._MAJORITY_OVERRIDE_PX[0] == item_index._EXTENT_TOLERANCE_PX + 1
+
+    before, after = segmentations[:2]
+    for correction in (3, item_index._EXTENT_TOLERANCE_PX, 13):
+        measured = _shift_with_votes(
+            base, [_STEP - correction, _STEP - correction, _STEP - correction, _STEP, _STEP],
+            status=frameshift.SHIFT_MEASURED, delta=_STEP - correction)
+        shifted, note = item_index._layout_repaired_shift(0, before, after, measured)
+        assert shifted is measured and note is None
+
+    # Exactly one pixel past the tolerance is the first correction that is both necessary (the
+    # fold cannot absorb it) and detectable (a wrong override would contradict the fold loudly),
+    # so it must be the first one accepted.
+    correction = item_index._EXTENT_TOLERANCE_PX + 1
+    measured = _shift_with_votes(
+        base, [_STEP - correction, _STEP - correction, _STEP - correction, _STEP, _STEP],
+        status=frameshift.SHIFT_MEASURED, delta=_STEP - correction)
+    shifted, note = item_index._layout_repaired_shift(0, before, after, measured)
+    assert shifted is not measured and note is not None
+    assert shifted.delta_px == _STEP and shifted.status == frameshift.SHIFT_MEASURED
+
+
+def test_the_majority_override_floor_follows_the_folds_own_tolerance(monkeypatch):
+    """The floor is "one past what the fold absorbs", so it must move when the fold does.
+
+    The frame-omission rebuild deliberately folds at `_RECOVERY_EXTENT_TOLERANCE_PX` (9) instead
+    of the default 8. A floor pinned to the module default would let that rebuild override a
+    measured majority by exactly 9px — a correction its own fold cancels, which is precisely the
+    unnecessary-and-undetectable case the floor exists to exclude.
+    """
+    frames = [_frame(_STEP * i) for i in range(2)]
+    before, after = (item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    base = item_index.estimate_shift(frames[0], frames[1], content_band=_CONTENT_BAND)
+
+    def overridden(correction, *, extent_tolerance_px):
+        measured = _shift_with_votes(
+            base, [_STEP - correction, _STEP - correction, _STEP - correction, _STEP, _STEP],
+            status=frameshift.SHIFT_MEASURED, delta=_STEP - correction)
+        shifted, _note = item_index._layout_repaired_shift(
+            0, before, after, measured, extent_tolerance_px=extent_tolerance_px)
+        return shifted is not measured
+
+    recovery = item_index._RECOVERY_EXTENT_TOLERANCE_PX
+    assert overridden(recovery, extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX)
+    assert not overridden(recovery, extent_tolerance_px=recovery)
+    assert overridden(recovery + 1, extent_tolerance_px=recovery)
+
+    # A fold that absorbs as much as the ceiling allows needs no override at all, and an empty
+    # window is the fail-closed answer rather than an inverted comparison that lets everything by.
+    ceiling = item_index._MAJORITY_OVERRIDE_PX[1]
+    assert not overridden(ceiling, extent_tolerance_px=ceiling)
+
+
+@pytest.mark.parametrize("candidate_pairs", (1, 4), ids=("isolated", "four_pair_run"))
+def test_layout_assisted_run_gates_reject_nonconforming_capture_end_to_end(monkeypatch,
+                                                                            candidate_pairs):
+    """The builder itself must not commit an isolated or overlong repair proposal."""
+    frames = [_frame(_STEP * i) for i in range(candidate_pairs + 1)]
+    real_shift = item_index.estimate_shift
+
+    def candidate_pairs_only(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        return _shift_with_votes(result, [_STEP, _STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+
+    monkeypatch.setattr(item_index, "estimate_shift", candidate_pairs_only)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert not index.usable
+    assert index.layout_repaired_shifts == () and index.notes == ()
+    assert all(shift.status == frameshift.SHIFT_NO_CONSENSUS for shift in index.shifts)
+
+
+def test_layout_assisted_prefix_replays_raw_evidence_and_preserves_provenance(monkeypatch):
+    frames = [_frame(_STEP * i) for i in range(5)]
+    real_shift = item_index.estimate_shift
+
+    def repaired_prefix_pairs(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(4) if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair in (0, 1):
+            return _shift_with_votes(result, [_STEP, _STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+        if pair == 2:
+            return _shift_with_votes(result, [_STEP - 10, _STEP - 10, _STEP - 10, _STEP, _STEP],
+                                     status=frameshift.SHIFT_MEASURED, delta=_STEP - 10)
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", repaired_prefix_pairs)
+    prefix = item_index.build_item_index(
+        frames[:4], content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+    extended = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        _prefix_index=prefix)
+
+    assert prefix.usable and extended.usable
+    assert [pair for pair, _raw in extended.layout_repaired_shifts] == [0, 1, 2]
+    assert extended.layout_repaired_shifts[2][1].delta_px == _STEP - 10
+    assert all("layout-assisted" in note for note in extended.notes[:3])
 
 
 def _kinds(index):

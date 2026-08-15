@@ -948,9 +948,15 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
             f"({sheet_render_drift:.2f} for the sheet's own re-render plus "
             f"{chosen.signature_drift or 0.0:.3f} of the crop's own drift). Nothing is typed"))
     if mine.distance is None:
+        # `nearest_index` is None when NOTHING in the payload could be measured against this
+        # sheet -- not when some other item was the nearest. Those are different facts and the
+        # operator gets this sentence verbatim: the 2026-08-15 observe run printed "The nearest
+        # stored item is None", which reads as an item named None rather than as "no comparison
+        # was possible at all". Say which one it is.
+        nearest = (f"The nearest stored item is {nearest_index}" if nearest_index is not None
+                   else "No stored item could be measured against this sheet either")
         return _verdict(VERIFY_MISMATCH, (
-            f"the sheet is not showing model item {model_index}: {mine.reason}. The nearest "
-            f"stored item is {nearest_index}"))
+            f"the sheet is not showing model item {model_index}: {mine.reason}. {nearest}"))
     if nearest_index != model_index:
         other = by_number[nearest_index]
         return _verdict(VERIFY_MISMATCH, (

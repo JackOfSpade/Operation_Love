@@ -24,6 +24,7 @@ that a hard dependency of this module.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
@@ -356,7 +357,9 @@ def _config_md(config_path: str) -> str:
                 f"models={c.opener.effective_models}, "
                 f"max_tokens={c.opener.max_tokens}\n"
                 f"- budget: run_budget_usd={c.budget.run_budget_usd}, "
-                f"opener.max_attempts={c.opener.max_attempts}")
+                f"opener.max_attempts={c.opener.max_attempts}, "
+                f"opener.advisory_max_attempts={c.opener.advisory_max_attempts}, "
+                f"opener.advisory_deadline_s={c.opener.advisory_deadline_s}")
     except Exception as exc:  # noqa: BLE001
         return f"- ⚠️ could not load `{config_path}`: {exc}"
 
@@ -1411,6 +1414,141 @@ def _latest_observe_context_md(lines: list[str], run: Path) -> str:
     return "\n".join(out)
 
 
+# ── evidence anomalies ─────────────────────────────────────────────────────
+# Filed after the 2026-08-14 run, where this report printed every record faithfully and still
+# could not surface either of the two bugs sitting in it. Both were found only by hashing the
+# PNGs by hand and reading the phone's own status-bar clock out of the pixels:
+#   * the composer detector called the like sheet CLOSED for one poll while the owner was
+#     editing the opener, because Android's text-selection handle welded the comment input to
+#     the Send Like CTA into one connected component; and
+#   * the LIKE's evidence frame was a five-minute-stale screenshot from before the heart was
+#     even tapped, because _await_like_resolved holds its `base` anchor frozen by design.
+# Neither is visible by eye in an actions.jsonl tail. These two checks say them in words.
+_DECISION_ACTIONS = ("observe_decision", "observe_like_dismissed", "observe_bottom_delta")
+
+
+def _composer_flap_md(lines: list[str]) -> str:
+    """Report every `like_sending` -> `like_sheet` regression in the run.
+
+    `like_sending` asserts the composer CLOSED and Hinge is now sending; `like_sheet` asserts
+    it is open with the human still composing. Hinge cannot reopen a sheet by itself, so the
+    forward transition is one-way in reality and every regression means at least one poll
+    misread the composer. That is worth its own line rather than being left inside the stall
+    summary, because the two states are NOT symmetric in cost: `like_sheet` re-arms the
+    stuck-screen budget on every poll (a human may take minutes writing an opener) while
+    `like_sending` deliberately does not (see _await_like_resolved). A false `like_sending`
+    therefore spends a watchdog allowance that belongs to the human who is still typing.
+    """
+    stretches = _observe_waiting_stretches(lines)
+    flaps: list[str] = []
+    for stretch in stretches:
+        for earlier, later in zip(stretch, stretch[1:]):
+            if earlier.get("reason") != "like_sending" or later.get("reason") != "like_sheet":
+                continue
+            flaps.append(f"`like_sending` at `{earlier.get('ts', '?')}` -> "
+                         f"`like_sheet` at `{later.get('ts', '?')}`")
+    if not flaps:
+        return ""
+    out = [f"- ⚠️ the composer was reported CLOSED and then OPEN again {len(flaps)}x -- a like "
+           "sheet cannot reopen itself, so at least one of these polls misread it:"]
+    out.extend(f"  - {flap}" for flap in flaps)
+    out.append("  - each false `like_sending` also burns stuck-screen budget that `like_sheet` "
+               "would have re-armed, so this can end a wait the human was still composing in")
+    return "\n".join(out)
+
+
+def _shot_digest(run: Path, name: object, cache: dict[str, str | None]) -> str | None:
+    """sha256 of a screenshot referenced by an actions.jsonl record, or None.
+
+    Cached per filename because a run's records reference the same shot repeatedly (the debug
+    log reuses one file for consecutive identical frames). Any unreadable/missing file is None
+    -- a bug report must never raise while describing a bug."""
+    if not isinstance(name, str) or not name:
+        return None
+    candidate = Path(name)
+    # actions.jsonl is diagnostic input, not authority to read arbitrary filesystem paths.
+    # Debug screenshots are flat PNG names inside the run directory; anything else is
+    # malformed evidence and must stay unread rather than following traversal/absolute paths.
+    if candidate.name != name or candidate.suffix.lower() != ".png":
+        return None
+    if name not in cache:
+        try:
+            cache[name] = hashlib.sha256((run / name).read_bytes()).hexdigest()
+        except Exception:  # noqa: BLE001
+            cache[name] = None
+    return cache[name]
+
+
+# like_candidate is deliberately absent: it means only that the lower screen changed, without
+# structural proof that a composer ever opened. Treating it as proof manufactures severe stale-
+# evidence warnings for benign snackbars and other bottom-only deltas.
+_COMPOSER_WAIT_REASONS = frozenset({"like_sheet", "like_sending"})
+
+
+def _stale_evidence_md(lines: list[str], run: Path) -> str:
+    """Flag a resolved composer whose evidence frame PREDATES that composer.
+
+    A like record claims the human sent something through the inline composer, so its one
+    stored frame should show that composer. Frames are compared by CONTENT, not filename: the
+    debug log keys dedup on (action label, digest), so the same pixels logged under a different
+    action get a fresh filename -- which is how the 2026-08-14 stale LIKE evidence hid in plain
+    sight as `00019_observe_decision_before.png` while being byte-identical to a waiting shot
+    from five minutes earlier.
+
+    "Predates the composer" is the discriminator, rather than the simpler "these two frames are
+    identical", and the difference is measured rather than stylistic. Reusing an earlier frame
+    is usually CORRECT: a decision's evidence is the card as it looked just before it advanced,
+    and on a motionless screen that is legitimately the previous waiting shot. Across this
+    project's runs the naive rule fired on ~10 of 16, nearly all benign, and a check that cries
+    wolf teaches the reader to skip it. Byte-difference alone is no better -- the status-bar
+    clock ticks below the driver's own change threshold, so frames differ while the screen has
+    not meaningfully moved. Evidence captured before the composer episode even began is
+    unambiguous: whatever it shows, it cannot show what was sent.
+    """
+    cache: dict[str, str | None] = {}
+    first_seen: dict[str, int] = {}
+    records: list[dict] = []
+    for raw in lines:
+        try:
+            rec = json.loads(raw)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(rec, dict):
+            records.append(rec)
+    findings: list[str] = []
+    composer_since: int | None = None          # where the in-flight composer episode began
+    for index, rec in enumerate(records):
+        action = rec.get("action")
+        if action == "observe_like_anchor" or (
+                action == "observe_waiting" and rec.get("reason") in _COMPOSER_WAIT_REASONS):
+            if composer_since is None:
+                composer_since = index
+        digest = _shot_digest(run, rec.get("before"), cache)
+        if digest is not None:
+            first_seen.setdefault(digest, index)
+        if action not in _DECISION_ACTIONS:
+            continue
+        opened_at, composer_since = composer_since, None
+        if opened_at is None or digest is None or first_seen[digest] >= opened_at:
+            continue
+        origin = records[first_seen[digest]]
+        gap = ""
+        then, now = _parse_action_ts(origin.get("ts")), _parse_action_ts(rec.get("ts"))
+        if then is not None and now is not None:
+            gap = f", captured {_format_stall_duration((now - then).total_seconds())} earlier"
+        findings.append(
+            f"`{action}` at `{rec.get('ts', '?')}` is evidenced by `{rec.get('before')}`, "
+            f"pixel-identical to `{origin.get('before')}` from `{origin.get('action')}` at "
+            f"`{origin.get('ts', '?')}`{gap} -- before this composer opened at "
+            f"`{records[opened_at].get('ts', '?')}`")
+    if not findings:
+        return ""
+    out = ["- ⚠️ a resolved like is evidenced by a frame from BEFORE its composer existed, so "
+           "the one stored frame cannot show what the human actually sent:"]
+    out.extend(f"  - {finding}" for finding in findings)
+    return "\n".join(out)
+
+
 def _debug_log_md(config_path: str) -> str:
     """Surface the on-disk action/screenshot debug log (Hinge's silent auto-mode logging) so the
     report points a developer straight at a failure: the latest run folder, the tail of its
@@ -1459,6 +1597,15 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
             if stall:
                 out.append("  - stall summary:")
                 out.extend(f"    {line}" for line in stall.splitlines())
+            # Beside the stall summary, and for the same reason: these are the anomalies a
+            # developer cannot see by reading the tail, because both look like ordinary
+            # records until you hash the screenshots. Quiet on a healthy run.
+            anomalies = "\n".join(part for part in
+                                  (_composer_flap_md(raw_lines), _stale_evidence_md(raw_lines, run))
+                                  if part)
+            if anomalies:
+                out.append("  - evidence anomalies:")
+                out.extend(f"    {line}" for line in anomalies.splitlines())
             observe_context = _latest_observe_context_md(raw_lines, run)
             if observe_context:
                 out.append("  - latest observe context (logged evidence, not a new phone read):")

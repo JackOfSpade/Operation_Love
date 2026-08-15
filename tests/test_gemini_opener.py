@@ -1546,6 +1546,31 @@ def test_no_text_with_other_finish_reason_surfaces_it_instead_of_a_generic_messa
     with pytest.raises(OpenerParseError) as exc_info:
         _opener(_Transport([(200, response)])).generate(Profile(), style="s")
     assert "SAFETY" in str(exc_info.value)
+    assert exc_info.value.reason_code == "response_blocked"
+
+
+def test_prompt_feedback_block_is_classified_without_candidates():
+    response = {
+        "promptFeedback": {"blockReason": "IMAGE_SAFETY"},
+        "usageMetadata": {"promptTokenCount": 5},
+    }
+    with pytest.raises(OpenerParseError) as exc_info:
+        _opener(_Transport([(200, response)])).generate(Profile(), style="s")
+    assert "promptFeedback.blockReason=IMAGE_SAFETY" in str(exc_info.value)
+    assert exc_info.value.reason_code == "prompt_blocked"
+    assert exc_info.value.usage.input_tokens == 5
+
+
+def test_prompt_block_reason_takes_precedence_over_candidate_finish_reason():
+    response = {
+        "promptFeedback": {"blockReason": "SAFETY"},
+        "candidates": [{"content": {"parts": []}, "finishReason": "MAX_TOKENS"}],
+        "usageMetadata": {"thoughtsTokenCount": 250},
+    }
+    with pytest.raises(OpenerParseError) as exc_info:
+        _opener(_Transport([(200, response)]), max_tokens=250).generate(Profile(), style="s")
+    assert exc_info.value.reason_code == "prompt_blocked"
+    assert "SAFETY" in str(exc_info.value)
 
 
 def test_invalid_json_response_surfaces_finish_reason():

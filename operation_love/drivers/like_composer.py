@@ -150,6 +150,26 @@ def _dark_mask(gray, np, background: float):
     return (gray < background - darkness).astype(np.uint8)
 
 
+def _without_thin_bridges(mask, cv2, np):
+    """Drop marks too narrow to be either composer control.
+
+    Whenever the owner taps into the comment field to edit the opener, Android
+    draws a text-selection handle in the gap between the input and the CTA.
+    Measured on the Pixel 7a, that teardrop is about 56px wide and spans the
+    whole 32px gap, so under 8-connectivity it welds the two controls into one
+    component whose bounds are neither control's -- the CTA validation then
+    refuses a composer that is plainly on screen, and the observe loop reports
+    the sheet as closed while the human is still typing.  Both real controls
+    span most of the display width, so opening with a horizontal element erases
+    the handle and leaves their geometry byte-identical.
+
+    The span is forced odd because OpenCV anchors an even kernel half a pixel
+    off centre, which translates the result instead of only eroding it.
+    """
+    span = max(3, round(mask.shape[1] * 0.30)) | 1
+    return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((1, span), np.uint8))
+
+
 def _cta_for_confirm(mask, cv2, *, confirm: tuple[int, int]) -> Rect:
     """Find the broad filled CTA component that physically encloses ``confirm``."""
     height, width = mask.shape
@@ -222,11 +242,18 @@ def _comment_for_cta(mask, cv2, np, *, send: Rect) -> Rect:
     # Real rounded rectangles connect their sides, allowing the component's
     # exact outer bounds.  Synthetic/hermetic frames commonly draw only the
     # two border rows, for which their union is the actual rectangle.
+    #
+    # Label within the input's own row band rather than the whole mask: a
+    # text-selection handle drawn below the input welds it to the CTA, and the
+    # merged component's bounds are then neither control's.  Nothing outside
+    # these rows can belong to the input, so cropping costs no evidence.
     top_y, bottom_y = top[0][0], bottom[-1][0]
     enclosing: list[Rect] = []
-    count, _labels, stats, _centres = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    band = mask[top_y:bottom_y + 1]
+    count, _labels, stats, _centres = cv2.connectedComponentsWithStats(band, connectivity=8)
     for x0, y0, component_width, component_height, _area in stats[1:count]:
-        rect = Rect(int(x0), int(y0), int(x0 + component_width), int(y0 + component_height))
+        rect = Rect(int(x0), int(y0 + top_y),
+                    int(x0 + component_width), int(y0 + top_y + component_height))
         if (rect.y0 <= top_y and rect.y1 > bottom_y and
                 round(width * 0.72) <= rect.width <= round(width * 0.90) and
                 round(height * 0.050) <= rect.height <= round(height * 0.105)):
@@ -264,7 +291,11 @@ def locate_inline_composer(frame: bytes, confirm_template, threshold: float = 0.
         try:
             background = _background_level(gray, np, confirm_point[1])
             mask = _dark_mask(gray, np, background)
-            send = _cta_for_confirm(mask, cv2, confirm=confirm_point)
+            # Only the CTA lookup needs the bridge-free view: it is the one step that
+            # reads a whole component's bounds, so a selection handle reaching the CTA
+            # from the input above corrupts it.  The comment lookup keeps the untouched
+            # mask so its measured outer bounds stay exact.
+            send = _cta_for_confirm(_without_thin_bridges(mask, cv2, np), cv2, confirm=confirm_point)
             comment = _comment_for_cta(mask, cv2, np, send=send)
         except ComposerDetectionError as exc:
             if first_failure is None:

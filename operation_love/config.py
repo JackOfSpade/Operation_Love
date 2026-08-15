@@ -53,12 +53,33 @@ class OpenerCfg:
     # Owner rule (2026-08-10): "I do not want commentless likes. If the response from the
     # AI is bad, redo the prompt... If after 5 attempts it's still a bad response, stop the
     # automation." This is how many times OpenerService re-asks for a rejected AI response
-    # (with a correction hint) before giving up and stopping the run -- there is no fallback
-    # to a bare/commentless like on an opener-capable app (see BudgetCfg's removed
-    # on_exhausted for the option this replaced). validate() caps this at
+    # (with a correction hint) before giving up and stopping the run. Provider safety-policy
+    # blocks are not bad draws and are not retried: AUTO preserves its prior like decision
+    # without a comment. There is no general fallback to a bare/commentless like on an
+    # opener-capable app (see BudgetCfg's removed on_exhausted for the option this replaced).
+    # validate() caps this at
     # _MAX_ATTEMPTS_CEILING (1-15): every attempt is a real, billed, quota-consuming API call,
     # so this can't be left unbounded -- see that constant's docstring for the arithmetic.
     max_attempts: int = 5
+    # The ADVISORY (observe-mode) retry budget: a SHORTENED form of max_attempts above, used
+    # when the opener is only a suggestion shown to a human rather than text the bot is about
+    # to send. Two things differ from the auto path and both argue for fewer attempts. First,
+    # nothing irreversible hangs on the outcome: auto normally requires an opener, so it
+    # spends the full budget and stops on ordinary generation failures; observe can simply show "no suggestion"
+    # and let the human type their own. Second, a human is standing at the phone waiting, so
+    # every extra attempt is dead time in front of them, not background work. validate()
+    # additionally requires this to be <= max_attempts -- it is the same budget, shortened,
+    # never a separate larger one.
+    advisory_max_attempts: int = 3
+    # Wall-clock ceiling on the ADVISORY retry loop (seconds, monotonic, measured from the
+    # top of maybe_opener). advisory_max_attempts alone bounds the COUNT of attempts but not
+    # the TIME they take: at the shipped request_timeout_s of 90, three attempts that each
+    # stall to the timeout is 270s of a human standing at the phone waiting for a suggestion
+    # they could have written themselves in ten. This deadline is checked before STARTING any
+    # attempt after the first (it never interrupts an in-flight call, which would waste the
+    # spend already committed to it), so it converts that worst case into "one slow attempt,
+    # then give up on this profile". validate() caps it at _MAX_ADVISORY_DEADLINE_S.
+    advisory_deadline_s: float = 60.0
 
     @property
     def effective_models(self) -> list[str]:
@@ -71,10 +92,10 @@ class BudgetCfg:
     run_budget_usd: float | None = 5.00
     day_budget_usd: float | None = None  # optional daily ceiling across all runs
     # `on_exhausted` (stop | swipe_without_opener) lived here until 2026-08-10. The owner
-    # ruled out commentless likes entirely -- "If after 5 attempts it's still a bad
-    # response, stop the automation" -- so swipe_without_opener is no longer a supported
-    # behavior at all, not merely a non-default option: stopping is now the ONLY outcome
-    # when an opener cannot be produced. Do not re-add this field; load() below fails
+    # ruled out a configurable commentless-like fallback -- "If after 5 attempts it's still a
+    # bad response, stop the automation" -- so swipe_without_opener is no longer supported.
+    # The separate, hard-coded provider-safety exception is a property of one response class,
+    # not a reason to re-add this broad setting. load() below fails
     # loudly if a config still sets it (see the `on_exhausted` check next to _BUDGET_KEYS).
     pricing: dict[str, ModelPricing] = field(default_factory=dict)
 
@@ -184,17 +205,17 @@ def load(path: str | Path = "config.yaml") -> Config:
         # Dedicated, actionable guard -- ahead of the generic unknown-key check below, which
         # would otherwise just say "unknown key(s) under budget: ['on_exhausted']" and leave
         # the reader to guess why. budget.on_exhausted was removed 2026-08-10: the owner
-        # ruled out commentless likes entirely ("if after 5 attempts it's still a bad
-        # response, stop the automation"), so swipe_without_opener is no longer a supported
-        # behavior, and stopping is now the run's only response to an opener that can't be
-        # produced. This fires even for `on_exhausted: stop` -- not because that value ever
+        # ruled out a configurable commentless-like fallback ("if after 5 attempts it's still
+        # a bad response, stop the automation"), so swipe_without_opener is no longer supported.
+        # The narrow provider-safety exception is hard-coded by response type and does not make
+        # this broad setting valid again. This fires even for `on_exhausted: stop` -- not because that value ever
         # did anything wrong, but so nobody keeps a dead key around believing it still
         # controls something; deleting the line changes nothing about how the run behaves.
         raise ValueError(
             "Config: budget.on_exhausted was removed and must be deleted from config.yaml. "
-            "Openerless (\"commentless\") likes are no longer supported on an "
-            "opener-capable app: the run now always stops when an opener cannot be "
-            "produced, instead of falling back to a bare like. If your config had "
+            "A configurable openerless (\"commentless\") fallback is no longer supported "
+            "on an opener-capable app: ordinary opener failures stop instead of falling back "
+            "to a bare like. Provider safety blocks are handled separately. If your config had "
             "'on_exhausted: stop', nothing about your run's behavior changes -- that was "
             "already the only real outcome; just remove the line. If it had "
             "'on_exhausted: swipe_without_opener', that mode has been removed entirely: "
@@ -833,9 +854,10 @@ def _validate_android_fractions(cfg: Config) -> None:
                     f"which can land inside a forbidden zone undetected.")
 
 
-# opener.max_attempts and opener.request_timeout_s sanity ceilings. Both bound the SAME
-# underlying risk -- an opener misconfig turning into a real-money, real-quota, real-time
-# runaway on a single profile -- so they're derived together and cross-referenced below.
+# opener.max_attempts, opener.request_timeout_s and opener.advisory_deadline_s sanity
+# ceilings. All bound the SAME underlying risk -- an opener misconfig turning into a
+# real-money, real-quota, real-time runaway on a single profile -- so they're derived
+# together and cross-referenced below.
 #
 # Every opener.max_attempts retry, and every model GeminiOpener.generate() tries within a
 # single attempt, is a real, billed, quota-consuming API call (see OpenerService.get_opener's
@@ -882,8 +904,22 @@ def _validate_android_fractions(cfg: Config) -> None:
 # ceiling above, the documented worst-case formula for the shipped 7-model cascade becomes 15
 # x 7 x 180s = 18,900s, ~5.25 hours -- still bounded and firmly worse-than-typical, but no
 # longer capable of the multi-day stalls an unbounded request_timeout_s previously allowed.
+#
+# _MAX_ADVISORY_DEADLINE_S = 300.0: the third vector, and the only one whose cost is paid in
+# HUMAN time rather than quota or background wall clock. The advisory path exists to put a
+# suggested opener in front of a person who is standing at the phone with the profile open,
+# waiting to type it. That is precisely why the deadline exists at all: the two ceilings above
+# bound a runaway to hours, which is fine for a background worker and useless here, because
+# advisory_max_attempts x request_timeout_s on the SHIPPED config is already 3 x 90s = 270s of
+# a human staring at a phone. Five minutes is deliberately far PAST the point where a
+# suggestion is still worth waiting for (nobody stands at a phone for five minutes rather than
+# type their own sentence), so the ceiling is not a target -- it is the outer bound past which
+# the value can no longer be a considered trade-off, only a typo or a misunderstanding of what
+# this knob is for. Anything genuinely useful lives an order of magnitude below it, and the
+# shipped 60.0 is a fifth of the ceiling.
 _MAX_ATTEMPTS_CEILING = 15
 _MAX_REQUEST_TIMEOUT_S = 180.0
+_MAX_ADVISORY_DEADLINE_S = 300.0
 
 
 def validate(cfg: Config) -> None:
@@ -986,6 +1022,78 @@ def validate(cfg: Config) -> None:
             "so many consecutive attempts are being rejected (check the run's debug log for "
             "the rejection reasons, and reconsider opener.style or the model's opener.thinking "
             "level) rather than spend more of the daily quota re-asking the same broken setup.")
+    # opener.advisory_max_attempts: the same retry budget as max_attempts above, SHORTENED for
+    # the advisory (observe-mode) path, where the opener is a suggestion shown to a human and
+    # not text the bot is about to send. Same bool-before-int trap and same floor as
+    # max_attempts (a 0-or-negative value means "never even try", which would silently make
+    # observe mode show no suggestion on every profile without ever asking Gemini once), and
+    # the same billed-call ceiling, since an advisory attempt costs exactly what an auto
+    # attempt costs. These checks deliberately run AFTER max_attempts' own three above: the
+    # cross-field check at the end compares the two, and comparing against an already invalid
+    # max_attempts (a string, a bool, a negative) would produce a confusing message about the
+    # wrong setting -- or a TypeError -- instead of naming the key actually at fault.
+    if isinstance(cfg.opener.advisory_max_attempts, bool) or not isinstance(cfg.opener.advisory_max_attempts, int):
+        raise ValueError(
+            f"Config: opener.advisory_max_attempts must be an integer (got "
+            f"{cfg.opener.advisory_max_attempts!r}). This is how many times an observe-mode "
+            "opener SUGGESTION is re-asked before the profile is skipped with no suggestion.")
+    if cfg.opener.advisory_max_attempts < 1:
+        raise ValueError(
+            f"Config: opener.advisory_max_attempts must be >= 1 (got "
+            f"{cfg.opener.advisory_max_attempts}). It must allow at least one real attempt at "
+            "generating a suggestion; 0 would silently show no opener on every observe profile "
+            "without ever asking Gemini once. To turn openers off entirely, set "
+            "opener.enabled: false instead -- that is the explicit, visible way to say it.")
+    if cfg.opener.advisory_max_attempts > _MAX_ATTEMPTS_CEILING:
+        raise ValueError(
+            f"Config: opener.advisory_max_attempts must be between 1 and "
+            f"{_MAX_ATTEMPTS_CEILING} (got {cfg.opener.advisory_max_attempts}). An advisory "
+            "attempt is a real, billed API call against the same small daily quota as an auto "
+            "attempt (as few as 20 requests/day for the best models in this project's "
+            "cascade), so it carries the identical ceiling. Lower this rather than raise it: a "
+            "human is standing at the phone waiting for the suggestion, and if that many "
+            "consecutive attempts are being rejected the setup is systemically broken -- check "
+            "the run's debug log for the rejection reasons, and reconsider opener.style or the "
+            "model's opener.thinking level, rather than spend more quota re-asking it.")
+    if cfg.opener.advisory_max_attempts > cfg.opener.max_attempts:
+        # Cross-field: advisory is a SHORTENED form of the same budget, never a bigger one.
+        # OpenerService takes min(max_attempts, advisory_max_attempts) at runtime, so a larger
+        # value here would not do what it says -- it would be silently clamped, leaving a
+        # config file that reads as one policy and behaves as another. Fail loudly instead.
+        raise ValueError(
+            f"Config: opener.advisory_max_attempts ({cfg.opener.advisory_max_attempts}) must "
+            f"be <= opener.max_attempts ({cfg.opener.max_attempts}). Advisory is a SHORTENED "
+            "form of the SAME retry budget -- the observe-mode path gives up sooner because a "
+            "human is standing at the phone waiting and nothing irreversible depends on the "
+            "result -- so it can never exceed the full budget it is a shortening of. Either "
+            "lower opener.advisory_max_attempts or raise opener.max_attempts.")
+    # opener.advisory_deadline_s: wall-clock ceiling on the advisory retry loop, the only
+    # bound on how long a HUMAN waits at the phone for a suggested opener. bool-before-numeric
+    # for the same int-subclass reason as the settings above (`advisory_deadline_s: true` must
+    # not silently become a 1.0 second deadline that kills every retry). Must be > 0: a 0 or
+    # negative deadline is already expired before the first retry is even considered, which
+    # would make opener.advisory_max_attempts dead config -- if one attempt is what you want,
+    # say it directly with advisory_max_attempts: 1. See _MAX_ADVISORY_DEADLINE_S above for the
+    # ceiling's derivation; note it bounds a different resource (a person's patience) than
+    # request_timeout_s does (one HTTP call), which is why it is a separate knob and not that
+    # one reused.
+    if isinstance(cfg.opener.advisory_deadline_s, bool) or not isinstance(cfg.opener.advisory_deadline_s, (int, float)):
+        raise ValueError(
+            f"Config: opener.advisory_deadline_s must be a number of seconds (got "
+            f"{cfg.opener.advisory_deadline_s!r}).")
+    if not (0 < cfg.opener.advisory_deadline_s <= _MAX_ADVISORY_DEADLINE_S):
+        raise ValueError(
+            f"Config: opener.advisory_deadline_s must be > 0 and <= "
+            f"{_MAX_ADVISORY_DEADLINE_S} (got {cfg.opener.advisory_deadline_s}). This is the "
+            "only thing bounding how long a human stands at the phone waiting for a suggested "
+            "opener: opener.advisory_max_attempts bounds the COUNT of advisory attempts but "
+            "not their duration, so without this a run at the shipped opener.request_timeout_s "
+            f"of 90 could make that person wait 3 x 90s. {_MAX_ADVISORY_DEADLINE_S} is already "
+            "far past the point where a suggestion is worth waiting for rather than typing "
+            "your own, so if you need longer the thing to fix is the latency or the model, not "
+            "the patience budget. A value of 0 or less is not a shorter deadline but a "
+            "permanently expired one -- to allow exactly one attempt, set "
+            "opener.advisory_max_attempts: 1.")
     # opener.request_timeout_s: the only bound on how long a single opener API call can run
     # (see GeminiOpener.generate()'s transport call). bool-before-numeric for the same reason
     # as max_attempts above (bool is an int subclass; `request_timeout_s: true` must not

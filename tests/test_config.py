@@ -1,6 +1,7 @@
 """config.validate() — fail-fast checks (offline)."""
 import tempfile
 
+import pytest
 import yaml
 
 from operation_love import config as c
@@ -389,6 +390,42 @@ def test_max_attempts_way_above_ceiling_rejected_same_as_just_above():
     # Regression test for the exact value an audit found `validate()` accepting.
     d = {**BASE, "opener": {**BASE["opener"], "max_attempts": 10000}}
     _expect_error(d, "max_attempts")
+
+
+# --- observe-mode opener retry policy -------------------------------------------------
+
+def test_advisory_retry_defaults_are_bounded():
+    cfg = _load(BASE)
+    assert cfg.opener.advisory_max_attempts == 3
+    assert cfg.opener.advisory_deadline_s == 60.0
+    c.validate(cfg)
+
+
+def test_advisory_retry_settings_accept_valid_values():
+    d = {**BASE, "opener": {**BASE["opener"], "advisory_max_attempts": 2,
+                             "advisory_deadline_s": 12.5}}
+    cfg = _load(d)
+    assert cfg.opener.advisory_max_attempts == 2
+    assert cfg.opener.advisory_deadline_s == 12.5
+    c.validate(cfg)
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "3", 2.5])
+def test_advisory_max_attempts_rejects_invalid_values(value):
+    d = {**BASE, "opener": {**BASE["opener"], "advisory_max_attempts": value}}
+    _expect_error(d, "advisory_max_attempts")
+
+
+def test_advisory_max_attempts_cannot_exceed_auto_budget():
+    d = {**BASE, "opener": {**BASE["opener"], "max_attempts": 2,
+                             "advisory_max_attempts": 3}}
+    _expect_error(d, "advisory_max_attempts")
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "60", 301])
+def test_advisory_deadline_rejects_invalid_values(value):
+    d = {**BASE, "opener": {**BASE["opener"], "advisory_deadline_s": value}}
+    _expect_error(d, "advisory_deadline_s")
 
 
 # --- opener.request_timeout_s: the only bound on how long a single opener API call can run.

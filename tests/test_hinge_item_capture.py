@@ -537,17 +537,20 @@ def test_the_enumeration_ceiling_is_derived_from_the_measured_page_and_cadence()
 
     It is not a free choice and it is not `_MAX_STEP_PX`-based arithmetic: the loop draws its
     step from a window whose ends are the ratio rule applied to the SMALLEST spacing seen on the
-    profile so far, so the realised cadence on both calibration profiles is ~233..262px and not
-    the 363px ceiling. 44 frames for the worst measured page, plus a 10% margin for a page longer
-    than either calibration profile, is 48 — and the absolute worst case (every draw landing on
-    the gesture floor) is 47, which the same number covers."""
+    profile so far, so the realised cadence on both original calibration profiles is ~233..262px
+    and not the 363px ceiling. A later profile with optional video content moved at least
+    11,773px in 47 gestures and was still not at bottom, invalidating the old 48-frame bound.
+    The replacement covers 13,797px even if every gesture lands on the safe floor."""
     worst_page_px, worst_measured_frames = 10027, 44
     realised_step_px = worst_page_px / (worst_measured_frames - 1)
     assert 233 <= realised_step_px <= 262, "the measured cadence the derivation rests on"
-    assert hinge._ENUMERATION_CAPTURE_LIMIT == math.floor(worst_measured_frames * 1.1)
+    assert hinge._ENUMERATION_CAPTURE_LIMIT == 64
 
     floor_px = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
-    assert hinge._ENUMERATION_CAPTURE_LIMIT >= math.ceil(worst_page_px / floor_px) + 1
+    reported_lower_bound_px = 11773
+    floor_coverage_px = (hinge._ENUMERATION_CAPTURE_LIMIT - 1) * floor_px
+    assert floor_coverage_px == 13797
+    assert floor_coverage_px >= math.ceil(reported_lower_bound_px * 1.17)
 
 
 def test_an_enumeration_read_that_runs_out_of_ceiling_says_so_out_loud(capsys, monkeypatch):
@@ -998,12 +1001,58 @@ def test_item_index_recovery_log_uses_the_actual_omitted_side_and_keeps_failure_
     drv._record_item_index_recovery(photos, _RecoveredIndex())
 
     assert debug.calls == [("item_index_recovered", {
-        "before": expected_before, "after": expected_after, "recovered_from_pair": [1, 2],
+        "before": expected_before, "after": expected_after,
+        "anchor": photos[expected_omitted[0]], "recovered_from_pair": [1, 2],
         "omitted_frame_indices": expected_omitted, "recovery_bridge": list(bridge),
         "original_status": "no_consensus", "original_reason": "two exact witnesses, below quorum",
         "original_agreeing": 2, "original_dissenting": 1, "original_eligible": 2,
         "recovery_reason": "fresh bridge measured",
     })]
+
+
+def test_two_pair_recovery_log_retains_both_refusals_and_the_omitted_frame():
+    """A transient can poison both neighbours; the dossier must not collapse that to one."""
+    drv = _drv(WorldAdb())
+
+    class _Debug:
+        calls = []
+
+        def action(self, name, **fields):
+            self.calls.append((name, fields))
+
+    class _FailedShift:
+        def __init__(self, reason, agreeing):
+            self.status = "no_consensus"
+            self.reason = reason
+            self.agreeing = agreeing
+            self.dissenting = 0
+            self.eligible = agreeing + 1
+
+    first = _FailedShift("left side of transient", 2)
+    second = _FailedShift("right side of transient", 2)
+
+    class _RecoveredIndex:
+        source_frame_indices = (0, 1, 3)
+        recovered_from_pair = (1, 2)
+        recovered_from_pairs = ((1, 2), (2, 3))
+        recovery_bridge = (1, 3)
+        recovery_failed_shift = first
+        recovery_failed_shifts = (first, second)
+        recovery_reason = "fresh bridge measured"
+
+    debug = _Debug()
+    drv._dbg = debug
+    photos = [b"zero", b"one", b"transient", b"three"]
+    drv._record_item_index_recovery(photos, _RecoveredIndex())
+
+    assert len(debug.calls) == 1
+    name, fields = debug.calls[0]
+    assert name == "item_index_recovered"
+    assert fields["before"] == b"one" and fields["after"] == b"three"
+    assert fields["anchor"] == b"transient"
+    assert fields["recovered_from_pairs"] == [[1, 2], [2, 3]]
+    assert [failure["reason"] for failure in fields["original_failures"]] == [
+        "left side of transient", "right side of transient"]
 
 
 def test_recovered_index_crops_only_the_exact_rebuilt_frame_sequence(monkeypatch):

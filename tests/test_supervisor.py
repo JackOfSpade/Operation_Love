@@ -896,12 +896,15 @@ class _SpyOpenerService:
     service (contract: OpenerService(client, tracker, store, style, max_attempts=5))."""
     instances: list = []
 
-    def __init__(self, client, tracker, store, style, max_attempts=5):
+    def __init__(self, client, tracker, store, style, max_attempts=5,
+                 advisory_max_attempts=3, advisory_deadline_s=60.0):
         self.client = client
         self.tracker = tracker
         self.store = store
         self.style = style
         self.max_attempts = max_attempts
+        self.advisory_max_attempts = advisory_max_attempts
+        self.advisory_deadline_s = advisory_deadline_s
         _SpyOpenerService.instances.append(self)
 
 
@@ -912,7 +915,10 @@ def test_opener_max_attempts_reaches_the_constructed_opener_service(monkeypatch,
     distinctive value (7) rather than the class default (5) so a mutation that drops the
     kwarg entirely -- silently falling back to OpenerService's own default -- cannot pass
     unnoticed."""
-    cfg_text = _CONFIG.replace("opener:\n  enabled: false", "opener:\n  enabled: false\n  max_attempts: 7")
+    cfg_text = _CONFIG.replace(
+        "opener:\n  enabled: false",
+        "opener:\n  enabled: false\n  max_attempts: 7\n"
+        "  advisory_max_attempts: 2\n  advisory_deadline_s: 17.5")
     cfg_path = _write_cfg(tmp_path, cfg_text)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
@@ -928,6 +934,8 @@ def test_opener_max_attempts_reaches_the_constructed_opener_service(monkeypatch,
 
     assert len(_SpyOpenerService.instances) == 1
     assert _SpyOpenerService.instances[0].max_attempts == 7
+    assert _SpyOpenerService.instances[0].advisory_max_attempts == 2
+    assert _SpyOpenerService.instances[0].advisory_deadline_s == 17.5
 
 
 def test_opener_max_attempts_default_reaches_the_constructed_opener_service(monkeypatch, tmp_path):
@@ -948,6 +956,8 @@ def test_opener_max_attempts_default_reaches_the_constructed_opener_service(monk
 
     assert len(_SpyOpenerService.instances) == 1
     assert _SpyOpenerService.instances[0].max_attempts == 5
+    assert _SpyOpenerService.instances[0].advisory_max_attempts == 3
+    assert _SpyOpenerService.instances[0].advisory_deadline_s == 60.0
 
 
 def test_on_opener_service_callback_receives_the_live_opener_service(monkeypatch, tmp_path):

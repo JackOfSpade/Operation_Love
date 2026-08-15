@@ -16,6 +16,7 @@ from operation_love.opener.opener import (
     OpenerError,
     OpenerParseError,
     OpenerResult,
+    REASON_PROMPT_BLOCKED,
 )
 from operation_love.opener.service import OpenerPick, OpenerService
 from operation_love.limits import RateLimiter
@@ -187,6 +188,21 @@ class OpenerErrorOpenerClient:
                  skip_models=frozenset()):
         self.calls += 1
         raise OpenerError("Gemini opener: photo index 0 could not be decoded")
+
+
+class SafetyBlockedOpenerClient:
+    """Gemini accepted the call but blocked this profile's content before generation."""
+    def __init__(self):
+        self.calls = 0
+    def generate(self, profile, style, retry_hint="", *, items=None,
+                 should_stop=None,
+                 skip_models=frozenset()):
+        self.calls += 1
+        raise OpenerParseError(
+            "Gemini blocked the opener prompt before generating content "
+            "(promptFeedback.blockReason=PROHIBITED_CONTENT)",
+            Usage(input_tokens=10), "gemini-test-model",
+            reason_code=REASON_PROMPT_BLOCKED)
 
 
 class BadRequestOpenerClient:
@@ -791,8 +807,10 @@ def test_auto_mode_stop_reason_is_visible_in_status_when_opener_budget_exhausts(
 
 
 # ---------------------------------------------------------------------------------------
-# COMPLETED RULE: in AUTO mode on an opener-capable app, a like is either sent WITH its
-# opener or not sent at all -- and there is no configuration that changes that (the old
+# COMPLETED RULE: in AUTO mode on an opener-capable app, a like is normally sent WITH its
+# opener or not sent at all. A provider safety block is the narrow exception: AUTO already
+# chose Like, so it proceeds without a comment. There is no configuration that broadens that
+# exception (the old
 # budget.on_exhausted="swipe_without_opener" mode was removed outright; see service.py's
 # module docstring). The tests above cover the pre-existing GLOBAL-exhaustion guard
 # (stop_requested); these cover every other way maybe_opener() can return None -- a
@@ -800,7 +818,8 @@ def test_auto_mode_stop_reason_is_visible_in_status_when_opener_budget_exhausts(
 # docstring and last_skip_reason), plus the case where a bad AI response keeps failing
 # through every retry attempt and the SERVICE itself ends up exhausted. Each must halt
 # before driver.like(), record no decision for the abandoned profile, and publish a
-# stop_reason naming the actual cause (not a generic line).
+# stop_reason naming the actual cause (not a generic line). The dedicated safety-block test
+# pins the opposite result for that one structured outcome.
 # ---------------------------------------------------------------------------------------
 
 def test_worker_halts_before_bare_like_when_the_opener_ultimately_fails_every_retry():
@@ -836,6 +855,28 @@ def test_worker_stops_before_bare_like_on_opener_error():
     assert store.decisions == []
     assert svc.disabled is False and svc.stop_requested is False
     assert svc.last_skip_reason and "could not be decoded" in svc.last_skip_reason
+    assert driver.closed
+
+
+def test_worker_auto_likes_without_comment_when_profile_content_is_safety_blocked():
+    """The ranker already chose Like; an uncontrollable profile-content block removes only
+    the optional comment and must not discard that decision or poison later profiles."""
+    driver = FakeDriver(1)
+    store = FakeStore()
+    client = SafetyBlockedOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
+
+    Worker("hinge", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto").run()
+
+    assert client.calls == 1
+    assert driver.likes == [None]
+    assert driver.like_item_indexes == [None]
+    assert driver.like_model_item_indexes == [None]
+    assert store.decisions == [("hinge", "like", "auto")]
+    assert store.openers == []
+    assert svc.disabled is False and svc.stop_requested is False
+    assert svc.last_skip_allows_commentless_like is True
     assert driver.closed
 
 
@@ -2072,15 +2113,14 @@ class _RecordingOpenerService:
 
 def test_observe_suggestion_passes_advisory_true():
     """The observe suggestion call site must pass advisory=True -- this is what makes
-    maybe_opener() use exactly one attempt and route any exhaustion through request_stop=False
-    instead of ending the session.
+    maybe_opener() use the short, deadline-bounded retry policy and route any exhaustion
+    through request_stop=False instead of ending the session.
 
     THE ONE DELIBERATE DIVERGENCE FROM AUTO left by doc 5.9's inversion, and it is a divergence
     in RETRY POLICY, never in the request: the crops, the schema and the prompt are identical
     (pinned below), so any opener observe DOES show is byte-identical to what auto would send.
-    What differs is that a first-attempt failure produces no suggestion here where auto would
-    retry -- a coverage difference, kept because an advisory failure must never end a labelling
-    session and because observe now calls on EVERY card rather than only on liked ones."""
+    What differs is only the smaller attempt/time budget, because an advisory failure must
+    never end a labelling session and observe now calls on every card rather than only likes."""
     from operation_love.status import RunStatus
 
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
@@ -3064,10 +3104,10 @@ class _TwoCardObserveLikeIntentDriver(FakeDriver):
 
 def test_advisory_suggestion_failure_never_stops_the_observe_run_end_to_end():
     """The headline contract for change A, driven through the REAL OpenerService (not a
-    fake) with a client that fails to parse on EVERY call: today's max_attempts (5) would
+    fake) with a client that fails to parse on EVERY call: max_attempts (5) would
     burn 5 real calls and, on exhaustion, set stop_requested -- which _observe_loop honours,
     ENDING the whole labelling session over a display-only failure. advisory=True must
-    instead use exactly ONE attempt per card and leave stop_requested False, so BOTH cards'
+    instead use the shorter advisory budget and leave stop_requested False, so BOTH cards'
     human decisions get processed and persisted -- the entire point of observe mode.
 
     Doc 5.9's inversion did not change any of that; it only moved WHEN the failing call
@@ -3084,11 +3124,10 @@ def test_advisory_suggestion_failure_never_stops_the_observe_run_end_to_end():
               threading.Event(), mode="observe", status=status)
     w.run()
 
-    # Card 1's single advisory attempt already exhausts the service (disabled=True), so
+    # Card 1's bounded advisory retries exhaust the service (disabled=True), so
     # card 2's call short-circuits on `disabled` at the very top of maybe_opener() without
-    # ever reaching the client again -- exactly one real call total, not two, and nowhere
-    # near the 5 a full AUTO-style retry storm would have burned on card 1 alone.
-    assert client.calls == 1
+    # ever reaching the client again -- three real calls total, not the full AUTO budget.
+    assert client.calls == svc.advisory_max_attempts == 3
     assert svc.disabled is True                 # spend still protected
     assert svc.stop_requested is False           # but the run itself was never asked to stop
     assert not w.stop_event.is_set()

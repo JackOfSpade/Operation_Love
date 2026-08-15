@@ -12,15 +12,17 @@ malformed-request errors -- a broken request schema/params) -- each flips the
 service to disabled and asks the supervisor to stop all workers.
 
 THE OWNER'S RULE (this is why there is no "swipe without an opener" mode anymore): a
-commentless like is never acceptable. If the AI's response is bad, redo the prompt --
-spending more usage is fine. Only if a profile's response is STILL bad after
+commentless like is normally not acceptable. If the AI's response is bad, redo the prompt --
+spending more usage is fine. The narrow exception is a provider safety-policy block: AUTO has
+already decided to like that profile, so it may proceed without a comment rather than retrying
+or stopping. Only if a profile's ordinary response is STILL bad after
 max_attempts tries does that mean something is actually wrong, and only then does the
 whole run stop. The old budget.on_exhausted="swipe_without_opener" configuration was
 removed outright rather than left dormant -- the same reasoning that removed the
 Anthropic provider path applies here: a setting that can silently reintroduce a banned
-behavior is worse than no setting at all. Every exhaustion path below now
-unconditionally sets stop_requested; there is no remaining way to configure this
-service to keep swiping once it gives up on a profile or on the run.
+behavior is worse than no setting at all. Every AUTO exhaustion path below sets
+stop_requested; advisory Observe failures disable further suggestions but deliberately leave
+the human labelling session running.
 
 Note what is NOT here: a single model id being retired (HTTP 404) is no longer a
 service-wide, permanent failure. GeminiOpener.generate() retires just that one model
@@ -38,13 +40,16 @@ next call regardless of that call's content -- latches the service permanently
 disabled.
 
 A per-call failure is handled differently depending on whether re-asking can plausibly
-help. OpenerParseError (a billed response that didn't parse into a usable opener) is
-RETRIED, up to self.max_attempts times, with the model told what was wrong on each
-retry -- see maybe_opener's docstring for the full loop and why: a parse failure is
-usually stochastic (the model drew a bad sample), so a re-ask genuinely has a decent
-chance of producing something usable, and the owner's explicit instruction is to keep
-trying rather than fall back to a bare like. OpenerError (refusal, or a corrupt photo
-that can't even be encoded) is NOT retried -- it is almost always specific to THAT
+help. Most OpenerParseError responses (a billed response that didn't parse into a usable
+opener) are RETRIED, up to self.max_attempts times, with the model told what was wrong on each
+retry -- see maybe_opener's docstring for the full loop and why: a parse failure is usually
+stochastic (the model drew a bad sample), so a re-ask genuinely has a decent chance of
+producing something usable. A prompt or response blocked by Gemini's safety policy is the
+narrow exception: it is recorded and skipped for that profile without retrying or disabling the
+run, because resending the same captured content cannot safely improve it. AUTO may still carry
+out its already-made like decision without a comment. A non-parse
+OpenerError (for example, a corrupt photo that can't even be encoded) is NOT retried -- it is
+almost always specific to THAT
 profile's content in a way a re-ask cannot fix (the same corrupt bytes go in again), so
 THIS SERVICE just returns None and stays enabled for the next profile. Either way, every
 billed attempt has its spend recorded before degrading. What a None return means to the
@@ -58,7 +63,7 @@ exactly the narrow (non-exhausting) case (see its docstring).
 A run of consecutive TRANSIENT failures (see _TRANSIENT_LATCH_THRESHOLD) is its own latch,
 alongside the 400 streak above: an unclassified exception (a bare timeout, a connection
 blip, a provider 5xx that GeminiAPIError didn't already classify) or a per-profile
-OpenerError (a refusal, or -- see opener.py's item B fix -- a corrupt captured photo) is,
+non-parse OpenerError (see opener.py's item B corrupt-capture fix) is,
 individually, exactly the kind of thing that must NOT kill a run over one unlucky profile.
 But left completely unbounded, EVERY such failure used to fall through to the same silent
 "swiping without an opener" branch forever, with the service left enabled and nothing on the
@@ -73,6 +78,7 @@ from __future__ import annotations
 
 import threading
 import inspect
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -92,6 +98,8 @@ from .opener import (
     OpenerClient,
     OpenerError,
     OpenerParseError,
+    REASON_PROMPT_BLOCKED,
+    REASON_RESPONSE_BLOCKED,
     _leading_ngram,
 )
 
@@ -403,8 +411,23 @@ class OpenerService:
     def last_skip_reason(self, value: str | None) -> None:
         self._call_outcome.last_skip_reason = value
 
+    @property
+    def last_skip_allows_commentless_like(self) -> bool:
+        """Whether this thread's latest call permits AUTO to use its existing like decision.
+
+        True only for Gemini content-policy blocks in a non-advisory call.  This structured,
+        thread-local outcome keeps worker.py from parsing operator-facing message text and from
+        confusing every other per-profile opener failure with the one exception the owner allows.
+        """
+        return bool(getattr(self._call_outcome, "allows_commentless_like", False))
+
+    @last_skip_allows_commentless_like.setter
+    def last_skip_allows_commentless_like(self, value: bool) -> None:
+        self._call_outcome.allows_commentless_like = bool(value)
+
     def __init__(self, client: OpenerClient | None, tracker: CostTracker, store,
-                 style: str, max_attempts: int = 5):
+                 style: str, max_attempts: int = 5, advisory_max_attempts: int | None = None,
+                 advisory_deadline_s: float = 60.0):
         # BUG 2 (adversarial audit): max_attempts=0 (or negative) made range(1, max_attempts+1)
         # empty, so maybe_opener()'s retry loop body never ran at all -- 0 API calls, disabled
         # stayed False, stop_requested stayed False, no reason was ever recorded. That is
@@ -419,6 +442,25 @@ class OpenerService:
         if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
             raise ValueError(
                 f"OpenerService max_attempts must be an int >= 1, got {max_attempts!r}")
+        # Direct callers historically supplied only max_attempts. Keep that API usable for
+        # small budgets while production passes the independently validated config value.
+        if advisory_max_attempts is None:
+            advisory_max_attempts = min(3, max_attempts)
+        if (isinstance(advisory_max_attempts, bool) or
+                not isinstance(advisory_max_attempts, int) or advisory_max_attempts < 1):
+            raise ValueError(
+                "OpenerService advisory_max_attempts must be an int >= 1, got "
+                f"{advisory_max_attempts!r}")
+        if advisory_max_attempts > max_attempts:
+            raise ValueError(
+                "OpenerService advisory_max_attempts must be <= max_attempts, got "
+                f"{advisory_max_attempts!r} > {max_attempts!r}")
+        if (isinstance(advisory_deadline_s, bool) or
+                not isinstance(advisory_deadline_s, (int, float)) or
+                not 0 < advisory_deadline_s <= 300):
+            raise ValueError(
+                "OpenerService advisory_deadline_s must be a number > 0 and <= 300, got "
+                f"{advisory_deadline_s!r}")
         self.client = client
         self.tracker = tracker
         self.store = store
@@ -430,13 +472,11 @@ class OpenerService:
         # like; this many consecutive failures in a row is what turns "one-off bad luck"
         # into "something is actually wrong".
         self.max_attempts = max_attempts
+        self.advisory_max_attempts = advisory_max_attempts
+        self.advisory_deadline_s = float(advisory_deadline_s)
         self.disabled = client is None
-        self.stop_requested = False     # set whenever _exhaust() runs (budget reached / out
-                                         # of credit / permanent provider error / max_attempts
-                                         # consecutive bad responses for one profile) -- see
-                                         # _exhaust; there is no configuration that keeps a run
-                                         # going once this is set (the owner's rule requires
-                                         # halting, not silently degrading to bare likes).
+        self.stop_requested = False     # set by AUTO exhaustion; advisory exhaustion disables
+                                         # suggestions without stopping human observation.
         # Human-readable cause of the FIRST exhaustion (see _exhaust) -- e.g. "run budget
         # reached" or "all configured Gemini models exhausted their free-tier quota; no
         # opener capacity remains". Every worker sharing this service reads the same value,
@@ -467,6 +507,7 @@ class OpenerService:
         # causes, already carried by exhausted_reason, and must not be shadowed by whatever
         # per-call symptom happened to trigger that exhaustion.
         self.last_skip_reason = None
+        self.last_skip_allows_commentless_like = False
         self._consecutive_bad_requests = 0   # streak of back-to-back 400s; see
                                               # _BAD_REQUEST_LATCH_THRESHOLD
         # Streak of back-to-back TRANSIENT failures (an unclassified exception, or a
@@ -646,11 +687,10 @@ class OpenerService:
         behavior; the paragraph that used to live here argued the guard must be skipped OUTRIGHT
         when advisory is True, and that argument was WRONG. Do not resurrect it.
 
-        The old reasoning: an advisory (Hinge observe-mode) call runs with
-        effective_max_attempts == 1 -- not five -- because a human is sitting there waiting on
-        the suggestion (see maybe_opener's advisory docstring paragraph), so a guard that
-        consumed an attempt would consume THE ONLY attempt and disable suggestions for the rest
-        of the session over a stylistic near-miss. That premise is false for this guard as
+        The old reasoning: an advisory (Hinge observe-mode) call used a smaller attempt budget
+        because a human may be waiting on the suggestion
+        (see maybe_opener's advisory docstring paragraph), so a guard that consumed an attempt
+        could disable suggestions over a stylistic near-miss. That premise is false for this guard as
         actually built: see THE THREE THINGS above, especially point 3. The extra draw sits on
         the SUCCESS path, lexically inside maybe_opener's `for attempt in range(...)` loop but
         returning unconditionally, so it structurally CANNOT produce another `attempt` iteration
@@ -678,7 +718,7 @@ class OpenerService:
         carve-out" -- it is this guard's OWN invariants (points 1-3 above), which hold
         identically in both modes: it never raises, never rejects, never calls _exhaust(), and
         never touches stop_requested or either latch counter, regardless of advisory. There was
-        never a failure mode here for advisory's single attempt to be exposed to.
+        never a failure mode here for advisory's bounded attempt budget to be exposed to.
 
         ONE extra draw, never a loop: if the second draw collides too, it is ACCEPTED and
         logged. A near-identical opener that gets sent is a much smaller problem than a retry
@@ -798,10 +838,9 @@ class OpenerService:
         confirmed Like: manual Observe may display it for a person, while the reviewed bridge
         may send that exact current draft only after its own sheet checks. Two consequences
         follow directly from its advisory role:
-          1. Exactly ONE attempt is made (effective_max_attempts becomes 1 regardless of
-             self.max_attempts): a human is sitting there waiting on this call, so a multi-
-             attempt retry storm is a UX problem here, not a spend-protecting safeguard --
-             there is no autonomous send to protect from a bad response in the first place.
+          1. It uses the shorter advisory_max_attempts budget and advisory_deadline_s. The
+             first attempt always runs; later attempts start only while the deadline remains.
+             In-flight provider calls are not interrupted, so their billed work is preserved.
           2. Every exhaustion path below routes through _exhaust(..., request_stop=False)
              instead of the default request_stop=True. disabled/exhausted_reason are still
              set exactly as for an AUTO exhaustion (so a systematically broken model/prompt
@@ -846,13 +885,17 @@ class OpenerService:
         against the shipped config) while this service's lock stayed held, blocking every
         other worker sharing it.
 
-        THE OWNER'S RULE: a commentless like is never acceptable. If the AI's response is
-        bad, redo the prompt -- spending more usage is fine. So a billed response that
-        didn't parse into a usable opener (OpenerParseError) is RETRIED for THIS profile,
+        THE OWNER'S RULE: a commentless like is normally not acceptable. If the AI's response
+        is bad, redo the prompt -- spending more usage is fine. The narrow exception is a
+        provider safety-policy block in AUTO: the ranker has already decided to like that
+        profile, so the worker may carry out that decision without a comment. Most billed responses that
+        didn't parse into a usable opener (OpenerParseError) are RETRIED for THIS profile,
         up to self.max_attempts times, each retry telling the model what was wrong with its
         previous attempt (retry_hint) so a re-ask can actually do better -- this is worth
         doing because a parse failure is usually stochastic (the same request often
-        succeeds on a re-ask), unlike a deterministic failure (see below). Only once
+        succeeds on a re-ask), unlike a deterministic failure (see below). Gemini safety
+        blocks are deliberately not resent: the current profile is skipped with a visible
+        reason while the next profile remains eligible. Only once
         max_attempts consecutive attempts have ALL failed does that stop looking like
         one-off bad luck and start looking like something actually broken (a bad prompt, a
         degenerate model, a schema bug) -- at that point the whole run stops via
@@ -900,8 +943,8 @@ class OpenerService:
 
         Every path that returns None because of a global exhaustion (budget reached, a
         latch tripped, a permanent provider error, GeminiCapacityExhausted, every retry
-        attempt failing) goes through _exhaust(), which records exhausted_reason and sets
-        stop_requested. Every OTHER path that returns None (a per-profile OpenerError, or
+        attempt failing) goes through _exhaust(), which records exhausted_reason and, for
+        AUTO, sets stop_requested. Every OTHER path that returns None (a per-profile OpenerError, or
         a single sub-latch 400/transient failure) instead records last_skip_reason: this
         call failed, but the service is still enabled and expects to succeed again next
         profile. Callers that must never send a like with no opener (see worker.py's
@@ -910,18 +953,21 @@ class OpenerService:
         service stays enabled): the run stopping says nothing about whether the opener
         pipeline itself is healthy, so it must not be reported or counted like one.
         """
+        advisory_started_at = time.monotonic() if advisory else None
         with self._lock:
+            # Per-call permission, never sticky. A successful call or any unrelated failure
+            # after a safety-blocked profile must restore the ordinary no-bare-like rule.
+            self.last_skip_allows_commentless_like = False
             if self.disabled:
                 return None
             if self.tracker.budget_reached():
                 self._exhaust("run budget reached", request_stop=not advisory)
                 return None
 
-            # advisory: exactly ONE attempt, never self.max_attempts -- see this method's
-            # advisory docstring paragraph. Local variable, not a mutation of self.max_attempts:
-            # the instance-level setting is shared by every caller (including concurrent AUTO
-            # calls on another app), so a suggestion call must never shrink it for anyone else.
-            effective_max_attempts = 1 if advisory else self.max_attempts
+            # Local policy only: the service is shared by advisory and AUTO callers, so an
+            # observe suggestion must never mutate the full autonomous retry budget.
+            effective_max_attempts = (
+                self.advisory_max_attempts if advisory else self.max_attempts)
             # Which models have already produced an unusable response FOR THIS PROFILE, so a
             # retry can steer GeminiOpener's cascade away from re-hitting the same (often
             # scarcest-quota) model that just failed -- see opener.py's generate() skip_models
@@ -932,6 +978,19 @@ class OpenerService:
 
             retry_hint = ""   # "" means first attempt; a retry fills this in below
             for attempt in range(1, effective_max_attempts + 1):
+                if (advisory and attempt > 1 and advisory_started_at is not None and
+                        time.monotonic() - advisory_started_at >= self.advisory_deadline_s):
+                    self.last_skip_reason = (
+                        "opener advisory retry deadline reached after "
+                        f"{attempt - 1}/{effective_max_attempts} attempt(s); no further "
+                        "attempt was started for this profile"
+                    )
+                    print(
+                        "Opener: advisory retry deadline reached after "
+                        f"{attempt - 1}/{effective_max_attempts} attempt(s); showing no "
+                        "suggestion for this profile, while future profiles remain eligible."
+                    )
+                    return None
                 if should_stop is not None and should_stop():
                     # Checked BETWEEN retry attempts (including before the very first one),
                     # independent of whatever the client itself does internally -- a simple/
@@ -1005,8 +1064,13 @@ class OpenerService:
                     except Exception as store_exc:  # noqa: BLE001
                         print(f"Warning: failed to persist opener spend record "
                               f"({_display_cost(cost)}): {store_exc}")
-                    print(f"Opener attempt {attempt}/{effective_max_attempts}: unparseable "
-                          f"response (billed {_display_cost(cost)}): {e}")
+                    attempt_outcome = (
+                        "safety-blocked" if e.reason_code in
+                        (REASON_PROMPT_BLOCKED, REASON_RESPONSE_BLOCKED) else "unparseable"
+                    )
+                    result_noun = "provider result" if attempt_outcome == "safety-blocked" else "response"
+                    print(f"Opener attempt {attempt}/{effective_max_attempts}: {attempt_outcome} "
+                          f"{result_noun} (billed {_display_cost(cost)}): {e}")
                     # Durable record of EVERY rejected attempt, not just successes (see
                     # ranker/bigquery_store.py's opener_rejections table and opener.py's
                     # OpenerParseError docstring for reason_code/raw_opener semantics).
@@ -1050,21 +1114,50 @@ class OpenerService:
                         # spend must stop further retries immediately.
                         self._exhaust("run budget reached", request_stop=not advisory)
                         return None
+                    if e.reason_code in (REASON_PROMPT_BLOCKED, REASON_RESPONSE_BLOCKED):
+                        # Gemini identified this as a content-policy block, not malformed JSON
+                        # or a stochastic bad draw.  Retrying another model with the same
+                        # profile captures would simply resubmit the content Gemini withheld;
+                        # do not evade that decision by rewriting, stripping, or isolating the
+                        # profile.  The blocked attempt has already been billed and recorded
+                        # above. Keep the service healthy for the next profile. In AUTO the
+                        # ranker has already made the like decision, so this one explicit
+                        # outcome permits a commentless like; Observe displays the reason and
+                        # remains live without changing its manual controls.
+                        blocked_stage = (
+                            "the request" if e.reason_code == REASON_PROMPT_BLOCKED
+                            else "the generated response"
+                        )
+                        self.last_skip_reason = (
+                            f"Gemini's safety policy withheld {blocked_stage} for this profile; "
+                            "it was not retried and no opener will be used for it. AUTO may "
+                            "proceed with its existing like decision without a comment. Future "
+                            "profiles remain eligible."
+                        )
+                        self.last_skip_allows_commentless_like = not advisory
+                        action = ("AUTO will proceed with its existing like decision without a "
+                                  "comment" if not advisory else "Observe will show no suggestion")
+                        print(
+                            "Opener: Gemini safety policy withheld content for this profile; "
+                            f"not retrying the same captured content. {action}; future profiles "
+                            "remain eligible."
+                        )
+                        return None
                     if attempt >= effective_max_attempts:
                         # Every attempt for this profile came back unusable. Per the owner's
                         # explicit rule, that many failures in a row is no longer one-off bad
                         # luck -- it means something is actually wrong -- so the whole run
                         # stops rather than ever falling back to a bare/commentless like.
-                        # (advisory: effective_max_attempts is 1, so this fires after the single
-                        # allowed attempt -- see this method's advisory docstring paragraph --
-                        # and request_stop=not advisory keeps that a display-only degradation.)
+                        # Advisory exhaustion disables further suggestions to prevent an
+                        # unbounded per-profile spend loop, but request_stop=False keeps the
+                        # human observation session itself running.
                         self._exhaust(
                             f"{attempt} consecutive AI opener attempts for this profile were "
                             f"all rejected as unusable (most recent: {e}) -- retrying a bad "
                             "response is expected, but this many failures in a row means "
                             "something is actually wrong (a broken prompt, a degenerate model, "
-                            "a schema bug), so the run is stopping rather than keep spending on "
-                            "retries that keep failing",
+                            "a schema bug), so opener generation is being disabled rather than "
+                            "keep spending on retries that keep failing",
                             request_stop=not advisory,
                         )
                         return None
@@ -1375,8 +1468,8 @@ class OpenerService:
                 return OpenerPick(result.opener, item_index, referenced, angle, item_description,
                                   index_space=index_space, _staged_record=staged)
             # Unreachable in practice: __init__ now rejects any max_attempts that isn't an
-            # int >= 1 (see BUG 2), so range(1, effective_max_attempts + 1) -- 1 for an advisory
-            # call, self.max_attempts otherwise -- always yields at least one iteration, and
+            # int >= 1 (see BUG 2), so range(1, effective_max_attempts + 1) always yields at
+            # least one iteration, and
             # every iteration above returns -- from the should_stop check, a non-retried
             # exception, the success branch, or _exhaust() on the final retry attempt. Before
             # that guard existed, OpenerService(max_attempts=0) made this loop body never run at

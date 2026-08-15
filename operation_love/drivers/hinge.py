@@ -827,26 +827,26 @@ _READ_SCROLL_FRAC_MAX = 0.75
 # closed loop steps at most ~1/3 of the locally measured card spacing and therefore needs
 # several times as many frames for the same profile.
 #
-# DERIVED FROM MEASURED GEOMETRY, and the derivation is spelled out here because the value it
-# lands on (48) is the same one that shipped on 2026-08-12 with a much weaker justification --
-# "the ceiling the validated bot-driven probe itself ran at". That was headroom, not a
-# derivation, and the 2026-08-12 bottom-up workflow was asked to TIGHTEN it. The measured
-# geometry does not license a smaller number, and stating why is more useful than shaving frames:
+# DERIVED FROM MEASURED GEOMETRY. The original 48-frame derivation used two captures containing
+# only the six-media/three-text-prompt core. A 2026-08-15 production capture disproved the
+# assumption that this was the structural maximum: Hinge also permits optional video and voice
+# prompt content. That profile advanced at least 11,773px in 47 gestures and still had not
+# reached the bottom. Treat that observation as a new lower bound, not as an outlier to truncate:
 #
-#   PAGE SPAN.    The two calibration profiles measure 8349px and 10027px, and both carry NINE
-#                 selectable items, which is Hinge's own maximum (6 photos + 3 prompts). So the
-#                 longer of them is close to the structural worst case rather than a sample from
-#                 an open-ended distribution.
+#   PAGE SPAN.    The first two calibration profiles measure 8349px and 10027px and both carry
+#                 nine selectable items. The production profile with optional animated prompt
+#                 content traversed ~11,773px before the old ceiling cut it off, proving that
+#                 10,027px and nine ordinary items were not a complete structural bound.
 #   REALISED STEP. The closed loop does NOT step `scroll_step._MAX_STEP_PX` (363px). It draws
 #                 uniformly inside a window whose ends are the ratio rule applied to the SMALLEST
 #                 spacing seen so far on this profile, and both calibration profiles contain a
 #                 685px card, so both loops end up drawing from (219, 265). Measured mean step
 #                 with that memory in play: 235..262px, and the loop was measured to need 35
 #                 gestures (36 frames) for profile B and 43 (44 frames) for profile A.
-#   THE BOUND.    44 frames for the worst measured profile, x1.1 for a page longer than either
-#                 calibration profile = 48.4, floor 48. Computing it against the ABSOLUTE worst
-#                 case instead -- every draw landing on the 219px gesture floor -- gives
-#                 ceil(10027/219) + 1 = 47, which 48 also covers.
+#   THE BOUND.    64 frames provide 63 gestures. Even if every draw lands on the 219px gesture
+#                 floor, that covers 13,797px -- 17% beyond the new 11,773px observed lower
+#                 bound. Normal profiles do not pay for the headroom: the repeated-frame bottom
+#                 signal still ends their loop as soon as it did before.
 #
 # A tighter value would have to come from a faster cadence, which doc 5.10.1 forbids (a step past
 # ~1/3 of the local spacing aliases the count against the card pitch), so the only honest
@@ -867,7 +867,7 @@ _READ_SCROLL_FRAC_MAX = 0.75
 # is for the observe read and for `_ensure_session_top`'s swipe ceiling. The jitter that keeps
 # profile after profile from terminating at one identical depth is unchanged and still applied
 # on top of this, by `_capture_limit_for_profile`.
-_ENUMERATION_CAPTURE_LIMIT = 48
+_ENUMERATION_CAPTURE_LIMIT = 64
 
 
 def _ranker_frames_from_enumeration(frames: list[bytes], target: int) -> list[bytes]:
@@ -1457,6 +1457,10 @@ class AndroidDriver(DatingAppDriver):
         self._identity_top_sig = None
         self._identity_sig = None
         self._identity_name = None
+        # Freshest frame that PROVED the like composer, so a resolved like is filed
+        # against what the human actually had on screen. Reset per wait by
+        # _wait_for_decision_unlocked; see _note_observe_like_outcome for why.
+        self._observe_like_evidence = None
         # The first band that differs from the top chrome is only a CANDIDATE until a later
         # frame reproduces it. Hinge can briefly draw a half-transitioned filter-chip/header
         # strip after a scroll; treating that one frame as authoritative caused the stable
@@ -3168,13 +3172,15 @@ class AndroidDriver(DatingAppDriver):
         """Log an already-verified isolated-frame recovery without affecting the result.
 
         The recovery is safe only because `build_item_index` rebuilt and validated the entire
-        reduced sequence, and the crop + identity gates above also passed.  This record preserves
-        the omitted raw frame and bridge endpoints for later review; diagnostics remain strictly
-        best-effort, like `_item_index_refused`.
+        reduced sequence, and the crop + identity gates above also passed. This record preserves
+        the omitted raw frame as its anchor and both bridge endpoints for later review;
+        diagnostics remain strictly best-effort, like `_item_index_refused`.
         """
         pair = getattr(index, "recovered_from_pair", None)
+        pairs = tuple(getattr(index, "recovered_from_pairs", ()) or ())
         bridge = getattr(index, "recovery_bridge", None)
         failed_shift = getattr(index, "recovery_failed_shift", None)
+        failed_shifts = tuple(getattr(index, "recovery_failed_shifts", ()) or ())
         source = tuple(getattr(index, "source_frame_indices", ()) or ())
         omitted = [i for i in range(len(photos)) if i not in source]
         if (self._dbg is None or not isinstance(pair, tuple) or len(pair) != 2
@@ -3184,16 +3190,28 @@ class AndroidDriver(DatingAppDriver):
         if not (0 <= left < omitted[0] < right < len(photos)):
             return
         try:
-            self._dbg.action(
-                "item_index_recovered", before=photos[left], after=photos[right],
-                recovered_from_pair=list(pair), omitted_frame_indices=omitted,
-                recovery_bridge=list(bridge),
-                original_status=getattr(failed_shift, "status", None),
-                original_reason=getattr(failed_shift, "reason", None),
-                original_agreeing=getattr(failed_shift, "agreeing", None),
-                original_dissenting=getattr(failed_shift, "dissenting", None),
-                original_eligible=getattr(failed_shift, "eligible", None),
-                recovery_reason=getattr(index, "recovery_reason", None))
+            fields = {
+                "recovered_from_pair": list(pair), "omitted_frame_indices": omitted,
+                "recovery_bridge": list(bridge),
+                "original_status": getattr(failed_shift, "status", None),
+                "original_reason": getattr(failed_shift, "reason", None),
+                "original_agreeing": getattr(failed_shift, "agreeing", None),
+                "original_dissenting": getattr(failed_shift, "dissenting", None),
+                "original_eligible": getattr(failed_shift, "eligible", None),
+                "recovery_reason": getattr(index, "recovery_reason", None),
+            }
+            if len(pairs) > 1 and len(pairs) == len(failed_shifts):
+                fields["recovered_from_pairs"] = [list(item) for item in pairs]
+                fields["original_failures"] = [{
+                    "pair": list(failed_pair),
+                    "status": getattr(shift, "status", None),
+                    "reason": getattr(shift, "reason", None),
+                    "agreeing": getattr(shift, "agreeing", None),
+                    "dissenting": getattr(shift, "dissenting", None),
+                    "eligible": getattr(shift, "eligible", None),
+                } for failed_pair, shift in zip(pairs, failed_shifts, strict=True)]
+            self._dbg.action("item_index_recovered", before=photos[left],
+                             after=photos[right], anchor=photos[omitted[0]], **fields)
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
 
@@ -5879,7 +5897,18 @@ class AndroidDriver(DatingAppDriver):
         the PASS control, so on a like it would report a confident "resync" for a tap that
         correctly landed on the heart -- a wrong answer is worse in a debug log than an honest
         absence.
+
+        The attached frame is the freshest one that PROVED the composer, not the caller's
+        `base` anchor. The PASS path's `base` is the card as it looked immediately before it
+        advanced, because that loop refreshes it every scroll poll; on this path
+        _await_like_resolved deliberately holds `base` frozen as a dismissal comparand for the
+        whole wait, so it can be minutes stale by the time a like resolves. In the audited
+        2026-08-14 run it was 5 minutes old and predated the heart tap entirely, showing a
+        scrolled profile instead of the item and opener that were actually sent -- evidence for
+        a screen the human had already left. `base` remains the fallback for the paths that
+        never observed a composer at all.
         """
+        evidence = self._observe_like_evidence or base
         fields = {
             "capture_truncated": getattr(self, "_current_capture_truncated", None),
             "profile_name": self._identity_name,
@@ -5894,12 +5923,12 @@ class AndroidDriver(DatingAppDriver):
         if bot is not None:
             fields["bot"] = round(bot, 2)
         if sent:
-            self._dbg_action("observe_decision", base, decision="like", **fields)
+            self._dbg_action("observe_decision", evidence, decision="like", **fields)
         elif sheet_seen:
             # Not a decision -- the human opened the sheet and backed out, and the wait
             # continues on the SAME card. Logged under its own action name so it can never be
             # miscounted as a decision, while still leaving a trace that the sheet was up.
-            self._dbg_action("observe_like_dismissed", base, **fields)
+            self._dbg_action("observe_like_dismissed", evidence, **fields)
         else:
             # The bottom half changed and resolved back to the same card, but the Send Like
             # glyph was never actually matched on ANY poll -- so calling this a dismissed like
@@ -5908,6 +5937,10 @@ class AndroidDriver(DatingAppDriver):
             # only what happened, so the log stays trustworthy about the rarer, higher-value
             # class of event it sits next to.
             self._dbg_action("observe_bottom_delta", base, **fields)
+        # This composer is resolved either way. A dismissal leaves the wait running on the
+        # SAME card, so without this a later resolution on that card could still be filed
+        # against the sheet the human already backed out of.
+        self._observe_like_evidence = None
 
     def _observe_recognized(self) -> None:
         """Mark the frame just classified as POSITIVELY RECOGNIZED, re-arming the stuck-screen
@@ -6009,6 +6042,9 @@ class AndroidDriver(DatingAppDriver):
         identity anchor below is exactly what makes that safe to do.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
+        # Cleared per wait, never merely overwritten: a leaked frame would file THIS
+        # profile's like against the previous profile's composer.
+        self._observe_like_evidence = None
         base = self._await_live_frame(deadline, should_stop)
         if base is None:
             return None
@@ -6067,6 +6103,7 @@ class AndroidDriver(DatingAppDriver):
                 # itself. Re-capturing here would add ADB latency and an animation-timing
                 # race for zero gain over what's already in hand.
                 self._observe_recognized()            # an open like sheet is a screen we know
+                self._observe_like_evidence = cur     # freshest proof of the composer so far
                 self._notify_observe_like_intent(on_like_intent, True, cur)
                 sent, intent_notified = self._await_like_resolved(
                     base, deadline, should_stop, on_like_intent=on_like_intent,
@@ -6123,6 +6160,9 @@ class AndroidDriver(DatingAppDriver):
                 # is not a human intent to like.
                 sheet_visible = self._observe_like_sheet_visible(cur)
                 if sheet_visible:
+                    # Same reason as the sibling call site: record the proof now, in case the
+                    # sheet closes before the resolver's first poll ever sees it.
+                    self._observe_like_evidence = cur
                     self._notify_observe_like_intent(on_like_intent, True, cur)   # cur already proves the sheet -- see the sibling call site above
                 sent, intent_notified = self._await_like_resolved(
                     base, deadline, should_stop, on_like_intent=on_like_intent,
@@ -6508,6 +6548,10 @@ class AndroidDriver(DatingAppDriver):
             if self._observe_stuck_bail(cur) is not None:
                 return None, intent_notified
             if self._observe_like_sheet_visible(cur):
+                # Advanced on EVERY sheet poll, not just the first: the composer's last
+                # observed state is what the human actually sent, and it is minutes newer
+                # than the `base` anchor this resolver deliberately holds frozen.
+                self._observe_like_evidence = cur
                 if not intent_notified:
                     self._notify_observe_like_intent(on_like_intent, True, cur)   # cur already proves the sheet -- see wait_for_decision's call sites
                     intent_notified = True

@@ -417,6 +417,38 @@ def test_like_writes_its_own_decision_record(monkeypatch):
     assert decisions[0]["sheet_seen"] is True
 
 
+def test_like_decision_is_evidenced_by_the_composer_not_a_stale_pre_tap_frame(monkeypatch):
+    """The frame filed with a LIKE must be one that actually showed the composer.
+
+    _await_like_resolved holds `base` frozen for the whole wait, on purpose -- it is the
+    dismissal comparand. Logging that same `base` as the decision's evidence made the record
+    show whatever the screen held when the wait STARTED. In the audited 2026-08-14 run that
+    was a scrolled profile from five minutes before the heart was even tapped, so the one
+    frame stored to prove a like showed a screen the human had already left.
+    """
+    monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
+    adb = FakeAdb([b"a", b"sheet1", b"sheet2", b"b"], advance_on_screencap=True)
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+    drv._identity_name = "profile_a"
+    import numpy as np
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    new_sig = np.full((16, 64), 250, dtype="int16")
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame.startswith(b"sheet"))
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"b")
+
+    assert drv.wait_for_decision(timeout=5.0) is True
+
+    evidence = dict(drv._dbg.befores)["observe_decision"]
+    assert evidence == b"sheet2"        # the LAST composer state -- what the human sent
+    assert evidence != b"a"             # not the frozen pre-tap anchor
+    # The resolved composer must not survive into the next wait on another profile.
+    assert drv._observe_like_evidence is None
+
+
 def test_dismissed_like_sheet_is_recorded_but_never_as_a_decision(monkeypatch):
     import numpy as np
     monkeypatch.setattr(hinge, "_split_diff",
@@ -872,9 +904,11 @@ def test_wait_for_decision_ignores_a_scroll_between_capture_stops_but_still_catc
 class _FakeDbg:
     def __init__(self):
         self.calls = []
+        self.befores = []          # (name, before) -- the frame each record is evidenced by
 
     def action(self, name, *, before=None, after=None, **fields):
         self.calls.append((name, fields))
+        self.befores.append((name, before))
 
 
 def test_reviewed_observe_pass_emits_a_verified_frame_bound_decision(monkeypatch):

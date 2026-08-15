@@ -454,13 +454,16 @@ opener:
   # latency (measured ~9-11s at high vs ~4-7s at low, well inside request_timeout_s below) and
   # per-minute token pressure -- which is exactly why the two Gemma entries stay at `minimal`.
   max_tokens: 16384
-  # Owner rule (2026-08-10): no commentless likes, ever. A rejected AI response (bad/empty
+  # Owner rule (updated 2026-08-15): ordinary rejected AI output (bad/empty
   # opener, fails the style rules, etc.) is re-asked with a correction hint instead of being
   # sent as-is or swapped for a bare like. Free-tier REQUESTS/day are the scarce resource
   # here, not tokens (see max_tokens above), so spending up to 5 requests re-asking is cheap
   # insurance against wasting an entire profile on one bad draw. If all max_attempts fail,
   # something is systemically wrong (a broken prompt, a misbehaving model, ...) rather than
-  # one unlucky generation, so the run stops instead of ever sending a like with no opener.
+  # one unlucky generation, so the run stops instead of sending a like with no opener. The
+  # narrow exception is a provider safety-policy block: AUTO already chose Like before asking
+  # for an opener, so it preserves that decision without a comment rather than stopping over
+  # profile content we do not control. The block is not retried or bypassed.
   # Accepted range is 1-15 (config.py's validate(), _MAX_ATTEMPTS_CEILING): each attempt is a
   # real, billed, quota-consuming call, and a rejected-content retry does NOT advance the
   # model cascade above -- it re-hits the SAME model -- so an uncapped value could burn a
@@ -478,6 +481,32 @@ opener:
   # opener.max_attempts' own ceiling above by letting a single stalled call hang a profile
   # indefinitely. 180s is 2x this measured 90s worst case.
   request_timeout_s: 90
+  # The advisory (observe mode) retry budget: the SAME budget as max_attempts above, only
+  # shortened. In observe mode the opener is a SUGGESTION shown to a human who then types it,
+  # so the two things that force auto to spend its full budget do not apply: nothing
+  # irreversible depends on the answer (observe can show "no suggestion" and the human writes
+  # their own sentence, whereas auto normally requires an opener), and a person is
+  # standing at the phone while the retries run, so every extra attempt is dead time in front
+  # of them rather than background work. 3 is the point where a genuinely unlucky draw still
+  # gets a second and third chance, without turning one profile whose photos a provider safety
+  # filter dislikes into a minute of waiting. This was 1 until 2026-08-15, which was too few:
+  # a single unparseable response was treated as proof the whole setup was broken and it
+  # switched openers off for the rest of the run. Accepted range is 1-15 and it may never
+  # exceed max_attempts above (config.py's validate(), _MAX_ATTEMPTS_CEILING); an advisory
+  # attempt is billed exactly like an auto one, hence the identical ceiling.
+  advisory_max_attempts: 3
+  # Wall clock ceiling on those advisory retries, in seconds. advisory_max_attempts bounds how
+  # MANY attempts run, not how long they take, and the two are not the same protection: at the
+  # request_timeout_s of 90 set above, three attempts that each stall to the timeout is 270
+  # seconds of a human standing at the phone with a profile open, waiting for a suggestion
+  # they could have written themselves in ten. 60 is the honest limit of that patience, and it
+  # is checked BEFORE starting any attempt after the first, never mid call, so an in flight
+  # request is always allowed to finish and pay for what was already spent on it. In practice
+  # this means one slow attempt then a graceful "no suggestion" rather than three slow ones.
+  # Accepted range is (0, 300] seconds (config.py's validate(), _MAX_ADVISORY_DEADLINE_S); 300
+  # is deliberately far past the point where waiting beats typing, so it is an outer bound on
+  # typos rather than a value anyone should choose.
+  advisory_deadline_s: 60.0
   # The owner-tunable voice and substance rules for the opener itself. opener.py's _SYSTEM
   # carries a near-duplicate copy of this same text, and the two are pinned by two SEPARATE
   # tests (tests/test_config_yaml_real.py against this file, tests/test_opener.py against
@@ -714,9 +743,11 @@ budget:
   run_budget_usd: 5.00         # stop spending on openers past this, per run
   # day_budget_usd: 10.00      # optional: hard daily ceiling across all runs (queries store at startup)
   # There used to be an on_exhausted: stop | swipe_without_opener setting here. The owner
-  # ruled out commentless likes entirely (2026-08-10), so swipe_without_opener no longer
-  # exists as an option -- stopping is the run's only response once openers are exhausted
-  # or budget.run_budget_usd is reached. See opener.max_attempts above for the setting that
+  # ruled out a configurable commentless-like fallback (2026-08-10), so
+  # swipe_without_opener no longer exists as an option. The hard-coded provider-safety
+  # exception above is not budget exhaustion and does not revive that broad setting.
+  # Stopping remains the response once openers are exhausted or budget.run_budget_usd is
+  # reached. See opener.max_attempts above for the setting that
   # replaced it: how many times a rejected AI response is re-asked before the run stops.
   # $ per 1,000,000 tokens, per model (used for client-side spend tracking).
   # These zero prices are ONLY for the explicitly selected Google free tier. Update every

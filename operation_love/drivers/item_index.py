@@ -392,6 +392,11 @@ class ItemIndex:
     recovered_from_pair: tuple[int, int] | None = None
     recovery_bridge: tuple[int, int] | None = None
     recovery_failed_shift: ShiftEstimate | None = None
+    # Complete refusal provenance.  The singular fields above remain the compatibility view of
+    # the first failed pair; one transient frame can make BOTH adjacent pairs refuse, so keeping
+    # only one of them would make a successful recovery impossible to audit.
+    recovered_from_pairs: tuple[tuple[int, int], ...] = ()
+    recovery_failed_shifts: tuple[ShiftEstimate, ...] = ()
     recovery_reason: str | None = None
     # One string per sighting `_split_on_bounded_cards` excluded while resolving `blocks` — never
     # silent, on the owner's standing rule that no fallback or degradation happens without being
@@ -1122,25 +1127,32 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             for i in range(len(frames) - 1))
 
     # An ordinary read can contain one unusable *intermediate* frame while both of its neighbours
-    # still correspond.  Do not turn two votes into a shift, and do not manufacture an offset:
-    # test each frame in that pair as the possible bad intermediate capture, then require a fresh
-    # direct bridge and a fully usable rebuild over the remaining real frames.  The omitted-frame
-    # provenance below makes that reduction visible to every caller, including the crop layer.
+    # still correspond.  That produces either one failed pair (only one side was damaged) or two
+    # adjacent failed pairs (both sides were damaged, as with a transient video/UI frame).  Do not
+    # turn two votes into a shift, and do not manufacture an offset: the only omission candidates
+    # are frames shared by every failed pair, and each candidate must pass a fresh direct bridge
+    # plus a fully usable rebuild over the remaining real frames.  The omitted-frame provenance
+    # below makes that reduction visible to every caller, including the crop layer.
     failed_pairs = [i for i, shift in enumerate(shifts) if shift.delta_px is None]
     has_segmentation_failure = any(seg.failures for seg in segmentations)
+    failed_pair_records = tuple((i, i + 1) for i in failed_pairs)
+    omission_candidates: set[int] = set()
+    if failed_pairs:
+        omission_candidates = {failed_pairs[0], failed_pairs[0] + 1}
+        for pair_index in failed_pairs[1:]:
+            omission_candidates.intersection_update((pair_index, pair_index + 1))
+        omission_candidates = {
+            omitted for omitted in omission_candidates if 0 < omitted < len(frames) - 1
+        }
     if (_allow_frame_omission_recovery and not has_segmentation_failure
-            and len(failed_pairs) == 1):
-        failed_pair = failed_pairs[0]
+            and omission_candidates):
         candidates: list[tuple[tuple[float, float, float, int], int, ItemIndex]] = []
-        # Test BOTH frames in the failed pair as the possible bad intermediate capture.  Each
-        # candidate is valid only when it has a neighbour on both sides; omitting frame 0 would
-        # also invalidate the caller's affirmative scroll-top proof.  ``build_item_index`` below
-        # remeasures the bridge and revalidates every later page-level invariant with recursion
-        # disabled, so neither original pair's consensus nor an assumed sum ever enters the
-        # recovered coordinate space.
-        for omitted in (failed_pair, failed_pair + 1):
-            if not 0 < omitted < len(frames) - 1:
-                continue
+        # With one refusal, test both sides as before.  With two adjacent refusals, their shared
+        # middle frame is the sole candidate.  A non-adjacent refusal leaves the intersection
+        # empty and cannot be disguised as one bad capture.  ``build_item_index`` remeasures the
+        # bridge and revalidates every later page-level invariant with recursion disabled, so no
+        # refused consensus or assumed sum enters the recovered coordinate space.
+        for omitted in sorted(omission_candidates):
             reduced_frames = tuple(frame for i, frame in enumerate(frames) if i != omitted)
             recovered = build_item_index(
                 reduced_frames, content_band=content_band, like_template=like_template,
@@ -1164,11 +1176,17 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             return replace(
                 recovered,
                 source_frame_indices=tuple(i for i in range(len(frames)) if i != omitted),
-                recovered_from_pair=(failed_pair, failed_pair + 1), recovery_bridge=bridge,
-                recovery_failed_shift=shifts[failed_pair],
+                recovered_from_pair=failed_pair_records[0], recovery_bridge=bridge,
+                recovery_failed_shift=shifts[failed_pairs[0]],
+                recovered_from_pairs=failed_pair_records,
+                recovery_failed_shifts=tuple(shifts[i] for i in failed_pairs),
                 recovery_reason=(
-                    f"frame {omitted} was omitted after frames {failed_pair} and "
-                    f"{failed_pair + 1} had no trustworthy shift; the fresh direct bridge from "
+                    f"frame {omitted} was omitted after "
+                    + (f"frames {failed_pairs[0]} and {failed_pairs[0] + 1} had no trustworthy "
+                       "shift" if len(failed_pairs) == 1 else
+                       f"pairs {', '.join(f'{a}/{b}' for a, b in failed_pair_records)} had no "
+                       "trustworthy shifts")
+                    + "; the fresh direct bridge from "
                     f"frame {bridge[0]} to frame {bridge[1]} and the complete rebuilt index "
                     "both passed without assuming an offset"))
 

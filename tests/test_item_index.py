@@ -262,6 +262,65 @@ def test_frame_omission_recovery_refuses_when_no_direct_bridge_is_measured(monke
     assert index.recovered_from_pair is None and index.recovery_bridge is None
 
 
+def test_one_transient_frame_can_recover_both_adjacent_refused_pairs(monkeypatch):
+    """A damaged intermediate frame naturally poisons both of its pairwise comparisons.
+
+    Recovery still requires independent evidence: the shared frame is omitted, its two real
+    neighbours are correlated directly, and the entire reduced index must validate.  This is
+    the shape of the reported animated-card capture; the old exactly-one-refusal gate never
+    attempted the valid bridge.
+    """
+    frames = [_frame(scroll) for scroll in _FULL_SCROLL]
+    real_shift = item_index.estimate_shift
+    refused = {(frames[3], frames[4]), (frames[4], frames[5])}
+
+    def transient_middle(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        if (frame_a, frame_b) in refused:
+            return dataclasses.replace(
+                result, delta_px=None, status=frameshift.SHIFT_NO_CONSENSUS,
+                consensus_px=None, reason="synthetic transient-frame refusal")
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", transient_middle)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.source_frame_indices == (0, 1, 2, 3, 5, 6, 7)
+    assert index.recovery_bridge == (3, 5)
+    assert index.recovered_from_pairs == ((3, 4), (4, 5))
+    assert len(index.recovery_failed_shifts) == 2
+    assert index.shifts[3].status == frameshift.SHIFT_MEASURED
+    assert index.shifts[3].delta_px == _STEP * 2
+    assert "pairs 3/4, 4/5" in index.recovery_reason
+
+
+def test_two_adjacent_refusals_still_fail_when_the_direct_bridge_refuses(monkeypatch):
+    """Two adjacent failures identify a candidate frame; they do not authorize dropping it."""
+    frames = [_frame(scroll) for scroll in _FULL_SCROLL]
+    real_shift = item_index.estimate_shift
+    refused = {(frames[3], frames[4]), (frames[4], frames[5]), (frames[3], frames[5])}
+
+    def transient_and_bridge(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        if (frame_a, frame_b) in refused:
+            return dataclasses.replace(
+                result, delta_px=None, status=frameshift.SHIFT_NO_CONSENSUS,
+                consensus_px=None, reason="synthetic direct-bridge refusal")
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", transient_and_bridge)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert not index.usable
+    assert index.source_frame_indices == tuple(range(len(frames)))
+    assert index.recovered_from_pairs == () and index.recovery_bridge is None
+
+
 def _kinds(index):
     return [b.kind for b in index.blocks]
 

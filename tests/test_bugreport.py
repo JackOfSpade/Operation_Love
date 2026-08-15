@@ -862,6 +862,154 @@ def test_touch_watcher_probe_when_config_cannot_load(monkeypatch):
     assert "bad yaml" in md
 
 
+# ── Evidence anomalies: the two 2026-08-14 bugs a faithful tail could not show ──────────────
+def test_composer_reported_closed_then_open_again_is_flagged(tmp_path):
+    """A like sheet cannot reopen itself, so like_sending -> like_sheet is a misread poll.
+
+    The 2026-08-14 run printed both records correctly and the regression still read as ordinary
+    waiting. It is not cosmetic: like_sheet re-arms the stuck-screen budget on every poll and
+    like_sending deliberately does not, so a false like_sending spends the allowance belonging
+    to a human who is still typing."""
+    run = tmp_path / "run_20260814_233454"
+    run.mkdir(parents=True)
+    waits = [{"ts": "2026-08-14T23:43:51", "action": "observe_waiting", "reason": "like_sheet"},
+             {"ts": "2026-08-14T23:44:01", "action": "observe_waiting", "reason": "like_sending"},
+             {"ts": "2026-08-14T23:44:06", "action": "observe_waiting", "reason": "like_sheet"}]
+    (run / "actions.jsonl").write_text("".join(json.dumps(w) + "\n" for w in waits))
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "evidence anomalies:" in md
+    assert "reported CLOSED and then OPEN again 1x" in md
+    assert "2026-08-14T23:44:01" in md and "2026-08-14T23:44:06" in md
+
+
+def test_a_forward_only_composer_close_is_not_flagged(tmp_path):
+    """like_sheet -> like_sending is the NORMAL resolution and must stay quiet."""
+    run = tmp_path / "run_20260814_233455"
+    run.mkdir(parents=True)
+    waits = [{"ts": "2026-08-14T23:43:51", "action": "observe_waiting", "reason": "like_sheet"},
+             {"ts": "2026-08-14T23:44:01", "action": "observe_waiting", "reason": "like_sending"}]
+    (run / "actions.jsonl").write_text("".join(json.dumps(w) + "\n" for w in waits))
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "reported CLOSED and then OPEN again" not in md
+
+
+def _stale_evidence_run(tmp_path, name, records, shots):
+    run = tmp_path / name
+    run.mkdir(parents=True)
+    for shot, payload in shots.items():
+        (run / shot).write_bytes(payload)
+    (run / "actions.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+    return bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+
+def test_like_evidenced_by_a_frame_older_than_its_composer_is_flagged(tmp_path):
+    """The exact 2026-08-14 shape: a LIKE filed against a pre-tap frame.
+
+    Compared by CONTENT, not filename -- the debug log keys dedup on (action label, digest), so
+    the same pixels logged under a different action get a fresh filename, which is how this hid
+    as `00019_observe_decision_before.png`."""
+    md = _stale_evidence_run(
+        tmp_path, "run_20260814_233456",
+        [{"ts": "2026-08-14T23:41:06", "action": "observe_waiting", "reason": "no_change",
+          "before": "00007_observe_waiting_before.png"},
+         {"ts": "2026-08-14T23:41:48", "action": "observe_waiting", "reason": "like_sheet",
+          "before": "00009_observe_waiting_before.png"},
+         {"ts": "2026-08-14T23:46:07", "action": "observe_decision", "decision": "like",
+          "before": "00019_observe_decision_before.png"}],
+        {"00007_observe_waiting_before.png": b"identical-pixels",
+         "00009_observe_waiting_before.png": b"the composer, open",
+         "00019_observe_decision_before.png": b"identical-pixels"})
+
+    assert "BEFORE its composer existed" in md
+    assert "00019_observe_decision_before.png" in md
+    assert "00007_observe_waiting_before.png" in md
+    assert "5m01s earlier" in md
+
+
+def test_like_evidenced_by_its_own_composer_frame_is_not_flagged(tmp_path):
+    """The fixed behaviour: evidence captured DURING the composer episode is correct."""
+    md = _stale_evidence_run(
+        tmp_path, "run_20260814_233457",
+        [{"ts": "2026-08-14T23:41:06", "action": "observe_waiting", "reason": "no_change",
+          "before": "00007_observe_waiting_before.png"},
+         {"ts": "2026-08-14T23:41:48", "action": "observe_waiting", "reason": "like_sheet",
+          "before": "00009_observe_waiting_before.png"},
+         {"ts": "2026-08-14T23:46:07", "action": "observe_decision", "decision": "like",
+          "before": "00019_observe_decision_before.png"}],
+        {"00007_observe_waiting_before.png": b"a scrolled profile",
+         "00009_observe_waiting_before.png": b"the composer, open",
+         "00019_observe_decision_before.png": b"the composer, open"})
+
+    assert "BEFORE its composer existed" not in md
+
+
+def test_like_candidate_without_a_verified_sheet_is_not_a_composer_episode(tmp_path):
+    md = _stale_evidence_run(
+        tmp_path, "run_20260814_233457_candidate",
+        [{"ts": "2026-08-14T23:41:06", "action": "observe_waiting", "reason": "no_change",
+          "before": "00007_observe_waiting_before.png"},
+         {"ts": "2026-08-14T23:41:48", "action": "observe_waiting", "reason": "like_candidate",
+          "before": "00009_observe_waiting_before.png"},
+         {"ts": "2026-08-14T23:42:07", "action": "observe_bottom_delta",
+          "before": "00010_observe_bottom_delta_before.png"}],
+        {"00007_observe_waiting_before.png": b"a motionless card",
+         "00009_observe_waiting_before.png": b"a bottom-only delta",
+         "00010_observe_bottom_delta_before.png": b"a motionless card"})
+
+    assert "BEFORE its composer existed" not in md
+
+
+def test_screenshot_digest_rejects_paths_outside_the_flat_run_directory(tmp_path):
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"private pixels")
+    run = tmp_path / "run"
+    run.mkdir()
+
+    assert bugreport._shot_digest(run, str(outside), {}) is None
+    assert bugreport._shot_digest(run, "../outside.png", {}) is None
+    assert bugreport._shot_digest(run, "nested/shot.png", {}) is None
+    assert bugreport._shot_digest(run, "actions.jsonl", {}) is None
+
+
+def test_a_pass_reusing_the_previous_still_frame_is_not_flagged(tmp_path):
+    """Reusing an earlier frame is usually CORRECT -- a decision's evidence is the card as it
+    looked just before it advanced, and on a motionless screen that IS the last waiting shot.
+    Flagging it fired on ~10 of 16 real runs, nearly all benign; a check that cries wolf gets
+    skipped."""
+    md = _stale_evidence_run(
+        tmp_path, "run_20260814_233458",
+        [{"ts": "2026-08-14T23:40:04", "action": "observe_waiting", "reason": "no_change",
+          "before": "00002_observe_waiting_before.png"},
+         {"ts": "2026-08-14T23:40:20", "action": "observe_waiting", "reason": "no_change",
+          "before": "00002_observe_waiting_before.png"},
+         {"ts": "2026-08-14T23:40:36", "action": "observe_decision", "decision": "pass",
+          "before": "00003_observe_decision_before.png"}],
+        {"00002_observe_waiting_before.png": b"a motionless screen",
+         "00003_observe_decision_before.png": b"a motionless screen"})
+
+    assert "BEFORE its composer existed" not in md
+
+
+def test_evidence_anomaly_checks_survive_missing_screenshots(tmp_path):
+    """A report must never raise while describing a bug: rotated-away shots are just unknown."""
+    run = tmp_path / "run_20260814_233458"
+    run.mkdir(parents=True)
+    records = [{"ts": "2026-08-14T23:41:06", "action": "observe_waiting", "reason": "no_change",
+                "before": "00007_rotated_away.png"},
+               {"ts": "2026-08-14T23:46:07", "action": "observe_decision", "decision": "like",
+                "before": "00019_also_gone.png"}]
+    (run / "actions.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "cached, not fresh" not in md
+    assert '"action": "observe_decision"' in md          # the rest of the section still renders
+
+
 # ── Debug-log tail: new observe_decision/observe_resync fields (§3.12) ──────────────────────
 def test_debug_log_tail_surfaces_observe_decision_fields(tmp_path):
     """hinge.py's wait_for_decision writes exactly these fields on a resolved PASS (see its

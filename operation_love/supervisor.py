@@ -359,7 +359,9 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     # working GeminiOpener or None (opener.enabled=false) -- there is no other branch to
     # decide here.
     opener_service = OpenerService(opener_client, tracker, store, cfg.opener.style,
-                                   max_attempts=cfg.opener.max_attempts)
+                                   max_attempts=cfg.opener.max_attempts,
+                                   advisory_max_attempts=cfg.opener.advisory_max_attempts,
+                                   advisory_deadline_s=cfg.opener.advisory_deadline_s)
     if on_opener_service:
         # The hub's bug report needs the openers actually GENERATED this run -- their text,
         # the detail each one claims to reference, and the item space each request used. A

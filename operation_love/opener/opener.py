@@ -854,8 +854,9 @@ def _leading_ngram(text: str, n: int = 4) -> str:
     Deliberately dumb, and deliberately free of policy: it decides nothing. What counts as a
     collision, what happens on one, and how a collision interacts with the attempt budget are
     all the service's business (that budget accounting is the entire reason the guard cannot
-    simply reject -- an advisory/observe call gets exactly ONE attempt, so a hard rejection
-    there would disable suggestions for the rest of the session over a stylistic near-miss).
+    simply reject -- an advisory/observe call gets a deliberately short attempt budget, so a
+    hard rejection there could disable suggestions for the rest of the session over a
+    stylistic near-miss).
     Keeping the string normalization here, alone, is what lets that policy change without
     touching the definition of the thing being compared.
     """
@@ -960,6 +961,24 @@ class OpenerResult:
 # which stays exactly the retry_hint the model reads and existing tests assert on verbatim).
 # Bare string literals rather than an enum: they cross a storage boundary (a BigQuery/sqlite
 # TEXT column) where an enum would just get str()'d back down to one of these values anyway.
+#
+# The two BLOCK codes lead the list because their guards fire first (see _parse's text-is-None
+# region):
+#   prompt_blocked   -- the body carries promptFeedback.blockReason and, in the live 2026-08-15
+#                       capture, NO "candidates" key at all: the provider refused the REQUEST
+#                       and never generated anything.
+#   response_blocked -- candidates exist but the candidate's finishReason is one of
+#                       _BLOCK_FINISH_REASONS: the provider generated, then withheld the ANSWER.
+# Both describe a response with no opener text in it, which is exactly why it is tempting to
+# fold them into no_text -- and exactly why they must not be. no_text means we do NOT know what
+# happened (an unexplained shape, the case that needs a shape dump to diagnose); these two mean
+# the provider told us precisely what happened and it was a REFUSAL, a property of THIS
+# profile's images plus THIS model rather than of a broken prompt, a bad schema, or an
+# exhausted token budget. Kept apart so a GROUP BY on opener_rejections can answer "how often
+# does the safety filter refuse us, and on which models" without that count being buried under
+# every shape we could not explain.
+REASON_PROMPT_BLOCKED = "prompt_blocked"
+REASON_RESPONSE_BLOCKED = "response_blocked"
 REASON_NO_TEXT = "no_text"
 REASON_MAX_TOKENS = "max_tokens"
 REASON_BAD_JSON = "bad_json"
@@ -970,6 +989,16 @@ REASON_UNDELIVERABLE_CHARS = "undeliverable_chars"
 REASON_UNDELIVERABLE_SEQUENCE = "undeliverable_sequence"
 REASON_SCAFFOLDING = "scaffolding"
 REASON_TOO_MANY_SENTENCES = "too_many_sentences"
+
+_BLOCK_FINISH_REASONS = frozenset({
+    "SAFETY",
+    "RECITATION",
+    "BLOCKLIST",
+    "PROHIBITED_CONTENT",
+    "SPII",
+    "IMAGE_SAFETY",
+    "IMAGE_PROHIBITED_CONTENT",
+})
 
 
 class OpenerParseError(OpenerError):
@@ -996,8 +1025,8 @@ class OpenerParseError(OpenerError):
       - the raw response text (no per-field candidate exists to point at) for bad_json and
         missing_field: neither ever produced a usable "opener" value, so the whole raw text
         the model returned is the most useful thing available, well short of nothing.
-      - None for no_text/max_tokens: the response carried no text part at all, so there is
-        nothing to show.
+      - None for no_text/max_tokens/prompt_blocked/response_blocked: the response carried no
+        text part at all, so there is nothing to show.
     Defaults to None so existing raisers/tests that don't pass it keep working unchanged.
     """
 
@@ -1844,6 +1873,16 @@ class GeminiOpener:
         return None
 
     @staticmethod
+    def _prompt_block_reason(response: Mapping[str, Any]) -> str | None:
+        feedback = response.get("promptFeedback")
+        if not isinstance(feedback, Mapping):
+            return None
+        reason = feedback.get("blockReason")
+        if not isinstance(reason, str) or not reason or reason == "BLOCK_REASON_UNSPECIFIED":
+            return None
+        return reason
+
+    @staticmethod
     def _thoughts_token_count(response: Mapping[str, Any]) -> int:
         metadata = response.get("usageMetadata")
         if not isinstance(metadata, Mapping):
@@ -1878,6 +1917,12 @@ class GeminiOpener:
         text = self._text(response)
         finish_reason = self._finish_reason(response)
         if text is None:
+            prompt_block_reason = self._prompt_block_reason(response)
+            if prompt_block_reason is not None:
+                raise OpenerParseError(
+                    "Gemini blocked the opener prompt before generating content "
+                    f"(promptFeedback.blockReason={prompt_block_reason})",
+                    usage, model, reason_code=REASON_PROMPT_BLOCKED)
             if finish_reason == "MAX_TOKENS":
                 # Thinking counts against maxOutputTokens for every model we use (all but
                 # gemini-2.5-flash-lite default it on). When thoughts + candidates exceed
@@ -1891,6 +1936,10 @@ class GeminiOpener:
                     f"{self.max_tokens} configured max_tokens, leaving no room for the opener "
                     f"JSON. Raise opener.max_tokens, or lower {model!r}'s opener.thinking level.",
                     usage, model, reason_code=REASON_MAX_TOKENS)
+            if finish_reason in _BLOCK_FINISH_REASONS:
+                raise OpenerParseError(
+                    f"Gemini withheld the generated opener (finishReason={finish_reason})",
+                    usage, model, reason_code=REASON_RESPONSE_BLOCKED)
             raise OpenerParseError(f"Gemini returned no text content (finishReason={finish_reason!r})",
                                    usage, model, reason_code=REASON_NO_TEXT)
         try:

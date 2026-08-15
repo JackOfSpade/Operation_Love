@@ -18,10 +18,11 @@ observe  — SHADOW LEARNING. You use the app's own controls on real profiles;
            This is the only way the owner can test what auto will actually
            send, so the two modes must issue the SAME request — see
            _ObserveSuggestion for what is shared and the one thing that is not
-           (observe is advisory: one attempt, and its failures never stop a run).
+           (observe is advisory: a short, time-bounded retry budget, and its failures never
+           stop the human observation run).
 auto     — AUTONOMOUS. The worker captures, scores with the trained ranker,
            and likes/dislikes itself (sending openers where the app allows).
-           On an opener-capable app (Hinge), a like is either sent WITH its
+           On an opener-capable app (Hinge), a like is normally sent WITH its
            opener or not sent at all — if OpenerService cannot produce one for
            a profile (global exhaustion — including every retry attempt for
            that profile failing, see OpenerService.maybe_opener — a
@@ -37,10 +38,12 @@ auto     — AUTONOMOUS. The worker captures, scores with the trained ranker,
            capture could not be enumerated into numbered items at all (doc
            5.2): the request is crops precisely so that image k IS item k, and
            falling back to the raw scroll frames would hand the model a
-           numbering nothing downstream can act on. There is no configuration
-           that changes any of this: a commentless like is never sent, full
-           stop, and neither is a like whose target can't be honoured. See
-           _auto_loop's opener guards.
+           numbering nothing downstream can act on. The narrow exception is a
+           Gemini safety-policy block: the AUTO ranker already decided to like
+           the profile, so that decision proceeds without a comment. This is a
+           structured per-call outcome, not a configurable fallback for other
+           opener failures. A like whose target cannot be honoured still never
+           sends. See _auto_loop's opener guards.
            And it stops one step LATER too, when the driver reports it could
            not put the like on the chosen item after all — it could not reach
            that item, or the sheet that opened was not showing it
@@ -1208,7 +1211,8 @@ class Worker(threading.Thread):
         construction rather than by two arguments agreeing.
 
         NOTHING IN HERE CAN END THE SESSION. The generation call that used to sit in this
-        callback is on its own thread and is advisory (one attempt, `request_stop=False`), so an
+        callback is on its own thread and is advisory (short bounded retries,
+        `request_stop=False`), so an
         opener failure remains what it always was -- cosmetic. The observe loop's own
         `stop_requested` check stays, because a DIFFERENT worker (an auto-mode app sharing this
         OpenerService) can still legitimately ask everyone to stop.
@@ -1554,11 +1558,13 @@ class Worker(threading.Thread):
                         self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
                         self.stop_event.set()
                         break
-                    # COMPLETED RULE: on an opener-capable app, an AUTO like is either sent
-                    # WITH its opener or not sent at all -- never bare, and there is no
-                    # configuration that changes that (the old budget.on_exhausted=
-                    # "swipe_without_opener" mode was removed outright; see service.py's
-                    # module docstring). The guard above only catches GLOBAL exhaustion
+                    # COMPLETED RULE: on an opener-capable app, an AUTO like is normally sent
+                    # WITH its opener or not sent at all. The one narrow exception is a Gemini
+                    # safety-policy block: the ranker has already decided to like this profile,
+                    # so the service may explicitly license that decision to proceed without a
+                    # comment. This is not configurable and does not revive the removed generic
+                    # budget.on_exhausted="swipe_without_opener" mode. The guard above catches
+                    # GLOBAL exhaustion
                     # (stop_requested, which _exhaust() now sets unconditionally); maybe_opener()
                     # can also return None for reasons that are narrow to THIS profile and leave
                     # the service otherwise healthy -- a per-profile OpenerError, a single
@@ -1575,13 +1581,17 @@ class Worker(threading.Thread):
                     # True from construction, client is None) -- there was never an opener to
                     # send here, so auto mode must run exactly as if openers didn't exist, not
                     # halt on the very first like. There, self.opener_service.disabled is True,
-                    # so `not disabled` is False and this guard is a no-op -- only a live,
-                    # still-enabled service that just failed on THIS call reaches here. Apps
+                    # so `not disabled` is False and this guard is a no-op. A live,
+                    # still-enabled service that just failed on THIS call normally stops here;
+                    # the structured safety-block permission is the sole exception. Apps
                     # that do not accept openers (Bumble) are untouched: accepts_opener is False
                     # for them, so pick is always None by construction and this condition never
                     # evaluates true.
+                    allows_commentless_like = bool(getattr(
+                        self.opener_service, "last_skip_allows_commentless_like", False))
                     if accepts_opener and pick is None and self.opener_service is not None \
-                            and not getattr(self.opener_service, "disabled", True):
+                            and not getattr(self.opener_service, "disabled", True) \
+                            and not allows_commentless_like:
                         stop_reason = getattr(self.opener_service, "last_skip_reason", None) or (
                             "opener service returned no opener for this profile and no "
                             "specific reason was recorded"

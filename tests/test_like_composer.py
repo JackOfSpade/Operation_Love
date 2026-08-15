@@ -94,6 +94,46 @@ def _keyboard_open_composer_with_selected_photo_edge() -> bytes:
     return _png(canvas, color=False)
 
 
+def _keyboard_open_composer_with_text_selection_handle() -> bytes:
+    """Synthetic keyboard layout with Android's text-selection handle in the control gap.
+
+    Measured on the Pixel 7a while the owner edited a generated opener before
+    sending it: tapping into the comment field draws a ~56px teardrop that
+    tapers across the whole gap, touching the input's lower border and the CTA
+    below it.  Only that geometry is reproduced; no profile pixels are kept.
+    """
+    canvas = np.full((_H, _W), _BG, dtype=np.uint8)
+    canvas[_KEYBOARD_COMMENT.y0:_KEYBOARD_COMMENT.y0 + 2,
+           _KEYBOARD_COMMENT.x0:_KEYBOARD_COMMENT.x1] = 222
+    canvas[_KEYBOARD_COMMENT.y1 - 2:_KEYBOARD_COMMENT.y1,
+           _KEYBOARD_COMMENT.x0:_KEYBOARD_COMMENT.x1] = 222
+    canvas[_KEYBOARD_SEND.y0:_KEYBOARD_SEND.y1, _KEYBOARD_SEND.x0:_KEYBOARD_SEND.x1] = 228
+    for offset, y in enumerate(range(_KEYBOARD_COMMENT.y1 - 1, _KEYBOARD_SEND.y0 + 1)):
+        half = round(28 - offset * 0.5)
+        canvas[y, 502 - half:502 + half] = 60
+    _paint_glyph(canvas, center=_KEYBOARD_CONFIRM_CENTER)
+    return _png(canvas, color=False)
+
+
+def test_text_selection_handle_bridging_the_controls_is_still_an_open_composer():
+    """Editing the opener must never read as a composer that closed itself."""
+    surface = locate_inline_composer(
+        _keyboard_open_composer_with_text_selection_handle(), _TEMPLATE)
+
+    assert surface.comment_rect == _KEYBOARD_COMMENT
+    assert surface.send_rect == _KEYBOARD_SEND
+    assert surface.confirm_point == _KEYBOARD_CONFIRM_CENTER
+
+
+def test_text_selection_handle_does_not_move_any_composer_geometry():
+    """The handle is a transient overlay, so tap targets must not shift under it."""
+    edited = locate_inline_composer(
+        _keyboard_open_composer_with_text_selection_handle(), _TEMPLATE)
+    untouched = locate_inline_composer(_keyboard_open_composer(), _TEMPLATE)
+
+    assert edited == untouched
+
+
 @pytest.mark.parametrize("color", [False, True], ids=["grayscale", "color"])
 def test_locates_measured_inline_composer_geometry_and_glyph_center(color):
     surface = locate_inline_composer(_inline_composer(color=color), _TEMPLATE)

@@ -20,6 +20,8 @@ from operation_love.opener.opener import (
     OpenerAborted,
     OpenerError,
     OpenerParseError,
+    REASON_PROMPT_BLOCKED,
+    REASON_RESPONSE_BLOCKED,
 )
 from operation_love.opener.service import OpenerPick, OpenerService
 
@@ -613,6 +615,7 @@ def test_parse_error_returns_none_and_formats_unknown_cost_safely(capsys):
 def test_last_skip_reason_starts_unset():
     s = OpenerService(_Client(), _Tracker(), _Store(), "casual")
     assert s.last_skip_reason is None
+    assert s.last_skip_allows_commentless_like is False
 
 
 def test_last_skip_reason_is_isolated_between_concurrent_worker_threads():
@@ -742,6 +745,66 @@ def test_bad_response_succeeding_on_retry_returns_the_opener_and_bills_both_atte
     assert len(st.spend) == 2
     assert len(st.openers) == 1               # only the successful attempt produces an opener
     assert s.disabled is False and s.stop_requested is False
+
+
+@pytest.mark.parametrize("reason_code", [REASON_PROMPT_BLOCKED, REASON_RESPONSE_BLOCKED])
+def test_gemini_safety_block_is_recorded_once_then_skips_only_this_profile(reason_code):
+    blocked = OpenerParseError("Gemini withheld content", "usage", "gemini-x",
+                               reason_code=reason_code)
+    c = _Client(exc=blocked)
+    t = _Tracker()
+    st = _Store()
+    s = OpenerService(c, t, st, "casual")
+
+    assert s.maybe_opener("r", "hinge", object()) is None
+
+    # The provider call is still billable/auditable, but a policy block must never trigger the
+    # ordinary malformed-output retry storm or disable an otherwise healthy run.
+    assert c.calls == 1
+    assert t.recorded == [("gemini-x", "usage")]
+    assert len(st.spend) == len(st.rejections) == 1
+    assert st.rejections[0][4] == reason_code
+    assert s.disabled is False and s.stop_requested is False
+    assert s.exhausted_reason is None
+    assert "safety policy withheld" in s.last_skip_reason
+    assert "not retried" in s.last_skip_reason
+    assert "Future profiles remain eligible" in s.last_skip_reason
+    assert s.last_skip_allows_commentless_like is True
+
+    c.exc = None
+    next_card = s.maybe_opener("r", "hinge", object())
+
+    assert next_card is not None and next_card.text == _Res.opener
+    assert s.last_skip_reason is None
+    assert s.last_skip_allows_commentless_like is False
+
+
+def test_advisory_gemini_safety_block_leaves_observation_and_future_cards_live():
+    blocked = OpenerParseError("Gemini withheld content", "usage", "gemini-x",
+                               reason_code=REASON_PROMPT_BLOCKED)
+    c = _Client(exc_sequence=[blocked, None])
+    st = _Store()
+    s = OpenerService(c, _Tracker(), st, "casual")
+
+    assert s.maybe_opener("r", "hinge", object(), advisory=True) is None
+
+    assert c.calls == 1
+    assert s.disabled is False and s.stop_requested is False
+    assert s.exhausted_reason is None
+    # Advisory drafts are still intentionally not durable opener/rejection rows, but their
+    # spend and the operator-facing per-profile reason are retained.
+    assert len(st.spend) == 1 and st.rejections == []
+    assert "safety policy withheld" in s.last_skip_reason
+    assert s.last_skip_allows_commentless_like is False
+
+    next_card = s.maybe_opener("r", "hinge", object(), advisory=True)
+
+    assert next_card is not None and next_card.text == _Res.opener
+    assert c.calls == 2
+    assert len(st.spend) == 2
+    assert s.disabled is False and s.stop_requested is False
+    assert s.last_skip_reason is None
+    assert s.last_skip_allows_commentless_like is False
 
 
 # ---------------------------------------------------------------------------------------
@@ -1013,27 +1076,64 @@ def test_max_attempts_must_be_a_positive_int(bad_max_attempts):
 
 
 # ---------------------------------------------------------------------------------------
-# A: advisory=True (Hinge's observe-mode post-heart suggestion) -- a display-only failure
-# must never end the observe session. maybe_opener(advisory=True) uses exactly ONE attempt
-# (never self.max_attempts) and routes every exhaustion through _exhaust(request_stop=False):
+# A: advisory=True (Hinge's observe-mode pre-action suggestion) -- a display-only failure
+# must never end the observe session. maybe_opener(advisory=True) uses its shorter, time-bounded
+# retry policy and routes exhaustion through _exhaust(request_stop=False):
 # disabled/exhausted_reason are still set (spend stays protected), but stop_requested is left
 # alone. The default (advisory=False, every existing test in this file) must be completely
 # unaffected -- none of those tests pass advisory at all, so they pin that on their own.
 # ---------------------------------------------------------------------------------------
 
-def test_advisory_uses_exactly_one_attempt_not_max_attempts():
-    """A parse failure that would normally retry up to max_attempts (5, the default) times
-    must stop after exactly ONE attempt when advisory=True -- a human is sitting there
-    waiting on this call, so a multi-attempt retry storm is a UX problem here, not a
-    spend-protecting safeguard."""
+def test_advisory_uses_its_shorter_retry_budget_not_auto_max_attempts():
+    """Observe retries transiently bad model output, but not for AUTO's full budget."""
     parse_error = OpenerParseError("bad JSON", "usage", "gemini-x")
     c = _Client(exc=parse_error)                # would keep failing every attempt forever
     s = OpenerService(c, _Tracker(), _Store(), "casual")
 
     assert s.maybe_opener("r", "hinge", object(), advisory=True) is None
-    assert c.calls == 1                          # not 5
+    assert c.calls == s.advisory_max_attempts == 3       # not the AUTO default of 5
     assert s.disabled is True                    # spend still protected
     assert s.stop_requested is False              # but the run itself was never asked to stop
+
+
+def test_advisory_bad_response_can_succeed_on_retry():
+    parse_error = OpenerParseError("bad JSON", "usage", "gemini-x")
+    c = _Client(exc_sequence=[parse_error])
+    s = OpenerService(c, _Tracker(), _Store(), "casual",
+                      max_attempts=5, advisory_max_attempts=3)
+
+    out = s.maybe_opener("r", "hinge", object(), advisory=True)
+
+    assert out.text == _Res.opener
+    assert c.calls == 2
+    assert c.retry_hints[0] == "" and "bad JSON" in c.retry_hints[1]
+    assert s.disabled is False and s.stop_requested is False
+
+
+def test_advisory_deadline_stops_retries_without_disabling_future_profiles(monkeypatch):
+    parse_error = OpenerParseError("bad JSON", "usage", "gemini-x")
+    c = _Client(exc=parse_error)
+    ticks = iter((100.0, 161.0))
+    monkeypatch.setattr(service_mod.time, "monotonic", lambda: next(ticks))
+    s = OpenerService(c, _Tracker(), _Store(), "casual",
+                      advisory_max_attempts=3, advisory_deadline_s=60)
+
+    assert s.maybe_opener("r", "hinge", object(), advisory=True) is None
+
+    assert c.calls == 1
+    assert s.disabled is False and s.stop_requested is False
+    assert "deadline" in s.last_skip_reason
+
+
+def test_advisory_deadline_never_prevents_the_first_attempt(monkeypatch):
+    c = _Client()
+    ticks = iter((100.0, 10_000.0))
+    monkeypatch.setattr(service_mod.time, "monotonic", lambda: next(ticks))
+    s = OpenerService(c, _Tracker(), _Store(), "casual",
+                      advisory_max_attempts=3, advisory_deadline_s=1)
+
+    assert s.maybe_opener("r", "hinge", object(), advisory=True).text == _Res.opener
+    assert c.calls == 1
 
 
 def test_advisory_exhaustion_disables_but_never_requests_stop(capsys):
@@ -1117,7 +1217,7 @@ def test_advisory_draft_keeps_billing_but_writes_no_opener_or_rejection_rows():
         _Client(exc=OpenerParseError("bad JSON", "usage", "gemini-x")),
         _Tracker([False]), rejection_store, "casual")
     assert rejected.maybe_opener("r", "hinge", object(), advisory=True) is None
-    assert len(rejection_store.spend) == 1
+    assert len(rejection_store.spend) == rejected.advisory_max_attempts == 3
     assert rejection_store.openers == []
     assert rejection_store.rejections == []
     assert rejected.recent_rejections_snapshot() == []
@@ -1246,8 +1346,8 @@ def test_skip_models_never_leaks_across_profiles():
     assert c.skip_models_seen == [frozenset()]                 # NOT frozenset({"gemini-x"})
 
 
-def test_advisory_single_attempt_also_passes_an_empty_skip_models():
-    """advisory's single attempt is still 'attempt 1' of its own call -- skip_models must be
+def test_advisory_first_attempt_passes_an_empty_skip_models():
+    """Advisory attempt 1 starts with no failed model -- skip_models must be
     empty (nothing has failed yet within THIS call) exactly like a first AUTO attempt."""
     c, t, st = _Client(), _Tracker([False, False]), _Store()
     s = OpenerService(c, t, st, "casual")
@@ -1718,15 +1818,12 @@ def test_advisory_collision_regenerates_exactly_once_and_sends_the_new_opener(ca
     assert "EXEMPT from the per-profile attempt budget" in output
 
 
-def test_advisory_regeneration_does_not_consume_the_single_attempt(capsys):
+def test_advisory_regeneration_does_not_consume_the_retry_budget(capsys):
     """Property 2, stated as the accounting rule it actually is, under advisory specifically:
-    effective_max_attempts is 1 there, so if the guard's redraw were ever mistakenly wired into
-    maybe_opener's attempt loop, a colliding advisory opener would burn the single allowed
-    attempt, trip "every attempt for this profile failed", and _exhaust() the service --
-    disabling suggestions for the rest of the observe session over a stylistic near-miss. It
-    must not: the service stays enabled, stop_requested stays False, exhausted_reason stays
-    None, and -- the actual proof -- a THIRD advisory call still gets served normally rather
-    than coming back None because the service thinks its one attempt was already spent."""
+    if the guard's redraw were ever mistakenly wired into maybe_opener's retry loop, a
+    colliding advisory opener could consume the deliberately small failure budget and disable
+    suggestions over a stylistic near-miss. It must not: the service stays enabled,
+    stop_requested stays False, exhausted_reason stays None, and a third call is still served."""
     c = _Client(opener_texts=[_NGRAM_A, _NGRAM_A, _NGRAM_B, _NGRAM_B])
     s = OpenerService(c, _Tracker(), _Store(), "casual")
 

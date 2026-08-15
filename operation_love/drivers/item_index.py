@@ -219,6 +219,12 @@ _MIN_ITEM_GAP_PX = min(_GUTTER_PX) - _GUTTER_TOLERANCE_PX
 # states that limit and names the corroborating signal.
 _END_TAIL_GAP_PX = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
 
+# Logged with every refusal dossier.  This is not a compatibility switch; it is a human-readable
+# name for the loaded decision surface, paired with a hash of the actual in-memory splitter code
+# by hinge.py.  The pair distinguishes "the current source replays cleanly" from "the long-lived
+# worker was still executing an older indexer" without trusting the working tree alone.
+ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v2"
+
 
 # =====================================================================================
 # Result vocabulary. Plain string constants, matching segment.py and frameshift.py (there is no

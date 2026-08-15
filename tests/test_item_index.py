@@ -712,6 +712,45 @@ def test_live_f19_to_f29_bridging_shape_is_split_on_its_bounded_cards():
     assert {"frame 19", "frame 20"} == {note.split("'s")[0] for note in notes}
 
 
+def test_live_f18_to_f29_caption_seam_refusal_geometry_is_repaired_conservatively():
+    """Pin the exact observation ledger saved by run 34b23877bdf8.
+
+    The segmentation-layer regression keeps the `Selfie #503` caption attached to its media in
+    new captures.  This lower-level control proves that an older/foreign segmentation carrying
+    the already-split evidence still fails safe without the giant contradiction shown to the
+    operator: the independently bounded pieces survive in page order and only the two clipped
+    bridge fragments are excluded with provenance.
+    """
+    blocks, failures, notes = _assemble([
+        _obs(18, 6406, 6661, complete=False),
+        _obs(19, 6406, 6905, complete=False),
+        _obs(20, 6406, 6541),
+        _obs(20, 6588, 7162, complete=False),
+        _obs(21, 6406, 6541),
+        _obs(21, 6588, 7383, complete=False),
+        _obs(22, 6588, 7515, hearts=(7426,)),
+        _obs(23, 6406, 6541),
+        _obs(23, 6588, 7515, hearts=(7426,)),
+        _obs(24, 6406, 6541),
+        _obs(24, 6588, 7515, hearts=(7426,)),
+        _obs(25, 6588, 7515, hearts=(7426,)),
+        _obs(26, 6773, 7515, complete=False, hearts=(7426,)),
+        _obs(27, 7002, 7515, complete=False, hearts=(7426,)),
+        _obs(28, 7251, 7515, complete=False),
+        _obs(29, 7496, 7515, complete=False),
+    ], full=True)
+
+    assert failures == ()
+    assert [(block.page_y0, block.page_y1, block.kind, block.heart_ordinal,
+             block.model_index) for block in blocks] == [
+        (6406, 6541, item_index.ITEM_CONTEXT, None, None),
+        (6588, 7515, item_index.ITEM_SELECTABLE, 1, 1),
+    ]
+    assert len(notes) == 2
+    assert {"frame 18", "frame 19"} == {note.split("'s")[0] for note in notes}
+    assert all("spans the proven card boundary" in note for note in notes)
+
+
 def test_a_bridging_fragment_with_an_uncorroborated_heart_is_not_discarded():
     """The split needs independent evidence for every heart it would exclude."""
     blocks, failures, notes = _assemble([

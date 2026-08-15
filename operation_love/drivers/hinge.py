@@ -64,6 +64,7 @@ import fcntl
 import functools
 import hashlib
 import json
+import marshal
 import math
 import os
 import random
@@ -112,6 +113,41 @@ _TARGETING_CALIBRATION_KEYS = frozenset({
     "identity_match_max_dist", "inline_item_max_dist", "device", "calibrated_at",
     "identity_band", "content_band",
 })
+
+
+def _item_index_runtime_provenance() -> dict[str, str | None]:
+    """Fingerprint the item-index implementation this process is actually executing.
+
+    A git hash or source-file hash describes the working tree, not a long-lived Python process:
+    either can change after imports are cached.  Reach the splitter through the loaded
+    ``build_item_index`` function's globals and hash its in-memory code object.  This remains
+    diagnostic-only and deliberately tolerates monkeypatched/test callables with no splitter.
+    """
+    try:
+        build = build_item_index
+        namespace = getattr(build, "__globals__", {})
+        splitter = namespace.get("_split_on_bounded_cards")
+        code = getattr(splitter, "__code__", None)
+        source = namespace.get("__file__")
+        if isinstance(source, str):
+            try:
+                source = str(Path(source).resolve())
+            except Exception:  # noqa: BLE001 -- provenance is best-effort diagnostics
+                pass
+        return {
+            "algorithm_id": namespace.get("ITEM_INDEX_ALGORITHM_ID"),
+            "build_callable": (
+                f"{getattr(build, '__module__', '?')}."
+                f"{getattr(build, '__qualname__', getattr(build, '__name__', '?'))}"),
+            "module_path": source if isinstance(source, str) else None,
+            "splitter_code_sha256": (
+                hashlib.sha256(marshal.dumps(code)).hexdigest() if code is not None else None),
+        }
+    except Exception:  # noqa: BLE001 -- diagnostics must never alter a live refusal
+        return {
+            "algorithm_id": None, "build_callable": None,
+            "module_path": None, "splitter_code_sha256": None,
+        }
 
 # A second controller must never turn an active OBSERVE wait into its own read-and-unwind
 # sequence.  The in-process map makes that refusal deterministic even when both drivers are
@@ -3221,8 +3257,9 @@ class AndroidDriver(DatingAppDriver):
         # for a malformed index with more local frames than capture images.
         return tuple(range(min(len(frames), len(photos)))) if frames else tuple(range(len(photos)))
 
-    def _save_item_index_refusal_evidence(self, photos: list[bytes], reason: str, index,
-                                           cited_local: list[int]) -> tuple[str | None, list[str]]:
+    def _save_item_index_refusal_evidence(
+            self, photos: list[bytes], reason: str, index, cited_local: list[int],
+            runtime_provenance: dict[str, str | None]) -> tuple[str | None, list[str]]:
         """Persist a small, standalone refusal dossier when this is a real DebugLog.
 
         The regular action logger intentionally owns normal rotating screenshots.  These source
@@ -3258,26 +3295,27 @@ class AndroidDriver(DatingAppDriver):
 
             offsets = tuple(getattr(index, "offsets", ()) or ())
             frames = tuple(getattr(index, "frames", ()) or ())
-            records = []
-            saved = []
-            for local in local_candidates:
-                original = source[local]
-                filename = f"item_index_refused_{dossier_id}_frame_{original}.png"
-                (debug_dir / filename).write_bytes(photos[original])
-                saved.append(filename)
+
+            def geometry_record(local: int, screenshot: str | None = None) -> dict:
+                original = source[local] if local < len(source) else local
                 segmentation = frames[local] if local < len(frames) else None
                 blocks = []
                 for block in tuple(getattr(segmentation, "blocks", ()) or ())[:64]:
                     y0, y1 = getattr(block, "y0", None), getattr(block, "y1", None)
                     offset = offsets[local] if local < len(offsets) else None
+                    top = getattr(block, "top", None)
+                    bottom = getattr(block, "bottom", None)
                     blocks.append({
                         "frame_rows": [y0, y1],
                         "page_rows": ([y0 + offset, y1 + offset]
                                       if isinstance(y0, int) and isinstance(y1, int)
                                       and isinstance(offset, int) else None),
+                        "kind": getattr(block, "kind", None),
                         "complete": bool(getattr(block, "complete", False)),
-                        "top_observed": bool(getattr(getattr(block, "top", None), "observed", False)),
-                        "bottom_observed": bool(getattr(getattr(block, "bottom", None), "observed", False)),
+                        "top_observed": bool(getattr(top, "observed", False)),
+                        "bottom_observed": bool(getattr(bottom, "observed", False)),
+                        "top_kind": getattr(top, "kind", None),
+                        "bottom_kind": getattr(bottom, "kind", None),
                         "hearts": {
                             "frame_rows": [list(h) for h in tuple(getattr(block, "hearts", ()) or ())[:12]],
                             "page_rows": ([list((x, y + offset)) for x, y in
@@ -3285,15 +3323,45 @@ class AndroidDriver(DatingAppDriver):
                                           if isinstance(offset, int) else None),
                         },
                     })
-                records.append({"local_frame_index": local, "source_frame_index": original,
-                                "offset_px": offsets[local] if local < len(offsets) else None,
-                                "screenshot": filename, "blocks": blocks})
+                runs = []
+                for run in tuple(getattr(segmentation, "runs", ()) or ())[:64]:
+                    runs.append({
+                        "frame_rows": [getattr(run, "y0", None), getattr(run, "y1", None)],
+                        "kind": getattr(run, "kind", None),
+                        "widest_intruder_px": getattr(run, "widest_intruder_px", None),
+                        "median_level_delta": getattr(run, "median_level_delta", None),
+                    })
+                record = {
+                    "local_frame_index": local, "source_frame_index": original,
+                    "offset_px": offsets[local] if local < len(offsets) else None,
+                    "blocks": blocks, "background_runs": runs,
+                }
+                if screenshot is not None:
+                    record["screenshot"] = screenshot
+                return record
+
+            records = []
+            saved = []
+            for local in local_candidates:
+                original = source[local]
+                filename = f"item_index_refused_{dossier_id}_frame_{original}.png"
+                (debug_dir / filename).write_bytes(photos[original])
+                saved.append(filename)
+                records.append(geometry_record(local, filename))
+
+            # Screenshots remain capped at eight, but geometry is small and is the evidence a
+            # replay actually needs.  Preserve every folded frame (bounded again per frame)
+            # instead of silently omitting a non-cited fragment that made a repair back out.
+            geometry_count = min(len(frames), len(source))
+            all_frame_geometry = [geometry_record(local) for local in range(geometry_count)]
             sidecar = f"item_index_refused_{dossier_id}_evidence.json"
-            # The structured geometry is capped by at most eight frames, 64 blocks/frame, and
-            # 12 hearts/block; reason is deliberately short because full text remains JSONL.
+            # The image payload is capped at eight frames; structured geometry is bounded by the
+            # capture ceiling, 64 blocks/runs per frame, and 12 hearts/block.  Reason remains
+            # short because the full prose is already in actions.jsonl.
             (debug_dir / sidecar).write_text(json.dumps({
-                "schema_version": 1, "reason": str(reason)[:2000],
-                "frames": records}, separators=(",", ":")))
+                "schema_version": 2, "reason": str(reason)[:2000],
+                "runtime": runtime_provenance, "frames": records,
+                "all_frame_geometry": all_frame_geometry}, separators=(",", ":")))
             return sidecar, saved
         except Exception:  # noqa: BLE001 -- disk trouble cannot change a hard refusal
             return None, []
@@ -3359,8 +3427,9 @@ class AndroidDriver(DatingAppDriver):
             pair = rec.get("pair")
             if isinstance(pair, list):
                 cited_local.extend(v for v in pair if isinstance(v, int))
+        runtime_provenance = _item_index_runtime_provenance()
         sidecar, evidence_frames = self._save_item_index_refusal_evidence(
-            photos, reason, index, cited_local)
+            photos, reason, index, cited_local, runtime_provenance)
 
         before = after = None
         if failing_pair is not None and 0 <= failing_pair and failing_pair + 1 < len(photos):
@@ -3375,6 +3444,7 @@ class AndroidDriver(DatingAppDriver):
             "photos": len(photos),
             "steps_px": steps_px,
             "refused_pairs": refused_pairs,
+            "item_index_runtime": runtime_provenance,
         }
         if failing_pair is not None:
             fields["failing_pair"] = [failing_pair, failing_pair + 1]

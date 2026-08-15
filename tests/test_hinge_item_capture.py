@@ -905,10 +905,18 @@ def test_item_index_refusal_saves_at_most_eight_source_mapped_frames_and_bounded
     refusal = next(rec for rec in records if rec["action"] == "item_index_refused")
     assert len(refusal["evidence_frames"]) == 8
     assert all("_frame_" in name for name in refusal["evidence_frames"])
+    runtime = refusal["item_index_runtime"]
+    assert runtime["algorithm_id"] == item_index.ITEM_INDEX_ALGORITHM_ID
+    assert runtime["module_path"].endswith("operation_love/drivers/item_index.py")
+    assert len(runtime["splitter_code_sha256"]) == 64
     sidecar = json.loads((drv._dbg.dir / refusal["evidence_sidecar"]).read_text())
+    assert sidecar["schema_version"] == 2
+    assert sidecar["runtime"] == runtime
     assert len(sidecar["frames"]) == 8
+    assert len(sidecar["all_frame_geometry"]) == 11
     frame = sidecar["frames"][0]
-    assert {"local_frame_index", "source_frame_index", "offset_px", "blocks"} <= set(frame)
+    assert {"local_frame_index", "source_frame_index", "offset_px", "blocks",
+            "background_runs"} <= set(frame)
     assert frame["blocks"][0]["frame_rows"] == [20, 60]
     assert frame["blocks"][0]["page_rows"] == [20, 60]
     assert frame["blocks"][0]["complete"] is True

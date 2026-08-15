@@ -237,6 +237,20 @@ _GUTTER_PX = (52, 53)
 # either way.
 _GUTTER_TOLERANCE_PX = 5
 
+# A gutter is not merely a canonical-length run with no full-width foreground span: its pixels
+# must also agree with the page background read from the side margins on the same rows.  The
+# distinction matters for compound photo cards.  Hinge can draw a short caption panel above the
+# media inside ONE rounded card, separated by 47px of blank card surface.  Length alone calls
+# that internal seam a gutter and splits the caption from its photo.  On the incident frame the
+# seam's median grey level is 2 levels away from the page reference on the median row (up to 3),
+# while the genuine gutter immediately below is an exact 0-level match on all 53 rows.
+#
+# [corpus] the page-margin probe's within-row spread is <=1 through p90 and real gutters are the
+# page itself, so one grey level absorbs ordinary capture noise without accepting the measured
+# card-white seam.  A failure here deliberately MERGES regions, the conservative/loud direction;
+# it can never create a new item or renumber anything below it.
+_GUTTER_BACKGROUND_LEVEL_TOLERANCE = 1.0
+
 # Corner radius window, in px, that a card's own top/bottom edge row may measure. [doc 5.10:
 # "Card corner radius | ~20-23px". corpus: at the 219 edges a canonical gutter independently
 # proves are card edges, the radius implied by the edge row's non-background span is 19.0 on 105
@@ -322,6 +336,8 @@ RUN_TOO_SHORT = "too_short"
 RUN_TOO_LONG = "too_long"
 RUN_CLIPPED = "clipped"           # touches the analysed band's edge, so its length is a lower
                                   # bound only and cannot be tested against the gutter window
+RUN_CARD_SURFACE = "card_surface"  # canonical length, but its median level differs from the
+                                   # page: blank space inside one compound card, not a gutter
 
 
 class SegmentationError(RuntimeError):
@@ -338,7 +354,7 @@ class SegmentationError(RuntimeError):
 
 @dataclass(frozen=True)
 class BackgroundRun:
-    """A maximal run of consecutive page-background rows inside the analysed band.
+    """A maximal run of consecutive background-like rows inside the analysed band.
 
     `y1` is EXCLUSIVE (so `height` is `y1 - y0` with no off-by-one), matching every other
     y-extent in this module. `widest_intruder_px` is the widest horizontal span of
@@ -350,6 +366,10 @@ class BackgroundRun:
     y1: int
     kind: str
     widest_intruder_px: int
+    # Median absolute grey-level distance between the card band and the same rows' page-margin
+    # reference.  This is the affirmative page-background check for RUN_GUTTER; older callers
+    # constructing records positionally remain source-compatible through the default.
+    median_level_delta: float = 0.0
 
     @property
     def height(self) -> int:
@@ -548,9 +568,10 @@ def _classify_rows(gray, *, card_x0: int, card_x1: int, reference, spread, toler
     return is_card, span
 
 
-def _background_runs(is_card, span, *, r0: int, r1: int, gutter_lo: int, gutter_hi: int,
+def _background_runs(is_card, span, level_delta, *, r0: int, r1: int, gutter_lo: int,
+                     gutter_hi: int, gutter_level_tolerance: float, np,
                      ) -> list[BackgroundRun]:
-    """Maximal runs of background rows within `[r0, r1)`, each classified by LENGTH alone.
+    """Maximal runs of background-like rows, classified by length and actual page agreement.
 
     A run that touches either end of the analysed band is `RUN_CLIPPED` regardless of its
     measured height: we only see a lower bound on its length, so it cannot be tested against the
@@ -571,16 +592,20 @@ def _background_runs(is_card, span, *, r0: int, r1: int, gutter_lo: int, gutter_
             y += 1
         clipped = start == r0 or y == r1
         height = y - start
+        median_delta = float(np.median(level_delta[start:y])) if height else 0.0
         if clipped:
             kind = RUN_CLIPPED
         elif height < gutter_lo:
             kind = RUN_TOO_SHORT
         elif height > gutter_hi:
             kind = RUN_TOO_LONG
+        elif median_delta > gutter_level_tolerance:
+            kind = RUN_CARD_SURFACE
         else:
             kind = RUN_GUTTER
         runs.append(BackgroundRun(y0=start, y1=y, kind=kind,
-                                  widest_intruder_px=int(span[start:y].max()) if height else 0))
+                                  widest_intruder_px=int(span[start:y].max()) if height else 0,
+                                  median_level_delta=median_delta))
     return runs
 
 
@@ -704,6 +729,8 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
                   card_row_min_span_frac: float = _CARD_ROW_MIN_SPAN_FRAC,
                   gutter_px: tuple[int, int] = _GUTTER_PX,
                   gutter_tolerance_px: int = _GUTTER_TOLERANCE_PX,
+                  gutter_background_level_tolerance: float =
+                  _GUTTER_BACKGROUND_LEVEL_TOLERANCE,
                   card_corner_px: tuple[int, int] = _CARD_CORNER_PX,
                   card_corner_ramp_slack_px: int = _CARD_CORNER_RAMP_SLACK_PX,
                   card_corner_dip_px: int = _CARD_CORNER_DIP_PX) -> FrameSegmentation:
@@ -786,10 +813,17 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
         img, card_x0=card_x0, card_x1=card_x1, reference=reference, spread=spread,
         tolerance=background_tolerance, min_span_frac=card_row_min_span_frac,
         max_spread=margin_probe_max_spread, np=np)
+    # The row classifier intentionally tolerates small colour differences so prompt whitespace
+    # is not fragmented.  Gutter acceptance gets a stricter, aggregate check: the median of the
+    # whole card band must actually match the page margins on those same rows.
+    band_level = np.median(img[:, card_x0:card_x1].astype(np.float32), axis=1)
+    level_delta = np.abs(band_level - reference)
 
     gutter_lo = min(gutter_px) - gutter_tolerance_px
     gutter_hi = max(gutter_px) + gutter_tolerance_px
-    runs = _background_runs(is_card, span, r0=r0, r1=r1, gutter_lo=gutter_lo, gutter_hi=gutter_hi)
+    runs = _background_runs(
+        is_card, span, level_delta, r0=r0, r1=r1, gutter_lo=gutter_lo,
+        gutter_hi=gutter_hi, gutter_level_tolerance=gutter_background_level_tolerance, np=np)
 
     # Deferred import, and the ONLY runtime dependency this module has on hinge.py. Deferring it
     # keeps the import graph acyclic (hinge.py imports segment.py) and, as a bonus, resolves

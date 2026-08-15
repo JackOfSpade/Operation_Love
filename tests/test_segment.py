@@ -221,6 +221,38 @@ def test_bright_uniform_span_inside_a_card_does_not_split_it():
     assert false_run[0].widest_intruder_px == 0          # genuinely indistinguishable by colour
 
 
+def test_caption_seam_that_is_card_white_does_not_split_one_compound_photo_card():
+    """Regression for the live `Selfie #503` capture.
+
+    Hinge put a 135px caption panel and its photo inside one rounded card, with a 47px blank
+    white seam between them.  Forty-seven pixels is inside the accepted gutter window, so the
+    old length-only rule split the caption into a heartless context block and the media into a
+    second card.  The seam is card white, however, not the page background beside it.  That
+    affirmative colour evidence must keep the outer rounded card whole; a genuine gutter of
+    the same layout still cuts normally immediately below it.
+    """
+    f = _Frame()
+    f.card(200, 379, heart_y=340)                       # top-clipped previous card
+    f.card(432, 1541, heart_y=1452)                    # caption + media, one outer card
+    seam_y0, seam_y1 = 567, 614                        # exact live 47px internal seam
+    card_white = np.minimum(
+        f.col[seam_y0:seam_y1].astype(np.int16) + 2, 255).astype(np.uint8)
+    f.gray[seam_y0:seam_y1, _CARD_X0:_CARD_X1] = card_white[:, None]
+    f.card(1594, 2300, heart_y=2050)                   # true 53px gutter above
+
+    r = f.segment()
+
+    assert r.ok, r.failures
+    assert _extents(r) == [(_BAND0, 379), (432, 1541), (1594, _BAND1)]
+    compound = r.blocks[1]
+    assert compound.kind == segment.BLOCK_SELECTABLE
+    assert compound.complete and compound.hearts == ((_HEART_CX, 1452),)
+    assert (seam_y0, seam_y1) not in _gutters(r)
+    seam = next(run for run in r.runs if (run.y0, run.y1) == (seam_y0, seam_y1))
+    assert seam.kind == segment.RUN_CARD_SURFACE
+    assert seam.median_level_delta > segment._GUTTER_BACKGROUND_LEVEL_TOLERANCE
+    assert (1541, 1594) in _gutters(r), "the real page-background gutter must still cut"
+
 def test_a_gutter_sized_background_span_does_split():
     """The negative control for the test above: same fixture, same colour, only the LENGTH
     changed from 192 rows to the canonical 53. Now it splits — which proves the previous test's

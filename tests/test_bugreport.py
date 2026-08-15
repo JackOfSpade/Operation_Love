@@ -503,6 +503,11 @@ def test_debug_log_section_summarises_item_index_refusals_and_realised_steps(tmp
         "failing_pair": [34, 35], "before": "00001_item_index_refused_before.png",
         "after": "00002_item_index_refused_after.png",
         "steps_px": [209, None, 211, 209],
+        "item_index_runtime": {
+            "algorithm_id": "bounded-card-split-v2",
+            "module_path": "/repo/operation_love/drivers/item_index.py",
+            "splitter_code_sha256": "a" * 64,
+        },
         "refused_pairs": [{"pair": [34, 35], "status": "no_consensus", "agreeing": 4,
                             "dissenting": 0, "eligible": 4}],
     }
@@ -515,6 +520,9 @@ def test_debug_log_section_summarises_item_index_refusals_and_realised_steps(tmp
     assert "realised steps (3 measured): min 209px, median 209px, max 211px" in md
     assert "before `00001_item_index_refused_before.png`" in md
     assert "after `00002_item_index_refused_after.png`" in md
+    assert "algorithm `bounded-card-split-v2`" in md
+    assert "loaded module `/repo/operation_love/drivers/item_index.py`" in md
+    assert "in-memory splitter `aaaaaaaaaaaa`" in md
 
 
 def test_item_index_summary_keeps_long_geometry_once_and_separates_trailing_saturation(tmp_path):

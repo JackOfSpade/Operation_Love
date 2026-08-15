@@ -2385,6 +2385,18 @@ Amendment two: a real gutter was **missed** by a naive "any pixel differs from b
 because a narrow element spanning only x=30-216 kept the row looking occupied. The test must
 require non-background pixels across close to the card's full 53-1026 width, not any single pixel.
 
+Amendment three (2026-08-14): **gutter length is necessary but not sufficient.** A captioned
+photo placed a 135px header and its media inside one rounded card with a 47px blank card-white
+seam. The old length-only gate accepted that seam as a real gutter, split one photo into a
+heartless context block plus a heart-bearing media block, and clipped frames spanning the two
+pieces later made the page index refuse contradictory extents. A gutter must therefore satisfy
+both structural tests: canonical length *and* affirmative agreement with the row-local page
+background read from the side margins. In the incident frame the internal seam's median grey
+level differed from the page by 2 levels (up to 3); the genuine 53px gutter immediately below
+matched by 0 on every row. The shipped gate allows one level of capture noise. Rejecting an
+uncertain gutter merges regions—the conservative, loud direction—and never fabricates or
+renumbers an item. This is content-derived segmentation; it has no fixed photo-count rule.
+
 **The viewport question (5.4, and open item in 9) is CLOSED.** The tallest card fully observed is
 1114px against an 1800px content band, 62% of the budget. Nothing in this capture approaches the
 viewport height, so cropping can work from single frames and **no stitching is required**. Caveat:

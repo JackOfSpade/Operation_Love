@@ -974,6 +974,21 @@ def _item_index_refusal_summary_md(lines: list[str]) -> str:
         sidecar = rec.get("evidence_sidecar")
         if sidecar:
             evidence.append(f"geometry sidecar `{_sanitize_inline(str(sidecar))}`")
+        runtime = rec.get("item_index_runtime")
+        if isinstance(runtime, dict):
+            algorithm = runtime.get("algorithm_id")
+            module_path = runtime.get("module_path")
+            splitter_hash = runtime.get("splitter_code_sha256")
+            runtime_bits = []
+            if algorithm:
+                runtime_bits.append(f"algorithm `{_sanitize_inline(str(algorithm))}`")
+            if module_path:
+                runtime_bits.append(f"loaded module `{_sanitize_inline(str(module_path))}`")
+            if splitter_hash:
+                runtime_bits.append(
+                    f"in-memory splitter `{_sanitize_inline(str(splitter_hash))[:12]}`")
+            if runtime_bits:
+                evidence.append("runtime provenance " + ", ".join(runtime_bits))
         evidence_text = "; ".join(evidence) if evidence else "no pair screenshots saved"
         reason = _sanitize_inline(str(rec.get("reason") or "no refusal reason logged"))
         regions = sorted(set(re.findall(r"page rows\s+(\d+\.\.\d+)", reason)))

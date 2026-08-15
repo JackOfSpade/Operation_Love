@@ -3104,6 +3104,13 @@ class AndroidDriver(DatingAppDriver):
                 source_frame = local_frame
                 if (isinstance(local_frame, int) and 0 <= local_frame < len(source_indices)):
                     source_frame = source_indices[local_frame]
+                classifier = None
+                if crop.image is not None and crop.heart_ordinal is not None:
+                    # Aggregate-only evidence: no OCR text and no additional saved image.  This
+                    # is calculated through the classifier's own entry point so the manifest
+                    # cannot drift from the verdict used by the policy.
+                    from .item_type_preflight import crop_type_evidence
+                    classifier = crop_type_evidence(crop.image)
                 manifest.append({
                     "kind": crop.kind,
                     "model_item": crop.number,
@@ -3113,6 +3120,7 @@ class AndroidDriver(DatingAppDriver):
                     "crop_size": [crop.width, crop.height],
                     "crop_sha256": (hashlib.sha256(crop.image).hexdigest()[:16]
                                     if crop.image is not None else None),
+                    "selection_evidence": classifier,
                     "reason": crop.reason,
                 })
             return manifest

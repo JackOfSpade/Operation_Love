@@ -10,6 +10,7 @@ from operation_love.drivers.item_type_preflight import (
     UNKNOWN,
     WRITTEN,
     classify_description,
+    crop_type_evidence,
     preflight_item_type,
 )
 
@@ -77,3 +78,58 @@ def test_written_panel_over_a_busy_background_is_inconclusive_not_a_photo_mismat
 
     assert result.state == INCONCLUSIVE
     assert result.crop_type == UNKNOWN
+
+
+def test_rectangular_captioned_low_detail_photo_is_affirmatively_photo():
+    """A title band, calm sky and non-square geometry must not turn a real photo into UNKNOWN."""
+    height, width = 300, 260
+    card = np.full((height, width, 3), 245, dtype=np.uint8)
+    cv2.putText(card, "TAKE ME BACK", (15, 31), cv2.FONT_HERSHEY_SIMPLEX,
+                0.55, (20, 20, 20), 2, cv2.LINE_AA)
+    y, x = np.mgrid[0:height - 50, 0:width]
+    card[50:, :, 0] = np.clip(160 + y * 0.15 + 20 * np.sin(x / 10), 0, 255)
+    card[50:, :, 1] = np.clip(120 + y * 0.25 + 18 * np.sin(x / 14), 0, 255)
+    card[50:, :, 2] = np.clip(80 + y * 0.45 + 15 * np.sin(x / 18), 0, 255)
+    cv2.circle(card, (190, 195), 35, (70, 55, 40), -1)
+
+    evidence = crop_type_evidence(_png(card))
+
+    assert evidence["large_uniform_panel"] is True
+    assert evidence["dominant_background"] < 0.45
+    assert evidence["classification"] == PHOTO
+
+
+def test_high_contrast_hinge_prompt_with_heart_control_is_still_written():
+    """Large serif-like text and the black heart broke the old global-std-only prompt gate.
+
+    The card deliberately exceeds that old 52-level bound.  The v2 verdict comes from the
+    stronger dominant white background plus affirmative multi-row glyph layout, not from making
+    every low-variation rectangle a prompt.
+    """
+    card = np.full((220, 320, 3), 246, dtype=np.uint8)
+    cv2.putText(card, "UNUSUAL SKILLS", (20, 55), cv2.FONT_HERSHEY_SIMPLEX,
+                0.75, (15, 15, 15), 2, cv2.LINE_AA)
+    cv2.putText(card, "I BUY STOCKS", (20, 115), cv2.FONT_HERSHEY_SIMPLEX,
+                1.0, (15, 15, 15), 2, cv2.LINE_AA)
+    cv2.putText(card, "HIGH SELL LOW", (20, 170), cv2.FONT_HERSHEY_SIMPLEX,
+                0.9, (15, 15, 15), 2, cv2.LINE_AA)
+    cv2.circle(card, (290, 187), 24, (12, 12, 12), -1)
+
+    evidence = crop_type_evidence(_png(card))
+
+    assert evidence["colour_std"] > 52
+    assert evidence["dominant_background"] > 0.84
+    assert evidence["text_layout"] is True
+    assert evidence["classification"] == WRITTEN
+
+
+def test_quiet_wall_photo_shape_without_text_rows_remains_unknown():
+    """The prompt recall fix must not turn a person against a calm wall into written context."""
+    card = np.full((240, 180, 3), (225, 220, 210), dtype=np.uint8)
+    cv2.ellipse(card, (90, 112), (30, 72), 0, 0, 360, (85, 65, 50), -1)
+    cv2.circle(card, (90, 40), 22, (105, 80, 60), -1)
+
+    evidence = crop_type_evidence(_png(card))
+
+    assert evidence["text_layout"] is False
+    assert evidence["classification"] == UNKNOWN

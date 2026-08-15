@@ -19,10 +19,9 @@
 > a default index of `0` are superseded by the final 2026-08-12 addenda.
 
 > **Photo-only targeting amendment (2026-08-13).** The owner contract now permits the system
-> to choose and tap photos only, never written prompt cards. Hinge's payload builder demotes
-> every confidently written selectable crop to readable, unnumbered context before the model
-> call. PHOTO and UNKNOWN crops retain page order: aspect ratio is not item-type evidence, and
-> the conservative classifier deliberately calls quiet photographs UNKNOWN. Dense model item
+> to choose and tap photos only, never written prompt cards. Hinge's payload builder numbers
+> only crops affirmatively classified as photos; WRITTEN and UNKNOWN crops remain readable,
+> unnumbered context. Aspect ratio and a presumed count are not item-type evidence. Dense model item
 > numbers retain a translation to the original page-heart
 > ordinals, so skipping prompt hearts cannot shift a later photo's tap. The current 9.134.0
 > corpus measures six 974x974 photos and three written prompt cards at 974x756 / 974x685; the

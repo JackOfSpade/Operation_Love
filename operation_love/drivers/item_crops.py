@@ -122,8 +122,9 @@ real people's profiles and never leave `ops/calibration/`.
     prompt hearts 2, 5 and 7 stay in page space but can never be chosen. The first implementation
     also required a square crop because all six calibration photos happened to be 974x974. A live
     974x695 photo proved that geometry was incidental: it was demoted while a later square photo
-    survived and was densely renamed item 1. The policy now uses the classifier only as the
-    high-precision WRITTEN veto it was designed to be; PHOTO and UNKNOWN crops keep page order.
+    survived and was densely renamed item 1. The policy now uses affirmative content-based photo
+    classification rather than geometry; UNKNOWN crops stay readable context instead of being
+    allowed to manufacture a false photo ordinal.
     The nine-item figures above are the pre-policy measurement retained as historical evidence.
   * **Size, doc 5.2's "crops are also smaller and fewer than the frames they came from".**
     Measured: 10 crops totalling 8.53MB of PNG against the capture's 24 frames totalling
@@ -285,10 +286,10 @@ CROP_CHROME = "chrome"            # Hinge's scroll-top header, already outside b
 CROP_UNCROPPABLE = "uncroppable"  # no frame ever bounded it end to end, so there is no crop that
                                   # is not a fragment: reported with its page position, not sent
 
-# Hinge policy: a confidently WRITTEN card may not enter the numbered/model-selectable list.
-# PHOTO and UNKNOWN remain eligible because the classifier deliberately leaves quiet photographs
-# unknown. The identifier is recorded by targeting calibration so a geometry bound cannot silently
-# outlive the classifier/policy that decided which physical hearts its item numbers can name.
+# Hinge policy: only a confidently PHOTO crop may enter the numbered/model-selectable list.
+# WRITTEN and UNKNOWN remain readable context, but ambiguity cannot manufacture a photo ordinal.
+# The identifier is recorded by targeting calibration so a geometry bound cannot silently outlive
+# the classifier/policy that decided which physical hearts its item numbers can name.
 PHOTO_ONLY_POLICY_ID = "hinge_photos_only_v1"
 EXCLUSION_NON_PHOTO = "photo_only"
 
@@ -667,25 +668,27 @@ def exclude_page_rows(spans: Sequence[tuple[int, int]], *, reason: str = EXCLUSI
 
 
 def unnumber_unless_confident_photo(image: bytes) -> str | None:
-    """Demote only a crop that is confidently a written Hinge prompt.
+    """Number only a crop affirmatively classified as a Hinge photograph.
 
     Card aspect ratio is deliberately not evidence of item type.  The calibration profile happened
     to contain square photos and shorter written prompts, but a later real profile showed a
     landscape first photo (974x695) and a square final photo.  Treating that incidental geometry
     as a hard gate demoted the earlier photos and renumbered the final one as model item 1.
 
-    ``classify_crop`` is intentionally high precision and leaves quiet or mixed cards UNKNOWN.
-    That is appropriate here: it is a prompt veto, not a photo-recall gate.  PHOTO and UNKNOWN
-    cards therefore remain numbered in page order; only a confident WRITTEN result becomes
-    readable, unnumbered context while retaining its heart ordinal.
+    ``classify_crop`` uses content variation, photo-region structure and text-card layout rather
+    than card geometry. UNKNOWN is not a weak PHOTO verdict: numbering it was the root cause of
+    a seven-item model list for a profile whose extra candidate was a prompt. WRITTEN and UNKNOWN
+    crops become readable, unnumbered context while retaining their heart ordinal; only PHOTO
+    crops receive dense model/photo numbers.
     """
-    from .item_type_preflight import WRITTEN, classify_crop
+    from .item_type_preflight import PHOTO, classify_crop
 
     item_type = classify_crop(image)
-    if item_type != WRITTEN:
+    if item_type == PHOTO:
         return None
-    return (f"{EXCLUSION_NON_PHOTO}: crop confidently classified as {item_type}; written "
-            "cards are readable context and may not be numbered or selected")
+    return (f"{EXCLUSION_NON_PHOTO}: crop classified as {item_type}; only confidently "
+            "photographic cards may be numbered, while ambiguous or written cards remain "
+            "readable context")
 
 
 def _band_height(index: ItemIndex) -> int:

@@ -26,6 +26,11 @@ PHOTO = "photo"
 WRITTEN = "written"
 UNKNOWN = "unknown"
 
+# Logged with every Hinge crop.  The selection policy has a stable product-level identifier,
+# while this names the pixel classifier revision underneath it so threshold changes are visible
+# in a bug report instead of silently changing what the policy means.
+CROP_CLASSIFIER_ID = "hinge_crop_type_v2"
+
 _PHOTO_WORDS = frozenset(("photo", "photos", "photograph", "photographs", "image",
                           "images", "selfie", "selfies"))
 _WRITTEN_WORDS = frozenset(("prompt", "prompts", "answer", "answers", "response",
@@ -70,6 +75,117 @@ def classify_description(item_description: str | None) -> str:
     return PHOTO if says_photo else WRITTEN
 
 
+def crop_type_evidence(image: bytes | None) -> dict[str, object]:
+    """Return the crop verdict and the bounded pixel evidence that produced it.
+
+    The dictionary contains only aggregate geometry/statistics, never OCR text or pixels, so it
+    is safe to place in the existing non-image capture manifest.  ``classify_crop`` is a thin
+    projection of this function; diagnostics and policy therefore cannot calculate subtly
+    different answers.
+    """
+    unknown: dict[str, object] = {
+        "classifier_id": CROP_CLASSIFIER_ID,
+        "classification": UNKNOWN,
+        "width": None,
+        "height": None,
+        "colour_std": None,
+        "dominant_background": None,
+        "edge_density": None,
+        "large_uniform_panel": None,
+        "text_layout": None,
+    }
+    if not image:
+        return unknown
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return unknown
+    encoded = np.frombuffer(image, dtype=np.uint8)
+    rgb = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    if rgb is None or rgb.shape[0] < 16 or rgb.shape[1] < 16:
+        return unknown
+
+    original_height, original_width = rgb.shape[:2]
+    # Work at a bounded size so this stays a cheap pre-flight check even for full card crops.
+    max_side = max(rgb.shape[:2])
+    if max_side > 256:
+        scale = 256 / max_side
+        rgb = cv2.resize(rgb, (max(16, round(rgb.shape[1] * scale)),
+                               max(16, round(rgb.shape[0] * scale))),
+                         interpolation=cv2.INTER_AREA)
+    height, width = rgb.shape[:2]
+
+    # The black circular Hinge heart is UI chrome, not card content.  On a short white prompt it
+    # occupies enough pixels to push global colour variation beyond the written-card bound.  Mask
+    # only its stable lower-right control region for aggregate statistics; the image sent to the
+    # model and the stored verification signature remain completely untouched.
+    yy, xx = np.ogrid[:height, :width]
+    heart_control = (((xx - 0.91 * width) / (0.13 * width)) ** 2
+                     + ((yy - 0.85 * height) / (0.19 * height)) ** 2 <= 1)
+    content = ~heart_control
+
+    rgb_f = rgb.astype(np.float32)
+    pixels = rgb_f[content]
+    median = np.median(pixels, axis=0)
+    colour_std = float(pixels.std(axis=0).mean())
+    dominant_background = float(
+        (np.abs(rgb_f - median).max(axis=2)[content] <= 24).mean())
+
+    gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
+    gx = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
+    gradient = np.abs(gx.astype(np.int32)) + np.abs(gy.astype(np.int32))
+    edge_density = float((gradient[content] >= 80).mean())
+    large_uniform_panel = bool(_has_large_uniform_panel(gray))
+    text_layout = bool(_has_text_layout(gray, content, float(np.median(gray[content]))))
+
+    classification = UNKNOWN
+    if colour_std >= 38 and edge_density >= 0.12 and dominant_background <= 0.62:
+        # A written prompt can put a large, calm text panel over a visually busy background.
+        # Its global variation then looks photographic even though the item is plainly a card.
+        # Do not try to decide that mixed composition from pixels alone: a broad uniform panel is
+        # enough to make the evidence ambiguous, so return UNKNOWN and leave the mandatory
+        # post-tap verifier as the safety backstop.
+        # A normal photo caption or a calm sky can also form a uniform panel.  It is only
+        # prompt-like when that panel is accompanied by a globally dominant background; the
+        # real rectangular sunset card that exposed the numbering bug has a small white title
+        # band but only 16% dominant-background pixels across the complete crop.
+        if not (large_uniform_panel and dominant_background >= 0.45):
+            classification = PHOTO
+    elif (dominant_background >= 0.78 and 0.008 <= edge_density <= 0.22
+          and (colour_std <= 52
+               or (dominant_background >= 0.84 and text_layout))):
+        # The second branch closes a real false negative: large serif prompt text, an emoji and
+        # the heart control can make a plainly white text card exceed the old global std limit.
+        # It still requires an even stronger dominant background plus affirmative multi-row glyph
+        # structure; a quiet wall/sky photograph therefore remains UNKNOWN rather than being
+        # discarded because it happens to have low variation.
+        classification = WRITTEN
+    elif (dominant_background < 0.78 and colour_std >= 18 and edge_density >= 0.02
+          and not (large_uniform_panel and dominant_background >= 0.45
+                   and colour_std >= 38)):
+        # Low-detail portraits and landscape cards need not clear the deliberately strong global
+        # PHOTO gate above.  They are still affirmative photographs when the crop has real colour
+        # and edge structure, lacks a dominant card background, and is not a high-variation mixed
+        # large-panel composition. A low-contrast photo can contain calm panel-like regions, so
+        # panel geometry alone is not a veto. This is content evidence, not an aspect-ratio or
+        # item-count shortcut.
+        classification = PHOTO
+
+    return {
+        "classifier_id": CROP_CLASSIFIER_ID,
+        "classification": classification,
+        "width": int(original_width),
+        "height": int(original_height),
+        "colour_std": round(colour_std, 4),
+        "dominant_background": round(dominant_background, 6),
+        "edge_density": round(edge_density, 6),
+        "large_uniform_panel": large_uniform_panel,
+        "text_layout": text_layout,
+    }
+
+
 def classify_crop(image: bytes | None) -> str:
     """Classify a numbered crop conservatively from colour variation and edge density.
 
@@ -78,50 +194,51 @@ def classify_crop(image: bytes | None) -> str:
     conjunctions below are intentional: a low-detail photograph and a graphical prompt card
     both become UNKNOWN instead of triggering a false stop.
     """
-    if not image:
-        return UNKNOWN
-    try:
-        import cv2
-        import numpy as np
-    except ImportError:
-        return UNKNOWN
-    encoded = np.frombuffer(image, dtype=np.uint8)
-    rgb = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-    if rgb is None or rgb.shape[0] < 16 or rgb.shape[1] < 16:
-        return UNKNOWN
+    return str(crop_type_evidence(image)["classification"])
 
-    # Work at a bounded size so this stays a cheap pre-flight check even for full card crops.
-    max_side = max(rgb.shape[:2])
-    if max_side > 256:
-        scale = 256 / max_side
-        rgb = cv2.resize(rgb, (max(16, round(rgb.shape[1] * scale)),
-                               max(16, round(rgb.shape[0] * scale))),
-                         interpolation=cv2.INTER_AREA)
-    rgb_f = rgb.astype(np.float32)
-    colour_std = float(rgb_f.reshape(-1, 3).std(axis=0).mean())
-    median = np.median(rgb_f.reshape(-1, 3), axis=0)
-    dominant_background = float((np.abs(rgb_f - median).max(axis=2) <= 24).mean())
 
-    gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
-    gx = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
-    gy = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
-    gradient = np.abs(gx.astype(np.int32)) + np.abs(gy.astype(np.int32))
-    edge_density = float((gradient >= 80).mean())
+def _has_text_layout(gray, content, background: float) -> bool:
+    """Whether a calm bright card has multiple rows of glyph-like foreground components.
 
-    # These deliberately leave a wide no-verdict band.  They describe the two obvious
-    # synthetic/card extremes, not a universal visual taxonomy.
-    if colour_std >= 38 and edge_density >= 0.12 and dominant_background <= 0.62:
-        # A written prompt can put a large, calm text panel over a visually busy background.
-        # Its global variation then looks photographic even though the item is plainly a card.
-        # Do not try to decide that mixed composition from pixels alone: a broad uniform panel is
-        # enough to make the evidence ambiguous, so return UNKNOWN and leave the mandatory
-        # post-tap verifier as the safety backstop.
-        if _has_large_uniform_panel(gray):
-            return UNKNOWN
-        return PHOTO
-    if colour_std <= 52 and dominant_background >= 0.78 and 0.008 <= edge_density <= 0.22:
-        return WRITTEN
-    return UNKNOWN
+    This is deliberately stronger than merely finding dark pixels.  A person against a white
+    wall can have a dominant background too, but normally forms a few large connected regions;
+    prompt typography forms many small components aligned into two or more text rows.
+    """
+    import cv2
+    import numpy as np
+
+    height, width = gray.shape[:2]
+    if background < 160:
+        return False
+    foreground = ((gray.astype(np.float32) <= background - 40) & content).astype(np.uint8)
+    count, _labels, stats, centres = cv2.connectedComponentsWithStats(
+        foreground, connectivity=8)
+    glyph_centres: list[float] = []
+    crop_area = height * width
+    for i in range(1, count):
+        _x, _y, component_w, component_h, area = stats[i]
+        box_area = int(component_w) * int(component_h)
+        if (2 <= area <= 0.025 * crop_area
+                and component_w <= 0.22 * width
+                and 2 <= component_h <= 0.22 * height
+                and box_area > 0 and area / box_area <= 0.92):
+            glyph_centres.append(float(centres[i][1]))
+    if len(glyph_centres) < 12:
+        return False
+
+    # Greedily cluster vertical centres. Four glyph components in each of two separated rows is
+    # enough; punctuation fragmentation may add components, but cannot manufacture row alignment.
+    rows: list[list[float]] = []
+    tolerance = max(3.0, 0.055 * height)
+    for centre in sorted(glyph_centres):
+        if not rows or centre - sum(rows[-1]) / len(rows[-1]) > tolerance:
+            rows.append([centre])
+        else:
+            rows[-1].append(centre)
+    substantial = [row for row in rows if len(row) >= 4]
+    return (len(substantial) >= 2
+            and (sum(substantial[-1]) / len(substantial[-1])
+                 - sum(substantial[0]) / len(substantial[0])) >= 0.08 * height)
 
 
 def _has_large_uniform_panel(gray) -> bool:

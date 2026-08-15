@@ -1026,7 +1026,9 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
     """
     capture = None
     for rec in _action_records(lines):
-        if rec.get("action") == "capture" and isinstance(rec.get("item_manifest"), list):
+        if (rec.get("action") == "capture"
+                and isinstance(rec.get("item_manifest"), list)
+                and rec.get("item_manifest")):
             capture = rec
     if capture is None:
         return ""
@@ -1063,6 +1065,29 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
         digest = row.get("crop_sha256")
         if digest:
             bits.append(f"sha256 `{_sanitize_inline(str(digest))}`")
+        evidence = row.get("selection_evidence")
+        if isinstance(evidence, dict):
+            classifier_id = evidence.get("classifier_id")
+            classification = evidence.get("classification")
+            classifier_bits = []
+            if classifier_id:
+                classifier_bits.append(_sanitize_inline(str(classifier_id)))
+            if classification:
+                classifier_bits.append(_sanitize_inline(str(classification)))
+            for key, metric_label in (("colour_std", "std"),
+                                      ("dominant_background", "background"),
+                                      ("edge_density", "edges")):
+                value = evidence.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    classifier_bits.append(f"{metric_label}={value}")
+            if evidence.get("large_uniform_panel") is not None:
+                classifier_bits.append(
+                    f"panel={str(bool(evidence['large_uniform_panel'])).lower()}")
+            if evidence.get("text_layout") is not None:
+                classifier_bits.append(
+                    f"text={str(bool(evidence['text_layout'])).lower()}")
+            if classifier_bits:
+                bits.append("classifier `" + ", ".join(classifier_bits) + "`")
         reason = row.get("reason")
         if reason:
             bits.append(f"reason `{_sanitize_inline(str(reason))}`")

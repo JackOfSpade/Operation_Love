@@ -198,10 +198,9 @@ apps:
 Those are the **exact** `apps.<app>.targeting_calibration` keys: no missing or additional keys.
 `schema_version` must be the integer `3`; legacy sheet calibrations are rejected.
 `hinge_version_name`, `frame_size_px`, `composer_layout_id`, and `item_selection_policy_id` bind the evidence to the exact
-live app/layout/display and selection contract. `hinge_photos_only_v1` demotes crops confidently
-classified as written prompts; PHOTO and UNKNOWN crops remain numbered in page order because
-aspect ratio is not item-type evidence and quiet photographs deliberately classify UNKNOWN.
-Written crops remain readable unnumbered context and can never be selected or tapped. Both distance fields must be finite positive numbers. `device` must exactly equal the nonempty
+live app/layout/display and selection contract. `hinge_photos_only_v1` numbers only crops
+affirmatively classified as photos; WRITTEN and UNKNOWN crops remain readable unnumbered context
+because neither aspect ratio nor a presumed item count is item-type evidence. Both distance fields must be finite positive numbers. `device` must exactly equal the nonempty
 `apps.hinge.serial` ADB serial; it is a machine-checked binding, not free-form device evidence.
 `calibrated_at` must be nonempty evidence text, not a placeholder. `identity_match_max_dist` must be strictly less than
 the known 2.565 different-profile distance; this is a hard upper limit, not a recommended

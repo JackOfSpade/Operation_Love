@@ -450,12 +450,12 @@ def test_photo_only_policy_refuses_a_capture_with_no_numbered_photographs():
         payload.item(1)
 
 
-def test_hinge_photo_policy_ignores_geometry_and_vetoes_only_written_cards():
+def test_hinge_photo_policy_ignores_geometry_and_requires_photo_evidence():
     rng = np.random.default_rng(991)
     square_photo = rng.integers(0, 256, size=(256, 256, 3), dtype=np.uint8)
     landscape_photo = rng.integers(0, 256, size=(180, 256, 3), dtype=np.uint8)
-    # A quiet portrait crop is deliberately UNKNOWN, not PHOTO.  It must still be selectable:
-    # UNKNOWN is an honest lack of type evidence, not permission to renumber it out of the list.
+    # A featureless crop is deliberately UNKNOWN, not PHOTO. Ambiguity must not manufacture a
+    # photo ordinal; it remains readable context instead.
     portrait_unknown = np.full((256, 180, 3), (130, 105, 80), dtype=np.uint8)
     written_square = np.full((256, 256, 3), 246, dtype=np.uint8)
     for y in (70, 130):
@@ -471,17 +471,16 @@ def test_hinge_photo_policy_ignores_geometry_and_vetoes_only_written_cards():
     assert item_crops.unnumber_unless_confident_photo(encoded(landscape_photo)) is None
     assert (item_type_preflight.classify_crop(encoded(portrait_unknown))
             == item_type_preflight.UNKNOWN)
-    assert item_crops.unnumber_unless_confident_photo(encoded(portrait_unknown)) is None
+    assert "photo_only" in item_crops.unnumber_unless_confident_photo(encoded(portrait_unknown))
     assert "photo_only" in item_crops.unnumber_unless_confident_photo(encoded(written_square))
 
 
-def test_hinge_photo_policy_keeps_non_square_unknown_cards_numbered_in_page_order(monkeypatch):
-    """A late square photo cannot become item 1 by demoting all earlier non-square photos.
+def test_hinge_photo_policy_does_not_number_unknown_cards(monkeypatch):
+    """Classifier ambiguity is readable context, never an invented photo position.
 
     The synthetic profile's four heart-bearing cards are 974px wide but 900, 760, 1000, and
-    820px tall.  Force the policy's deliberately inconclusive classifier outcome: the contract
-    under test is that UNKNOWN is not an eligibility rejection.  All four must remain numbered
-    in page order.
+    820px tall. Force an inconclusive result for all four; geometry and a presumed item count may
+    not override the content classifier.
     """
     monkeypatch.setattr(item_type_preflight, "classify_crop",
                         lambda _image: item_type_preflight.UNKNOWN)
@@ -489,11 +488,30 @@ def test_hinge_photo_policy_keeps_non_square_unknown_cards_numbered_in_page_orde
     payload = item_crops.build_item_payload(
         frames, index, unnumber=item_crops.unnumber_unless_confident_photo)
 
-    assert payload.usable, payload.failures
-    assert [crop.number for crop in payload.items] == [1, 2, 3, 4]
-    assert [(crop.page_y0, crop.page_y1) for crop in payload.items] == [
-        _CARD1[1:], _CARD2[1:], _CARD3[1:], _CARD4[1:]]
-    assert payload.translation == (1, 2, 3, 4)
+    assert not payload.usable
+    assert payload.item_count == 0 and payload.translation == ()
+    assert [crop.heart_ordinal for crop in payload.context if crop.heart_ordinal] == [1, 2, 3, 4]
+    assert all("classified as unknown" in crop.reason for crop in payload.context
+               if crop.heart_ordinal)
+
+
+def test_unknown_prompt_cannot_shift_the_last_photo_from_six_to_seven(monkeypatch):
+    """Regression for the reported dog-photo ordinal, derived from classes rather than a cap."""
+    classes = iter([
+        item_type_preflight.PHOTO, item_type_preflight.WRITTEN,
+        item_type_preflight.PHOTO, item_type_preflight.PHOTO,
+        item_type_preflight.WRITTEN, item_type_preflight.PHOTO,
+        item_type_preflight.UNKNOWN, item_type_preflight.PHOTO,
+        item_type_preflight.PHOTO,
+    ])
+    monkeypatch.setattr(item_type_preflight, "classify_crop", lambda _image: next(classes))
+
+    numbered_hearts = tuple(
+        heart for heart in range(1, 10)
+        if item_crops.unnumber_unless_confident_photo(b"crop") is None)
+
+    assert numbered_hearts == (1, 3, 4, 6, 8, 9)
+    assert numbered_hearts.index(9) + 1 == 6
 
 
 def test_exclusion_withholds_the_image_entirely():

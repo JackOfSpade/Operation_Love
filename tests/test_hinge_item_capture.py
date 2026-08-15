@@ -433,6 +433,10 @@ def test_capture_debug_manifest_preserves_page_order_and_model_to_heart_mapping(
         (row["page_rows"] for row in numbered), key=lambda rows: rows[0])
     assert all(row["source_frame_index"] is not None for row in numbered)
     assert all(len(row["crop_sha256"]) == 16 for row in numbered)
+    assert all(row["selection_evidence"]["classifier_id"] == "hinge_crop_type_v2"
+               for row in numbered)
+    assert all(row["selection_evidence"]["classification"] in
+               {"photo", "written", "unknown"} for row in numbered)
 
 
 def test_capture_debug_manifest_translates_repaired_local_frame_to_original_source_frame():

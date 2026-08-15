@@ -568,6 +568,12 @@ def test_debug_report_surfaces_item_numbering_manifest_and_compacts_raw_tail(tmp
             {"kind": "item", "model_item": 1, "heart_ordinal": 7,
              "source_frame_index": 31, "page_rows": [7000, 7974],
              "crop_size": [974, 974], "crop_sha256": "cccc3333dddd4444",
+             "selection_evidence": {
+                 "classifier_id": "hinge_crop_type_v2", "classification": "photo",
+                 "colour_std": 61.25, "dominant_background": 0.14,
+                 "edge_density": 0.31, "large_uniform_panel": False,
+                 "text_layout": False,
+             },
              "reason": "item 1 (heart 7 on the page)"},
         ],
     }
@@ -580,6 +586,8 @@ def test_debug_report_surfaces_item_numbering_manifest_and_compacts_raw_tail(tmp
     assert "unnumbered context: page heart 1; source frame 2; page rows 300..995" in md
     assert "crop 974x695" in md and "rectangular crop demoted" in md
     assert "model item 1: page heart 7; source frame 31; page rows 7000..7974" in md
+    assert ("classifier `hinge_crop_type_v2, photo, std=61.25, background=0.14, "
+            "edges=0.31, panel=false, text=false`" in md)
     assert '"item_manifest": "see item-numbering manifest above"' in md
     assert md.count("aaaa1111bbbb2222") == 1
 

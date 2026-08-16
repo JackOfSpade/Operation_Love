@@ -26,7 +26,7 @@ import cv2
 import numpy as np
 import pytest
 
-from operation_love.drivers import hinge, segment
+from operation_love.drivers import hinge, item_index, segment
 
 _W, _H = 1080, 2400                        # the calibrated Pixel 7a screencap size
 _SEED = 7
@@ -129,6 +129,21 @@ def _gutters(result):
 
 def _card_edge_runs(result):
     return [(r.y0, r.y1) for r in result.runs if r.kind == segment.RUN_CARD_EDGE]
+
+
+def _low_contrast_scroll_top(*, card_y1=1491, heart_y=1402, bottom_gutter=True):
+    """The sanitized geometry of the reported first-photo failure, with no profile pixels."""
+    f = _Frame()
+    f.fill(368, 411, 100, 900, 40)                    # name/header content
+    f.card(517, card_y1, heart_y=heart_y)
+    # Keep one pale edge indistinguishable from the page after the real corner. The initial
+    # bilateral span still implies a 22px radius and expands like a corner, but never reaches
+    # full card width, which is exactly why the ordinary strict detector must decline it.
+    for y in range(517, min(550, card_y1)):
+        f.page(y, y + 1, _CARD_X1 - _CORNER_RADIUS_PX, _CARD_X1)
+    if bottom_gutter:
+        f.card(card_y1 + _GUTTER, _BAND1 + 100, heart_y=2000)
+    return f
 
 
 # =====================================================================================
@@ -550,6 +565,61 @@ def test_a_gutter_clipped_by_the_band_edge_is_recovered_from_the_corner():
 # The corner test's two safety properties. Both are the difference between "trusted edge"
 # and "confidently wrong extent", so both get an explicit control.
 # =====================================================================================
+
+def test_confirmed_scroll_top_recovers_a_square_first_photo_with_one_pale_corner():
+    """Regression: header chrome must not swallow a real first photo and shift every number."""
+    f = _low_contrast_scroll_top()
+    ordinary = f.segment()
+    assert (368, 1491) in _extents(ordinary)
+    assert ordinary.blocks[0].kind == segment.BLOCK_PARTIAL
+
+    recovered = f.segment(recover_leading_low_contrast_media=True)
+
+    assert recovered.ok, recovered.failures
+    assert (517, 1491) in _extents(recovered)
+    first_photo = next(block for block in recovered.blocks
+                       if (block.y0, block.y1) == (517, 1491))
+    assert first_photo.kind == segment.BLOCK_SELECTABLE and first_photo.complete
+    assert first_photo.top.kind == segment.EDGE_SCROLL_TOP_MEDIA
+    assert first_photo.heart == (_HEART_CX, 1402)
+    assert (411, 517) in [
+        (run.y0, run.y1) for run in recovered.runs
+        if run.kind == segment.RUN_SCROLL_TOP_MEDIA]
+
+    # Production does not call the opt-in directly: the item indexer grants it only to frame 0
+    # when its caller has already confirmed scroll-top. Pin that wiring and the recovered heart
+    # ordinal, which is what prevents every later photo number shifting down by one.
+    index = item_index.build_item_index(
+        [f.png()], content_band=_CONTENT_BAND, like_template=f.template,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True,
+        identity_band=None)
+    assert index.usable, index.failures
+    assert index.translation == (1,)
+    assert index.selectable[0].page_y0 == 517
+
+
+@pytest.mark.parametrize("change", ["non_square", "missing_heart", "missing_gutter"])
+def test_scroll_top_media_recovery_refuses_when_any_independent_guard_is_missing(change):
+    """The opt-in path is a conjunction, never a generic licence to split long blank spans."""
+    if change == "non_square":
+        frame = _low_contrast_scroll_top(card_y1=1450, heart_y=1361)
+    elif change == "missing_heart":
+        frame = _low_contrast_scroll_top(heart_y=None)
+    else:
+        frame = _low_contrast_scroll_top(bottom_gutter=False)
+
+    result = frame.segment(recover_leading_low_contrast_media=True)
+
+    assert not any(run.kind == segment.RUN_SCROLL_TOP_MEDIA for run in result.runs)
+    assert not any(block.top.kind == segment.EDGE_SCROLL_TOP_MEDIA for block in result.blocks)
+
+
+def test_low_contrast_recovery_is_never_enabled_for_an_ordinary_frame():
+    """The same pixels without the caller's confirmed-top authority stay conservatively partial."""
+    result = _low_contrast_scroll_top().segment()
+    assert not any(run.kind == segment.RUN_SCROLL_TOP_MEDIA for run in result.runs)
+    assert result.blocks[0].kind == segment.BLOCK_PARTIAL
+
 
 def test_a_rounded_element_inside_a_card_cannot_forge_a_card_edge():
     """Safety property one: the arc must reach the FULL card width. Only the card itself spans

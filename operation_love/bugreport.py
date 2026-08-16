@@ -63,6 +63,7 @@ _RECENT_OPENERS_SHOWN = 10        # cap on _recent_openers_md rows -- see its do
 _RECENT_OPENER_TEXT_CHARS = 240   # per-opener cap so one runaway response can't blow up the report
 _RECENT_REJECTIONS_SHOWN = 10     # cap on _recent_opener_rejections_md rows -- mirrors the above
 _STALL_STRETCHES_SHOWN = 3        # cap on _stall_summary_md rows -- see its docstring
+_ABANDONED_CARDS_SHOWN = 3        # cap on _abandoned_card_summary_md rows -- see its docstring
 _CAPTURE_SPLITS_SHOWN = 3          # most recent split/recovery pairs to show — see below
 _MIN_ACTIONABLE_DESCRIPTION_CHARS = 20
 _ITEM_INDEX_REASON_INLINE_LIMIT = 360
@@ -1019,6 +1020,7 @@ def _item_index_refusal_summary_md(lines: list[str]) -> str:
 def _item_index_repair_summary_md(lines: list[str]) -> str:
     """Show conservative usable-index repairs, with both source and local frame coordinates."""
     notes: list[str] = []
+    structured: list[str] = []
     for raw in lines:
         try:
             rec = json.loads(raw)
@@ -1026,16 +1028,43 @@ def _item_index_repair_summary_md(lines: list[str]) -> str:
             continue
         if not isinstance(rec, dict) or rec.get("action") != "item_index_repaired":
             continue
+        # v12 writes the same field name as refusal records.  Keep the older
+        # key as a read-only compatibility fallback so historic debug runs
+        # remain useful in newly generated reports.
+        runtime = rec.get("item_index_runtime", rec.get("runtime"))
+        algorithm = runtime.get("algorithm_id") if isinstance(runtime, dict) else None
+        repairs = rec.get("repairs") if isinstance(rec.get("repairs"), list) else ()
+        for repair in repairs[:16]:
+            if not isinstance(repair, dict):
+                continue
+            path = repair.get("path")
+            source_pair = repair.get("source_pair")
+            raw_shift = repair.get("raw") if isinstance(repair.get("raw"), dict) else {}
+            effective = (repair.get("effective")
+                         if isinstance(repair.get("effective"), dict) else {})
+            if not isinstance(path, str) or not isinstance(source_pair, list) or len(source_pair) != 2:
+                continue
+            line = (
+                f"{algorithm or 'unknown indexer'}: `{path}` source frames "
+                f"{source_pair[0]}→{source_pair[1]}; raw "
+                f"{raw_shift.get('status')} {raw_shift.get('delta_px')}px → effective "
+                f"{effective.get('status')} {effective.get('delta_px')}px")
+            clean = _sanitize_inline(line)
+            if clean and clean not in structured:
+                structured.append(clean)
         for note in rec.get("notes", ()) if isinstance(rec.get("notes"), list) else ():
             if isinstance(note, str):
                 clean = _sanitize_inline(note)
                 if clean and clean not in notes:
                     notes.append(clean)
-    if not notes:
+    if not notes and not structured:
         return ""
-    shown = notes[:8]
-    suffix = f"; {len(notes) - len(shown)} more distinct repair note(s) in actions.jsonl" if len(notes) > len(shown) else ""
-    return "\n".join(f"- `{note}`" for note in shown) + suffix
+    shown_structured = structured[:8]
+    shown_notes = notes[:max(0, 8 - len(shown_structured))]
+    rendered = [f"- {line}" for line in shown_structured] + [f"- `{note}`" for note in shown_notes]
+    hidden = len(structured) - len(shown_structured) + len(notes) - len(shown_notes)
+    suffix = f"; {hidden} more distinct repair record(s) in actions.jsonl" if hidden else ""
+    return "\n".join(rendered) + suffix
 
 
 def _manifest_capture(lines: list[str]) -> dict | None:
@@ -1378,6 +1407,120 @@ def _stall_summary_md(lines: list[str]) -> str:
     return "\n".join(out)
 
 
+# A resync record written from hinge.py's PASS-path fork carries no `reason` key at all --
+# `_dbg_action("observe_resync", base, **fields)` there (hinge.py ~6532) never sets one, unlike
+# the two LIKE-path call sites below it. That is not missing data to paper over: the card
+# genuinely changed and the identity+deck-ready proof held, but the human's own touch stream did
+# not corroborate a decision, so worker.py records nothing rather than guess pass or like. Naming
+# that fork explicitly -- rather than leaving its bullet's reason blank -- is the difference this
+# whole section exists to make: an absent field must never render as absent TEXT.
+_GESTURE_UNCORROBORATED_REASON = "gesture-uncorroborated"
+
+# The complete reason vocabulary `observe_resync` emits today (there are exactly three call
+# sites in hinge.py; grep "observe_resync" there to re-confirm before trusting this list is
+# still exhaustive). A reason not in this dict is not swallowed -- see
+# _abandoned_card_summary_md -- it renders with its raw string and no explanation, so a reason
+# added later reaches the report before anyone remembers to update this dict.
+_RESYNC_REASON_EXPLANATIONS = {
+    "like_candidate_without_observed_sheet": (
+        "a bottom-only screen change was investigated as a possible like, but no Send Like "
+        "sheet was ever observed and the identity anchor could not confirm the card was still "
+        "the captured profile; the card was abandoned and recaptured with nothing recorded"),
+    "like_send_identity_unproven": (
+        "a real Send Like sheet was observed, but the deck that followed could not be "
+        "positively proven to be a DIFFERENT profile, so no LIKE was recorded rather than risk "
+        "filing it against the wrong person"),
+    "like_send_identity_unavailable": (
+        "same as like_send_identity_unproven, except this profile never revealed its sticky "
+        "header during capture, so there was no identity anchor to prove anything with"),
+    _GESTURE_UNCORROBORATED_REASON: (
+        "the card genuinely changed, but the human's own touch stream did not corroborate a "
+        "decision causing it -- the pass path, not a like path"),
+}
+
+
+def _abandoned_card_summary_md(lines: list[str]) -> str:
+    """ABANDONED CARDS: every `observe_resync` record in a run's actions.jsonl, most recent
+    first, capped at `_ABANDONED_CARDS_SHOWN`.
+
+    Filed against the 2026-08-15 report "it moved on again without waiting for my like or
+    dislike": the owner was only scrolling to read a profile, pressed nothing, and the run
+    abandoned the card and recaptured it, recording nothing. worker.py already does the SAFE
+    thing on a resync -- a returned None means "recapture, record nothing" (worker._observe_loop's `liked is None` branch) -- so
+    no like/pass was mislabelled by this incident. But the event that would have EXPLAINED the
+    complaint sat only inside the raw `actions.jsonl (tail)` code block, indistinguishable by eye
+    from any other line, so a developer had to spot "observe_resync" themselves and then
+    reverse-engineer what it meant before they could even tell the owner's complaint apart from a
+    real bug. This section names the event and turns its `reason` into the plain-English claim it
+    is actually making -- the same translation `_OBSERVE_WAIT_EXPLANATIONS` below already does
+    for observe_waiting.
+
+    Deliberately does NOT claim every resync is a bug. Two of the three named reasons
+    (`like_send_identity_unproven` / `_unavailable`) are the identity anchor correctly refusing to
+    file a LIKE it could not prove belonged to a different profile -- the conservative, INTENDED
+    outcome, not a failure. This section only narrates what the log says happened; it is not a
+    verdict on whether a given resync was the bug a report was filed about -- that judgement still
+    needs the surrounding context (profile_name, the latest observe context above, screenshots).
+
+    Most-recent-first, same rationale as `_stall_summary_md`'s recency-first ordering: a developer
+    chasing "why did it just move on" needs the LATEST resync first, not one from three profiles
+    ago in the same run. Unlike the stall summary there is no "still open" distinction to make --
+    a resync is, by construction, already resolved (the card was recaptured) -- so plain recency
+    is the whole ranking, with no secondary sort needed.
+
+    Returns "" (no heading, no bullets) when there are none -- the common healthy run, where every
+    card ended in a proven capture or decision, must render nothing extra here, same "quiet when
+    healthy" contract as `_stall_summary_md` and `_app_diagnostics_md`. Never raises:
+    `_action_records` already swallows JSON parse failures, and every field read below is
+    defensively type/truthiness-checked before display, so a record missing several keys entirely
+    -- as logs from before this provenance existed do -- renders with those fields omitted rather
+    than throwing or printing a bare `None`."""
+    records = [rec for rec in _action_records(lines) if rec.get("action") == "observe_resync"]
+    if not records:
+        return ""
+    records.reverse()                                      # most recent logged resync first
+    shown = records[:_ABANDONED_CARDS_SHOWN]
+    out: list[str] = []
+    if len(records) > len(shown):
+        out.append(f"- {len(records)} card(s) abandoned without a decision (resync) logged in "
+                   f"this run; showing the most recent {len(shown)}:")
+    for rec in shown:
+        reason = rec.get("reason")
+        has_reason = isinstance(reason, str) and bool(reason)
+        gesture = rec.get("gesture")
+
+        bits: list[str] = []
+        if has_reason:
+            bits.append(f"reason=`{_sanitize_inline(reason)}`")
+        profile_name = rec.get("profile_name")
+        if profile_name:
+            bits.append(f"profile_name=`{_sanitize_inline(str(profile_name))}`")
+        sheet_seen = rec.get("sheet_seen")
+        if isinstance(sheet_seen, bool):                   # False is a real, meaningful value --
+            bits.append(f"sheet_seen=`{'true' if sheet_seen else 'false'}`")   # never drop it
+        identity = rec.get("identity")
+        if identity:
+            bits.append(f"identity=`{_sanitize_inline(str(identity))}`")
+        confirm_identity = rec.get("confirm_identity")
+        if confirm_identity:
+            bits.append(f"confirm_identity=`{_sanitize_inline(str(confirm_identity))}`")
+        if gesture:
+            bits.append(f"gesture=`{_sanitize_inline(str(gesture))}`")
+        detail = ", ".join(bits) if bits else "no further detail was logged"
+
+        if has_reason:
+            explanation = _RESYNC_REASON_EXPLANATIONS.get(reason)
+            tail = (f" — {explanation}." if explanation is not None
+                    else " — unrecognised resync reason (no explanation on file for it yet).")
+        elif gesture == "resync":
+            tail = f" — {_RESYNC_REASON_EXPLANATIONS[_GESTURE_UNCORROBORATED_REASON]}."
+        else:
+            tail = " — no reason or gesture verdict was logged for this resync."
+
+        out.append(f"- `{_record_time(rec)}`: {detail}{tail}")
+    return "\n".join(out)
+
+
 _OBSERVE_WAIT_EXPLANATIONS = {
     "no_change": "the frame has not visibly changed since this card became READY; no manual "
                  "pass/like has been proven",
@@ -1673,6 +1816,14 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
             if stall:
                 out.append("  - stall summary:")
                 out.extend(f"    {line}" for line in stall.splitlines())
+            # Names the specific event the 2026-08-15 "it moved on again without waiting for my
+            # like or dislike" report needed but never got: the resync record was in the log,
+            # but nothing in the report named it (see _abandoned_card_summary_md's docstring).
+            # Quiet on a run where every card ended in a proven capture or decision.
+            abandoned = _abandoned_card_summary_md(raw_lines)
+            if abandoned:
+                out.append("  - cards abandoned without a decision (resync):")
+                out.extend(f"    {line}" for line in abandoned.splitlines())
             # Beside the stall summary, and for the same reason: these are the anomalies a
             # developer cannot see by reading the tail, because both look like ordinary
             # records until you hash the screenshots. Quiet on a healthy run.

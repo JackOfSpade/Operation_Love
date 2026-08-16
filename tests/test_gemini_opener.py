@@ -219,10 +219,16 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     # a hypothesis, not a documented Gemini guarantee. Losing either half turns the schema
     # back into five neutral labels that all invite the same description.
     referenced_description = schema["properties"]["referenced"]["description"].lower()
+    angle_description = schema["properties"]["angle"]["description"].lower()
     opener_description = schema["properties"]["opener"]["description"].lower()
     assert "never sent to" in referenced_description
     assert "does not leak into the opener" in referenced_description
     assert "must not describe the item" in opener_description
+    # With minimal thinking, angle is the only place to plan the relationship between beats
+    # before emitting the opener. Keep the premise-consistency check in that scratch field.
+    assert "accepts and advances the first beat's claim" in angle_description
+    assert "verifying it, contradicting it" in angle_description
+    assert "abandoning it for a nearby generic topic" in angle_description
     assert "must not reuse the words from referenced" in opener_description
     # `angle` is free text and telemetry only (doc 3.5) -- an enum would force a pick from a
     # closed set, which is exactly the shoehorning the move list is designed to avoid.

@@ -6,7 +6,9 @@ import pytest
 
 from operation_love.costing import CostTracker, ModelPricing, Usage
 from operation_love.drivers.base import (ActionCancelled, DatingAppDriver, DeckBlockedError,
-                                        DriverClosed, ItemTargetingError)
+                                        DriverClosed, ItemTargetingError,
+                                        OBSERVE_ITEM_INCONCLUSIVE, OBSERVE_ITEM_MATCH,
+                                        OBSERVE_ITEM_MISMATCH, ObserveItemCheck)
 from operation_love.opener.opener import (
     FIRST_ITEM_INDEX,
     INDEX_SPACE_MODEL_ITEMS,
@@ -2814,6 +2816,129 @@ def test_observe_dismissing_the_like_sheet_goes_back_to_the_instruction_and_drop
     assert dismissed["opener_warning"] is None
     assert dismissed["opener_suggestion"] == "loved your trail photo"
     assert dismissed["opener_item"] == 3
+
+
+def test_observe_rechecks_a_settling_sheet_and_restores_a_correct_item_suggestion():
+    """One verified composer frame is enough to start observing, not to freeze its preview.
+
+    The Alex report's first sheet frame was vertically clipped enough for its correct item 3 to
+    be unmeasurable; the old driver sent no later anchor while the sheet remained open, so the
+    transient warning stayed until the human manually changed the screen.  A later settled frame
+    that verifies item 3 must restore the already-generated advice on its own.
+    """
+    from operation_love.status import RunStatus
+
+    class SettlingSheetDriver(_ObserveLikeIntentDriver):
+        def observe_item_check(self, sheet, model_item_index):
+            self.checked.append((sheet, model_item_index))
+            if sheet == b"settling-sheet":
+                return ObserveItemCheck(
+                    OBSERVE_ITEM_INCONCLUSIVE,
+                    "the selected image could not yet be confirmed as model item 3")
+            return ObserveItemCheck(OBSERVE_ITEM_MATCH)
+
+        def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
+            self.gate()
+            if on_like_intent is not None:
+                on_like_intent(True, b"settling-sheet")
+                on_like_intent(True, b"settled-item-3-sheet")
+            return True
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = SettlingSheetDriver(gate=_settled(status))
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService(suggestion="loved your trail photo", index=3)
+    Worker("bumble", driver, _ObserveDecider(), svc, FakeStore(), "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    assert driver.checked == [(b"settling-sheet", 3), (b"settled-item-3-sheet", 3)]
+    assert any(c.get("opener_warning") for c in calls)
+    settled = [c for c in calls if c.get("state") == "waiting_for_send"][-1]
+    assert settled["opener_suggestion"] == "loved your trail photo"
+    assert settled["opener_warning"] is None
+
+
+def test_observe_keeps_a_verified_suggestion_through_inconclusive_typing_refreshes():
+    """Exact 2026-08-16 Julia regression: once item 3 is positively verified, keyboard text,
+    cursor handles and selection overlays in later frames of the SAME continuously open composer
+    may be inconclusive but must never alternate the hub back to "no suggestion to type"."""
+    from operation_love.status import RunStatus
+
+    class TypingRefreshDriver(_ObserveLikeIntentDriver):
+        def observe_item_check(self, sheet, model_item_index):
+            self.checked.append((sheet, model_item_index))
+            if sheet in {b"typing-overlay", b"selection-popup"}:
+                return ObserveItemCheck(
+                    OBSERVE_ITEM_INCONCLUSIVE,
+                    "the selected-card preview is not immediately above the inline composer")
+            return ObserveItemCheck(OBSERVE_ITEM_MATCH)
+
+        def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
+            self.gate()
+            if on_like_intent is not None:
+                on_like_intent(True, b"verified-item-3-sheet")
+                on_like_intent(True, b"typing-overlay")
+                on_like_intent(True, b"selection-popup")
+            return True
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = TypingRefreshDriver(gate=_settled(status))
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService(suggestion="loved your FlowRider photo", index=3)
+    Worker("bumble", driver, _ObserveDecider(), svc, FakeStore(), "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    assert driver.checked == [
+        (b"verified-item-3-sheet", 3),
+        (b"typing-overlay", 3),
+        (b"selection-popup", 3),
+    ]
+    open_sheet = [c for c in calls if c.get("state") == "waiting_for_send"]
+    assert len(open_sheet) == 3
+    assert all(c.get("opener_suggestion") == "loved your FlowRider photo" for c in open_sheet)
+    assert all(c.get("opener_warning") is None for c in open_sheet)
+
+
+def test_observe_affirmative_mismatch_revokes_a_prior_match_until_sheet_closes():
+    """The anti-flicker latch is not a permission to ignore real contrary evidence.
+
+    A positively identified wrong item revokes a prior match and stays refused for that open
+    composer. Closing it resets the epoch, so a newly opened correct sheet can verify afresh.
+    """
+    from operation_love.status import RunStatus
+
+    class MismatchThenReopenDriver(_ObserveLikeIntentDriver):
+        def observe_item_check(self, sheet, model_item_index):
+            self.checked.append((sheet, model_item_index))
+            if sheet == b"wrong-item-5-sheet":
+                return ObserveItemCheck(
+                    OBSERVE_ITEM_MISMATCH,
+                    "you opened item 5, but this suggestion was written about item 3")
+            return ObserveItemCheck(OBSERVE_ITEM_MATCH)
+
+        def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
+            self.gate()
+            if on_like_intent is not None:
+                on_like_intent(True, b"initial-item-3-sheet")
+                on_like_intent(True, b"wrong-item-5-sheet")
+                on_like_intent(True, b"later-item-3-frame")
+                on_like_intent(False, None)
+                on_like_intent(True, b"reopened-item-3-sheet")
+            return True
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = MismatchThenReopenDriver(gate=_settled(status))
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService(suggestion="loved your FlowRider photo", index=3)
+    Worker("bumble", driver, _ObserveDecider(), svc, FakeStore(), "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    open_sheet = [c for c in calls if c.get("state") == "waiting_for_send"]
+    assert open_sheet[0]["opener_suggestion"] == "loved your FlowRider photo"
+    assert open_sheet[1]["opener_warning"]
+    assert open_sheet[2]["opener_warning"]       # later match cannot erase real mismatch
+    assert open_sheet[3]["opener_suggestion"] == "loved your FlowRider photo"  # reopen reset
+    assert open_sheet[3]["opener_warning"] is None
 
 
 # ---------------------------------------------------------------------------------------

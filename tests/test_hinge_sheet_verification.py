@@ -18,7 +18,8 @@ import pytest
 from operation_love.drivers import (
     hinge, item_crops, item_identity, item_nav, item_verify, scroll_step)
 from operation_love.drivers.frameshift import ShiftEstimationError
-from operation_love.drivers.base import ActionCancelled
+from operation_love.drivers.base import (ActionCancelled, OBSERVE_ITEM_INCONCLUSIVE,
+                                         OBSERVE_ITEM_MATCH, OBSERVE_ITEM_MISMATCH)
 from operation_love.drivers.hinge import HingeActionError, HingeDriver, HingeTargetingError
 from operation_love.drivers.like_composer import ComposerSurface, Rect
 from operation_love.drivers.scroll_top import band_fingerprint
@@ -371,6 +372,61 @@ def test_navigation_translates_model_item_through_the_payload_heart_ordinal():
         mp.setattr(hinge, "navigate_to_item", navigate)
         assert driver._navigate_to_model_item(1) == (540, 1200)
     assert seen == [(2, b"entry")]
+
+
+def test_shannon_style_photo_and_video_policy_translation_targets_heart_seven():
+    """Policy demotions cannot make model item 2 tap page heart 2.
+
+    This is the successful Shannon manifest shape in synthetic form: photos survive at hearts
+    1/7/9, written-or-unknown cards are readable context, and confirmed or unscreenable video
+    cards are withheld entirely.  The navigator still counts every physical selectable heart.
+    """
+    def crop(kind, heart, *, number=None, image=None, reason):
+        signature = (item_crops.signature_of(
+            image, y0=0, y1=_CARD_H, x0=0, x1=_CARD_W)
+                     if kind == item_crops.CROP_ITEM else None)
+        return item_crops.ItemCrop(
+            kind=kind, number=number, heart_ordinal=heart,
+            page_y0=heart * 1000, page_y1=heart * 1000 + _CARD_H,
+            x0=53, x1=53 + _CARD_W, frame_index=heart, frame_y0=0, frame_y1=_CARD_H,
+            image=image, signature=signature, signature_drift=None, drift_frames=(),
+            nearest_item_distance=None, reason=reason)
+
+    photo_1, photo_7, photo_9 = _card(21), _card(22), _card(23)
+    payload = item_crops.ItemPayload(crops=(
+        crop(item_crops.CROP_ITEM, 1, number=1, image=photo_1, reason="photo"),
+        crop(item_crops.CROP_CONTEXT, 2, image=_card(24), reason="photo_only: written"),
+        crop(item_crops.CROP_EXCLUDED, 3, reason="video_mute_v1: exact mute match"),
+        crop(item_crops.CROP_EXCLUDED, 4, reason="video_mute_v1: screen failed closed"),
+        crop(item_crops.CROP_CONTEXT, 5, image=_card(25), reason="photo_only: written"),
+        crop(item_crops.CROP_EXCLUDED, 6, reason="video_mute_v1: screen failed closed"),
+        crop(item_crops.CROP_ITEM, 7, number=2, image=photo_7, reason="photo"),
+        crop(item_crops.CROP_CONTEXT, 8, image=_card(26), reason="photo_only: unknown"),
+        crop(item_crops.CROP_ITEM, 9, number=3, image=photo_9, reason="photo"),
+    ), truncated=False, at_scroll_top=True, signature_grid=(32, 32), failures=())
+    assert payload.usable and payload.translation == (1, 7, 9)
+    assert [crop.heart_ordinal for crop in payload.excluded] == [3, 4, 6]
+    assert [crop.heart_ordinal for crop in payload.context] == [2, 5, 8]
+
+    adb = SheetAdb(_SHEETS[0])
+    seen = []
+    with pytest.MonkeyPatch.context() as mp:
+        driver = _driver(adb, mp, payload=payload, anchor=b"entry")
+        driver._current_item_index.translation = tuple(range(1, 10))
+
+        def navigate(_driver, _index, navigation_index, *, entry_reference, **_kw):
+            seen.append((navigation_index, entry_reference))
+            return type("Target", (), {
+                "point": (540, 1200), "heart_ordinal": 7, "scrolls": 0,
+                "climbed_px": 0, "agreement_px": 0, "hearts_counted": 7,
+                "frame": b"landing", "reason": "synthetic",
+            })()
+
+        mp.setattr(hinge, "navigate_to_item", navigate)
+        assert driver._navigate_to_model_item(2) == (540, 1200)
+
+    assert seen == [(7, b"entry")]
+    assert seen[0][0] not in {2, 3, 4, 5, 6, 8}
 
 
 def test_runtime_parser_rejects_a_known_unsafe_sheet_ceiling_even_without_config_validation():
@@ -789,6 +845,7 @@ def test_the_item_the_human_opened_matching_the_suggestion_is_confirmed_with_no_
     adb = SheetAdb(_SHEETS[0])
     with pytest.MonkeyPatch.context() as mp:
         driver = _observing(adb, mp)
+        assert driver.observe_item_check(_SHEETS[0], 1).state == OBSERVE_ITEM_MATCH
         assert driver.observe_item_mismatch(_SHEETS[0], 1) == ""
 
 
@@ -799,8 +856,38 @@ def test_a_human_opening_a_different_item_is_reported_with_both_numbers():
     adb = SheetAdb(_SHEETS[1])
     with pytest.MonkeyPatch.context() as mp:
         driver = _observing(adb, mp)
+        assert driver.observe_item_check(_SHEETS[1], 1).state == OBSERVE_ITEM_MISMATCH
         reason = driver.observe_item_mismatch(_SHEETS[1], 1)
     assert "item 2" in reason and "item 1" in reason
+
+
+def test_observe_does_not_name_a_reachable_neighbour_when_the_intended_item_was_unmeasurable():
+    """A nearest candidate is not proof of the item a human opened.
+
+    This is the reporting half of Alex's portrait reframe regression: item 3 was beyond the
+    previous reframe envelope, so item 6 was merely the nearest comparison that remained.  The
+    hub must ask for a fresh check, never assert that item 6 was selected.
+    """
+    adb = SheetAdb(_SHEETS[0])
+    with pytest.MonkeyPatch.context() as mp:
+        driver = _observing(adb, mp)
+        baseline = item_verify.verify_sheet_item(
+            _SHEETS[0], driver._current_item_payload, 1, composer_surface=_COMPOSER_SURFACE,
+            absolute_max_dist=10.0)
+        mine = next(c for c in baseline.comparisons if c.number == 1)
+        unavailable = dataclasses.replace(
+            baseline, state=item_verify.VERIFY_MISMATCH, nearest_index=2, distance=None,
+            comparisons=tuple(
+                dataclasses.replace(c, distance=None,
+                                  reason="inline composer preview is still settling")
+                if c.number == 1 else c
+                for c in baseline.comparisons))
+        mp.setattr(hinge, "verify_sheet_item", lambda *_a, **_k: unavailable)
+        assert driver.observe_item_check(_SHEETS[0], 1).state == OBSERVE_ITEM_INCONCLUSIVE
+        reason = driver.observe_item_mismatch(_SHEETS[0], 1)
+    assert "could not yet be confirmed as model item 1" in reason
+    assert "settling" in reason
+    assert "item 2" not in reason
 
 
 def test_a_sheet_on_a_different_profile_is_refused_on_IDENTITY_not_on_card_pixels():
@@ -853,6 +940,8 @@ def test_an_unreadable_sheet_is_a_reason_rather_than_an_exception():
     adb = SheetAdb(_SHEETS[0])
     with pytest.MonkeyPatch.context() as mp:
         driver = _observing(adb, mp)
+        check = driver.observe_item_check(b"not an image at all", 1)
+        assert check.state == OBSERVE_ITEM_INCONCLUSIVE
         reason = driver.observe_item_mismatch(b"not an image at all", 1)
     assert reason
 

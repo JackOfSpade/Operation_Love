@@ -326,6 +326,7 @@ def test_pass_detected_on_card_advance(monkeypatch):
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
+    monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
     assert drv.wait_for_decision(timeout=5.0) is False
 
 
@@ -339,6 +340,7 @@ def test_waits_until_a_change_then_pass(monkeypatch):
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)  # deck-ready evidence -- see above
+    monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
     assert drv.wait_for_decision(timeout=None) is False
 
 
@@ -508,10 +510,18 @@ def test_bottom_delta_with_no_sheet_is_not_logged_as_a_dismissed_like(monkeypatc
     assert not [name for name, _f in drv._dbg.calls if name == "observe_decision"]
 
 
-def test_unobserved_bottom_delta_stable_ready_deck_resyncs_never_likes(monkeypatch):
-    """Exact 2026-08-14 regression: a read-scroll can look like a candidate sheet,
-    then land on a stable deck frame that does not match a capture-time signature.  Without a
-    positively observed inline composer, that is ambiguous and MUST be an unlabeled resync.
+def test_unobserved_bottom_delta_on_an_identity_proven_card_keeps_waiting(monkeypatch):
+    """Exact 2026-08-15 regression: the owner scrolled up and down to READ a profile, pressed
+    nothing, and the run abandoned the card anyway -- with the name at the top of the phone
+    unchanged the whole time.
+
+    Mechanism, which is also the 2026-08-14 Hayley setup right up to the last step: a
+    read-scroll makes a bottom-only delta, which enters _await_like_resolved speculatively, and
+    the manual scroll offset then matches none of the coarse capture-time downsamples. The
+    sticky header still names the captured profile, and 'same' is authoritative for the outer
+    loop on every poll -- so it must be authoritative HERE too, where the only two outcomes are
+    "keep waiting" and "throw the profile away". Hayley's invariant is unchanged (never a LIKE);
+    what is added is that it must not resync either.
     """
     monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (0.0, 0.0)))
     adb = FakeAdb([b"base", b"scroll", b"processing", b"steady"], advance_on_screencap=True)
@@ -524,29 +534,93 @@ def test_unobserved_bottom_delta_stable_ready_deck_resyncs_never_likes(monkeypat
     drv._identity_sig = identity
     drv._identity_top_sig = np.full((16, 64), 150, dtype="int16")
     drv._current_sigs = [captured_content]
-    # Pin the actual Hayley failure mechanism rather than bypassing it: the sticky name still
-    # says "same", but a manual scroll at an uncaptured offset misses the coarse full-frame
-    # content signatures, so require_content=True returns False and the old code called it a
-    # new, ready deck.
     monkeypatch.setattr(hinge, "_band", lambda _frame, _rect: identity)
     monkeypatch.setattr(hinge, "_downsample", lambda *_a, **_k: scrolled_content)
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"steady")
-    wait_reasons = []
-    monkeypatch.setattr(drv, "_note_observe_waiting",
-                        lambda reason, _frame: wait_reasons.append(reason))
 
-    assert drv._is_current_profile_frame(b"steady") is True
-    assert drv._is_current_profile_frame(b"steady", require_content=True) is False
+    # The two halves of the mechanism, asserted directly so a future change to either one
+    # cannot quietly make this test pass for the wrong reason.
+    assert drv._is_current_profile_frame(b"steady") is True                       # header: same card
+    assert drv._is_current_profile_frame(b"steady", require_content=True) is False  # photos: no match
 
-    assert drv.wait_for_decision(timeout=5.0) is None
-    assert wait_reasons == ["like_candidate"]
+    sent, notified = drv._await_like_resolved(b"base", None, lambda: False,
+                                              intent_notified=False)
 
+    assert sent is False            # "no like happened" -> the outer loop keeps this card
+    assert notified is False
+    assert not [name for name, _fields in drv._dbg.calls if name == "observe_resync"]
+    assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
+
+
+def test_unobserved_bottom_delta_still_resyncs_when_identity_cannot_name_the_card(monkeypatch):
+    """The other side of the same rule, and the reason it is not simply "always keep waiting".
+
+    When the anchor CANNOT say this is the captured profile, the card really may have advanced
+    underneath us with no sheet ever observed. Continuing to wait there would leave the loop
+    watching a card whose _current_sigs/profile are stale and file the human's NEXT decision
+    against the person they already left. So that stays an unlabeled resync -- never a LIKE --
+    and the record now carries the identity verdicts that made the call.
+    """
+    monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (0.0, 0.0)))
+    adb = FakeAdb([b"base", b"scroll", b"steady", b"steady"], advance_on_screencap=True)
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+    import numpy as np
+    identity = np.full((16, 64), 10, dtype="int16")
+    other = np.full((16, 64), 250, dtype="int16")
+    captured_content = np.full((24, 24), 10, dtype="int16")
+    scrolled_content = np.full((24, 24), 200, dtype="int16")
+    drv._identity_sig = identity
+    drv._identity_top_sig = np.full((16, 64), 150, dtype="int16")
+    drv._current_sigs = [captured_content]
+    # A DIFFERENT profile's header on every frame the resolver sees.
+    monkeypatch.setattr(hinge, "_band",
+                        lambda frame, _rect: identity if frame == b"base" else other)
+    monkeypatch.setattr(hinge, "_downsample", lambda *_a, **_k: scrolled_content)
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda _frame: True)
+
+    sent, notified = drv._await_like_resolved(b"base", None, lambda: False,
+                                              intent_notified=False)
+
+    assert sent is None             # unlabeled resync, never a LIKE
+    assert notified is False
     resyncs = [fields for name, fields in drv._dbg.calls if name == "observe_resync"]
     assert resyncs == [{"reason": "like_candidate_without_observed_sheet",
                         "sheet_seen": False, "profile_name": None,
+                        "identity": "new", "confirm_identity": "new",
                         "current": False, "deck_ready": True}]
     assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
+
+
+def test_observed_sheet_keeps_the_strict_content_rule_for_a_same_named_next_card(monkeypatch):
+    """The asymmetry must not leak the other way. Once a composer HAS been observed, a wrong
+    "still the current profile" silently drops a like the human really sent, so that state
+    still demands the header AND the photos agree before calling a frame current."""
+    import numpy as np
+    adb = FakeAdb([b"steady", b"steady"], advance_on_screencap=True)
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+    identity = np.full((16, 64), 10, dtype="int16")
+    drv._identity_sig = identity
+    drv._identity_top_sig = np.full((16, 64), 150, dtype="int16")
+    drv._current_sigs = [np.full((24, 24), 10, dtype="int16")]
+    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect: identity)     # same first name
+    monkeypatch.setattr(hinge, "_downsample",
+                        lambda *_a, **_k: np.full((24, 24), 200, dtype="int16"))
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda _frame: True)
+
+    sent, notified = drv._await_like_resolved(b"base", None, lambda: False,
+                                              intent_notified=True)
+
+    # Not a dismissal (which is what require_content=False would have concluded here), and not
+    # a fabricated LIKE either: identity cannot prove a NEW deck, so it resyncs.
+    assert sent is None
+    assert notified is True
+    resyncs = [fields for name, fields in drv._dbg.calls if name == "observe_resync"]
+    assert [f["reason"] for f in resyncs] == ["like_send_identity_unproven"]
 
 
 def test_observed_sheet_needs_identity_proven_new_deck_when_anchor_exists(monkeypatch):
@@ -623,6 +697,35 @@ def test_like_sheet_wait_emits_a_heartbeat_instead_of_going_silent(monkeypatch):
 
     waiting = [f for name, f in drv._dbg.calls if name == "observe_waiting"]
     assert waiting and all(f["reason"] == "like_sheet" for f in waiting)
+
+
+def test_one_negative_composer_poll_does_not_close_a_still_open_sheet(monkeypatch):
+    """A missed glyph must not briefly turn an open human draft into `like_sending`.
+
+    The live 2026-08-15 trace read like_sheet -> like_sending -> like_sheet while the same
+    composer stayed open.  The resolver now confirms the first negative read; its next frame is
+    again a valid sheet, so the callback remains active and only an open-sheet heartbeat occurs.
+    """
+    adb = FakeAdb([b"negative", b"sheet"], advance_on_screencap=True)
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
+    callbacks = []
+    calls = {"n": 0}
+
+    def should_stop():
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    sent, seen = drv._await_like_resolved(
+        b"base", None, should_stop,
+        on_like_intent=lambda active, anchor=None: callbacks.append((active, anchor)),
+        intent_notified=True)
+
+    assert sent is None and seen is True
+    assert callbacks == [(True, b"sheet")]
+    waiting = [fields for name, fields in drv._dbg.calls if name == "observe_waiting"]
+    assert waiting and all(fields["reason"] == "like_sheet" for fields in waiting)
 
 
 def test_waiting_notice_always_fires_when_the_reason_changes(monkeypatch):
@@ -775,6 +878,7 @@ def test_wait_for_decision_ignores_scroll(monkeypatch):
     # raw fake frames can't satisfy the real glyph template match, and the new rule requires
     # positive proof of a settled deck-ready card before concluding PASS.
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
+    monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
 
     # wait_for_decision should ignore the transition to "b" (scroll) and only return on "c" (pass -> False)
     assert drv.wait_for_decision(timeout=5.0) is False
@@ -896,6 +1000,7 @@ def test_wait_for_decision_ignores_a_scroll_between_capture_stops_but_still_catc
     # new rule requires positive proof of a settled deck-ready card (these raw fake frames
     # never satisfy the real glyph template match) before it will conclude PASS at all.
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
+    monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
 
     assert drv.wait_for_decision(timeout=5.0) is False   # only "new" is a genuine pass
     assert adb.i == 2                                    # both "mid" and "new" were observed
@@ -1035,8 +1140,8 @@ def test_observe_release_fact_without_debug_log_remains_transport_free():
 
 def test_wait_for_decision_records_pass_diagnostics_in_the_debug_log(monkeypatch):
     """The bug report that motivated this fix had NO actions.jsonl entry explaining why a PASS
-    was recorded -- just a bare 'Got PASS' in the console log. A silent pixel-only PASS verdict
-    must leave a paper trail for the next report to point at."""
+    was recorded -- just a bare 'Got PASS' in the console log. A corroborated PASS verdict must
+    leave a paper trail for the next report to point at."""
     import numpy as np
     adb = FakeAdb([b"a", b"new"], advance_on_screencap=True)
     drv = _drv(adb)
@@ -1054,6 +1159,7 @@ def test_wait_for_decision_records_pass_diagnostics_in_the_debug_log(monkeypatch
     monkeypatch.setattr(hinge, "_split_diff", lambda x, y: (0.0, 0.0) if x == y else (15.0, 15.0))
     # Deck-ready evidence for "new" -- see test_pass_detected_on_card_advance's comment.
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
+    monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
 
     assert drv.wait_for_decision(timeout=5.0) is False
 
@@ -1066,6 +1172,7 @@ def test_wait_for_decision_records_pass_diagnostics_in_the_debug_log(monkeypatch
     assert decisions[0]["identity"] == "new"
     assert decisions[0]["confirm_identity"] == "new"
     assert decisions[0]["confirm_identity_dist"] is not None
+    assert decisions[0]["gesture"] == "pass"
 
 
 def test_observe_scroll_shift_match_record_carries_sig_index_shift_overlap_rows_and_name_read(
@@ -1183,8 +1290,8 @@ def test_identity_new_profile_plus_deck_ready_and_settle_confirms_a_pass(monkeyp
     """The positive-path complement to the test above: proving the identity anchor also
     lets a REAL advance through, not just refuses to mistake a scroll for one. The identity
     band reads as a DIFFERENT profile's header (not merely 'unrecognised content'), the
-    next deck is confirmed ready, and a settle re-capture reconfirms both -- wait_for_decision
-    returns False (PASS)."""
+    next deck is confirmed ready, a settle re-capture reconfirms both, and the pass-control
+    gesture independently corroborates it -- wait_for_decision returns False (PASS)."""
     import numpy as np
     old_sig = np.full((16, 64), 10, dtype="int16")
     new_sig = np.full((16, 64), 250, dtype="int16")
@@ -1195,8 +1302,43 @@ def test_identity_new_profile_plus_deck_ready_and_settle_confirms_a_pass(monkeyp
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"new" else old_sig)
     monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
+    monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
 
     assert drv.wait_for_decision(timeout=5.0) is False
+
+
+def test_same_profile_reflow_with_pixel_new_and_no_gesture_resyncs_without_a_pass(monkeypatch):
+    """Exact 2026-08-16 Julia regression.
+
+    Hinge moved the filter-chip/name/card layout while the same profile remained visible. The
+    thin pixel identity band consequently read ``new`` on two settled deck-ready frames, while
+    the broad card-header OCR returned garbage and touch watching was unavailable. Those facts
+    may prove that pixels moved, but they do not prove a human pressed X: resync and record
+    nothing instead of manufacturing a PASS.
+    """
+    import numpy as np
+    old_sig = np.full((16, 64), 10, dtype="int16")
+    reflowed_sig = np.full((16, 64), 250, dtype="int16")
+    adb = FakeAdb([b"base", b"same-julia-reflow"], advance_on_screencap=True)
+    drv = _drv(adb, observe_name_ocr=False, observe_touch_watch=False)
+    drv._dbg = _FakeDbg()
+    drv._identity_sig = old_sig
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(
+        hinge, "_band",
+        lambda frame, rect: reflowed_sig if frame == b"same-julia-reflow" else old_sig,
+    )
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
+
+    assert drv.wait_for_decision(timeout=5.0) is None
+    resyncs = [fields for name, fields in drv._dbg.calls if name == "observe_resync"]
+    assert len(resyncs) == 1
+    assert resyncs[0]["reason"] == "pass_identity_name_unconfirmed"
+    assert resyncs[0]["identity"] == resyncs[0]["confirm_identity"] == "new"
+    assert resyncs[0]["gesture"] == "no_data"
+    assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
 
 
 def test_identity_same_beats_a_large_top_delta_across_repeated_scrolls_then_catches_the_real_pass(
@@ -1220,6 +1362,7 @@ def test_identity_same_beats_a_large_top_delta_across_repeated_scrolls_then_catc
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: band_by_frame[frame])
     monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
+    monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
 
     assert drv.wait_for_decision(timeout=5.0) is False
     assert adb.i == 3                # every frame observed: two same-identity scrolls, then the pass
@@ -1363,6 +1506,24 @@ def test_identity_top_name_ocr_all_chrome_words_stays_top_inconclusive(monkeypat
     state, _dist = drv._identity_of(b"frame")
 
     assert state == "top"
+
+
+def test_identity_top_name_ocr_garbage_with_multiple_candidates_stays_inconclusive(monkeypatch):
+    """Exact OCR side of the 2026-08-16 Julia regression: a broad/misaligned crop can include
+    photo texture and hallucinate many word-like tokens. None is positive evidence of one clean
+    different profile name, so the generic scroll-top verdict must remain inconclusive."""
+    drv = _top_state_drv(monkeypatch, stored_name="Julia")
+    monkeypatch.setattr(
+        drv, "_ocr_band",
+        lambda frame, rect, psm="7": (
+            "Neh eae Bk hySey spate Batya Marina SENS Cie" if psm == "6" else None
+        ),
+    )
+
+    state, _dist = drv._identity_of(b"same-julia-reflow")
+
+    assert state == "top"
+    assert drv._identity_top_name_verdict is None
 
 
 def test_identity_top_name_ocr_vetoes_a_pixel_new_when_the_stored_name_is_read(monkeypatch):
@@ -1854,21 +2015,21 @@ def test_gesture_verdict_tap_on_pass_x_confirms_the_pass(monkeypatch):
     assert drv.wait_for_decision(timeout=5.0) is False
 
 
-def test_touch_watcher_health_exception_falls_back_to_pass_and_warns_once(monkeypatch, capsys):
+def test_touch_watcher_health_exception_requires_name_proof_and_warns_once(monkeypatch, capsys):
     """event_count == 0 for the whole run is proof the STREAM itself isn't delivering
     anything on this device (wrong node selected, a permissions change mid-run, ...) -- not
-    "the human genuinely never touched the screen". A broken sensor must never veto a real,
-    identity-and-deck-ready-proven advance. Falls back to PASS, and warns exactly once even
-    across a SECOND, independent advance on the same driver -- the warned flag lives on the
-    driver instance, not the call."""
+    "the human genuinely never touched the screen". It therefore cannot veto an independently
+    name-proven advance, but pixel identity alone cannot manufacture one either. These fixtures
+    have no name proof, so both resync without a label, and the health warning appears exactly
+    once across both waits on the same driver."""
     watcher = _FakeWatcher([], alive=True, event_count=0)
     drv, _adb = _proven_advance_drv(monkeypatch, watcher, frames=(b"base1", b"new1"))
 
-    assert drv.wait_for_decision(timeout=5.0) is False
+    assert drv.wait_for_decision(timeout=5.0) is None
 
     drv._adb = FakeAdb([b"base2", b"new2"], advance_on_screencap=True)
     drv._touch = drv._adb
-    assert drv.wait_for_decision(timeout=5.0) is False
+    assert drv.wait_for_decision(timeout=5.0) is None
 
     out = capsys.readouterr().out
     assert out.count("touch watcher has seen no events this run") == 1
@@ -1879,8 +2040,8 @@ def test_open_session_raises_driver_closed_naming_config_key_when_watcher_cant_s
     platform withholds the stream) must fail LOUDLY -- the same "explicit
     operator decision, never a silent downgrade" contract as touch_backend -- when the
     device's touch event stream can't be attached, rather than silently narrowing observe
-    mode's PASS proof back to identity+deck-ready alone. The raised DriverClosed must name
-    the config key an operator can set to accept that narrower proof on purpose."""
+    mode's PASS proof back to repeated name + identity + deck readiness. The raised DriverClosed
+    must name the config key an operator can set to accept that narrower proof on purpose."""
     class _OpenAdb(FakeAdb):
         def __init__(self):
             super().__init__([b"x"])
@@ -3099,6 +3260,7 @@ def test_wait_for_decision_resumes_after_the_screen_comes_back(monkeypatch):
     # Deck-ready evidence for the final frame -- see test_pass_detected_on_card_advance's
     # comment: these noise frames carry no real glyph for _observe_deck_ready to match.
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
+    monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
     assert drv.wait_for_decision(timeout=5.0) is False   # advanced -> pass
 
 
@@ -3272,7 +3434,7 @@ def test_a_content_collision_cannot_override_an_authoritative_identity_new(monke
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda f: True)
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda f: False)
     monkeypatch.setattr(drv, "_changed", lambda a, b: False)
-    monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda f: "no_data")
+    monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda f: "pass")
 
     assert drv.wait_for_decision(timeout=5.0) is False   # the advance is NOT swallowed
 

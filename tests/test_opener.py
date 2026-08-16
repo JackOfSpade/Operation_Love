@@ -480,6 +480,14 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "describing what is in the photo can never be wrong" in lowered
     assert "she is not checking whether you have eyes" in lowered
     assert "the thing you can see may be your premise. it may never be your point" in lowered
+    # Bug report 2026-08-15: "my money is on the French Alps" answered an imaginary location
+    # question without ever saying what was being guessed. Shared visual context can carry the
+    # photo detail; it cannot carry the missing proposition.
+    assert "self contained claim" in lowered
+    assert "not a shorthand answer to an imagined question" in lowered
+    assert "a bare option in an unstated guessing game" in lowered
+    assert "shared visual context lets you omit a description" in lowered
+    assert "a reader should never have to ask 'for what?'" in lowered
     # Bug report 2026-08-15: an observation-deck photo produced a three-hop story about
     # climbing stairs, jelly legs and beating a target time. Falsifiability is not permission
     # to fabricate the premise. Keep one evidence-bound inference while preserving playful
@@ -488,22 +496,19 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "the premise must be plainly visible in the item or explicitly stated" in lowered
     assert "never stack guesses" in lowered
     assert "unseen action, route, effort, goal, cause, or sequence" in lowered
-    assert "an observation deck does not mean she climbed stairs or had a target time" in lowered
-    assert "being on a summit does not mean she hiked there" in lowered
+    assert "a setting or destination does not establish how she arrived" in lowered
+    assert "what effort it took, or whether she pursued a goal" in lowered
     assert "choose a different claim or a different item" in lowered
-    # One-hop alone is insufficient: feeding a goat -> cleaning its barn can be phrased as one
-    # inference while still depending on an implausibly specific ownership/routine backstory.
+    # One-hop alone is insufficient: an inference can still depend on an implausibly specific
+    # ownership or routine backstory. Keep the semantic boundary without a worked scenario.
     assert "calibrate the guess: a hedge does not rescue a far-fetched premise" in lowered
     assert "natural under most ordinary explanations of the scene" in lowered
     assert "not only under one special backstory" in lowered
     assert "ownership, employment, a routine, a responsibility, or a relationship" in lowered
-    assert "feeding one goat does not mean she owns it, works on a farm" in lowered
-    assert "it may be a wild encounter on a trail" in lowered
-    assert "guess about the interaction the evidence shows, not an unshown life story" in lowered
-    assert "you became its favorite person the second the snacks came out" in lowered
+    assert "guess about the visible interaction, not an unshown life story" in lowered
     assert "traceability test" in lowered
     assert "she should instantly see which visible or stated clue led you there" in lowered
-    assert "how did you possibly get that from this?" in lowered
+    assert "if the clue to inference path needs an explanation" in lowered
     assert "the inference is too remote and you have fantasized a backstory" in lowered
     # The premise the whole rule rests on, and the only reason it can be unconditional (doc
     # 1.2): on Hinge a like-with-comment is ALWAYS displayed attached to its item.
@@ -519,6 +524,18 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "a claim she can correct beats a question she has to answer" in lowered
     assert "a question is allowed as the second beat after a real claim" in lowered
     assert "never as the whole message" in lowered
+    # Bug report 2026-08-16: the first beat guessed X, then the question either re-asked X,
+    # contradicted X, or drifted to a generic nearby topic. Sentence-level validity is not
+    # enough; the two beats must form one logically continuous move.
+    assert "premise consistency" in lowered
+    assert "must accept x as its working premise and move forward from it" in lowered
+    assert "consequence, choice, or specific detail that makes sense if x is true" in lowered
+    assert "never ask whether x itself was true" in lowered
+    assert "ask about the opposite of x" in lowered
+    assert "abandon x for a generic question about the surrounding scene" in lowered
+    assert "the second beat inherits the same evidence boundary" in lowered
+    assert "presuppose an unseen expectation, opinion, goal, difficulty, outcome" in lowered
+    assert "if no natural evidence bound question follows, stop after the claim" in lowered
     # The old "Favor a sincere observation, a direct low-pressure invitation, or ..." default
     # went with it: a sincere observation about a visible thing is unfalsifiable by
     # construction, i.e. exactly what THE ONE RULE now forbids as the whole message.
@@ -537,28 +554,21 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     # --- THE THREE GUARDRAILS (doc 2.4). Safety rules rather than style preferences, which
     # is why they are stated in BOTH copies of the prompt rather than only in config.yaml.
     #
-    # Addendum 2026-08-11: a live dry run produced 5/5 openers all opening with "I bet". Root
-    # cause was this line naming only TWO hedge forms ("a hedge like I bet or I heard"), with
-    # "I bet" first, immediately before the model writes. Widened to seven named forms, framed
-    # as illustrative rather than exhaustive, plus a standalone VARY THE OPENING instruction.
-    # The underlying guardrail -- hedge the claim, never the sender -- is pinned unchanged.
+    # Addendum 2026-08-15: widening a two-form list to seven did not create contextual freedom;
+    # it created seven salient templates and shipped "my money is on" as awkward copy. Pin the
+    # semantic requirement and the absence of that stock menu instead. The item and angle, not
+    # rotation through an inventory, choose the construction.
     assert "hedge the claim, never yourself" in lowered
-    assert "a hedge like i bet or i heard" not in lowered   # the too-narrow, now-fixed phrasing
-    _hedge_forms = ["i'm going to guess", "i heard", "i'm assuming", "something tells me",
-                    "odds are", "my money is on", "i bet"]
-    for form in _hedge_forms:
-        assert form in lowered, f"hedge form {form!r} missing from _SYSTEM"
-    # The regression this whole block exists to catch: HEDGE THE CLAIM collapsing back to a
-    # two-item list with "I bet" anchored first, which is what produced 5/5 "I bet" openers in
-    # the 2026-08-11 live dry run. Counted dynamically (not just len() of the literal above) so
-    # a future edit that trims the *sentence* while leaving this list untouched still fails here.
-    _forms_present = sum(1 for form in _hedge_forms if form in lowered)
-    assert _forms_present > 2, (
-        f"_SYSTEM's HEDGE THE CLAIM line only names {_forms_present} hedge forms "
-        f"(need >2) -- this is the exact 'I bet' monoculture regression"
-    )
-    assert "illustrative, not exhaustive" in lowered
+    assert "when a claim is uncertain, express that uncertainty naturally" in lowered
+    assert "wording that fits the specific item" in lowered
+    assert "the goal is calibrated uncertainty, not a particular lead in" in lowered
+    assert "this is not a phrase menu" in lowered
+    assert "choose the construction from context" in lowered
+    assert "never use a hedge as a substitute for the complete self contained claim" in lowered
+    assert "my money is on" not in lowered
     assert "vary the opening" in lowered
+    assert "let the specific item and angle determine the wording" in lowered
+    assert "do not rotate or recycle a fixed stock hedge" in lowered
     assert "never open every message the same way" in lowered
     assert "never apologise for writing" in lowered
     assert "never call your own question dumb" in lowered
@@ -633,23 +643,11 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "referenced_index" not in lowered
     assert "scroll order" not in lowered
 
-    # --- Owner invariant, not a wording choice: this text is itself sent to the model, so it
-    # must not model the typography the HARD RULE above bans. (_SYSTEM is deliberately NOT
-    # asserted hyphen-free: legacy phrases like "profile-specific", "low-pressure", "0-based"
-    # and the 'PA-C' counter-example still carry hyphens. The no-hyphen rule bites hardest on
-    # EXAMPLE OPENERS, which live only in config.yaml and are pinned there.)
+    # --- Owner invariant, not a wording choice: this text is itself sent to the model.
     assert all(ord(ch) < 128 for ch in _SYSTEM), "_SYSTEM must be pure ASCII"
     assert "—" not in _SYSTEM
 
 
-# The five moves (doc 2.3) are illustrations of THE ONE RULE, never a menu: "If none fits the
-# item in front of the model, it writes whatever does fit and keeps the property." Forcing a
-# move onto an item it does not suit produces awkwardness, which is worse than plain. They
-# live in config.yaml's opener.style today and are pinned there, but nothing stops a later
-# edit from compressing them into _SYSTEM too -- and the compressed form is exactly where the
-# escape clause would get dropped for space. This test is therefore CONDITIONAL on their
-# presence: it passes today because _SYSTEM lists no moves at all, and starts biting the
-# moment one appears without its non-binding framing.
 _MOVE_LIST_MARKERS = (
     "ways this tends to look",
     "say something you know that the item brought to mind",
@@ -657,14 +655,6 @@ _MOVE_LIST_MARKERS = (
     "connect two things she said",
 )
 
-_NON_BINDING_FRAMINGS = (
-    "examples, not a checklist",
-    "write whatever does fit",
-    "never shoehorn",
-)
-
-# Phrasings that would turn the illustrations into a closed set to pick from. Banned
-# unconditionally, for the same reason `angle` is free text and not an enum (doc 3.5).
 _BINDING_MENU_PHRASINGS = (
     "choose one of",
     "pick one of",
@@ -675,15 +665,19 @@ _BINDING_MENU_PHRASINGS = (
 )
 
 
-def test_system_prompt_never_turns_the_five_moves_into_a_binding_menu():
+def test_system_prompt_contains_no_move_menu_or_concrete_opener_copy():
     lowered = _SYSTEM.lower()
     for phrase in _BINDING_MENU_PHRASINGS:
         assert phrase not in lowered, f"_SYSTEM presents the moves as a closed menu: {phrase!r}"
-    present = [marker for marker in _MOVE_LIST_MARKERS if marker in lowered]
-    if present:
-        assert any(framing in lowered for framing in _NON_BINDING_FRAMINGS), (
-            f"_SYSTEM now lists moves ({present}) with no escape clause; doc 2.3 requires "
-            "they be stated as examples with an explicit 'write whatever does fit' out")
+    for marker in _MOVE_LIST_MARKERS:
+        assert marker not in lowered
+    for copied_phrase in (
+        "froze your butt off",
+        "favorite person the second the snacks came out",
+        "jelly after climbing all those stairs",
+        "based on that ridgeline",
+    ):
+        assert copied_phrase not in lowered
 
 
 # ---------------------------------------------------------------------------------------

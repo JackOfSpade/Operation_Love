@@ -42,41 +42,6 @@ def test_opener_model_has_pricing_entry(cfg):
     )
 
 
-def _example_opener_lines(style):
-    """The example opener lines the model is actually shown, extracted from the style block.
-
-    Returned verbatim (stripped of leading indentation only), so a caller can assert on the
-    exact characters the model copies. Few-shot examples are the strongest instrument in this
-    prompt, so the owner rules about what may appear in them are enforced against THESE lines
-    specifically rather than against the block as a whole, which contains prose the rules do
-    not govern (the HARD RULE has to spell "PA-C" to forbid it).
-
-    Structure of the EXAMPLES OF THE EDIT block (config.yaml, per ops/OPENER-REDESIGN.md 3.3):
-    an item description at column 0, then its examples indented and labelled "No:"/"Yes:", and
-    one example that WRAPS onto a continuation line indented deeper still. The continuation is
-    part of the example the model reads, so it is collected too.
-    """
-    lines = style.splitlines()
-    starts = [i for i, line in enumerate(lines)
-              if line.strip().startswith("EXAMPLES OF THE EDIT")]
-    assert len(starts) == 1, (
-        "expected exactly one 'EXAMPLES OF THE EDIT' heading in opener.style, "
-        f"found {len(starts)}"
-    )
-    collected = []
-    in_example = False
-    for line in lines[starts[0] + 1:]:
-        stripped = line.strip()
-        if stripped.startswith(("No:", "Yes:")):
-            in_example = True
-            collected.append(stripped)
-        elif in_example and stripped and line.startswith(" "):
-            collected.append(stripped)      # wrapped continuation of the example above
-        else:
-            in_example = False              # blank line, or an item description at column 0
-    return collected
-
-
 def test_shipped_opener_style_keeps_faithful_corey_framework_and_two_sentence_cap(cfg):
     """The Corey Wayne voice and the length ceiling survive the 2026-08-11 redesign.
 
@@ -125,7 +90,8 @@ def test_shipped_opener_style_ships_the_unbluffable_claim_rule(cfg):
       - the falsifiability property that replaced brevity as the fix,
       - the premise-not-point carve-out that keeps "based on that ridgeline" legal,
       - the "do not say the detail back to her" clause bolted onto the grounding sentence,
-      - the demotion of questions to a second beat.
+      - a complete proposition rather than an answer to an imagined question,
+      - the demotion of questions to an evidence-bound second beat.
     """
     style = " ".join(cfg.opener.style.lower().split())
     assert "shared context rule" in style
@@ -135,6 +101,11 @@ def test_shipped_opener_style_ships_the_unbluffable_claim_rule(cfg):
     assert "she is not checking whether you have eyes" in style
     assert "may be your premise. it may never be your point" in style
     assert "test it by covering the photo: if nothing is left, start over" in style
+    assert "self contained claim" in style
+    assert "not a shorthand answer to an imagined question" in style
+    assert "a bare option in an unstated guessing game" in style
+    assert "shared visual context lets you omit a description" in style
+    assert 'a reader should never have to ask "for what?"' in style
     # Bug report 2026-08-15: a deck photo licensed a made-up staircase, exertion and target
     # time. The model may make one uncertain inference; it may not invent facts to serve as
     # premises for further guesses.
@@ -142,27 +113,22 @@ def test_shipped_opener_style_ships_the_unbluffable_claim_rule(cfg):
     assert "the premise must be plainly visible in the item or explicitly stated" in style
     assert "never stack guesses" in style
     assert "unseen action, route, effort, goal, cause, or before and after sequence" in style
-    assert "an observation deck does not mean she climbed stairs or had a target time" in style
-    assert "a summit does not mean she hiked there" in style
-    assert "your legs were jelly after climbing all those stairs" in style
+    assert "a setting or destination does not establish how she arrived" in style
+    assert "what effort it took, or whether she pursued a goal" in style
     assert "choose a different claim or a different item" in style
     # One-hop is necessary but not sufficient: a single-photo inference can still assume an
-    # implausibly specific backstory. Pin evidence-proportional calibration and the reporter's
-    # goat/barn counterexample.
+    # implausibly specific backstory. Pin evidence-proportional calibration without shipping a
+    # worked scenario the model could imitate.
     assert "calibrate the guess: a hedge does not rescue a far fetched premise" in style
     assert "natural under most ordinary explanations of the scene" in style
     assert "if it works only under one special backstory, do not use it" in style
     assert "ownership, employment, a routine, a responsibility, or a relationship" in style
-    assert "feeding one goat does not mean she owns it, works on a farm" in style
-    assert "spent the day cleaning a barn" in style
-    assert "it could be a wild encounter on a trail" in style
-    assert "guess about the interaction the evidence shows, not an unshown life story" in style
+    assert "guess about the visible interaction, not an unshown life story" in style
     assert "confidently wrong is playful only when the guess was reasonable" in style
-    assert "you became its favorite person the second the snacks came out" in style
     assert "traceability test" in style
     assert "she should instantly see which visible or stated clue led you to that angle" in style
     assert "the path from clue to guess must be obvious without an explanation" in style
-    assert "how did you possibly see it that way?" in style
+    assert "if the clue to inference path needs an explanation" in style
     assert "fantasized a backstory from minimal evidence" in style
     assert "reasoning she can recognize at a glance" in style
     # The grounding sentence and its new second half must stay adjacent: the sentence alone is
@@ -172,27 +138,45 @@ def test_shipped_opener_style_ships_the_unbluffable_claim_rule(cfg):
     # Doc 2.2: questions stay legal, they stop being the default.
     assert "a claim she can correct beats a question she has to answer" in style
     assert "never as the whole message" in style
+    # Bug report 2026-08-16: a valid claim and a valid question can still make an incoherent
+    # pair when the question re-checks, contradicts, or abandons the claim.
+    assert "premise consistency" in style
+    assert "must accept x as its working premise and move the conversation forward" in style
+    assert "consequence, choice, or specific detail that makes sense if x is true" in style
+    assert "never ask whether x itself was true" in style
+    assert "restate x as a question" in style
+    assert "ask about the opposite of x" in style
+    assert "abandon x for a generic question about the surrounding scene" in style
+    assert "replacing x with its opposite, it is not following the claim" in style
+    assert "if no coherent continuation exists, use the claim alone" in style
+    assert "the second beat inherits the same evidence boundary" in style
+    assert "presuppose an unseen expectation, opinion, goal, difficulty, outcome" in style
+    assert "if no natural evidence bound question follows, stop after the claim" in style
 
 
-def test_shipped_opener_style_frames_the_five_moves_as_non_binding_examples(cfg):
-    """ops/OPENER-REDESIGN.md 2.3: the five moves are illustrations, never a menu.
-
-    Deliberate and easy to "tidy" into a bug: if the escape clause is ever dropped, the moves
-    read as a checklist and the model shoehorns one onto an item it does not suit, which is
-    worse than plain. The five moves themselves are pinned so a silent deletion is caught, and
-    Connect is pinned as the strongest because that ranking is the reason Part B exists at all.
-    """
+def test_shipped_opener_style_derives_the_move_without_an_example_menu(cfg):
+    """The profile should determine the move without a model-facing taxonomy to imitate."""
     style = " ".join(cfg.opener.style.lower().split())
-    assert "ways this tends to look. these are examples, not a checklist" in style
-    assert "write whatever does fit and keep the rule" in style
-    assert "never shoehorn" in style
-    assert "guess something from the evidence and commit to it" in style
-    assert "say something you know that the item brought to mind" in style
-    assert "make one direct inference outside the frame, licensed by what is visible or stated" in style
-    assert "claim something outside the frame: what she felt, what it cost, what happened next" not in style
-    assert "tease her, good naturedly, about something the evidence licenses" in style
-    assert "connect two things she said in different places on her profile" in style
-    assert "connecting two separate places on her profile is the strongest" in style
+    assert "derive the conversational move from the specific profile" in style
+    assert "rather than choosing from a fixed taxonomy" in style
+    assert "two separate parts of her profile create one natural angle" in style
+    assert "ways this tends to look" not in style
+    assert "examples, not a checklist" not in style
+
+
+def test_shipped_opener_style_contains_no_concrete_opener_examples(cfg):
+    raw = cfg.opener.style
+    lowered = raw.lower()
+    assert "examples of the edit" not in lowered
+    assert not any(line.strip().startswith(("No:", "Yes:")) for line in raw.splitlines())
+    for copied_phrase in (
+        "froze your butt off",
+        "hot chocolate afterwards",
+        "favorite person the second the snacks came out",
+        "jelly after climbing all those stairs",
+        "based on that ridgeline",
+    ):
+        assert copied_phrase not in lowered
 
 
 def test_shipped_opener_style_does_not_ship_the_item_selection_rule(cfg):
@@ -220,9 +204,8 @@ def test_shipped_opener_style_does_not_ship_the_item_selection_rule(cfg):
             "opener.py's _SYSTEM -- see test_opener.py's item-selection assertions."
         )
 
-    # Everything else the redesign shipped around it must survive untouched -- this test exists
-    # to catch a regression in ONE paragraph, not to license churn on its neighbours.
-    assert "connecting two separate places on her profile is the strongest" in style
+    # The whole-profile connection principle remains, without the former move menu.
+    assert "two separate parts of her profile create one natural angle" in style
     assert "a claim she can correct beats a question she has to answer" in style
 
 
@@ -250,63 +233,34 @@ def test_shipped_opener_style_ships_the_redesign_guardrails(cfg):
 
 
 def test_shipped_opener_style_hedge_forms_are_wide_and_openings_are_varied(cfg):
-    """ops/OPENER-REDESIGN.md 3.6 (entropy guard) plus its 2026-08-11 addendum: a live dry run
-    against a real profile produced 5/5 openers that all opened with "I bet". Root cause was the
-    HEDGE THE CLAIM guardrail naming too few forms with "I bet" landing first/most salient, both
-    here and in opener.py's _SYSTEM (pinned separately by tests/test_opener.py). This test pins
-    the two-part fix so the regression cannot come back silently: (1) more than two named hedge
-    forms, offered as illustrative rather than a fixed menu, and (2) an explicit instruction not
-    to open every message the same way.
+    """Pin the 2026-08-15 correction to the earlier prompt-level entropy mitigation.
+
+    Expanding the named hedge list replaced one recurring template with seven salient templates;
+    a live run then copied "my money is on" into a semantically incomplete opener. The prompt now
+    specifies the job of uncertainty language and lets the item determine its construction.
     """
     style = " ".join(cfg.opener.style.lower().split())
-    _hedge_forms = ["i'm going to guess", "i heard", "i'm assuming", "something tells me",
-                    "odds are", "my money is on", "i bet"]
-    for form in _hedge_forms:
-        assert form in style, f"hedge form {form!r} missing from opener.style"
-    _forms_present = sum(1 for form in _hedge_forms if form in style)
-    assert _forms_present > 2, (
-        f"opener.style's HEDGE THE CLAIM line only names {_forms_present} hedge forms "
-        f"(need >2) -- this is the exact 'I bet' monoculture regression"
-    )
-    assert "these are examples, not a menu to pick the same one from every time" in style
+    assert "when a claim is uncertain, express that uncertainty naturally" in style
+    assert "wording that fits the specific item" in style
+    assert "the goal is calibrated uncertainty, not a particular lead in" in style
+    assert "this is not a phrase menu" in style
+    assert "choose the construction from context" in style
+    assert "never use a hedge as a substitute for the complete self contained claim" in style
+    assert "my money is on" not in style
     assert "vary the opening" in style
-    assert "do not start every message the same way" in style
+    assert "let the specific item and angle determine the wording" in style
+    assert "do not rotate or recycle a fixed stock hedge" in style
 
 
-def test_shipped_example_openers_contain_no_hyphen_em_dash_or_non_ascii(cfg):
-    """Owner rule, and the strictest place it applies: the few-shot examples.
-
-    The model copies the shape of what it is shown, so a single hyphen inside an example opener
-    would teach it to write hyphens regardless of what the HARD RULE says in prose. The HARD
-    RULE itself has to contain "PA-C" in order to forbid it, which is why this is asserted
-    against the example lines rather than the whole block, and why the block-wide check below
-    allows exactly that one hyphen and names it.
-    """
+def test_shipped_opener_style_models_its_typography_rules(cfg):
+    """The model-facing style itself should obey the typography it requests."""
     raw = cfg.opener.style
-    examples = _example_opener_lines(raw)
-    # Guard the extractor itself: if a reflow ever breaks the parse, this test must fail loudly
-    # rather than silently pass over zero lines. 10 = 2 sauna + 3 husky + 1 ridge + 2 prompt
-    # card (one of which wraps, giving 3 lines) + 1 hot sauce.
-    assert len(examples) == 10, f"extractor found {len(examples)} example lines: {examples}"
-    assert "Yes: That view looks relaxing, where is this from?" in examples
-    assert "No:  That view by the sauna during sunset looks relaxing, where is this from?" in examples
-    assert "Yes: I know you were smiling, but I bet you were freezing out there." in examples
-    assert "which one is the lie?" in examples          # the wrapped continuation line
-    for line in examples:
-        assert "-" not in line, f"example opener contains a hyphen: {line!r}"
-        assert "—" not in line, f"example opener contains an em dash: {line!r}"
-        assert "–" not in line, f"example opener contains an en dash: {line!r}"
-        assert all(ord(c) < 128 for c in line), f"example opener is not plain ASCII: {line!r}"
-    # Block-wide, the same rules hold with exactly one documented exception. Asserting the
-    # count (rather than "no hyphen") is what lets this stay strict: a new hyphen anywhere in
-    # the style text fails here even if it is added outside the examples.
+    normalized = " ".join(raw.split())
     assert all(ord(c) < 128 for c in raw), "opener.style must be plain ASCII"
     assert "—" not in raw
-    assert raw.count("-") == 1, (
-        "opener.style should contain exactly one hyphen, the 'PA-C' the HARD RULE forbids; "
-        f"found {raw.count('-')}"
-    )
-    assert 'not "PA-C"' in raw
+    assert "–" not in raw
+    assert "-" not in raw
+    assert "spell out hyphenated abbreviations" in normalized
 
 
 def test_hinge_identity_top_name_band_matches_the_measured_ocr_band(cfg):

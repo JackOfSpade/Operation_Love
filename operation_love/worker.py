@@ -68,7 +68,8 @@ from datetime import date
 
 from .config import PacingCfg
 from .drivers.base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClosed,
-                           ItemTargetingError)
+                           ItemTargetingError, OBSERVE_ITEM_INCONCLUSIVE, OBSERVE_ITEM_MATCH,
+                           OBSERVE_ITEM_MISMATCH, ObserveItemCheck)
 from .human import human_cooldown, human_delay
 from .human_motion import think_time_s
 from .interaction import AutoSessionPolicy
@@ -205,6 +206,10 @@ class _ObserveSuggestion:
         self._pick = None          # the OpenerPick, once the model has answered
         self._warning = None       # why there is no text to type, when there is none
         self._sheet = None         # the like-sheet frame the human opened, once they have
+        # Three-valued check latched within one uninterrupted sheet session. A later
+        # INCONCLUSIVE typing frame preserves MATCH/MISMATCH; only affirmative evidence may
+        # change an undecided state. The item number binds the proof to the pick it licensed.
+        self._sheet_item_check: tuple[int, ObserveItemCheck] | None = None
         self._pending = False      # a generation call is in flight
         self._cancelled = False
         # This is deliberately separate from `_cancelled`/`_lock`: a provider call can be
@@ -256,6 +261,10 @@ class _ObserveSuggestion:
         the guard being unable to look at all.
         """
         with self._lock:
+            if self._sheet is None:
+                # First frame of a newly opened sheet. Any proof belonged to the previous
+                # continuous composer session and must not cross a close/reopen boundary.
+                self._sheet_item_check = None
             self._sheet = frame if frame else b""
         self._publish()
 
@@ -268,6 +277,7 @@ class _ObserveSuggestion:
         """
         with self._lock:
             self._sheet = None
+            self._sheet_item_check = None
         self._publish()
 
     def cancel(self) -> None:
@@ -459,22 +469,53 @@ class _ObserveSuggestion:
         consequence differs.
         """
         if not self._sheet:
-            return ("the app's comment sheet is open but this driver could not hand over a "
-                    "picture of it, so there is no way to tell which item you opened")
-        try:
-            mismatch = self._worker.driver.observe_item_mismatch(self._sheet, pick.index)
-        except Exception as exc:  # noqa: BLE001 — see the class docstring: never break the run
-            return (f"the item you opened could not be checked against this suggestion "
+            current = ObserveItemCheck(
+                OBSERVE_ITEM_INCONCLUSIVE,
+                "the app's comment sheet is open but this driver could not hand over a "
+                "picture of it, so there is no way to tell which item you opened")
+        else:
+            try:
+                typed_check = getattr(self._worker.driver, "observe_item_check", None)
+                if callable(typed_check):
+                    current = typed_check(self._sheet, pick.index)
+                    if not isinstance(current, ObserveItemCheck):
+                        raise TypeError("observe_item_check did not return ObserveItemCheck")
+                else:
+                    # Compatibility for existing third-party drivers/test doubles. Their old
+                    # string API cannot distinguish "wrong" from "could not look", so a reason
+                    # remains a fail-closed mismatch. Production Hinge exposes the typed method.
+                    reason = self._worker.driver.observe_item_mismatch(self._sheet, pick.index)
+                    current = ObserveItemCheck(
+                        OBSERVE_ITEM_MISMATCH if reason else OBSERVE_ITEM_MATCH,
+                        reason or "")
+            except Exception as exc:  # noqa: BLE001 — a display check never breaks the run
+                current = ObserveItemCheck(
+                    OBSERVE_ITEM_INCONCLUSIVE,
+                    f"the item you opened could not be checked against this suggestion "
                     f"({type(exc).__name__}: {exc})")
-        if not mismatch and not self._release_post_tap_recorded:
-            record = getattr(self._worker.driver, "observe_release_fact", None)
-            if callable(record):
-                try:
-                    record("post_tap_item_verified")
-                except Exception:  # noqa: BLE001 -- debug evidence never changes observe safety
-                    pass
-            self._release_post_tap_recorded = True
-        return mismatch
+
+        previous = (self._sheet_item_check[1]
+                    if self._sheet_item_check is not None
+                    and self._sheet_item_check[0] == pick.index else None)
+        if previous is not None and previous.state == OBSERVE_ITEM_MISMATCH:
+            effective = previous              # an affirmative wrong-item result stays refused
+        elif current.state == OBSERVE_ITEM_INCONCLUSIVE and previous is not None:
+            effective = previous              # typing/layout noise cannot revoke real evidence
+        else:
+            effective = current
+            self._sheet_item_check = (pick.index, current)
+
+        if effective.state == OBSERVE_ITEM_MATCH:
+            if not self._release_post_tap_recorded:
+                record = getattr(self._worker.driver, "observe_release_fact", None)
+                if callable(record):
+                    try:
+                        record("post_tap_item_verified")
+                    except Exception:  # noqa: BLE001 -- debug evidence never changes observe safety
+                        pass
+                self._release_post_tap_recorded = True
+            return ""
+        return effective.reason
 
     def _publish(self, *, announce_pick=None) -> None:
         with self._lock:

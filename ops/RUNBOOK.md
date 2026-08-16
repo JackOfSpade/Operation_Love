@@ -199,7 +199,8 @@ Those are the **exact** `apps.<app>.targeting_calibration` keys: no missing or a
 `schema_version` must be the integer `3`; legacy sheet calibrations are rejected.
 `hinge_version_name`, `frame_size_px`, `composer_layout_id`, and `item_selection_policy_id` bind the evidence to the exact
 live app/layout/display and selection contract. `hinge_photos_only_v1` numbers only crops
-affirmatively classified as photos; WRITTEN and UNKNOWN crops remain readable unnumbered context
+affirmatively classified as photos after their source sightings clear the card-local mute-control
+screen; videos are excluded, while WRITTEN and UNKNOWN crops remain readable unnumbered context
 because neither aspect ratio nor a presumed item count is item-type evidence. Both distance fields must be finite positive numbers. `device` must exactly equal the nonempty
 `apps.hinge.serial` ADB serial; it is a machine-checked binding, not free-form device evidence.
 `calibrated_at` must be nonempty evidence text, not a placeholder. `identity_match_max_dist` must be strictly less than

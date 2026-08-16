@@ -26,7 +26,9 @@
 > ordinals, so skipping prompt hearts cannot shift a later photo's tap. The current 9.134.0
 > corpus measures six 974x974 photos and three written prompt cards at 974x756 / 974x685; the
 > resulting translation is `(1, 3, 4, 6, 8, 9)`. Calibration schema 3 binds this behavior as
-> `hinge_photos_only_v1`. Historical passages below that say every photo or prompt is selectable
+> `hinge_photos_only_v1`. The policy additionally excludes a card when its source
+> sightings show Hinge's pixel-stable upper-left mute control; the card and heart remain in the
+> scroll index, so later photo ordinals do not shift. Historical passages below that say every photo or prompt is selectable
 > describe the superseded policy, not the current product contract.
 
 Designed 2026-08-11. This is the agreed design, written down so the reasoning survives.
@@ -185,6 +187,22 @@ This is a prompt-layer mitigation, not the deterministic entropy guard 3.6 descr
 fix (a leading-n-gram repetition check on `recent_openers`, soft-signalled via `retry_hint` rather
 than hard-rejecting). That guard is still not built. Re-verify with a fresh live dry run once it
 ships, since prompt wording alone is not guaranteed to hold under continued volume.
+
+**A fourth production defect, found by a live suggestion and fixed 2026-08-15.** Expanding the
+hedge list changed the size of the phrase menu without removing the menu. The model opened with
+"my money is on the French Alps", which reads as a bare answer to an imaginary location question:
+the message never says what is supposedly in the French Alps, so the reader reasonably asks "for
+what?" Its second sentence also introduced an unsupported evaluation rather than following from
+the evidence-bound claim.
+
+Fixed in both prompt copies by removing the named hedge forms. HEDGE THE CLAIM now specifies a
+semantic function -- express uncertainty naturally when the claim needs it -- and explicitly lets
+the specific item and angle determine the construction. A new SELF-CONTAINED CLAIM rule requires
+the entire proposition rather than shorthand from an unstated guessing game; shared visual context
+may carry the photo description, but not a missing subject or relation. Optional second-beat
+questions now inherit the same one-hop evidence boundary and must be omitted when no natural,
+evidence-bound question follows. The underlying permission to make playful, correctable guesses is
+unchanged.
 
 ---
 
@@ -372,6 +390,10 @@ has failed, whether it is too descriptive or too generic.
 The thing you can see may be your premise. It may never be your point. Test it by covering
 the photo: if nothing is left, start over.
 
+SELF CONTAINED CLAIM: write the whole proposition, not shorthand from an imagined question
+or a bare option in an unstated guessing game. Shared visual context may carry the photo
+description, but the message must still say what you think is true.
+
 WAYS THIS TENDS TO LOOK. These are examples, not a checklist. If none of them fits the item
 in front of you, write whatever does fit and keep the rule.
   Guess something from the evidence and commit to it.
@@ -381,11 +403,15 @@ in front of you, write whatever does fit and keep the rule.
   Connect two things she said in different places on her profile.
 
 A claim she can correct beats a question she has to answer. Questions are allowed as the
-second beat after a real one, never as the whole message.
+second beat after a real one, never as the whole message. That second beat inherits the same
+evidence boundary and may not add an unseen expectation, outcome, or earlier conversation.
+If no natural evidence bound question follows, stop after the claim.
 
-HEDGE THE CLAIM, NEVER YOURSELF: "I'm going to guess", "I bet", "I heard", "I'm assuming".
-Being wrong is then part of the fun and she gets to be the expert. Never apologise for
-writing, never ask permission, never call your own question dumb.
+HEDGE THE CLAIM, NEVER YOURSELF: when a claim is uncertain, express that uncertainty naturally
+in wording that fits the specific item. This is a semantic requirement, not a phrase menu.
+Choose the construction from context and state the complete proposition. Being wrong is then
+part of the fun and she gets to be the expert. Never apologise for writing, never ask
+permission, never call your own question dumb.
 
 GUESS THE WORLD, NOT HER IDENTITY: name a country, a region, a park, the way a well travelled
 friend would. Never a street, a neighbourhood, a hotel, a specific venue, or anywhere that

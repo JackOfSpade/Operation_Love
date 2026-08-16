@@ -148,8 +148,9 @@ apps:
     # /dev/input/event3` reads the touchscreen's capabilities fine, but 30s of deliberate
     # tapping and scrolling produced ZERO lines -- Android withholds the input stream from
     # unprivileged readers on this build. Not recoverable in code; see HINGE_SPEC's comment.
-    # The identity anchor above is what fixes the scroll-recorded-as-PASS bug; this was the
-    # optional extra layer. Flip to true only on a device where
+    # With this extra layer unavailable, a pixel-only identity change is never enough for PASS:
+    # the different card-header name must reproduce cleanly on both settled frames, otherwise
+    # Observe resyncs without a label. Flip to true only on a device where
     # `python -m tools.touch_selftest` actually prints TAP/DRAG lines while you touch.
     observe_touch_watch: false
     # OCR (via the host's `tesseract` binary, if installed) of the identity/card-header bands.
@@ -537,17 +538,10 @@ opener:
   # construction, which is exactly why it proves nothing -- a message that cannot be wrong
   # could have been written without looking. Anyone can see; the opener has to show we thought.
   #
-  # Two deliberate wordings that look like mistakes and are not. (1) The five moves are stated
-  # as examples with an explicit escape clause, never as a checklist, because forcing a move
-  # onto an item it does not suit produces awkwardness, which is worse than plain. (2) The
-  # guardrail says "the sender" and "he" rather than "me": the rest of the prompt addresses the
+  # One deliberate wording that looks like a mistake and is not. The guardrail says "the
+  # sender" and "he" rather than "me": the rest of the prompt addresses the
   # model in the second person about a third-person man ("the opening message a man sends"), so
   # a first-person "me" would be ambiguous about whose history is being protected.
-  #
-  # Every example opener below is free of em dashes and hyphens, and of emoji and non-ASCII,
-  # by owner rule: few-shot examples are the strongest instrument in this prompt and the model
-  # copies the shape of what it is shown, so a single hyphen in an example would teach the
-  # model to write them despite the HARD RULE.
   #
   # Addendum 2026-08-11 (same day, later): a live dry run against a real profile produced 5/5
   # openers that all opened with "I bet", exactly the entropy-collapse risk doc 3.6 predicted.
@@ -564,9 +558,8 @@ opener:
   # Addendum 2026-08-12 (Part B, ops/OPENER-REDESIGN.md 5.1): the model now CHOOSES which item
   # to write about, and that choice is also the item that gets liked, so the style guide gained
   # three paragraphs (PICK THE ITEM YOURSELF, THE FAILURE TO AVOID, THE UNNUMBERED IMAGES ARE
-  # CONTEXT). Nothing already here was edited: the one rule, the five moves and their escape
-  # clause, the three guardrails, the hedge list, VARY THE OPENING, the two sentence ceiling,
-  # the economy rule, the HARD RULEs and every edit pair are untouched, and opener.py's _SYSTEM
+  # CONTEXT). Nothing already here was edited at that time: the one rule, the guardrails,
+  # VARY THE OPENING, the two sentence ceiling, the economy rule and the HARD RULEs stayed, and opener.py's _SYSTEM
   # carries a compressed copy of the same three paragraphs so the pair keeps agreeing (doc 3.1).
   #
   # The selection criterion is doc 5.1's: best ANGLE, not most striking photo. It is the same
@@ -618,6 +611,25 @@ opener:
   # unconditional, unguarded duplicate of it is. See that test and
   # tests/test_config_yaml_real.py's test_shipped_opener_style_does_not_ship_the_item_selection_rule
   # for the pinned shape of this decision.
+  #
+  # Addendum 2026-08-15: a live suggestion opened with "my money is on the French Alps", which
+  # is a bare answer to an imaginary location question rather than a complete standalone claim.
+  # The previous seven-form hedge list had replaced one salient template with seven templates;
+  # calling them examples did not stop the model from treating them as recommended copy. The
+  # list is now gone. HEDGE THE CLAIM states the semantic job and lets the model choose language
+  # from the item and angle. SELF CONTAINED CLAIM adds the "for what?" test, and every optional
+  # second beat now inherits the evidence boundary instead of being allowed to invent a new
+  # expectation, outcome, or earlier conversation.
+  #
+  # Addendum 2026-08-16: a second beat could obey that boundary while logically wobbling away
+  # from the first: guess X, then ask whether X, ask about not-X, or switch to a generic question
+  # about the scene. PREMISE CONSISTENCY makes a question accept the claim as its working premise
+  # and advance it.
+  #
+  # Addendum 2026-08-16 (prompt de-templating): all concrete opener copy, worked scenarios and
+  # move menus were removed from the model-facing style guide. Even a labelled bad example gives
+  # a minimal-thinking model salient language to imitate. The regressions remain concrete in
+  # tests, while the production prompt now contains only semantic properties and failure types.
   style: |
     Use the dating and conversational principles associated with Coach Corey Wayne's
     "How to Be a 3% Man", without copying his wording. Be a charming gentleman first:
@@ -638,31 +650,30 @@ opener:
     The thing you can see may be your premise. It may never be your point. Test it by covering
     the photo: if nothing is left, start over.
 
+    SELF CONTAINED CLAIM: write the whole proposition, not a shorthand answer to an imagined
+    question or a bare option in an unstated guessing game. The message itself must say what you
+    think is true. Shared visual context lets you omit a description, not the claim's subject or
+    relation. A reader should never have to ask "for what?" to understand the message.
+
     EVIDENCE BOUNDARY, ONE HOP ONLY: the premise must be plainly visible in the item or
     explicitly stated in her profile. From that fact you may make one playful, uncertain
     inference. Never stack guesses by inventing an unseen action, route, effort, goal, cause,
-    or before and after sequence as the premise for another claim. A destination does not tell
-    you how she arrived: an observation deck does not mean she climbed stairs or had a target
-    time, just as a summit does not mean she hiked there. The reported opener "your legs were
-    jelly after climbing all those stairs, did you beat your target time?" is invalid because
-    it invents the route, exertion, and goal from the setting alone. If an opener needs a hidden
+    or before and after sequence as the premise for another claim. A setting or destination
+    does not establish how she arrived, what effort it took, or whether she pursued a goal.
+    If an opener needs a hidden
     bridge like that, choose a different claim or a different item.
 
     CALIBRATE THE GUESS: a hedge does not rescue a far fetched premise. Ask whether the claim
     would still sound natural under most ordinary explanations of the scene. If it works only
     under one special backstory, do not use it. Never infer ownership, employment, a routine, a
-    responsibility, or a relationship merely from proximity in one photo. A photo of her
-    feeding one goat does not mean she owns it, works on a farm, or spent the day cleaning a
-    barn; it could be a wild encounter on a trail. Guess about the interaction the evidence
-    shows, not an unshown life story. Being confidently wrong is playful only when the guess was
-    reasonable enough that correcting it feels natural rather than confusing. A calibrated
-    opener for that photo stays with the visible interaction: "You became its favorite person
-    the second the snacks came out."
+    responsibility, or a relationship merely from proximity in one photo. Guess about the
+    visible interaction, not an unshown life story. Being confidently wrong is playful only
+    when the guess was reasonable enough that correcting it feels natural rather than confusing.
 
     TRACEABILITY TEST: even if your conclusion is wrong, she should instantly see which visible
     or stated clue led you to that angle. The path from clue to guess must be obvious without an
-    explanation. If her natural reaction would be "how did you possibly see it that way?", the
-    inference is too remote and you have fantasized a backstory from minimal evidence. Choose an
+    explanation. If the clue to inference path needs an explanation, the inference is too remote
+    and you have fantasized a backstory from minimal evidence. Choose an
     angle whose reasoning she can recognize at a glance.
 
     Ground this opener in exactly ONE concrete detail from a specific photo or prompt, then do
@@ -670,34 +681,39 @@ opener:
     message is made of. Make one clear, positive, profile specific bid and leave room for her
     reply.
 
-    WAYS THIS TENDS TO LOOK. These are examples, not a checklist. If none of them fits the item
-    in front of you, write whatever does fit and keep the rule. Never shoehorn one of these onto
-    an item it does not suit; awkward is worse than plain.
-      Guess something from the evidence and commit to it.
-      Say something you know that the item brought to mind.
-      Make one direct inference outside the frame, licensed by what is visible or stated.
-      Tease her, good naturedly, about something the evidence licenses.
-      Connect two things she said in different places on her profile.
-    Connecting two separate places on her profile is the strongest of these, because it could
-    not have been written by anyone who looked at less than the whole page, and because she
-    volunteered both halves herself.
+    Derive the conversational move from the specific profile rather than choosing from a fixed
+    taxonomy. When two separate parts of her profile create one natural angle, that connection
+    is especially specific because it requires reading the whole page.
 
     A claim she can correct beats a question she has to answer. A correction is the easiest and
     most enjoyable reply a person can give, so being wrong about the guess still wins. Questions
     are allowed as the second beat after a real claim, never as the whole message: at most one
-    open, easy to answer question about that detail. Questions should invite positive, fun
-    conversation, not form an interview.
+    open, easy to answer question about that detail.
 
-    HEDGE THE CLAIM, NEVER YOURSELF: "I'm going to guess", "I heard", "I'm assuming",
-    "something tells me", "odds are", "my money is on", "I bet", or any other phrasing that
-    does the same job. These are examples, not a menu to pick the same one from every time: any
-    phrase that makes a real claim safe to make and trivially easy to answer qualifies. Being
-    wrong is then part of the fun and she gets to be the expert. Never apologise for writing,
-    never ask permission, never call your own question dumb.
+    PREMISE CONSISTENCY: once the first beat asserts or guesses X, the second beat must accept X
+    as its working premise and move the conversation forward from it. Ask for a consequence,
+    choice, or specific detail that makes sense if X is true. Never ask whether X itself was
+    true, restate X as a question, ask about the opposite of X, or abandon X for a generic
+    question about the surrounding scene. If the second sentence would work unchanged after
+    replacing X with its opposite, it is not following the claim. If no coherent continuation
+    exists, use the claim alone.
 
-    VARY THE OPENING: do not start every message the same way. Rotate which hedge phrase, which
-    of the five moves, and which sentence shape leads from one opener to the next. The same
-    opening construction message after message reads as a template, not a person.
+    The second beat inherits the same evidence
+    boundary: it may not introduce another inference or presuppose an unseen expectation,
+    opinion, goal, difficulty, outcome, or earlier conversation. If no natural evidence bound
+    question follows, stop after the claim. Questions should invite positive, fun conversation,
+    not form an interview.
+
+    HEDGE THE CLAIM, NEVER YOURSELF: when a claim is uncertain, express that uncertainty
+    naturally in wording that fits the specific item. The goal is calibrated uncertainty, not a
+    particular lead in. This is not a phrase menu: choose the construction from context, and
+    never use a hedge as a substitute for the complete self contained claim. Being wrong is then
+    part of the fun and she gets to be the expert. Never apologise for writing, never ask
+    permission, never call your own question dumb.
+
+    VARY THE OPENING: let the specific item and angle determine the wording and sentence shape.
+    Do not rotate or recycle a fixed stock hedge. The same opening construction message after
+    message reads as a template, not a person.
 
     GUESS THE WORLD, NOT HER IDENTITY: name a country, a region, a park, the way a well travelled
     friend would. Never a street, a neighbourhood, a hotel, a specific venue, or anywhere that
@@ -718,25 +734,8 @@ opener:
     the claim allows: spend no word on anything she can already see, and no word on padding, but
     never cut the claim itself to save room. A second sentence may be one easy positive question
     or a direct low pressure invitation. Do not try to build a text relationship in the opener.
-    HARD RULE: never use an em dash or any hyphen; use commas or periods instead
-    (write "physician assistant", not "PA-C").
-
-    EXAMPLES OF THE EDIT. Same item each time, first is wrong, second is right.
-    Photo of her in an outdoor sauna at sunset.
-      No:  That view by the sauna during sunset looks relaxing, where is this from?
-      Yes: That view looks relaxing, where is this from?
-    Photo of her with a husky in the arctic.
-      No:  That husky is too cute, is it yours?
-      Yes: I know you were smiling, but I bet you were freezing out there.
-      Yes: I heard huskies run about as warm as a space heater, so at least you had that.
-    Photo of her on a ridge with mountains behind her.
-      Yes: Based on that ridgeline I'm going to guess Norway.
-    Prompt card, two truths and a lie about 30 countries, cilantro, and meeting a pop star.
-      No:  Your two truths and a lie about the countries, cilantro and the pop star is fun,
-           which one is the lie?
-      Yes: The cilantro one is the lie, I can feel it.
-    Her prompts mention she puts hot sauce on everything; separate photo of her backpacking.
-      Yes: How many bottles of hot sauce did that trip cost you?
+    HARD RULE: never use an em dash or any hyphen; use commas or periods instead and spell out
+    hyphenated abbreviations.
 
 # --- Cost control (see operation_love/costing.py) ---
 budget:

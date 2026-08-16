@@ -150,9 +150,27 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
   * Whether a card is ANIMATED. Two screencaps of the same position over animated content can
     differ. Frameshift still refuses ordinary measurements below its three-strip quorum. This
     layer can repair one narrowly bounded two- or three-pair animation run only when an exact
-    two-strip alternative is independently fixed by several observed card/heart landmarks and
-    the complete page rebuild is contradiction-free; every other animation shape remains a
-    broken-chain refusal, never a guessed answer.
+    two-strip alternative is independently fixed by several observed card/heart landmarks.  In
+    the narrower one-strip case -- whether it is the only match or a dissenting alternative to
+    a failed two-strip candidate -- all three landmark kinds (a card top, a card bottom and a
+    heart) must fix it exactly and an adjacent pair must independently form part of the same
+    repair run.  The complete page rebuild must then be contradiction-free.  One still narrower
+    three-pair transition may begin with two NCC strips
+    plus one exact shared gutter (the old heart has left before the new one arrives), but only
+    when the following pair is a measured-majority override and the last is the full-landmark
+    one-strip case.  A final saved shape may extend one ordinary run to four pairs only when its
+    measured tail is corrected by one unique exact top/bottom/heart answer in the separately
+    bounded 13..14px structural-tail window.  One final five-pair refusal island is recoverable
+    only when ordinary measured pairs bracket it, exact three-or-more-strip/full-landmark
+    candidates close both ends, and the fixed 3+/2/2/1/3+ evidence grammar plus complete page
+    rebuild succeeds.  An app-confirmed animation marker may also authorize one bounded measured-
+    bridge window connecting otherwise independent two-strip/full-layout repairs when every
+    intervening pair and both outer anchors retain raw NCC quorum plus exact multi-kind geometry.
+    Within that window only, a raw measured bridge may project by at most the existing fold
+    tolerance onto one unique exact top/bottom/heart delta with an exact NCC witness; this treats
+    stable samples inside one confirmed live-video span as corroboration rather than incorrectly
+    splitting the span into separate repair runs.
+    Every other animation shape remains a broken-chain refusal, never a guessed answer.
 """
 from __future__ import annotations
 
@@ -253,6 +271,13 @@ _RECOVERY_EXTENT_TOLERANCE_PX = 9
 # cluster this far from a correct majority.
 _MAJORITY_OVERRIDE_PX = (_EXTENT_TOLERANCE_PX + 1, 12)
 
+# A structure-only measured tail is NOT an extension of the ordinary override window above.
+# It has its own two-pixel window and the fixed four-pair grammar in
+# `_repair_shifts_from_layout`.  The floor is exactly one past the NCC-backed ceiling; the ceiling
+# is the saved +207 -> +221 correction and remains far below half the smallest Hinge gutter.
+# Nothing currently authorises a 15px structure-only correction.
+_STRUCTURAL_TAIL_CORRECTION_PX = (_MAJORITY_OVERRIDE_PX[1] + 1, 14)
+
 # `_MAX_STEP_PX` (imported above) bounds a layout-supported repair: the reader targets about one
 # third of the locally observed card spacing, so a repair must still fit inside one ordinary read
 # step.  It is never a back door for a large jump that frameshift deliberately refused outside its
@@ -283,7 +308,7 @@ _END_TAIL_GAP_PX = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
 # indexer decision path and splitter.  Those values distinguish "the current source replays
 # cleanly" from "the long-lived
 # worker was still executing an older indexer" without trusting the working tree alone.
-ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v3"
+ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v13"
 
 
 # =====================================================================================
@@ -406,6 +431,32 @@ class IndexedBlock:
 
 
 @dataclass(frozen=True)
+class VideoMuteMarker:
+    """One affirmative, positioned Hinge mute-control observation.
+
+    Unlike the legacy frame boolean, ``x/y`` identify the physical card carrying the app-owned
+    control.  The indexer uses that identity only to bound a video-card track; it never changes
+    frameshift's raw vote or manufactures a scroll distance.
+    """
+    frame_index: int
+    x: int
+    y: int
+    score: float
+
+
+@dataclass(frozen=True)
+class ItemIndexRepair:
+    """One accepted repair's audit record; it carries no pixels or inferred identity."""
+    pair_index: int
+    path: str                    # ``v12_mute_card_track`` or ``legacy_layout_grammar``
+    raw_status: str
+    raw_delta_px: int | None
+    effective_status: str
+    effective_delta_px: int | None
+    marker_frames: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
 class ItemIndex:
     """The profile's items, the evidence behind them, and what the capture failed to establish.
 
@@ -449,6 +500,18 @@ class ItemIndex:
     # offending intermediate frame and measuring a direct bridge instead; the crop layer must use
     # the same reduced sequence, never the original sequence shifted by one position.
     source_frame_indices: tuple[int, ...] = ()
+    # Per-index-frame affirmative animation markers supplied by the app driver.  They never
+    # alter raw frameshift or segmentation.  A bounded measured-bridge repair may consult them
+    # as product-specific evidence that changing pixels really come from a video UI rather than
+    # from two unrelated static cards; False is absence of proof, never proof of a still image.
+    animation_markers: tuple[bool, ...] = ()
+    # Position-aware mute-control evidence used by v12's physical video-card tracker.  This is
+    # separate from the legacy bool tuple so older callers and recorded manifests remain readable.
+    video_mute_markers: tuple[VideoMuteMarker, ...] = ()
+    # Accepted effective shifts and the raw evidence they replaced.  This is deliberately
+    # structured so a successful capture, not only a refusal sidecar, can say whether v12's
+    # physical-card tracker or the legacy compatibility grammar supplied authority.
+    repair_provenance: tuple[ItemIndexRepair, ...] = ()
     recovered_from_pair: tuple[int, int] | None = None
     recovery_bridge: tuple[int, int] | None = None
     recovery_failed_shift: ShiftEstimate | None = None
@@ -593,26 +656,46 @@ class ItemIndex:
 
 
 def _matched_delta_clusters(shift: ShiftEstimate) -> tuple[tuple[int, tuple[int, ...]], ...]:
-    """The disjoint, within-frameshift-tolerance clusters among usable strip votes.
+    """The admissible disjoint clusters among usable strip votes for layout corroboration.
 
     ``frameshift`` intentionally has the final word on an ordinary strip-only measurement.  This
-    helper merely exposes its *two*-witness alternatives for the much narrower layout check
-    below.  Chaining adjacent values is deliberate: votes at 0, 3 and 6px form one three-voter
-    component, just as a median of 3 accepts all three; treating either edge pair as a separate
-    two-voter cluster would manufacture a repair candidate out of overlapping evidence.
+    helper normally exposes its *two*-witness alternatives for the much narrower layout check
+    below.  It exposes a single witness only when it is the pair's sole matched strip and the raw
+    result is already a refusal; `_layout_repaired_shift` then requires top, bottom, and heart
+    geometry, and `_repair_shifts_from_layout` still refuses it unless an adjacent pair forms the
+    same bounded animation run.  Thus a lone NCC coincidence can never repair an isolated pair.
+
+    A two-voter candidate uses the same decision surface as ``frameshift._resolve``: both values
+    must sit within `_AGREEMENT_TOLERANCE_PX` of their rounded median.  Comparing the values to
+    *each other* instead is too strict -- the saved `+278,+282` pair is 4px apart but both are
+    only 2px from its `+280` median, so frameshift correctly counts two agreeing witnesses.
+
+    Overlapping pairs remain inadmissible.  Votes at 0, 3 and 6px can make candidate pairs around
+    2 and 4, but the middle vote belongs to both; exposing either would manufacture a repair
+    candidate out of evidence that also supports its neighbour.  Disjoint alternatives are
+    retained so independent layout can select between them.
     """
     deltas = sorted(s.delta_px for s in shift.strips
                     if s.state == STRIP_MATCHED and s.delta_px is not None)
-    clusters: list[list[int]] = []
-    for delta in deltas:
-        if clusters and delta - clusters[-1][-1] <= _AGREEMENT_TOLERANCE_PX:
-            clusters[-1].append(delta)
-        else:
-            clusters.append([delta])
-    return tuple(
-        (int(round(sum(cluster) / len(cluster))), tuple(cluster))
-        for cluster in clusters if len(cluster) == 2
-    )
+    if shift.status == SHIFT_NO_CONSENSUS and len(deltas) == 1:
+        return ((deltas[0], (deltas[0],)),)
+
+    candidates: list[tuple[int, tuple[int, int], tuple[int, int]]] = []
+    for left in range(len(deltas)):
+        for right in range(left + 1, len(deltas)):
+            candidate = int(round((deltas[left] + deltas[right]) / 2))
+            supporters = tuple(i for i, delta in enumerate(deltas)
+                               if abs(delta - candidate) <= _AGREEMENT_TOLERANCE_PX)
+            if supporters == (left, right):
+                candidates.append((candidate, (left, right), (deltas[left], deltas[right])))
+
+    overlapping: set[int] = set()
+    for i, (_candidate, voter_indices, _voters) in enumerate(candidates):
+        if any(set(voter_indices).intersection(other_indices)
+               for j, (_other, other_indices, _other_voters) in enumerate(candidates) if i != j):
+            overlapping.add(i)
+    return tuple((candidate, voters) for i, (candidate, _indices, voters) in enumerate(candidates)
+                 if i not in overlapping)
 
 
 def _structural_landmarks(before: FrameSegmentation, after: FrameSegmentation,
@@ -640,6 +723,76 @@ def _structural_landmarks(before: FrameSegmentation, after: FrameSegmentation,
     return tuple(landmarks)
 
 
+def _observed_gutters(segmentation: FrameSegmentation) -> tuple[tuple[int, int], ...]:
+    """Exact `(upper bottom, lower top)` rows for fully observed canonical gutters.
+
+    A generic top and bottom can belong to unrelated blocks.  Keeping them paired here proves
+    the specific layout object the live-video transition preserves: both sides of one 47..58px
+    Hinge gutter, observed in both frames.  Band-edge fragments are excluded by the edge flags.
+    """
+    low = min(_GUTTER_PX) - _GUTTER_TOLERANCE_PX
+    high = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
+    gutters: list[tuple[int, int]] = []
+    for upper, lower in zip(segmentation.blocks, segmentation.blocks[1:]):
+        if not upper.bottom.observed or not lower.top.observed:
+            continue
+        bottom, top = upper.bottom.y, lower.top.y
+        if low <= top - bottom <= high:
+            gutters.append((bottom, top))
+    return tuple(gutters)
+
+
+def _shared_gutter_witnesses(before: FrameSegmentation, after: FrameSegmentation,
+                             candidate: int,
+                             ) -> tuple[tuple[int, int, int, int], ...]:
+    """Shared canonical gutters whose two independently segmented edges move `candidate` px."""
+    return tuple(
+        (before_bottom, before_top, after_bottom, after_top)
+        for before_bottom, before_top in _observed_gutters(before)
+        for after_bottom, after_top in _observed_gutters(after)
+        if before_bottom - after_bottom == candidate and before_top - after_top == candidate
+    )
+
+
+def _edge_only_two_strip_shift(pair_index: int, before: FrameSegmentation,
+                               after: FrameSegmentation, shift: ShiftEstimate,
+                               ) -> tuple[ShiftEstimate, str | None]:
+    """Propose the saved transition's two-NCC plus exact-shared-gutter shift.
+
+    This helper never grants ordinary layout acceptance.  `_repair_shifts_from_layout` admits
+    its tagged proposal only as the first member of one exact three-pair animation pattern, and
+    the builder still probes the complete page before committing it.
+    """
+    if shift.status != SHIFT_NO_CONSENSUS:
+        return shift, None
+    passing: list[tuple[int, tuple[int, ...], tuple[int, int, int, int]]] = []
+    for candidate, voters in _matched_delta_clusters(shift):
+        if len(voters) != 2 or not 0 < candidate <= _MAX_STEP_PX:
+            continue
+        witnesses = _shared_gutter_witnesses(before, after, candidate)
+        if len(witnesses) == 1:
+            passing.append((candidate, voters, witnesses[0]))
+    if len(passing) != 1:
+        return shift, None
+
+    candidate, voters, witness = passing[0]
+    before_bottom, before_top, after_bottom, after_top = witness
+    repaired = replace(
+        shift, delta_px=candidate, consensus_px=candidate, status=SHIFT_MEASURED,
+        agreeing=2, dissenting=max(0, shift.eligible - 2),
+        confidence=(2 / shift.eligible if shift.eligible else 0.0),
+        reason=(
+            f"three-pair edge companion from {shift.status}: exactly two independent NCC strips "
+            f"({voters[0]:+d}px, {voters[1]:+d}px) form +{candidate}px; one canonical gutter "
+            f"moves exactly from rows {before_bottom}..{before_top} to "
+            f"{after_bottom}..{after_top}"))
+    note = (
+        f"frame {pair_index}'s pair with frame {pair_index + 1}: three-pair edge companion "
+        f"+{candidate}px from exactly two NCC strips {list(voters)} and one exact shared gutter "
+        f"{before_bottom}..{before_top} -> {after_bottom}..{after_top}")
+    return repaired, note
+
+
 def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: FrameSegmentation,
                            shift: ShiftEstimate, *,
                            extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
@@ -649,14 +802,18 @@ def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: Fr
     This does *not* relax ``frameshift``.  It may only rescue a no-consensus result, or replace
     an actually different measured majority, when exactly two NCC strips form an alternative
     cluster and three independently segmented landmarks of at least two kinds locate that exact
-    candidate.  More than one passing cluster is ambiguity, hence no repair.
+    candidate.  A no-consensus pair with only one matched strip has the stronger requirement that
+    all three independently detected landmark kinds -- top, bottom, and heart -- agree exactly.
+    The same exact-three-kind rule may select one dissenting strip only after every ordinary
+    two-strip alternative has failed layout corroboration.  That covers the saved live-video
+    bank ``+256,+256,+261``, whose independently segmented top, bottom and heart all move
+    ``+261``.  The enclosing run check still prevents either one-strip form from repairing an
+    isolated pair.  More than one passing candidate is ambiguity, hence no repair.
     """
     if shift.status not in (SHIFT_NO_CONSENSUS, SHIFT_MEASURED):
         return shift, None
 
     candidates = _matched_delta_clusters(shift)
-    if not candidates:
-        return shift, None
     landmarks = _structural_landmarks(before, after)
     passing: list[tuple[int, tuple[int, ...], tuple[tuple[str, int], ...]]] = []
     for candidate, voters in candidates:
@@ -664,8 +821,33 @@ def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: Fr
             continue
         corroborating = tuple((kind, delta) for kind, delta in landmarks
                                if abs(delta - candidate) <= _AGREEMENT_TOLERANCE_PX)
-        if len(corroborating) >= 3 and len({kind for kind, _delta in corroborating}) >= 2:
+        kinds = {kind for kind, _delta in corroborating}
+        exact_kinds = {kind for kind, delta in landmarks if delta == candidate}
+        enough_layout = (len(corroborating) >= 3 and
+                         (exact_kinds == {"top", "bottom", "heart"} if len(voters) == 1
+                          else len(kinds) >= 2))
+        if enough_layout:
             passing.append((candidate, voters, corroborating))
+
+    # A changing video can create a repeated wrong match while one stable strip follows the
+    # actual card.  Do not put singleton alternatives into `_matched_delta_clusters`: that
+    # helper's pair candidates are also used by the weaker shared-gutter exception.  Instead,
+    # fall back here only when NONE of those stronger candidates passed.  There need not be an
+    # ordinary pair: the saved `+286,+274` bank has two mutually dissenting matches and therefore
+    # no two-strip candidate at all, while top, bottom and heart independently fix `+274`.  The
+    # singleton must be a unique exact strip delta and all three independently detected landmark
+    # kinds must equal it pixel-for-pixel.  Later,
+    # `_repair_shifts_from_layout` still requires an adjacent two-strip repair and the builder
+    # still probes the complete page before committing the run.
+    if not passing and shift.status == SHIFT_NO_CONSENSUS:
+        matched = tuple(s.delta_px for s in shift.strips
+                        if s.state == STRIP_MATCHED and s.delta_px is not None)
+        for candidate in sorted(set(matched)):
+            if matched.count(candidate) != 1 or not 0 < candidate <= _MAX_STEP_PX:
+                continue
+            exact = tuple((kind, delta) for kind, delta in landmarks if delta == candidate)
+            if {kind for kind, _delta in exact} == {"top", "bottom", "heart"}:
+                passing.append((candidate, (candidate,), exact))
     if len(passing) != 1:
         return shift, None
 
@@ -692,40 +874,467 @@ def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: Fr
     types = ", ".join(sorted({kind for kind, _delta in corroborating}))
     old = (f"{shift.status} {shift.delta_px:+d}px" if shift.delta_px is not None
            else shift.status)
+    witness_label = "one NCC strip" if len(voters) == 1 else "exactly two independent NCC strips"
     repaired = replace(
         shift, delta_px=candidate, consensus_px=candidate, status=SHIFT_MEASURED,
         agreeing=len(voters), dissenting=max(0, shift.eligible - len(voters)),
         confidence=(len(voters) / shift.eligible if shift.eligible else 0.0),
         reason=(
-            f"layout-assisted acceptance from {old}: exactly two independent NCC strips "
+            f"layout-assisted acceptance from {old}: {witness_label} "
             f"({', '.join(f'{value:+d}px' for value in voters)}) form +{candidate}px; "
             f"{len(corroborating)} observed structural landmark pairings across {types} "
             f"also land within {_AGREEMENT_TOLERANCE_PX}px (one-step maximum {_MAX_STEP_PX}px)"))
     note = (
         f"frame {pair_index}'s pair with frame {pair_index + 1}: layout-assisted shift from {old} "
-        f"to +{candidate}px using exactly two NCC strips {list(voters)} plus "
+        f"to +{candidate}px using {witness_label} {list(voters)} plus "
         f"{len(corroborating)} structural landmark pairings across {types}")
     return repaired, note
+
+
+def _structural_tail_shift(pair_index: int, before: FrameSegmentation, after: FrameSegmentation,
+                           shift: ShiftEstimate,
+                           ) -> tuple[ShiftEstimate, str | None]:
+    """Propose one exact-layout tail beyond the ordinary majority-override ceiling.
+
+    This is deliberately not part of `_layout_repaired_shift`: it may have zero NCC witnesses at
+    the structural answer and is therefore weaker than every ordinary repair.  The enclosing
+    run gate admits it only as the measured final member of one exact four-pair animation shape,
+    after two ordinary two-strip repairs and one exact one-strip repair.  The builder then probes
+    the complete page before committing anything.
+
+    Its two-pixel correction window begins one pixel beyond the existing strip-supported ceiling
+    and ends at the saved transition's +207px raw versus +221px exact geometry.  Fourteen pixels
+    is still far below half one Hinge gutter; nothing authorises a wider structural-only answer.
+    """
+    if shift.status != SHIFT_MEASURED or shift.delta_px is None:
+        return shift, None
+    landmarks = _structural_landmarks(before, after)
+    candidates = tuple(sorted({
+        delta for _kind, delta in landmarks
+        if 0 < delta <= _MAX_STEP_PX
+        and {kind for kind, other in landmarks if other == delta}
+        == {"top", "bottom", "heart"}
+    }))
+    if len(candidates) != 1:
+        return shift, None
+    candidate = candidates[0]
+    correction = abs(shift.delta_px - candidate)
+    if not _STRUCTURAL_TAIL_CORRECTION_PX[0] <= correction \
+            <= _STRUCTURAL_TAIL_CORRECTION_PX[1]:
+        return shift, None
+
+    matched = tuple(s.delta_px for s in shift.strips
+                    if s.state == STRIP_MATCHED and s.delta_px == candidate)
+    repaired = replace(
+        shift, delta_px=candidate, consensus_px=candidate, status=SHIFT_MEASURED,
+        agreeing=len(matched), dissenting=max(0, shift.eligible - len(matched)),
+        confidence=(len(matched) / shift.eligible if shift.eligible else 0.0),
+        reason=(
+            f"four-pair structural tail proposal from measured {shift.delta_px:+d}px to "
+            f"+{candidate}px: exact top, bottom and heart geometry; correction {correction}px "
+            f"is above the ordinary {_MAJORITY_OVERRIDE_PX[1]}px strip-supported ceiling and "
+            f"inside the dedicated {_STRUCTURAL_TAIL_CORRECTION_PX[0]}.."
+            f"{_STRUCTURAL_TAIL_CORRECTION_PX[1]}px structural-tail window"))
+    note = (
+        f"frame {pair_index}'s pair with frame {pair_index + 1}: four-pair structural tail "
+        f"from measured {shift.delta_px:+d}px to +{candidate}px using exact top, bottom and "
+        f"heart geometry")
+    return repaired, note
+
+
+def _exact_multi_strip_shift(pair_index: int, before: FrameSegmentation,
+                             after: FrameSegmentation, shift: ShiftEstimate,
+                             ) -> tuple[ShiftEstimate, str | None]:
+    """Propose one exact 3+-strip/full-layout boundary for the five-pair video grammar.
+
+    This is deliberately separate from `_matched_delta_clusters`.  The ordinary helper exposes
+    under-quorum two-strip alternatives; it must not start treating every local mode in a noisy
+    strip bank as a measurement.  Here a candidate must be an exact repeated strip value, not a
+    rounded centroid, and independently segmented top, bottom, and heart landmarks must all land
+    on that same pixel.  `_repair_shifts_from_layout` still grants the proposal authority only as
+    one of the two measured-bracketed endpoints of one exact five-pair refusal island.
+    """
+    if shift.status != SHIFT_NO_CONSENSUS:
+        return shift, None
+    matched = tuple(s.delta_px for s in shift.strips
+                    if s.state == STRIP_MATCHED and s.delta_px is not None)
+    landmarks = _structural_landmarks(before, after)
+    passing: list[tuple[int, int, tuple[tuple[str, int], ...]]] = []
+    for candidate in sorted(set(matched)):
+        supporters = matched.count(candidate)
+        if supporters < 3 or not 0 < candidate <= _MAX_STEP_PX:
+            continue
+        exact = tuple((kind, delta) for kind, delta in landmarks if delta == candidate)
+        if {kind for kind, _delta in exact} == {"top", "bottom", "heart"}:
+            passing.append((candidate, supporters, exact))
+    if len(passing) != 1:
+        return shift, None
+
+    candidate, supporters, exact = passing[0]
+    repaired = replace(
+        shift, delta_px=candidate, consensus_px=candidate, status=SHIFT_MEASURED,
+        agreeing=supporters, dissenting=max(0, shift.eligible - supporters),
+        confidence=(supporters / shift.eligible if shift.eligible else 0.0),
+        reason=(
+            f"five-pair boundary proposal from {shift.status}: {supporters} independent NCC "
+            f"strips land exactly at +{candidate}px and exact top, bottom and heart geometry "
+            "selects that one repeated strip value"))
+    note = (
+        f"frame {pair_index}'s pair with frame {pair_index + 1}: five-pair full-landmark "
+        f"cluster boundary +{candidate}px from {supporters} exact NCC strips plus exact top, "
+        "bottom and heart geometry")
+    return repaired, note
+
+
+def _measured_layout_bridge(pair_index: int, before: FrameSegmentation,
+                            after: FrameSegmentation, shift: ShiftEstimate, *,
+                            allow_full_layout_projection: bool = False,
+                            extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
+                            ) -> tuple[ShiftEstimate, str | None]:
+    """Describe a raw measured pair strong enough to bridge two nearby repair proposals.
+
+    It already passed frameshift's ordinary quorum.  Ordinarily this helper only adds an
+    independent exact-layout requirement: at least two observed landmark kinds must sit on the
+    measured delta pixel-for-pixel, and the raw shift is returned unchanged.
+
+    Inside an affirmatively video-marked measured-bridge window only, the caller may permit one
+    stronger form: a UNIQUE exact top/bottom/heart delta within the fold's existing tolerance may
+    remove a small NCC centroid error when at least one matched strip lands on that exact answer.
+    That projection is still only a proposal; refusal pairs on both sides plus the complete page
+    rebuild remain mandatory.  Anchors never use it, and nothing here lowers frameshift quorum.
+    """
+    if (shift.status != SHIFT_MEASURED or shift.delta_px is None or shift.agreeing < 3
+            or not 0 < shift.delta_px <= _MAX_STEP_PX):
+        return shift, None
+    landmarks = _structural_landmarks(before, after)
+    exact = tuple((kind, delta) for kind, delta in landmarks if delta == shift.delta_px)
+    kinds = {kind for kind, _delta in exact}
+    if len(exact) >= 2 and len(kinds) >= 2:
+        return shift, (
+            f"frame {pair_index}'s pair with frame {pair_index + 1}: retained raw measured "
+            f"bridge +{shift.delta_px}px from {shift.agreeing} NCC strips and {len(exact)} "
+            f"exact landmark pairings across {', '.join(sorted(kinds))}")
+    if not allow_full_layout_projection:
+        return shift, None
+
+    candidates = tuple(sorted({
+        delta for _kind, delta in landmarks
+        if 0 < delta <= _MAX_STEP_PX
+        and 0 < abs(delta - shift.delta_px) <= extent_tolerance_px
+        and {kind for kind, other in landmarks if other == delta}
+        == {"top", "bottom", "heart"}
+        and any(strip.state == STRIP_MATCHED and strip.delta_px == delta
+                for strip in shift.strips)
+    }))
+    if len(candidates) != 1:
+        return shift, None
+    candidate = candidates[0]
+    voters = tuple(strip.delta_px for strip in shift.strips
+                   if strip.state == STRIP_MATCHED and strip.delta_px is not None
+                   and abs(strip.delta_px - candidate) <= _AGREEMENT_TOLERANCE_PX)
+    projected = replace(
+        shift, delta_px=candidate, consensus_px=candidate,
+        agreeing=len(voters), dissenting=max(0, shift.eligible - len(voters)),
+        confidence=(len(voters) / shift.eligible if shift.eligible else 0.0),
+        reason=(
+            f"video-marked measured-bridge projection from raw measured {shift.delta_px:+d}px "
+            f"({shift.agreeing} agreeing NCC strips) to +{candidate}px: exact top, bottom and "
+            f"heart geometry plus exact NCC witness; correction "
+            f"{abs(candidate - shift.delta_px)}px is inside the existing "
+            f"{extent_tolerance_px}px fold tolerance"))
+    return projected, (
+        f"frame {pair_index}'s pair with frame {pair_index + 1}: video-marked measured bridge "
+        f"projected from raw {shift.delta_px:+d}px to exact full-layout {candidate:+d}px; "
+        f"{len(voters)} NCC strip(s) remain within {_AGREEMENT_TOLERANCE_PX}px")
+
+
+def _project_to_exact_full_layout(pair_index: int, before: FrameSegmentation,
+                                  after: FrameSegmentation, raw: ShiftEstimate,
+                                  proposed: ShiftEstimate,
+                                  ) -> tuple[ShiftEstimate, str | None]:
+    """Project one two-strip proposal onto its unique exact full-layout delta, if different.
+
+    A rounded two-vote centroid can sit between the physical answers (`+274,+275` rounds to
+    `+274` while card top, card bottom and heart all move exactly `+275`).  This projection is
+    used only by the measured-bridge window.  Both selected NCC voters must remain within the
+    ordinary agreement tolerance of the exact structural answer, so geometry can remove the
+    rounding error but cannot nominate an unrelated shift.
+    """
+    if (raw.status != SHIFT_NO_CONSENSUS or proposed.delta_px is None
+            or proposed.agreeing != 2):
+        return proposed, None
+    voters = tuple(s.delta_px for s in raw.strips
+                   if s.state == STRIP_MATCHED and s.delta_px is not None
+                   and abs(s.delta_px - proposed.delta_px) <= _AGREEMENT_TOLERANCE_PX)
+    if len(voters) != 2:
+        return proposed, None
+    landmarks = _structural_landmarks(before, after)
+    candidates = tuple(sorted({
+        delta for _kind, delta in landmarks
+        if 0 < delta <= _MAX_STEP_PX
+        and {kind for kind, other in landmarks if other == delta}
+        == {"top", "bottom", "heart"}
+        and all(abs(voter - delta) <= _AGREEMENT_TOLERANCE_PX for voter in voters)
+    }))
+    if len(candidates) != 1 or candidates[0] == proposed.delta_px:
+        return proposed, None
+    candidate = candidates[0]
+    projected = replace(
+        proposed, delta_px=candidate, consensus_px=candidate,
+        reason=(f"{proposed.reason}; measured-bridge exact-layout projection from "
+                f"{proposed.delta_px:+d}px to {candidate:+d}px using top, bottom and heart"))
+    return projected, (
+        f"frame {pair_index}'s pair with frame {pair_index + 1}: measured-bridge projection "
+        f"from two-strip centroid {proposed.delta_px:+d}px to exact full-layout "
+        f"{candidate:+d}px; voters {list(voters)} remain within "
+        f"{_AGREEMENT_TOLERANCE_PX}px")
+
+
+def _marker_block(segmentation: FrameSegmentation, marker: VideoMuteMarker):
+    """The one segmented card containing a mute-control origin, or ``None``.
+
+    A Hinge mute control sits inside the card, near its upper-left corner.  Containment is an
+    identity check, not an attempt to classify image pixels: a marker in page chrome or in a
+    gutter never starts a video track.
+    """
+    candidates = tuple(block for block in segmentation.blocks
+                       if block.x0 <= marker.x < block.x1 and block.y0 <= marker.y < block.y1)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _track_candidate_deltas(pair_index: int, before: FrameSegmentation,
+                            after: FrameSegmentation, raw: ShiftEstimate, *,
+                            extent_tolerance_px: int) -> tuple[int, ...]:
+    """Strict candidate deltas a *known* video card may use to link adjacent sightings.
+
+    This merely supplies alternatives for card-identity matching.  The caller separately keeps
+    the raw quorum and only records a repair when the complete assembly succeeds.
+    """
+    candidates: set[int] = set()
+    if raw.status == SHIFT_MEASURED and raw.delta_px is not None:
+        candidates.add(raw.delta_px)
+        projected, note = _measured_layout_bridge(
+            pair_index, before, after, raw, allow_full_layout_projection=True,
+            extent_tolerance_px=extent_tolerance_px)
+        if note is not None and projected.delta_px is not None:
+            candidates.add(projected.delta_px)
+    elif raw.status == SHIFT_NO_CONSENSUS:
+        proposed, note = _layout_repaired_shift(
+            pair_index, before, after, raw, extent_tolerance_px=extent_tolerance_px)
+        if note is not None and proposed.delta_px is not None:
+            candidates.add(proposed.delta_px)
+            projected, projection_note = _project_to_exact_full_layout(
+                pair_index, before, after, raw, proposed)
+            if projection_note is not None and projected.delta_px is not None:
+                candidates.add(projected.delta_px)
+    return tuple(sorted(delta for delta in candidates if 0 < delta <= _MAX_STEP_PX))
+
+
+def _track_anchor_count(before, after, delta: int, *,
+                        before_marker: VideoMuteMarker | None,
+                        after_marker: VideoMuteMarker | None) -> int:
+    """Count independent card-local anchors that translate by one exact delta."""
+    anchors = 0
+    for name, before_y, after_y in (
+            ("top", before.top.y, after.top.y),
+            ("bottom", before.bottom.y, after.bottom.y),
+            ("heart", before.heart[1] if before.heart else None,
+             after.heart[1] if after.heart else None)):
+        if (before_y is not None and after_y is not None
+                and ((name == "top" and before.top.observed and after.top.observed)
+                     or (name == "bottom" and before.bottom.observed and after.bottom.observed)
+                     or name == "heart")
+                and before_y - after_y == delta):
+            anchors += 1
+    if (before_marker is not None and after_marker is not None
+            and before_marker.y - after_marker.y == delta
+            and before_marker.x == after_marker.x):
+        anchors += 1
+    return anchors
+
+
+def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
+                        shifts: Sequence[ShiftEstimate],
+                        markers: Sequence[VideoMuteMarker], *,
+                        extent_tolerance_px: int) -> dict[int, int]:
+    """Return adjacent pair -> exact delta for uniquely tracked physical video cards.
+
+    A mute hit seeds a card, then a track may continue after that overlay scrolls out of frame
+    only through two exact card-local anchors.  It cannot jump to the next card merely because a
+    frame contains *some* video.  Ambiguity removes authority rather than choosing an identity.
+    """
+    by_frame: dict[int, VideoMuteMarker] = {}
+    for marker in markers:
+        if not (0 <= marker.frame_index < len(segmentations)):
+            continue
+        # Multiple matches in one frame would be ambiguous without per-card IDs.  Do not let a
+        # broad full-frame search make a later geometry repair choose between them.
+        if marker.frame_index in by_frame:
+            by_frame[marker.frame_index] = None  # type: ignore[assignment]
+        else:
+            by_frame[marker.frame_index] = marker
+
+    seeded: dict[int, object] = {}
+    marker_blocks: dict[int, object] = {}
+    for frame_index, marker in tuple(by_frame.items()):
+        if marker is None:
+            continue
+        block = _marker_block(segmentations[frame_index], marker)
+        if block is not None:
+            seeded[frame_index] = block
+            marker_blocks[frame_index] = marker
+
+    # All later mute hits are observations that must agree with this one physical trajectory;
+    # they are not independent repair seeds.  Otherwise a broken middle link could silently
+    # start a second "same video" track below it.
+    first_seed = min(seeded, default=None)
+    active: set[tuple[int, object]] = (
+        {(first_seed, seeded[first_seed])} if first_seed is not None else set())
+    links: dict[int, int] = {}
+    for pair_index, (before_seg, after_seg, raw) in enumerate(
+            zip(segmentations[:-1], segmentations[1:], shifts, strict=True)):
+        current = tuple(block for frame, block in active if frame == pair_index)
+        if not current:
+            continue
+        before_marker = marker_blocks.get(pair_index)
+        after_marker = marker_blocks.get(pair_index + 1)
+        candidates: list[tuple[object, object, int]] = []
+        for before in current:
+            deltas = _track_candidate_deltas(
+                    pair_index, before_seg, after_seg, raw,
+                    extent_tolerance_px=extent_tolerance_px)
+            # A marker disappearing while its predicted origin remains inside the next content
+            # band invalidates the WHOLE track, including earlier repairs.  Otherwise a later
+            # missed UI match could leave a trusted prefix that falsely connects two cards.
+            if (before_marker is not None and after_marker is None
+                    and any(before_marker.y - delta >= after_seg.band[0] for delta in deltas)):
+                return {}
+            for delta in deltas:
+                # A control may disappear only by leaving the analysed band.  If its predicted
+                # origin is still visible, a missing after-hit is a broken identity chain, not
+                # permission to follow whichever lower card geometry happens to fit.
+                matches = tuple(after for after in after_seg.blocks
+                                if _track_anchor_count(
+                                    before, after, delta,
+                                    before_marker=before_marker,
+                                    after_marker=after_marker) >= 2)
+                if len(matches) == 1:
+                    candidates.append((before, matches[0], delta))
+        # A direct, single-card continuation is the only authority.  Multiple valid mappings
+        # are exactly the situation in which treating animation as a repair would be a guess.
+        if len(candidates) != 1:
+            continue
+        _before, after, delta = candidates[0]
+        active.add((pair_index + 1, after))
+        links[pair_index] = delta
+    return links
+
+
+def _repair_video_track_shifts(segmentations: Sequence[FrameSegmentation],
+                               shifts: Sequence[ShiftEstimate],
+                               markers: Sequence[VideoMuteMarker], *,
+                               extent_tolerance_px: int,
+                               ) -> tuple[tuple[ShiftEstimate, ...], tuple[str, ...],
+                                          tuple[tuple[int, ShiftEstimate], ...]]:
+    """Repair only no-consensus/video-centroid pairs on one uniquely tracked mute card."""
+    links = _video_track_deltas(segmentations, shifts, markers,
+                                extent_tolerance_px=extent_tolerance_px)
+    repaired = list(shifts)
+    notes: list[str] = []
+    raw_provenance: list[tuple[int, ShiftEstimate]] = []
+    for pair_index, delta in sorted(links.items()):
+        raw = shifts[pair_index]
+        before, after = segmentations[pair_index], segmentations[pair_index + 1]
+        if raw.status == SHIFT_NO_CONSENSUS:
+            proposed, note = _layout_repaired_shift(
+                pair_index, before, after, raw, extent_tolerance_px=extent_tolerance_px)
+            if note is not None:
+                projected, projection_note = _project_to_exact_full_layout(
+                    pair_index, before, after, raw, proposed)
+                if projection_note is not None:
+                    proposed = projected
+                    note = f"{note}; {projection_note}"
+            if note is None or proposed.delta_px != delta:
+                continue
+            repaired[pair_index] = proposed
+        elif raw.status == SHIFT_MEASURED and raw.delta_px != delta:
+            proposed, note = _measured_layout_bridge(
+                pair_index, before, after, raw, allow_full_layout_projection=True,
+                extent_tolerance_px=extent_tolerance_px)
+            if note is None or proposed.delta_px != delta:
+                continue
+            repaired[pair_index] = proposed
+        else:
+            continue
+        raw_provenance.append((pair_index, raw))
+        notes.append(
+            f"frame {pair_index}'s pair with frame {pair_index + 1}: v12 mute-card track "
+            f"fixed the physical video card at +{delta}px; raw {raw.status} "
+            f"{raw.delta_px if raw.delta_px is not None else 'no-consensus'} is retained for "
+            "audit and complete-page assembly must still pass"
+            + (f"; video-marked measured bridge projected to +{delta}px"
+               if raw.status == SHIFT_MEASURED else ""))
+    return tuple(repaired), tuple(notes), tuple(raw_provenance)
 
 
 def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
                                shifts: Sequence[ShiftEstimate], *,
                                extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
+                               animation_markers: Sequence[bool] = (),
                                ) -> tuple[tuple[ShiftEstimate, ...], tuple[str, ...],
                                           tuple[tuple[int, ShiftEstimate], ...]]:
     """Propose one bounded animation run, never an isolated layout repair.
 
-    A real animation affects neighbouring capture pairs, whereas a coincidental two-strip match
-    is normally isolated.  Exactly one maximal run of two or three candidates is therefore the
-    only admissible shape, and it must include a raw no-consensus pair.  The caller still runs a
-    complete ordinary page assembly before committing this proposal.
+    A real animation affects neighbouring capture pairs, whereas a coincidental strip match is
+    normally isolated.  Exactly one maximal run of two or three ordinary candidates is therefore
+    the only generally admissible shape, and it must include a raw no-consensus pair.  A one-strip
+    candidate may accompany that run but cannot bootstrap it: at least one candidate must carry
+    the ordinary two-strip layout corroboration.
+
+    One exact four-pair continuation is narrower still: two ordinary two-strip repairs, one exact
+    one-strip repair, then a measured structural-only tail beyond the normal override ceiling.
+    The tail cannot occur anywhere else or validate a shorter/otherwise shaped run.
+
+    One five-pair refusal island has a different, fully bracketed grammar: exact 3+-strip/full-
+    landmark candidates close both ends around the existing 2-strip, 2-strip, 1-strip sequence;
+    raw measured pairs must sit immediately outside it.  Its one heartless transition must carry
+    an exact shared gutter.  This does not raise the generic three-pair limit.
+
+    Ordinary two-strip proposals separated by one or two raw measured pairs are one animation
+    window rather than unrelated runs only when the app supplied an affirmative animation marker,
+    the whole span is at most five pairs, every gap and both immediate outer anchors have raw
+    quorum plus exact multi-kind layout, and the repair endpoints include both exact full layout
+    and an exact heartless shared-gutter transition. One measured gap may project within the
+    existing fold tolerance only onto unique exact top/bottom/heart geometry carrying an exact
+    NCC witness. The complete page probe remains the final authority.
+
+    The edge-only helper is weaker and cannot participate in that general rule.  It is admitted
+    only in the exact saved three-pair sequence: leading no-consensus two-strip/shared-gutter;
+    middle measured-majority override with two strips and full top/bottom/heart layout; trailing
+    no-consensus one-strip repair with full layout.  The caller still runs a complete ordinary
+    page assembly before committing either proposal.
     """
     repaired: list[ShiftEstimate] = []
     notes: list[str | None] = []
+    edge_only_indices: list[int] = []
+    structural_tail_indices: list[int] = []
+    exact_multi_indices: list[int] = []
     for i, (before, after, shift) in enumerate(zip(segmentations[:-1], segmentations[1:], shifts,
                                                      strict=True)):
         result, note = _layout_repaired_shift(i, before, after, shift,
                                               extent_tolerance_px=extent_tolerance_px)
+        if note is None:
+            result, note = _edge_only_two_strip_shift(i, before, after, shift)
+            if note is not None:
+                edge_only_indices.append(i)
+        if note is None:
+            result, note = _structural_tail_shift(i, before, after, shift)
+            if note is not None:
+                structural_tail_indices.append(i)
+        if note is None:
+            result, note = _exact_multi_strip_shift(i, before, after, shift)
+            if note is not None:
+                exact_multi_indices.append(i)
         repaired.append(result)
         notes.append(note)
 
@@ -737,16 +1346,175 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
         elif note is None and start is not None:
             runs.append((start, i))
             start = None
+    window_notes = list(notes)
+    measured_bridge_indices: tuple[int, ...] = ()
+    projected_bridge_indices: tuple[int, ...] = ()
     if len(runs) != 1:
-        return tuple(shifts), (), ()
+        # Live video can briefly leave enough stable pixels for an ordinary raw measurement,
+        # producing two repair-note islands even though card/heart geometry proves one physical
+        # transition.  Merge only one short, fully bracketed window of ORDINARY layout proposals;
+        # none of the weaker edge-only, structural-tail, or exact-multi exceptions may borrow
+        # this path.  At least two proposals are required, so a measured neighbour can never
+        # bootstrap an isolated two-strip coincidence.
+        proposal_indices = tuple(i for i, note in enumerate(notes) if note is not None)
+        if (edge_only_indices or structural_tail_indices or exact_multi_indices
+                or not 2 <= len(proposal_indices) <= 3):
+            return tuple(shifts), (), ()
+        start, end = proposal_indices[0], proposal_indices[-1] + 1
+        measured_bridge_indices = tuple(
+            i for i in range(start, end) if notes[i] is None)
+        if (end - start > 5 or not 1 <= len(measured_bridge_indices) <= 2
+                or start == 0 or end >= len(shifts)
+                or any(shifts[i].status != SHIFT_NO_CONSENSUS
+                       or shifts[i].agreeing != 2 or shifts[i].eligible != 2
+                       or shifts[i].dissenting != 0
+                       or sum(1 for strip in shifts[i].strips
+                              if strip.state == STRIP_MATCHED) != 2
+                       for i in proposal_indices)):
+            return tuple(shifts), (), ()
+        if (len(animation_markers) != len(segmentations)
+                or not any(bool(animation_markers[i]) for i in range(start, end + 1))):
+            # This broader connection of otherwise independent repair islands exists only for
+            # an app-confirmed animated/video window.  Layout alone continues to use the older
+            # contiguous-run grammars; absence of a marker is absence of authority.
+            return tuple(shifts), (), ()
+        anchor_indices = (start - 1, *measured_bridge_indices, end)
+        bridge_notes: dict[int, str] = {}
+        projected_bridges: list[int] = []
+        for i in anchor_indices:
+            bridge_shift, bridge_note = _measured_layout_bridge(
+                i, segmentations[i], segmentations[i + 1], shifts[i],
+                allow_full_layout_projection=(i in measured_bridge_indices),
+                extent_tolerance_px=extent_tolerance_px)
+            if bridge_note is None:
+                return tuple(shifts), (), ()
+            if i in measured_bridge_indices:
+                repaired[i] = bridge_shift
+                bridge_notes[i] = bridge_note
+                if bridge_shift.delta_px != shifts[i].delta_px:
+                    projected_bridges.append(i)
+            elif bridge_shift is not shifts[i]:
+                # Outer anchors must remain raw measurements.  Their job is to bound the window,
+                # not borrow repair authority from it.
+                return tuple(shifts), (), ()
+        projected_bridge_indices = tuple(projected_bridges)
+
+        full_layout = 0
+        shared_gutter = 0
+        for i in proposal_indices:
+            projected, projection_note = _project_to_exact_full_layout(
+                i, segmentations[i], segmentations[i + 1], shifts[i], repaired[i])
+            repaired[i] = projected
+            if projection_note is not None:
+                notes[i] = f"{notes[i]}; {projection_note}"
+            delta = repaired[i].delta_px
+            exact_kinds = {
+                kind for kind, landmark_delta in _structural_landmarks(
+                    segmentations[i], segmentations[i + 1])
+                if delta is not None and landmark_delta == delta
+            }
+            if exact_kinds == {"top", "bottom", "heart"}:
+                full_layout += 1
+            elif (exact_kinds == {"top", "bottom"} and delta is not None
+                    and len(_shared_gutter_witnesses(
+                        segmentations[i], segmentations[i + 1], delta)) == 1):
+                shared_gutter += 1
+            else:
+                return tuple(shifts), (), ()
+        if full_layout < 1 or shared_gutter < 1:
+            return tuple(shifts), (), ()
+        for i, bridge_note in bridge_notes.items():
+            window_notes[i] = bridge_note
+        for i in proposal_indices:
+            window_notes[i] = notes[i]
+        runs = [(start, end)]
     start, end = runs[0]
-    if not 2 <= end - start <= 3:
+    max_run = 5 if (exact_multi_indices or measured_bridge_indices) \
+        else (4 if structural_tail_indices else 3)
+    if not 2 <= end - start <= max_run:
         return tuple(shifts), (), ()
     indices = tuple(range(start, end))
     if not any(shifts[i].status == SHIFT_NO_CONSENSUS for i in indices):
         return tuple(shifts), (), ()
-    return (tuple(repaired), tuple(note for note in notes[start:end] if note is not None),
-            tuple((i, shifts[i]) for i in indices))
+    if exact_multi_indices:
+        # This is not permission for an arbitrary long repair run.  Both strong candidates must
+        # be the exact boundaries of one five-pair all-refusal island, and ordinary measured
+        # shifts must bracket that island on both sides.  The middle evidence grammar is the
+        # saved live-video transition: two strips with one exact shared gutter while the old
+        # heart leaves, then two strips with full layout, then one exact strip with full layout.
+        if (edge_only_indices or structural_tail_indices
+                or tuple(exact_multi_indices) != (start, end - 1)
+                or end - start != 5 or start == 0 or end >= len(shifts)
+                or shifts[start - 1].status != SHIFT_MEASURED
+                or shifts[end].status != SHIFT_MEASURED
+                or any(shifts[i].status != SHIFT_NO_CONSENSUS for i in indices)
+                or repaired[start].agreeing < 3 or repaired[end - 1].agreeing < 3
+                or tuple(repaired[i].agreeing for i in indices[1:-1]) != (2, 2, 1)):
+            return tuple(shifts), (), ()
+        for position, i in enumerate(indices):
+            delta = repaired[i].delta_px
+            exact_kinds = {
+                kind for kind, landmark_delta in _structural_landmarks(
+                    segmentations[i], segmentations[i + 1])
+                if delta is not None and landmark_delta == delta
+            }
+            if position == 1:
+                if (exact_kinds != {"top", "bottom"} or delta is None
+                        or len(_shared_gutter_witnesses(
+                            segmentations[i], segmentations[i + 1], delta)) != 1):
+                    return tuple(shifts), (), ()
+            elif exact_kinds != {"top", "bottom", "heart"}:
+                return tuple(shifts), (), ()
+    if edge_only_indices:
+        # Do not generalise two edges into a third independent landmark.  The saved failure is
+        # safe only as this one fully bracketed transition: the middle pair corrects a measured
+        # majority with the ordinary two-strip/full-layout rule, and the trailing pair is the
+        # sole-strip/exact-full-layout rule.  Neither weak pair can bootstrap the other.
+        if (tuple(edge_only_indices) != (start,) or end - start != 3
+                or tuple(shifts[i].status for i in indices) != (
+                    SHIFT_NO_CONSENSUS, SHIFT_MEASURED, SHIFT_NO_CONSENSUS)
+                or tuple(repaired[i].agreeing for i in indices) != (2, 2, 1)):
+            return tuple(shifts), (), ()
+        for i in indices[1:]:
+            delta = repaired[i].delta_px
+            corroborating_kinds = {
+                kind for kind, landmark_delta in _structural_landmarks(
+                    segmentations[i], segmentations[i + 1])
+                if delta is not None
+                and abs(landmark_delta - delta) <= _AGREEMENT_TOLERANCE_PX
+            }
+            if corroborating_kinds != {"top", "bottom", "heart"}:
+                return tuple(shifts), (), ()
+    if structural_tail_indices:
+        # A structure-only answer never gains ordinary authority.  It is the terminal cross-check
+        # for exactly the saved four-pair video transition, whose three preceding pairs have
+        # progressively 2, 2, and 1 NCC witnesses.  The last two of those and the tail must all
+        # carry exact full landmark geometry; the first already passed the ordinary multi-edge
+        # layout gate.  Any other placement, status grammar, or evidence strength remains raw.
+        if (edge_only_indices or tuple(structural_tail_indices) != (end - 1,)
+                or end - start != 4
+                or tuple(shifts[i].status for i in indices) != (
+                    SHIFT_NO_CONSENSUS, SHIFT_NO_CONSENSUS,
+                    SHIFT_NO_CONSENSUS, SHIFT_MEASURED)
+                or tuple(repaired[i].agreeing for i in indices[:3]) != (2, 2, 1)):
+            return tuple(shifts), (), ()
+        for i in indices[1:]:
+            delta = repaired[i].delta_px
+            exact_kinds = {
+                kind for kind, landmark_delta in _structural_landmarks(
+                    segmentations[i], segmentations[i + 1])
+                if delta is not None and landmark_delta == delta
+            }
+            if exact_kinds != {"top", "bottom", "heart"}:
+                return tuple(shifts), (), ()
+    if not any(repaired[i].agreeing == 2 for i in indices):
+        # Two adjacent lone-strip coincidences are not independent evidence for one another.
+        # The one-strip exception is a companion to an ordinary two-strip layout repair only.
+        return tuple(shifts), (), ()
+    return (tuple(repaired),
+            tuple(note for note in window_notes[start:end] if note is not None),
+            tuple((i, shifts[i]) for i in indices
+                  if notes[i] is not None or i in projected_bridge_indices))
 
 
 def _frame_offsets(shifts: Sequence[ShiftEstimate]) -> tuple[list[int | None], list[str]]:
@@ -1241,6 +2009,8 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
 def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, float],
                      like_template, like_threshold: float, at_scroll_top: bool,
                      identity_band: tuple[float, float, float, float] | None,
+                     animation_markers: Sequence[bool] | None = None,
+                     video_mute_markers: Sequence[VideoMuteMarker] | None = None,
                      trust_window_px: int | None = None,
                      extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
                      min_item_gap_px: int = _MIN_ITEM_GAP_PX,
@@ -1306,6 +2076,18 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
     5.7's carried-forward requirement — an index that cannot say whose profile it describes
     cannot be built by accident, only on purpose, and still cannot be navigated with.
 
+    `animation_markers` is optional, frame-aligned affirmative app evidence (for Hinge, its exact
+    per-card mute control). It never changes raw frameshift or segmentation and never authorizes
+    an isolated repair; it is consulted only by the bounded measured-bridge window documented in
+    `_repair_shifts_from_layout`. None means no marker evidence. A supplied sequence with the
+    wrong length is refused rather than padded or guessed.
+
+    `video_mute_markers` is the v12 form of that evidence: positioned, near-perfect matches of
+    Hinge's own mute control.  A row first binds to one segmented card and may then follow that
+    same card after its overlay leaves the visible band, but only through two exact card-local
+    anchors.  When the legacy boolean sequence is omitted, its frame-aligned compatibility view
+    is derived from these rows; an explicitly supplied boolean sequence remains authoritative.
+
     `trust_window_px` is forwarded to `frameshift.estimate_shift`; the remaining keywords are
     calibration constants with measured defaults, exposed so a validation pass can vary one
     without editing the module.
@@ -1318,6 +2100,22 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         raise ItemIndexError(
             "no frames to index: an empty capture is a capture failure, and returning an empty "
             "item list for it would read as 'this profile has no items'")
+    marker_evidence = (tuple(False for _ in frames) if animation_markers is None
+                       else tuple(bool(value) for value in animation_markers))
+    if len(marker_evidence) != len(frames):
+        raise ItemIndexError(
+            f"{len(marker_evidence)} animation marker(s) given for {len(frames)} frame(s) — "
+            "video evidence must be frame-aligned and may not be guessed or padded")
+    mute_markers = tuple(video_mute_markers or ())
+    if any(not isinstance(marker, VideoMuteMarker) for marker in mute_markers):
+        raise ItemIndexError("video mute markers must be VideoMuteMarker records, never booleans")
+    if any(not (0 <= marker.frame_index < len(frames)) for marker in mute_markers):
+        raise ItemIndexError("video mute marker frame index is outside this capture")
+    if animation_markers is None and mute_markers:
+        # Structured rows are stronger evidence; deriving their historical frame flag keeps the
+        # all-or-nothing v11 fallback available after a v12 track rejects itself.
+        marker_evidence = tuple(any(marker.frame_index == frame_index for marker in mute_markers)
+                                for frame_index in range(len(frames)))
 
     # `_prefix_index` is intentionally private: the supervised calibration reader is the only
     # caller that grows one frame list by one frame at a time.  Reuse only measurements whose
@@ -1342,9 +2140,11 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         # treating a synthetic acceptance as an ordinary frameshift quorum.
         prefix_raw_shifts = dict(getattr(_prefix_index, "layout_repaired_shifts", ()) or ())
         segmentations = _prefix_index.frames + tuple(
-            segment_frame(frame, content_band=content_band, like_template=like_template,
-                          like_threshold=like_threshold)
-            for frame in frames[prefix_count:])
+            segment_frame(
+                frame, content_band=content_band, like_template=like_template,
+                like_threshold=like_threshold,
+                recover_leading_low_contrast_media=bool(at_scroll_top and i == 0))
+            for i, frame in enumerate(frames[prefix_count:], start=prefix_count))
         shifts = tuple(prefix_raw_shifts.get(i, shift)
                        for i, shift in enumerate(_prefix_index.shifts)) + tuple(
             estimate_shift(frames[i], frames[i + 1], content_band=content_band,
@@ -1352,9 +2152,11 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             for i in range(prefix_count - 1, len(frames) - 1))
     else:
         segmentations = tuple(
-            segment_frame(frame, content_band=content_band, like_template=like_template,
-                          like_threshold=like_threshold)
-            for frame in frames)
+            segment_frame(
+                frame, content_band=content_band, like_template=like_template,
+                like_threshold=like_threshold,
+                recover_leading_low_contrast_media=bool(at_scroll_top and i == 0))
+            for i, frame in enumerate(frames))
         shifts = tuple(
             estimate_shift(frames[i], frames[i + 1], content_band=content_band,
                            trust_window_px=trust_window_px)
@@ -1365,10 +2167,34 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
     # *propose* an alternative.  Commit it only if the entire ordinary assembly succeeds at this
     # call's extent bound (8px by default); no omitted frames or best-effort prefix is involved.
     raw_shifts = shifts
-    shifts, repair_notes, layout_repaired_shifts = _repair_shifts_from_layout(
-        segmentations, shifts, extent_tolerance_px=extent_tolerance_px)
-    if repair_notes:
-        probe_offsets, probe_chain_failures = _frame_offsets(shifts)
+    used_video_track = False
+    accepted_repair_path: str | None = None
+    if mute_markers:
+        shifts, repair_notes, layout_repaired_shifts = _repair_video_track_shifts(
+            segmentations, shifts, mute_markers,
+            extent_tolerance_px=extent_tolerance_px)
+        used_video_track = bool(repair_notes)
+        if repair_notes:
+            accepted_repair_path = "v12_mute_card_track"
+        if not repair_notes:
+            # Position-aware evidence is preferred, but a marker row can be unavailable for an
+            # older replay even when its historical frame-aligned flag was recorded.  Keep that
+            # compatibility path as a proposal-only fallback; live Hinge never relies on it.
+            shifts, repair_notes, layout_repaired_shifts = _repair_shifts_from_layout(
+                segmentations, raw_shifts, extent_tolerance_px=extent_tolerance_px,
+                animation_markers=marker_evidence)
+            if repair_notes:
+                accepted_repair_path = "legacy_layout_grammar"
+    else:
+        # Compatibility for recorded/offline callers which only stored the pre-v12 frame flag.
+        # Production Hinge sends positioned markers and never grants repair authority from this.
+        shifts, repair_notes, layout_repaired_shifts = _repair_shifts_from_layout(
+            segmentations, shifts, extent_tolerance_px=extent_tolerance_px,
+            animation_markers=marker_evidence)
+        if repair_notes:
+            accepted_repair_path = "legacy_layout_grammar"
+    def repair_probe_failed(candidate_shifts: Sequence[ShiftEstimate]) -> bool:
+        probe_offsets, probe_chain_failures = _frame_offsets(candidate_shifts)
         probe_failures: tuple[str, ...] = ()
         if not probe_chain_failures and not any(seg.failures for seg in segmentations):
             _probe_blocks, probe_failures, _probe_notes = _assemble(
@@ -1376,8 +2202,37 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
                 card_x=segmentations[0].card_x, extent_tolerance_px=extent_tolerance_px,
                 min_item_gap_px=min_item_gap_px, band_y0=segmentations[0].band[0],
                 include_notes=True)
-        if probe_chain_failures or probe_failures or any(seg.failures for seg in segmentations):
+        return bool(probe_chain_failures or probe_failures or any(seg.failures for seg in segmentations))
+
+    if repair_notes and repair_probe_failed(shifts):
+        if used_video_track:
+            # Never blend two repair theories.  A physical-track proposal that cannot rebuild
+            # the page is discarded wholesale, then the independently audited historical
+            # grammar gets one fresh all-or-nothing probe from the original raw shifts.
+            legacy_shifts, legacy_notes, legacy_raw = _repair_shifts_from_layout(
+                segmentations, raw_shifts, extent_tolerance_px=extent_tolerance_px,
+                animation_markers=marker_evidence)
+            if legacy_notes and not repair_probe_failed(legacy_shifts):
+                shifts, repair_notes, layout_repaired_shifts = (
+                    legacy_shifts, legacy_notes, legacy_raw)
+                accepted_repair_path = "legacy_layout_grammar"
+            else:
+                shifts, repair_notes, layout_repaired_shifts = raw_shifts, (), ()
+                accepted_repair_path = None
+        else:
             shifts, repair_notes, layout_repaired_shifts = raw_shifts, (), ()
+            accepted_repair_path = None
+
+    repair_provenance = tuple(
+        ItemIndexRepair(
+            pair_index=pair_index, path=accepted_repair_path or "legacy_layout_grammar",
+            raw_status=raw.status, raw_delta_px=raw.delta_px,
+            effective_status=shifts[pair_index].status,
+            effective_delta_px=shifts[pair_index].delta_px,
+            marker_frames=tuple(marker.frame_index for marker in mute_markers
+                                if marker.frame_index in (pair_index, pair_index + 1)),
+        )
+        for pair_index, raw in layout_repaired_shifts)
 
     # An ordinary read can contain one unusable *intermediate* frame while both of its neighbours
     # still correspond.  That produces either one failed pair (only one side was damaged) or two
@@ -1410,7 +2265,16 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             recovered = build_item_index(
                 reduced_frames, content_band=content_band, like_template=like_template,
                 like_threshold=like_threshold, at_scroll_top=at_scroll_top,
-                identity_band=identity_band, trust_window_px=trust_window_px,
+                identity_band=identity_band,
+                animation_markers=tuple(value for i, value in enumerate(marker_evidence)
+                                        if i != omitted),
+                video_mute_markers=tuple(
+                    VideoMuteMarker(
+                        frame_index=(marker.frame_index - 1 if marker.frame_index > omitted
+                                     else marker.frame_index),
+                        x=marker.x, y=marker.y, score=marker.score)
+                    for marker in mute_markers if marker.frame_index != omitted),
+                trust_window_px=trust_window_px,
                 extent_tolerance_px=max(extent_tolerance_px, _RECOVERY_EXTENT_TOLERANCE_PX),
                 min_item_gap_px=min_item_gap_px,
                 end_tail_gap_px=end_tail_gap_px, _allow_frame_omission_recovery=False)
@@ -1488,6 +2352,9 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         page_span=page_span, at_scroll_top=at_scroll_top, reached_end=reached_end,
         tail_gap_px=tail_gap, failures=tuple(failures), identity=identity,
         source_frame_indices=tuple(range(len(frames))), notes=notes,
+        animation_markers=marker_evidence,
+        video_mute_markers=mute_markers,
+        repair_provenance=repair_provenance,
         layout_repaired_shifts=layout_repaired_shifts,
         extent_tolerance_px=extent_tolerance_px)
 

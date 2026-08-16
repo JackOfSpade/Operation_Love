@@ -9,6 +9,7 @@ ops/HINGE-PIXEL-RUNBOOK.md §5).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from ..perception.capture import Profile
 
@@ -72,6 +73,37 @@ class ItemTargetingError(RuntimeError):
         self.intended = intended
         self.actual = actual
         self.index_space = index_space
+
+
+OBSERVE_ITEM_MATCH = "match"
+OBSERVE_ITEM_MISMATCH = "mismatch"
+OBSERVE_ITEM_INCONCLUSIVE = "inconclusive"
+_OBSERVE_ITEM_STATES = frozenset({
+    OBSERVE_ITEM_MATCH, OBSERVE_ITEM_MISMATCH, OBSERVE_ITEM_INCONCLUSIVE,
+})
+
+
+@dataclass(frozen=True)
+class ObserveItemCheck:
+    """Three-valued result for checking an Observe composer against a suggested item.
+
+    ``mismatch`` means the check positively identified the wrong profile/item. ``inconclusive``
+    means the frame could not answer (animation, keyboard/selection overlay, missing geometry or
+    unavailable vision). Conflating those states made a transient typing frame revoke an item
+    that an earlier frame of the same continuously open composer had already verified.
+    """
+
+    state: str
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        if self.state not in _OBSERVE_ITEM_STATES:
+            raise ValueError(f"unknown Observe item-check state {self.state!r}")
+        if self.state != OBSERVE_ITEM_MATCH and not self.reason:
+            raise ValueError(f"Observe item-check state {self.state!r} requires a reason")
+
+    def __bool__(self):
+        raise TypeError("ObserveItemCheck has no truth value -- inspect .state")
 
 
 def open_debug_log(debug_dir: str, *, run_id: str | None = None):

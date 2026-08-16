@@ -185,7 +185,8 @@ def _inline_surface() -> ComposerSurface:
     return ComposerSurface("hinge_inline_v1", comment, send, (695, send.y0 + 50))
 
 
-def _paint_inline_reframe(crop_image: bytes, *, start: int = 37, rows: int = 933) -> bytes:
+def _paint_inline_reframe(crop_image: bytes, *, start: int = 37, rows: int = 933,
+                          preview_height: int = _SHEET_PREVIEW_MAX_H) -> bytes:
     """Synthetic 9.134 selected-photo composer, including its removed card-heart lane.
 
     The real Malaika regression is a complete square source card rendered as a 933-row interior
@@ -196,17 +197,17 @@ def _paint_inline_reframe(crop_image: bytes, *, start: int = 37, rows: int = 933
     card = cv2.imdecode(np.frombuffer(crop_image, np.uint8), cv2.IMREAD_COLOR)
     source_x1 = card.shape[1] - round(card.shape[1] * item_verify._INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
     assert 0 <= start and start + rows <= card.shape[0]
-    preview = np.full((_SHEET_PREVIEW_MAX_H, _SHEET_PREVIEW_W, 3), 145, dtype=np.uint8)
+    preview = np.full((preview_height, _SHEET_PREVIEW_W, 3), 145, dtype=np.uint8)
     # The left photo area is exactly the full-width, bounded source window verifier is allowed to
     # search.  The right side represents the layout's selected-photo control-free lane and is
     # excluded symmetrically by the inline verifier.
     left_w = _SHEET_PREVIEW_W - round(
         _SHEET_PREVIEW_W * item_verify._INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
     preview[:, :left_w] = cv2.resize(card[start:start + rows, :source_x1],
-                                     (left_w, _SHEET_PREVIEW_MAX_H),
+                                     (left_w, preview_height),
                                      interpolation=cv2.INTER_AREA)
     canvas = np.full((_H, _W, 3), _SHEET_BG, dtype=np.uint8)
-    canvas[_SHEET_PREVIEW_Y0:_SHEET_PREVIEW_Y0 + _SHEET_PREVIEW_MAX_H,
+    canvas[_SHEET_PREVIEW_Y0:_SHEET_PREVIEW_Y0 + preview_height,
            _SHEET_PREVIEW_X0:_SHEET_PREVIEW_X0 + _SHEET_PREVIEW_W] = preview
     ok, buf = cv2.imencode(".png", canvas)
     assert ok
@@ -295,6 +296,45 @@ def test_malaika_style_inline_reframe_uses_a_bounded_one_item_cap_without_loosen
     wrong_prompt = item_verify.verify_sheet_item(frame, prompt_only, 1, composer_surface=surface)
     assert not wrong_prompt.matched
     assert wrong_prompt.distance > item_verify._INLINE_COMPOSER_ONE_ITEM_MAX_DIST
+
+
+def test_alex_style_inline_reframe_allows_the_measured_28_percent_crop_but_not_more():
+    """A 731px sheet preview maps to 800 source rows after the fixed control-lane crop.
+
+    The live Alex frame kept 800/1109 rows of the selected portrait (27.86% hidden).  The
+    previous 22% cap made the intended item unmeasurable and then let a merely reachable item
+    be reported as the one the human opened.  Thirty percent is a bounded renderer envelope,
+    not a general patch search: every candidate remains a full-width contiguous window, and
+    the existing multi-item separation proof and absolute ceiling still decide acceptance.
+    """
+    payload = _payload()
+    selected = payload.item(4)  # 1109px tall in this fixture, matching Alex's selected crop.
+    frame = _paint_inline_reframe(selected.image, start=109, rows=800, preview_height=731)
+    surface = _inline_surface_for(frame)
+
+    # Production additionally supplies this calibrated foreign-card ceiling; the real geometry
+    # must pass it too, not only the payload-relative proof.
+    verdict = item_verify.verify_sheet_item(
+        frame, payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+    assert verdict.matched, verdict.reason
+    assert verdict.nearest_index == 4
+
+    foreign = dataclasses.replace(payload, crops=(dataclasses.replace(payload.item(3), number=1),))
+    assert not item_verify.verify_sheet_item(
+        frame, foreign, 1, composer_surface=surface).matched
+    prompt = dataclasses.replace(_lookalike_payload().item(2), number=1)
+    prompt_only = dataclasses.replace(_lookalike_payload(), crops=(prompt,))
+    assert not item_verify.verify_sheet_item(
+        frame, prompt_only, 1, composer_surface=surface).matched
+
+    # A 707px preview derives a 774-row source window: 335/1109 (30.2%) hidden, beyond the
+    # calibrated renderer envelope.
+    too_cropped = _paint_inline_reframe(selected.image, start=167, rows=774, preview_height=707)
+    refusal = item_verify.verify_sheet_item(
+        too_cropped, payload, 4, composer_surface=_inline_surface_for(too_cropped))
+    mine = next(c for c in refusal.comparisons if c.number == 4)
+    assert mine.distance is None
+    assert "above the 30% reframe limit" in mine.reason
 
 
 def test_tega_style_bright_photo_uses_compact_locator_only_when_composer_binds_it():

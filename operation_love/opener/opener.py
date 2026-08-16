@@ -135,6 +135,9 @@ _SCHEMA = {
                            "it remains natural under the ordinary competing explanations of "
                            "the scene. The clue-to-guess path must be immediately recognizable "
                            "to her; do not use one invented fact as the premise for another. "
+                           "If the opener has a second beat, state how it accepts and advances "
+                           "the first beat's claim rather than verifying it, contradicting it, "
+                           "or abandoning it for a nearby generic topic. "
                            "Free text, not a fixed list of choices. Recorded for analysis only, "
                            "never sent to her.",
         },
@@ -202,6 +205,27 @@ _SCHEMA = {
 # so the pair keeps agreeing (doc 3.1). Neither change touches the underlying guardrail: hedge
 # the claim, never the sender, is unchanged word for word at the start of the sentence.
 #
+# Addendum 2026-08-15: widening that list treated the symptom as a vocabulary problem and made
+# the examples a seven-item stock menu. A live suggestion then opened with "my money is on the
+# French Alps", a bare answer to an imaginary location question: the reader reasonably asks
+# "for what?" The named list is removed. The guardrail now specifies its semantic job -- express
+# uncertainty naturally when the claim needs it -- while SELF CONTAINED CLAIM requires the model
+# to state the whole proposition. VARY THE OPENING now tells the item and angle to determine the
+# wording rather than telling the model to rotate through an inventory. A second-beat question
+# explicitly inherits the evidence boundary so it cannot smuggle in another invented premise.
+#
+# Addendum 2026-08-16: evidence-bounded sentences could still disagree with each other. Live
+# suggestions asserted X and then asked whether X, asked about not-X, or abandoned X for a
+# generic question about the scene. PREMISE CONSISTENCY makes the optional second beat accept
+# the first claim as its working premise and advance it with a consequence or specific detail.
+# The angle field carries the same instruction because it is the model's only pre-opener
+# scratchpad under minimal thinking.
+#
+# Addendum 2026-08-16 (prompt de-templating): all concrete opener copy, worked scenarios and
+# move menus were removed from the model-facing instructions. Even a labelled counterexample
+# supplies salient wording for a minimal-thinking model to imitate. The prompt now specifies
+# properties and failure categories only; tests keep the regressions concrete off-wire.
+#
 # Addendum 2026-08-12 (Part B, ops/OPENER-REDESIGN.md 5.1/5.7): the model now CHOOSES the item
 # rather than labelling one after the fact, so two lines changed here and nothing else did.
 # "The images are her profile in scroll order; set referenced_index to the 0-based index of the
@@ -219,8 +243,7 @@ _SCHEMA = {
 # tradeoff it exists to settle, and a model with a page of photos in front of it has a strong
 # prior toward the best photograph. Three things were added, all of them doc 5.1's:
 #   - The tradeoff, made explicit: a plain item you can make a real claim about beats a
-#     beautiful one you have nothing to say about ("a mediocre backpacking shot that connects to
-#     her food prompt beats a great portrait with nothing to say about it"). It is the same
+#     beautiful one you have nothing to say about. It is the same
 #     premise/point distinction THE ONE RULE already makes, applied one step earlier -- the item
 #     is the premise, so picking by how the item LOOKS optimises the half that is not the message.
 #   - The failure mode, named as a failure: picking an item it has nothing to say about, which
@@ -232,11 +255,8 @@ _SCHEMA = {
 #     names combining two things she said in different places as the strongest move precisely
 #     because it cannot be bluffed by anyone who read one card, and the vitals block is prime
 #     material for it -- so "read it, use it, but never pick it" needed the REASON to use it,
-#     not just permission. Deliberately worded WITHOUT naming the move list itself: the moves are
-#     stated as non-binding examples in config.yaml only (doc 2.3), and a compressed copy here
-#     would arrive without its escape clause, which is exactly what
-#     tests/test_opener.py::test_system_prompt_never_turns_the_five_moves_into_a_binding_menu
-#     watches for.
+#     not just permission. Deliberately worded without a menu of moves so the model derives its
+#     approach from the profile instead of imitating a prompt-provided form.
 # config.yaml's opener.style carries the long form of all three (doc 3.1's division of labour),
 # and both copies are pinned by their own tests.
 #
@@ -258,37 +278,47 @@ _SYSTEM = (
     "ONE RULE: your opener must contain a claim that could be wrong. Describing what is in the "
     "photo can never be wrong, which is exactly why it proves nothing; she is not checking "
     "whether you have eyes. The thing you can see may be your premise. It may never be your "
-    "point. EVIDENCE BOUNDARY, ONE HOP ONLY: the premise must be plainly visible in the item "
+    "point. SELF CONTAINED CLAIM: write the whole proposition, not a shorthand answer to an "
+    "imagined question or a bare option in an unstated guessing game. The message itself must "
+    "say what you think is true; shared visual context lets you omit a description, not the "
+    "claim's subject or relation. A reader should never have to ask 'for what?' to understand "
+    "it. EVIDENCE BOUNDARY, ONE HOP ONLY: the premise must be plainly visible in the item "
     "or explicitly stated in her profile. From it you may make one playful, uncertain inference. "
     "Never stack guesses by inventing an unseen action, route, effort, goal, cause, or sequence "
-    "as the premise for another claim. Being at an observation deck does not mean she climbed "
-    "stairs or had a target time, just as being on a summit does not mean she hiked there. If "
+    "as the premise for another claim. A setting or destination does not establish how she "
+    "arrived, what effort it took, or whether she pursued a goal. If "
     "the opener needs that hidden bridge, choose a different claim or a different item. "
     "CALIBRATE THE GUESS: a hedge does not rescue a far-fetched premise. The claim should sound "
     "natural under most ordinary explanations of the scene, not only under one special backstory. "
     "Never infer ownership, employment, a routine, a responsibility, or a relationship merely "
-    "from proximity in one photo. Feeding one goat does not mean she owns it, works on a farm, "
-    "or spent the day cleaning a barn; it may be a wild encounter on a trail. Guess about the "
-    "interaction the evidence shows, not an unshown life story. A calibrated opener for that "
-    "photo is: You became its favorite person the second the snacks came out. TRACEABILITY "
+    "from proximity in one photo. Guess about the visible interaction, not an unshown life "
+    "story. TRACEABILITY "
     "TEST: even if the conclusion is wrong, she should instantly see which visible or stated "
-    "clue led you there. If her reaction would be 'how did you possibly get that from this?', "
-    "the inference is too remote and you have fantasized a backstory. Make "
+    "clue led you there. If the clue to inference path needs an explanation, the inference is "
+    "too remote and you have fantasized a backstory. Make "
     "one clear, positive, profile-specific bid, then leave room for her reply. A "
     "claim she can correct beats a question she has to answer: a question is allowed as the "
-    "second beat after a real claim, never as the whole message. "
-    "Questions should invite positive, fun conversation, not form an interview. "
+    "second beat after a real claim, never as the whole message. PREMISE CONSISTENCY: once the "
+    "first beat asserts or guesses X, the second beat must accept X as its working premise and "
+    "move forward from it. Ask for a consequence, choice, or specific detail that makes sense "
+    "if X is true. Never ask whether X itself was true, ask about the opposite of X, or abandon "
+    "X for a generic question about the surrounding scene. The second beat inherits the "
+    "same evidence boundary: it may not introduce another inference or presuppose an unseen "
+    "expectation, opinion, goal, difficulty, outcome, or earlier conversation. If no natural "
+    "evidence bound question follows, stop after the claim. Questions should invite positive, "
+    "fun conversation, not form an interview. "
     "Any teasing must be clearly good-natured and never belittling, arrogant, condescending, or "
     "mean. Mild innuendo is eligible only when her own profile clearly invites that playful tone; "
     "never force it. A brief greeting is optional but cannot substitute for profile-specific "
     "substance. At most one authentic, specific compliment is allowed; never pile on flattery or "
     "seek approval. Do not act as if intimacy or romantic interest already exists. Keep the tone "
-    "non-needy and do not demand that she chase. HEDGE THE CLAIM, NEVER YOURSELF: a hedge such as "
-    "I'm going to guess, I heard, I'm assuming, something tells me, odds are, my money is on, or "
-    "I bet makes a real claim safe to make and trivially easy to answer; that list is "
-    "illustrative, not exhaustive, so never reach for the same one every time. VARY THE OPENING: "
-    "rotate which hedge, move, or sentence shape leads from one opener to the next, and never "
-    "open every message the same way. Never apologise for writing, never ask permission, and "
+    "non-needy and do not demand that she chase. HEDGE THE CLAIM, NEVER YOURSELF: when a claim "
+    "is uncertain, express that uncertainty naturally in wording that fits the specific item. "
+    "The goal is calibrated uncertainty, not a particular lead in. This is not a phrase menu: "
+    "choose the construction from context, and never use a hedge as a substitute for the complete "
+    "self contained claim. VARY THE OPENING: let the specific item and angle determine the wording "
+    "and sentence shape; do not rotate or recycle a fixed stock hedge, and never open every "
+    "message the same way. Never apologise for writing, never ask permission, and "
     "never call your own question dumb. GUESS "
     "THE WORLD, NOT HER IDENTITY: name a country, a region, or a park the way a well travelled "
     "friend would, never a street, a neighbourhood, a hotel, a specific venue, or anywhere that "
@@ -316,10 +346,9 @@ _SYSTEM = (
     "and none on padding, but never cut the claim itself to save room. A second sentence may be "
     "one easy positive question "
     "or a direct low-pressure invitation. Do not try to build a text relationship in the opener. "
-    "HARD RULE: never use an em dash or any hyphen; use commas or periods instead (write 'physician "
-    "assistant', not 'PA-C'). HARD RULE: write the opener in plain ASCII letters and punctuation "
-    "only; use no emoji and no accented or non-English letters (spell a name like Chloe or Zoe with "
-    "plain English letters, never an accented one). "
+    "HARD RULE: never use an em dash or any hyphen; use commas or periods instead and spell out "
+    "hyphenated abbreviations. HARD RULE: write the opener in plain ASCII letters and punctuation "
+    "only; use no emoji and transliterate accented or non-English letters to plain ASCII. "
     "Fill item_index, referenced, angle and item_description before you write the opener: "
     "referenced is the "
     "full description of what you are reacting to and is never sent to her, so put the whole "

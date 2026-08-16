@@ -261,10 +261,11 @@ _SCALE_TOLERANCE = 0.02
 
 # Hinge 9.134's inline composer can reframe a selected square photo vertically before putting
 # the comment controls below it. The source crop remains complete; what changes is which interior
-# strip is visible, so the legacy modal's bottom-anchor assumption is not valid there. A compositor
-# may hide at most this fraction of the source photo in total; beyond that we refuse rather than
-# turn verification into an arbitrary image-patch search.
-_INLINE_REFRAME_MAX_HIDDEN_FRACTION = 0.22
+# strip is visible, so the legacy modal's bottom-anchor assumption is not valid there. The 2026-08-15
+# Alex composer frame showed 800 of 1109 source rows (27.86% hidden); 30% admits that measured
+# renderer with a small margin, while the contiguous full-width window and fixed origin sample cap
+# still prevent this from becoming an arbitrary image-patch search.
+_INLINE_REFRAME_MAX_HIDDEN_FRACTION = 0.30
 _INLINE_REFRAME_ORIGIN_SAMPLES = 49
 # The ordinary profile card draws its heart over the photo's lower-right corner. Hinge removes
 # that control from the selected inline preview, so comparison excludes the fixed control lane on
@@ -662,7 +663,7 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
                 f"bottom {window_px}px of a {crop_height}px crop, swept +-{tolerance}px")
 
     # This is deliberately not a generic patch search. Every candidate keeps the full card
-    # width and all but a bounded edge strip, and a changed layout that hides more than 22% of
+    # width and all but a bounded edge strip, and a changed layout that hides more than 30% of
     # the source simply fails. It exists only for a structurally proven inline composer; the
     # normal modal comparison above retains bottom anchoring exactly.
     nominal_hidden = crop_height - window_px

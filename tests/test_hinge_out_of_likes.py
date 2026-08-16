@@ -143,6 +143,49 @@ def _deck_ready_frame(heart_xy=(930, 1600), pass_xy=(130, 2030), seed=41):
     return buf.tobytes()
 
 
+def _pass_only_frame(pass_xy=(130, 2030), seed=53):
+    """A decodable frame carrying the pass-X but NOT the like-heart -- i.e. _observe_deck_ready
+    is genuinely False on it.
+
+    This is not a contrived shape. Hinge hides the floating heart at some scroll offsets, and
+    the 2026-08-15 bug report's own capture contains two such frames
+    (data/hinge_debug/e7b13ac6fd21/00020, 00021): ordinary mid-read positions of a profile the
+    owner was scrolling through, pass-X present, no heart anywhere. See
+    test_identity_recognised_static_screen_never_bails_without_visible_deck_glyphs."""
+    import cv2
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
+    t = hinge._load_template("hinge_pass_x.png")
+    th, tw = t.shape
+    cx, cy = pass_xy
+    canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+    ok, buf = cv2.imencode(".png", canvas)
+    return buf.tobytes()
+
+
+def _profile_header_frame(header_value=250, seed=61):
+    """A decodable frame whose identity band carries a distinctive uniform block -- a stand-in
+    for ONE profile's sticky header, for tests that need an identity anchor belonging to a
+    different screen than the one under test.
+
+    Deliberately NOT just another `rng.integers(60, 200)` noise frame, and the reason is a trap
+    worth stating: `_band` block-averages the band down to 16x64, and averaging independent
+    uniform noise converges to the SAME mean, so two unrelated noise frames measure ~4.3 apart
+    -- under the 9.0 change_threshold -- and every noise frame reads as 'same' profile as every
+    other one. Real headers are text on a flat ground and separate cleanly (measured 0.00 within
+    a profile vs ~18 across two -- see hinge.py's identity_band comment), so a fixture must
+    reproduce that separation rather than accidentally defeat it."""
+    import cv2
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
+    x0, y0, x1, y1 = HINGE_SPEC.identity_band
+    canvas[int(y0 * 2400):int(y1 * 2400), int(x0 * 1080):int(x1 * 1080)] = header_value
+    ok, buf = cv2.imencode(".png", canvas)
+    return buf.tobytes()
+
+
 def _blank_frame():
     """A solid-black frame -- device asleep / on the keyguard (_is_blank_frame's own
     definition: near-black AND near-uniform)."""
@@ -435,6 +478,66 @@ def test_deck_ready_static_screen_never_bails_even_well_past_the_stuck_budget(mo
         "the wait must have survived multiple stuck-budgets for this to prove anything")
     assert drv.blocked_reason() is None   # the watchdog never fired at any point in the wait
     assert adb.taps == [] and adb.swipes == []
+
+
+def test_identity_recognised_static_screen_never_bails_without_visible_deck_glyphs(monkeypatch):
+    """The same protection for the OTHER way a human legitimately sits still, found while
+    investigating the 2026-08-15 report.
+
+    The deck-ready probe above is necessary but not sufficient: Hinge hides the floating like
+    heart at some scroll offsets, so an ordinary mid-read position can have the pass-X and no
+    heart (measured on that report's own frames -- see _pass_only_frame). An owner who scrolls
+    to such a position and then simply READS is producing `no_change` on a screen where
+    _observe_deck_ready is False, so before this the budget never re-armed and the watchdog
+    stopped the run claiming it could not recognize the screen -- while the screen was the very
+    profile it was watching. The sticky-header identity anchor recognises it, and that is a
+    positive identification of exactly this loop's subject, so it must re-arm too."""
+    clock = [40_000.0]
+    monkeypatch.setattr(hinge.time, "monotonic", lambda: clock[0])
+    frame = _pass_only_frame()
+    adb = FakeAdb([frame])
+    drv = _drv(adb)
+    assert drv._observe_deck_ready(frame) is False        # the precondition this test exists for
+    # A real band read off this real frame: the anchor genuinely matches, it is not stubbed.
+    drv._identity_sig = hinge._band(frame, drv.identity_band)
+    assert drv._identity_of(frame)[0] == "same"
+    _survive_past = 3 * hinge._OBSERVE_STUCK_S
+
+    def should_stop():
+        clock[0] += hinge._OBSERVE_STUCK_S
+        return clock[0] - 40_000.0 > _survive_past
+
+    result = drv.wait_for_decision(timeout=None, should_stop=should_stop)
+    assert result is None                 # ended by should_stop, not by the watchdog
+    assert clock[0] - 40_000.0 > _survive_past
+    assert drv.blocked_reason() is None
+    assert adb.taps == [] and adb.swipes == []
+
+
+def test_unrecognised_static_screen_still_bails_even_with_an_identity_anchor_armed(monkeypatch):
+    """The paywall guard must survive the re-arm above. A profile that HAS a locked identity
+    anchor does not make every later screen recognisable: a paywall (or any unknown screen)
+    matches no captured header, so it must still count down and still bail. Without this the
+    previous test's fix would have quietly re-opened the 2026-08-11 hang for any run that had
+    got far enough to lock an anchor -- which is every run that ever reached a decision."""
+    clock = [50_000.0]
+    monkeypatch.setattr(hinge.time, "monotonic", lambda: clock[0])
+    stuck_budget = 48.0
+    monkeypatch.setattr(hinge, "_observe_stuck_budget", lambda: stuck_budget)
+    unknown = _no_paywall_frame()
+    drv = _drv(FakeAdb([unknown]))
+    # An anchor locked from a DIFFERENT screen -- the profile the run was watching before this
+    # one appeared. It must not launder the unknown screen into a recognised one.
+    drv._identity_sig = hinge._band(_profile_header_frame(), drv.identity_band)
+    assert drv._identity_of(unknown)[0] != "same"          # the precondition, not an assumption
+    assert drv._observe_deck_ready(unknown) is False
+
+    def should_stop():
+        clock[0] += stuck_budget / 3
+        return False                      # only the watchdog may end this wait
+
+    assert drv.wait_for_decision(timeout=None, should_stop=should_stop) is None
+    assert drv.blocked_reason() is not None
 
 
 # ===============================================================================================

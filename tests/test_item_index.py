@@ -26,6 +26,7 @@ Every positive is paired with a negative plus a control that proves WHICH mechan
 excluding.
 """
 import dataclasses
+import hashlib
 import math
 import subprocess
 import sys
@@ -384,7 +385,7 @@ def test_two_adjacent_refusals_still_fail_when_the_direct_bridge_refuses(monkeyp
 def test_layout_assisted_animation_run_repairs_two_refusals_and_wrong_measured_majority(monkeypatch):
     """Three neighbouring pair failures are repaired only as one layout-proven animation run.
 
-    This is the saved-capture shape in synthetic form: a 2/2 refusal, a 2/3 refusal, and a
+    This is the earlier saved-capture shape in synthetic form: a 2/2 refusal, a 2/3 refusal, and a
     wrong three-strip majority whose two dissenting strips are the ones card geometry proves.
     The original frameshift quorum remains untouched; the index carries all three raw estimates.
     """
@@ -417,6 +418,995 @@ def test_layout_assisted_animation_run_repairs_two_refusals_and_wrong_measured_m
     assert index.layout_repaired_shifts[2][1].delta_px == _STEP - 10
     assert len(index.notes) >= 3
     assert all("layout-assisted" in note for note in index.notes[:3])
+
+
+def test_layout_assisted_two_pair_run_repairs_two_strips_then_one_strip(monkeypatch):
+    """The live-video failure is repaired without weakening frameshift's raw quorum.
+
+    The first pair has the existing two-NCC plus layout proof.  Animation leaves only one stable
+    NCC strip in the adjacent pair, where exact top, bottom, and heart geometry supplies the
+    stronger cross-check.  This is the saved 2026-08-15 frames 8/9/10 shape.
+    """
+    frames = [_frame(_STEP * i) for i in range(5)]
+    real_shift = item_index.estimate_shift
+
+    def animated_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(4) if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair == 1:
+            return _shift_with_votes(result, [_STEP, _STEP],
+                                     status=frameshift.SHIFT_NO_CONSENSUS)
+        if pair == 2:
+            return _shift_with_votes(result, [_STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", animated_pair)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert [shift.delta_px for shift in index.shifts[1:3]] == [_STEP, _STEP]
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [1, 2]
+    assert [raw.agreeing for _pair, raw in index.layout_repaired_shifts] == [0, 0]
+    assert "exactly two independent NCC strips" in index.notes[0]
+    assert "one NCC strip" in index.notes[1]
+
+
+def test_two_pair_video_run_repairs_exact_structural_dissent_then_two_strips(monkeypatch):
+    """A stable strip plus exact full layout can beat a repeated animated-video match.
+
+    This is the fourth saved Shannon transition in synthetic form.  The first raw pair votes
+    twice for the video phase five pixels away from the real scroll, while one strip and the
+    independently segmented card top, card bottom, and heart all land exactly on the real step.
+    Its adjacent pair has the ordinary two-strip/full-layout proof, so the existing run and
+    complete-assembly gates can corroborate the weaker first member.
+    """
+    frames = [_frame(_STEP * i) for i in range(3)]
+    real_shift = item_index.estimate_shift
+
+    def animated_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(2) if frame_a == frames[i] and frame_b == frames[i + 1])
+        votes = [_STEP - 5, _STEP - 5, _STEP] if pair == 0 else [_STEP, _STEP]
+        return _shift_with_votes(result, votes, status=frameshift.SHIFT_NO_CONSENSUS)
+
+    monkeypatch.setattr(item_index, "estimate_shift", animated_pair)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.offsets == (0, _STEP, _STEP * 2)
+    assert [shift.delta_px for shift in index.shifts] == [_STEP, _STEP]
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [0, 1]
+    assert "one NCC strip" in index.notes[0]
+    assert "exactly two independent NCC strips" in index.notes[1]
+
+
+def test_dissenting_single_strip_requires_exact_top_bottom_and_heart(monkeypatch):
+    """The minority-strip fallback is exact full geometry, not a wider tolerance."""
+    before = item_index.segment_frame(
+        _frame(0), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+    after = item_index.segment_frame(
+        _frame(_STEP), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+    raw = _shift_with_votes(
+        item_index.estimate_shift(_frame(0), _frame(_STEP), content_band=_CONTENT_BAND),
+        [_STEP - 5, _STEP - 5, _STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", _STEP), ("bottom", _STEP), ("heart", _STEP + 1)))
+    refused, note = item_index._layout_repaired_shift(0, before, after, raw)
+    assert refused is raw and note is None
+
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", _STEP), ("bottom", _STEP), ("heart", _STEP)))
+    repaired, note = item_index._layout_repaired_shift(0, before, after, raw)
+    assert repaired.delta_px == _STEP and repaired.agreeing == 1
+    assert note is not None and "one NCC strip" in note
+
+
+def test_dissenting_single_strip_cannot_repair_an_isolated_pair():
+    """Exact minority geometry remains only a companion to a stronger adjacent repair."""
+    frames = [_frame(0), _frame(_STEP)]
+    segmentations = tuple(item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    raw = _shift_with_votes(
+        item_index.estimate_shift(*frames, content_band=_CONTENT_BAND),
+        [_STEP - 5, _STEP - 5, _STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+
+    repaired, notes, provenance = item_index._repair_shifts_from_layout(segmentations, (raw,))
+    assert repaired == (raw,)
+    assert notes == () and provenance == ()
+
+
+def test_dissenting_single_strip_refuses_two_exact_structural_answers(monkeypatch):
+    """Two exact singleton alternatives are ambiguity, even beside a repeated NCC cluster."""
+    frames = [_frame(0), _frame(_STEP)]
+    before, after = (item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    raw = _shift_with_votes(
+        item_index.estimate_shift(*frames, content_band=_CONTENT_BAND),
+        [_STEP - 5, _STEP - 5, _STEP, _STEP - 12],
+        status=frameshift.SHIFT_NO_CONSENSUS)
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", _STEP), ("bottom", _STEP), ("heart", _STEP),
+        ("top", _STEP - 12), ("bottom", _STEP - 12), ("heart", _STEP - 12)))
+
+    repaired, note = item_index._layout_repaired_shift(0, before, after, raw)
+    assert repaired is raw and note is None
+
+
+def test_three_pair_video_run_repairs_two_mutually_dissenting_tail_strips(monkeypatch):
+    """Exact full layout selects one tail strip even when no two-strip cluster exists.
+
+    This is the fifth saved Shannon transition in synthetic form: two ordinary two-NCC layout
+    repairs followed by raw votes twelve pixels apart.  Top, bottom and heart all identify the
+    lower tail vote exactly, and only the complete three-pair run may commit it.
+    """
+    scrolls = (0, _STEP, _STEP * 2, _STEP * 3 - 12)
+    frames = [_frame(scroll) for scroll in scrolls]
+    real_shift = item_index.estimate_shift
+
+    def animated_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(3) if frame_a == frames[i] and frame_b == frames[i + 1])
+        votes = [_STEP, _STEP] if pair < 2 else [_STEP, _STEP - 12]
+        return _shift_with_votes(result, votes, status=frameshift.SHIFT_NO_CONSENSUS)
+
+    monkeypatch.setattr(item_index, "estimate_shift", animated_pair)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.offsets == scrolls
+    assert [shift.delta_px for shift in index.shifts] == [_STEP, _STEP, _STEP - 12]
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [0, 1, 2]
+    assert item_index._matched_delta_clusters(index.layout_repaired_shifts[2][1]) == ()
+    assert "one NCC strip" in index.notes[2]
+
+
+def test_four_pair_video_run_accepts_one_exact_structural_measured_tail(monkeypatch):
+    """The full saved transition may end in one separately bounded structure-only correction."""
+    scrolls = (0, _STEP, _STEP * 2, _STEP * 3 - 12, _STEP * 4 - 26)
+    frames = [_frame(scroll) for scroll in scrolls]
+    real_shift = item_index.estimate_shift
+
+    def animated_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(4) if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair < 2:
+            return _shift_with_votes(result, [_STEP, _STEP],
+                                     status=frameshift.SHIFT_NO_CONSENSUS)
+        if pair == 2:
+            return _shift_with_votes(result, [_STEP, _STEP - 12],
+                                     status=frameshift.SHIFT_NO_CONSENSUS)
+        true_step = scrolls[4] - scrolls[3]
+        raw_step = true_step - item_index._STRUCTURAL_TAIL_CORRECTION_PX[1]
+        return _shift_with_votes(
+            result, [raw_step, raw_step, raw_step],
+            status=frameshift.SHIFT_MEASURED, delta=raw_step)
+
+    monkeypatch.setattr(item_index, "estimate_shift", animated_pair)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.offsets == scrolls
+    assert [shift.delta_px for shift in index.shifts] == [
+        _STEP, _STEP, _STEP - 12, _STEP - 14]
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [0, 1, 2, 3]
+    assert index.layout_repaired_shifts[3][1].delta_px == _STEP - 28
+    assert index.shifts[3].agreeing == 0
+    assert "four-pair structural tail" in index.notes[3]
+
+
+@pytest.mark.parametrize("probe_failure", [False, True])
+def test_five_pair_video_refusal_island_accepts_exact_multi_strip_boundaries(
+        monkeypatch, probe_failure):
+    """The sixth saved Shannon rupture is one measured-bracketed five-pair video island.
+
+    The endpoint strip banks mirror the production evidence's `265x4` and `232x3` modes: the
+    raw global medians are untrustworthy, but one exact repeated value at each end is selected
+    independently by top, bottom, and heart geometry.  The middle is the already-supported
+    2-strip, 2-strip, 1-strip grammar; its heartless transition carries one exact shared gutter.
+    """
+    frames = [_frame(scroll) for scroll in _FULL_SCROLL]
+    real_shift = item_index.estimate_shift
+    real_landmarks = item_index._structural_landmarks
+    real_gutters = item_index._shared_gutter_witnesses
+    heartless_digest = hashlib.sha256(frames[2]).hexdigest()
+
+    def animated_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(7) if frame_a == frames[i] and frame_b == frames[i + 1])
+        votes = {
+            1: [_STEP] * 4 + [_STEP - 18, _STEP - 17, _STEP - 15, _STEP - 15],
+            2: [_STEP, _STEP],
+            3: [_STEP, _STEP],
+            4: [_STEP, _STEP + 1, _STEP + 7],
+            5: [_STEP] * 3 + [_STEP - 18] * 3 + [_STEP - 14, _STEP - 10],
+        }.get(pair)
+        return (result if votes is None else
+                _shift_with_votes(result, votes, status=frameshift.SHIFT_NO_CONSENSUS))
+
+    def video_landmarks(before, after):
+        if before.frame_digest == heartless_digest:
+            return (("top", _STEP), ("top", _STEP), ("bottom", _STEP))
+        return real_landmarks(before, after)
+
+    def video_gutter(before, after, candidate):
+        if before.frame_digest == heartless_digest and candidate == _STEP:
+            return ((760, 813, 397, 450),)
+        return real_gutters(before, after, candidate)
+
+    monkeypatch.setattr(item_index, "estimate_shift", animated_pair)
+    monkeypatch.setattr(item_index, "_structural_landmarks", video_landmarks)
+    monkeypatch.setattr(item_index, "_shared_gutter_witnesses", video_gutter)
+    if probe_failure:
+        real_assemble = item_index._assemble
+        calls = 0
+
+        def contradictory_probe(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return (), ("synthetic five-pair page contradiction",), ()
+            return real_assemble(*args, **kwargs)
+
+        monkeypatch.setattr(item_index, "_assemble", contradictory_probe)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    if probe_failure:
+        assert not index.usable
+        assert index.layout_repaired_shifts == ()
+        assert any("could not be put in one coordinate space" in failure
+                   for failure in index.failures)
+        return
+    assert index.usable, index.failures
+    assert index.offsets == _FULL_SCROLL
+    assert [shift.delta_px for shift in index.shifts] == [_STEP] * 7
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [1, 2, 3, 4, 5]
+    assert [shift.agreeing for shift in index.shifts[1:6]] == [4, 2, 2, 1, 3]
+    assert all(raw.status == frameshift.SHIFT_NO_CONSENSUS
+               for _pair, raw in index.layout_repaired_shifts)
+    assert sum("five-pair full-landmark cluster boundary" in note
+               for note in index.notes) == 2
+
+
+def test_exact_multi_strip_boundary_is_never_a_standalone_layout_repair(monkeypatch):
+    """The endpoint helper requires exact 3+ NCC plus one unambiguous full-layout answer."""
+    frames = [_frame(0), _frame(_STEP)]
+    before, after = (item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    base = item_index.estimate_shift(*frames, content_band=_CONTENT_BAND)
+
+    only_two = _shift_with_votes(
+        base, [_STEP, _STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+    refused, note = item_index._exact_multi_strip_shift(0, before, after, only_two)
+    assert refused is only_two and note is None
+
+    three_distinct = _shift_with_votes(
+        base, [_STEP - 1, _STEP, _STEP + 1], status=frameshift.SHIFT_NO_CONSENSUS)
+    refused, note = item_index._exact_multi_strip_shift(0, before, after, three_distinct)
+    assert refused is three_distinct and note is None
+
+    repeated = _shift_with_votes(
+        base, [_STEP, _STEP, _STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", _STEP), ("bottom", _STEP), ("heart", _STEP + 1)))
+    refused, note = item_index._exact_multi_strip_shift(0, before, after, repeated)
+    assert refused is repeated and note is None
+
+    ambiguous = _shift_with_votes(
+        base, [_STEP] * 3 + [_STEP - 18] * 3,
+        status=frameshift.SHIFT_NO_CONSENSUS)
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", _STEP), ("bottom", _STEP), ("heart", _STEP),
+        ("top", _STEP - 18), ("bottom", _STEP - 18), ("heart", _STEP - 18)))
+    refused, note = item_index._exact_multi_strip_shift(0, before, after, ambiguous)
+    assert refused is ambiguous and note is None
+
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", _STEP), ("bottom", _STEP), ("heart", _STEP)))
+    proposed, note = item_index._exact_multi_strip_shift(0, before, after, repeated)
+    assert proposed.delta_px == _STEP and proposed.agreeing == 3 and note is not None
+    repaired, notes, provenance = item_index._repair_shifts_from_layout(
+        (before, after), (repeated,))
+    assert repaired == (repeated,)
+    assert notes == () and provenance == ()
+
+
+def test_five_pair_video_grammar_requires_both_measured_brackets(monkeypatch):
+    """Even the exact 4/2/2/1/3 evidence shape cannot begin at an unanchored capture edge."""
+    frames = [_frame(_STEP * i) for i in range(6)]
+    segmentations = tuple(item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    bases = tuple(item_index.estimate_shift(
+        frames[i], frames[i + 1], content_band=_CONTENT_BAND) for i in range(5))
+    shifts = (
+        _shift_with_votes(bases[0], [_STEP] * 4, status=frameshift.SHIFT_NO_CONSENSUS),
+        _shift_with_votes(bases[1], [_STEP, _STEP], status=frameshift.SHIFT_NO_CONSENSUS),
+        _shift_with_votes(bases[2], [_STEP, _STEP], status=frameshift.SHIFT_NO_CONSENSUS),
+        _shift_with_votes(
+            bases[3], [_STEP, _STEP + 1, _STEP + 7],
+            status=frameshift.SHIFT_NO_CONSENSUS),
+        _shift_with_votes(bases[4], [_STEP] * 3, status=frameshift.SHIFT_NO_CONSENSUS),
+    )
+    heartless_digest = segmentations[1].frame_digest
+    real_landmarks = item_index._structural_landmarks
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda before, after: (
+        (("top", _STEP), ("top", _STEP), ("bottom", _STEP))
+        if before.frame_digest == heartless_digest else real_landmarks(before, after)))
+    monkeypatch.setattr(item_index, "_shared_gutter_witnesses", lambda *_: (
+        (760, 813, 397, 450),))
+
+    repaired, notes, provenance = item_index._repair_shifts_from_layout(segmentations, shifts)
+    assert repaired == shifts
+    assert notes == () and provenance == ()
+
+
+@pytest.mark.parametrize("break_gate", (None, "marker", "gutter", "probe"))
+def test_two_video_refusals_can_share_one_raw_measured_geometry_bridge(monkeypatch, break_gate):
+    """Two strict repair proposals may belong to one bounded live-video window.
+
+    This is the seventh saved Shannon shape without profile pixels: measured anchors surround
+    NCC+240, measured+263, NCC(+274,+275), measured+231.  The left refusal has exact top/bottom
+    plus one shared gutter; the raw bridge has exact top/heart; the right refusal's two-vote
+    centroid projects onto its unique exact +275 top/bottom/heart geometry.  The measured pair is
+    retained raw and only the two refusal pairs appear in repair provenance.
+    """
+    scrolls = (0, 222, 462, 725, 1000, 1231, 1482)
+    frames = [_frame(scroll) for scroll in scrolls]
+    real_shift = item_index.estimate_shift
+    digests = [hashlib.sha256(frame).hexdigest() for frame in frames]
+
+    def video_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(len(frames) - 1)
+                    if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair == 1:
+            return dataclasses.replace(
+                _shift_with_votes(result, [240, 240],
+                                  status=frameshift.SHIFT_NO_CONSENSUS),
+                agreeing=2, dissenting=0)
+        if pair == 3:
+            return dataclasses.replace(
+                _shift_with_votes(result, [274, 275],
+                                  status=frameshift.SHIFT_NO_CONSENSUS),
+                agreeing=2, dissenting=0)
+        return result
+
+    landmarks = {
+        0: (("top", 222), ("bottom", 222)),
+        1: (("top", 240), ("top", 240), ("bottom", 240)),
+        2: (("top", 263), ("heart", 263)),
+        3: (("top", 275), ("bottom", 275), ("heart", 275)),
+        4: (("top", 231), ("bottom", 231)),
+        5: (("top", 251), ("bottom", 251)),
+    }
+
+    def video_landmarks(before, after):
+        pair = digests.index(before.frame_digest)
+        return landmarks[pair]
+
+    def video_gutters(before, after, candidate):
+        pair = digests.index(before.frame_digest)
+        return (((794, 847, 554, 607),)
+                if break_gate != "gutter" and pair == 1 and candidate == 240 else ())
+
+    monkeypatch.setattr(item_index, "estimate_shift", video_pair)
+    monkeypatch.setattr(item_index, "_structural_landmarks", video_landmarks)
+    monkeypatch.setattr(item_index, "_shared_gutter_witnesses", video_gutters)
+    if break_gate == "probe":
+        real_assemble = item_index._assemble
+        calls = 0
+
+        def contradictory_probe(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return (), ("synthetic measured-bridge page contradiction",), ()
+            return real_assemble(*args, **kwargs)
+
+        monkeypatch.setattr(item_index, "_assemble", contradictory_probe)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        animation_markers=(False,) * len(frames) if break_gate == "marker" else
+        tuple(i == 2 for i in range(len(frames))))
+
+    if break_gate is not None:
+        assert not index.usable
+        assert index.layout_repaired_shifts == ()
+        return
+    assert index.usable, index.failures
+    assert index.offsets == scrolls
+    assert [shift.delta_px for shift in index.shifts] == [222, 240, 263, 275, 231, 251]
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [1, 3]
+    assert [raw.status for _pair, raw in index.layout_repaired_shifts] == [
+        frameshift.SHIFT_NO_CONSENSUS, frameshift.SHIFT_NO_CONSENSUS]
+    assert [(repair.pair_index, repair.path, repair.raw_status,
+             repair.raw_delta_px, repair.effective_status, repair.effective_delta_px,
+             repair.marker_frames) for repair in index.repair_provenance] == [
+        (1, "legacy_layout_grammar", frameshift.SHIFT_NO_CONSENSUS, None,
+         frameshift.SHIFT_MEASURED, 240, ()),
+        (3, "legacy_layout_grammar", frameshift.SHIFT_NO_CONSENSUS, None,
+         frameshift.SHIFT_MEASURED, 275, ()),
+    ]
+    assert index.shifts[2].status == frameshift.SHIFT_MEASURED
+    assert index.shifts[2].delta_px == 263 and index.shifts[2].agreeing >= 3
+    assert any("retained raw measured bridge +263px" in note for note in index.notes)
+    assert any("projection" in note and "+275px" in note for note in index.notes)
+
+
+@pytest.mark.parametrize("break_gate", (None, "marker", "residual", "witness", "probe"))
+def test_video_marked_two_bridge_window_projects_one_measured_video_centroid(
+        monkeypatch, break_gate):
+    """A confirmed video window may correct one small, fully structural measured bridge.
+
+    This mirrors the v10 refusal at frames 6..13 without profile pixels.  The two under-quorum
+    endpoints remain ordinary strict layout proposals.  Between them, +233 is already exact;
+    raw +257 has a valid five-strip majority but the physical card top, bottom, heart and one NCC
+    strip all say +262.  Marker evidence plus the whole-page probe are mandatory.
+    """
+    scrolls = (0, 261, 480, 713, 975, 1220, 1471, 1726)
+    frames = [_frame(scroll) for scroll in scrolls]
+    real_shift = item_index.estimate_shift
+    digests = [hashlib.sha256(frame).hexdigest() for frame in frames]
+
+    def video_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(len(frames) - 1)
+                    if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair == 1:
+            return dataclasses.replace(
+                _shift_with_votes(result, [219, 219],
+                                  status=frameshift.SHIFT_NO_CONSENSUS),
+                agreeing=2, dissenting=0)
+        if pair == 3:
+            if break_gate == "residual":
+                votes, raw_delta = [252, 252, 253, 253, 255, 262], 253
+            elif break_gate == "witness":
+                votes, raw_delta = [256, 256, 257, 257, 259, 260], 257
+            else:
+                votes, raw_delta = [256, 256, 257, 257, 259, 262], 257
+            return _shift_with_votes(
+                result, votes, status=frameshift.SHIFT_MEASURED, delta=raw_delta)
+        if pair == 4:
+            return dataclasses.replace(
+                _shift_with_votes(result, [242, 245],
+                                  status=frameshift.SHIFT_NO_CONSENSUS),
+                agreeing=2, dissenting=0)
+        return result
+
+    landmarks = {
+        0: (("top", 261), ("bottom", 261), ("heart", 261)),
+        1: (("top", 219), ("top", 219), ("bottom", 219)),
+        2: (("top", 233), ("bottom", 233), ("heart", 233)),
+        3: (("top", 262), ("bottom", 262), ("heart", 262)),
+        4: (("top", 245), ("bottom", 245), ("heart", 245)),
+        5: (("top", 251), ("bottom", 251), ("heart", 251)),
+        6: (("top", 255), ("bottom", 255), ("heart", 255)),
+    }
+
+    monkeypatch.setattr(item_index, "estimate_shift", video_pair)
+    monkeypatch.setattr(
+        item_index, "_structural_landmarks",
+        lambda before, after: landmarks[digests.index(before.frame_digest)])
+    monkeypatch.setattr(
+        item_index, "_shared_gutter_witnesses",
+        lambda before, after, candidate: (
+            ((765, 818, 546, 599),)
+            if digests.index(before.frame_digest) == 1 and candidate == 219 else ()))
+    if break_gate == "probe":
+        calls = 0
+
+        def contradictory_probe(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return (), ("synthetic projected-bridge page contradiction",), ()
+
+        monkeypatch.setattr(item_index, "_assemble", contradictory_probe)
+
+    mute_markers = (() if break_gate == "marker" else (
+        item_index.VideoMuteMarker(frame_index=1, x=106, y=1150, score=1.0),
+        item_index.VideoMuteMarker(frame_index=2, x=106, y=931, score=1.0),
+        item_index.VideoMuteMarker(frame_index=3, x=106, y=698, score=1.0),
+        item_index.VideoMuteMarker(frame_index=4, x=106, y=436, score=1.0)))
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        video_mute_markers=mute_markers, _allow_frame_omission_recovery=False)
+
+    if break_gate is not None:
+        assert not index.usable
+        assert index.layout_repaired_shifts == ()
+        return
+    assert index.usable, index.failures
+    assert index.offsets == scrolls
+    assert [shift.delta_px for shift in index.shifts] == [261, 219, 233, 262, 245, 251, 255]
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [1, 3, 4]
+    assert index.layout_repaired_shifts[1][1].delta_px == 257
+    assert any("v12 mute-card track" in note and "+262px" in note
+               for note in index.notes)
+
+
+@pytest.mark.parametrize("break_gate", (None, "visible_exit", "out_of_card", "witness"))
+def test_positioned_mute_card_track_repairs_latest_two_refusal_capture_shape(
+        monkeypatch, break_gate):
+    """Only one physically tracked mute card may repair the latest Shannon shape.
+
+    The real capture's card-local mute origins move 234px then 241px; its final origin would
+    land above the content band on the +239px transition.  Once the overlay has genuinely left
+    view, the same card's exact bottom/heart geometry permits a one-pixel NCC-centroid repair
+    (+229 raw to +233 physical).  This must not be a boolean ``some video existed`` grammar.
+    """
+    scrolls = (0, 225, 459, 700, 939, 1172, 1419)
+    frames = [_frame(scroll) for scroll in scrolls]
+    real_shift = item_index.estimate_shift
+
+    def latest_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(len(frames) - 1)
+                    if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair in (1, 3):
+            step = scrolls[pair + 1] - scrolls[pair]
+            return dataclasses.replace(
+                _shift_with_votes(result, [step, step], status=frameshift.SHIFT_NO_CONSENSUS),
+                agreeing=2, dissenting=0)
+        if pair == 4:
+            # Saved pair 10->11: the animated NCC centroid is +229, but its two nearest
+            # physical-card strips are +230/+233 and card bottom plus heart translate +233.
+            votes = ([228, 228, 230, 230] if break_gate == "witness"
+                     else [228, 228, 230, 233])
+            return _shift_with_votes(result, votes, status=frameshift.SHIFT_MEASURED,
+                                     delta=229)
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", latest_pair)
+    marker_rows = (1200, 966, 725, 486)
+    if break_gate == "visible_exit":
+        # All direct marker deltas remain exact, but the predicted next origin (487) is still
+        # inside the content band: absence cannot be explained by the tracked overlay leaving.
+        marker_rows = tuple(row + 240 for row in marker_rows)
+    markers = tuple(
+        item_index.VideoMuteMarker(frame_index=frame_index, x=(10 if break_gate == "out_of_card"
+                                                                 else 106),
+                                   y=row, score=1.0)
+        for frame_index, row in zip(range(1, 5), marker_rows, strict=True))
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        video_mute_markers=markers)
+
+    if break_gate == "witness":
+        # Raw quorum can still fit the page inside its ordinary fold slack, but no exact NCC
+        # witness may convert that centroid to +233.
+        assert index.usable, index.failures
+        assert index.shifts[4].delta_px == 229
+        assert 4 not in {pair for pair, _raw in index.layout_repaired_shifts}
+        return
+    if break_gate is not None:
+        assert not index.usable
+        assert index.layout_repaired_shifts == ()
+        return
+    assert index.usable, index.failures
+    assert index.offsets == scrolls
+    assert [shift.delta_px for shift in index.shifts] == [225, 234, 241, 239, 233, 247]
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [1, 3, 4]
+    assert index.layout_repaired_shifts[-1][1].delta_px == 229
+    assert [(repair.pair_index, repair.path, repair.raw_status,
+             repair.raw_delta_px, repair.effective_status, repair.effective_delta_px,
+             repair.marker_frames) for repair in index.repair_provenance] == [
+        (1, "v12_mute_card_track", frameshift.SHIFT_NO_CONSENSUS, None,
+         frameshift.SHIFT_MEASURED, 234, (1, 2)),
+        (3, "v12_mute_card_track", frameshift.SHIFT_NO_CONSENSUS, None,
+         frameshift.SHIFT_MEASURED, 239, (3, 4)),
+        (4, "v12_mute_card_track", frameshift.SHIFT_MEASURED, 229,
+         frameshift.SHIFT_MEASURED, 233, (4,)),
+    ]
+    assert any("v12 mute-card track" in note and "+233px" in note for note in index.notes)
+
+
+def test_positioned_mute_card_track_rolls_every_repair_back_on_page_contradiction(monkeypatch):
+    """A real card track is evidence, not a bypass of the final whole-page assembly probe."""
+    scrolls = (0, 225, 459, 700, 939, 1172, 1419)
+    frames = [_frame(scroll) for scroll in scrolls]
+    real_shift = item_index.estimate_shift
+
+    def latest_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(len(frames) - 1)
+                    if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair in (1, 3):
+            step = scrolls[pair + 1] - scrolls[pair]
+            return dataclasses.replace(
+                _shift_with_votes(result, [step, step], status=frameshift.SHIFT_NO_CONSENSUS),
+                agreeing=2, dissenting=0)
+        if pair == 4:
+            return _shift_with_votes(result, [228, 228, 230, 233],
+                                     status=frameshift.SHIFT_MEASURED, delta=229)
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", latest_pair)
+    real_assemble = item_index._assemble
+    calls = 0
+
+    def contradictory_probe(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return (), ("synthetic mute-track page contradiction",), ()
+        return real_assemble(*args, **kwargs)
+
+    monkeypatch.setattr(item_index, "_assemble", contradictory_probe)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        video_mute_markers=tuple(
+            item_index.VideoMuteMarker(frame_index=frame_index, x=106, y=row, score=1.0)
+            for frame_index, row in zip(range(1, 5), (1200, 966, 725, 486), strict=True)))
+
+    assert calls >= 1
+    assert not index.usable
+    assert index.layout_repaired_shifts == ()
+
+
+@pytest.mark.parametrize("correction", (12, 15))
+def test_structural_measured_tail_keeps_its_own_two_pixel_window(correction):
+    """The structural tail neither borrows nor widens the ordinary 9..12px override band."""
+    true_step = _STEP - 14
+    frames = [_frame(0), _frame(true_step)]
+    before, after = (item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    raw_step = true_step - correction
+    raw = _shift_with_votes(
+        item_index.estimate_shift(*frames, content_band=_CONTENT_BAND),
+        [raw_step, raw_step, raw_step], status=frameshift.SHIFT_MEASURED, delta=raw_step)
+
+    repaired, note = item_index._structural_tail_shift(0, before, after, raw)
+    assert repaired is raw and note is None
+
+
+def test_structural_measured_tail_requires_one_exact_full_layout_answer(monkeypatch):
+    """An inexact heart or two full structural answers cannot nominate a tail shift."""
+    true_step = _STEP - 14
+    frames = [_frame(0), _frame(true_step)]
+    before, after = (item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    raw_step = true_step - 14
+    raw = _shift_with_votes(
+        item_index.estimate_shift(*frames, content_band=_CONTENT_BAND),
+        [raw_step, raw_step, raw_step], status=frameshift.SHIFT_MEASURED, delta=raw_step)
+
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", true_step), ("bottom", true_step), ("heart", true_step + 1)))
+    refused, note = item_index._structural_tail_shift(0, before, after, raw)
+    assert refused is raw and note is None
+
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", true_step), ("bottom", true_step), ("heart", true_step),
+        ("top", true_step - 20), ("bottom", true_step - 20), ("heart", true_step - 20)))
+    refused, note = item_index._structural_tail_shift(0, before, after, raw)
+    assert refused is raw and note is None
+
+
+def test_structural_measured_tail_cannot_repair_an_isolated_pair():
+    """A valid local structural tail is still powerless without the exact preceding run."""
+    true_step = _STEP - 14
+    frames = [_frame(0), _frame(true_step)]
+    segmentations = tuple(item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    raw_step = true_step - 14
+    raw = _shift_with_votes(
+        item_index.estimate_shift(*frames, content_band=_CONTENT_BAND),
+        [raw_step, raw_step, raw_step], status=frameshift.SHIFT_MEASURED, delta=raw_step)
+
+    repaired, notes, provenance = item_index._repair_shifts_from_layout(segmentations, (raw,))
+    assert repaired == (raw,)
+    assert notes == () and provenance == ()
+
+
+def test_nonclustered_single_strip_still_requires_an_exact_heart(monkeypatch):
+    """Two far-apart matches do not widen the exact-three-kind singleton rule."""
+    frames = [_frame(0), _frame(_STEP - 12)]
+    before, after = (item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    raw = _shift_with_votes(
+        item_index.estimate_shift(*frames, content_band=_CONTENT_BAND),
+        [_STEP, _STEP - 12], status=frameshift.SHIFT_NO_CONSENSUS)
+    assert item_index._matched_delta_clusters(raw) == ()
+
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", _STEP - 12), ("bottom", _STEP - 12), ("heart", _STEP - 11)))
+    refused, note = item_index._layout_repaired_shift(0, before, after, raw)
+    assert refused is raw and note is None
+
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", _STEP - 12), ("bottom", _STEP - 12), ("heart", _STEP - 12)))
+    repaired, note = item_index._layout_repaired_shift(0, before, after, raw)
+    assert repaired.delta_px == _STEP - 12 and repaired.agreeing == 1
+    assert note is not None and "one NCC strip" in note
+
+
+def test_nonclustered_single_strip_refuses_two_exact_answers(monkeypatch):
+    """Independent full geometry must select one of the two dissenting strips, not both."""
+    frames = [_frame(0), _frame(_STEP - 12)]
+    before, after = (item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    raw = _shift_with_votes(
+        item_index.estimate_shift(*frames, content_band=_CONTENT_BAND),
+        [_STEP, _STEP - 12], status=frameshift.SHIFT_NO_CONSENSUS)
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", _STEP), ("bottom", _STEP), ("heart", _STEP),
+        ("top", _STEP - 12), ("bottom", _STEP - 12), ("heart", _STEP - 12)))
+
+    repaired, note = item_index._layout_repaired_shift(0, before, after, raw)
+    assert repaired is raw and note is None
+
+
+def test_nonclustered_single_strip_cannot_repair_an_isolated_pair():
+    """Exact full geometry without an adjacent two-strip repair remains a hard refusal."""
+    frames = [_frame(0), _frame(_STEP - 12)]
+    segmentations = tuple(item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    raw = _shift_with_votes(
+        item_index.estimate_shift(*frames, content_band=_CONTENT_BAND),
+        [_STEP, _STEP - 12], status=frameshift.SHIFT_NO_CONSENSUS)
+
+    repaired, notes, provenance = item_index._repair_shifts_from_layout(segmentations, (raw,))
+    assert repaired == (raw,)
+    assert notes == () and provenance == ()
+
+
+def test_two_strip_candidate_uses_the_same_median_tolerance_as_frameshift():
+    """Votes 4px apart both agree with their median under the shared ±3px rule."""
+    base = item_index.estimate_shift(_frame(0), _frame(_STEP), content_band=_CONTENT_BAND)
+    raw = _shift_with_votes(
+        base, [_STEP - 2, _STEP + 2], status=frameshift.SHIFT_NO_CONSENSUS)
+    assert item_index._matched_delta_clusters(raw) == ((_STEP, (_STEP - 2, _STEP + 2)),)
+
+
+def test_two_strip_candidate_rejects_overlapping_median_pairs():
+    """A middle vote supporting two candidates cannot be spent as evidence for either one."""
+    base = item_index.estimate_shift(_frame(0), _frame(_STEP), content_band=_CONTENT_BAND)
+    raw = _shift_with_votes(
+        base, [_STEP - 4, _STEP, _STEP + 4], status=frameshift.SHIFT_NO_CONSENSUS)
+    assert item_index._matched_delta_clusters(raw) == ()
+
+
+def test_three_pair_video_run_accepts_two_votes_straddling_their_median(monkeypatch):
+    """The third saved Shannon capture is handled by the general bounded animation repair."""
+    frames = [_frame(_STEP * i) for i in range(5)]
+    real_shift = item_index.estimate_shift
+
+    def animated_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(4) if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair == 0:
+            return _shift_with_votes(
+                result, [_STEP - 2, _STEP + 2], status=frameshift.SHIFT_NO_CONSENSUS)
+        if pair == 1:
+            return _shift_with_votes(
+                result, [_STEP + 10, _STEP + 10, _STEP + 10, _STEP + 10, _STEP, _STEP],
+                status=frameshift.SHIFT_MEASURED, delta=_STEP + 10)
+        if pair == 2:
+            return _shift_with_votes(
+                result, [_STEP, _STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", animated_pair)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert [shift.delta_px for shift in index.shifts[:3]] == [_STEP, _STEP, _STEP]
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [0, 1, 2]
+    assert [raw.status for _pair, raw in index.layout_repaired_shifts] == [
+        frameshift.SHIFT_NO_CONSENSUS, frameshift.SHIFT_MEASURED,
+        frameshift.SHIFT_NO_CONSENSUS]
+
+
+def test_three_pair_video_transition_accepts_one_exact_shared_gutter_companion(monkeypatch):
+    """The second saved Shannon capture's complete animation transition is recoverable.
+
+    Pair 0 has two competing two-strip clusters, but only the true shift moves both observed
+    sides of one canonical gutter exactly.  That deliberately weaker proposal is bracketed by
+    the already-supported measured-majority override and one-strip/full-layout repair.
+    """
+    frames = [_frame(_STEP * i) for i in range(5)]
+    first_digest = hashlib.sha256(frames[0]).hexdigest()
+    real_shift = item_index.estimate_shift
+    real_landmarks = item_index._structural_landmarks
+
+    def animated_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(4) if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair == 0:
+            return _shift_with_votes(
+                result, [_STEP, _STEP, _STEP + 7, _STEP + 7, _STEP + 13],
+                status=frameshift.SHIFT_NO_CONSENSUS)
+        if pair == 1:
+            return _shift_with_votes(
+                result, [_STEP - 10, _STEP - 10, _STEP - 10, _STEP, _STEP],
+                status=frameshift.SHIFT_MEASURED, delta=_STEP - 10)
+        if pair == 2:
+            return _shift_with_votes(result, [_STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+        return result
+
+    def old_heart_left_before_new_heart_arrived(before, after):
+        if before.frame_digest == first_digest:
+            return (("top", _STEP), ("bottom", _STEP))
+        return real_landmarks(before, after)
+
+    monkeypatch.setattr(item_index, "estimate_shift", animated_pair)
+    monkeypatch.setattr(item_index, "_structural_landmarks",
+                        old_heart_left_before_new_heart_arrived)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert [shift.delta_px for shift in index.shifts[:3]] == [_STEP, _STEP, _STEP]
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [0, 1, 2]
+    assert [raw.status for _pair, raw in index.layout_repaired_shifts] == [
+        frameshift.SHIFT_NO_CONSENSUS, frameshift.SHIFT_MEASURED,
+        frameshift.SHIFT_NO_CONSENSUS]
+    assert index.layout_repaired_shifts[1][1].delta_px == _STEP - 10
+    assert "three-pair edge companion" in index.notes[0]
+    assert "exact shared gutter" in index.notes[0]
+
+
+def test_edge_only_candidate_cannot_bootstrap_a_short_animation_run(monkeypatch):
+    """Two NCC strips plus one gutter are not a general substitute for a third landmark."""
+    frames = [_frame(_STEP * i) for i in range(3)]
+    segmentations = tuple(item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    bases = tuple(item_index.estimate_shift(
+        frames[i], frames[i + 1], content_band=_CONTENT_BAND) for i in range(2))
+    edge_only = _shift_with_votes(
+        bases[0], [_STEP, _STEP, _STEP + 7, _STEP + 7],
+        status=frameshift.SHIFT_NO_CONSENSUS)
+    one_strip = _shift_with_votes(
+        bases[1], [_STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+    real_landmarks = item_index._structural_landmarks
+    monkeypatch.setattr(
+        item_index, "_structural_landmarks",
+        lambda before, after: (("top", _STEP), ("bottom", _STEP))
+        if before is segmentations[0] else real_landmarks(before, after))
+
+    repaired, notes, raw = item_index._repair_shifts_from_layout(
+        segmentations, (edge_only, one_strip))
+    assert repaired == (edge_only, one_strip)
+    assert notes == () and raw == ()
+
+
+def test_edge_only_three_pair_pattern_requires_a_measured_middle_override(monkeypatch):
+    """Three weak refusals cannot validate one another merely because their run length is three."""
+    frames = [_frame(_STEP * i) for i in range(4)]
+    segmentations = tuple(item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    bases = tuple(item_index.estimate_shift(
+        frames[i], frames[i + 1], content_band=_CONTENT_BAND) for i in range(3))
+    shifts = (
+        _shift_with_votes(bases[0], [_STEP, _STEP, _STEP + 7, _STEP + 7],
+                          status=frameshift.SHIFT_NO_CONSENSUS),
+        _shift_with_votes(bases[1], [_STEP, _STEP],
+                          status=frameshift.SHIFT_NO_CONSENSUS),
+        _shift_with_votes(bases[2], [_STEP], status=frameshift.SHIFT_NO_CONSENSUS),
+    )
+    real_landmarks = item_index._structural_landmarks
+    monkeypatch.setattr(
+        item_index, "_structural_landmarks",
+        lambda before, after: (("top", _STEP), ("bottom", _STEP))
+        if before is segmentations[0] else real_landmarks(before, after))
+
+    repaired, notes, raw = item_index._repair_shifts_from_layout(segmentations, shifts)
+    assert repaired == shifts
+    assert notes == () and raw == ()
+
+
+def test_edge_only_candidate_rejects_two_structurally_plausible_strip_clusters(monkeypatch):
+    """One exact gutter must disambiguate the strip bank; two passing clusters are unknowable."""
+    frames = [_frame(0), _frame(_STEP)]
+    before, after = (item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    base = item_index.estimate_shift(*frames, content_band=_CONTENT_BAND)
+    raw = _shift_with_votes(
+        base, [_STEP - 7, _STEP - 7, _STEP, _STEP],
+        status=frameshift.SHIFT_NO_CONSENSUS)
+    monkeypatch.setattr(
+        item_index, "_shared_gutter_witnesses",
+        lambda _before, _after, candidate: ((100, 153, 100 - candidate, 153 - candidate),))
+
+    repaired, note = item_index._edge_only_two_strip_shift(0, before, after, raw)
+    assert repaired is raw and note is None
+
+
+def test_one_strip_layout_candidate_requires_all_three_landmark_kinds(monkeypatch):
+    """One NCC match is proposed only with the full top/bottom/heart structural cross-check.
+
+    This tests the stronger local gate.  The separate bounded-run gate remains responsible for
+    refusing this proposal when it has no adjacent layout-assisted pair.
+    """
+    before = item_index.segment_frame(_frame(0), content_band=_CONTENT_BAND,
+                                      like_template=_TEMPLATE,
+                                      like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+    after = item_index.segment_frame(_frame(_STEP), content_band=_CONTENT_BAND,
+                                     like_template=_TEMPLATE,
+                                     like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+    raw = _shift_with_votes(
+        item_index.estimate_shift(_frame(0), _frame(_STEP), content_band=_CONTENT_BAND),
+        [_STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", _STEP), ("bottom", _STEP), ("top", _STEP)))
+    refused, note = item_index._layout_repaired_shift(0, before, after, raw)
+    assert refused is raw and note is None
+
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", _STEP), ("bottom", _STEP), ("heart", _STEP + 1)))
+    refused, note = item_index._layout_repaired_shift(0, before, after, raw)
+    assert refused is raw and note is None
+
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+        ("top", _STEP), ("bottom", _STEP), ("heart", _STEP)))
+    repaired, note = item_index._layout_repaired_shift(0, before, after, raw)
+    assert repaired.status == frameshift.SHIFT_MEASURED
+    assert repaired.delta_px == _STEP and repaired.agreeing == 1
+    assert note is not None and "one NCC strip" in note
+
+
+def test_isolated_one_strip_layout_candidate_remains_a_refusal(monkeypatch):
+    """A lone NCC coincidence plus layout may not create a shift without an adjacent repair."""
+    frames = [_frame(_STEP * i) for i in range(3)]
+    segmentations = tuple(item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    base = item_index.estimate_shift(frames[0], frames[1], content_band=_CONTENT_BAND)
+    isolated = _shift_with_votes(base, [_STEP], status=frameshift.SHIFT_NO_CONSENSUS)
+    ordinary = item_index.estimate_shift(frames[1], frames[2], content_band=_CONTENT_BAND)
+
+    repaired, notes, raw = item_index._repair_shifts_from_layout(
+        segmentations, (isolated, ordinary))
+    assert repaired == (isolated, ordinary)
+    assert notes == () and raw == ()
+
+
+def test_two_adjacent_one_strip_layout_candidates_cannot_corroborate_each_other(monkeypatch):
+    """The companion exception still needs one independently stronger two-strip pair."""
+    frames = [_frame(_STEP * i) for i in range(3)]
+    segmentations = tuple(item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    raw_shifts = tuple(_shift_with_votes(
+        item_index.estimate_shift(frames[i], frames[i + 1], content_band=_CONTENT_BAND),
+        [_STEP], status=frameshift.SHIFT_NO_CONSENSUS) for i in range(2))
+
+    repaired, notes, raw = item_index._repair_shifts_from_layout(segmentations, raw_shifts)
+    assert repaired == raw_shifts
+    assert notes == () and raw == ()
 
 
 @pytest.mark.parametrize("landmarks", [

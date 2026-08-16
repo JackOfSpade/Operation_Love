@@ -283,6 +283,20 @@ _CARD_CORNER_RAMP_SLACK_PX = 2
 # construction.
 _CARD_CORNER_DIP_PX = 1
 
+# A confirmed scroll-top has one layout edge that ordinary frames do not: profile-name chrome,
+# then a page-background gap, then the first media card. A pale photo can make one of that
+# card's corner ramps indistinguishable from the page, so `_corner_radius` correctly refuses the
+# generic edge even though the initial row still has the measured 18..25px corner span. The
+# fallback below is deliberately much narrower than the generic corner rule: it is opt-in for
+# frame 0 of an affirmatively confirmed scroll-top, the gap is inside the measured 69..143px
+# header range (with raster slack), and the candidate below it must be an exactly square media
+# card ending at a canonical gutter with one normally placed Hinge heart.
+_SCROLL_TOP_MEDIA_GAP_PX = (64, 160)
+_SCROLL_TOP_MEDIA_SQUARE_TOLERANCE_PX = 2
+_SCROLL_TOP_MEDIA_RAMP_ROWS = 8
+_SCROLL_TOP_MEDIA_MIN_RAMP_GAIN_PX = 12
+_SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX = (60, 120)
+
 # Which half of the screen a like heart may appear on. Hinge puts it at the bottom-RIGHT of
 # every likeable item (hinge.py:770, enforced by _match_glyph's own side filter). Named rather
 # than inlined so the one place this assumption lives is greppable.
@@ -321,6 +335,7 @@ EDGE_GUTTER = "gutter"            # a canonical-length page-background run betwe
 EDGE_CARD_CORNER = "card_corner"  # the card's OWN rounded corner is visible on this row: the
                                   # span it starts from and the rows it takes to reach the full
                                   # card width agree on one radius (see `_corner_radius`)
+EDGE_SCROLL_TOP_MEDIA = "scroll_top_media"  # guarded frame-0 recovery for a pale square photo
 EDGE_BAND_EDGE = "band_edge"      # the block runs straight into the analysed band's edge
 EDGE_BACKGROUND_RUN = "background_run"  # page background beyond this edge, but neither
                                   # gutter-length nor corner-confirmed, so what it MEANS is
@@ -332,6 +347,7 @@ RUN_GUTTER = "gutter"
 RUN_CARD_EDGE = "card_edge"       # not gutter-length, but a card's own top corner starts on the
                                   # row directly below it — the list-top case, where Hinge's
                                   # header chrome sits above item 1 instead of a gutter
+RUN_SCROLL_TOP_MEDIA = "scroll_top_media"  # distinct provenance for the guarded recovery
 RUN_TOO_SHORT = "too_short"
 RUN_TOO_LONG = "too_long"
 RUN_CLIPPED = "clipped"           # touches the analysed band's edge, so its length is a lower
@@ -380,10 +396,11 @@ class BackgroundRun:
 class BlockEdge:
     """One end of a block: where it is, whether we actually SAW it, and what put it there.
 
-    `observed` is the load-bearing field. It is True for exactly two kinds — `EDGE_GUTTER`, a
-    canonical-length background run between two cards, and `EDGE_CARD_CORNER`, the card's own
-    rounded corner measured on this row — because those are the only two things that positively
-    show where a card stops. It is False for `EDGE_BAND_EDGE` (the block runs flush into the
+    `observed` is the load-bearing field. It is normally True for `EDGE_GUTTER`, a canonical
+    background run, or `EDGE_CARD_CORNER`, the card's own rounded corner. The sole third form is
+    `EDGE_SCROLL_TOP_MEDIA`: the separately gated frame-0 conjunction documented above, which
+    combines a partial corner with square-card, heart and lower-gutter geometry. It is False for
+    `EDGE_BAND_EDGE` (the block runs flush into the
     analysed band) and for `EDGE_BACKGROUND_RUN`, where there IS page background beyond the edge
     but nothing says whether the card ended or merely went blank, which from one frame is the
     same picture.
@@ -653,6 +670,58 @@ def _corner_radius(is_card, span, *, y: int, step: int, lo_row: int, hi_row: int
     return None
 
 
+def _leading_low_contrast_media_edge(
+        runs: list[BackgroundRun], run_index: int, *, hearts: tuple[tuple[int, int], ...],
+        is_card, span, card_x0: int, card_x1: int, radius_px: tuple[int, int],
+        dip_px: int) -> bool:
+    """Whether one rejected long run safely bounds the first square media card.
+
+    This is not a relaxed corner detector. It is the conjunction supplied by an already
+    confirmed Hinge scroll-top: header content above this first long run, a square card below it,
+    a canonical gutter at the card bottom, one lower-right heart, and the visible half of a
+    measured corner ramp. Any missing fact keeps the run rejected as before.
+    """
+    run = runs[run_index]
+    if run.kind != RUN_TOO_LONG or not (
+            _SCROLL_TOP_MEDIA_GAP_PX[0] <= run.height <= _SCROLL_TOP_MEDIA_GAP_PX[1]):
+        return False
+    if any(previous.kind in (RUN_GUTTER, RUN_CARD_EDGE, RUN_SCROLL_TOP_MEDIA)
+           for previous in runs[:run_index]):
+        return False
+    if not any(bool(value) for value in is_card[:run.y0]):
+        return False
+    next_gutter = next((candidate for candidate in runs[run_index + 1:]
+                        if candidate.kind == RUN_GUTTER), None)
+    if next_gutter is None:
+        return False
+    width = card_x1 - card_x0
+    if abs((next_gutter.y0 - run.y1) - width) > _SCROLL_TOP_MEDIA_SQUARE_TOLERANCE_PX:
+        return False
+    card_hearts = tuple((x, y) for x, y in hearts if run.y1 <= y < next_gutter.y0)
+    if len(card_hearts) != 1:
+        return False
+    heart_x, heart_y = card_hearts[0]
+    inset = next_gutter.y0 - heart_y
+    if (heart_x < card_x0 + width // 2
+            or not (_SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX[0] <= inset
+                    <= _SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX[1])):
+        return False
+
+    top = run.y1
+    if top + _SCROLL_TOP_MEDIA_RAMP_ROWS >= next_gutter.y0 or not is_card[top]:
+        return False
+    initial_span = int(span[top])
+    implied_radius = (width - initial_span) / 2.0
+    if not (radius_px[0] <= implied_radius <= radius_px[1]):
+        return False
+    ramp = [int(span[y]) for y in range(top, top + _SCROLL_TOP_MEDIA_RAMP_ROWS + 1)]
+    if any(not is_card[y] for y in range(top, top + _SCROLL_TOP_MEDIA_RAMP_ROWS + 1)):
+        return False
+    if any(after < before - dip_px for before, after in zip(ramp, ramp[1:])):
+        return False
+    return ramp[-1] - ramp[0] >= _SCROLL_TOP_MEDIA_MIN_RAMP_GAIN_PX
+
+
 def _block_edge(*, y: int, cut: BackgroundRun | None, gap: int,
                 corner: float | None) -> BlockEdge:
     """One end of a block, resolved to a `BlockEdge`.
@@ -661,14 +730,15 @@ def _block_edge(*, y: int, cut: BackgroundRun | None, gap: int,
 
       1. a canonical-length GUTTER on this side. Exact on every card pair in the corpus (206 of
          206 measured exactly 53px), so it settles the edge on its own.
-      2. the card's own rounded CORNER on the edge row. This is what bounds item 1 and item N,
+      2. the guarded confirmed-scroll-top media conjunction, when explicitly present on the cut.
+      3. the card's own rounded CORNER on the edge row. This is what bounds item 1 and item N,
          which no gutter can reach, and it also rescues any block the analysed band happened to
          clip inside a gutter.
-      3. page background beyond the edge that is neither. We saw where the content stopped, we
+      4. page background beyond the edge that is neither. We saw where the content stopped, we
          just cannot trust WHY it stopped — a card that ended and a card whose blank tail runs
          off the band are the same picture — so the length is reported and the edge is not
          observed.
-      4. nothing at all: the block runs flush into the analysed band.
+      5. nothing at all: the block runs flush into the analysed band.
 
     `gap` is how many page-background rows were trimmed off this end of the segment; it is 0 by
     construction at any cut (the run was maximal), so it only carries information at the band's
@@ -676,6 +746,8 @@ def _block_edge(*, y: int, cut: BackgroundRun | None, gap: int,
     """
     if cut is not None and cut.kind == RUN_GUTTER:
         return BlockEdge(y=y, observed=True, kind=EDGE_GUTTER, run_px=cut.height)
+    if cut is not None and cut.kind == RUN_SCROLL_TOP_MEDIA:
+        return BlockEdge(y=y, observed=True, kind=EDGE_SCROLL_TOP_MEDIA, run_px=cut.height)
     run_px = cut.height if cut is not None else (gap or None)
     if corner is not None:
         return BlockEdge(y=y, observed=True, kind=EDGE_CARD_CORNER, run_px=run_px,
@@ -722,6 +794,7 @@ def _classify_block(*, top: BlockEdge, bottom: BlockEdge, hearts) -> tuple[str, 
 
 def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_template,
                   like_threshold: float,
+                  recover_leading_low_contrast_media: bool = False,
                   card_margin_px: int = _CARD_MARGIN_PX,
                   margin_probe_inset_px: int = _MARGIN_PROBE_INSET_PX,
                   margin_probe_max_spread: float = _MARGIN_PROBE_MAX_SPREAD,
@@ -745,6 +818,10 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
     (`HINGE_SPEC.templates["like"]` and `hinge._LIKE_MATCH_THRESHOLD`, whose module comment
     carries the measurement that justifies the number), and a default here would be a second
     copy free to drift. Pass `driver._template("like")` and `hinge._LIKE_MATCH_THRESHOLD`.
+
+    `recover_leading_low_contrast_media` is False by default and may be set only for frame 0
+    after the caller independently confirmed Hinge's scroll-top chrome. It enables the guarded
+    pale-square-first-photo conjunction above; it does not relax ordinary corner detection.
 
     THERE IS DELIBERATELY NO `list_top_y` / `list_bottom_y`, and that is a fix, not an omission.
     Doc 5.4's fourth failure class — "Above the first card is Hinge's filter-chips header, and
@@ -858,7 +935,7 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
             f"{_MATCH_GLYPH_HIT_CAP}-iteration non-max-suppression cap — the true count is "
             "unknown, so no index may be built from this frame")
 
-    # WHICH BACKGROUND RUNS CUT A BLOCK. Exactly two kinds of evidence, and nothing else:
+    # WHICH BACKGROUND RUNS CUT A BLOCK. The ordinary path has exactly two kinds of evidence:
     #
     #   * a canonical-length gutter. This is amendment one of doc 5.4 — a background run that is
     #     not gutter-shaped (the measured 192-row bright span inside a single card) is recorded
@@ -877,6 +954,9 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
     # [corpus: 8 non-gutter interior runs across 148 frames, all too_long, zero too_short. The
     # corner test cuts 6 of the 8 — every scroll-top chrome gap — and correctly declines the
     # other 2, which are the whitespace between the header strip and the name row above it.]
+    # The opt-in third label is the narrow scroll-top media conjunction described by
+    # `_leading_low_contrast_media_edge`; unlike either ordinary rule it is never available to
+    # an unconfirmed or later frame.
     cuts: list[BackgroundRun] = []
     for i, run in enumerate(runs):
         if run.kind == RUN_GUTTER:
@@ -884,12 +964,20 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
             continue
         if run.kind != RUN_TOO_LONG:
             continue
-        if _corner_radius(is_card, span, y=run.y1, step=1, lo_row=r0, hi_row=r1,
-                          card_width=card_x1 - card_x0, radius_px=card_corner_px,
-                          ramp_slack=card_corner_ramp_slack_px,
-                          dip_px=card_corner_dip_px) is None:
+        corner = _corner_radius(
+            is_card, span, y=run.y1, step=1, lo_row=r0, hi_row=r1,
+            card_width=card_x1 - card_x0, radius_px=card_corner_px,
+            ramp_slack=card_corner_ramp_slack_px, dip_px=card_corner_dip_px)
+        if corner is not None:
+            runs[i] = replace(run, kind=RUN_CARD_EDGE)
+        elif (recover_leading_low_contrast_media
+              and _leading_low_contrast_media_edge(
+                  runs, i, hearts=hearts, is_card=is_card, span=span,
+                  card_x0=card_x0, card_x1=card_x1, radius_px=card_corner_px,
+                  dip_px=card_corner_dip_px)):
+            runs[i] = replace(run, kind=RUN_SCROLL_TOP_MEDIA)
+        else:
             continue
-        runs[i] = replace(run, kind=RUN_CARD_EDGE)
         cuts.append(runs[i])
 
     blocks: list[Block] = []

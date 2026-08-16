@@ -331,8 +331,10 @@ def test_hinge_observe_waits_through_keyboard_motion_until_send_like_closes(monk
     assert driver.wait_for_decision(
         timeout=1.0,
         on_like_intent=lambda active, anchor: callbacks.append((active, anchor))) is True
-    # The True notification's anchor is the sheet frame that proved the sheet was up.
-    assert callbacks == [(True, b"sheet"), (False, None)]
+    # The first True carries the frame that proved the sheet was up.  While the composer remains
+    # visible, a later keyboard-settled frame refreshes that anchor so a provisional item read can
+    # correct itself; it is still one open intent, cleared exactly once after the sheet closes.
+    assert callbacks == [(True, b"sheet"), (True, b"typing"), (False, None)]
     assert adb.taps == []
     assert adb.swipes == []
     assert adb.texts == []

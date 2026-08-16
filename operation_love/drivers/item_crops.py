@@ -116,7 +116,8 @@ real people's profiles and never leave `ops/calibration/`.
     DISTINCT frames, so no frame contributes two items and the duplication doc 5.2 warns about
     cannot arise. `payload.translation == index.translation == (1..9)`, since nothing was
     excluded. `truncated` False.
-  * **PHOTO-ONLY AMENDMENT, corrected 2026-08-14.** Applying `hinge_photos_only_v1` to that same
+  * **STILL-PHOTO-ONLY AMENDMENT, corrected 2026-08-15.** Applying
+    `hinge_photos_only_v1` to that same
     byte-exact corpus yields six numbered photos and demotes all three confidently WRITTEN prompt
     cards to unnumbered context. The production translation is therefore `(1, 3, 4, 6, 8, 9)`:
     prompt hearts 2, 5 and 7 stay in page space but can never be chosen. The first implementation
@@ -286,8 +287,11 @@ CROP_CHROME = "chrome"            # Hinge's scroll-top header, already outside b
 CROP_UNCROPPABLE = "uncroppable"  # no frame ever bounded it end to end, so there is no crop that
                                   # is not a fragment: reported with its page position, not sent
 
-# Hinge policy: only a confidently PHOTO crop may enter the numbered/model-selectable list.
-# WRITTEN and UNKNOWN remain readable context, but ambiguity cannot manufacture a photo ordinal.
+# Hinge policy: only a confidently PHOTO crop may enter the numbered/model-selectable list, and
+# Hinge's upper-left mute control must not identify that card as a video. Video screening is performed
+# by the driver across the block's source-frame sightings before this crop layer runs; the block
+# remains in ItemIndex (and keeps its real heart ordinal) but is excluded from the payload. WRITTEN
+# and UNKNOWN remain readable context, so ambiguity still cannot manufacture a photo ordinal.
 # The identifier is recorded by targeting calibration so a geometry bound cannot silently outlive
 # the classifier/policy that decided which physical hearts its item numbers can name.
 PHOTO_ONLY_POLICY_ID = "hinge_photos_only_v1"

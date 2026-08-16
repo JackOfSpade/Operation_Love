@@ -8,6 +8,8 @@ import sys
 import threading
 import types
 
+import pytest
+
 from operation_love import bugreport, config as oplove_config
 from operation_love.drivers import touchwatch
 
@@ -512,6 +514,115 @@ def test_debug_log_section_explains_like_candidate_without_claiming_a_sheet(tmp_
     assert "sheet closed" not in md
 
 
+def test_debug_log_section_names_an_abandoned_card_resync(tmp_path):
+    """The 2026-08-15 report ("it moved on again without waiting for my like or dislike") was
+    filed against an `observe_resync` record that existed only in the raw actions.jsonl tail --
+    nothing in the report named it. This is that record, taken from hinge.py's
+    like_candidate_without_observed_sheet call site, and the report must now name it, the
+    profile it happened to, and the identity verdicts that decided it -- not just leave it for a
+    developer to spot in the tail.
+
+    The identity verdicts here are `unknown`/`new` rather than `same` on purpose: that call site
+    is now only reachable when the anchor could NOT name the card as the captured profile (a
+    'same' verdict keeps the wait alive instead -- see hinge.py's `require_content` comment), so
+    a fixture pinning `identity: same` would be pinning a record production can no longer
+    write."""
+    run = tmp_path / "run_abandoned_card"
+    run.mkdir(parents=True)
+    resync = {
+        "ts": "2026-08-15T09:12:03", "action": "observe_resync",
+        "reason": "like_candidate_without_observed_sheet",
+        "sheet_seen": False, "profile_name": "Jamie",
+        "identity": "unknown", "confirm_identity": "new",
+        "current": False, "deck_ready": True,
+    }
+    (run / "actions.jsonl").write_text(json.dumps(resync) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "cards abandoned without a decision (resync):" in md
+    assert "2026-08-15T09:12:03" in md
+    assert "reason=`like_candidate_without_observed_sheet`" in md
+    assert "profile_name=`Jamie`" in md
+    assert "identity=`unknown`" in md and "confirm_identity=`new`" in md
+    assert "sheet_seen=`false`" in md
+    assert "no Send Like sheet was ever observed" in md
+
+
+def test_debug_log_section_is_quiet_when_no_card_was_ever_abandoned(tmp_path):
+    """A run where every card ended in a proven capture/decision must render nothing extra --
+    same 'quiet when healthy' contract every other debug-log section here follows."""
+    run = tmp_path / "run_healthy"
+    run.mkdir(parents=True)
+    records = [
+        {"ts": "2026-08-15T09:00:00", "action": "capture", "profile_name": "Riley"},
+        {"ts": "2026-08-15T09:00:20", "action": "observe_decision", "decision": "pass"},
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "cards abandoned without a decision (resync):" not in md
+
+
+def test_debug_log_section_handles_gesture_path_resync_without_a_reason_key(tmp_path):
+    """hinge.py's PASS-path resync (the `_dbg_action("observe_resync", base, **fields)` call
+    right after `if verdict == "resync":`) never sets a `reason` key at all -- only `gesture`.
+    That must render as a labelled, sensible bullet (a card that changed without the human's
+    touch stream corroborating a decision), never as a blank or `None` reason."""
+    run = tmp_path / "run_gesture_resync"
+    run.mkdir(parents=True)
+    resync = {
+        "ts": "2026-08-15T09:20:00", "action": "observe_resync",
+        "top": 0.1, "bot": 12.3, "identity": "new", "confirm_identity": "new",
+        "profile_name": "Alex", "gesture": "resync", "watcher": "healthy",
+    }
+    (run / "actions.jsonl").write_text(json.dumps(resync) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "cards abandoned without a decision (resync):" in md
+    assert "gesture=`resync`" in md
+    assert "profile_name=`Alex`" in md
+    assert "reason=`" not in md                     # no reason key was logged -- must not invent one
+    assert "touch stream did not corroborate" in md
+    assert "None" not in md
+
+
+def test_debug_log_section_renders_an_unknown_resync_reason_without_swallowing_it(tmp_path):
+    """A future reason string this dict doesn't know about yet must still get its own bullet
+    with the raw reason -- never silently dropped, never a crash."""
+    run = tmp_path / "run_unknown_reason"
+    run.mkdir(parents=True)
+    resync = {
+        "ts": "2026-08-15T09:30:00", "action": "observe_resync",
+        "reason": "some_future_reason_nobody_has_seen_yet", "profile_name": "Sam",
+    }
+    (run / "actions.jsonl").write_text(json.dumps(resync) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "cards abandoned without a decision (resync):" in md
+    assert "reason=`some_future_reason_nobody_has_seen_yet`" in md
+
+
+def test_debug_log_section_survives_malformed_jsonl_around_a_resync(tmp_path):
+    """A malformed/partial line elsewhere in actions.jsonl (a live in-progress append is the
+    common real cause) must never break this section -- same contract `_action_records`
+    guarantees for every other summary here."""
+    run = tmp_path / "run_malformed"
+    run.mkdir(parents=True)
+    good = {"ts": "2026-08-15T09:12:03", "action": "observe_resync",
+            "reason": "like_candidate_without_observed_sheet", "profile_name": "Jamie"}
+    (run / "actions.jsonl").write_text(
+        "{not valid json\n" + json.dumps(good) + "\n" + "\n" + '{"incomplete":\n')
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})   # must not raise
+
+    assert "cards abandoned without a decision (resync):" in md
+    assert "profile_name=`Jamie`" in md
+
+
 def test_debug_log_section_summarises_item_index_refusals_and_realised_steps(tmp_path):
     """A long capture's failure must answer both questions that its first-frame-only capture
     record cannot: which adjacent frames broke, and whether the realised step was otherwise
@@ -579,6 +690,27 @@ def test_item_index_summary_keeps_long_geometry_once_and_separates_trailing_satu
     assert "trailing scroll saturation at step 3 was 15px" in md
     assert "item-index conservative repairs:" in md
     assert md.count("source frame 20 (index frame 19)") == 1
+
+
+@pytest.mark.parametrize("runtime_key", ("item_index_runtime", "runtime"))
+def test_item_index_repair_summary_reads_v12_runtime_with_legacy_fallback(runtime_key):
+    """Repair telemetry changed keys in v12 without making old runs opaque."""
+    summary = bugreport._item_index_repair_summary_md([json.dumps({
+        "action": "item_index_repaired",
+        runtime_key: {"algorithm_id": "bounded-card-split-v13"},
+        "repairs": [{
+            "path": "v12_mute_card_track",
+            "local_pair": [1, 2], "source_pair": [7, 9],
+            "raw": {"status": "no_consensus", "delta_px": None},
+            "effective": {"status": "measured", "delta_px": 234},
+            "mute_markers": [{"local_frame_index": 1, "source_frame_index": 7,
+                              "x": 106, "y": 876, "score": 1.0}],
+        }],
+    })])
+
+    assert "bounded-card-split-v13: 'v12_mute_card_track'" in summary
+    assert "source frames 7→9" in summary
+    assert "raw no_consensus Nonepx → effective measured 234px" in summary
 
 
 def test_debug_report_surfaces_item_numbering_manifest_and_compacts_raw_tail(tmp_path):

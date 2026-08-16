@@ -294,13 +294,19 @@ def _drv(adb, *, auto=True, openers=True, targeting_calibration=True, **cfg):
 
 
 @pytest.fixture(autouse=True)
-def _no_sleep(monkeypatch):
+def _no_sleep(monkeypatch, request):
     monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
     # This synthetic world's grayscale noise cards carry geometry, not semantic photo/prompt
     # evidence.  The real classifier has its own pixel tests and the crop layer has explicit
     # photo-only numbering tests; keep these capture/navigation tests focused on their declared
     # geometry by labelling every synthetic selectable card a photo.
     monkeypatch.setattr(hinge, "unnumber_unless_confident_photo", lambda _crop: None)
+    # Video screening has its own exact-template/ROI tests below. Every synthetic noise card here
+    # is a successfully screened still by default.
+    if request.node.name != "test_video_mute_template_is_a_near_perfect_app_ui_match":
+        monkeypatch.setattr(
+            HingeDriver, "_match_video_mute",
+            staticmethod(lambda _frame, _rect: (True, 0.0)))
     # The sticky-header OCR is a subprocess call to tesseract; it is not what this file tests,
     # and stubbing it also lets the name assertions below be exact.
     monkeypatch.setattr(HingeDriver, "_ocr_band", lambda self, *a, **k: "Ada")
@@ -382,6 +388,166 @@ def test_hinge_numbers_only_policy_approved_photos_and_preserves_prompt_heart(mo
     prompt = next(c for c in drv._current_item_payload.context if c.heart_ordinal == 2)
     assert prompt.number is None and prompt.sent and "written prompt" in prompt.reason
     assert all(isinstance(crop, bytes) and crop for crop in profile.items + profile.item_context)
+
+
+def test_video_mute_exclusion_keeps_heart_space_but_removes_model_choice(monkeypatch):
+    """A video is never numbered, while later photos retain their original heart ordinals."""
+    monkeypatch.setattr(
+        HingeDriver, "_video_selection_exclusions",
+        lambda self, frames, index: {
+            2: "video_mute_v1: upper-left mute control matched"})
+    drv = _drv(WorldAdb())
+
+    profile = drv._capture_current()
+
+    assert profile is not None and len(profile.items) == 3
+    assert drv._current_item_index.heart_count == 4
+    assert drv._current_item_payload.translation == (1, 3, 4)
+    video = next(crop for crop in drv._current_item_payload.excluded
+                 if crop.heart_ordinal == 2)
+    assert video.number is None and video.image is None and not video.sent
+    assert "video_mute_v1" in video.reason
+
+
+def test_all_video_profile_fails_before_opener_or_targeting(monkeypatch):
+    monkeypatch.setattr(
+        HingeDriver, "_video_selection_exclusions",
+        lambda self, frames, index: {
+            block.heart_ordinal: "video_mute_v1: mute control matched"
+            for block in index.selectable})
+    drv = _drv(WorldAdb())
+
+    profile = drv._capture_current()
+
+    assert profile is not None and profile.items == ()
+    assert "no policy-approved selectable item" in profile.items_unavailable
+    assert drv._current_item_index is None and drv._current_item_payload is None
+
+
+def test_video_screen_reads_only_card_local_upper_left_sightings(monkeypatch):
+    """The Android mute status icon and card like-heart are never inside the searched ROI."""
+    frames = [_frame(260 * i) for i in range(10)]
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True,
+        identity_band=_IDENTITY_BAND)
+    seen: list[tuple[int, int, int, int]] = []
+
+    def screen(_frame_bytes, rect):
+        seen.append(rect)
+        return True, (1.0 if len(seen) == 2 else 0.0)
+
+    monkeypatch.setattr(HingeDriver, "_match_video_mute", staticmethod(screen))
+    exclusions = _drv(WorldAdb())._video_selection_exclusions(frames, index)
+
+    assert exclusions and any("mute control" in reason for reason in exclusions.values())
+    # Manifest diagnostics retain only bounded geometry plus a scalar matcher score, never OCR
+    # text or image data from the prospective video card.
+    assert any("screen outcomes: f" in reason and "mute_matched@[" in reason
+               and "score=1.0" in reason for reason in exclusions.values())
+    assert all("ocr" not in reason.lower() and "pixel" not in reason.lower()
+               for reason in exclusions.values())
+    assert seen
+    assert all(x0 >= 53 and x1 <= 1027 and y0 >= round(_H * _CONTENT_BAND[0])
+               for x0, y0, x1, _y1 in seen)
+
+
+def test_video_screen_matcher_failure_fails_closed_with_bounded_roi_diagnostics(monkeypatch):
+    """An unreadable mute ROI is an exclusion, with no video content leaking into the manifest."""
+    frames = [_frame(260 * i) for i in range(10)]
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True,
+        identity_band=_IDENTITY_BAND)
+    monkeypatch.setattr(HingeDriver, "_match_video_mute", staticmethod(
+        lambda _frame_bytes, _rect: (False, None)))
+
+    exclusions = _drv(WorldAdb())._video_selection_exclusions(frames, index)
+
+    assert exclusions
+    for reason in exclusions.values():
+        assert "not targetable because upper-left mute-control screening failed" in reason
+        assert "screen outcomes: f" in reason
+        assert "matcher_failed@[" in reason
+        assert "ocr" not in reason.lower() and "pixel" not in reason.lower()
+        assert "b'" not in reason
+
+
+def test_clipped_mute_roi_does_not_overrule_a_later_successful_no_mute_screen(monkeypatch):
+    """A 9px card sliver cannot be mislabeled matcher failure and exclude a real photo."""
+    block = SimpleNamespace(
+        heart_ordinal=1, x0=_CARD_X0, x1=_CARD_X1, height=974,
+        observations=(
+            SimpleNamespace(top_observed=True, frame_index=0, frame_y0=2091, frame_y1=2100),
+            SimpleNamespace(top_observed=True, frame_index=1, frame_y0=700, frame_y1=1674),
+        ))
+    index = SimpleNamespace(selectable=(block,))
+    calls = []
+
+    def no_mute(_frame, rect):
+        calls.append(rect)
+        return True, 0.1
+
+    monkeypatch.setattr(HingeDriver, "_match_video_mute", staticmethod(no_mute))
+    exclusions = _drv(WorldAdb())._video_selection_exclusions(
+        [_frame(0), _frame(0)], index)
+
+    assert exclusions == {}
+    assert calls == [(_CARD_X0, 700, _CARD_X0 + round(0.22 * 974), 836)]
+
+
+def test_only_clipped_mute_rois_still_fail_closed_without_calling_matcher(monkeypatch):
+    """Skipping an impossible ROI is not permission when no complete screen exists at all."""
+    block = SimpleNamespace(
+        heart_ordinal=1, x0=_CARD_X0, x1=_CARD_X1, height=974,
+        observations=(
+            SimpleNamespace(top_observed=True, frame_index=0, frame_y0=2094, frame_y1=2100),
+        ))
+    index = SimpleNamespace(selectable=(block,))
+    monkeypatch.setattr(HingeDriver, "_match_video_mute", staticmethod(
+        lambda *_args: pytest.fail("an undersized ROI must be skipped before OpenCV")))
+
+    exclusions = _drv(WorldAdb())._video_selection_exclusions([_frame(0)], index)
+
+    reason = exclusions[1]
+    assert "no source frame exposed the 42x42" in reason
+    assert "insufficient_visible_roi" in reason
+
+
+def test_video_mute_template_is_a_near_perfect_app_ui_match():
+    """The embedded template contains only the stable glyph/black disk, not video pixels."""
+    template = cv2.imdecode(
+        np.frombuffer(hinge.base64.b64decode(hinge._VIDEO_MUTE_TEMPLATE_B64), dtype=np.uint8),
+        cv2.IMREAD_GRAYSCALE)
+    assert template.shape == (hinge._VIDEO_MUTE_TEMPLATE_SIDE_PX,) * 2
+    frame = np.full((_H, _W), 173, dtype=np.uint8)
+    y0, x0 = 660, 106
+    frame[y0:y0 + template.shape[0], x0:x0 + template.shape[1]] = template
+    ok, encoded = cv2.imencode(".png", frame)
+    assert ok
+
+    screened, score = HingeDriver._match_video_mute(
+        encoded.tobytes(), (_CARD_X0, 607, 268, 812))
+
+    assert screened and score == pytest.approx(1.0, abs=1e-6)
+    assert score >= hinge._VIDEO_MUTE_MATCH_THRESHOLD
+
+    class MarkerReader:
+        content_band = _CONTENT_BAND
+        _match_video_mute = staticmethod(HingeDriver._match_video_mute)
+
+    assert HingeDriver._video_mute_frame_markers(
+        MarkerReader(), [encoded.tobytes()]) == (True,)
+
+    # The identical UI pixels in Android's top bar or Hinge's right-side control lane do not
+    # grant animation-repair authority because both sit outside the frozen marker search ROI.
+    outside = np.full((_H, _W), 173, dtype=np.uint8)
+    outside[40:40 + template.shape[0], 106:106 + template.shape[1]] = template
+    outside[660:660 + template.shape[0], 900:900 + template.shape[1]] = template
+    ok, outside_encoded = cv2.imencode(".png", outside)
+    assert ok
+    assert HingeDriver._video_mute_frame_markers(
+        MarkerReader(), [outside_encoded.tobytes()]) == (False,)
 
 
 def test_the_driver_keeps_the_index_and_the_translation_table_the_profile_does_not():
@@ -914,13 +1080,16 @@ def test_item_index_refusal_saves_at_most_eight_source_mapped_frames_and_bounded
     assert len(runtime["indexer_code_sha256"]) == 64
     assert len(runtime["splitter_code_sha256"]) == 64
     sidecar = json.loads((drv._dbg.dir / refusal["evidence_sidecar"]).read_text())
-    assert sidecar["schema_version"] == 2
+    assert sidecar["schema_version"] == 6
     assert sidecar["runtime"] == runtime
     assert len(sidecar["frames"]) == 8
     assert len(sidecar["all_frame_geometry"]) == 11
+    assert sidecar["pair_evidence"] == []
     frame = sidecar["frames"][0]
-    assert {"local_frame_index", "source_frame_index", "offset_px", "blocks",
-            "background_runs"} <= set(frame)
+    assert {"local_frame_index", "source_frame_index", "offset_px", "animation_marker",
+            "video_mute_markers", "blocks", "background_runs"} <= set(frame)
+    assert frame["animation_marker"] is None
+    assert frame["video_mute_markers"] == []
     assert frame["blocks"][0]["frame_rows"] == [20, 60]
     assert frame["blocks"][0]["page_rows"] == [20, 60]
     assert frame["blocks"][0]["complete"] is True
@@ -929,6 +1098,50 @@ def test_item_index_refusal_saves_at_most_eight_source_mapped_frames_and_bounded
     assert frame["blocks"][0]["hearts"] == {
         "frame_rows": [[900, 42]], "page_rows": [[900, 42]],
     }
+
+
+def test_item_index_refusal_sidecar_keeps_measured_pair_strips_and_lookahead(tmp_path):
+    """A downstream measured contradiction remains diagnosable after an earlier refusal."""
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="item-index-pair-ledger")
+    photos = [_frame(260 * i) for i in range(5)]
+    index = item_index.build_item_index(
+        photos, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True,
+        identity_band=_IDENTITY_BAND)
+    assert index.usable, index.failures
+
+    refused = dataclasses.replace(
+        index.shifts[1], delta_px=None, consensus_px=None, status="no_consensus",
+        reason="synthetic refusal whose measured look-ahead must survive")
+    diagnostic_index = dataclasses.replace(
+        index, shifts=(index.shifts[0], refused, *index.shifts[2:]))
+    drv._item_index_refused(
+        photos, "frames 1 and 2 could not be put in one coordinate space", diagnostic_index)
+
+    actions = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    action = next(record for record in actions if record["action"] == "item_index_refused")
+    # One anchor before the failed pair and two look-ahead frames after its right endpoint.
+    assert sorted(int(Path(name).stem.rsplit("_", 1)[1]) for name in action["evidence_frames"]) \
+        == [0, 1, 2, 3, 4]
+    sidecar = json.loads((drv._dbg.dir / action["evidence_sidecar"]).read_text())
+    assert sidecar["schema_version"] == 6
+    assert len(sidecar["pair_evidence"]) == 4
+    measured_lookahead = sidecar["pair_evidence"][2]
+    assert measured_lookahead["status"] == "measured"
+    assert isinstance(measured_lookahead["delta_px"], int)
+    assert measured_lookahead["strips"]
+    assert {"frame_rows", "state", "delta_px", "score", "runner_up", "stddev", "search"} \
+        <= set(measured_lookahead["strips"][0])
+    assert measured_lookahead["structural_landmarks"]
+    assert {"before", "after"} == set(measured_lookahead["observed_gutters"])
+    assert "local_proposals" in measured_lookahead
+    assert "v12_video_track_delta_px" in measured_lookahead
+    assert measured_lookahead["v12_video_track_delta_px"] is None
+    refused_pair = sidecar["pair_evidence"][1]
+    assert any(proposal["kind"] == "exact_multi"
+               for proposal in refused_pair["local_proposals"])
 
 
 def test_item_index_runtime_provenance_hashes_loaded_indexer_not_worktree_source(
@@ -955,6 +1168,13 @@ def test_item_index_runtime_provenance_hashes_loaded_indexer_not_worktree_source
     monkeypatch.setattr(item_index, "_assemble", changed_assemble)
     helper_changed = hinge._item_index_runtime_provenance()
     assert helper_changed["indexer_code_sha256"] != baseline["indexer_code_sha256"]
+
+    # The v9 five-pair boundary helper is an explicit decision stage too.  It may be replaced in
+    # a live process independently of `build_item_index`, so provenance must name it directly.
+    with monkeypatch.context() as patched:
+        patched.setattr(item_index, "_exact_multi_strip_shift", changed_assemble)
+        assert hinge._item_index_runtime_provenance()["indexer_code_sha256"] \
+            != helper_changed["indexer_code_sha256"]
 
     # Loaded calibration globals are part of the same contract, rather than an invisible
     # behavioural input outside the code-object digest.
@@ -1048,6 +1268,13 @@ def test_item_index_repair_notes_log_original_capture_frame_after_omission_recov
         frames = (object(), object(), object())
         source_frame_indices = (0, 2, 3)
         notes = ("frame 1's sighting at page rows 600..900 spans a proven boundary",)
+        video_mute_markers = (item_index.VideoMuteMarker(
+            frame_index=1, x=106, y=876, score=1.0),)
+        repair_provenance = (item_index.ItemIndexRepair(
+            pair_index=1, path="v12_mute_card_track",
+            raw_status="no_consensus", raw_delta_px=None,
+            effective_status="measured", effective_delta_px=234,
+            marker_frames=(1,)),)
 
     debug = _Debug()
     drv._dbg = debug
@@ -1059,6 +1286,17 @@ def test_item_index_repair_notes_log_original_capture_frame_after_omission_recov
         "notes": ["source frame 2 (index frame 1)'s sighting at page rows 600..900 spans a proven boundary"],
         "note_frames": [{"local_frame_index": 1, "source_frame_index": 2}],
         "source_frame_indices": [0, 2, 3],
+        "item_index_runtime": hinge._item_index_runtime_provenance(),
+        "repairs": [{
+            "path": "v12_mute_card_track",
+            "local_pair": [1, 2], "source_pair": [2, 3],
+            "raw": {"status": "no_consensus", "delta_px": None},
+            "effective": {"status": "measured", "delta_px": 234},
+            "mute_markers": [{
+                "local_frame_index": 1, "source_frame_index": 2,
+                "x": 106, "y": 876, "score": 1.0,
+            }],
+        }],
     })]
 
 

@@ -58,6 +58,7 @@ browser-closed path) so the worker stops cleanly and flushes buffered labels.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import base64
 import dataclasses
 import difflib
 import fcntl
@@ -83,15 +84,24 @@ from ..perception.capture import Profile
 from .adb import SCROLL_X_JITTER_PX, Adb, AdbError, clamp_xy, scroll_x
 from .android_spec import AndroidAppSpec
 from .base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClosed,
-                   ItemTargetingError, open_debug_log, snapshot_failure_frame)
+                   ItemTargetingError, OBSERVE_ITEM_INCONCLUSIVE, OBSERVE_ITEM_MATCH,
+                   OBSERVE_ITEM_MISMATCH, ObserveItemCheck, open_debug_log,
+                   snapshot_failure_frame)
 from .frameshift import ShiftEstimationError
 from .item_crops import (
     PHOTO_ONLY_POLICY_ID, ItemCropError, build_item_payload, unnumber_unless_confident_photo)
 from .item_type_preflight import INCONCLUSIVE, ItemTypePreflight, preflight_item_type
 from .item_identity import IdentityError, compare_profile_identity
-from .item_index import ItemIndexError, build_item_index
+from .item_index import (
+    ItemIndexError, _edge_only_two_strip_shift, _exact_multi_strip_shift,
+    _layout_repaired_shift, _measured_layout_bridge,
+    _matched_delta_clusters, _observed_gutters, _structural_landmarks,
+    _project_to_exact_full_layout, _structural_tail_shift, VideoMuteMarker, build_item_index,
+    _video_track_deltas,
+)
 from .item_nav import ItemNavigationError, navigate_to_item
-from .item_verify import SheetVerificationError, verification_blocker, verify_sheet_item
+from .item_verify import (VERIFY_MISMATCH, SheetVerificationError, verification_blocker,
+                          verify_sheet_item)
 from .like_composer import (
     ComposerDetectionError, ComposerSurface, locate_inline_composer)
 from .scroll_step import ScrollStepError, plan_scroll_step
@@ -159,6 +169,10 @@ def _item_index_runtime_provenance() -> dict[str, str | None]:
         callable_names = (
             "build_item_index",
             "_matched_delta_clusters", "_structural_landmarks", "_layout_repaired_shift",
+            "_exact_multi_strip_shift", "_measured_layout_bridge",
+            "_project_to_exact_full_layout",
+            "_track_candidate_deltas", "_track_anchor_count", "_video_track_deltas",
+            "_repair_video_track_shifts",
             "_repair_shifts_from_layout", "_frame_offsets", "_observations",
             "_overlap_groups", "_heart_clusters", "_resolve_group",
             "_scroll_top_evidence", "_split_on_bounded_cards", "_assemble", "_tail",
@@ -710,6 +724,34 @@ _PAYWALL_OCR_WHITE_MIN = 200
 # measured-flat range rather than a tuned edge. See _ocr_band's `white_text_threshold` parameter
 # for why the ordinary recipe cannot read this band at all.
 
+# Hinge's video mute control is app-owned UI: a white muted-speaker glyph on a fixed black circle
+# at the upper-left of the media card.  Unlike video pixels and the playback timestamp, it is
+# byte-stable.  The embedded 42x42 template is the inner square of that control, wholly inside
+# the black disk so none of the person's underlying video pixels are retained.  Across the four
+# saved Shannon sightings it matches at 1.0000 even while every surrounding video frame changes.
+# Search remains card-local and top-local, so the Android mute status icon and the per-card like
+# heart are outside the ROI.  The policy threshold is intentionally near-perfect: this is an
+# exclusion/targeting decision, not a fuzzy content classifier.
+_VIDEO_MUTE_X_BAND = (0.0, 0.22)
+_VIDEO_MUTE_Y_BAND = (0.0, 0.14)
+_VIDEO_MUTE_MATCH_THRESHOLD = 0.98
+_VIDEO_MUTE_TEMPLATE_SIDE_PX = 42
+_VIDEO_MUTE_TEMPLATE_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAACoAAAAqCAAAAADgqJaHAAACiUlEQVQ4EY3BX2hNARzA8e9v"
+    "uVsjaw8e+BmRFy/+JFnCOWsKZaeNrUQ6t22KJv/CuWttDzb3IMWbc5/MtHukGA8S8ciDBybK"
+    "pnbuipqa1EKRP5tz98fY2cP5fESJS5S4RIlLlLhEiUuUuESJS5QZNlSvuPicWYjyn7L2bTC6"
+    "7wlRovyj6MjhBKGHjUSJMs1qXcy4gQqiRJmyIr2ZSYFJlCgFyU2lhNbPIe/VaghMokS5Xsm0"
+    "gVMLMxCYQCE/mFTyGRCt6OavH5cyvywPAhMSnaMNvxjXsbFuBERbmphyr30IqjIQmCQ6K3hw8"
+    "DehtoP07/qCaDoJrx8RupsjVJWBwKSpBbhzbBROngBunEbUtaG7mdDclS8Ay4PAJHF9C3D7+N"
+    "ihVmCgZgRR14ZsCkoONNx3AMuDnAFFfjng93UAgzWfQNS1obuZ2vPF+A5geRCYQPHNdUx4Xz0"
+    "MiLo2ZFOkk+A7gOVBziA079Yq8oZqhgiJujZkU6ST4DuA5UHOIK/04WLge+U78kRdG7Ip0kn"
+    "wHcDyIGeQV3dZCHW2kSfq2pBNkU6C7wCWBzmD0L4LwrjONkKirg3ZFOkk+A5geZAzgPoOoHd"
+    "oJ3CtFRB1bXj9iK1rwHcAy4PAhPoOoG/3t6uVgO+AaEsTU54lv0JVBgKTvReBt7UjJLoM4Iq"
+    "LqOXx18ezPWNVGQhMFtwrY7DmE1DklzNS149oQbfBtN7m5RkITFh0Z6x6mLzinmW7+kGUgv1"
+    "GKaF1heS9XAuBCSz9+YEJ85e8AUSZou07mJQziBJlmnluKeMGKogS5R+Jw0cLCT3dQ5Qo/yk"
+    "7sx1+Nz4mSpQZNlTP6XrDLESJS5S4RIlLlLhEiUuUuESJ6w+BFL9vsnkW/AAAAABJRU5ErkJ"
+    "ggg==")
+
 # Hinge's spec: exactly today's values (formerly the module-level `DEFAULTS` dict + the
 # `apps.hinge` block in config.yaml). calibrated=True — coords/templates verified live on the
 # Pixel 7a (1080x2400) 2026-06-27. Config-overridable (apps.hinge.* in config.yaml).
@@ -827,10 +869,11 @@ HINGE_SPEC = AndroidAppSpec(
     # withholds the input event stream from unprivileged readers on this build; recording
     # input is a rooted-device capability. No code change here can recover it.
     #
-    # This is a lost EXTRA layer, not the fix: the identity anchor above is what stops a human
-    # scroll being recorded as a PASS, and it is fully verified against real device frames.
-    # What is given up is the narrower set of cases only a real tap could disambiguate -- a
-    # rewind/nav tap that changes the card without being a decision, and the same-first-name
+    # With this extra layer unavailable, wait_for_decision fails closed: raw pixel identity is
+    # only a candidate advance, and a PASS additionally requires the different card-header name
+    # to be read cleanly on both settled frames. Ambiguous header reflows resync without a label.
+    # What is still given up is the narrower set of cases only a real tap could disambiguate --
+    # a rewind/nav tap that changes the card without being a decision, and the same-first-name
     # collision (see _is_current_profile_frame). Both are logged as accepted risk in
     # ops/ANTI-BOT-RESEARCH.md with a §5 re-check trigger.
     #
@@ -3183,6 +3226,222 @@ class AndroidDriver(DatingAppDriver):
         return plan_scroll_step(segmentation, x_frac=x_frac,
                                 profile_min_spacing_px=min_spacing_px)
 
+    @staticmethod
+    def _match_video_mute(frame: bytes, rect: tuple[int, int, int, int],
+                          ) -> tuple[bool, float | None]:
+        """Return whether one card-local ROI contains the exact Hinge mute control.
+
+        ``screened=False`` means decode/template/matcher failure, not "no video".  The control's
+        inner square is entirely black-background UI plus white glyph, so ordinary
+        ``TM_CCOEFF_NORMED`` can make the promised near-perfect comparison without a mask whose
+        OpenCV support varies by method/version.
+        """
+        try:
+            import cv2
+            import numpy as np
+
+            image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+            template = cv2.imdecode(
+                np.frombuffer(base64.b64decode(_VIDEO_MUTE_TEMPLATE_B64), dtype=np.uint8),
+                cv2.IMREAD_GRAYSCALE)
+            if image is None or template is None:
+                return False, None
+            x0, y0, x1, y1 = rect
+            if not (0 <= x0 < x1 <= image.shape[1] and 0 <= y0 < y1 <= image.shape[0]):
+                return False, None
+            roi = image[y0:y1, x0:x1]
+            if roi.shape[0] < template.shape[0] or roi.shape[1] < template.shape[1]:
+                return False, None
+            score = float(cv2.minMaxLoc(
+                cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED))[1])
+            return True, score
+        except Exception:  # noqa: BLE001 — selection screening fails closed; it never raises
+            return False, None
+
+    @staticmethod
+    def _locate_video_mute(frame: bytes, rect: tuple[int, int, int, int],
+                           ) -> tuple[bool, float | None, tuple[int, int] | None]:
+        """Return the origin of the same exact mute match used by the selection screen."""
+        try:
+            import cv2
+            import numpy as np
+
+            image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+            template = cv2.imdecode(
+                np.frombuffer(base64.b64decode(_VIDEO_MUTE_TEMPLATE_B64), dtype=np.uint8),
+                cv2.IMREAD_GRAYSCALE)
+            if image is None or template is None:
+                return False, None, None
+            x0, y0, x1, y1 = rect
+            if not (0 <= x0 < x1 <= image.shape[1] and 0 <= y0 < y1 <= image.shape[0]):
+                return False, None, None
+            roi = image[y0:y1, x0:x1]
+            if roi.shape[0] < template.shape[0] or roi.shape[1] < template.shape[1]:
+                return False, None, None
+            _min, score, _min_loc, max_loc = cv2.minMaxLoc(
+                cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED))
+            return True, float(score), (x0 + max_loc[0], y0 + max_loc[1])
+        except Exception:  # noqa: BLE001 — no location is no repair authority
+            return False, None, None
+
+    def _video_mute_frame_markers(self, frames: list[bytes]) -> tuple[bool, ...]:
+        """Affirmative per-frame video UI evidence for the generic item indexer.
+
+        The full-frame search is still tightly bounded: left 30% of the screen and only the
+        configured content band.  That contains the card-local mute control but excludes both
+        Android's top-bar mute icon and Hinge's right-side like hearts.  Matcher failure is False
+        (no repair authority); the later per-card selection screen remains independently
+        fail-closed before anything can be numbered.
+        """
+        markers: list[bool] = []
+        for frame in frames:
+            try:
+                import cv2
+                import numpy as np
+
+                image = cv2.imdecode(
+                    np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+                if image is None:
+                    markers.append(False)
+                    continue
+                height, width = image.shape
+                rect = (0, round(self.content_band[0] * height), round(0.30 * width),
+                        round(self.content_band[1] * height))
+                screened, score = self._match_video_mute(frame, rect)
+                markers.append(bool(screened and score is not None
+                                    and score >= _VIDEO_MUTE_MATCH_THRESHOLD))
+            except Exception:  # noqa: BLE001 — marker absence never grants repair authority
+                markers.append(False)
+        return tuple(markers)
+
+    def _video_mute_marker_rows(self, frames: list[bytes]) -> tuple[VideoMuteMarker, ...]:
+        """Positioned mute observations for v12's physical-card tracker.
+
+        The old boolean reader remains for manifests/tests, but production indexing receives
+        these rows: a video can carry its identity after the control itself scrolls offscreen.
+        """
+        markers: list[VideoMuteMarker] = []
+        for frame_index, frame in enumerate(frames):
+            try:
+                import cv2
+                import numpy as np
+
+                image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+                if image is None:
+                    continue
+                height, width = image.shape
+                rect = (0, round(self.content_band[0] * height), round(0.30 * width),
+                        round(self.content_band[1] * height))
+                ok, score, origin = self._locate_video_mute(frame, rect)
+                if ok and origin is not None and score is not None and score >= _VIDEO_MUTE_MATCH_THRESHOLD:
+                    markers.append(VideoMuteMarker(
+                        frame_index=frame_index, x=origin[0], y=origin[1], score=score))
+            except Exception:  # noqa: BLE001 — no affirmative marker is no repair authority
+                continue
+        return tuple(markers)
+
+    def _video_selection_exclusions(self, frames: list[bytes], index) -> dict[int, str]:
+        """Map mute-marked/unscreenable heart ordinals to post-index payload exclusions.
+
+        ItemIndex deliberately keeps video blocks and their hearts: their stable card edges and
+        gutters are valid scroll evidence, and removing a heart from page space would shift every
+        target below it.  This method acts later, at the product-policy boundary.  It looks only
+        inside each selectable block's upper-left overlay ROI; the Android mute status icon and
+        the per-card like heart are outside that rectangle.  One near-perfect app-UI match is
+        affirmative video evidence.
+
+        Neither the absence of a sufficiently visible top sighting nor matcher failures with no
+        successful search prove a still photograph. That physical card is therefore excluded
+        from automatic targeting. A successful full-ROI search with no mute control clears it;
+        clipped slivers are skipped as geometry, and the independent photo classifier still
+        decides whether the crop is actually photographic.
+        """
+        blocks = tuple(getattr(index, "selectable", ()) or ())
+        excluded: dict[int, str] = {}
+        for block in blocks:
+            ordinal = block.heart_ordinal
+            if ordinal is None:
+                continue
+            top_sightings = tuple(
+                obs for obs in block.observations
+                if obs.top_observed and 0 <= obs.frame_index < len(frames))
+            if not top_sightings:
+                excluded[ordinal] = (
+                    "video_mute_v1: not targetable because no source frame observed the card "
+                    "top needed for mute-control screening")
+                continue
+
+            screened = False
+            failed = False
+            mute_frames: list[int] = []
+            insufficient_frames: list[int] = []
+            outcomes: list[dict[str, object]] = []
+            for obs in top_sightings:
+                card_width = block.x1 - block.x0
+                x0 = block.x0 + round(_VIDEO_MUTE_X_BAND[0] * card_width)
+                x1 = block.x0 + round(_VIDEO_MUTE_X_BAND[1] * card_width)
+                y0 = obs.frame_y0 + round(_VIDEO_MUTE_Y_BAND[0] * block.height)
+                y1 = min(obs.frame_y1,
+                         obs.frame_y0 + round(_VIDEO_MUTE_Y_BAND[1] * block.height))
+                # A top grazing the analysed band's bottom can expose fewer rows than the
+                # 42x42 mute template. That is incomplete geometry, not matcher failure: skip
+                # it and use a later full sighting. With no full sighting, screening still
+                # fails closed below.
+                if (x1 - x0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX
+                        or y1 - y0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX):
+                    insufficient_frames.append(obs.frame_index)
+                    outcomes.append({"source_frame_index": obs.frame_index,
+                                     "roi": [x0, y0, x1, y1],
+                                     "outcome": "insufficient_visible_roi"})
+                    continue
+                ok, score = self._match_video_mute(
+                    frames[obs.frame_index], (x0, y0, x1, y1))
+                if not ok:
+                    failed = True
+                    outcomes.append({"source_frame_index": obs.frame_index,
+                                     "roi": [x0, y0, x1, y1],
+                                     "outcome": "matcher_failed"})
+                    continue
+                screened = True
+                outcomes.append({"source_frame_index": obs.frame_index,
+                                 "roi": [x0, y0, x1, y1],
+                                 "outcome": ("mute_matched" if score is not None
+                                             and score >= _VIDEO_MUTE_MATCH_THRESHOLD
+                                             else "no_mute_match"),
+                                 "score": (round(float(score), 6)
+                                           if score is not None else None)})
+                if score is not None and score >= _VIDEO_MUTE_MATCH_THRESHOLD:
+                    mute_frames.append(obs.frame_index)
+
+            def outcome_summary(values: list[dict[str, object]]) -> str:
+                # Geometry and UI-match outcomes only: no crop bytes, image content, OCR text,
+                # or matcher exceptions enter a profile manifest.
+                return "; ".join(
+                    f"f{value['source_frame_index']}:{value['outcome']}@"
+                    f"{value['roi']}"
+                    + (f" score={value['score']}" if value.get("score") is not None else "")
+                    for value in values[:12])
+
+            if mute_frames:
+                excluded[ordinal] = (
+                    "video_mute_v1: upper-left Hinge mute control matched in card source "
+                    f"frame(s) {sorted(set(mute_frames))}; videos are retained for scroll "
+                    "geometry but are never numbered or likeable; screen outcomes: "
+                    + outcome_summary(outcomes))
+            elif not screened:
+                failed_frames = [value["source_frame_index"] for value in outcomes
+                                 if value["outcome"] == "matcher_failed"]
+                blocker = (
+                    "upper-left mute-control screening failed in source frame(s) "
+                    f"{failed_frames}" if failed else
+                    f"no source frame exposed the {_VIDEO_MUTE_TEMPLATE_SIDE_PX}x"
+                    f"{_VIDEO_MUTE_TEMPLATE_SIDE_PX} upper-left mute-control template area; "
+                    f"clipped source frame(s) {insufficient_frames}")
+                excluded[ordinal] = (
+                    f"video_mute_v1: not targetable because {blocker}; screen outcomes: "
+                    + outcome_summary(outcomes))
+        return excluded
+
     def _index_captured_items(self, photos: list[bytes]) -> str:
         """Fold this capture's frames into doc 5.3's index and doc 5.2's crops.
 
@@ -3230,10 +3489,16 @@ class AndroidDriver(DatingAppDriver):
         # fail-loud indexing outcome.
         index = None
         try:
+            video_mute_markers = self._video_mute_marker_rows(photos)
+            animation_markers = tuple(any(marker.frame_index == frame_index
+                                          for marker in video_mute_markers)
+                                      for frame_index in range(len(photos)))
             index = build_item_index(
                 photos, content_band=self.content_band,
                 like_template=self._template("like"), like_threshold=_LIKE_MATCH_THRESHOLD,
-                at_scroll_top=True, identity_band=self.identity_band)
+                at_scroll_top=True, identity_band=self.identity_band,
+                animation_markers=animation_markers,
+                video_mute_markers=video_mute_markers)
             if not index.usable:
                 return self._item_index_refused(
                     photos, "the item index this capture produced contradicts itself, so its "
@@ -3260,8 +3525,11 @@ class AndroidDriver(DatingAppDriver):
             else:
                 # Compatibility with a legacy/index test double that predates frame provenance.
                 indexed_photos = photos
+            video_exclusions = self._video_selection_exclusions(indexed_photos, index)
             payload = build_item_payload(
-                indexed_photos, index, unnumber=unnumber_unless_confident_photo)
+                indexed_photos, index,
+                exclude=lambda block: video_exclusions.get(block.heart_ordinal),
+                unnumber=unnumber_unless_confident_photo)
             if not payload.usable:
                 return self._item_index_refused(
                     photos, "the item crops this capture produced are not a request the model can "
@@ -3416,10 +3684,36 @@ class AndroidDriver(DatingAppDriver):
             if not notes:
                 return
             first = note_frames[0]["source_frame_index"] if note_frames else None
+            runtime = _item_index_runtime_provenance()
+            mute_markers = tuple(getattr(index, "video_mute_markers", ()) or ())
+            repairs = []
+            for repair in tuple(getattr(index, "repair_provenance", ()) or ())[:16]:
+                local = getattr(repair, "pair_index", None)
+                if not isinstance(local, int) or not 0 <= local + 1 < len(source):
+                    continue
+                marker_frames = tuple(getattr(repair, "marker_frames", ()) or ())
+                marker_evidence = [
+                    {"local_frame_index": marker.frame_index,
+                     "source_frame_index": source[marker.frame_index],
+                     "x": marker.x, "y": marker.y, "score": marker.score}
+                    for marker in mute_markers
+                    if marker.frame_index in marker_frames
+                    and 0 <= marker.frame_index < len(source)]
+                repairs.append({
+                    "path": getattr(repair, "path", None),
+                    "local_pair": [local, local + 1],
+                    "source_pair": [source[local], source[local + 1]],
+                    "raw": {"status": getattr(repair, "raw_status", None),
+                            "delta_px": getattr(repair, "raw_delta_px", None)},
+                    "effective": {"status": getattr(repair, "effective_status", None),
+                                  "delta_px": getattr(repair, "effective_delta_px", None)},
+                    "mute_markers": marker_evidence,
+                })
             self._dbg.action("item_index_repaired",
                              before=(photos[first] if first is not None else None),
                              notes=notes, note_frames=note_frames,
-                             source_frame_indices=list(source))
+                             source_frame_indices=list(source), item_index_runtime=runtime,
+                             repairs=repairs)
         except Exception:  # noqa: BLE001 -- diagnostics must never affect a usable capture
             pass
 
@@ -3473,6 +3767,15 @@ class AndroidDriver(DatingAppDriver):
 
             offsets = tuple(getattr(index, "offsets", ()) or ())
             frames = tuple(getattr(index, "frames", ()) or ())
+            shifts = tuple(getattr(index, "shifts", ()) or ())
+            animation_markers = tuple(getattr(index, "animation_markers", ()) or ())
+            mute_markers = tuple(getattr(index, "video_mute_markers", ()) or ())
+            try:
+                track_deltas = _video_track_deltas(
+                    frames, shifts, mute_markers, extent_tolerance_px=getattr(
+                        index, "extent_tolerance_px", 8))
+            except Exception:  # noqa: BLE001 -- provenance cannot affect a refusal
+                track_deltas = {}
 
             def geometry_record(local: int, screenshot: str | None = None) -> dict:
                 original = source[local] if local < len(source) else local
@@ -3512,6 +3815,13 @@ class AndroidDriver(DatingAppDriver):
                 record = {
                     "local_frame_index": local, "source_frame_index": original,
                     "offset_px": offsets[local] if local < len(offsets) else None,
+                    "animation_marker": (animation_markers[local]
+                                         if local < len(animation_markers) else None),
+                    "video_mute_markers": [
+                        {"x": getattr(marker, "x", None), "y": getattr(marker, "y", None),
+                         "score": getattr(marker, "score", None)}
+                        for marker in mute_markers
+                        if getattr(marker, "frame_index", None) == local],
                     "blocks": blocks, "background_runs": runs,
                 }
                 if screenshot is not None:
@@ -3532,14 +3842,98 @@ class AndroidDriver(DatingAppDriver):
             # instead of silently omitting a non-cited fragment that made a repair back out.
             geometry_count = min(len(frames), len(source))
             all_frame_geometry = [geometry_record(local) for local in range(geometry_count)]
+
+            def pair_record(local: int) -> dict:
+                """Numeric raw evidence and local proposals for one adjacent frame pair."""
+                shift = shifts[local]
+                before, after = frames[local], frames[local + 1]
+                strips = []
+                for strip in tuple(getattr(shift, "strips", ()) or ())[:32]:
+                    strips.append({
+                        "frame_rows": [getattr(strip, "y0", None), getattr(strip, "y1", None)],
+                        "state": getattr(strip, "state", None),
+                        "delta_px": getattr(strip, "delta_px", None),
+                        "score": getattr(strip, "score", None),
+                        "runner_up": getattr(strip, "runner_up", None),
+                        "stddev": getattr(strip, "stddev", None),
+                        "search": list(getattr(strip, "search", ()) or ())[:2],
+                    })
+                proposals = []
+                for kind, proposer in (
+                    ("layout", lambda: _layout_repaired_shift(local, before, after, shift)),
+                    ("edge", lambda: _edge_only_two_strip_shift(local, before, after, shift)),
+                    ("structural_tail", lambda: _structural_tail_shift(
+                        local, before, after, shift)),
+                    ("exact_multi", lambda: _exact_multi_strip_shift(
+                        local, before, after, shift)),
+                ):
+                    proposed, note = proposer()
+                    if note is not None:
+                        proposals.append({
+                            "kind": kind, "delta_px": getattr(proposed, "delta_px", None),
+                            "agreeing": getattr(proposed, "agreeing", None), "note": note[:1000],
+                        })
+                        if kind == "layout":
+                            projected, projection_note = _project_to_exact_full_layout(
+                                local, before, after, shift, proposed)
+                            if projection_note is not None:
+                                proposals.append({
+                                    "kind": "measured_bridge_projection",
+                                    "delta_px": getattr(projected, "delta_px", None),
+                                    "agreeing": getattr(projected, "agreeing", None),
+                                    "note": projection_note[:1000],
+                                })
+                bridge_shift, bridge_note = _measured_layout_bridge(
+                    local, before, after, shift,
+                    allow_full_layout_projection=True)
+                if bridge_note is not None:
+                    proposals.append({
+                        "kind": "measured_bridge",
+                        "delta_px": getattr(bridge_shift, "delta_px", None),
+                        "agreeing": getattr(bridge_shift, "agreeing", None),
+                        "note": bridge_note[:1000],
+                    })
+                return {
+                    "pair": [local, local + 1],
+                    "source_pair": [source[local], source[local + 1]],
+                    "status": getattr(shift, "status", None),
+                    "delta_px": getattr(shift, "delta_px", None),
+                    "consensus_px": getattr(shift, "consensus_px", None),
+                    "confidence": getattr(shift, "confidence", None),
+                    "agreeing": getattr(shift, "agreeing", None),
+                    "dissenting": getattr(shift, "dissenting", None),
+                    "eligible": getattr(shift, "eligible", None),
+                    "reason": str(getattr(shift, "reason", ""))[:1000],
+                    "strips": strips,
+                    "matched_delta_clusters": [
+                        {"delta_px": delta, "voters": list(voters)}
+                        for delta, voters in _matched_delta_clusters(shift)
+                    ],
+                    "structural_landmarks": [list(value)
+                                             for value in _structural_landmarks(before, after)],
+                    "observed_gutters": {
+                        "before": [list(value) for value in _observed_gutters(before)],
+                        "after": [list(value) for value in _observed_gutters(after)],
+                    },
+                    "local_proposals": proposals,
+                    "v12_video_track_delta_px": track_deltas.get(local),
+                }
+
+            # Every pair is bounded to 32 numeric strip records; unlike screenshots this carries
+            # no profile pixels or text.  Keeping measured pairs is essential: the fifth saved
+            # refusal's first broken chain hid a later +207px measured majority whose exact
+            # top/bottom/heart geometry was +221px, and v2 had discarded its strip bank.
+            pair_count = min(len(shifts), max(0, len(frames) - 1), max(0, len(source) - 1))
+            pair_evidence = [pair_record(local) for local in range(pair_count)]
             sidecar = f"item_index_refused_{dossier_id}_evidence.json"
             # The image payload is capped at eight frames; structured geometry is bounded by the
             # capture ceiling, 64 blocks/runs per frame, and 12 hearts/block.  Reason remains
             # short because the full prose is already in actions.jsonl.
             (debug_dir / sidecar).write_text(json.dumps({
-                "schema_version": 2, "reason": str(reason)[:2000],
+                "schema_version": 6, "reason": str(reason)[:2000],
                 "runtime": runtime_provenance, "frames": records,
-                "all_frame_geometry": all_frame_geometry}, separators=(",", ":")))
+                "all_frame_geometry": all_frame_geometry,
+                "pair_evidence": pair_evidence}, separators=(",", ":")))
             return sidecar, saved
         except Exception:  # noqa: BLE001 -- disk trouble cannot change a hard refusal
             return None, []
@@ -3605,6 +3999,13 @@ class AndroidDriver(DatingAppDriver):
             pair = rec.get("pair")
             if isinstance(pair, list):
                 cited_local.extend(v for v in pair if isinstance(v, int))
+                if (len(pair) == 2 and all(isinstance(v, int) for v in pair)):
+                    # Preserve one anchor before and two frames after every refused pair.  The
+                    # look-ahead is still subject to the existing eight-image cap, but catches a
+                    # measured downstream contradiction: v2 stopped at frame 10 while frame 11
+                    # was the first screenshot proving +207px should have been +221px.
+                    cited_local.extend(range(
+                        max(0, pair[0] - 1), min(len(photos), pair[1] + 3)))
         runtime_provenance = _item_index_runtime_provenance()
         sidecar, evidence_frames = self._save_item_index_refusal_evidence(
             photos, reason, index, cited_local, runtime_provenance)
@@ -4999,6 +5400,13 @@ class AndroidDriver(DatingAppDriver):
                                   verdict.preview.x0, verdict.preview.x1])
         if verdict.matched:
             return
+        if verdict.distance is None:
+            intended = next(c for c in verdict.comparisons if c.number == model_item_index)
+            raise HingeTargetingError(
+                f"{self.spec.app}: the like sheet could not confirm model item "
+                f"{model_item_index}: {intended.reason}. The opener is NOT typed and the like "
+                f"is NOT sent; the sheet is left open for debugging.",
+                stage="verify", intended=model_item_index, index_space="model_items")
         # Never send a commentless like, never ship a comment attached to the wrong item, never
         # rewrite the opener to match whatever we hit (all three are owner rules, and the third is
         # why there is no anchored re-ask here -- that repair callback was removed outright on
@@ -5018,9 +5426,8 @@ class AndroidDriver(DatingAppDriver):
     # There is deliberately no `supports_*` capability flag beside it: the method's PRESENCE is
     # the capability, worker.py tests exactly that, and a second declaration of the same fact is
     # one more thing that can drift out of agreement with the first.
-    def observe_item_mismatch(self, sheet: bytes, model_item_index: int) -> str:
-        """"" when the open comment sheet in `sheet` IS showing model item `model_item_index` of
-        the profile this driver enumerated; otherwise the operator-facing reason it is not.
+    def observe_item_check(self, sheet: bytes, model_item_index: int) -> ObserveItemCheck:
+        """Classify the open composer's selected item as match, mismatch, or inconclusive.
 
         DOC 5.9's MISMATCH GUARD, and the reason it exists is that the inversion removed a
         guarantee. While observe generated AFTER the tap, the suggestion was right by
@@ -5061,50 +5468,90 @@ class AndroidDriver(DatingAppDriver):
         design, and a second writer would interleave records in the artefact a bug report is
         reconstructed from. The console line the caller prints is this check's record.
         """
+        def result(state: str, reason: str = "") -> ObserveItemCheck:
+            return ObserveItemCheck(state, reason)
+
         calibration = self.targeting_calibration
         if calibration is None:
-            return self.targeted_suggestion_blocker()
+            return result(OBSERVE_ITEM_INCONCLUSIVE, self.targeted_suggestion_blocker())
         payload = self._current_item_payload
         index = self._current_item_index
         if payload is None or index is None:
-            return (f"this driver holds no numbered items for the profile on screen, so there is "
-                    f"no way to tell whether the sheet is showing item {model_item_index}: "
-                    f"{self._current_items_unavailable or 'no reason was recorded'}")
+            return result(
+                OBSERVE_ITEM_INCONCLUSIVE,
+                f"this driver holds no numbered items for the profile on screen, so there is "
+                f"no way to tell whether the sheet is showing item {model_item_index}: "
+                f"{self._current_items_unavailable or 'no reason was recorded'}")
         try:
             composer = locate_inline_composer(
                 sheet, self._template("confirm"), threshold=0.8)
         except ComposerDetectionError as exc:
-            return (f"the inline Send Like composer could not be structurally confirmed "
-                    f"({exc}), so the suggestion is not offered")
+            return result(
+                OBSERVE_ITEM_INCONCLUSIVE,
+                f"the inline Send Like composer could not be structurally confirmed "
+                f"({exc}), so the suggestion is not offered")
         try:
             verdict = compare_profile_identity(
                 sheet, index.identity, identity_band=self.identity_band,
                 match_max_dist=calibration.identity_match_max_dist)
         except IdentityError as exc:
-            return (f"the profile on the like sheet could not be checked against the one item "
-                    f"{model_item_index} was cropped from ({exc}), so the suggestion is not "
-                    f"offered")
+            return result(
+                OBSERVE_ITEM_INCONCLUSIVE,
+                f"the profile on the like sheet could not be checked against the one item "
+                f"{model_item_index} was cropped from ({exc}), so the suggestion is not "
+                f"offered")
         if not verdict.matched:
-            return (f"the like sheet is not on the profile item {model_item_index} was cropped "
-                    f"from, so this suggestion is about a card you are no longer looking at. "
-                    f"{verdict.reason}")
+            reason = (f"the like sheet is not on the profile item {model_item_index} was cropped "
+                      f"from, so this suggestion is about a card you are no longer looking at. "
+                      f"{verdict.reason}")
+            return result(
+                OBSERVE_ITEM_MISMATCH if verdict.mismatched else OBSERVE_ITEM_INCONCLUSIVE,
+                reason)
         try:
             blocker = verification_blocker(payload, model_item_index)
             if blocker:
-                return blocker
+                return result(OBSERVE_ITEM_INCONCLUSIVE, blocker)
             sheet_verdict = verify_sheet_item(
                 sheet, payload, model_item_index,
                 absolute_max_dist=calibration.inline_item_max_dist,
                 composer_surface=composer)
         except (SheetVerificationError, ItemCropError) as exc:
-            return (f"the like sheet could not be checked against model item "
-                    f"{model_item_index} ({exc}), so the suggestion is not offered")
+            return result(
+                OBSERVE_ITEM_INCONCLUSIVE,
+                f"the like sheet could not be checked against model item "
+                f"{model_item_index} ({exc}), so the suggestion is not offered")
         if sheet_verdict.matched:
-            return ""
+            return result(OBSERVE_ITEM_MATCH)
+        # A nearest *reachable* crop is not the item the human opened when the intended crop
+        # could not be measured at all (for example a still-settling inline reframe).  It is
+        # merely the closest remaining candidate.  Calling that a positive identification was
+        # the Alex report's false "you opened item 6" while the sheet was actually item 3.
+        if sheet_verdict.distance is None:
+            intended = next(c for c in sheet_verdict.comparisons
+                            if c.number == model_item_index)
+            return result(
+                OBSERVE_ITEM_INCONCLUSIVE,
+                f"the selected image could not yet be confirmed as model item "
+                f"{model_item_index}: {intended.reason}. The suggestion is withheld until "
+                f"the sheet can be checked again")
+        if sheet_verdict.state != VERIFY_MISMATCH:
+            return result(OBSERVE_ITEM_INCONCLUSIVE, sheet_verdict.reason)
         actual = ("nothing this profile was indexed with" if sheet_verdict.nearest_index is None
                   else f"item {sheet_verdict.nearest_index}")
-        return (f"you opened {actual}, but this suggestion was written about item "
-                f"{model_item_index}. {sheet_verdict.reason}")
+        return result(
+            OBSERVE_ITEM_MISMATCH,
+            f"you opened {actual}, but this suggestion was written about item "
+            f"{model_item_index}. {sheet_verdict.reason}")
+
+    def observe_item_mismatch(self, sheet: bytes, model_item_index: int) -> str:
+        """Compatibility wrapper: empty on match, otherwise the operator-facing refusal.
+
+        New Observe state machines consume :meth:`observe_item_check` so a transient unreadable
+        refresh is not confused with positive evidence of the wrong item. Auto and existing
+        external/test callers retain the original string contract.
+        """
+        check = self.observe_item_check(sheet, model_item_index)
+        return "" if check.state == OBSERVE_ITEM_MATCH else check.reason
 
     # --- reviewed Observe action bridge ---------------------------------
     def observe_open_targeted_like(self, model_item_index: int, *, should_stop=None) -> None:
@@ -5759,15 +6206,21 @@ class AndroidDriver(DatingAppDriver):
                     self._identity_top_name_verdict = "same"
                 elif state == "top":
                     # The scroll-top geometry is the one this crop was measured against, so a
-                    # candidate different name can identify a real advance. It is still only a
-                    # first observation: wait_for_decision requires a second ``new`` read
-                    # before it can produce a PASS.
-                    candidate = next(
-                        (tok for tok in tokens
-                         if tok.casefold() not in _TOP_NAME_CHROME_WORDS
-                         and sum(ch.isalpha() for ch in tok) >= 3),
-                        None)
-                    if candidate is not None:
+                    # CLEAN different name can identify a real advance. Exactly one non-chrome
+                    # candidate is required: the 2026-08-16 Julia failure's crop included photo
+                    # texture and OCR'd dozens of unrelated words. Taking the first one would
+                    # turn arbitrary image noise into a person's name and recreate the false
+                    # PASS even after the repeated-name gate below. A measured real header read
+                    # may include "Signals Active today", but those are all filtered as chrome,
+                    # leaving exactly the name ("Zorva", "Qelix", ...). Zero or multiple
+                    # candidates is inconclusive. It is still only a first observation:
+                    # wait_for_decision requires the clean ``new`` read on the settle frame too.
+                    candidates = [
+                        tok for tok in tokens
+                        if tok.casefold() not in _TOP_NAME_CHROME_WORDS
+                        and sum(ch.isalpha() for ch in tok) >= 3
+                    ]
+                    if len(candidates) == 1:
                         state = "new"
                         self._identity_top_name_verdict = "new"
                 # When the original pixel state was ``new``, a nonmatch might just be OCR of
@@ -5849,12 +6302,13 @@ class AndroidDriver(DatingAppDriver):
                       every gesture since ready was a drag with no tap at all (a tap-gesture
                       app's card cannot advance from a drag), or the human's last tap did not
                       land on the pass control. worker.py already treats a returned None as
-                      "recapture, record nothing" (worker.py:226) -- exactly right here.
+                      "recapture, record nothing" (worker._observe_loop's `liked is None` branch) -- exactly right here.
           'no_data' — nothing to corroborate WITH: the watcher isn't configured/running, or it
                       has parsed zero events for the whole run (the health exception -- a
-                      broken sensor must never veto a real advance, see the printed warning
-                      below). Callers fall back to the identity-and-deck-proven advance alone,
-                      the same as if observe_touch_watch were off entirely.
+                      broken sensor is not affirmative evidence either way, see the printed
+                      warning below). Callers may accept the advance only when the different
+                      profile name was also positively read on both settled frames; a
+                      pixel-only identity-band change resyncs without recording.
         """
         watcher = self._touch_watcher
         if not self.observe_touch_watch or watcher is None or not watcher.alive:
@@ -5867,8 +6321,8 @@ class AndroidDriver(DatingAppDriver):
             if not self._touch_watch_health_warned:
                 self._touch_watch_health_warned = True
                 print(f"{self.spec.app}: touch watcher has seen no events this run; falling "
-                      f"back to identity-only decision proof (check `adb shell getevent` on "
-                      f"this device).")
+                      f"back to repeated next-profile name proof (check `adb shell getevent` "
+                      f"on this device).")
             return "no_data"
 
         radius = self._observe_tap_radius_px()      # "landed ON the control" -- generous
@@ -6298,11 +6752,31 @@ class AndroidDriver(DatingAppDriver):
                 # per 0.35s poll), ask whether a real deck is actually underneath. Deck ready ->
                 # the human is deliberating, re-arm. Not ready -> leave the budget running and
                 # draw the next interval.
+                #
+                # The deck-ready probe is necessary but NOT sufficient, and assuming it was cost
+                # a second false stop of its own kind. Hinge hides the floating like heart at
+                # some scroll offsets -- measured on the 2026-08-15 report's own frames, where
+                # 00020/00021 are ordinary mid-read positions with the pass X visible and NO
+                # heart, so _observe_deck_ready is False on them. An owner who scrolls to such a
+                # position and then simply READS for the drawn budget (>= 90s, median ~104s --
+                # entirely normal on a long prompt answer; this very run held one screen for
+                # 2m20s) would never re-arm, and the watchdog would stop the run claiming it
+                # could not recognize the screen -- while the screen was the profile being
+                # watched, controls and all.
+                #
+                # So ask the identity anchor as well. A band that still matches the captured
+                # profile's sticky header IS a positive recognition of exactly the thing this
+                # loop is watching, which is what _observe_recognized documents itself as
+                # meaning, and it is the same verdict Layer 1 below already treats as
+                # authoritative. It does not weaken the paywall guard this watchdog exists for:
+                # a paywall's band matches no captured header, so it still counts down and still
+                # bails. Deck-ready is tried FIRST because it is pure template matching, so the
+                # healthy case never reaches _identity_of's OCR at all.
                 now = time.monotonic()
                 if now - self._observe_stuck_probe_at >= self._observe_stuck_probe_interval_s:
                     self._observe_stuck_probe_at = now
                     self._observe_stuck_probe_interval_s = human_delay(_OBSERVE_STUCK_CHECK_S)
-                    if self._observe_deck_ready(cur):
+                    if self._observe_deck_ready(cur) or self._identity_of(cur)[0] == "same":
                         self._observe_recognized()
                 self._note_observe_waiting("no_change", cur)
                 time.sleep(_OBSERVE_POLL_S)
@@ -6484,14 +6958,14 @@ class AndroidDriver(DatingAppDriver):
             # recorded exactly that manual read as a PASS. Requiring `new` on BOTH independently
             # captured frames makes the safe error a missed/resync decision, never a label on
             # the wrong person's profile.
-            proven = (
+            stable_identity_advance = (
                 not self._observe_like_sheet_visible(confirm)
                 and self._observe_deck_ready(confirm)
                 and not self._changed(cur, confirm)
                 and identity_state == "new"
                 and confirm_identity_state == "new"
             )
-            if not proven:
+            if not stable_identity_advance:
                 self._note_observe_waiting("not_settled", confirm)
                 time.sleep(_OBSERVE_POLL_S)
                 continue                              # still settling / reverted -- keep watching
@@ -6499,10 +6973,13 @@ class AndroidDriver(DatingAppDriver):
             # LAYER 3: corroborate the now identity-and-deck-proven advance against the
             # human's OWN touch stream, when this app is configured to read one (read-only --
             # see touchwatch.py; this driver never injects anything on this path).
-            # 'no_data' (watcher off, not running, or healthy-but-empty for this window) falls
-            # through to the identity-proven advance alone -- corroboration INFRASTRUCTURE
-            # being unavailable must never itself veto a real decision, only affirmative
-            # evidence of a NON-decision (a resync) does.
+            # A positively located pass-control gesture is sufficient corroboration even if
+            # OCR could not read the next name.  With no gesture data, however, raw pixel
+            # identity is NOT sufficient: the 2026-08-16 Julia incident produced two stable
+            # ``new`` pixel verdicts from nothing more than Hinge vertically reflowing its
+            # filter chips and card header. Both screenshots still showed Julia. In that
+            # fallback state require the independent card-header OCR to have positively read
+            # a different name on BOTH frames. Failure is an unlabeled resync, never a PASS.
             verdict = self._observe_gesture_verdict(confirm)
             # profile_name, not name: DebugLog.action's own first positional parameter is
             # `name` (the action-type string, "observe_decision"/"observe_resync" below) --
@@ -6527,16 +7004,27 @@ class AndroidDriver(DatingAppDriver):
             if verdict == "resync":
                 # The card DID change, but nothing corroborates a human decision causing it
                 # (only a drag, or a tap that didn't land on the pass control). worker.py
-                # already treats a returned None as "recapture, record nothing" (worker.py:226)
+                # already treats a returned None as "recapture, record nothing" (worker._observe_loop's `liked is None` branch)
                 # -- exactly the right outcome for a resync, never a silent mislabel.
                 self._dbg_action("observe_resync", base, **fields)
                 return None
+            name_advance_proven = (
+                identity_name_verdict == "new"
+                and confirm_identity_name_verdict == "new"
+            )
+            if verdict == "no_data" and not name_advance_proven:
+                self._dbg_action(
+                    "observe_resync", base,
+                    reason="pass_identity_name_unconfirmed",
+                    **fields,
+                )
+                return None
             self._dbg_action("observe_decision", base, decision="pass", **fields)
-            return False                              # identity + deck-ready + settle (+ gesture) -> pass
+            return False                              # identity + deck-ready + settle + gesture/name -> pass
         return None
 
     def _notify_observe_like_intent(self, callback, active: bool,
-                                    anchor: bytes | None = None) -> None:
+                                    anchor: bytes | None = None, *, refresh: bool = False) -> None:
         """Best-effort notification for the passive Hinge observe flow.
 
         This helper intentionally performs no ADB input. If displaying or generating
@@ -6576,7 +7064,10 @@ class AndroidDriver(DatingAppDriver):
         """
         if callback is None:
             return
-        if self._dbg is not None and active and anchor is not None:
+        # A sheet can settle its preview after its Send Like controls are already visible.  The
+        # worker needs those later frames to correct a provisional item reading, but repeating
+        # the provenance action on every 0.4 s poll would turn one human tap into a noisy log.
+        if self._dbg is not None and active and anchor is not None and not refresh:
             self._dbg.action("observe_like_anchor", before=anchor)   # best-effort; DebugLog.action never raises
         try:
             callback(active, anchor)
@@ -6677,6 +7168,15 @@ class AndroidDriver(DatingAppDriver):
         like; closing the sheet onto Hinge's transient sending UI is deliberately neither.
         The base card (or another captured frame of the current profile) is a dismissal.
 
+        This is also entered SPECULATIVELY, from wait_for_decision's bottom-only-delta branch,
+        before any composer has been seen -- because a real one may still be animating up. In
+        that state (`intent_notified` False) it is a *candidate* resolver, not a like resolver:
+        it can only ever conclude "no like happened, keep waiting on this card" (False) or
+        "the card is no longer the one we captured" (None -> resync), never a LIKE. Every
+        verdict below that reads differently depending on which of the two states it is in says
+        so explicitly; see the `require_content` comment in the loop for the measured incident
+        on each side.
+
         This loop shares wait_for_decision's stuck-screen budget (self._observe_stuck_budget_s,
         floored at _OBSERVE_STUCK_S -- see _observe_stuck_budget), armed once per profile-wait by
         that method and re-armed with a fresh draw by every _observe_recognized() call, with a
@@ -6714,6 +7214,14 @@ class AndroidDriver(DatingAppDriver):
                 if not intent_notified:
                     self._notify_observe_like_intent(on_like_intent, True, cur)   # cur already proves the sheet -- see wait_for_decision's call sites
                     intent_notified = True
+                else:
+                    # The first structurally-valid composer frame can still be mid-animation:
+                    # its selected-photo preview may be clipped differently from the settled
+                    # sheet.  Re-check the live anchor while the sheet remains visible, so one
+                    # such frame cannot leave the hub claiming a different item until the human
+                    # manually scrolls/reopens it.  This is a refresh of one tap, not another
+                    # tap, hence no duplicate `observe_like_anchor` debug action.
+                    self._notify_observe_like_intent(on_like_intent, True, cur, refresh=True)
                 # HALF of the watchdog's deliberate ASYMMETRY here (the other half is at the
                 # `like_sending` notice at the bottom of this loop). `like_sheet` means the sheet
                 # is OPEN and the HUMAN is composing a comment, which is human-paced and must
@@ -6726,9 +7234,53 @@ class AndroidDriver(DatingAppDriver):
                 self._note_observe_waiting("like_sheet", cur)
                 time.sleep(_OBSERVE_POLL_S)
                 continue
-            # require_content=True: at THIS call site a wrong "still the current profile"
-            # verdict throws away a like the human really sent (see the flag's docstring).
-            current = cur == base or self._is_current_profile_frame(cur, require_content=True)
+            # A single negative glyph read is not enough to call a human's compose sheet closed.
+            # The 2026-08-15 trace contained exactly that flap (like_sheet -> like_sending ->
+            # like_sheet three seconds later).  Confirm the negative reading before entering
+            # closed/sending resolution; a reappearing sheet is still an open, human-paced draft.
+            if intent_notified:
+                time.sleep(_OBSERVE_POLL_S)
+                confirm_sheet = self._screencap(on_blank="none")
+                if confirm_sheet is None:
+                    continue
+                if self._observe_like_sheet_visible(confirm_sheet):
+                    self._observe_like_evidence = confirm_sheet
+                    self._notify_observe_like_intent(
+                        on_like_intent, True, confirm_sheet, refresh=True)
+                    self._observe_recognized()
+                    self._note_observe_waiting("like_sheet", confirm_sheet)
+                    time.sleep(_OBSERVE_POLL_S)
+                    continue
+                cur = confirm_sheet
+
+            # `require_content` is ASYMMETRIC on purpose, and the axis is `intent_notified`,
+            # because the two states of this resolver pay opposite prices for a wrong verdict.
+            #
+            # SHEET OBSERVED (intent_notified) -- the strict two-signal rule, unchanged: a wrong
+            # "still the current profile" throws away a like the human really sent, and a
+            # same-first-name next card can make the header collide (see the flag's docstring).
+            #
+            # NO SHEET EVER OBSERVED -- there is no like to throw away. This branch can only
+            # return False (nothing happened, keep waiting on this card) or None (resync); it
+            # can never return True, so no content check is protecting a label here. The prices
+            # are therefore REVERSED: the costly error is a wrong "not current", and it costs
+            # the whole profile. That is the 2026-08-15 Alex report -- the owner only scrolled
+            # to read, the sticky header stayed pixel-identical the entire time (measured 0.000
+            # across every frame of that read, and wait_for_decision's Layer 1 had used exactly
+            # that 'same' verdict to keep waiting three seconds earlier), but the manual scroll
+            # offset matched none of the capture-time downsamples. require_content=True turned
+            # an identity-proven SAME CARD into "not current", the deck glyphs were legitimately
+            # on screen, and the no-sheet branch below resynced a profile nobody had decided on,
+            # discarding a five-minute read and its opener.
+            #
+            # Deferring to the identity anchor here introduces no new risk class: it is the same
+            # verdict the outer loop already treats as authoritative on every single poll. What
+            # it removes is this resolver being quietly STRICTER than that loop while running on
+            # WEAKER evidence -- a bottom-only delta, which a fling settling, a snackbar, or a
+            # keyboard transition all produce.
+            require_content = intent_notified
+            current = cur == base or self._is_current_profile_frame(
+                cur, require_content=require_content)
             ready = not current and self._observe_deck_ready(cur)
             if current or ready:
                 self._observe_recognized()            # back on the known card, or on a ready deck
@@ -6742,7 +7294,7 @@ class AndroidDriver(DatingAppDriver):
                 if self._observe_like_sheet_visible(confirm):
                     continue                          # sheet reappeared / animation still resolving
                 confirm_current = confirm == base or self._is_current_profile_frame(
-                    confirm, require_content=True)
+                    confirm, require_content=require_content)   # same asymmetry as `current`
                 if current and confirm_current:
                     return False, intent_notified     # genuinely back on the current profile
                 if (ready and not confirm_current and self._observe_deck_ready(confirm)
@@ -6760,12 +7312,30 @@ class AndroidDriver(DatingAppDriver):
                     # sheet evidence means no human like evidence.  Return None (worker
                     # resyncs and records no preference) rather than False: False asserts a
                     # dismissal of a sheet we never observed, while True would invent a LIKE.
+                    #
+                    # Reaching here now MEANS the identity anchor could not name this card as
+                    # the captured profile on either frame (`current` above consults it without
+                    # the content requirement when no sheet was seen), so the card really may
+                    # have moved on beneath us. Resync is still the right answer for that: the
+                    # alternative -- keep waiting -- would leave the loop watching a card whose
+                    # `_current_sigs`/profile are stale, and attribute the human's NEXT decision
+                    # to the person they already left, which is the corrupted-label failure this
+                    # whole design exists to prevent.
+                    #
+                    # The identity states are logged because their ABSENCE is what made the
+                    # 2026-08-15 report expensive to diagnose: the record said only
+                    # `current=False, deck_ready=True`, while the decisive fact -- that the
+                    # sticky header still read the captured name -- was nowhere in it.
                     if not intent_notified:
+                        identity_state, _identity_dist = self._identity_of(cur)
+                        confirm_identity_state, _confirm_dist = self._identity_of(confirm)
                         self._dbg_action(
                             "observe_resync", base,
                             reason="like_candidate_without_observed_sheet",
                             sheet_seen=False,
                             profile_name=self._identity_name,
+                            identity=identity_state,
+                            confirm_identity=confirm_identity_state,
                             current=False,
                             deck_ready=True,
                         )
@@ -6841,12 +7411,18 @@ class AndroidDriver(DatingAppDriver):
         ~18 against that profile's own scroll-top chrome) -- never BETWEEN two people. Two
         different profiles who happen to share a first name render that header identically, so
         'same' can be wrong for a genuinely new card. In wait_for_decision's scroll-vs-pass
-        check a wrong 'same' merely defers (keep waiting, decide nothing). Here in
-        _await_like_resolved it DISCARDS: a like the human actually sent reads as a dismissal
-        and is silently dropped. So that caller passes require_content=True and gets 'same'
-        only when the header AND the photos agree -- two independent signals that would both
-        have to collide at once -- while the cheap identity-only path stays for the caller
-        whose worst case is patience."""
+        check a wrong 'same' merely defers (keep waiting, decide nothing). In
+        _await_like_resolved, ONCE A COMPOSER HAS BEEN OBSERVED, it DISCARDS: a like the human
+        actually sent reads as a dismissal and is silently dropped. So that caller passes
+        require_content=True in that state and gets 'same' only when the header AND the photos
+        agree -- two independent signals that would both have to collide at once -- while the
+        cheap identity-only path stays for the callers whose worst case is patience.
+
+        That same resolver passes require_content=False BEFORE any sheet has been observed, and
+        the reason is that the sentence above stops being true there: with no composer seen it
+        cannot return a LIKE at all, so a wrong 'same' discards nothing and merely keeps
+        watching, while a wrong 'not current' resyncs a card the owner is still reading. See its
+        own `require_content` comment for the 2026-08-15 report that mis-set asymmetry produced."""
         state, _dist = self._identity_of(frame)
         if state == "new":
             return False                              # the header proves it is NOT this card

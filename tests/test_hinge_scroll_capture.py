@@ -249,6 +249,32 @@ def test_list_ready_devices_exits_nonzero_when_adb_binary_missing(monkeypatch, c
     assert "not found" in capsys.readouterr().err.lower()
 
 
+def test_list_ready_devices_exits_nonzero_when_adb_command_fails(monkeypatch, capsys):
+    monkeypatch.setattr(
+        hsc.subprocess, "run",
+        lambda argv, **kw: subprocess.CompletedProcess(
+            argv, 1, stdout=b"", stderr=b"adb server is unavailable"))
+
+    with pytest.raises(SystemExit) as exc:
+        hsc._list_ready_devices("adb")
+    assert exc.value.code != 0
+    err = capsys.readouterr().err
+    assert "exit code 1" in err and "server is unavailable" in err
+
+
+@pytest.mark.parametrize("seconds, interval", [
+    (0.0, 0.0), (-1.0, 0.0), (float("nan"), 0.0),
+    (1.0, -0.1), (1.0, float("inf")),
+])
+def test_capture_rejects_invalid_timing_before_creating_output(tmp_path, seconds, interval):
+    out_dir = tmp_path / "out"
+
+    with pytest.raises(ValueError, match="finite value"):
+        hsc.capture(adb=FakeAdb([b"frame"]), seconds=seconds, interval=interval,
+                    out_dir=out_dir, serial="SER1", progress=False)
+    assert not out_dir.exists()
+
+
 # --- main() wiring, --help, and end-to-end with a fake device -----------------------------
 
 def test_main_help_exits_cleanly_without_touching_device(monkeypatch):

@@ -645,6 +645,33 @@ def test_api_start_rejects_non_object_json_before_launching_run(monkeypatch, pay
         _join_hub_watch_threads()
 
 
+@pytest.mark.parametrize("path", [
+    "/api/observe/action", "/api/hub/open", "/api/hub/ping", "/api/hub/closed",
+])
+@pytest.mark.parametrize("payload", [b"not-json", b"[]", b"null"])
+def test_api_post_endpoints_reject_non_object_json_without_crashing(path, payload):
+    """POST handlers all read JSON fields, so their shared HTTP boundary must reject
+    malformed/non-object JSON before any handler reaches ``body.get(...)``."""
+    _Handler.state = HubState("config.yaml")
+    httpd = _bind("127.0.0.1", 8799)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_address[1]}{path}", data=payload,
+            method="POST", headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req, timeout=5)
+        assert exc_info.value.code == 400
+        response = json.loads(exc_info.value.read())
+        assert response["ok"] is False
+        assert "JSON object" in response["msg"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        _join_hub_watch_threads()
+
+
 def test_hub_card_shows_single_accuracy_metric():
     # One metric (ROC-AUC as accuracy %); the old PR-AUC/ROC-AUC/Brier/diminishing lines are gone.
     assert "e.roc_auc[0]*100" in _PAGE                # accuracy = ROC-AUC x 100

@@ -157,18 +157,26 @@ def _row_id(row: dict) -> str:
     return hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
 
 
-def _day_start_job_config(start_dt: datetime):
+def _day_start_job_config(start_dt: datetime, *, app: str | None = None):
     """QueryJobConfig binding `start_dt` as the `day_start` TIMESTAMP parameter shared by
-    count_today/spend_today (see local_midnight_epoch). Falls back to a minimal duck-typed
-    stand-in when the SDK isn't installed: the ``client`` is injectable (see module
-    docstring) so tests run against a fake client and never touch the real BigQuery API."""
+    count_today/spend_today (see local_midnight_epoch), and optionally the application name.
+    Falls back to a minimal duck-typed stand-in when the SDK isn't installed: the ``client`` is
+    injectable (see module docstring) so tests run against a fake client and never touch the
+    real BigQuery API."""
+    parameters = [("day_start", "TIMESTAMP", start_dt)]
+    if app is not None:
+        parameters.append(("app", "STRING", app))
     try:
         from google.cloud import bigquery
     except ImportError:
         return SimpleNamespace(query_parameters=[
-            SimpleNamespace(name="day_start", type_="TIMESTAMP", value=start_dt)])
+            SimpleNamespace(name=name, type_=kind, value=value)
+            for name, kind, value in parameters
+        ])
     return bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter("day_start", "TIMESTAMP", start_dt)])
+        bigquery.ScalarQueryParameter(name, kind, value)
+        for name, kind, value in parameters
+    ])
 
 
 def _missing_optional_opener_retractions(exc: Exception, *, ensure: bool) -> bool:
@@ -383,12 +391,11 @@ class BigQueryStore:
     def count_today(self, app: str) -> int:
         """Auto-mode swipes recorded today (LOCAL day — same boundary as
         SQLiteStore.count_today, via local_midnight_epoch(), NOT a UTC reporting day)."""
-        safe = app.replace("'", "").replace("\\", "")
         start_dt = datetime.fromtimestamp(local_midnight_epoch(), tz=timezone.utc)
         rows = self.client.query(
             f"SELECT COUNT(*) AS c FROM `{self._tid('decisions')}` "
-            f"WHERE app='{safe}' AND created_at >= @day_start AND source='auto'",
-            job_config=_day_start_job_config(start_dt),
+            "WHERE app=@app AND created_at >= @day_start AND source='auto'",
+            job_config=_day_start_job_config(start_dt, app=app),
         ).result()
         for r in rows:
             return int(r["c"])

@@ -17,6 +17,9 @@ from .state import HubState, validate_stop_after_seconds
 
 _BROWSER_SHUTDOWN_GRACE_S = 1.5
 _BROWSER_STALE_CHECK_S = 5.0
+# Hub requests only carry a few IDs and small action records.  Bound the body before reading it
+# so a malformed/local client cannot make a ThreadingHTTPServer worker buffer an unbounded body.
+_MAX_REQUEST_BODY_BYTES = 1_048_576
 # Ctrl-C's grace period for an active run to flush/save before the process exits
 # anyway. Generous enough to cover the run's own bounded shutdown (supervisor.py
 # joins each of up to 2 app workers for up to 30s each) plus real save time, while
@@ -107,16 +110,24 @@ class _Handler(BaseHTTPRequestHandler):
         threading.Thread(target=_target, name="hub-tab-stale-watch", daemon=True).start()
 
     def do_POST(self) -> None:
-        length = int(self.headers.get("Content-Length", 0) or 0)
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            self._json({"ok": False, "msg": "Content-Length must be an integer"}, 400)
+            return
+        if length < 0 or length > _MAX_REQUEST_BODY_BYTES:
+            self._json({"ok": False, "msg": "request body is too large"}, 413)
+            return
         raw = self.rfile.read(length) if length else b""
         try:
             body = json.loads(raw) if raw else {}
         except ValueError:
             body = None
+        if self.path in {"/api/start", "/api/observe/action", "/api/hub/open",
+                         "/api/hub/ping", "/api/hub/closed"} and not isinstance(body, dict):
+            self._json({"ok": False, "msg": "request body must be a JSON object"}, 400)
+            return
         if self.path == "/api/start":
-            if not isinstance(body, dict):
-                self._json({"ok": False, "msg": "start request must be a JSON object"}, 400)
-                return
             mpr = body.get("max_per_run")           # auto-mode per-run cap (0 = unlimited)
             try:
                 mpr = int(mpr) if mpr is not None else None

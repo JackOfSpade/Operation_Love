@@ -874,7 +874,6 @@ def test_observe_does_not_name_a_reachable_neighbour_when_the_intended_item_was_
         baseline = item_verify.verify_sheet_item(
             _SHEETS[0], driver._current_item_payload, 1, composer_surface=_COMPOSER_SURFACE,
             absolute_max_dist=10.0)
-        mine = next(c for c in baseline.comparisons if c.number == 1)
         unavailable = dataclasses.replace(
             baseline, state=item_verify.VERIFY_MISMATCH, nearest_index=2, distance=None,
             comparisons=tuple(

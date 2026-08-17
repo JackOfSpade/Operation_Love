@@ -12,6 +12,7 @@ like/dislike classes are present, so the bot doesn't swipe blind on no signal.
 from __future__ import annotations
 
 import math
+import threading
 
 # Shared with ranker/evaluate.py's offline CV, so the reported accuracy can't
 # silently drift from the classifier actually shipped in PreferenceModel.
@@ -76,52 +77,69 @@ class PreferenceModel:
         self.n_labels = 0
         self._clf = None
         self._impl = None
+        # supervisor shares one PreferenceModel through every Worker.  A retrain must be
+        # observed as one state transition: readers either use the completed classifier or wait
+        # for the completed failure/not-ready state, never see the temporary cleared sentinel
+        # while fit() is running.
+        self._lock = threading.RLock()
 
     @property
     def ready(self) -> bool:
-        return self._clf is not None
+        with self._lock:
+            return self._clf is not None
 
     def train(self, samples: list[tuple[bool, list[float]]]) -> bool:
         """samples: list of (liked, feature_vector). Returns whether the model is ready."""
-        self.n_labels = len(samples)
-        if self.n_labels < self.min_labels:
+        # Retraining is an all-or-nothing replacement.  In particular, do not keep serving a
+        # classifier trained on an older label set when the current one is insufficient or its
+        # fit fails: that would make ``retrain`` appear to have failed loudly while the swipe
+        # loop still acts on stale preferences.  Clear the readiness sentinel before every
+        # validation/fit attempt; a newly fitted classifier is published only after fit()
+        # succeeds below.
+        # Hold the same lock readers use for the complete fit. A separate "training" flag
+        # would let ready() return an obsolete classifier while the new labels are being fitted;
+        # clearing without this lock made the opposite mistake, exposing a transient not-ready
+        # state. Blocking briefly is the only honest answer for a shared mutable model.
+        with self._lock:
             self._clf = None
-            return False
-        X = [v for (_, v) in samples]
-        y = [1 if liked else 0 for (liked, _) in samples]
-        if len(set(y)) < 2:   # need both like and dislike examples
-            self._clf = None
-            return False
-        n_likes = sum(y)
-        if min(n_likes, len(y) - n_likes) < self.min_per_class:
-            self._clf = None
-            return False
-        # The ONLY intended fallback is "sklearn isn't installed" (ImportError) -> the
-        # pure-Python LR. Scope the try to the import alone: a genuine fit FAILURE (e.g.
-        # NaN/inf in the feature vectors, which sklearn rejects) must surface loudly, not
-        # be swallowed into a silently-degraded model that reports ready=True and then
-        # auto-swipes on garbage (the pure-Python LR has no NaN guard and would fit NaN
-        # weights). This is training/inference code, not best-effort logging.
-        try:
-            clf = new_classifier()
-        except ImportError:
-            clf = _PurePyLogReg()
-            clf.fit(X, y)
-            self._impl, self._clf = "purepy", clf
-        else:
-            # Outside the except: a real bug in .fit() (bad shapes, NaN/inf embeddings,
-            # a sklearn version incompatibility) propagates instead of silently and
-            # permanently degrading to the pure-Python fallback with no signal.
-            clf.fit(X, y)
-            self._impl, self._clf = "sklearn", clf
-        return True
+            self._impl = None
+            self.n_labels = len(samples)
+            if self.n_labels < self.min_labels:
+                return False
+            X = [v for (_, v) in samples]
+            y = [1 if liked else 0 for (liked, _) in samples]
+            if len(set(y)) < 2:   # need both like and dislike examples
+                return False
+            n_likes = sum(y)
+            if min(n_likes, len(y) - n_likes) < self.min_per_class:
+                return False
+            # The ONLY intended fallback is "sklearn isn't installed" (ImportError) -> the
+            # pure-Python LR. Scope the try to the import alone: a genuine fit FAILURE (e.g.
+            # NaN/inf in the feature vectors, which sklearn rejects) must surface loudly, not
+            # be swallowed into a silently-degraded model that reports ready=True and then
+            # auto-swipes on garbage (the pure-Python LR has no NaN guard and would fit NaN
+            # weights). This is training/inference code, not best-effort logging.
+            try:
+                clf = new_classifier()
+            except ImportError:
+                clf = _PurePyLogReg()
+                clf.fit(X, y)
+                self._impl, self._clf = "purepy", clf
+            else:
+                # Outside the except: a real bug in .fit() (bad shapes, NaN/inf embeddings,
+                # a sklearn version incompatibility) propagates instead of silently and
+                # permanently degrading to the pure-Python fallback with no signal.
+                clf.fit(X, y)
+                self._impl, self._clf = "sklearn", clf
+            return True
 
     def predict_proba(self, vec: list[float]) -> float:
-        if self._clf is None:
-            raise RuntimeError("PreferenceModel is not ready (not enough labels)")
-        if self._impl == "sklearn":
-            return float(self._clf.predict_proba([vec])[0][1])
-        return self._clf.predict_proba(vec)
+        with self._lock:
+            if self._clf is None:
+                raise RuntimeError("PreferenceModel is not ready (not enough labels)")
+            if self._impl == "sklearn":
+                return float(self._clf.predict_proba([vec])[0][1])
+            return self._clf.predict_proba(vec)
 
     def decide(self, vec: list[float]) -> tuple[str, float]:
         p = self.predict_proba(vec)

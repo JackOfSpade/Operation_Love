@@ -25,7 +25,11 @@ class DebugLog:
         self.dir = Path(base_dir) / stamp
         self.dir.mkdir(parents=True, exist_ok=True)
         self._log = self.dir / "actions.jsonl"
-        self._n = 0
+        # A worker can restart a driver while retaining its run id. actions.jsonl
+        # already appends in that case, so continue the screenshot sequence too:
+        # restarting at zero would overwrite the first run's evidence while old
+        # records still referenced those names.
+        self._n = _highest_shot_sequence(self.dir)
         self._shots: deque[tuple[tuple[str, str], Path]] = deque()
         # (label, sha256(frame bytes)) -> filename, for shots currently alive in `_shots`
         # (rotating, normal shots only -- see _save_shot). The LABEL is part of the key on
@@ -44,6 +48,13 @@ class DebugLog:
         # dedup existed (see _save_shot's `if not rotate` branch, which never touches this dict
         # in either direction).
         self._keep = max(1, int(keep_shots))
+        # A restart retains the run directory and JSONL. Rebuild the live normal-shot ring before
+        # accepting any more frames, otherwise every restarted DebugLog gets a fresh cap and one
+        # long run can grow without bound. The rare keep_before screenshot is named explicitly;
+        # error records already identify their permanently kept ``screenshot``. Any malformed or
+        # missing record is handled as an ordinary numbered shot, so recovery remains best-effort
+        # and never blocks a driver.
+        self._restore_shot_state()
         # Observe suggestions can publish from their provider thread while the device thread is
         # waiting for a manual decision. Release-evidence facts share this log, so guard the
         # filename counter, rotating-shot index and JSONL append as one operation.
@@ -81,25 +92,47 @@ class DebugLog:
             return name                                    # error shots are kept forever (never rotated)
         self._shot_hashes[key] = name
         self._shots.append((key, self.dir / name))
-        while len(self._shots) > self._keep:               # rotation: drop the oldest NORMAL shots
+        self._trim_normal_shots()
+        return name
+
+    def _restore_shot_state(self) -> None:
+        """Rebuild the normal-shot ring from a prior instance of this run.
+
+        The directory is authoritative for liveness: old JSONL records may legitimately point
+        at files already removed by rotation. New keep_before records name that exception, while
+        error logs retain their established ``screenshot`` convention; any other legacy numbered
+        PNG is treated as normal so the cap can still be recovered rather than silently abandoned.
+        """
+        protected = _protected_shot_names(self._log)
+        seen: set[str] = set()
+        for path in sorted(self.dir.glob("*.png"), key=_shot_sort_key):
+            if path.name in protected or path.name in seen or _shot_sequence(path) is None:
+                continue
+            seen.add(path.name)
+            key = _shot_key(path)
+            if key is None:
+                # An unreadable file cannot be a valid dedup target, but it still counts toward
+                # the cap and can be cleaned up like every other ordinary screenshot.
+                key = ("", path.name)
+            else:
+                self._shot_hashes[key] = path.name
+            self._shots.append((key, path))
+        self._trim_normal_shots()
+
+    def _trim_normal_shots(self) -> None:
+        """Enforce the run-wide cap without touching protected evidence."""
+        while len(self._shots) > self._keep:
             old_key, old_path = self._shots.popleft()
             # Drop the hash entry together with the file it names. Without this, the NEXT
-            # identical frame would keep resolving to a filename that no longer exists on disk
-            # -- turning "dedup points at a live file" into "dedup points at nothing" the moment
-            # rotation runs, rather than only much later. This does not make stale references
-            # impossible: a JSONL record written earlier for `old_path`, before it aged out of
-            # the ring just now, is left exactly as stale as any pre-dedup rotated-away record
-            # has always been -- rotation has never gone back and rewritten old actions.jsonl
-            # lines, dedup or not. Clearing the entry here only stops the problem from
-            # compounding forward: a repeat of that same screen AFTER this rotation is simply
-            # treated as new and saved fresh, same as any other frame that's never been seen.
+            # identical frame would keep resolving to a filename that no longer exists on disk.
+            # Old JSONL references are intentionally left as historical records, exactly as
+            # they were before restart recovery existed.
             if self._shot_hashes.get(old_key) == old_path.name:
                 del self._shot_hashes[old_key]
             try:
                 old_path.unlink()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 — best-effort cleanup must never break logging
                 pass
-        return name
 
     def _write(self, record: dict) -> None:
         try:
@@ -127,6 +160,10 @@ class DebugLog:
                 rec["after"] = a
             if anchor_name:
                 rec["anchor"] = anchor_name
+            if b and keep_before:
+                # The only exceptional action-shot policy. Normal before/after/anchor files are
+                # the recovery default, so recording each one would bloat a long-lived JSONL.
+                rec["kept_before"] = b
             self._write(rec)
 
     def error(self, name: str, frame: bytes | None, exc: BaseException) -> None:
@@ -140,3 +177,62 @@ class DebugLog:
 
 
 HingeDebugLog = DebugLog          # backward-compat alias (older imports / tests)
+
+
+def _highest_shot_sequence(directory: Path) -> int:
+    """Return the highest numeric prefix used by a debug screenshot filename.
+
+    Ignore unrelated PNGs and malformed names in a user-managed debug directory;
+    only this module's ``00001_label.png`` convention reserves a sequence number.
+    """
+    highest = 0
+    for path in directory.glob("*.png"):
+        prefix, separator, _ = path.name.partition("_")
+        if separator and prefix.isdecimal():
+            highest = max(highest, int(prefix))
+    return highest
+
+
+def _shot_sequence(path: Path) -> int | None:
+    """This module's numeric screenshot prefix, or None for unrelated PNGs."""
+    prefix, separator, _ = path.name.partition("_")
+    return int(prefix) if separator and prefix.isdecimal() else None
+
+
+def _shot_sort_key(path: Path) -> tuple[int, str]:
+    return (_shot_sequence(path) or 0, path.name)
+
+
+def _shot_key(path: Path) -> tuple[str, str] | None:
+    """Dedup key for a persisted normal shot, or None if it cannot be read."""
+    try:
+        _prefix, _separator, label = path.name.partition("_")
+        return (label.removesuffix(".png"), hashlib.sha256(path.read_bytes()).hexdigest())
+    except Exception:  # noqa: BLE001 — restart recovery must remain best-effort
+        return None
+
+
+def _protected_shot_names(log_path: Path) -> set[str]:
+    """Names that restart recovery must never put in the rotating pool."""
+    protected: set[str] = set()
+    try:
+        lines = log_path.open()
+    except Exception:  # noqa: BLE001 — absent/unreadable log is a recoverable empty history
+        return protected
+    try:
+        with lines:
+            for line in lines:
+                try:
+                    record = json.loads(line)
+                except Exception:  # noqa: BLE001 — retain usable history around a malformed line
+                    continue
+                kept_before = record.get("kept_before")
+                if isinstance(kept_before, str):
+                    protected.add(kept_before)
+                # Error records have always used this shape and were never rotating.
+                screenshot = record.get("screenshot")
+                if isinstance(screenshot, str) and "error" in record:
+                    protected.add(screenshot)
+    except Exception:  # noqa: BLE001 — a mid-read I/O failure keeps usable prior history
+        pass
+    return protected

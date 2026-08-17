@@ -837,6 +837,126 @@ def test_one_negative_composer_poll_does_not_close_a_still_open_sheet(monkeypatc
     assert waiting and all(fields["reason"] == "like_sheet" for fields in waiting)
 
 
+def test_two_negative_composer_pairs_do_not_spend_a_human_draft_as_sending(monkeypatch):
+    """Transient detector failures must not turn an edited sheet into app work.
+
+    The first negative pair is the old confirmation guard; this covers the next failure too,
+    before the focused composer becomes detectable again. No like_sending heartbeat may appear
+    and the recognized-sheet budget must be refreshed while we are still uncertain.
+    """
+    adb = FakeAdb(
+        [b"negative-1", b"negative-2", b"negative-3", b"negative-4", b"sheet"],
+        advance_on_screencap=True,
+    )
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
+    calls = {"n": 0}
+
+    def should_stop():
+        calls["n"] += 1
+        return calls["n"] > 3
+
+    sent, seen = drv._await_like_resolved(
+        b"base", None, should_stop, intent_notified=True)
+
+    assert sent is None and seen is True
+    waiting = [fields for name, fields in drv._dbg.calls if name == "observe_waiting"]
+    assert waiting and all(fields["reason"] == "like_sheet" for fields in waiting)
+    assert any(fields.get("composer_detection") == "unconfirmed" for fields in waiting)
+
+
+def test_focused_partial_composer_is_not_a_shared_composer_proof():
+    """A selection overlay may hide the top input border while the keyboard remains open."""
+    import cv2
+    import numpy as np
+
+    canvas = np.full((2400, 1080), 250, dtype=np.uint8)
+    # The visible lower input outline, CTA, literal glyph, and Android keyboard reproduce the
+    # read-only fallback's evidence. Deliberately omit the top input outline: strict location
+    # must still refuse geometry for typing.
+    canvas[1299:1302, 110:970] = 238
+    canvas[1334:1443, 390:985] = 228
+    glyph = hinge._load_template("hinge_send_like.png")
+    gh, gw = glyph.shape
+    canvas[1383 - gh // 2:1383 - gh // 2 + gh,
+           695 - gw // 2:695 - gw // 2 + gw] = glyph
+    canvas[1560:, :] = 43
+    ok, encoded = cv2.imencode(".png", canvas)
+    assert ok
+
+    drv = _drv(FakeAdb([]))
+    frame = encoded.tobytes()
+    assert drv._locate_inline_composer(frame) is None
+    assert drv._focused_draft_composer_visible(frame)
+    assert not drv._observe_like_sheet_visible(frame)
+    assert drv._observe_like_sheet_detection == "not_visible"
+
+
+def test_focused_partial_only_defers_a_prior_strict_like_intent(monkeypatch):
+    """Weak focused-draft evidence can keep a known human draft open, never create intent."""
+    adb = FakeAdb([b"strict-miss", b"focused-partial"], advance_on_screencap=True)
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
+    monkeypatch.setattr(drv, "_focused_draft_composer_visible", lambda _frame: True)
+    callbacks = []
+    calls = {"n": 0}
+
+    def should_stop():
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    sent, seen = drv._await_like_resolved(
+        b"base", None, should_stop,
+        on_like_intent=lambda active, anchor=None: callbacks.append((active, anchor)),
+        intent_notified=True,
+    )
+
+    assert sent is None and seen is True
+    assert callbacks == []                         # no new/refreshed intent from weak evidence
+    waiting = [fields for name, fields in drv._dbg.calls if name == "observe_waiting"]
+    assert waiting and waiting[-1]["composer_detection"] == "focused_partial"
+
+
+def test_focused_partial_never_originates_intent_or_a_like_outcome(monkeypatch):
+    """A candidate with no strict composer proof remains unlabeled, even if fallback matches."""
+    adb = FakeAdb([b"candidate"])
+    drv = _drv(adb)
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
+    partial_calls = []
+    monkeypatch.setattr(drv, "_focused_draft_composer_visible",
+                        lambda frame: partial_calls.append(frame) or True)
+    callbacks = []
+    calls = {"n": 0}
+
+    def should_stop():
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    result = drv.wait_for_decision(
+        timeout=None, should_stop=should_stop,
+        on_like_intent=lambda active, anchor=None: callbacks.append((active, anchor)),
+    )
+
+    assert result is None
+    assert partial_calls == []                     # fallback cannot originate the resolver
+    assert callbacks == []
+
+
+def test_focused_partial_does_not_block_the_strict_only_session_top_path(monkeypatch):
+    """Auto/session paths must never treat the observe-only fallback as an open sheet."""
+    drv = _drv(FakeAdb([b"partial"]))
+    monkeypatch.setattr(drv, "_focused_draft_composer_visible", lambda _frame: True)
+    calls = []
+    monkeypatch.setattr(drv, "_scroll_to_top", lambda _stop: calls.append("scroll") or True)
+
+    drv._ensure_session_top()
+
+    assert calls == ["scroll"]
+    assert drv._session_top_done is True
+
+
 def test_waiting_notice_always_fires_when_the_reason_changes(monkeypatch):
     """Rate-limiting by CHANNEL rather than by reason hid the informative event: a
     no_change -> not_deck_ready transition is precisely the moment the screen started moving,

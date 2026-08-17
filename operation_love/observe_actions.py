@@ -10,6 +10,14 @@ from __future__ import annotations
 import secrets
 import threading
 import time
+from collections import OrderedDict
+
+
+# Completed reviewed actions are retained only to make a just-retried HTTP request idempotent.
+# They are not the durable audit trail (the worker/store own that), and a hub can remain open
+# through arbitrarily many cards and runs.  Keep a generous recent window without turning an
+# otherwise long-lived local hub into an unbounded in-memory action log.
+_MAX_COMPLETED_RESULTS = 256
 
 
 class ObserveActionBridge:
@@ -25,7 +33,9 @@ class ObserveActionBridge:
         self._workers = {}
         self._cards = {}
         self._pending = {}
-        self._results = {}
+        # Ordered by most recently completed/updated result, so eviction preserves a useful
+        # replay window for delayed browser retries while bounding process memory.
+        self._results: OrderedDict[str, dict] = OrderedDict()
 
     def register(self, worker) -> None:
         with self._lock:
@@ -211,6 +221,9 @@ class ObserveActionBridge:
         if reason:
             result["reason"] = reason
         self._results[token] = result
+        self._results.move_to_end(token)
+        while len(self._results) > _MAX_COMPLETED_RESULTS:
+            self._results.popitem(last=False)
         for card in self._cards.values():
             if card.get("pending") == token:
                 card["pending"] = None

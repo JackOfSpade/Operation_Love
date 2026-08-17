@@ -47,7 +47,7 @@ jobs:
   merge:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: main
           fetch-depth: 0
@@ -61,7 +61,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -uo pipefail
+          # Fail closed on unexpected setup/ref failures. Expected non-zero outcomes (a
+          # non-fast-forward merge, a conflict, or a branch that advanced) are handled in
+          # explicit if/|| branches below; everything else must stop the drain rather than
+          # continuing with an unknown checkout or ref state.
+          set -euo pipefail
           # shellcheck source=../../scripts/auto_merge_decision.sh
           source scripts/auto_merge_decision.sh
 

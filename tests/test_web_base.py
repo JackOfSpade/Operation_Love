@@ -66,6 +66,30 @@ def test_accepts_opener_false_carried_over():
     assert BumbleWebDriver.accepts_opener is False
 
 
+def test_capture_metadata_uses_the_web_registry_id():
+    # The Android and web transports deliberately have separate registry/storage
+    # ids. A retained web capture must not silently identify itself as Android
+    # Bumble in its profile metadata.
+    drv = BumbleWebDriver(_Cfg())
+    drv._capture_photos = lambda: [b"photo"]
+    drv._text = lambda _selector: "about"
+    drv._capture_prompts = lambda: [("prompt", "answer")]
+
+    profile = drv._capture_current()
+
+    assert profile.meta == {"app": "bumble_web"}
+
+
+def test_capture_entry_points_accept_the_base_stop_keyword():
+    # The driver is not interruptible during its multi-step capture, but it must
+    # still honour the shared base-method signature used by generic callers.
+    drv = BumbleWebDriver(_Cfg())
+    drv.out_of_profiles = lambda: True
+
+    assert drv.next_profile(should_stop=lambda: True) is None
+    assert drv.current_profile(should_stop=lambda: True) is None
+
+
 # --- platform-availability guard --------------------------------------------
 
 def test_registry_marks_bumble_web_unavailable_with_a_reason():

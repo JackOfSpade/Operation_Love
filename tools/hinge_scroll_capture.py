@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import subprocess
 import sys
 import time
@@ -68,6 +69,12 @@ def _list_ready_devices(adb_path: str = "adb") -> list[str]:
         sys.exit(1)
     except subprocess.TimeoutExpired:
         print("ERROR: `adb devices` timed out.", file=sys.stderr)
+        sys.exit(1)
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        suffix = f": {detail}" if detail else ""
+        print(f"ERROR: `adb devices` failed with exit code {result.returncode}{suffix}",
+              file=sys.stderr)
         sys.exit(1)
     return parse_devices_output(result.stdout.decode("utf-8", errors="replace"))
 
@@ -114,6 +121,14 @@ def capture(*, adb, seconds: float, interval: float, out_dir: Path,
     Ctrl-C (KeyboardInterrupt) stops the loop cleanly; the manifest is still written, with
     `interrupted: true` and whatever frames were captured before the interrupt.
     """
+    # Reject invalid timing before creating a directory or touching the device.  A negative
+    # interval otherwise turns the loop into a busy poll, while a non-positive/NaN duration
+    # produces an empty, misleadingly successful capture manifest.
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("seconds must be a finite value greater than zero")
+    if not math.isfinite(interval) or interval < 0:
+        raise ValueError("interval must be a finite value greater than or equal to zero")
+
     out_dir.mkdir(parents=True, exist_ok=True)
     frames: list[dict] = []
     last_digest: str | None = None

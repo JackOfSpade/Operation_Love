@@ -6628,7 +6628,7 @@ class AndroidDriver(DatingAppDriver):
     # observe-mode deadline is None, i.e. forever. That is precisely the silence the sibling
     # notice was written to eliminate, left in place in the worst spot for it.
 
-    def _note_observe_waiting(self, reason: str, frame: bytes | None = None) -> None:
+    def _note_observe_waiting(self, reason: str, frame: bytes | None = None, **fields) -> None:
         """Rate-limited operator print + matching debug record for wait_for_decision's "still
         waiting, nothing recorded yet" branches. `reason` is one of the plain, per-branch
         strings the call sites below pass -- `same` (identity says this is still the captured
@@ -6666,6 +6666,9 @@ class AndroidDriver(DatingAppDriver):
         NEXT state while the record next to it claimed "nothing has moved". That is actively
         misleading in the one artifact you open when diagnosing a stall.
         """
+        # Keep ordinary heartbeat records byte-for-byte compact. Optional diagnostic fields
+        # are present only when they carry a real observation rather than a null placeholder.
+        fields = {key: value for key, value in fields.items() if value is not None}
         like_wait = reason in _OBSERVE_LIKE_WAIT_REASONS
         interval = self._OBSERVE_LIKE_NOTICE_S if like_wait else self._OBSERVE_WAIT_NOTICE_S
         if reason != self._observe_last_reason:
@@ -6717,11 +6720,11 @@ class AndroidDriver(DatingAppDriver):
             # Straight to DebugLog.action, bypassing _dbg_action: the whole point is to log the
             # frame already in hand rather than let _dbg_action grab a second, later one.
             try:
-                self._dbg.action("observe_waiting", before=frame, reason=reason)
+                self._dbg.action("observe_waiting", before=frame, reason=reason, **fields)
             except Exception:  # noqa: BLE001 — debug logging must never break the wait
                 pass
             return
-        self._dbg_action("observe_waiting", None, reason=reason)
+        self._dbg_action("observe_waiting", None, reason=reason, **fields)
 
     def _note_observe_like_outcome(self, base: bytes, sent: bool, *, sheet_seen: bool = True,
                                    top: float | None = None, bot: float | None = None) -> None:
@@ -7428,6 +7431,10 @@ class AndroidDriver(DatingAppDriver):
         `like_sending` branches below. This is where the 2026-08-11 incident actually hung, so it
         matters more here than anywhere else.
         """
+        # A strict composer proof is required before any autonomous typing. Passive observe
+        # mode keeps a short grace for detector flaps while an edited human draft is open; a
+        # real closure still resolves immediately once the old card or a stable deck proves it.
+        unconfirmed_sheet_pairs = 0
         while deadline is None or time.monotonic() < deadline:
             if should_stop and should_stop():
                 return None, intent_notified
@@ -7451,6 +7458,7 @@ class AndroidDriver(DatingAppDriver):
             if self._observe_stuck_bail(cur) is not None:
                 return None, intent_notified
             if self._observe_like_sheet_visible(cur):
+                unconfirmed_sheet_pairs = 0
                 # Advanced on EVERY sheet poll, not just the first: the composer's last
                 # observed state is what the human actually sent, and it is minutes newer
                 # than the `base` anchor this resolver deliberately holds frozen.
@@ -7475,10 +7483,16 @@ class AndroidDriver(DatingAppDriver):
                 self._observe_recognized()
                 # The keyboard/sheet may radically alter the top half. It is still
                 # an unsent human draft while the Send Like control is visible.
-                self._note_observe_waiting("like_sheet", cur)
+                evidence = getattr(self, "_observe_like_sheet_detection", "strict")
+                self._note_observe_waiting(
+                    "like_sheet", cur,
+                    composer_detection=evidence if evidence != "strict" else None)
                 time.sleep(_OBSERVE_POLL_S)
                 continue
-            # A single negative glyph read is not enough to call a human's compose sheet closed.
+            # A single negative strict-composer read is not enough to call a human's compose
+            # sheet closed. The focused-draft fallback below is deliberately reached ONLY from
+            # this already-strictly-observed state: it may defer resolution of a human draft,
+            # but can never originate like intent or authorize a LIKE outcome by itself.
             # The 2026-08-15 trace contained exactly that flap (like_sheet -> like_sending ->
             # like_sheet three seconds later).  Confirm the negative reading before entering
             # closed/sending resolution; a reappearing sheet is still an open, human-paced draft.
@@ -7488,14 +7502,31 @@ class AndroidDriver(DatingAppDriver):
                 if confirm_sheet is None:
                     continue
                 if self._observe_like_sheet_visible(confirm_sheet):
+                    unconfirmed_sheet_pairs = 0
                     self._observe_like_evidence = confirm_sheet
                     self._notify_observe_like_intent(
                         on_like_intent, True, confirm_sheet, refresh=True)
                     self._observe_recognized()
-                    self._note_observe_waiting("like_sheet", confirm_sheet)
+                    evidence = getattr(self, "_observe_like_sheet_detection", "strict")
+                    self._note_observe_waiting(
+                        "like_sheet", confirm_sheet,
+                        composer_detection=evidence if evidence != "strict" else None)
                     time.sleep(_OBSERVE_POLL_S)
                     continue
                 cur = confirm_sheet
+
+                # Selection handles can obscure the strict locator's input outline while the
+                # person is still editing a real draft. This weaker detector is observe-only:
+                # strict evidence above already established intent, and this branch merely
+                # postpones closure. It never refreshes the suggestion anchor or calls the
+                # intent callback, because weak evidence must not create or revise intent.
+                if self._focused_draft_composer_visible(cur):
+                    unconfirmed_sheet_pairs = 0
+                    self._observe_recognized()
+                    self._note_observe_waiting(
+                        "like_sheet", cur, composer_detection="focused_partial")
+                    time.sleep(_OBSERVE_POLL_S)
+                    continue
 
             # `require_content` is ASYMMETRIC on purpose, and the axis is `intent_notified`,
             # because the two states of this resolver pay opposite prices for a wrong verdict.
@@ -7609,6 +7640,19 @@ class AndroidDriver(DatingAppDriver):
                         deck_ready=True,
                     )
                     return None, True
+            # Two negative confirmation pairs are still not affirmative evidence that the
+            # human sent. This protects an edited draft when strict input-outline detection
+            # briefly fails. Positive closure facts above (dismissal/ready deck) bypass it.
+            if intent_notified and unconfirmed_sheet_pairs < 2:
+                unconfirmed_sheet_pairs += 1
+                self._observe_recognized()
+                self._note_observe_waiting(
+                    "like_sheet", cur,
+                    composer_detection="unconfirmed",
+                    unconfirmed_pairs=unconfirmed_sheet_pairs)
+                time.sleep(_OBSERVE_POLL_S)
+                continue
+
             # A closed VERIFIED sheet but no current card and no ready deck = Hinge is still
             # processing.  Without that proof this is only a bottom-delta candidate (often a
             # human read-scroll), and must not claim a sheet closed or a send is in progress.
@@ -7711,5 +7755,59 @@ class HingeDriver(AndroidDriver):
             return None
 
     def _observe_like_sheet_visible(self, frame: bytes) -> bool:
-        """Passive proof of Hinge's inline composer, never a bare text-template match."""
-        return self._locate_inline_composer(frame) is not None
+        """Passive proof of Hinge's inline composer, never a bare text-template match.
+
+        This shared predicate is used by capture/session/action verification as well as passive
+        observation, so it must remain strict. `_focused_draft_composer_visible` is intentionally
+        called only by `_await_like_resolved` after strict evidence already established a human
+        like-sheet intent; it can then postpone a closure decision, but cannot create intent or
+        alter the non-observe paths that call this method.
+        """
+        if self._locate_inline_composer(frame) is not None:
+            self._observe_like_sheet_detection = "strict"
+            return True
+        self._observe_like_sheet_detection = "not_visible"
+        return False
+
+    def _focused_draft_composer_visible(self, frame: bytes) -> bool:
+        """Read-only fallback for an edited inline composer with its keyboard still open."""
+        try:
+            import cv2
+            import numpy as np
+
+            image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+            if image is None:
+                return False
+            height, width = image.shape
+            if width < 720 or height < 1600:
+                return False
+            # A sent-like transition removes the Android keyboard. Light keyboards retain the
+            # strict-only path, while this catches the measured dark keyboard edit state.
+            if float(np.median(image[round(height * 0.65):round(height * 0.95), :])) > 100.0:
+                return False
+            hits = _match_glyph(frame, self._template("confirm"), side="any", threshold=0.8)
+            for x, y in hits:
+                if not (round(height * 0.50) <= y <= round(height * 0.68)):
+                    continue
+                background = float(np.median(image[
+                    max(0, y - round(height * 0.10)):min(height, y + round(height * 0.10)),
+                    round(width * 0.02):round(width * 0.08)]))
+                cta = image[max(0, y - round(height * 0.025)):min(height, y + round(height * 0.025)),
+                            max(0, x - round(width * 0.28)):min(width, x + round(width * 0.28))]
+                if not cta.size or float(np.median(cta)) > background - 10.0:
+                    continue
+                # The lower outline is enough to prove a focused draft for observation, but
+                # deliberately not enough for the typing path's strict geometry requirement.
+                band = image[max(0, y - round(height * 0.050)):max(0, y - round(height * 0.028)), :]
+                darkness = max(5.0, min(20.0, background * 0.025))
+                dark = band < background - darkness
+                for row in dark:
+                    padded = np.concatenate(([False], row, [False]))
+                    changes = np.diff(padded.astype(np.int8))
+                    starts, ends = np.flatnonzero(changes == 1), np.flatnonzero(changes == -1)
+                    if any(end - start >= round(width * 0.72)
+                           for start, end in zip(starts, ends)):
+                        return True
+        except Exception:  # noqa: BLE001 -- passive evidence must never block observation
+            return False
+        return False

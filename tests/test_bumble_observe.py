@@ -425,6 +425,17 @@ def test_wait_clears_stale_decision_before_polling():
     assert drv.page.cleared == 1            # the pre-poll clear ran exactly once
 
 
+def test_stop_before_wait_leaves_the_page_untouched():
+    # A stop request takes precedence over listener setup. This matters if the
+    # page is already closing/navigating while the worker is shutting down.
+    class _PageThatMustNotBeTouched:
+        def evaluate(self, *_args, **_kwargs):
+            raise AssertionError("a stopped wait must not install or poll a listener")
+
+    drv = _driver(_PageThatMustNotBeTouched())
+    assert drv.wait_for_decision(timeout=5, should_stop=lambda: True) is None
+
+
 def test_deck_empty_returns_none():
     drv = _driver(FakePage(reads=[None], empty=True))
     assert drv.wait_for_decision(timeout=5) is None

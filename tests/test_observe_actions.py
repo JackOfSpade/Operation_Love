@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from operation_love.drivers.base import ItemTargetingError
-from operation_love.observe_actions import ObserveActionBridge
+from operation_love.observe_actions import ObserveActionBridge, _MAX_COMPLETED_RESULTS
 from operation_love.worker import Worker, _OBSERVE_PRE_TAP_TARGETING_REFUSED
 
 
@@ -64,6 +64,40 @@ def test_idempotency_and_one_pending_command_make_race_safe():
     claimed = bridge.claim(worker, card["profile_token"])
     bridge.complete(claimed, "completed")
     assert bridge.submit(_request(card))[1]["status"] == "completed"
+
+
+def test_completed_idempotency_cache_is_bounded_without_replaying_evicted_actions():
+    """The bridge is process-long-lived, while completed action receipts only exist for
+    delayed HTTP retries.  Eviction must cap memory but never let an old token act on a
+    newer card; the newest receipt must remain replayable."""
+    bridge, worker = ObserveActionBridge(), _Worker()
+    bridge.register(worker)
+    requests = []
+    for n in range(_MAX_COMPLETED_RESULTS + 1):
+        card = bridge.begin_card(worker)
+        request = _request(card, command="pass", idempotency_token=f"review-{n}")
+        assert bridge.submit(request)[0]
+        claimed = bridge.claim(worker, card["profile_token"])
+        assert claimed is not None
+        bridge.complete(claimed, "completed", phase="terminal")
+        bridge.end_card(worker, card["profile_token"])
+        requests.append(request)
+
+    assert len(bridge._results) == _MAX_COMPLETED_RESULTS
+    assert requests[0]["idempotency_token"] not in bridge._results
+
+    # A delayed retry that is still in the replay window remains exactly idempotent.
+    ok, result, code = bridge.submit(requests[-1])
+    assert ok and code == 200 and result["status"] == "completed"
+
+    # The same token after eviction has no authority on the newest card: its old
+    # profile/suggestion capability binding is checked again and leaves the card untouched.
+    fresh = bridge.begin_card(worker)
+    ok, result, code = bridge.submit(requests[0])
+    assert not ok and code == 409 and "stale" in result["reason"]
+    checkpoint = bridge.snapshot()["checkpoints"][0]
+    assert checkpoint["profile_token"] == fresh["profile_token"]
+    assert checkpoint["action"] == "waiting"
 
 
 def test_send_requires_successful_open_and_pass_is_blocked_once_opened():

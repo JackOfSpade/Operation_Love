@@ -1017,12 +1017,25 @@ def test_count_today_parameterizes_local_midnight_matching_sqlite():
 
     sql = client.queries[-1]
     assert "@day_start" in sql
+    assert "app=@app" in sql
     assert "TIMESTAMP_TRUNC" not in sql
 
-    param = client.job_configs[-1].query_parameters[0]
-    assert param.name == "day_start"
+    params = {param.name: param for param in client.job_configs[-1].query_parameters}
+    param = params["day_start"]
     expected = datetime.fromtimestamp(local_midnight_epoch(), tz=timezone.utc)
     assert abs((param.value - expected).total_seconds()) < 2   # same boundary as SQLite
+    assert params["app"].value == "bumble"
+
+
+def test_count_today_binds_app_names_without_mutating_them():
+    client = _FakeBQ(label_rows=[{"c": 0}])
+    s = _store(client)
+
+    s.count_today("o'brien")
+
+    assert "o'brien" not in client.queries[-1]
+    params = {param.name: param for param in client.job_configs[-1].query_parameters}
+    assert params["app"].value == "o'brien"
 
 
 def test_spend_today_parameterizes_local_midnight_and_sums_cost():

@@ -18,6 +18,58 @@ def test_action_writes_record_and_before_after_shots(tmp_path):
     assert (dl.dir / rec["after"]).read_bytes() == b"BBB"
 
 
+def test_reopening_a_run_keeps_existing_screenshots_and_allocates_a_new_name(tmp_path):
+    # Driver restarts reuse a run id. The JSONL is append-only, so frame names
+    # must be as well; otherwise the second instance overwrites first-run evidence.
+    first = HingeDebugLog(str(tmp_path), run_id="r")
+    first.action("capture", before=b"FIRST_FRAME")
+
+    second = HingeDebugLog(str(tmp_path), run_id="r")
+    second.action("capture", before=b"SECOND_FRAME")
+
+    recs = _recs(second)
+    assert len(recs) == 2
+    first_name, second_name = (rec["before"] for rec in recs)
+    assert first_name != second_name
+    assert (second.dir / first_name).read_bytes() == b"FIRST_FRAME"
+    assert (second.dir / second_name).read_bytes() == b"SECOND_FRAME"
+
+
+def test_restart_enforces_the_normal_shot_cap_without_rotating_protected_evidence(tmp_path):
+    """The screenshot cap belongs to a run, not merely to one DebugLog instance."""
+    first = HingeDebugLog(str(tmp_path), run_id="r", keep_shots=8)
+    first.action("recoverable", before=b"KEEP_BEFORE", keep_before=True)
+    first.error("unexpected", b"KEEP_ERROR", RuntimeError("boom"))
+    for frame in (b"NORMAL_1", b"NORMAL_2", b"NORMAL_3"):
+        first.action("capture", before=frame)
+
+    records = _recs(first)
+    kept_before = records[0]["before"]
+    error_shot = records[1]["screenshot"]
+    assert records[0]["kept_before"] == kept_before
+    assert "_debuglog_shots" not in records[0]
+    assert "_debuglog_shots" not in records[1]
+    assert "kept_before" not in records[2]
+
+    # Restart with a smaller cap: recovery immediately trims the oldest normal
+    # file, then the next normal capture rotates the next-oldest one.
+    second = HingeDebugLog(str(tmp_path), run_id="r", keep_shots=2)
+    normal_bytes = {
+        path.read_bytes() for path in second.dir.glob("*.png")
+        if path.name not in {kept_before, error_shot}
+    }
+    assert normal_bytes == {b"NORMAL_2", b"NORMAL_3"}
+
+    second.action("capture", before=b"NORMAL_4")
+    normal_bytes = {
+        path.read_bytes() for path in second.dir.glob("*.png")
+        if path.name not in {kept_before, error_shot}
+    }
+    assert normal_bytes == {b"NORMAL_3", b"NORMAL_4"}
+    assert (second.dir / kept_before).read_bytes() == b"KEEP_BEFORE"
+    assert (second.dir / error_shot).read_bytes() == b"KEEP_ERROR"
+
+
 def test_action_can_preserve_an_identity_anchor_shot(tmp_path):
     dl = HingeDebugLog(str(tmp_path), run_id="r")
     dl.action("capture_split", before=b"TOP", anchor=b"ANCHOR", after=b"TRIGGER")

@@ -201,22 +201,19 @@ class BumbleWebDriver(PlaywrightDriver):
             photos=self._capture_photos(),
             bio=self._text(self.selectors["bio"]),
             prompts=self._capture_prompts(),
-            # Registry pools Bumble web + the Bumble Android app under one
-            # store_key ("bumble") -- it's the same person's taste either way, so
-            # the ranker should keep training on all of it (see platforms.py's
-            # Platform.bucket). Keep stamping "bumble" here even though this
-            # driver's own platform id is "bumble_web"; do NOT change this to
-            # self.hud_label or self.platform_app.
-            meta={"app": "bumble"},
+            # Keep capture metadata aligned with the registry id. Storage receives
+            # this same id from Worker, and platforms.py intentionally keeps Android
+            # Bumble and the retired web driver separate.
+            meta={"app": self.platform_app},
         )
 
-    def next_profile(self) -> Profile | None:
+    def next_profile(self, *, should_stop=None) -> Profile | None:
         if self.out_of_profiles():
             return None
         return self._capture_current()
 
     # --- observe mode (shadow learning) ---------------------------------
-    def current_profile(self) -> Profile | None:
+    def current_profile(self, *, should_stop=None) -> Profile | None:
         if self.out_of_profiles():
             return None
         return self._capture_current()
@@ -254,6 +251,11 @@ class BumbleWebDriver(PlaywrightDriver):
         indefinitely. Mouse clicks on the like/pass controls are detected; if
         you also use keyboard shortcuts, confirm coverage with bumble_inspect.py.
         """
+        # A stop requested before setup must be a true no-op. In particular, do
+        # not mutate a page that may already be navigating away just to install a
+        # listener that will never be used.
+        if should_stop and should_stop():
+            return None
         self._install_observe_listener()
         # Discard any decision recorded during the PREVIOUS card's capture/embed
         # window. With the in-page busy modal off (inpage_overlays default False),

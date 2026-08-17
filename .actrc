@@ -1,6 +1,10 @@
 # act-local-CI config (read only by the `act` CLI; GitHub Actions has no concept
-# of this file, so it has zero effect on real CI). The global pre-push hook runs
+# of this file, so it has zero effect on real CI). The repository pre-push hook runs
 # `act push` before every push to a protected branch.
+# Install the tracked hook once per clone with:
+#   git config core.hooksPath .githooks
+# Recent successful runs are cached by exact commit/environment for 24 hours;
+# see .githooks/pre-push for cache controls and branch-sensitivity safeguards.
 #
 # Works around a real `act` bug (nektos/act#107), not anything in this repo:
 # under --container-architecture linux/amd64 on Apple Silicon (which the hook

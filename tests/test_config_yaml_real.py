@@ -56,11 +56,11 @@ def test_shipped_opener_style_keeps_faithful_corey_framework_and_two_sentence_ca
     assert "90/10 framework" in style
     assert "genuinely curious" in style
     assert "do not force teasing into every opener" in style
-    assert "one open, easy to answer question" in style
+    assert "one specific, easy, positive question may be the whole message" in style
     assert "positive, fun conversation" in style
     assert "brief greeting is optional" in style
     assert "two sentences is the absolute maximum" in style
-    assert "exactly one concrete detail" in style
+    assert "a visible detail may be named" in style
     assert "never use an em dash or any hyphen" in style
     assert "low investment so she chases" not in style
     assert "tease her like a bratty little sister" not in style
@@ -68,8 +68,9 @@ def test_shipped_opener_style_keeps_faithful_corey_framework_and_two_sentence_ca
     # The ceiling now lives under its own heading, alongside the economy rule that replaced
     # the brevity preference. Pinning the heading keeps the two from drifting apart.
     assert "application rule: two sentences is the absolute maximum" in style
-    assert "as short as the claim allows" in style
-    assert "spend no word on anything she can already see" in style
+    assert "as short as the angle allows" in style
+    assert "spend no word merely repeating what she can already see" in style
+    assert "never cut necessary setup or the conversational payoff" in style
     # Doc 3.2.1: this phrasing must stay GONE. Its return would silently reinstate the
     # brevity-for-its-own-sake pressure the redesign removes, and it would do so without
     # contradicting any other assertion in this file.
@@ -77,81 +78,65 @@ def test_shipped_opener_style_keeps_faithful_corey_framework_and_two_sentence_ca
     assert "one short sentence" not in style
 
 
-def test_shipped_opener_style_ships_the_unbluffable_claim_rule(cfg):
-    """The substance rule from ops/OPENER-REDESIGN.md 2, 2.1 and 2.2.
-
-    This is the whole point of the redesign. "exactly one concrete detail" (asserted above)
-    survived the rewrite but no longer means what it used to: on its own it never distinguished
-    being GROUNDED IN a detail from NAMING it, which is how we shipped "That view by the sauna
-    during sunset looks relaxing, where is this from?" under a photo of a sauna at sunset. Each
-    half is now load-bearing, so each half is pinned:
-
-      - the premise that makes the rule unconditional (she is looking at the item),
-      - the falsifiability property that replaced brevity as the fix,
-      - the premise-not-point carve-out that keeps "based on that ridgeline" legal,
-      - the "do not say the detail back to her" clause bolted onto the grounding sentence,
-      - a complete proposition rather than an answer to an imagined question,
-      - the demotion of questions to an evidence-bound second beat.
-    """
+def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
+    """Visible setup is legal; only description as final payoff fails, and claims are optional."""
     style = " ".join(cfg.opener.style.lower().split())
     assert "shared context rule" in style
     assert "displayed directly under the exact photo or prompt it attaches to" in style
     assert "write like two people looking at the same thing" in style
-    assert "the one rule: your opener must contain a claim that could be wrong" in style
-    assert "she is not checking whether you have eyes" in style
-    assert "may be your premise. it may never be your point" in style
-    assert "test it by covering the photo: if nothing is left, start over" in style
-    assert "self contained claim" in style
-    assert "not a shorthand answer to an imagined question" in style
-    assert "a bare option in an unstated guessing game" in style
-    assert "shared visual context lets you omit a description" in style
-    assert 'a reader should never have to ask "for what?"' in style
-    # Bug report 2026-08-15: a deck photo licensed a made-up staircase, exertion and target
-    # time. The model may make one uncertain inference; it may not invent facts to serve as
-    # premises for further guesses.
-    assert "evidence boundary, one hop only" in style
-    assert "the premise must be plainly visible in the item or explicitly stated" in style
-    assert "never stack guesses" in style
-    assert "unseen action, route, effort, goal, cause, or before and after sequence" in style
+    assert "photo header rule" in style
+    assert "title, caption, or prompt printed with a photo is part of that same item" in style
+    assert "defines how the photo is meant to be read" in style
+    assert "interpret the visible scene through that text before choosing an angle" in style
+    assert "never contradict, reverse, or ignore the header's framing" in style
+    assert "conversational value rule" in style
+    assert "a visible detail may be named and may be the subject, premise, or setup" in style
+    assert "final conversational point is merely that description" in style
+    assert "perspective, grounded interpretation, playful framing, connection, or natural question" in style
+    assert "does not have to contain a guess or a claim that could be wrong" in style
+    assert "claims only when natural" in style
+    assert "a correctable inference is one available move, not a requirement" in style
+    assert "prefer a grounded observation or specific question over a forced guess" in style
+    assert "write the whole proposition rather than a shorthand answer" in style
+    assert "choose the least speculative interpretation" in style
+    assert "minimum invention" in style
+    assert "never invent a purpose, motive, cause, plan, sequence, action, route" in style
+    assert "do not assign why she chose or did something unless her profile states it" in style
+    assert "any literal premise must be plainly visible in the item or explicitly stated" in style
+    assert "never use one invented fact as the premise for another" in style
     assert "a setting or destination does not establish how she arrived" in style
     assert "what effort it took, or whether she pursued a goal" in style
-    assert "choose a different claim or a different item" in style
-    # One-hop is necessary but not sufficient: a single-photo inference can still assume an
-    # implausibly specific backstory. Pin evidence-proportional calibration without shipping a
-    # worked scenario the model could imitate.
-    assert "calibrate the guess: a hedge does not rescue a far fetched premise" in style
-    assert "natural under most ordinary explanations of the scene" in style
-    assert "if it works only under one special backstory, do not use it" in style
+    assert "a hedge does not rescue a far fetched premise" in style
     assert "ownership, employment, a routine, a responsibility, or a relationship" in style
-    assert "guess about the visible interaction, not an unshown life story" in style
-    assert "confidently wrong is playful only when the guess was reasonable" in style
     assert "traceability test" in style
-    assert "she should instantly see which visible or stated clue led you to that angle" in style
-    assert "the path from clue to guess must be obvious without an explanation" in style
-    assert "if the clue to inference path needs an explanation" in style
-    assert "fantasized a backstory from minimal evidence" in style
-    assert "reasoning she can recognize at a glance" in style
-    # The grounding sentence and its new second half must stay adjacent: the sentence alone is
-    # root cause #1 from doc 1.1, and it is only safe with this clause attached.
-    assert "exactly one concrete detail" in style
-    assert "then do not say that detail back to her" in style
-    # Doc 2.2: questions stay legal, they stop being the default.
-    assert "a claim she can correct beats a question she has to answer" in style
-    assert "never as the whole message" in style
-    # Bug report 2026-08-16: a valid claim and a valid question can still make an incoherent
-    # pair when the question re-checks, contradicts, or abandons the claim.
+    assert "for any inference, she should instantly see which visible or stated clue" in style
+    assert "if the path from clue to inference needs an explanation" in style
+    assert "playful hyperbole" in style
+    assert "unmistakably nonliteral exaggeration is allowed" in style
+    assert "does not license presenting an invented motive" in style
+    assert "a natural claim she can correct can be effective, but it is not mandatory" in style
+    assert "question may be the whole message when that is the strongest natural angle" in style
+    assert "never as the whole message" not in style
+    assert "setup payoff continuity" in style
+    assert "every visible detail you name must be necessary to, and used by" in style
+    assert "if removing a descriptive clause leaves the later point or question unchanged, cut it" in style
+    assert "question coherence" in style
+    assert "ask one coherent thing at a time" in style
+    assert "parallel, genuinely contrasting answers to that same underlying question" in style
+    assert "never to join unrelated dimensions" in style
     assert "premise consistency" in style
+    assert "if the first beat asserts or guesses x" in style
     assert "must accept x as its working premise and move the conversation forward" in style
-    assert "consequence, choice, or specific detail that makes sense if x is true" in style
     assert "never ask whether x itself was true" in style
     assert "restate x as a question" in style
     assert "ask about the opposite of x" in style
     assert "abandon x for a generic question about the surrounding scene" in style
-    assert "replacing x with its opposite, it is not following the claim" in style
-    assert "if no coherent continuation exists, use the claim alone" in style
-    assert "the second beat inherits the same evidence boundary" in style
-    assert "presuppose an unseen expectation, opinion, goal, difficulty, outcome" in style
-    assert "if no natural evidence bound question follows, stop after the claim" in style
+    assert "may extend the angle with clearly nonliteral hyperbole" in style
+    assert "may not add a literal invented fact, motive, or backstory" in style
+    assert "if no coherent continuation exists, stop after the first beat" in style
+    assert "your opener must contain a claim that could be wrong" not in style
+    assert "test it by covering the photo" not in style
+    assert "then do not say that detail back to her" not in style
 
 
 def test_shipped_opener_style_derives_the_move_without_an_example_menu(cfg):
@@ -206,7 +191,7 @@ def test_shipped_opener_style_does_not_ship_the_item_selection_rule(cfg):
 
     # The whole-profile connection principle remains, without the former move menu.
     assert "two separate parts of her profile create one natural angle" in style
-    assert "a claim she can correct beats a question she has to answer" in style
+    assert "a natural claim she can correct can be effective, but it is not mandatory" in style
 
 
 def test_shipped_opener_style_ships_the_redesign_guardrails(cfg):

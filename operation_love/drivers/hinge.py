@@ -87,7 +87,7 @@ from .base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClo
                    ItemTargetingError, OBSERVE_ITEM_INCONCLUSIVE, OBSERVE_ITEM_MATCH,
                    OBSERVE_ITEM_MISMATCH, ObserveItemCheck, open_debug_log,
                    snapshot_failure_frame)
-from .frameshift import ShiftEstimationError
+from .frameshift import SHIFT_MEASURED, ShiftEstimationError, estimate_shift
 from .item_crops import (
     PHOTO_ONLY_POLICY_ID, ItemCropError, build_item_payload, unnumber_unless_confident_photo)
 from .item_type_preflight import INCONCLUSIVE, ItemTypePreflight, preflight_item_type
@@ -104,7 +104,9 @@ from .item_verify import (VERIFY_MISMATCH, SheetVerificationError, verification_
                           verify_sheet_item)
 from .like_composer import (
     ComposerDetectionError, ComposerSurface, locate_inline_composer)
-from .scroll_step import ScrollStepError, plan_scroll_step
+from .scroll_step import (MAX_SEGMENTATION_FALLBACK_FRAMES, STEP_SEGMENTATION_FALLBACK,
+                          ScrollStepError,
+                          plan_scroll_step)
 from .scroll_top import ScrollTopError, confirm_scroll_top
 from .segment import SegmentationError, segment_frame
 from .touchwatch import TouchWatcher, TouchWatchUnavailable
@@ -1014,6 +1016,63 @@ def _frame_sig(frame: bytes) -> bytes:
     return hashlib.md5(frame).digest()
 
 
+# How many consecutive read-scrolls must be MEASURED to have moved the page 0px before the
+# capture calls it the bottom. Not 1: a single swipe can be swallowed by a mid-animation frame or
+# lost by the input transport, and ending a read on one lost gesture would silently truncate a
+# real profile -- the expensive direction, since the model then chooses from an item list that
+# stops part way down. Not more than 2 either: every extra confirmation is another futile swipe
+# at a bottomed profile, and swiping at a page that cannot move is exactly the kind of thing
+# ops/ANTI-BOT-RESEARCH.md exists to keep off the wire. Two independent quorate measurements of
+# "nothing moved" across two real gestures is the smallest evidence that is not one accident.
+_STATIC_PAIRS_FOR_BOTTOM = 2
+
+
+# Whole-frame downsample mean-abs-difference above which two frames are too different to be the
+# same page position, so the expensive `estimate_shift` probe below is skipped. Purely a cost
+# gate: it may only ever say "obviously moved", never "bottom".
+# [corpus: the 2026-08-16 Grace frames, the hardest real case there is -- a page that had stopped
+# under a video repainting ~40% of the content band. The six STATIC pairs measure 1.24, 4.87,
+# 4.91, 4.99, 6.77 and 12.49; the two genuinely SCROLLED pairs measure 49.19 and 51.72. Nothing
+# lands between 12.5 and 49.] 36 sits ~2.9x above the static ceiling and ~1.4x below the scrolled
+# floor, so a real 0px pair would have to animate three times harder than a playing video to be
+# skipped -- and a frame that animated THAT hard has no static strips left for `estimate_shift`
+# to reach quorum on, so it would be refused rather than measured either way.
+_STATIC_PROBE_MAX_DIST = 36.0
+
+
+def _static_pair_is_the_bottom(before: bytes, after: bytes,
+                               content_band: tuple[float, float], *,
+                               before_ds=None, after_ds=None) -> bool:
+    """Whether frameshift AFFIRMATIVELY measured these two frames as the same page position.
+
+    True only for a quorate `SHIFT_MEASURED` of exactly 0px. Every other outcome -- a refusal, a
+    saturation report, an undecodable frame, a missing cv2 -- is False, so the capture keeps
+    reading. That default is the point: this predicate can only ever STOP a read, a wrong stop
+    truncates a profile the model then has to choose items from, and `estimate_shift` is the only
+    comparator in this driver that says "I cannot tell" instead of guessing.
+
+    It is deliberately not `_vertical_shift_match` or a `_band_dist` threshold. Both are
+    mean-absolute-difference tests over the content band, and the frames this exists to classify
+    have a VIDEO repainting up to half that band -- the mean is dominated by the one region that
+    is genuinely changing, which is how it hides the fact that the page underneath it is not.
+    Such a threshold appears here only as `_STATIC_PROBE_MAX_DIST`, where its one job is to skip
+    work on frames that obviously moved; it is never allowed to conclude the opposite.
+    """
+    if before_ds is not None and after_ds is not None:
+        try:
+            import numpy as np
+            if float(np.abs(before_ds.astype("float32")
+                            - after_ds.astype("float32")).mean()) > _STATIC_PROBE_MAX_DIST:
+                return False
+        except Exception:  # noqa: BLE001 — the gate is an optimisation; fall through and measure
+            pass
+    try:
+        shift = estimate_shift(before, after, content_band=content_band)
+    except Exception:  # noqa: BLE001 — decode/cv2/geometry failure is "cannot tell", never "bottom"
+        return False
+    return shift.status == SHIFT_MEASURED and shift.delta_px == 0
+
+
 # The hard bounds _sample_read_step/_sample_read_scroll validate any policy-sampled read-scroll
 # distance against before issuing a gesture (see both call sites below). Named here so
 # _vertical_shift_match derives its search radius from the SAME numbers instead of a second,
@@ -1076,7 +1135,7 @@ def _ranker_frames_from_enumeration(frames: list[bytes], target: int) -> list[by
     """Downsample an enumeration-cadence capture back to the ranker's ordinary frame budget
     (audit fix, "BUG 3", 2026-08-12).
 
-    THE PROBLEM. `_ENUMERATION_CAPTURE_LIMIT` (48, above) replaced `scroll_captures` (12,
+    THE PROBLEM. `_ENUMERATION_CAPTURE_LIMIT` (64, above) replaced `scroll_captures` (12,
     config.yaml) as the CEILING for a read that is also building an item index -- the index
     needs the finer, closed-loop cadence to avoid the step/spacing aliasing doc 5.10.1
     measured, so raising the ceiling for THAT consumer is correct and is not touched here. But
@@ -1345,6 +1404,23 @@ _TOP_NAME_CHROME_WORDS = frozenset({
 # misread it as a genuinely new profile: a FALSE PASS. With the blocklist, a read containing
 # only chrome words yields no candidate at all and the verdict stays "top" (inconclusive) --
 # the safe outcome; the pixel/content layers downstream still get to decide.
+
+
+def _clean_first_line_name_candidate(text: str) -> str | None:
+    """Return one clean, non-chrome name candidate from OCR's first line, or ``None``.
+
+    Both identity OCR bands put the person's name on their first non-empty line when they are
+    actually looking at a name. Requiring exactly one candidate keeps filter-chip chrome and
+    photo-text garbage inconclusive; the caller still decides whether this candidate is the
+    captured name or a possible next profile.
+    """
+    first_line_tokens = _TOP_NAME_TOKEN_RE.findall(text.splitlines()[0]) if text else []
+    candidates = [
+        tok for tok in first_line_tokens
+        if tok.casefold() not in _TOP_NAME_CHROME_WORDS
+        and sum(ch.isalpha() for ch in tok) >= 3
+    ]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 # --- vision: locate an action BUTTON by its glyph (not a fixed coord) --------------------
@@ -1646,7 +1722,7 @@ class AndroidDriver(DatingAppDriver):
         # exactly that reason. Read by _item_enumeration_blocker (audit
         # fix, "BUG 2", 2026-08-12): item enumeration exists solely to let the model pick an item
         # for an opener, so with opener.enabled: false there is no consumer for it at all, and it
-        # must not run -- reading a profile enumerated at _ENUMERATION_CAPTURE_LIMIT (48 frames,
+        # must not run -- reading a profile enumerated at _ENUMERATION_CAPTURE_LIMIT (64 frames,
         # ~3x the dwell) for a run that was only ever going to send bare likes is both wasted
         # device time and, worse, the one condition doc 5.2's "never fall back to raw frames"
         # stop was never meant to fire for: nothing was ever going to consume the numbered list,
@@ -1670,18 +1746,22 @@ class AndroidDriver(DatingAppDriver):
         self._identity_anchor_confirmed = False
         self._identity_anchor_frame = None
         self._identity_anchor_frame_index = None
-        # The scroll-top card-header OCR text _identity_of last read (or None if it never ran
-        # this call -- see that method's "Layer 1b" block). Reset on every _identity_of call,
+        # The identity OCR text _identity_of last used for a verdict (or None if neither the
+        # tight header nor scroll-top card-header read produced one). Reset on every call,
         # not just every profile, so an observe_scroll debug record logged right after can
         # report exactly what was seen at the moment THAT verdict was decided.
         self._identity_top_name_read = None
-        # What Layer 1b itself concluded ('same' / 'new'), or None if it never ran or never
+        # What the identity OCR concluded ('same' / 'new'), or None if it never ran or never
         # reached a verdict this call. Reset alongside _identity_top_name_read, for the same
         # reason. wait_for_decision reads this immediately after the FIRST _identity_of(cur)
         # call of a poll to tell a name-derived 'new' apart from a pixel-derived one -- see
         # its own "name-derived 'new' must be reproduced" comment for why that distinction
         # gates whether a confirm-frame 'top' is allowed to corroborate a PASS.
         self._identity_top_name_verdict = None
+        # The clean name token behind a ``new`` OCR verdict, if there was one. A no-touch-data
+        # PASS requires the same candidate on both settled frames; two unrelated OCR guesses
+        # are movement evidence, not proof that one new profile is on screen.
+        self._identity_name_candidate = None
         # Bounded memo cache for _ocr_band: keyed on (rect, psm, sha1(frame)), holding at most
         # _OCR_BAND_CACHE_MAX entries. See _ocr_band's own comment for the measured cost this
         # exists to avoid. Reset per profile (in _capture_current) alongside the other identity
@@ -3196,7 +3276,8 @@ class AndroidDriver(DatingAppDriver):
                     f"{verdict.reason}")
         return ""
 
-    def _plan_enumeration_step(self, frame: bytes, x_frac: float, min_spacing_px: int | None):
+    def _plan_enumeration_step(self, frame: bytes, x_frac: float, min_spacing_px: int | None,
+                               *, allow_segmentation_failure_fallback: bool = False):
         """Size the next enumeration scroll against the spacing THIS frame shows.
 
         Returns the `ScrollStep`; `.frac` and `.x_frac` go straight to `_scroll_down_one`, both
@@ -3218,13 +3299,18 @@ class AndroidDriver(DatingAppDriver):
         `fallback_spacing_px` are the offline-validation door doc 5.6 flags: widening one takes
         the gesture outside the envelope every measurement in this stack was taken inside. A
         production caller passes none of them, and the way to keep that true is to have nowhere
-        to put them.
+        to put them. ``allow_segmentation_failure_fallback`` is intentionally not a geometry
+        override: the capture loop may use it only for the capped contiguous run, producing an
+        explicitly marked corpus-minimum step whose contradictory frames must be omitted by
+        item_index's separate measured-bridge rebuild before they can ever produce an opener.
         """
         segmentation = segment_frame(frame, content_band=self.content_band,
                                      like_template=self._template("like"),
                                      like_threshold=_LIKE_MATCH_THRESHOLD)
         return plan_scroll_step(segmentation, x_frac=x_frac,
-                                profile_min_spacing_px=min_spacing_px)
+                                profile_min_spacing_px=min_spacing_px,
+                                allow_segmentation_failure_fallback=
+                                allow_segmentation_failure_fallback)
 
     @staticmethod
     def _match_video_mute(frame: bytes, rect: tuple[int, int, int, int],
@@ -3605,20 +3691,22 @@ class AndroidDriver(DatingAppDriver):
         """
         pair = getattr(index, "recovered_from_pair", None)
         pairs = tuple(getattr(index, "recovered_from_pairs", ()) or ())
+        segmentation_frames = tuple(
+            getattr(index, "recovered_from_segmentation_frames", ()) or ())
         bridge = getattr(index, "recovery_bridge", None)
         failed_shift = getattr(index, "recovery_failed_shift", None)
         failed_shifts = tuple(getattr(index, "recovery_failed_shifts", ()) or ())
         source = tuple(getattr(index, "source_frame_indices", ()) or ())
         omitted = [i for i in range(len(photos)) if i not in source]
-        if (self._dbg is None or not isinstance(pair, tuple) or len(pair) != 2
-                or not isinstance(bridge, tuple) or len(bridge) != 2 or len(omitted) != 1):
+        if (self._dbg is None or not isinstance(bridge, tuple) or len(bridge) != 2
+                or not omitted or omitted != list(range(omitted[0], omitted[-1] + 1))):
             return
         left, right = bridge
-        if not (0 <= left < omitted[0] < right < len(photos)):
+        if not (0 <= left < omitted[0] <= omitted[-1] < right < len(photos)):
             return
         try:
             fields = {
-                "recovered_from_pair": list(pair), "omitted_frame_indices": omitted,
+                "omitted_frame_indices": omitted,
                 "recovery_bridge": list(bridge),
                 "original_status": getattr(failed_shift, "status", None),
                 "original_reason": getattr(failed_shift, "reason", None),
@@ -3627,6 +3715,10 @@ class AndroidDriver(DatingAppDriver):
                 "original_eligible": getattr(failed_shift, "eligible", None),
                 "recovery_reason": getattr(index, "recovery_reason", None),
             }
+            if isinstance(pair, tuple) and len(pair) == 2:
+                fields["recovered_from_pair"] = list(pair)
+            if segmentation_frames:
+                fields["recovered_from_segmentation_frames"] = list(segmentation_frames)
             if len(pairs) > 1 and len(pairs) == len(failed_shifts):
                 fields["recovered_from_pairs"] = [list(item) for item in pairs]
                 fields["original_failures"] = [{
@@ -3731,7 +3823,8 @@ class AndroidDriver(DatingAppDriver):
 
     def _save_item_index_refusal_evidence(
             self, photos: list[bytes], reason: str, index, cited_local: list[int],
-            runtime_provenance: dict[str, str | None]) -> tuple[str | None, list[str]]:
+            runtime_provenance: dict[str, str | None],
+            priority_local: tuple[int, ...] = ()) -> tuple[str | None, list[str]]:
         """Persist a small, standalone refusal dossier when this is a real DebugLog.
 
         The regular action logger intentionally owns normal rotating screenshots.  These source
@@ -3757,13 +3850,34 @@ class AndroidDriver(DatingAppDriver):
                                     [round(i * (len(source) - 1) / (count - 1))
                                      for i in range(count)])
             # Preserve the breadth of a long cited run (including both endpoints), not merely
-            # its first eight frames.
+            # its first eight frames -- but never at the cost of the frames the refusal is ABOUT.
+            #
+            # The even stride below walks POSITIONS in the merged candidate list and knows
+            # nothing about which of them form a refused pair. Live 2026-08-16 (Grace) that cost
+            # exactly the two frames the dossier existed to preserve: six refused pairs merged
+            # into a 25-frame pool, the stride landed on positions 0 and 3 of the first pair's
+            # five-frame window, and the bundle shipped frames 35 and 38 -- the NEIGHBOURS of
+            # failing pair (36, 37) -- while both frames of the pair itself were dropped. The
+            # refusal could not be replayed from its own evidence. Seed the selection with the
+            # named frames first, then let the stride spend what is left on breadth.
             if len(local_candidates) > 8:
-                local_candidates = sorted({round(i * (len(local_candidates) - 1) / 7)
-                                           for i in range(8)})
-                # Those are positions in the candidate list, not frame indices.
                 cited = sorted({i for i in cited_local if 0 <= i < len(source)})
-                local_candidates = [cited[i] for i in local_candidates]
+                chosen = {i for i in dict.fromkeys(priority_local) if i in set(cited)}
+                budget = max(0, 8 - len(chosen))
+                # The stride still spans the whole pool including both endpoints; it just runs
+                # over the slots the named frames left it.
+                if budget > 1:
+                    chosen.update(cited[round(i * (len(cited) - 1) / (budget - 1))]
+                                  for i in range(budget))
+                elif budget == 1:
+                    chosen.add(cited[0])
+                # A named frame that the stride would also have picked costs a slot rather than
+                # shrinking the dossier, so the cap stays a floor as well as a ceiling.
+                for value in cited:
+                    if len(chosen) >= 8:
+                        break
+                    chosen.add(value)
+                local_candidates = sorted(chosen)
 
             offsets = tuple(getattr(index, "offsets", ()) or ())
             frames = tuple(getattr(index, "frames", ()) or ())
@@ -3987,12 +4101,14 @@ class AndroidDriver(DatingAppDriver):
                     break
 
         cited_local: list[int] = []
+        named_in_reason: list[int] = []
         # Refusal prose is deliberately human-readable, so retain every frame it names.  Pair
         # ledger fields cover older/newer message wording that does not say "frame".
         for text in (reason, *tuple(getattr(index, "failures", ()) or ())):
             if isinstance(text, str):
                 for match in re.finditer(r"\bframe(?:s)?\s+(\d+)(?:\s+and\s+(\d+))?", text):
-                    cited_local.extend(int(v) for v in match.groups() if v is not None)
+                    named_in_reason.extend(int(v) for v in match.groups() if v is not None)
+        cited_local.extend(named_in_reason)
         if failing_pair is not None:
             cited_local.extend((failing_pair, failing_pair + 1))
         for rec in refused_pairs:
@@ -4008,7 +4124,12 @@ class AndroidDriver(DatingAppDriver):
                         max(0, pair[0] - 1), min(len(photos), pair[1] + 3)))
         runtime_provenance = _item_index_runtime_provenance()
         sidecar, evidence_frames = self._save_item_index_refusal_evidence(
-            photos, reason, index, cited_local, runtime_provenance)
+            photos, reason, index, cited_local, runtime_provenance,
+            # The pair the refusal is named after outranks breadth when the eight-image cap
+            # has to drop something.  A malformed/legacy index that yields no failing pair still
+            # has the frames its own prose names, which is the same evidence by a weaker route.
+            priority_local=((failing_pair, failing_pair + 1) if failing_pair is not None
+                            else tuple(named_in_reason[:2])))
 
         before = after = None
         if failing_pair is not None and 0 <= failing_pair and failing_pair + 1 < len(photos):
@@ -4056,8 +4177,17 @@ class AndroidDriver(DatingAppDriver):
         Only ever called for a read that raised the ceiling. An ordinary 12-frame read that hits
         `scroll_captures` is the pre-existing `capture_truncated` case and is untouched.
         """
+        # Names the LIMIT THIS READ ACTUALLY RAN AT, not just the constant it was derived from:
+        # `_capture_limit_for_profile` jitters the ceiling upward per profile, so quoting the
+        # bare constant misreports the read by up to two frames in the one message whose job is
+        # to let the owner judge whether that constant is measured against the wrong profiles.
+        applied = self._profile_capture_limit
+        ceiling = (f"the derived ceiling of {_ENUMERATION_CAPTURE_LIMIT}" if applied is None
+                   or applied == _ENUMERATION_CAPTURE_LIMIT else
+                   f"this read's ceiling of {applied}, jittered up from the derived "
+                   f"{_ENUMERATION_CAPTURE_LIMIT}")
         print(f"{self.spec.app}: this profile is longer than the enumeration read could cover -- "
-              f"{frames} frame(s) at the derived ceiling of {_ENUMERATION_CAPTURE_LIMIT} and the "
+              f"{frames} frame(s) at {ceiling} and the "
               f"bottom was never reached, so the numbered item list stops part way down the "
               f"profile and the model is told so. See _ENUMERATION_CAPTURE_LIMIT for the "
               f"derivation; if this is not rare, that constant is measured against the wrong "
@@ -4178,8 +4308,17 @@ class AndroidDriver(DatingAppDriver):
         # The smallest heart-bearing card spacing measured anywhere on THIS profile so far; see
         # _plan_enumeration_step. None until the first frame that can measure one.
         enum_min_spacing_px: int | None = None
+        # A short contiguous contradictory run can continue at the corpus-minimum cadence, but
+        # only so item_index gets a consecutive sequence in which to independently omit it and
+        # remeasure its direct bridge. A fifth contradiction ends enumeration as before.
+        enum_segmentation_fallback_frames: list[int] = []
         read_dwell_s_total = 0.0
         seen = set()
+        # Consecutive pairs frameshift has MEASURED as exactly 0px since the last frame that
+        # actually moved. See _static_pair_is_the_bottom for why the byte-identical `seen` test
+        # below cannot see this profile's bottom on its own.
+        static_pairs = 0
+        prev_ds = None                  # last APPENDED frame's downsample, for that probe's gate
         for i in range(self._profile_capture_limit):
             if should_stop is not None and should_stop():
                 # Checked BEFORE the screencap, so a stop that lands during the previous
@@ -4314,8 +4453,40 @@ class AndroidDriver(DatingAppDriver):
                 if i == 1 and ds is not None:
                     return None
                 break
+            # The bottom, when an ANIMATION is repainting the page. `sig` above is a whole-frame
+            # 24x24 compared for EXACT byte equality, so one autoplaying video card keeps every
+            # frame "new" forever and the bottom signal never fires. Measured live 2026-08-16
+            # (Grace): the page saturated at frame 37 and the loop still ran to its 64-frame
+            # ceiling, issuing 26 futile swipes at an already-bottomed profile and then reporting
+            # the profile as LONGER than the read could cover -- the exact opposite of the truth,
+            # into the hub banner and BigQuery's capture_truncated column.
+            #
+            # frameshift is the authority instead of a looser pixel threshold because it is the
+            # one comparator here that REFUSES when it cannot tell: a measured 0 means 3+ strips
+            # independently agreed to the pixel that nothing moved, and anything less certain
+            # returns None and simply keeps the read going. That asymmetry is the whole safety
+            # argument -- a false 0 would truncate a real profile, so only an affirmative,
+            # quorate measurement is allowed to stop the loop, and it must happen TWICE in a row
+            # so one dropped or swallowed gesture cannot end a read on its own.
+            #
+            # The count is of failed GESTURES, not of idle frames, which is why this does not
+            # short-circuit the dwell and scroll below: each static pair is measured across a
+            # read-scroll that was actually issued, so two of them mean two real swipes moved
+            # nothing. Skipping ahead to the next screencap instead would prove only that the
+            # screen was idle while nothing was asked of it.
+            if photos and _static_pair_is_the_bottom(
+                    photos[-1], frame, self.content_band,
+                    before_ds=prev_ds, after_ds=ds):
+                static_pairs += 1
+                if static_pairs >= _STATIC_PAIRS_FOR_BOTTOM:
+                    # Deliberately not appended: a measured 0px translation of the previous
+                    # frame carries no page content the index has not already seen.
+                    break
+            else:
+                static_pairs = 0
             seen.add(sig)
             photos.append(frame)
+            prev_ds = ds
             # Lock the identity anchor INLINE as frames arrive, not retroactively after the
             # loop. The boundary check above can only fire once _identity_sig exists, and a
             # post-hoc scan would establish it only after the foreign frames had already been
@@ -4370,14 +4541,19 @@ class AndroidDriver(DatingAppDriver):
                     # indistinguishable, which no better estimator can fix. The lane and the
                     # dwell keep coming from the behaviour policy exactly as they did.
                     #
-                    # A refusal here ENDS THE ENUMERATION and lets the read finish at the
-                    # ordinary cadence. That is not the forbidden substitution: no item payload
-                    # will be built from this capture (the reason is recorded and the crops are
-                    # never produced), so nothing downstream can mistake these frames for a
-                    # numbered list -- the only thing degrading is the frame set the RANKER
-                    # gets, which has no index in it to be wrong about.
+                    # A refusal here normally ENDS THE ENUMERATION and lets the read finish at
+                    # the ordinary cadence. The sole bounded exception is one short, contiguous
+                    # contradictory segmentation run, carried at the corpus-minimum cadence so
+                    # item_index can independently omit it and rebuild across a measured bridge. Any
+                    # other refusal builds no item payload: its reason is recorded, crops are
+                    # never produced, and nothing downstream can mistake the frames for a
+                    # numbered list.
                     try:
-                        step = self._plan_enumeration_step(frame, x_frac, enum_min_spacing_px)
+                        step = self._plan_enumeration_step(
+                            frame, x_frac, enum_min_spacing_px,
+                            allow_segmentation_failure_fallback=
+                            len(enum_segmentation_fallback_frames)
+                            < MAX_SEGMENTATION_FALLBACK_FRAMES)
                     except (ScrollStepError, SegmentationError) as exc:
                         enumerating = False
                         enumeration_reason = (
@@ -4385,6 +4561,22 @@ class AndroidDriver(DatingAppDriver):
                             f"{len(photos) - 1} of this profile ({type(exc).__name__}: {exc})")
                     else:
                         frac, x_frac = step.frac, step.x_frac
+                        if step.basis == STEP_SEGMENTATION_FALLBACK:
+                            # This is only reachable inside the explicitly capped bad-frame run:
+                            # the next call after the cap disables the opt-in and raises normally.
+                            # Save every raw frame permanently for the direct-bridge audit.
+                            fallback_frame = len(photos) - 1
+                            enum_segmentation_fallback_frames.append(fallback_frame)
+                            if self._dbg is not None:
+                                self._dbg.action(
+                                    "enumeration_segmentation_fallback", before=frame,
+                                    keep_before=True,
+                                    frame_index=fallback_frame,
+                                    fallback_frame_indices=enum_segmentation_fallback_frames,
+                                    reason=step.reason,
+                                    profile_min_spacing_px=enum_min_spacing_px,
+                                    step_px=step.step_px,
+                                    sized_against_px=step.sized_against_px)
                         if step.spacing.measured:
                             enum_min_spacing_px = (
                                 step.spacing.px if enum_min_spacing_px is None
@@ -4738,12 +4930,11 @@ class AndroidDriver(DatingAppDriver):
         in either direction is one adjective in a message, never a wrong action.
 
         That is not a hypothetical tolerance: MEASURED 2026-08-11 against the reference
-        screenshot, this exact path reads "You're out of freelikes for today" — tesseract reads
-        the headline's two wrapped lines correctly, and then `_ocr_band`'s existing character
-        filter strips the newline BETWEEN them without leaving a space, welding "free" onto
-        "likes". Both substrings this test looks for survive that, which is the point; the
-        filter itself is deliberately left alone, because it is shared with the identity-band
-        call sites whose behaviour must not change.
+        screenshot, tesseract reads the headline's two wrapped lines correctly. `_ocr_band`
+        preserves that boundary now, but older OCR/cache behavior welded the words into
+        "freelikes" and imperfect reads can still vary their spacing. Both substrings this test
+        looks for survive either form, which is the point; a random hero-image OCR result that
+        happens to contain just one generic word does not.
 
         Both strings name Hinge outright even though this method lives on the app-agnostic
         AndroidDriver, because both are reachable only through a spec that declares a "paywall"
@@ -6052,8 +6243,23 @@ class AndroidDriver(DatingAppDriver):
                 [tesseract, "stdin", "stdout", "--psm", psm],
                 input=buf.getvalue(), capture_output=True, timeout=5.0,
             )
-            text = self._OCR_NAME_RE.sub("", result.stdout.decode("utf-8", "replace"))
-            cleaned = " ".join(text.split())
+            # Preserve Tesseract's line segmentation.  The scroll-top card-header crop is a
+            # small block, not a single line: line 1 is the profile name, while line 2 holds
+            # pronouns/activity metadata and line 3 can already contain the first card title.
+            # Flattening that structure made a perfectly clean read such as
+            # ``Jen &\nshe/her Active now`` become ``Jen sheher Active now``.  The name parser
+            # then saw several plausible words, refused to identify Jen, and a real X press was
+            # swallowed by the content-scroll fallback.  Replace punctuation with spaces (so
+            # ``she/her`` cannot weld into ``sheher``) and normalize each line independently.
+            # Single-line callers remain byte-for-byte equivalent apart from punctuation now
+            # becoming a separator instead of disappearing; the paywall caller benefits too
+            # because wrapped ``free\nlikes`` no longer becomes ``freelikes``.
+            raw_text = result.stdout.decode("utf-8", "replace")
+            lines = [
+                " ".join(self._OCR_NAME_RE.sub(" ", line).split())
+                for line in raw_text.splitlines()
+            ]
+            cleaned = "\n".join(line for line in lines if line)
             value = cleaned or None
         except Exception:  # noqa: BLE001 — OCR failure must stay fail-closed, never raise
             value = None
@@ -6065,11 +6271,12 @@ class AndroidDriver(DatingAppDriver):
     def _identity_of(self, frame: bytes) -> tuple[str, float | None]:
         """('same' | 'new' | 'top' | 'unknown', distance).
 
-        'same'    — the app's sticky per-profile header matches the captured profile. Whatever
-                    else moved on screen, this is still the same card: never a decision. THIS
-                    is the fix for the reported bug (a human scrolling to read a profile, no
-                    tap at all, recorded as a PASS) -- wait_for_decision checks this FIRST,
-                    before any pixel-delta reasoning, on every poll.
+        'same'    — the app's sticky per-profile header pixels match the captured profile.
+                    Normally this is the same card and never a decision. The one deliberately
+                    separate signal is ``_identity_name_candidate``: the mostly-white bands of
+                    two different names can fall under the pixel threshold, so a clean tight
+                    OCR mismatch remains eligible for wait_for_decision's repeated-name proof.
+                    This method still returns ``same`` until that caller proves the pair.
         'top'     — the band shows the app's own scroll-top chrome (profile-independent), so
                     identity is simply not visible right now; the caller falls back to content
                     matching (_vertical_shift_match) rather than treating this as a mismatch.
@@ -6096,6 +6303,7 @@ class AndroidDriver(DatingAppDriver):
         # THIS call's provenance.
         self._identity_top_name_read = None
         self._identity_top_name_verdict = None
+        self._identity_name_candidate = None
         if self.identity_band is None:
             return "unknown", None
         band = _band(frame, self.identity_band)
@@ -6145,8 +6353,10 @@ class AndroidDriver(DatingAppDriver):
         # recognise the SAME profile through a header that shifted a few px (a banner
         # appearing/disappearing) and would therefore fail the pixel compare.
         #
-        # Deliberately ASYMMETRIC: a name match can only ever upgrade the verdict TO 'same',
-        # never downgrade one to 'new'. The two errors are not equally costly. A false 'same'
+        # Deliberately ASYMMETRIC: a name match normally only upgrades the verdict TO 'same'.
+        # The narrow exception is a pixel ``same`` whose tight sticky-header OCR cleanly reads
+        # one different name; that becomes only a candidate ``new`` and must survive the
+        # caller's two-frame/deck-ready/name-repeat gates. The two errors are not equally costly. A false 'same'
         # costs at most a missed pass -- the loop keeps waiting, and the deck-ready + settle +
         # content checks downstream still have to agree before anything is recorded. A false
         # 'new' writes a WRONG TRAINING LABEL, which is the entire class of bug this redesign
@@ -6155,14 +6365,29 @@ class AndroidDriver(DatingAppDriver):
         # 2026-08-10: OCRs as "Signals ( Agev ) Height v", which matches no name and would
         # have flipped a correct 'top' verdict straight to 'new'), and tesseract garbles
         # perfectly ordinary names often enough that a non-match proves nothing on its own.
-        # So OCR gets a veto on 'new' and no power to create one.
-        if self.observe_name_ocr and self._identity_name and state != "same":
+        # So an arbitrary OCR mismatch gets no power to create ``new``.
+        identity_band_named_candidate = False
+        if self.observe_name_ocr and self._identity_name:
             seen_name = self._ocr_band(frame, self.identity_band)
             if seen_name:
-                stored = self._identity_name.strip().casefold()
-                seen = seen_name.strip().casefold()
-                if stored and seen and seen == stored:
+                stored = self._identity_name.strip()
+                seen_tokens = _TOP_NAME_TOKEN_RE.findall(seen_name)
+                if stored and any(_name_token_matches(tok, stored) for tok in seen_tokens):
                     state = "same"
+                elif state == "same":
+                    # The signature is mostly white header chrome. In the measured Allison ->
+                    # Brittany incident two genuinely different sticky headers were only 6.81
+                    # apart, below the 9.0 pixel ``same`` threshold. A tight psm-7 read of one
+                    # different name is useful evidence against that background-dominated
+                    # match, but it does NOT change this method's pixel verdict. The caller
+                    # alone may combine the candidate with the same name on a settled,
+                    # deck-ready confirm frame before a no-touch PASS can be recorded.
+                    candidate = _clean_first_line_name_candidate(seen_name)
+                    if candidate is not None:
+                        self._identity_top_name_read = seen_name
+                        self._identity_top_name_verdict = "new"
+                        self._identity_name_candidate = candidate
+                        identity_band_named_candidate = True
 
         # Layer 1b: OCR the CARD HEADER. It can resolve a verified scroll-top chrome state,
         # and it can veto a pixel-derived ``new`` when it sees the stored name.
@@ -6188,7 +6413,8 @@ class AndroidDriver(DatingAppDriver):
         #   corroboration above already applies: no stored name means nothing to compare
         #   against, and no declared band means this app was never measured for one (None is
         #   the default -- see that field's docstring).
-        if (state in {"top", "new"} and self.observe_name_ocr and self._identity_name
+        if (state in {"top", "new"} and not identity_band_named_candidate
+                and self.observe_name_ocr and self._identity_name
                 and self.identity_top_name_band is not None):
             text = self._ocr_band(frame, self.identity_top_name_band, psm="6")
             self._identity_top_name_read = text
@@ -6215,14 +6441,21 @@ class AndroidDriver(DatingAppDriver):
                     # leaving exactly the name ("Zorva", "Qelix", ...). Zero or multiple
                     # candidates is inconclusive. It is still only a first observation:
                     # wait_for_decision requires the clean ``new`` read on the settle frame too.
-                    candidates = [
-                        tok for tok in tokens
-                        if tok.casefold() not in _TOP_NAME_CHROME_WORDS
-                        and sum(ch.isalpha() for ch in tok) >= 3
-                    ]
-                    if len(candidates) == 1:
+                    # Tesseract's line boundary is important evidence here: the measured Hinge
+                    # geometry puts the person's name on the FIRST non-empty line.  Pronouns,
+                    # "Active now/today", and occasionally the first card title occupy later
+                    # lines.  Looking for candidates across the flattened whole crop caused the
+                    # reported Sammy -> Jen pass to be missed even though OCR had read ``Jen``
+                    # correctly on both settled frames.  Restrict NEW-name candidates to the
+                    # first line.  SAME-name vetoes above still inspect every line, preserving
+                    # the deliberately conservative false-PASS guard if OCR reflows a stored
+                    # name downward.  If OCR emits one noisy line, the existing exactly-one-
+                    # candidate rule still refuses it (the Julia regression).
+                    candidate = _clean_first_line_name_candidate(text)
+                    if candidate is not None:
                         state = "new"
                         self._identity_top_name_verdict = "new"
+                        self._identity_name_candidate = candidate
                 # When the original pixel state was ``new``, a nonmatch might just be OCR of
                 # photo content. It deliberately does nothing: only a matching stored name can
                 # override pixels in that direction.
@@ -6825,18 +7058,20 @@ class AndroidDriver(DatingAppDriver):
                 continue
 
             # Top changed (whole card moved). LAYER 1 (identity) is authoritative and runs
-            # FIRST: whatever else changed on screen, a frame whose sticky per-profile header
-            # still matches the CAPTURED profile is still the same card, full stop -- this is
-            # the actual fix for the reported bug (the owner scrolling to read a profile, no
-            # tap of any kind, recorded as a PASS). Layers 2/3 below only ever CORROBORATE an
-            # identity-proven advance; neither can override a 'same' verdict here.
+            # FIRST: a matching sticky-header pixel signature normally proves this is still the
+            # captured card -- the fix for manual scrolls once being recorded as PASS. The one
+            # exception is a clean different-name candidate from that same tight band: shared
+            # white chrome can make two names pixel-``same``, so the caller keeps that candidate
+            # alive only long enough to demand the same name again on a settled, deck-ready
+            # confirm frame. Layers 2/3 cannot override ``same`` without that named evidence.
             identity_state, identity_dist = self._identity_of(cur)
             # `_identity_of` resets its OCR provenance on every call, including the confirm
             # call below. Preserve this frame's read now so the decision/resync record says
             # whether header OCR rescued (or was unable to rescue) the pixel verdict.
             identity_name_read = self._identity_top_name_read
             identity_name_verdict = self._identity_top_name_verdict
-            if identity_state == "same":
+            identity_name_candidate = self._identity_name_candidate
+            if identity_state == "same" and identity_name_candidate is None:
                 base = cur                            # scroll within the SAME profile -> keep waiting
                 self._observe_recognized()            # identity named this card: recognised
                 self._note_observe_waiting("same", cur)
@@ -6876,7 +7111,8 @@ class AndroidDriver(DatingAppDriver):
             seen_pairs = [(idx, s) for idx, s in enumerate(current_sigs) if s is not None]
             min_dist = None
             shift_matched = False
-            if identity_state != "new" and ds_cur is not None and seen_pairs:
+            if (identity_state != "new" and identity_name_candidate is None
+                    and ds_cur is not None and seen_pairs):
                 import numpy as np
                 dists = [(idx, float(np.mean(np.abs(ds_cur - ds_seen)))) for idx, ds_seen in seen_pairs]
                 min_idx, min_dist = min(dists, key=lambda pair: pair[1])
@@ -6950,6 +7186,7 @@ class AndroidDriver(DatingAppDriver):
             confirm_identity_state, confirm_identity_dist = self._identity_of(confirm)
             confirm_identity_name_read = self._identity_top_name_read
             confirm_identity_name_verdict = self._identity_top_name_verdict
+            confirm_identity_name_candidate = self._identity_name_candidate
             # A PASS label demands a positive, stable different-profile identity, not merely
             # two frames that failed to match the captured profile. In particular, Hinge fades
             # the filter chips/sticky header during a manual scroll; that transient band can be
@@ -6958,12 +7195,20 @@ class AndroidDriver(DatingAppDriver):
             # recorded exactly that manual read as a PASS. Requiring `new` on BOTH independently
             # captured frames makes the safe error a missed/resync decision, never a label on
             # the wrong person's profile.
+            candidate_identity_advance = (
+                identity_name_verdict == "new"
+                and confirm_identity_name_verdict == "new"
+                and identity_name_candidate is not None
+                and confirm_identity_name_candidate is not None
+                and identity_name_candidate.casefold()
+                    == confirm_identity_name_candidate.casefold()
+            )
             stable_identity_advance = (
                 not self._observe_like_sheet_visible(confirm)
                 and self._observe_deck_ready(confirm)
                 and not self._changed(cur, confirm)
-                and identity_state == "new"
-                and confirm_identity_state == "new"
+                and (identity_state == "new" or candidate_identity_advance)
+                and (confirm_identity_state == "new" or candidate_identity_advance)
             )
             if not stable_identity_advance:
                 self._note_observe_waiting("not_settled", confirm)
@@ -6994,11 +7239,13 @@ class AndroidDriver(DatingAppDriver):
                 identity_dist=None if identity_dist is None else round(identity_dist, 2),
                 identity_name_read=identity_name_read,
                 identity_name_verdict=identity_name_verdict,
+                identity_name_candidate=identity_name_candidate,
                 confirm_identity=confirm_identity_state,
                 confirm_identity_dist=(None if confirm_identity_dist is None
                                        else round(confirm_identity_dist, 2)),
                 confirm_identity_name_read=confirm_identity_name_read,
                 confirm_identity_name_verdict=confirm_identity_name_verdict,
+                confirm_identity_name_candidate=confirm_identity_name_candidate,
                 profile_name=self._identity_name, gesture=verdict, watcher=self.observe_touch_watch,
             )
             if verdict == "resync":
@@ -7008,10 +7255,7 @@ class AndroidDriver(DatingAppDriver):
                 # -- exactly the right outcome for a resync, never a silent mislabel.
                 self._dbg_action("observe_resync", base, **fields)
                 return None
-            name_advance_proven = (
-                identity_name_verdict == "new"
-                and confirm_identity_name_verdict == "new"
-            )
+            name_advance_proven = candidate_identity_advance
             if verdict == "no_data" and not name_advance_proven:
                 self._dbg_action(
                     "observe_resync", base,

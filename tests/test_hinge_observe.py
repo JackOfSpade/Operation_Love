@@ -10,6 +10,7 @@ diff thresholds are confirmed live on a finished profile (see hinge.py header).
 """
 import math
 import random
+from types import SimpleNamespace
 
 import pytest
 
@@ -188,6 +189,114 @@ def test_capture_respects_scroll_capture_limit():
     drv = _drv(adb, scroll_captures=2)
     profile = drv._capture_current()
     assert profile.photos == [b"a", b"b"]
+
+
+def test_capture_carries_one_contradictory_frame_to_index_rebuild(monkeypatch):
+    """A single marked fallback retains enumeration cadence; the indexer remains the gate."""
+    adb = FakeAdb([b"a", b"b", b"b"])
+    drv = _drv(adb, scroll_captures=4)
+    calls = []
+    indexed = []
+
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_confirm_enumeration_top", lambda: "")
+
+    def plan(_frame, _lane, _minimum, *, allow_segmentation_failure_fallback=False):
+        calls.append(allow_segmentation_failure_fallback)
+        return SimpleNamespace(
+            frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
+            basis=(hinge.STEP_SEGMENTATION_FALLBACK if len(calls) == 1 else "measured"),
+            spacing=SimpleNamespace(measured=False, px=None),
+            reason="synthetic contradictory frame")
+
+    monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
+    monkeypatch.setattr(drv, "_index_captured_items",
+                        lambda photos: indexed.append(list(photos)) or "")
+
+    profile = drv._capture_current()
+
+    assert profile is not None
+    assert calls == [True, True]        # the second permit stays available until a second fault
+    assert indexed == [[b"a", b"b"]]
+
+
+def test_capture_carries_two_adjacent_contradictory_frames_to_index_rebuild(monkeypatch):
+    adb = FakeAdb([b"a", b"b", b"c", b"c"])
+    drv = _drv(adb, scroll_captures=4)
+    calls = []
+    indexed = []
+
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_confirm_enumeration_top", lambda: "")
+
+    def plan(_frame, _lane, _minimum, *, allow_segmentation_failure_fallback=False):
+        calls.append(allow_segmentation_failure_fallback)
+        return SimpleNamespace(
+            frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
+            basis=(hinge.STEP_SEGMENTATION_FALLBACK if len(calls) <= 2 else "measured"),
+            spacing=SimpleNamespace(measured=False, px=None), reason="synthetic contradiction")
+
+    monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
+    monkeypatch.setattr(drv, "_index_captured_items",
+                        lambda photos: indexed.append(list(photos)) or "")
+
+    assert drv._capture_current() is not None
+    assert calls == [True, True, True]
+    assert indexed == [[b"a", b"b", b"c"]]
+
+
+def test_capture_carries_four_adjacent_contradictory_frames_to_index_rebuild(monkeypatch):
+    """The fourth bounded failure reaches the indexer's measured-bridge gate."""
+    adb = FakeAdb([b"a", b"b", b"c", b"d", b"e", b"e"])
+    drv = _drv(adb, scroll_captures=5)
+    calls = []
+    indexed = []
+
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_confirm_enumeration_top", lambda: "")
+
+    def plan(_frame, _lane, _minimum, *, allow_segmentation_failure_fallback=False):
+        calls.append(allow_segmentation_failure_fallback)
+        return SimpleNamespace(
+            frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
+            basis=(hinge.STEP_SEGMENTATION_FALLBACK if len(calls) <= 4 else "measured"),
+            spacing=SimpleNamespace(measured=False, px=None), reason="synthetic contradiction")
+
+    monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
+    monkeypatch.setattr(drv, "_index_captured_items",
+                        lambda photos: indexed.append(list(photos)) or "")
+
+    assert drv._capture_current() is not None
+    assert calls == [True, True, True, True, False]
+    assert indexed == [[b"a", b"b", b"c", b"d", b"e"]]
+
+
+def test_capture_refuses_a_fifth_contradictory_frame(monkeypatch):
+    """The expanded recovery stays a bounded bridge, never an unmeasured read mode."""
+    adb = FakeAdb([b"a", b"b", b"c", b"d", b"e", b"f", b"f"])
+    drv = _drv(adb, scroll_captures=6)
+    calls = []
+    indexed = []
+
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_confirm_enumeration_top", lambda: "")
+
+    def plan(_frame, _lane, _minimum, *, allow_segmentation_failure_fallback=False):
+        calls.append(allow_segmentation_failure_fallback)
+        if not allow_segmentation_failure_fallback:
+            raise hinge.ScrollStepError("synthetic fifth contradiction")
+        return SimpleNamespace(
+            frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
+            basis=hinge.STEP_SEGMENTATION_FALLBACK,
+            spacing=SimpleNamespace(measured=False, px=None), reason="synthetic contradiction")
+
+    monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
+    monkeypatch.setattr(drv, "_index_captured_items",
+                        lambda photos: indexed.append(list(photos)) or "")
+
+    assert drv._capture_current() is not None
+    assert calls == [True, True, True, True, False]
+    assert indexed == []
 
 
 def test_auto_policy_varies_read_geometry_dwell_and_only_raises_capture_ceiling(monkeypatch):
@@ -1307,6 +1416,60 @@ def test_identity_new_profile_plus_deck_ready_and_settle_confirms_a_pass(monkeyp
     assert drv.wait_for_decision(timeout=5.0) is False
 
 
+def test_repeated_tight_name_overrides_weak_pixel_same_and_records_the_real_pass(monkeypatch):
+    """The complete no-touch-data path for the Allison -> Brittany missed X incident.
+
+    One OCR read may only make a candidate. The same clean next-profile name on the settled
+    confirm frame, with the existing deck-ready proof, is sufficient to recover the real pass
+    even though both background-dominated pixel comparisons incorrectly say ``same``.
+    """
+    import numpy as np
+
+    adb = FakeAdb([b"allison", b"brittany"], advance_on_screencap=True)
+    drv = _drv(adb, observe_touch_watch=False)
+    drv._dbg = _FakeDbg()
+    drv._identity_name = "Allison"
+    drv._identity_sig = np.zeros((16, 64), dtype="int16")
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: drv._identity_sig)
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
+    monkeypatch.setattr(drv, "_ocr_band",
+                        lambda frame, rect, psm="7": "Brittany" if psm == "7" else None)
+
+    assert drv.wait_for_decision(timeout=5.0) is False
+    decisions = [fields for name, fields in drv._dbg.calls if name == "observe_decision"]
+    assert len(decisions) == 1
+    assert decisions[0]["decision"] == "pass"
+    assert decisions[0]["gesture"] == "no_data"
+    assert decisions[0]["identity_name_candidate"] == "Brittany"
+    assert decisions[0]["confirm_identity_name_candidate"] == "Brittany"
+
+
+def test_two_different_tight_ocr_candidates_do_not_create_a_no_touch_pass(monkeypatch):
+    """Two unrelated OCR guesses are not a repeated next-profile identity."""
+    import itertools
+    import numpy as np
+
+    adb = FakeAdb([b"allison", b"candidate"], advance_on_screencap=True)
+    drv = _drv(adb, observe_touch_watch=False)
+    drv._dbg = _FakeDbg()
+    drv._identity_name = "Allison"
+    drv._identity_sig = np.zeros((16, 64), dtype="int16")
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: drv._identity_sig)
+    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (50.0, 50.0))
+    monkeypatch.setattr(drv, "_changed", lambda a, b: False)
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
+    names = itertools.cycle(("Brittany", "Brenda"))
+    monkeypatch.setattr(drv, "_ocr_band",
+                        lambda frame, rect, psm="7": next(names) if psm == "7" else None)
+
+    assert drv.wait_for_decision(timeout=0.01) is None
+    assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
+
+
 def test_same_profile_reflow_with_pixel_new_and_no_gesture_resyncs_without_a_pass(monkeypatch):
     """Exact 2026-08-16 Julia regression.
 
@@ -1524,6 +1687,74 @@ def test_identity_top_name_ocr_garbage_with_multiple_candidates_stays_inconclusi
 
     assert state == "top"
     assert drv._identity_top_name_verdict is None
+
+
+def test_identity_top_name_ocr_uses_the_name_line_not_pronouns_or_activity(monkeypatch):
+    """Regression for the 2026-08-16 Sammy -> Jen missed X report.
+
+    Tesseract correctly returned ``Jen`` on line 1 and Hinge's ``she/her Active now`` metadata
+    on line 2.  Treating the whole block as an unordered bag of candidate words made the clean
+    name ambiguous, after which the loose content matcher swallowed the real card advance as a
+    scroll.  The measured header geometry gives line 1 a distinct meaning: it is the name.
+    """
+    drv = _top_state_drv(monkeypatch, stored_name="Sammy")
+    monkeypatch.setattr(
+        drv, "_ocr_band",
+        lambda frame, rect, psm="7": "Jen\nshe her Active now" if psm == "6" else None,
+    )
+
+    state, _dist = drv._identity_of(b"jen-after-x")
+
+    assert state == "new"
+    assert drv._identity_top_name_verdict == "new"
+
+
+def test_tight_name_ocr_overrules_a_weak_pixel_same_for_a_different_profile(monkeypatch):
+    """Regression for the Allison -> Brittany missed X incident.
+
+    The two sticky headers measured only 6.81 apart because their shared white chrome dominated
+    the thin pixel band, below the 9.0 ``same`` threshold. The same tight band nevertheless OCR'd
+    ``Brittany`` cleanly. That positive different-name evidence must remain eligible for the
+    caller's settled two-frame proof instead of adopting Brittany as Allison's new baseline.
+    """
+    import numpy as np
+
+    drv = _drv(FakeAdb([b"brittany-scrolled"]))
+    drv._identity_name = "Allison"
+    drv._identity_sig = np.zeros((16, 64), dtype="int16")
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: drv._identity_sig)
+    psms = []
+
+    def ocr(frame, rect, psm="7"):
+        psms.append(psm)
+        return "Brittany" if psm == "7" else None
+
+    monkeypatch.setattr(drv, "_ocr_band", ocr)
+
+    state, distance = drv._identity_of(b"brittany-scrolled")
+
+    assert state == "same"                      # OCR is only a candidate, never a one-frame verdict
+    assert distance == 0.0                       # the pixel layer alone said an exact "same"
+    assert drv._identity_top_name_verdict == "new"
+    assert drv._identity_name_candidate == "Brittany"
+    assert psms == ["7"]                         # the clean tight read needs no broad photo OCR
+
+
+def test_tight_name_ocr_near_match_preserves_pixel_same(monkeypatch):
+    """A normal OCR spelling error must retain the conservative same-profile verdict."""
+    import numpy as np
+
+    drv = _drv(FakeAdb([b"allison"]))
+    drv._identity_name = "Allison"
+    drv._identity_sig = np.zeros((16, 64), dtype="int16")
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    monkeypatch.setattr(hinge, "_band", lambda frame, rect: drv._identity_sig)
+    monkeypatch.setattr(drv, "_ocr_band",
+                        lambda frame, rect, psm="7": "Alllson" if psm == "7" else None)
+
+    assert drv._identity_of(b"allison")[0] == "same"
+    assert drv._identity_name_candidate is None
 
 
 def test_identity_top_name_ocr_vetoes_a_pixel_new_when_the_stored_name_is_read(monkeypatch):
@@ -1796,6 +2027,27 @@ def test_ocr_band_caches_a_repeated_identical_band_without_rerunning_tesseract(m
     assert first == "Zorva"
     assert second == "Zorva"
     assert len(calls) == 1, f"expected exactly 1 tesseract invocation, got {len(calls)}"
+
+
+def test_ocr_band_preserves_lines_and_separates_punctuation(monkeypatch):
+    """The exact raw OCR shape from the missed Jen pass must retain its name-line boundary.
+
+    Slashes and the verification badge are separators, not characters to delete: deleting
+    them used to weld ``she/her`` into another plausible name token, while flattening the
+    newline discarded the strongest evidence that ``Jen`` was the actual profile name.
+    """
+    from types import SimpleNamespace
+    drv = _drv(FakeAdb([b"x"]))
+    monkeypatch.setattr(hinge.shutil, "which", lambda name: "/usr/bin/tesseract")
+    monkeypatch.setattr(
+        hinge.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(
+            stdout=b"Jen &\nshe/her Active now\n", returncode=0),
+    )
+
+    assert drv._ocr_band(_png(value=10), (0.0, 0.0, 1.0, 1.0), psm="6") == (
+        "Jen\nshe her Active now"
+    )
 
 
 def test_ocr_band_cache_miss_on_a_different_band_still_invokes_tesseract(monkeypatch):

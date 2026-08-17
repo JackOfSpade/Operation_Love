@@ -78,6 +78,17 @@
       <select id="mode"><option value="observe">observe (you decide)</option>
         <option value="auto">auto (bot decides)</option></select>
     </div>
+    <div class="controls" style="margin-top:10px">
+      <label class="muted" for="stopafter">stop after</label>
+      <select id="stopafter" aria-describedby="timerhint">
+        <option value="0" selected>Unlimited</option>
+        <option value="900">15 minutes</option>
+        <option value="1800">30 minutes</option>
+        <option value="3600">1 hour</option>
+        <option value="7200">2 hours</option>
+      </select>
+      <span class="meta" id="timerhint" aria-live="polite"></span>
+    </div>
     <div class="controls" id="maxrow" style="margin-top:10px;display:none">
       <span class="muted">max profiles this run</span>
       <input type="text" inputmode="numeric" id="maxrun" value="8"
@@ -164,6 +175,20 @@ function stopButtonState(running, stopping){
 // substring a comment-only revert could dodge.
 function shouldClearHint(running, wasRunning){ return !!wasRunning && !running; }
 
+// A timed stop is a run-wide safety control, unlike max-per-run (which only applies to
+// automatic decisions), so it is rendered for both Observe and Auto.  The server owns the
+// clock and sends whole seconds remaining; round up so "stops in 1m" never says zero while
+// the run is still live.
+function formatTimedStopRemaining(seconds){
+  const total = Math.max(0, Math.ceil(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+  if (minutes) return `${minutes}m ${String(secs).padStart(2, '0')}s`;
+  return `${secs}s`;
+}
+
 function renderGlobal(snap){
   const running = snap && snap.running;
   const s = snap && snap.status;
@@ -172,6 +197,10 @@ function renderGlobal(snap){
   $('#runpill').textContent = running ? ((phase && phase!=='live') ? phase : 'running') : 'stopped';
   $('#runpill').className = 'pill ' + (running ? 'run' : 'stop');
   $('#start').disabled = running;
+  $('#stopafter').disabled = !!running;
+  const timedStop = (snap && snap.timed_stop) || (s && s.timed_stop);
+  $('#timerhint').textContent = running && timedStop
+    ? `stops in ${formatTimedStopRemaining(timedStop.remaining_seconds)}` : '';
   const stopBtn = stopButtonState(running, stopping);
   $('#stop').disabled = stopBtn.disabled;
   $('#stop').textContent = stopBtn.label;
@@ -688,11 +717,16 @@ function computeMaxPerRun(mode, unlimitedChecked, rawValue){
   const n = parseInt(rawValue, 10);
   return (Number.isFinite(n) && n > 0) ? n : null;
 }
+function stopAfterSeconds(rawValue){
+  const n = Number(rawValue);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
 async function startRunFromControls(){
   $('#hint').textContent='starting…';
   const mode = $('#mode').value;
   const max_per_run = computeMaxPerRun(mode, $('#unlimited').checked, $('#maxrun').value);
-  const r = await postJSON('/api/start', {mode, apps: chosenApps(), max_per_run});
+  const stop_after_seconds = stopAfterSeconds($('#stopafter').value);
+  const r = await postJSON('/api/start', {mode, apps: chosenApps(), max_per_run, stop_after_seconds});
   // The server is the only authority on what can run, so a refusal is shown verbatim
   // and in full -- these reasons are a sentence or two ("Additional work needed to get
   // this to run..."), which would be unreadable squeezed into the one-line hint.

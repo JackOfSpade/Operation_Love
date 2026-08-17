@@ -38,6 +38,16 @@ def test_normal_shots_rotate_but_error_shots_are_kept(tmp_path):
     assert (dl.dir / err["screenshot"]).read_bytes() == b"CRITICAL"   # crucial log preserved
 
 
+def test_recoverable_action_can_keep_its_raw_evidence(tmp_path):
+    dl = HingeDebugLog(str(tmp_path), run_id="r", keep_shots=2)
+    dl.action("enumeration_segmentation_fallback", before=b"BAD_FRAME", keep_before=True)
+    for i in range(8):
+        dl.action("capture", before=bytes([i]))
+
+    rec = _recs(dl)[0]
+    assert (dl.dir / rec["before"]).read_bytes() == b"BAD_FRAME"
+
+
 def test_logging_is_best_effort_no_frame(tmp_path):
     dl = HingeDebugLog(str(tmp_path), run_id="r")
     dl.action("capture", before=None, photos=0)               # no screenshot -> no shot keys

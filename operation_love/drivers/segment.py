@@ -297,6 +297,13 @@ _SCROLL_TOP_MEDIA_RAMP_ROWS = 8
 _SCROLL_TOP_MEDIA_MIN_RAMP_GAIN_PX = 12
 _SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX = (60, 120)
 
+# Consecutive media cards in the live Rebecca capture have a 98..101px page-background gap,
+# rather than the ordinary 52..53px gutter.  It is still a real boundary: its upper edge lands
+# 89px below the prior card's lower-right like heart, inside the independently measured 60..120px
+# heart-bottom inset.  Keep this deliberately narrow.  A generic 98..101px blank span is not a
+# boundary, and a heart at another vertical position is not evidence that its card ended here.
+_HEART_ANCHORED_MEDIA_GAP_PX = (90, 112)
+
 # Which half of the screen a like heart may appear on. Hinge puts it at the bottom-RIGHT of
 # every likeable item (hinge.py:770, enforced by _match_glyph's own side filter). Named rather
 # than inlined so the one place this assumption lives is greppable.
@@ -336,6 +343,9 @@ EDGE_CARD_CORNER = "card_corner"  # the card's OWN rounded corner is visible on 
                                   # span it starts from and the rows it takes to reach the full
                                   # card width agree on one radius (see `_corner_radius`)
 EDGE_SCROLL_TOP_MEDIA = "scroll_top_media"  # guarded frame-0 recovery for a pale square photo
+EDGE_HEART_ANCHORED_MEDIA_GUTTER = "heart_anchored_media_gutter"
+                                  # a tall, page-coloured gap starts at a proven media item's
+                                  # lower edge even though its corner is obscured
 EDGE_BAND_EDGE = "band_edge"      # the block runs straight into the analysed band's edge
 EDGE_BACKGROUND_RUN = "background_run"  # page background beyond this edge, but neither
                                   # gutter-length nor corner-confirmed, so what it MEANS is
@@ -348,6 +358,7 @@ RUN_CARD_EDGE = "card_edge"       # not gutter-length, but a card's own top corn
                                   # row directly below it — the list-top case, where Hinge's
                                   # header chrome sits above item 1 instead of a gutter
 RUN_SCROLL_TOP_MEDIA = "scroll_top_media"  # distinct provenance for the guarded recovery
+RUN_HEART_ANCHORED_MEDIA_GUTTER = "heart_anchored_media_gutter"
 RUN_TOO_SHORT = "too_short"
 RUN_TOO_LONG = "too_long"
 RUN_CLIPPED = "clipped"           # touches the analysed band's edge, so its length is a lower
@@ -722,6 +733,32 @@ def _leading_low_contrast_media_edge(
     return ramp[-1] - ramp[0] >= _SCROLL_TOP_MEDIA_MIN_RAMP_GAIN_PX
 
 
+def _heart_anchored_media_gutter(
+        run: BackgroundRun, *, hearts: tuple[tuple[int, int], ...],
+        gutter_level_tolerance: float) -> bool:
+    """Whether a non-canonical page-coloured run is the lower edge of a media item.
+
+    This is intentionally not a wider gutter window. A tall blank surface can occur inside one
+    compound card, but a Hinge like heart sits at the lower-right of its one item. When the
+    next page-coloured run begins at that measured heart-bottom inset, the heart proves the
+    upper card ended there; a genuine 98..101px Rebecca gap is then enough to cut. The lower
+    card need not already show its heart -- the first card must become complete before the next
+    one has scrolled into view.
+    """
+    if run.kind != RUN_TOO_LONG or not (
+            _HEART_ANCHORED_MEDIA_GAP_PX[0] <= run.height <=
+            _HEART_ANCHORED_MEDIA_GAP_PX[1]):
+        return False
+    if run.median_level_delta > gutter_level_tolerance:
+        return False
+    anchored = [
+        heart for heart in hearts
+        if (_SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX[0] <= run.y0 - heart[1]
+                <= _SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX[1])
+    ]
+    return len(anchored) == 1
+
+
 def _block_edge(*, y: int, cut: BackgroundRun | None, gap: int,
                 corner: float | None) -> BlockEdge:
     """One end of a block, resolved to a `BlockEdge`.
@@ -748,6 +785,9 @@ def _block_edge(*, y: int, cut: BackgroundRun | None, gap: int,
         return BlockEdge(y=y, observed=True, kind=EDGE_GUTTER, run_px=cut.height)
     if cut is not None and cut.kind == RUN_SCROLL_TOP_MEDIA:
         return BlockEdge(y=y, observed=True, kind=EDGE_SCROLL_TOP_MEDIA, run_px=cut.height)
+    if cut is not None and cut.kind == RUN_HEART_ANCHORED_MEDIA_GUTTER:
+        return BlockEdge(y=y, observed=True, kind=EDGE_HEART_ANCHORED_MEDIA_GUTTER,
+                         run_px=cut.height)
     run_px = cut.height if cut is not None else (gap or None)
     if corner is not None:
         return BlockEdge(y=y, observed=True, kind=EDGE_CARD_CORNER, run_px=run_px,
@@ -956,7 +996,9 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
     # other 2, which are the whitespace between the header strip and the name row above it.]
     # The opt-in third label is the narrow scroll-top media conjunction described by
     # `_leading_low_contrast_media_edge`; unlike either ordinary rule it is never available to
-    # an unconfirmed or later frame.
+    # an unconfirmed or later frame. The fourth is an equally narrow interior media rule: a
+    # 90..112px run at the one measured bottom inset of the preceding like heart. It does not
+    # widen generic gutter acceptance, so ordinary long card-white spans remain whole.
     cuts: list[BackgroundRun] = []
     for i, run in enumerate(runs):
         if run.kind == RUN_GUTTER:
@@ -976,6 +1018,10 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
                   card_x0=card_x0, card_x1=card_x1, radius_px=card_corner_px,
                   dip_px=card_corner_dip_px)):
             runs[i] = replace(run, kind=RUN_SCROLL_TOP_MEDIA)
+        elif _heart_anchored_media_gutter(
+                run, hearts=hearts,
+                gutter_level_tolerance=gutter_background_level_tolerance):
+            runs[i] = replace(run, kind=RUN_HEART_ANCHORED_MEDIA_GUTTER)
         else:
             continue
         cuts.append(runs[i])

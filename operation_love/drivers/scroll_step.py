@@ -423,6 +423,17 @@ SPACING_CARD_EXTENT = "card_extent"    # one complete heart-bearing block's heig
 # --- what sized the step ------------------------------------------------------------
 STEP_MEASURED = "measured"             # sized against this frame's own smallest spacing
 STEP_FALLBACK = "fallback"             # nothing measurable here: sized against _FALLBACK_SPACING_PX
+# An explicitly opted-in bounded escape hatch for the capture loop. This is distinct from
+# STEP_FALLBACK: that frame segmented normally but exposed no period; these frames contradicted
+# themselves and must later be omitted from the item-index rebuild before any can support an opener.
+STEP_SEGMENTATION_FALLBACK = "segmentation_fallback"
+# A missed white-on-white gutter can persist for four small enumeration steps before the next
+# card boundary becomes visible again (Rebecca, 2026-08-16).  The caller may carry only this
+# bounded contiguous run; item_index still discards every failed frame and requires one fresh,
+# measured bridge across all five reads before it will emit an item list. More than this is no
+# longer an isolated missed-gutter event, so the capture stops rather than carrying an arbitrary
+# unsegmented run into the indexer.
+MAX_SEGMENTATION_FALLBACK_FRAMES = 4
 
 
 class ScrollStepError(RuntimeError):
@@ -609,7 +620,8 @@ def plan_scroll_step(segmentation: FrameSegmentation, *,
                      ratio_window: tuple[float, float] = (_STEP_RATIO_MIN, _STEP_RATIO_MAX),
                      max_step_px: int = _MAX_STEP_PX,
                      fallback_spacing_px: int = _FALLBACK_SPACING_PX,
-                     frac_window: tuple[float, float] | None = None) -> ScrollStep:
+                     frac_window: tuple[float, float] | None = None,
+                     allow_segmentation_failure_fallback: bool = False) -> ScrollStep:
     """Size the next enumeration read-scroll against the spacing `segmentation` can see.
 
     The entry point. Hand `step.frac` AND `step.x_frac` to `_scroll_down_one` — both, always;
@@ -637,9 +649,13 @@ def plan_scroll_step(segmentation: FrameSegmentation, *,
 
     Raises `ScrollStepError` when the frame contradicts itself, when the geometry cannot be
     computed, or when the measured spacing is too small for any permitted gesture to respect
-    `ratio_window`'s ceiling. It never substitutes a larger step for a refused one.
+    `ratio_window`'s ceiling. The sole exception is the capture loop's explicit
+    ``allow_segmentation_failure_fallback`` opt-in: it produces a corpus-minimum plan marked
+    ``STEP_SEGMENTATION_FALLBACK`` so the capture loop can carry a bounded bad run to the
+    indexer's independent omit-and-rebuild check. The default remains a hard refusal.
     """
-    if not segmentation.ok:
+    segmentation_failed = not segmentation.ok
+    if segmentation_failed and not allow_segmentation_failure_fallback:
         raise ScrollStepError(
             "refusing to size a scroll from a frame whose segmentation contradicts itself: "
             + "; ".join(segmentation.failures))
@@ -665,11 +681,16 @@ def plan_scroll_step(segmentation: FrameSegmentation, *,
         raise ScrollStepError(
             f"read-scroll frac window {(frac_lo, frac_hi)} is not a positive, non-inverted range")
 
-    spacing = measure_local_spacing(segmentation)
+    # A contradictory frame has no safe local period to measure.  The only permitted recovery
+    # does not pretend otherwise: it sizes at the already-validated corpus minimum and labels
+    # the gesture so its caller cannot mistake this for an ordinary missing measurement.
+    spacing = (LocalSpacing(px=None, evidence=()) if segmentation_failed
+               else measure_local_spacing(segmentation))
     if spacing.measured:
         basis, sizing_px = STEP_MEASURED, spacing.px
     else:
-        basis, sizing_px = STEP_FALLBACK, int(fallback_spacing_px)
+        basis = STEP_SEGMENTATION_FALLBACK if segmentation_failed else STEP_FALLBACK
+        sizing_px = int(fallback_spacing_px)
         if sizing_px <= 0:
             raise ScrollStepError(
                 f"fallback spacing {fallback_spacing_px} is not a positive distance")
@@ -738,6 +759,10 @@ def plan_scroll_step(segmentation: FrameSegmentation, *,
         reason = (f"no local spacing on this frame ({len(segmentation.blocks)} block(s), "
                   f"{len(segmentation.hearts)} heart(s)); stepped {step_px}px, sized against the "
                   f"{fallback_spacing_px}px corpus minimum")
+        if segmentation_failed:
+            reason = ("frame segmentation contradicted itself ("
+                      + "; ".join(segmentation.failures)
+                      + "); " + reason)
     if sizing_px != (spacing.px if spacing.measured else int(fallback_spacing_px)):
         reason += f", tightened to {sizing_px}px by this profile's smallest spacing so far"
     if low_px >= cap_px:

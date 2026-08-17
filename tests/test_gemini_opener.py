@@ -214,22 +214,35 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
             < serialized.index('"angle"') < serialized.index('"item_description"')
             < serialized.index('"opener"'))
 
-    # The field descriptions are deliberately ADVERSARIAL to each other (doc 3.4), so the
-    # routing still works on a model that ignores declared property order entirely -- which is
-    # a hypothesis, not a documented Gemini guarantee. Losing either half turns the schema
-    # back into five neutral labels that all invite the same description.
+    # The field descriptions route literal grounding into `referenced`, planning into `angle`,
+    # and the conversational payoff into `opener`, even if property order is ignored.
     referenced_description = schema["properties"]["referenced"]["description"].lower()
     angle_description = schema["properties"]["angle"]["description"].lower()
     opener_description = schema["properties"]["opener"]["description"].lower()
     assert "never sent to" in referenced_description
-    assert "does not leak into the opener" in referenced_description
-    assert "must not describe the item" in opener_description
+    assert "opener does not have to carry it" in referenced_description
+    assert "including any header, caption, or prompt printed with a photo" in referenced_description
+    assert "how it frames the photo" in referenced_description
+    assert "may name only the visible detail needed as setup" in referenced_description
+    assert "final conversational point must add something beyond" in referenced_description
+    assert "may name a visible detail as setup" in opener_description
+    assert "final point must do something conversational beyond describing" in opener_description
     # With minimal thinking, angle is the only place to plan the relationship between beats
     # before emitting the opener. Keep the premise-consistency check in that scratch field.
-    assert "accepts and advances the first beat's claim" in angle_description
+    assert "a guess is optional" in angle_description
+    assert "least speculative interpretation" in angle_description
+    assert "do not invent a motive, purpose, cause, or unseen circumstance" in angle_description
+    assert "must respect any header, caption, or prompt attached to the photo" in angle_description
+    assert "defines the photo's intended context" in angle_description
+    assert "accepts and advances that claim" in angle_description
     assert "verifying it, contradicting it" in angle_description
     assert "abandoning it for a nearby generic topic" in angle_description
-    assert "must not reuse the words from referenced" in opener_description
+    assert "every visible detail named in the opener" in angle_description
+    assert "parallel, contrasting answers" in angle_description
+    assert "never unrelated dimensions joined by 'or'" in angle_description
+    assert "every named setup detail must be necessary" in opener_description
+    assert "cut it if the later point still works without it" in opener_description
+    assert "parallel, contrasting answers to it" in opener_description
     # `angle` is free text and telemetry only (doc 3.5) -- an enum would force a pick from a
     # closed set, which is exactly the shoehorning the move list is designed to avoid.
     assert "enum" not in schema["properties"]["angle"]
@@ -253,6 +266,8 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     # opener against.
     assert schema["properties"]["item_description"]["type"] == "string"
     assert "enum" not in schema["properties"]["item_description"]
+    assert "include any header, caption, or prompt printed with it" in (
+        schema["properties"]["item_description"]["description"].lower())
 
 
 def test_angle_is_mapped_from_the_response_and_degrades_to_empty_when_omitted():
@@ -1032,23 +1047,23 @@ def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     assert "two sentences" in lower
     assert "dash" in lower and "hyphen" in lower
     assert "concrete detail" in lower
-    # Root cause #1 (ops/OPENER-REDESIGN.md 1.1) named the retry hint as one of three places
-    # that demanded the opener prove it looked, with nothing to stop the model from naming the
-    # detail instead of merely being grounded in it. The counterweight must survive here too,
-    # not just in _SYSTEM and the anchored closing: the detail is a premise, never named or
-    # described back to her, and the corrected opener must still carry a claim that could be
-    # wrong.
-    assert "premise" in lower and "point" in lower
-    assert "never name it or describe it back to her" in lower
-    assert "must still carry a claim that could be wrong" in lower
-    assert "only one direct inference from that visible or stated premise" in lower
-    assert "never stack guesses" in lower
-    assert "hidden action, route, effort, goal, cause, or sequence" in lower
-    assert "natural under the ordinary competing explanations of the scene" in lower
-    assert "a hedge does not rescue a far-fetched premise" in lower
-    assert "invented ownership, job, routine, responsibility, or relationship" in lower
-    assert "recognize the visible or stated clue that led to the guess immediately" in lower
-    assert "without reverse-engineering your logic" in lower
+    # A retry must not revive the old forced-claim rule. It keeps visible setup legal, requires
+    # a conversational payoff, and carries the minimum-invention/hyperbole distinction.
+    assert "you may name that detail when it is useful setup" in lower
+    assert "final conversational point must add something beyond description" in lower
+    assert "a guess is optional" in lower
+    assert "grounded observation or specific question over a forced inference" in lower
+    assert "hidden purpose, motive, circumstance, action, route, effort, goal, cause" in lower
+    assert "least speculative natural interpretation" in lower
+    assert "visible or stated basis immediately recognizable" in lower
+    assert "clearly nonliteral playful hyperbole is allowed" in lower
+    assert "invented motive or event presented as literal fact is not" in lower
+    assert "every named visible detail must be necessary to the conversational move" in lower
+    assert "cut it if the later point works without it" in lower
+    assert "ask one coherent thing at a time" in lower
+    assert "parallel, genuinely contrasting answers to one underlying question" in lower
+    assert "never unrelated dimensions" in lower
+    assert "must still carry a claim that could be wrong" not in lower
 
 
 def test_retry_hint_reaches_the_second_model_after_a_429_cascade(capsys):

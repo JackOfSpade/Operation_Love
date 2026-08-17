@@ -254,6 +254,40 @@ shared-visual-context assumption holds 100% of the time, so the rule can be unco
 
 ## Part A: wording
 
+### 2026-08-16 superseding correction: conversational value without forced invention
+
+Sections 2 through 3.3 below are retained as decision history, but their mandatory
+falsifiability rule, cover-the-photo test, question demotion, move menu and few-shot edit pairs
+are no longer normative and no longer ship to the model. They overcorrected the original
+description problem: when a photo offered no natural inference, the model manufactured a motive
+or circumstance merely to satisfy the required claim shape.
+
+The current contract is:
+
+- A visible detail may be named and may be the subject, premise or setup. The opener fails only
+  when its final conversational payoff merely identifies or describes that detail.
+- Every visible detail named in the sent opener must be necessary to, and used by, its
+  conversational move. If removing a descriptive clause leaves the later point or question
+  unchanged, cut it rather than spending a sentence on an orphaned scene inventory.
+- A guess or correctable claim is optional. When no natural inference exists, a grounded
+  observation or specific question is better than a forced guess.
+- Any claim uses the least speculative interpretation supported by what is visible or stated.
+  Never invent a purpose, motive, cause, plan, sequence or unseen circumstance to create one.
+- Clearly nonliteral playful hyperbole is allowed when its visible anchor is immediate. That is
+  playful framing, not permission to present invented biography as literal fact.
+- A question may be the whole message when it is the strongest natural angle. If a claim leads a
+  two-beat opener, the second beat must accept and advance that premise rather than rechecking,
+  contradicting or abandoning it.
+- A question asks one coherent thing. An "or" is valid only for parallel, genuinely contrasting
+  answers to the same underlying question, never for unrelated dimensions such as what an object
+  is and why she was there.
+- Production prompt text contains semantic properties and failure categories only. Concrete
+  opener examples remain off-wire in tests and historical documentation so they cannot become
+  templates for the model.
+
+The authoritative shipped wording is pinned in `tests/test_opener.py`,
+`tests/test_config_yaml_real.py`, and `tests/test_gemini_opener.py`.
+
 ## 2. The rule
 
 Shortening alone produces a worse failure. "That looks fun, where is it?" is sendable to any

@@ -692,6 +692,90 @@ def test_item_index_summary_keeps_long_geometry_once_and_separates_trailing_satu
     assert md.count("source frame 20 (index frame 19)") == 1
 
 
+def test_item_index_summary_names_a_multi_step_trailing_saturation_run(tmp_path):
+    """The real incident this guards against: a profile's scroll reached the card's bottom at
+    step 36, and the capture kept swiping a page that could not move for the rest of the run
+    (measured 0px steps interleaved with refused pairs). The old code only ever recognised the
+    single LAST step as saturation and folded everything else -- including 21 measured 0px
+    steps -- into "realised steps", reporting a nonsensical `min 0px` cadence and mislabelling
+    the run's own head as scattered "mid-run small-step anomalies". The whole contiguous run
+    must be named as one fact, and excluded wholesale from the cadence stats.
+    """
+    run = tmp_path / "run_item_index_trailing_saturation"
+    run.mkdir(parents=True)
+    steps_px = [265, 302, 268, 256, 270, 266, 263, 233, 231, 221, 247, 232, 274, 243, 262, 266,
+                234, 239, 218, 226, 279, 274, 236, 249, 232, 280, 281, 243, 279, 223, 256, 252,
+                274, 224, 223, 231, None, 0, 0, 0, 0, 0, 0, None, 0, 0, None, 0, 0, 0, 0, 0, 0,
+                None, 0, 0, 0, None, 0, 0, None, 0, 0]
+    assert len(steps_px) == 63
+    refusal = {"action": "item_index_refused", "reason": "no trustworthy shift",
+               "failing_pair": [61, 62], "steps_px": steps_px}
+    (run / "actions.jsonl").write_text(json.dumps(refusal) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert ("scroll saturated from step 36 to the end of the capture (21 measured steps at "
+            "0px, 6 refused): the profile's bottom was reached there and the remaining frames "
+            "repeat the same page position") in md
+    assert "mid-run small-step anomal" not in md
+    assert "main realised cadence (36 measured): min 218px, median 250.5px, max 302px" in md
+    # The old bug's signature: folding the trailing zeros into the cadence produced `min 0px`.
+    assert "min 0px" not in md
+    assert "trailing scroll saturation at step 62" not in md
+
+
+def test_item_index_summary_still_pins_a_single_short_final_gesture(tmp_path):
+    """A lone clamped final gesture (one near-zero measured step at the very end, nothing else
+    saturated) must keep reading exactly as it always has -- the multi-step run wording is only
+    for runs of two or more measured near-zero steps."""
+    run = tmp_path / "run_item_index_single_clamp"
+    run.mkdir(parents=True)
+    refusal = {"action": "item_index_refused", "reason": "no trustworthy shift",
+               "steps_px": [240, 250, 245, 15]}
+    (run / "actions.jsonl").write_text(json.dumps(refusal) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "main realised cadence (3 measured): min 240px, median 245px, max 250px" in md
+    assert "trailing scroll saturation at step 3 was 15px" in md
+    assert "scroll saturated from step" not in md
+    assert "mid-run small-step anomal" not in md
+
+
+def test_item_index_summary_still_flags_genuine_mid_run_small_step_anomalies(tmp_path):
+    """A small step surrounded by a healthy cadence on both sides -- including a healthy tail --
+    is a real spacing anomaly, not saturation, and must keep being called out as one."""
+    run = tmp_path / "run_item_index_mid_run_anomaly"
+    run.mkdir(parents=True)
+    refusal = {"action": "item_index_refused", "reason": "no trustworthy shift",
+               "steps_px": [260, 255, 40, 270, 265, 258, 262]}
+    (run / "actions.jsonl").write_text(json.dumps(refusal) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "realised steps (7 measured): min 40px, median 260px, max 270px" in md
+    assert "mid-run small-step anomaly at step 2=40px" in md
+    assert "scroll saturated from step" not in md
+    assert "trailing scroll saturation" not in md
+
+
+def test_item_index_summary_reports_plain_cadence_with_no_saturation(tmp_path):
+    """A healthy capture with no trailing saturation and no anomalies reports only the plain
+    cadence, unchanged from today's behaviour."""
+    run = tmp_path / "run_item_index_healthy"
+    run.mkdir(parents=True)
+    refusal = {"action": "item_index_refused", "reason": "no trustworthy shift",
+               "steps_px": [260, 255, 270, 265, 258]}
+    (run / "actions.jsonl").write_text(json.dumps(refusal) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "realised steps (5 measured): min 255px, median 260px, max 270px" in md
+    assert "scroll saturated from step" not in md
+    assert "trailing scroll saturation" not in md
+    assert "mid-run small-step anomal" not in md
+
+
 @pytest.mark.parametrize("runtime_key", ("item_index_runtime", "runtime"))
 def test_item_index_repair_summary_reads_v12_runtime_with_legacy_fallback(runtime_key):
     """Repair telemetry changed keys in v12 without making old runs opaque."""

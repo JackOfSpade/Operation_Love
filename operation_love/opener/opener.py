@@ -101,9 +101,9 @@ INDEX_SPACE_MODEL_ITEMS = "model_items"
 # Whether Gemini actually honours declared property order in responseJsonSchema is a
 # HYPOTHESIS, not a documented guarantee (doc 3.4 says to A/B it rather than assume it), so
 # this ordering is cheap insurance that costs nothing if the hypothesis is wrong. The field
-# descriptions below are written to be adversarial to each other -- `referenced` says "this is
-# never sent to her, put the whole description here", `opener` says "do not reuse those words"
-# -- so the routing survives even on a model that ignores order entirely.
+# descriptions below separate private grounding from public payoff: `referenced` holds the full
+# literal description, while `angle` and `opener` require conversational value beyond it. That
+# routing survives even on a model that ignores order entirely.
 _SCHEMA = {
     "type": "object",
     "properties": {
@@ -121,23 +121,32 @@ _SCHEMA = {
         "referenced": {
             "type": "string",
             "description": "What you are reacting to, described in full: the exact photo or "
-                           "prompt detail your claim comes from. THIS FIELD IS NEVER SENT TO "
+                           "prompt detail your angle comes from. THIS FIELD IS NEVER SENT TO "
                            "HER. Record only what is visibly shown or explicitly stated, not "
                            "an action or backstory you inferred. Put the whole description "
-                           "here so it does not leak into the opener, and do not reuse its "
-                           "words in the opener.",
+                           "here, including any header, caption, or prompt printed with a photo "
+                           "and how it frames the photo, so the opener does not have to carry "
+                           "it. The opener may name "
+                           "only the visible detail needed as setup, and its final conversational "
+                           "point must add something beyond that description.",
         },
         "angle": {
             "type": "string",
             "description": "In your own words, what your opener is doing: what you are "
-                           "guessing, claiming, teasing about, or connecting. Name the one "
-                           "direct inference from the visible or stated premise and make sure "
-                           "it remains natural under the ordinary competing explanations of "
-                           "the scene. The clue-to-guess path must be immediately recognizable "
-                           "to her; do not use one invented fact as the premise for another. "
-                           "If the opener has a second beat, state how it accepts and advances "
-                           "the first beat's claim rather than verifying it, contradicting it, "
-                           "or abandoning it for a nearby generic topic. "
+                           "observing, asking, guessing, teasing about, or connecting. State "
+                           "the conversational payoff beyond merely identifying what is visible. "
+                           "The angle must respect any header, caption, or prompt attached to "
+                           "the photo; that text defines the photo's intended context. "
+                           "A guess is optional. If you use one, choose the least speculative "
+                           "interpretation that fits ordinary explanations of the scene and do "
+                           "not invent a motive, purpose, cause, or unseen circumstance. If the "
+                           "opener has a second beat after a claim, state how it accepts and "
+                           "advances that claim rather than verifying it, contradicting it, or "
+                           "abandoning it for a nearby generic topic. "
+                           "For every visible detail named in the opener, state how it is used "
+                           "by the conversational move. If it asks a question, name the one "
+                           "underlying question; alternatives must be parallel, contrasting "
+                           "answers to it, never unrelated dimensions joined by 'or'. "
                            "Free text, not a fixed list of choices. Recorded for analysis only, "
                            "never sent to her.",
         },
@@ -145,14 +154,19 @@ _SCHEMA = {
             "type": "string",
             "description": "A short description of the item you picked: say whether it is a "
                            "photo or a written prompt, and in a few words what it shows or "
-                           "says. This is how we check that the item you numbered is the item "
+                           "says. For a photo, include any header, caption, or prompt printed "
+                           "with it. This is how we check that the item you numbered is the item "
                            "we think it is. Never sent to her.",
         },
         "opener": {
             "type": "string",
             "description": "The message to send, bare text only. She reads it while looking at "
-                           "the item, so it must not describe the item and must not reuse the "
-                           "words from referenced. Maximum two sentences. No em dash, no hyphen.",
+                           "the item. It may name a visible detail as setup, but its final point "
+                           "must do something conversational beyond describing that detail. "
+                           "Every named setup detail must be necessary to that move; cut it if "
+                           "the later point still works without it. A question asks one coherent "
+                           "thing; use 'or' only for parallel, contrasting answers to it. "
+                           "Maximum two sentences. No em dash, no hyphen.",
         },
     },
     "required": ["item_index", "referenced", "angle", "item_description", "opener"],
@@ -168,9 +182,9 @@ _SCHEMA = {
 # fails a test in a file nobody would think to look at. The duplication itself is known debt,
 # recorded in ops/OPENER-REDESIGN.md 3.1.
 #
-# Division of labour between the two copies, per doc 3.1: the LONG form of the rule, the
-# reasoning behind it, and the few-shot edit pairs live in config.yaml, which is owner tunable
-# and is where voice belongs. This constant carries a COMPRESSED statement of the same
+# Division of labour between the two copies, per doc 3.1: the LONG form of the rule and its
+# reasoning live in config.yaml, which is owner tunable and is where voice belongs. This
+# constant carries a COMPRESSED statement of the same
 # property plus the mechanics that have nowhere else to live (field semantics, output format,
 # the two HARD RULEs).
 #
@@ -226,6 +240,17 @@ _SCHEMA = {
 # supplies salient wording for a minimal-thinking model to imitate. The prompt now specifies
 # properties and failure categories only; tests keep the regressions concrete off-wire.
 #
+# Addendum 2026-08-16 (minimum invention): making falsifiability unconditional overcorrected
+# the description problem. On an item with no natural inference it pressured the model to invent
+# motives and circumstances merely to produce a correctable claim. A claim is now optional. A
+# visible detail may be named as setup and fails only when description is the final payoff. The
+# model must prefer the least speculative natural move, while unmistakably nonliteral hyperbole
+# remains available because it is playful framing rather than asserted biography.
+#
+# Addendum 2026-08-16 (photo headers): a captioned photo is one compound profile item. The
+# caption is not decoration: it can reverse the ordinary reading of the pixels, so the model
+# must inventory it before drafting and treat it as authoritative context for the photo.
+#
 # Addendum 2026-08-12 (Part B, ops/OPENER-REDESIGN.md 5.1/5.7): the model now CHOOSES the item
 # rather than labelling one after the fact, so two lines changed here and nothing else did.
 # "The images are her profile in scroll order; set referenced_index to the 0-based index of the
@@ -274,39 +299,46 @@ _SYSTEM = (
     "interaction: default to sincere interest and easy confidence, and reserve light teasing or "
     "cheeky humor for the occasional profile where it arises naturally. Do not force teasing into "
     "every opener. SHARED CONTEXT RULE: your message is displayed directly under the exact photo "
-    "or prompt it attaches to, and she is looking at that item while she reads your words. THE "
-    "ONE RULE: your opener must contain a claim that could be wrong. Describing what is in the "
-    "photo can never be wrong, which is exactly why it proves nothing; she is not checking "
-    "whether you have eyes. The thing you can see may be your premise. It may never be your "
-    "point. SELF CONTAINED CLAIM: write the whole proposition, not a shorthand answer to an "
-    "imagined question or a bare option in an unstated guessing game. The message itself must "
-    "say what you think is true; shared visual context lets you omit a description, not the "
-    "claim's subject or relation. A reader should never have to ask 'for what?' to understand "
-    "it. EVIDENCE BOUNDARY, ONE HOP ONLY: the premise must be plainly visible in the item "
-    "or explicitly stated in her profile. From it you may make one playful, uncertain inference. "
-    "Never stack guesses by inventing an unseen action, route, effort, goal, cause, or sequence "
-    "as the premise for another claim. A setting or destination does not establish how she "
-    "arrived, what effort it took, or whether she pursued a goal. If "
-    "the opener needs that hidden bridge, choose a different claim or a different item. "
-    "CALIBRATE THE GUESS: a hedge does not rescue a far-fetched premise. The claim should sound "
-    "natural under most ordinary explanations of the scene, not only under one special backstory. "
-    "Never infer ownership, employment, a routine, a responsibility, or a relationship merely "
-    "from proximity in one photo. Guess about the visible interaction, not an unshown life "
-    "story. TRACEABILITY "
-    "TEST: even if the conclusion is wrong, she should instantly see which visible or stated "
-    "clue led you there. If the clue to inference path needs an explanation, the inference is "
-    "too remote and you have fantasized a backstory. Make "
-    "one clear, positive, profile-specific bid, then leave room for her reply. A "
-    "claim she can correct beats a question she has to answer: a question is allowed as the "
-    "second beat after a real claim, never as the whole message. PREMISE CONSISTENCY: once the "
-    "first beat asserts or guesses X, the second beat must accept X as its working premise and "
-    "move forward from it. Ask for a consequence, choice, or specific detail that makes sense "
-    "if X is true. Never ask whether X itself was true, ask about the opposite of X, or abandon "
-    "X for a generic question about the surrounding scene. The second beat inherits the "
-    "same evidence boundary: it may not introduce another inference or presuppose an unseen "
-    "expectation, opinion, goal, difficulty, outcome, or earlier conversation. If no natural "
-    "evidence bound question follows, stop after the claim. Questions should invite positive, "
-    "fun conversation, not form an interview. "
+    "or prompt it attaches to, and she is looking at that item while she reads your words. "
+    "PHOTO HEADER RULE: any title, caption, or prompt printed with a photo is part of that same "
+    "item and defines how the photo is meant to be read. Interpret the visible scene through "
+    "that text before choosing an angle. The angle and opener must respect the combined meaning, "
+    "never contradict, reverse, or ignore the header's framing. "
+    "CONVERSATIONAL VALUE RULE: do more than label what she can already see. A visible detail "
+    "may be named and may be the subject, premise, or setup. The opener fails only when its "
+    "final conversational point is merely that description. Use the detail to add a perspective, "
+    "grounded interpretation, playful framing, connection, or natural question. The message "
+    "must be profile-specific, but it does not have to contain a guess or a claim that could be "
+    "wrong. CLAIMS ONLY WHEN NATURAL: a correctable inference is one available move, not a "
+    "requirement. When no natural inference exists, prefer a grounded observation or specific "
+    "question over a forced guess. If you make a claim, write the whole proposition rather than "
+    "a shorthand answer to an imagined question, and choose the least speculative interpretation "
+    "that fits ordinary explanations of the scene. MINIMUM INVENTION: never invent a purpose, "
+    "motive, cause, plan, sequence, effort, goal, or unseen circumstance just to create a claim. "
+    "Do not assign why she chose or did something unless her profile states it. Any literal "
+    "premise must be plainly visible in the item or explicitly stated in her profile. Never use "
+    "one invented fact as the premise for another. A setting or destination does not establish "
+    "how she arrived, what effort it took, or whether she pursued a goal. A hedge does not rescue "
+    "a far-fetched premise. Never infer ownership, employment, a routine, a responsibility, or a "
+    "relationship merely from proximity in one photo. TRACEABILITY TEST: for any inference, she "
+    "should instantly see which visible or stated clue led there. If that path needs an "
+    "explanation, the inference is too remote. PLAYFUL HYPERBOLE: unmistakably nonliteral "
+    "exaggeration is allowed when its visible anchor is immediate. It adds playful framing; it "
+    "does not license presenting an invented motive, circumstance, or event as literal fact. "
+    "Make one clear, positive, profile-specific bid, then leave room for her reply. A natural "
+    "claim she can correct can be effective, but it is not mandatory. One specific, easy, "
+    "positive question may be the whole message when that is the strongest natural angle. "
+    "SETUP PAYOFF CONTINUITY: every visible detail you name must be necessary to, and used by, "
+    "the conversational move. If removing a descriptive clause leaves the later point or "
+    "question unchanged, cut it. QUESTION COHERENCE: ask one coherent thing at a time. An 'or' "
+    "is allowed only for parallel, genuinely contrasting answers to that same underlying "
+    "question, never to join unrelated dimensions. "
+    "PREMISE CONSISTENCY: if the first beat asserts or guesses X, the second beat must accept X "
+    "as its working premise and move forward from it. Never ask whether X itself was true, ask "
+    "about the opposite of X, or abandon X for a generic question about the surrounding scene. "
+    "A second beat may extend the angle with clearly nonliteral hyperbole, but it may not add a "
+    "literal invented fact, motive, or backstory. If no coherent continuation exists, stop after "
+    "the first beat. Questions should invite positive, fun conversation, not form an interview. "
     "Any teasing must be clearly good-natured and never belittling, arrogant, condescending, or "
     "mean. Mild innuendo is eligible only when her own profile clearly invites that playful tone; "
     "never force it. A brief greeting is optional but cannot substitute for profile-specific "
@@ -327,23 +359,25 @@ _SYSTEM = (
     "done something, or likes something, because you do not know his history and he has to live "
     "with whatever you write. PICK THE ITEM YOURSELF: the numbered images are her profile photos, "
     "numbered from 1 in the order they are given, and you choose which one to write about. Choose "
-    "the item you have the best angle on, not the most striking picture: a plain photo you can "
-    "make a real claim about beats a beautiful one you have nothing to say about, because the "
-    "item is only ever your premise and the claim is the message. Written prompts are deliberately "
+    "the item you have the best conversational angle on, not the most striking picture: a plain "
+    "photo that supports a natural observation, question, connection, or playful framing beats "
+    "a beautiful one you have nothing to say about. The item supplies the material and the "
+    "conversational payoff is the message. Written prompts are deliberately "
     "absent from the numbered choices and item_index must never refer to a prompt. THE FAILURE TO "
     "AVOID IS PICKING A PHOTO YOU HAVE NOTHING TO SAY ABOUT, because then all that is left to write is what it "
-    "looks like, which is the one thing that is never allowed. Read all of the numbered items "
-    "first, find the one that hands you a claim that could be wrong, and pick that one even when "
+    "looks like, which is never enough as the final point. Read all of the numbered items "
+    "first, find the one that hands you the most natural conversational angle, and pick that one even when "
     "another item is the better picture. Set item_index "
     "to that item's number; it is also the item that gets liked, so your message and the like "
     "always land on the same thing. Any image given WITHOUT a number is context, usually her "
     "vitals: her age, her job, her school, her city. Read it, use it, and refer to what it shows "
-    "whenever it sharpens your claim, because something she states there, set against a numbered "
+    "whenever it sharpens your angle, because something she states there, set against a numbered "
     "item, is often the best angle on the page. It simply carries no number, so you can never "
     "pick it and item_index can never refer to it. "
     "APPLICATION RULE: TWO sentences is the absolute maximum, and within "
-    "that ceiling be as short as the claim allows: spend no word on anything she can already see "
-    "and none on padding, but never cut the claim itself to save room. A second sentence may be "
+    "that ceiling be as short as the angle allows: spend no word merely repeating what she can "
+    "already see and none on padding, but never cut necessary setup or the conversational payoff. "
+    "A second sentence may be "
     "one easy positive question "
     "or a direct low-pressure invitation. Do not try to build a text relationship in the opener. "
     "HARD RULE: never use an em dash or any hyphen; use commas or periods instead and spell out "
@@ -351,8 +385,9 @@ _SYSTEM = (
     "only; use no emoji and transliterate accented or non-English letters to plain ASCII. "
     "Fill item_index, referenced, angle and item_description before you write the opener: "
     "referenced is the "
-    "full description of what you are reacting to and is never sent to her, so put the whole "
-    "description there and keep its words out of the message, angle is your own short wording "
+    "full description of what you are reacting to and is never sent to her, so put the literal "
+    "inventory there; the message may use only the setup it needs and must add a conversational "
+    "payoff. Angle is your own short wording "
     "for what your opener is doing, and item_description says in a few words what the item you "
     "picked is, a photo and what it shows. "
     "The opener field must contain only the bare message itself, "
@@ -400,7 +435,9 @@ _ITEM_PREAMBLE = (
     "=== HER PROFILE, ONE IMAGE PER ITEM ===\n"
     "Every image below is one item cropped from her profile, and each image is immediately "
     "preceded by its own label. A label reading ITEM k means the image directly after it IS "
-    "item k, so there is nothing here for you to count and no order for you to work out."
+    "item k, so there is nothing here for you to count and no order for you to work out. "
+    "A numbered crop may contain a title, caption, or prompt above its photo; that text and "
+    "the photo are one compound item and must be read together."
 )
 
 # Appended to _ITEM_PREAMBLE only when context crops are actually being sent. Explaining a
@@ -1590,16 +1627,19 @@ class GeminiOpener:
                 "null, a number, or an empty/whitespace value), and the opener must be at "
                 "most TWO sentences. Also keep following the style guide above, especially "
                 "the hard rule against em dashes and hyphens, and ground the opener in one "
-                "concrete detail from her profile text or photos. That detail is your "
-                "premise, not your point: never name it or describe it back to her. The "
-                "corrected opener must still carry a claim that could be wrong, but it may "
-                "make only one direct inference from that visible or stated premise. Never "
-                "stack guesses or invent a hidden action, route, effort, goal, cause, or "
-                "sequence as a bridge to the claim. The guess must also remain natural under "
-                "the ordinary competing explanations of the scene; a hedge does not rescue "
-                "a far-fetched premise or an invented ownership, job, routine, responsibility, "
-                "or relationship. She must be able to recognize the visible or stated clue "
-                "that led to the guess immediately, without reverse-engineering your logic. "
+                "concrete detail from her profile text or photos. You may name that detail when "
+                "it is useful setup, but the final conversational point must add something "
+                "beyond description. A guess is optional. Prefer a grounded observation or "
+                "specific question over a forced inference. Never invent a hidden purpose, "
+                "motive, circumstance, action, route, effort, goal, cause, or sequence merely "
+                "to create a claim. If you do make a claim, use the least speculative natural "
+                "interpretation and make its visible or stated basis immediately recognizable. "
+                "Clearly nonliteral playful hyperbole is allowed; an invented motive or event "
+                "presented as literal fact is not. "
+                "Every named visible detail must be necessary to the conversational move; cut "
+                "it if the later point works without it. Ask one coherent thing at a time. Use "
+                "'or' only for parallel, genuinely contrasting answers to one underlying "
+                "question, never unrelated dimensions. "
                 "Write the "
                 "corrected opener now."
             )

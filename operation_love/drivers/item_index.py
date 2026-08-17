@@ -191,7 +191,7 @@ from .segment import (
 # `_MAX_STEP_PX` is borrowed for the same reason: the ceiling on ONE read gesture is measured and
 # cited in scroll_step.py, and it is the gesture that produced the frames folded here, so a
 # second copy of it would be free to drift away from the step the reader actually makes.
-from .scroll_step import _MAX_STEP_PX
+from .scroll_step import MAX_SEGMENTATION_FALLBACK_FRAMES, _MAX_STEP_PX
 
 
 # =====================================================================================
@@ -520,6 +520,11 @@ class ItemIndex:
     # only one of them would make a successful recovery impossible to audit.
     recovered_from_pairs: tuple[tuple[int, int], ...] = ()
     recovery_failed_shifts: tuple[ShiftEstimate, ...] = ()
+    # A single segmentation contradiction can be treated exactly like one damaged intermediate
+    # frame, but only after the surrounding real frames bridge and the reduced index rebuilds.
+    # Keep it separate from ``recovered_from_pair``: there need not have been a failed shift,
+    # and inventing one would make the successful recovery's audit trail lie.
+    recovered_from_segmentation_frames: tuple[int, ...] = ()
     recovery_reason: str | None = None
     # Original frameshift evidence replaced by a layout-assisted acceptance.  This is never a
     # hidden quorum relaxation: the effective shift's reason and this immutable provenance both
@@ -1127,7 +1132,16 @@ def _track_candidate_deltas(pair_index: int, before: FrameSegmentation,
                 pair_index, before, after, raw, proposed)
             if projection_note is not None and projected.delta_px is not None:
                 candidates.add(projected.delta_px)
-    return tuple(sorted(delta for delta in candidates if 0 < delta <= _MAX_STEP_PX))
+    # 0 is admissible HERE and nowhere else. A page that has hit its bottom while a video keeps
+    # playing produces a run of genuine 0px pairs, and excluding them did not merely skip those
+    # pairs -- it broke the track permanently, because `_video_track_deltas` drops a card the
+    # moment one pair offers no candidate and never re-seeds. Live 2026-08-16 (Grace) that killed
+    # the mute-card track at the first static frame, discarding the identity of the card for the
+    # whole rest of the profile. Letting a track CONTINUE across "it did not move" cannot invent
+    # a shift: `_layout_repaired_shift` and `_exact_multi_strip_shift` both still refuse to
+    # propose a non-positive candidate, so a 0 link can only ever confirm a pair frameshift
+    # already measured as 0 and can never repair one it refused.
+    return tuple(sorted(delta for delta in candidates if 0 <= delta <= _MAX_STEP_PX))
 
 
 def _track_anchor_count(before, after, delta: int, *,
@@ -2242,7 +2256,9 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
     # plus a fully usable rebuild over the remaining real frames.  The omitted-frame provenance
     # below makes that reduction visible to every caller, including the crop layer.
     failed_pairs = [i for i, shift in enumerate(shifts) if shift.delta_px is None]
-    has_segmentation_failure = any(seg.failures for seg in segmentations)
+    failed_segmentation_frames = {
+        i for i, segmentation in enumerate(segmentations) if segmentation.failures
+    }
     failed_pair_records = tuple((i, i + 1) for i in failed_pairs)
     omission_candidates: set[int] = set()
     if failed_pairs:
@@ -2252,61 +2268,112 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         omission_candidates = {
             omitted for omitted in omission_candidates if 0 < omitted < len(frames) - 1
         }
-    if (_allow_frame_omission_recovery and not has_segmentation_failure
-            and omission_candidates):
-        candidates: list[tuple[tuple[float, float, float, int], int, ItemIndex]] = []
+    # One short, contiguous contradictory run is also eligible for the same conservative
+    # recovery.  A white-on-white Hinge card boundary can remain invisible for four adjacent
+    # scroll positions; all failed frames must disappear from a fully rebuilt page coordinate system,
+    # joined by one fresh measured bridge. Anything longer, non-contiguous, at an endpoint, or
+    # accompanied by an unrelated shift failure remains a hard refusal.
+    segmentation_frames = tuple(sorted(failed_segmentation_frames))
+    segmentation_recovery = (
+        1 <= len(segmentation_frames) <= MAX_SEGMENTATION_FALLBACK_FRAMES
+        and segmentation_frames[0] > 0
+        and segmentation_frames[-1] < len(frames) - 1
+        and segmentation_frames == tuple(range(segmentation_frames[0],
+                                               segmentation_frames[-1] + 1)))
+    if segmentation_recovery:
+        omitted_set = set(segmentation_frames)
+        # A pair may fail because it touches the bad run; a failure wholly outside it proves the
+        # sequence has a second fault and cannot be repaired by dropping these frames.
+        segmentation_recovery = all(
+            pair_index in omitted_set or pair_index + 1 in omitted_set
+            for pair_index in failed_pairs)
+
+    if failed_segmentation_frames:
+        candidate_runs = [segmentation_frames] if segmentation_recovery else []
+    else:
+        candidate_runs = [(candidate,) for candidate in sorted(omission_candidates)]
+
+    if _allow_frame_omission_recovery and candidate_runs:
+        candidates: list[tuple[tuple[float, float, float, int], tuple[int, ...], ItemIndex]] = []
         # With one refusal, test both sides as before.  With two adjacent refusals, their shared
         # middle frame is the sole candidate.  A non-adjacent refusal leaves the intersection
         # empty and cannot be disguised as one bad capture.  ``build_item_index`` remeasures the
         # bridge and revalidates every later page-level invariant with recursion disabled, so no
         # refused consensus or assumed sum enters the recovered coordinate space.
-        for omitted in sorted(omission_candidates):
-            reduced_frames = tuple(frame for i, frame in enumerate(frames) if i != omitted)
+        for omitted_frames in candidate_runs:
+            omitted_set = set(omitted_frames)
+            reduced_frames = tuple(frame for i, frame in enumerate(frames) if i not in omitted_set)
+            # The direct bridge spans the omitted frames plus the next real read.  Its maximum
+            # is therefore a known multiple of the driver's own one-gesture ceiling, not an
+            # inferred page offset.  Widen the estimator only enough to see that bridge; every
+            # other reduced-chain pair is checked back against the normal one-step ceiling below.
+            recovery_trust_window_px = trust_window_px
+            if failed_segmentation_frames:
+                default_window = (segmentations[0].band[1] - segmentations[0].band[0]) // 2
+                recovery_trust_window_px = max(
+                    default_window if trust_window_px is None else trust_window_px,
+                    (len(omitted_frames) + 1) * _MAX_STEP_PX)
             recovered = build_item_index(
                 reduced_frames, content_band=content_band, like_template=like_template,
                 like_threshold=like_threshold, at_scroll_top=at_scroll_top,
                 identity_band=identity_band,
                 animation_markers=tuple(value for i, value in enumerate(marker_evidence)
-                                        if i != omitted),
+                                        if i not in omitted_set),
                 video_mute_markers=tuple(
                     VideoMuteMarker(
-                        frame_index=(marker.frame_index - 1 if marker.frame_index > omitted
-                                     else marker.frame_index),
+                        frame_index=(marker.frame_index - sum(
+                            omitted < marker.frame_index for omitted in omitted_frames)),
                         x=marker.x, y=marker.y, score=marker.score)
-                    for marker in mute_markers if marker.frame_index != omitted),
-                trust_window_px=trust_window_px,
+                    for marker in mute_markers if marker.frame_index not in omitted_set),
+                trust_window_px=recovery_trust_window_px,
                 extent_tolerance_px=max(extent_tolerance_px, _RECOVERY_EXTENT_TOLERANCE_PX),
                 min_item_gap_px=min_item_gap_px,
                 end_tail_gap_px=end_tail_gap_px, _allow_frame_omission_recovery=False)
-            bridge = (omitted - 1, omitted + 1)
+            bridge = (omitted_frames[0] - 1, omitted_frames[-1] + 1)
             # The source index shifts by one after the omission, but the bridge always starts at
             # the original left neighbour.  ``usable`` also rules out any other broken pair.
             bridge_shift = recovered.shifts[bridge[0]] if recovered.usable else None
-            if bridge_shift is not None and bridge_shift.status == SHIFT_MEASURED:
+            ordinary_pairs_stay_one_step = all(
+                pair_index == bridge[0] or shift.delta_px is not None
+                and 0 <= shift.delta_px <= _MAX_STEP_PX
+                for pair_index, shift in enumerate(recovered.shifts))
+            if (bridge_shift is not None and bridge_shift.status == SHIFT_MEASURED
+                    and ordinary_pairs_stay_one_step):
                 candidates.append((
                     (bridge_shift.agreeing, bridge_shift.confidence,
-                     -bridge_shift.dissenting, -omitted), omitted, recovered))
+                     -bridge_shift.dissenting, -omitted_frames[0]), omitted_frames, recovered))
         if candidates:
             # Most independent agreement wins; stable secondary keys make an audit replay choose
             # the same reduction when both bridges are sound.
-            _score, omitted, recovered = max(candidates, key=lambda candidate: candidate[0])
-            bridge = (omitted - 1, omitted + 1)
+            _score, omitted_frames, recovered = max(candidates, key=lambda candidate: candidate[0])
+            bridge = (omitted_frames[0] - 1, omitted_frames[-1] + 1)
             return replace(
                 recovered,
-                source_frame_indices=tuple(i for i in range(len(frames)) if i != omitted),
-                recovered_from_pair=failed_pair_records[0], recovery_bridge=bridge,
-                recovery_failed_shift=shifts[failed_pairs[0]],
+                source_frame_indices=tuple(i for i in range(len(frames)) if i not in omitted_frames),
+                recovered_from_pair=(failed_pair_records[0] if failed_pair_records else None),
+                recovery_bridge=bridge,
+                recovery_failed_shift=(shifts[failed_pairs[0]] if failed_pairs else None),
                 recovered_from_pairs=failed_pair_records,
                 recovery_failed_shifts=tuple(shifts[i] for i in failed_pairs),
+                recovered_from_segmentation_frames=(
+                    tuple(sorted(failed_segmentation_frames)) if failed_segmentation_frames else ()),
                 recovery_reason=(
-                    f"frame {omitted} was omitted after "
-                    + (f"frames {failed_pairs[0]} and {failed_pairs[0] + 1} had no trustworthy "
+                    f"frame{'s' if len(omitted_frames) > 1 else ''} "
+                    + ", ".join(str(frame) for frame in omitted_frames) + " "
+                    + ("were omitted after their segmentations contradicted themselves"
+                       if len(omitted_frames) > 1 and failed_segmentation_frames else
+                       "was omitted after its segmentation contradicted itself"
+                       if failed_segmentation_frames else
+                       f"frames {failed_pairs[0]} and {failed_pairs[0] + 1} had no trustworthy "
                        "shift" if len(failed_pairs) == 1 else
                        f"pairs {', '.join(f'{a}/{b}' for a, b in failed_pair_records)} had no "
                        "trustworthy shifts")
                     + "; the fresh direct bridge from "
                     f"frame {bridge[0]} to frame {bridge[1]} and the complete rebuilt index "
-                    "both passed without assuming an offset"))
+                    "both passed without assuming an offset"
+                    + (f" (the bridge alone was measured inside the "
+                       f"{(len(omitted_frames) + 1) * _MAX_STEP_PX}px "
+                       "multi-read window)" if len(omitted_frames) > 1 else "")))
 
     failures: list[str] = []
     for i, seg in enumerate(segmentations):

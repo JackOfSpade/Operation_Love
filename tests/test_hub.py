@@ -503,6 +503,148 @@ def test_hubstate_forwards_max_per_run(monkeypatch):
     assert seen["mode"] == "auto" and seen["max_per_run"] == 8
 
 
+@pytest.mark.parametrize("mode", ["observe", "auto"])
+def test_hubstate_timed_stop_stops_each_run_mode_and_reports_countdown(monkeypatch, mode):
+    """The hub's timer is mode-agnostic: it stops supervisor's shared Event, not a worker.
+
+    This uses a real one-second local timer rather than calling stop() directly so the test
+    covers scheduling, expiry, and the exact Event supervisor receives.
+    """
+    import operation_love.hub as hub
+
+    entered = threading.Event()
+    finished = threading.Event()
+
+    def fake_run(config_path, **kw):
+        entered.set()
+        assert kw["stop_event"].wait(timeout=4)
+        finished.set()
+
+    monkeypatch.setattr(hub.supervisor, "run", fake_run)
+    st = HubState("config.yaml")
+    ok, _ = st.start(mode=mode, apps=["hinge"], stop_after_seconds=1)
+    assert ok is True
+    assert entered.wait(timeout=2)
+
+    timed_stop = st.snapshot()["timed_stop"]
+    assert timed_stop is not None
+    assert timed_stop["duration_seconds"] == 1
+    assert 0 <= timed_stop["remaining_seconds"] <= 1
+
+    assert finished.wait(timeout=3)
+    st._thread.join(timeout=3)
+    assert st.snapshot()["timed_stop"] is None
+
+
+def test_hubstate_manual_stop_cancels_the_timed_stop(monkeypatch):
+    import operation_love.hub as hub
+
+    entered = threading.Event()
+    released = threading.Event()
+
+    def fake_run(config_path, **kw):
+        entered.set()
+        assert kw["stop_event"].wait(timeout=3)
+        released.set()
+
+    monkeypatch.setattr(hub.supervisor, "run", fake_run)
+    st = HubState("config.yaml")
+    ok, _ = st.start(mode="observe", apps=["hinge"], stop_after_seconds=10)
+    assert ok is True and entered.wait(timeout=2)
+    assert st.stop()[0] is True
+    assert st.snapshot()["timed_stop"] is None
+    assert released.wait(timeout=2)
+    st._thread.join(timeout=2)
+
+
+def test_hubstate_stale_timed_stop_cannot_stop_a_newer_generation():
+    st = HubState("config.yaml")
+    old_stop = threading.Event()
+    new_stop = threading.Event()
+    keep_alive = threading.Event()
+    st._thread = threading.Thread(target=keep_alive.wait, daemon=True)
+    st._thread.start()
+    with st._lock:
+        st._run_generation = 2
+        st._stop = new_stop
+
+    # Simulate a callback from a cancelled timer belonging to run generation 1.  It must
+    # not set the Event owned by generation 2, even though a run is currently live.
+    st._timed_stop_elapsed(1, old_stop)
+    assert old_stop.is_set() is False
+    assert new_stop.is_set() is False
+
+    keep_alive.set()
+    st._thread.join(timeout=2)
+
+
+@pytest.mark.parametrize("value", [True, False, -1, 1.5, "30", "1.0", []])
+def test_hub_timed_stop_validation_rejects_non_integer_or_negative_values(value):
+    from operation_love.hub.state import validate_stop_after_seconds
+
+    ok, normalized, error = validate_stop_after_seconds(value)
+    assert ok is False
+    assert normalized is None
+    assert error
+
+
+@pytest.mark.parametrize("value, expected", [(None, None), (0, None), (1, 1), (90, 90)])
+def test_hub_timed_stop_validation_accepts_unlimited_or_positive_seconds(value, expected):
+    from operation_love.hub.state import validate_stop_after_seconds
+
+    assert validate_stop_after_seconds(value) == (True, expected, None)
+
+
+def test_api_start_rejects_invalid_timed_stop_before_launching_run(monkeypatch):
+    import operation_love.hub as hub
+
+    launched = []
+    monkeypatch.setattr(hub.supervisor, "run", lambda *a, **k: launched.append((a, k)))
+    _Handler.state = HubState("config.yaml")
+    httpd = _bind("127.0.0.1", 8799)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_address[1]}/api/start",
+            data=json.dumps({"mode": "observe", "apps": ["hinge"],
+                             "stop_after_seconds": "not-a-number"}).encode(),
+            method="POST", headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req, timeout=5)
+        assert exc_info.value.code == 400
+        assert json.loads(exc_info.value.read())["ok"] is False
+        assert launched == []
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        _join_hub_watch_threads()
+
+
+@pytest.mark.parametrize("payload", [b"not-json", b"[]", b"null"])
+def test_api_start_rejects_non_object_json_before_launching_run(monkeypatch, payload):
+    import operation_love.hub as hub
+
+    launched = []
+    monkeypatch.setattr(hub.supervisor, "run", lambda *a, **k: launched.append((a, k)))
+    _Handler.state = HubState("config.yaml")
+    httpd = _bind("127.0.0.1", 8799)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_address[1]}/api/start", data=payload,
+            method="POST", headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req, timeout=5)
+        assert exc_info.value.code == 400
+        assert launched == []
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        _join_hub_watch_threads()
+
+
 def test_hub_card_shows_single_accuracy_metric():
     # One metric (ROC-AUC as accuracy %); the old PR-AUC/ROC-AUC/Brier/diminishing lines are gone.
     assert "e.roc_auc[0]*100" in _PAGE                # accuracy = ROC-AUC x 100
@@ -868,12 +1010,13 @@ def _render_global_script(calls: list) -> str:
     exactly the transition this is testing."""
     fns = (_extract_js_function(_PAGE, "stopButtonState") + "\n"
            + _extract_js_function(_PAGE, "shouldClearHint") + "\n"
+           + _extract_js_function(_PAGE, "formatTimedStopRemaining") + "\n"
            + _extract_js_function(_PAGE, "renderGlobal"))
     return (
         "let _wasRunning = false;\n"
         "let els = {runpill:{textContent:'',className:''}, start:{disabled:false}, "
         "stop:{disabled:false,textContent:''}, hint:{textContent:''}, budget:{textContent:''}, "
-        "err:{textContent:''}};\n"
+        "err:{textContent:''}, stopafter:{disabled:false}, timerhint:{textContent:''}};\n"
         "function $(sel){ return els[sel.slice(1)]; }\n"
         + fns + "\n"
         "const calls = " + json.dumps(calls) + ";\n"
@@ -882,7 +1025,8 @@ def _render_global_script(calls: list) -> str:
         "  if (c.presetHint != null) els.hint.textContent = c.presetHint;\n"
         "  renderGlobal(c.snap);\n"
         "  results.push({hint: els.hint.textContent, pill: els.runpill.textContent, "
-        "stopDisabled: els.stop.disabled, stopLabel: els.stop.textContent});\n"
+        "stopDisabled: els.stop.disabled, stopLabel: els.stop.textContent, "
+        "timerDisabled: els.stopafter.disabled, timerHint: els.timerhint.textContent});\n"
         "}\n"
         "console.log(JSON.stringify(results));\n"
     )
@@ -919,6 +1063,21 @@ def test_render_global_shows_stopping_on_the_pill_and_disables_the_stop_button()
     assert results[0]["pill"] == "stopping"
     assert results[0]["stopDisabled"] is True
     assert results[0]["stopLabel"] == "■ Stopping…"
+
+
+def test_render_global_shows_server_timer_countdown_and_locks_the_choice_while_running():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    calls = [
+        {"snap": {"running": True, "status": {"phase": "live", "budget_spent": 0},
+                  "timed_stop": {"duration_seconds": 1800, "remaining_seconds": 65}}},
+        {"snap": {"running": False, "status": None, "timed_stop": None}},
+    ]
+    results = _run_node(_render_global_script(calls))
+    assert results[0]["timerDisabled"] is True
+    assert results[0]["timerHint"] == "stops in 1m 05s"
+    assert results[1]["timerDisabled"] is False
+    assert results[1]["timerHint"] == ""
 
 
 def test_hub_page_rereigsters_on_tab_wake_events():
@@ -2037,6 +2196,19 @@ def test_hub_auto_volume_control_defaults_to_unlimited():
     )
 
 
+def test_hub_timed_stop_is_visible_in_both_modes_and_defaults_to_unlimited():
+    tag = re.search(r'<select\b[^>]*\bid="stopafter"[^>]*>(.*?)</select>', _PAGE, re.S)
+    assert tag, "timed stop control missing"
+    assert re.search(r'<option\s+value="0"\s+selected>Unlimited</option>', tag.group(0))
+    assert [int(v) for v in re.findall(r'<option\s+value="(\d+)"', tag.group(1))] == [
+        0, 900, 1800, 3600, 7200,
+    ]
+    # The duration is a run-wide safety limit, including an Observe run waiting for the
+    # operator; unlike the auto-only max-profile control, it must never be mode-gated.
+    assert "$('#stopafter').disabled = !!running" in _PAGE
+    assert "$('#mode').value === 'auto'" not in tag.group(0)
+
+
 def test_hub_defaults_to_observe_even_when_config_defaults_to_auto():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
@@ -2052,10 +2224,11 @@ def test_hub_start_handler_posts_explicit_unlimited_override():
     assert re.search(r"\$\('#start'\)\.onclick\s*=\s*startRunFromControls", _PAGE)
     fns = (_extract_js_function(_PAGE, "escHtml") + "\n"
            + _extract_js_function(_PAGE, "computeMaxPerRun") + "\n"
+           + _extract_js_function(_PAGE, "stopAfterSeconds") + "\n"
            + _extract_js_function(_PAGE, "startRunFromControls"))
     script = (
         "const els = {hint:{textContent:''}, mode:{value:'auto'}, unlimited:{checked:true}, "
-        "maxrun:{value:'8'}, platnote:{innerHTML:''}};\n"
+        "maxrun:{value:'8'}, stopafter:{value:'0'}, platnote:{innerHTML:''}};\n"
         "function $(sel){ return els[sel.slice(1)]; }\n"
         "function chosenApps(){ return ['hinge']; }\n"
         "let posted = null;\n"
@@ -2066,7 +2239,33 @@ def test_hub_start_handler_posts_explicit_unlimited_override():
     )
     assert _run_node(script) == {
         "path": "/api/start",
-        "body": {"mode": "auto", "apps": ["hinge"], "max_per_run": 0},
+        "body": {"mode": "auto", "apps": ["hinge"], "max_per_run": 0,
+                 "stop_after_seconds": 0},
+    }
+
+
+def test_hub_start_posts_a_timed_stop_for_observe_runs_too():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fns = (_extract_js_function(_PAGE, "escHtml") + "\n"
+           + _extract_js_function(_PAGE, "computeMaxPerRun") + "\n"
+           + _extract_js_function(_PAGE, "stopAfterSeconds") + "\n"
+           + _extract_js_function(_PAGE, "startRunFromControls"))
+    script = (
+        "const els = {hint:{textContent:''}, mode:{value:'observe'}, unlimited:{checked:true}, "
+        "maxrun:{value:'8'}, stopafter:{value:'1800'}, platnote:{innerHTML:''}};\n"
+        "function $(sel){ return els[sel.slice(1)]; }\n"
+        "function chosenApps(){ return ['hinge']; }\n"
+        "let posted = null;\n"
+        "async function postJSON(path, body){ posted={path,body}; return {ok:true,msg:'started'}; }\n"
+        "function tick(){}\n"
+        + fns + "\n"
+        "startRunFromControls().then(() => console.log(JSON.stringify(posted)));\n"
+    )
+    assert _run_node(script) == {
+        "path": "/api/start",
+        "body": {"mode": "observe", "apps": ["hinge"], "max_per_run": None,
+                 "stop_after_seconds": 1800},
     }
 
 

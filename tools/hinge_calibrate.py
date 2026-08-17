@@ -173,7 +173,7 @@ _CARD_SCROLL_X_FRAC = 0.5
 
 # Ceiling on how many small forward scrolls one profile capture may take before this tool
 # refuses rather than spinning the device forever on a profile that never resolves. Generous
-# relative to the driver's own _ENUMERATION_CAPTURE_LIMIT (48) precedent, because a calibration
+# relative to the driver's own _ENUMERATION_CAPTURE_LIMIT (64) precedent, because a calibration
 # run is supervised and offline-verified at every step, not timed.
 _MAX_CARD_SCROLLS = 60
 

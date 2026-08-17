@@ -520,6 +520,23 @@ def test_a_segmentation_that_contradicts_itself_is_refused():
         scroll_step.plan_scroll_step(seg)
 
 
+def test_one_explicit_segmentation_recovery_step_is_blind_and_marked():
+    """The live capture loop may carry one bad frame forward, never size it from bad geometry."""
+    frame = _tall_frame()
+    frame.heart(974 + 500 - _HEART_ABOVE_BOTTOM - 200)
+    seg = frame.segment()
+    assert not seg.ok
+
+    plan = scroll_step.plan_scroll_step(seg, rng=random.Random(3),
+                                        allow_segmentation_failure_fallback=True)
+
+    assert plan.basis == scroll_step.STEP_SEGMENTATION_FALLBACK
+    assert plan.spacing_px is None and not plan.spacing.measured
+    assert plan.sized_against_px == scroll_step._FALLBACK_SPACING_PX
+    assert plan.step_px <= plan.bound_px
+    assert "segmentation contradicted itself" in plan.reason
+
+
 def test_a_zero_height_screen_raises():
     with pytest.raises(scroll_step.ScrollStepError):
         scroll_step.plan_scroll_step(_tall_frame().segment(), screen_height=0)

@@ -109,10 +109,16 @@ class DebugLog:
             pass
 
     def action(self, name: str, *, before: bytes | None = None,
-               after: bytes | None = None, anchor: bytes | None = None, **fields) -> None:
+               after: bytes | None = None, anchor: bytes | None = None,
+               keep_before: bool = False, **fields) -> None:
+        """Record an action and its optional frames.
+
+        ``keep_before`` is for a rare recoverable refusal whose raw frame is the evidence needed
+        to audit that recovery. Ordinary action screenshots remain in the bounded rotating set.
+        """
         with self._lock:
             rec = {"ts": datetime.now().isoformat(timespec="seconds"), "action": name, **fields}
-            b = self._save_shot(f"{name}_before", before)
+            b = self._save_shot(f"{name}_before", before, rotate=not keep_before)
             a = self._save_shot(f"{name}_after", after)
             anchor_name = self._save_shot(f"{name}_anchor", anchor)
             if b:

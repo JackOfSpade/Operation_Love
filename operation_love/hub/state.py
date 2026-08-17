@@ -6,6 +6,7 @@ down once the last browser tab goes away.
 from __future__ import annotations
 
 import copy
+import math
 import threading
 import time
 
@@ -21,6 +22,29 @@ from ..observe_actions import ObserveActionBridge
 _BROWSER_CLIENT_STALE_S = 120.0
 _CLOSED_BROWSER_CLIENT_TTL_S = 30.0
 _EVAL_COLD_WAIT_S = 60.0  # bound on a cold-eval waiter so a dead computer thread can't hang it
+
+
+def validate_stop_after_seconds(value: object) -> tuple[bool, int | None, str | None]:
+    """Normalize the hub's optional local timed-stop duration.
+
+    ``None`` and zero deliberately mean unlimited.  Do not coerce strings, floats, or
+    booleans here: accepting a surprising JSON value for an operation that can stop a
+    live run makes a typo look like a successful configuration.
+    """
+    if value is None or value == 0:
+        # bool is an int subclass, and False compares equal to zero, so reject it before
+        # applying the unlimited shorthand.
+        if isinstance(value, bool):
+            return False, None, "stop_after_seconds must be null, 0, or a positive integer"
+        return True, None, None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return False, None, "stop_after_seconds must be null, 0, or a positive integer"
+    # Event.wait (used by threading.Timer) rejects an excessively large timeout on some
+    # platforms.  Keep API validation deterministic instead of letting a background thread
+    # crash after Start appeared to succeed.
+    if value > threading.TIMEOUT_MAX:
+        return False, None, f"stop_after_seconds must not exceed {int(threading.TIMEOUT_MAX)}"
+    return True, value, None
 
 
 def _selected_platform(enabled_apps: list[str]) -> "platforms.Platform":
@@ -46,6 +70,10 @@ class HubState:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop: threading.Event | None = None
+        self._run_generation = 0
+        self._timed_stop_timer: threading.Timer | None = None
+        self._timed_stop_deadline: float | None = None
+        self._timed_stop_duration_seconds: int | None = None
         self._status = None                 # RunStatus, captured via on_status
         self._error: str | None = None
         self._eval: dict | None = None      # cached model-quality CV (eval_snapshot)
@@ -71,7 +99,12 @@ class HubState:
         return self._thread is not None and self._thread.is_alive()
 
     def start(self, mode: str | None = None, apps=None,
-              max_per_run: int | None = None) -> tuple[bool, str]:
+              max_per_run: int | None = None,
+              stop_after_seconds: int | None = None) -> tuple[bool, str]:
+        valid_timeout, stop_after_seconds, timeout_error = validate_stop_after_seconds(
+            stop_after_seconds)
+        if not valid_timeout:
+            return False, timeout_error or "invalid timed-stop duration"
         with self._lock:
             if self.is_running():
                 return False, "a run is already active"
@@ -94,6 +127,12 @@ class HubState:
                 reason = platforms.check_runnable(apps)
                 if reason:
                     return False, reason
+            # No prior timer should survive into a replacement run.  The generation check in
+            # its callback is a second guard for a callback that was already queued when it
+            # was cancelled.
+            self._cancel_timed_stop_locked(clear=True)
+            self._run_generation += 1
+            generation = self._run_generation
             self._stop = threading.Event()
             self._status = None
             self._error = None
@@ -105,6 +144,16 @@ class HubState:
             self._completed_openers = []
             self._completed_opener_rejections = []
             stop = self._stop
+
+            if stop_after_seconds is not None:
+                self._timed_stop_duration_seconds = stop_after_seconds
+                self._timed_stop_deadline = time.monotonic() + stop_after_seconds
+                timer = threading.Timer(
+                    stop_after_seconds, self._timed_stop_elapsed, args=(generation, stop))
+                # A timed stop is strictly a run helper.  It must not keep the local hub
+                # process alive after a normal shutdown or a test teardown.
+                timer.daemon = True
+                self._timed_stop_timer = timer
 
             def _capture(st):
                 with self._lock:
@@ -141,11 +190,18 @@ class HubState:
                     # object (or retaining its locks/client/store).
                     self._freeze_completed_opener_telemetry()
                     with self._lock:
+                        if generation == self._run_generation and stop is self._stop:
+                            # Completion (including a supervisor-side stop) makes the timer
+                            # irrelevant.  Clear it so a completed snapshot is unambiguously
+                            # inactive, and so it cannot later wake up a new run.
+                            self._cancel_timed_stop_locked(clear=True)
                         self._live_store = None   # supervisor closed it on exit; don't read a dead store
                         self._opener_service = None   # same reason: don't read a torn-down object after the supervisor tore the run down
 
             self._thread = threading.Thread(target=_target, name="hub-run", daemon=True)
             self._thread.start()
+            if self._timed_stop_timer is not None:
+                self._timed_stop_timer.start()
             return True, "started"
 
     def stop(self) -> tuple[bool, str]:
@@ -163,6 +219,10 @@ class HubState:
                 # active looked like it worked.
                 return False, "no run is active"
             stop.set()
+            # A manual stop wins over the scheduled one.  In addition to cancelling the
+            # wait, clearing the status prevents a stale countdown from surviving the
+            # shutdown tail.
+            self._cancel_timed_stop_locked(clear=True)
         # Printed (not just returned in the API response) so Stop lands in the SAME place
         # every OTHER shutdown trigger already announces itself: the tab-close path
         # (server.py's _schedule_shutdown_if_tab_stayed_closed), SIGINT
@@ -176,6 +236,32 @@ class HubState:
         print("Hub: stop requested -- waiting for the active run to finish what it's doing. "
               "A swipe made from now on will NOT be recorded.")
         return True, "stopping"
+
+    def _timed_stop_elapsed(self, generation: int, stop: threading.Event) -> None:
+        """Request a stop only for the exact run that created this timer."""
+        with self._lock:
+            if (generation != self._run_generation or stop is not self._stop
+                    or not self.is_running() or stop.is_set()):
+                return
+            stop.set()
+            # Keep the duration/deadline until the run's thread finishes, so the active
+            # stopping snapshot can show a truthful zero-second countdown.  The callback is
+            # the timer thread itself, so there is nothing left to cancel.
+            self._timed_stop_timer = None
+            duration = self._timed_stop_duration_seconds
+        print("Hub: timed stop reached after "
+              f"{duration} seconds -- waiting for the active run to finish what it's doing. "
+              "A swipe made from now on will NOT be recorded.")
+
+    def _cancel_timed_stop_locked(self, *, clear: bool) -> None:
+        """Cancel the scheduled callback.  Caller must hold ``self._lock``."""
+        timer = self._timed_stop_timer
+        self._timed_stop_timer = None
+        if timer is not None:
+            timer.cancel()
+        if clear:
+            self._timed_stop_deadline = None
+            self._timed_stop_duration_seconds = None
 
     def wait_for_run(self, timeout: float | None = None) -> bool:
         """Block until the active run's thread finishes (or `timeout` elapses).
@@ -264,6 +350,8 @@ class HubState:
             status = self._status
             error = self._error
             stop_pending = self._stop is not None and self._stop.is_set()
+            timed_stop_duration = self._timed_stop_duration_seconds if running else None
+            timed_stop_deadline = self._timed_stop_deadline if running else None
         snap = status.snapshot() if status else None
         if snap is not None and running and stop_pending:
             # RunStatus.stopping is written by supervisor.run()'s shutdown finally, which is
@@ -280,6 +368,13 @@ class HubState:
             "running": running,
             "error": error,
             "status": snap,
+            "timed_stop": (
+                {
+                    "duration_seconds": timed_stop_duration,
+                    "remaining_seconds": max(0, math.ceil(timed_stop_deadline - time.monotonic())),
+                }
+                if timed_stop_duration is not None and timed_stop_deadline is not None else None
+            ),
         }
 
     def observe_action_snapshot(self, *, run_id: str | None = None, app: str | None = None) -> dict:

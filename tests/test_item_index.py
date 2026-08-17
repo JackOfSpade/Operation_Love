@@ -255,6 +255,110 @@ def test_one_isolated_bad_intermediate_frame_is_rebuilt_over_a_measured_bridge(m
     assert (frames[2], frames[4]) in calls and (frames[3], frames[5]) in calls
 
 
+def test_one_contradictory_segmentation_frame_is_rebuilt_over_a_measured_bridge(monkeypatch):
+    """One frame that missed a gutter may be omitted only after a full direct-bridge rebuild."""
+    frames = [_frame(scroll) for scroll in _FULL_SCROLL]
+    bad_frame = 4
+    real_segment = item_index.segment_frame
+
+    def one_contradictory_frame(frame, **kwargs):
+        result = real_segment(frame, **kwargs)
+        if frame == frames[bad_frame]:
+            return dataclasses.replace(
+                result, failures=("synthetic two hearts in one block",))
+        return result
+
+    monkeypatch.setattr(item_index, "segment_frame", one_contradictory_frame)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.source_frame_indices == (0, 1, 2, 3, 5, 6, 7)
+    assert index.recovered_from_pair is None
+    assert index.recovered_from_segmentation_frames == (bad_frame,)
+    assert index.recovery_bridge == (3, 5)
+    assert index.shifts[3].status == frameshift.SHIFT_MEASURED
+    assert "segmentation contradicted itself" in index.recovery_reason
+
+
+def test_segmentation_recovery_rebuilds_two_adjacent_contradictory_frames(monkeypatch):
+    """A short white-on-white boundary run needs one direct bridge across both bad captures."""
+    frames = [_frame(scroll) for scroll in _FULL_SCROLL]
+    real_segment = item_index.segment_frame
+
+    def two_contradictory_frames(frame, **kwargs):
+        result = real_segment(frame, **kwargs)
+        if frame in (frames[3], frames[4]):
+            return dataclasses.replace(result, failures=("synthetic contradiction",))
+        return result
+
+    monkeypatch.setattr(item_index, "segment_frame", two_contradictory_frames)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.source_frame_indices == (0, 1, 2, 5, 6, 7)
+    assert index.recovered_from_segmentation_frames == (3, 4)
+    assert index.recovery_bridge == (2, 5)
+    assert index.shifts[2].status == frameshift.SHIFT_MEASURED
+    assert "frames 3, 4" in index.recovery_reason
+
+
+def test_segmentation_recovery_rebuilds_three_adjacent_contradictory_frames(monkeypatch):
+    """The observed white-on-white run is rebuilt only over a four-read measured bridge."""
+    # Rebecca's captured recovery steps were 220..231px. At that cadence a four-read bridge
+    # retains enough overlapping content for frameshift's ordinary 3-witness quorum.
+    frames = [_frame(230 * i) for i in range(8)]
+    real_segment = item_index.segment_frame
+
+    def three_contradictory_frames(frame, **kwargs):
+        result = real_segment(frame, **kwargs)
+        if frame in (frames[2], frames[3], frames[4]):
+            return dataclasses.replace(result, failures=("synthetic contradiction",))
+        return result
+
+    monkeypatch.setattr(item_index, "segment_frame", three_contradictory_frames)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.source_frame_indices == (0, 1, 5, 6, 7)
+    assert index.recovered_from_segmentation_frames == (2, 3, 4)
+    assert index.recovery_bridge == (1, 5)
+    assert index.shifts[1].status == frameshift.SHIFT_MEASURED
+    assert "frames 2, 3, 4" in index.recovery_reason
+
+
+def test_segmentation_recovery_rebuilds_four_adjacent_contradictory_frames(monkeypatch):
+    """A four-frame run is safe only when its five-read bridge is freshly measured."""
+    # Rebecca's live failure was four 227..230px fallback steps in one missed-gutter run.
+    # Keep the bridge small enough for the ordinary strip quorum to prove it, rather than
+    # widening a matching rule to make this test pass.
+    frames = [_frame(230 * i) for i in range(10)]
+    real_segment = item_index.segment_frame
+
+    def four_contradictory_frames(frame, **kwargs):
+        result = real_segment(frame, **kwargs)
+        if frame in (frames[2], frames[3], frames[4], frames[5]):
+            return dataclasses.replace(result, failures=("synthetic contradiction",))
+        return result
+
+    monkeypatch.setattr(item_index, "segment_frame", four_contradictory_frames)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.source_frame_indices == (0, 1, 6, 7, 8, 9)
+    assert index.recovered_from_segmentation_frames == (2, 3, 4, 5)
+    assert index.recovery_bridge == (1, 6)
+    assert index.shifts[1].status == frameshift.SHIFT_MEASURED
+    assert "frames 2, 3, 4, 5" in index.recovery_reason
+
+
 def test_frame_omission_recovery_refuses_when_no_direct_bridge_is_measured(monkeypatch):
     """The recovery cannot turn a failed pair into a permission to drop evidence blindly."""
     frames = [_frame(scroll) for scroll in _FULL_SCROLL]
@@ -1061,6 +1165,167 @@ def test_positioned_mute_card_track_rolls_every_repair_back_on_page_contradictio
     assert calls >= 1
     assert not index.usable
     assert index.layout_repaired_shifts == ()
+
+
+def test_positioned_mute_card_track_survives_a_static_page_stretch(monkeypatch):
+    """The track's authority must reach PAST a run of genuine zero-pixel pairs.
+
+    Live 2026-08-16 ("Grace"): the reader had scrolled into card 2's neighbourhood and then
+    dwelled there for two whole frames while its mute-marked video kept playing -- the page
+    itself did not move, so both intervening pairs measured a genuine, unanimous +0px. The old
+    `_track_candidate_deltas` filter (`0 < delta`) discarded that +0px candidate outright, so
+    `_video_track_deltas` found zero candidates for the first static pair, its
+    `len(candidates) != 1` guard fired, and the physical card was never re-added to `active` --
+    killing the identity chain for the rest of the profile, even though nothing was ever wrong
+    with the measurement itself. The fix widens the filter to `0 <= delta`, which lets a pair
+    that TRULY measured no motion continue the same chain instead of ending it.
+
+    The card here scrolls normally for two pairs (+225px, +234px -- both raw, unforced
+    `frameshift` measurements), then the page holds still for two pairs (the marker's
+    frame-local row is unchanged and the frames are pixel-identical, so `frameshift` itself
+    reports two genuine, unforced `+0px` measured pairs -- nothing here is synthesised), and
+    only then does the read resume with one more +241px step. That final pair is forced to
+    `SHIFT_NO_CONSENSUS` with a two-strip cluster below `frameshift`'s own quorum, so the ONLY
+    way it can be corrected is the video track's layout-corroborated repair -- and the ONLY way
+    the track can still be holding this card's identity by that point is by having crossed the
+    two static pairs first. If the track's authority stopped at the first static pair, as it did
+    live, this final refusal would have nothing left to repair it.
+    """
+    scrolls = (0, 225, 459, 459, 459, 700)
+    frames = [_frame(scroll) for scroll in scrolls]
+    real_shift = item_index.estimate_shift
+
+    def latest_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(len(frames) - 1)
+                    if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair == 4:
+            return dataclasses.replace(
+                _shift_with_votes(result, [241, 241], status=frameshift.SHIFT_NO_CONSENSUS),
+                agreeing=2, dissenting=0)
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", latest_pair)
+    markers = tuple(
+        item_index.VideoMuteMarker(frame_index=i, x=106, y=1425 - scroll, score=1.0)
+        for i, scroll in enumerate(scrolls))
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        video_mute_markers=markers)
+
+    assert index.usable, index.failures
+    assert index.offsets == scrolls
+    assert [shift.delta_px for shift in index.shifts] == [225, 234, 0, 0, 241]
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [4]
+    assert index.layout_repaired_shifts[0][1].status == frameshift.SHIFT_NO_CONSENSUS
+    assert index.layout_repaired_shifts[0][1].delta_px is None
+    assert any("v12 mute-card track" in note and "+241px" in note for note in index.notes)
+
+    # The control that proves the fix is what did it: restore the OLD `0 < delta` filter --
+    # copied from the current `_track_candidate_deltas` source with only its final line
+    # reverted, everything else identical -- and rebuild the exact same capture. The static
+    # pairs no longer offer a continuation candidate, `len(candidates) != 1` fires on the very
+    # first one, frame 3 never re-enters `active`, and the later refusal at pair 4 has no track
+    # left to repair it: the whole capture becomes unusable, exactly as it did live.
+    def old_track_candidate_deltas(pair_index, before, after, raw, *, extent_tolerance_px):
+        candidates: set[int] = set()
+        if raw.status == frameshift.SHIFT_MEASURED and raw.delta_px is not None:
+            candidates.add(raw.delta_px)
+            projected, note = item_index._measured_layout_bridge(
+                pair_index, before, after, raw, allow_full_layout_projection=True,
+                extent_tolerance_px=extent_tolerance_px)
+            if note is not None and projected.delta_px is not None:
+                candidates.add(projected.delta_px)
+        elif raw.status == frameshift.SHIFT_NO_CONSENSUS:
+            proposed, note = item_index._layout_repaired_shift(
+                pair_index, before, after, raw, extent_tolerance_px=extent_tolerance_px)
+            if note is not None and proposed.delta_px is not None:
+                candidates.add(proposed.delta_px)
+                projected, projection_note = item_index._project_to_exact_full_layout(
+                    pair_index, before, after, raw, proposed)
+                if projection_note is not None and projected.delta_px is not None:
+                    candidates.add(projected.delta_px)
+        return tuple(sorted(delta for delta in candidates
+                            if 0 < delta <= item_index._MAX_STEP_PX))
+
+    monkeypatch.setattr(item_index, "_track_candidate_deltas", old_track_candidate_deltas)
+    regressed = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        video_mute_markers=markers)
+
+    assert not regressed.usable
+    assert regressed.layout_repaired_shifts == ()
+
+
+def test_static_track_continuation_cannot_manufacture_a_zero_repair(monkeypatch):
+    """Admitting +0px as a track CONTINUATION delta must never invent a +0px REPAIR.
+
+    `_track_candidate_deltas`'s comment argues this holds because `_layout_repaired_shift` (and
+    `_exact_multi_strip_shift`, used elsewhere in the same repair vocabulary) both still refuse
+    every non-positive candidate. Reading their source confirms it: `_layout_repaired_shift`
+    filters `0 < candidate <= _MAX_STEP_PX` on both its ordinary two-strip candidates and its
+    exact-landmark singleton fallback, and `_exact_multi_strip_shift` filters the same way. So a
+    +0px link can only ever be taken from a pair `frameshift` ALREADY measured as +0px (the raw
+    `SHIFT_MEASURED` branch of `_track_candidate_deltas`, which merely records what was already
+    measured) -- it is never something the layout-repair branch can propose for a pair that
+    failed to measure at all. This is what makes the previous test's fix safe rather than merely
+    convenient: letting a track ride through a CONFIRMED zero cannot be repurposed to invent one.
+
+    The card scrolls normally for one pair (+225px, unforced), then the page holds for two
+    pairs. The FIRST of those two static pairs is forced to `SHIFT_NO_CONSENSUS` with a
+    two-strip cluster that itself sits at +0px -- the strongest possible temptation for exactly
+    the bug this guards against, since the real page geometry (top, bottom and heart alike) truly
+    is +0px here too, and every landmark a repair would want lines up. If the `0 < candidate`
+    guard in `_layout_repaired_shift` were ever bypassed for this call site, this is precisely
+    the pair that would turn into a fabricated +0px repair. It must not: `_layout_repaired_shift`
+    and `_track_candidate_deltas` are checked directly first, then the full pipeline is checked
+    to confirm the pair comes out of `build_item_index` exactly as `frameshift` left it -- a
+    refusal, with no note claiming a track repair for it.
+    """
+    scrolls = (0, 225, 459, 459, 459)
+    frames = [_frame(scroll) for scroll in scrolls]
+    real_shift = item_index.estimate_shift
+
+    def zero_no_consensus(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        return dataclasses.replace(
+            _shift_with_votes(result, [0, 0], status=frameshift.SHIFT_NO_CONSENSUS),
+            agreeing=2, dissenting=0)
+
+    before_seg, after_seg = (item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in (frames[2], frames[3]))
+    raw_pair2 = zero_no_consensus(frames[2], frames[3], content_band=_CONTENT_BAND)
+
+    repaired, note = item_index._layout_repaired_shift(2, before_seg, after_seg, raw_pair2)
+    assert note is None and repaired is raw_pair2
+    assert item_index._track_candidate_deltas(
+        2, before_seg, after_seg, raw_pair2, extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX
+    ) == ()
+
+    def latest_pair(frame_a, frame_b, **kwargs):
+        pair = next(i for i in range(len(frames) - 1)
+                    if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair == 2:
+            return zero_no_consensus(frame_a, frame_b, **kwargs)
+        return real_shift(frame_a, frame_b, **kwargs)
+
+    monkeypatch.setattr(item_index, "estimate_shift", latest_pair)
+    markers = tuple(
+        item_index.VideoMuteMarker(frame_index=i, x=106, y=1425 - scroll, score=1.0)
+        for i, scroll in enumerate(scrolls))
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        video_mute_markers=markers, _allow_frame_omission_recovery=False)
+
+    assert index.shifts[2].status == frameshift.SHIFT_NO_CONSENSUS
+    assert index.shifts[2].delta_px is None
+    assert 2 not in {pair for pair, _raw in index.layout_repaired_shifts}
+    assert 2 not in {repair.pair_index for repair in index.repair_provenance}
+    assert not any("frame 2's pair with frame 3" in note for note in index.notes)
 
 
 @pytest.mark.parametrize("correction", (12, 15))

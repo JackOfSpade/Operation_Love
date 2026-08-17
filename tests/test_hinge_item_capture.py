@@ -779,7 +779,7 @@ def test_ranker_frames_from_enumeration_is_pure_and_evenly_spaced():
 
 
 def test_the_ranker_still_sees_scroll_captures_frames_not_the_enumeration_ceiling(monkeypatch):
-    """Audit fix, "BUG 3" (2026-08-12). `_ENUMERATION_CAPTURE_LIMIT` (48) raises the CEILING for
+    """Audit fix, "BUG 3" (2026-08-12). `_ENUMERATION_CAPTURE_LIMIT` (64) raises the CEILING for
     a read that also builds an item index -- the index needs the finer, closed-loop cadence, and
     this test's own fixture already needs more than `scroll_captures` (8, HINGE_SPEC's default)
     raw frames to cover the page at that cadence (see the assertion on `served` below). But
@@ -1821,3 +1821,224 @@ def test_a_stopped_read_is_not_reported_as_an_enumerated_one():
     drv._adb = drv._touch = WorldAdb()
     assert drv._capture_current(_stop) is None
     assert drv._current_item_index is None and drv._current_item_payload is None
+
+
+# =====================================================================================
+# The bottom of a profile that is still ANIMATING (live 2026-08-16, profile "Grace")
+# =====================================================================================
+
+_VIDEO_TEXTURE = cv2.GaussianBlur(
+    np.random.default_rng(_SEED).integers(
+        0, 256, (4000, _CARD_X1 - _CARD_X0), dtype=np.uint8), (9, 9), 0)
+# The video lives INSIDE the last card, in PAGE coordinates, clear of both gutters and of the
+# heart glyph near that card's bottom -- a video is part of a card, so it scrolls with the card
+# and only its own content moves once the page has stopped. Painting it at fixed FRAME rows
+# instead would smear it across a card boundary, weld two cards into one block and make the
+# segmenter refuse for a reason that has nothing to do with what these tests are about.
+_VIDEO_PAGE_ROWS = (_CARDS[-1][1] + 30, _CARDS[-1][2] - _HEART_ABOVE_BOTTOM - 80)
+# At the clamped scroll this lands at frame rows 1117..1737, inside the analysed band.
+_VIDEO_ROWS = (_VIDEO_PAGE_ROWS[0] - _MAX_SCROLL, _VIDEO_PAGE_ROWS[1] - _MAX_SCROLL)
+
+
+def _animated(frame: bytes, tick: int, *, rows: tuple[int, int] = _VIDEO_ROWS,
+              parallax: int = 14) -> bytes:
+    """`frame` with one autoplaying video card painted over `rows`.
+
+    Two properties, and the tests below need both.
+
+    It REPAINTS, so no two frames of a motionless page are ever byte-identical -- which is the
+    whole mechanism of the incident, since `_frame_sig` compares a whole-frame 24x24 downsample
+    for EXACT equality and one animating region therefore keeps every frame "new" forever.
+
+    And its motion is NOT RIGID: rows nearer the bottom of the patch travel further per tick, the
+    way anything with depth in it does. That is what makes the estimator's strips over a video
+    land on a SPREAD of wrong offsets rather than one shared wrong offset, and the distinction is
+    load-bearing rather than decorative -- a patch that translated rigidly would be genuinely
+    indistinguishable from a page scroll by pixel evidence alone, and `_exact_cluster_shift` is
+    supposed to refuse that case, not rescue it. Live, the five video strips reported +73..+81
+    against the page's unanimous +145; this fixture reproduces that shape.
+    """
+    gray = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_GRAYSCALE)
+    r0, r1 = rows
+    height = r1 - r0
+    # Wrapped rather than clamped, so the patch keeps animating for any tick count a future
+    # test might reach.  A clamp would quietly stop the video and hand the byte-identical
+    # signal back the bottom detection these tests exist to take away from it.
+    span = len(_VIDEO_TEXTURE) - height
+    for y in range(height):
+        start = (1000 - tick * (61 + round(parallax * y / height))) % span
+        gray[r0 + y, _CARD_X0:_CARD_X1] = _VIDEO_TEXTURE[start + y]
+    ok, buf = cv2.imencode(".png", gray)
+    assert ok
+    return buf.tobytes()
+
+
+class _VideoWorldAdb(WorldAdb):
+    """The same arithmetic phone, plus a video card that repaints on every screencap."""
+
+    def __init__(self, *, video_page_rows=_VIDEO_PAGE_ROWS, **kw):
+        super().__init__(**kw)
+        self._video_page_rows = video_page_rows
+        self._tick = 0
+
+    def screencap(self):
+        self._tick += 1
+        # Page rows -> this frame's rows, clipped to the part of the card actually on screen.
+        p0, p1 = self._video_page_rows
+        r0, r1 = max(_BAND0, p0 - self.scroll), min(_BAND1, p1 - self.scroll)
+        frame = super().screencap()
+        return frame if r1 - r0 < 64 else _animated(frame, self._tick, rows=(r0, r1))
+
+
+def test_a_repainting_video_defeats_the_byte_identical_bottom_signal():
+    """The premise of the incident, pinned on its own so the two tests below cannot both pass
+    for the wrong reason. A motionless page under an autoplaying video produces frames that are
+    all DIFFERENT to the byte, so `seen` can never recognise the bottom."""
+    still = _frame(_MAX_SCROLL)
+    sigs = {hinge._frame_sig(_animated(still, tick)) for tick in range(6)}
+
+    assert hinge._frame_sig(still) == hinge._frame_sig(still)   # the check itself works
+    assert len(sigs) == 6, "the animated frames must be mutually distinct, or nothing is proven"
+
+
+def test_a_static_pair_is_the_bottom_only_on_an_affirmative_zero_measurement():
+    """The predicate that replaces the byte test. It must say "bottom" for a page that did not
+    move under a repainting video, and must NOT say it for a page that did move -- and its
+    default on any uncertainty is False, because a wrong True truncates a real profile."""
+    still = _frame(_MAX_SCROLL)
+    a, b = _animated(still, 1), _animated(still, 2)
+
+    assert hinge._static_pair_is_the_bottom(a, b, _CONTENT_BAND)
+    assert not hinge._static_pair_is_the_bottom(
+        a, _animated(_frame(_MAX_SCROLL - 240), 3), _CONTENT_BAND)
+    # "I cannot tell" is never "bottom": undecodable bytes must not end a read.
+    assert not hinge._static_pair_is_the_bottom(b"not a png", b"nor this", _CONTENT_BAND)
+
+
+def test_the_read_stops_at_a_bottom_it_cannot_see_by_bytes_and_does_not_claim_truncation():
+    """The incident itself. Grace's profile reached its bottom at frame 37 with a video still
+    playing; the byte-identical signal never fired, so the read ran its full 64-frame ceiling,
+    issued 26 futile swipes at a page that could not move, and then reported the profile as
+    LONGER than the read could cover -- into the operator's banner and BigQuery's
+    `capture_truncated` column. Every part of that is the opposite of what happened.
+
+    Two consecutive MEASURED 0px pairs now end the read, so the swipes stop, and because the
+    loop leaves by `break` rather than exhausting its `range`, the truncation branch does not
+    run: the capture is correctly recorded as having reached the profile's end.
+    """
+    adb = _VideoWorldAdb()
+    drv = _drv(adb)
+
+    profile = drv._capture_current()
+
+    assert profile is not None
+    assert adb.scroll == _MAX_SCROLL, "the fixture must actually reach its own bottom"
+    assert adb.scrolls < hinge._ENUMERATION_CAPTURE_LIMIT - 1, (
+        "the read kept swiping at a page that could not move")
+    assert not drv._current_capture_truncated
+    assert "capture_truncated" not in (profile.meta or {}) or not profile.meta["capture_truncated"]
+
+
+def test_one_swallowed_gesture_alone_never_ends_a_read():
+    """The safety direction of `_STATIC_PAIRS_FOR_BOTTOM`. A single read-scroll that fails to
+    move the page -- swallowed by an animation, lost by the input transport -- is not the bottom,
+    and ending the read on it would silently truncate a real profile: the model would then pick
+    an item from a list that stops part way down. One stall costs one extra frame and the read
+    carries on to the real bottom.
+
+    The stall is placed where the video card is already on screen, which is the only place this
+    rule is what decides anything: with no animation the two frames either side of a swallowed
+    gesture are byte-identical, and the far older `seen` test ends the read there on its own.
+    """
+    adb = _VideoWorldAdb()
+    drv = _drv(adb)
+    real_scroll_up, stalled = adb.scroll_up, {"done": False}
+
+    def visible_video_px():
+        p0, p1 = _VIDEO_PAGE_ROWS
+        return min(_BAND1, p1 - adb.scroll) - max(_BAND0, p0 - adb.scroll)
+
+    def scroll_up(frac, x_frac=0.5):
+        # One gesture goes nowhere, once enough of the animating card is on screen that the
+        # two frames either side of it cannot be byte-identical.
+        if visible_video_px() >= 400 and not stalled["done"]:
+            stalled["done"] = True
+            adb.scrolls += 1
+            adb.gestures.append((frac, x_frac))
+            return
+        real_scroll_up(frac, x_frac)
+
+    adb.scroll_up = scroll_up
+
+    assert drv._capture_current() is not None
+    assert stalled["done"], "the fixture never actually stalled a gesture"
+    assert adb.scroll == _MAX_SCROLL, "one stall must not have ended the read early"
+
+
+def test_the_dossier_keeps_the_failing_pairs_own_frames_when_the_cap_has_to_drop_some(tmp_path):
+    """Live 2026-08-16 (Grace): six refused pairs merged into a 25-frame candidate pool, the
+    eight-image cap's even stride walked LIST POSITIONS with no idea which of them formed a pair,
+    and the bundle shipped frames 35 and 38 -- the neighbours of failing pair (36, 37) -- while
+    both frames of the pair itself were dropped. The one refusal the dossier is named after was
+    the one thing it could not be used to replay.
+
+    Breadth is still spent on the rest of the pool; it just no longer outranks the evidence."""
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="item-index-failing-pair")
+
+    class _Edge:
+        def __init__(self, y):
+            self.y, self.observed = y, True
+
+    class _Block:
+        y0, y1, complete = 20, 60, True
+        top, bottom = _Edge(20), _Edge(60)
+        hearts = ((900, 42),)
+
+    class _Seg:
+        blocks = (_Block(),)
+        card_x = (_CARD_X0, _CARD_X1)
+        band = (_BAND0, _BAND1)
+        failures = ()
+
+    refused_at = (36, 43, 46, 53, 57, 60)      # the incident's own six refused pairs
+
+    class _Shift:
+        def __init__(self, delta_px):
+            self.delta_px = delta_px
+            self.status = "measured" if delta_px is not None else "no_consensus"
+            self.consensus_px = delta_px
+            self.confidence = 1.0 if delta_px is not None else 0.0
+            self.agreeing = 9 if delta_px is not None else 0
+            self.dissenting = 0 if delta_px is not None else 10
+            self.eligible = 9 if delta_px is not None else 11
+            self.reason = "synthetic"
+            self.strips = ()
+
+    class _Index:
+        frames = (_Seg(),) * 64
+        source_frame_indices = tuple(range(64))
+        offsets = tuple(i * 100 for i in range(64))
+        shifts = tuple(_Shift(None if i in refused_at else 240) for i in range(63))
+        failures = ()
+
+    photos = [f"frame-{i}".encode() for i in range(64)]
+    reason = ("frames 36 and 37 could not be put in one coordinate space: no_consensus"
+              + "".join(f"; frames {a} and {a + 1} likewise" for a in (43, 46, 53, 57, 60)))
+
+    assert drv._item_index_refused(photos, reason, _Index()) == reason
+
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    refusal = next(rec for rec in records if rec["action"] == "item_index_refused")
+    saved = refusal["evidence_frames"]
+
+    assert refusal["failing_pair"] == [36, 37]
+    assert len(saved) == 8, "the cap still binds"
+    assert "item_index_refused_" in saved[0]
+    numbers = sorted(int(name.rsplit("_frame_", 1)[1].split(".")[0]) for name in saved)
+    assert 36 in numbers and 37 in numbers, (
+        f"the failing pair's own frames were dropped again: {numbers}")
+    assert numbers[0] == 35 and numbers[-1] == 63, "breadth still reaches both endpoints"
+    for name in saved:
+        assert (drv._dbg.dir / name).exists()

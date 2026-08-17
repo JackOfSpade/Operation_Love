@@ -152,6 +152,7 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 # Imported rather than re-declared: these two are already measured-and-cited in segment.py, and
@@ -653,6 +654,86 @@ def estimate_shift(frame_a: bytes, frame_b: bytes, *,
                     pin_margin=pin_margin_px, np=np)
 
 
+def _vote_clusters(voters: Sequence[StripMatch], *, tolerance: int) -> list[list[int]]:
+    """The matched offsets split into disjoint groups, each internally within `tolerance`.
+
+    Sorted, then cut wherever two neighbouring values are further apart than one agreement
+    tolerance. A rigid translation puts every voter in ONE group; two groups mean two different
+    things moved by two different amounts, which a single number cannot describe and a median
+    across both actively misdescribes.
+    """
+    deltas = sorted(s.delta_px for s in voters if s.delta_px is not None)
+    if not deltas:
+        return []
+    groups = [[deltas[0]]]
+    for delta in deltas[1:]:
+        if delta - groups[-1][-1] > tolerance:
+            groups.append([delta])
+        else:
+            groups[-1].append(delta)
+    return groups
+
+
+def _pins_allow(strips: Sequence[StripMatch], candidate: int) -> bool:
+    """Whether every pinned strip's LOWER BOUND is consistent with `candidate`.
+
+    A pinned strip's peak sits on the edge of its own search range, so it says "the content went
+    at least this far, in this direction" and never "it went exactly here" (see `_PIN_MARGIN_PX`).
+    Pinned at the top of the range means the truth is at or beyond it; pinned at the bottom means
+    at or below. That is a real independent constraint and it is free, so a split-bank rescue is
+    held to it even though the ordinary median path has never needed it.
+    """
+    for strip in strips:
+        if strip.state != STRIP_PINNED or strip.delta_px is None:
+            continue
+        low, high = strip.search
+        if strip.delta_px == high and candidate < strip.delta_px:
+            return False
+        if strip.delta_px == low and candidate > strip.delta_px:
+            return False
+    return True
+
+
+def _exact_cluster_shift(strips: Sequence[StripMatch], voters: Sequence[StripMatch], *,
+                         tolerance: int, min_agreeing: int) -> int | None:
+    """The one pixel-exact group in a SPLIT strip bank, or None if that is not unambiguous.
+
+    THE FAILURE THIS EXISTS FOR (Grace, 2026-08-16, frames 36/37 and 26 more pairs). A profile
+    whose last card is an autoplaying video was read to the bottom. The page below the video
+    stopped moving, the video did not. Nine strips of page content reported the true shift
+    IDENTICALLY TO THE PIXEL (+145, then +0 once the scroll saturated); the five strips lying
+    over the video reported +73..+81 — a coherent-looking but non-rigid cluster, because they had
+    re-correlated against the video's OWN internal motion rather than against the page. The median
+    of the two groups landed at +113, a value no strip had ever reported, so every strip
+    "dissented" from it and the pair was refused. Sixty-four frames, a whole profile, and no
+    numbered items — for a capture in which the answer was present, unanimous and exact.
+
+    A median is only a consensus statistic for a UNIMODAL bank. This is the bimodal repair, and
+    it turns exclusively on the discriminator the corpus already established for
+    `_AGREEMENT_TOLERANCE_PX`: strips that agree about a rigid translation agree TO THE PIXEL
+    (spread exactly 0 on all 23 bot-scrolled pairs), so an internally-spread group is by
+    definition NOT reporting one rigid translation and cannot be the page. Deliberately NOT
+    gated on `separation`, which this corpus measured as unable to tell correct strips from
+    incorrect ones.
+
+    The bar is unanimity-or-nothing, because a wrong measurement here costs a wrongly indexed
+    item and a like on the wrong photo (doc 5.10):
+      * exactly one group is pixel-exact AND at quorum — a second such group is a genuine
+        ambiguity and is refused, never broken by taking the larger one;
+      * a LARGER inexact group never wins, and never blocks: size is not evidence of rigidity,
+        and letting a big smear outvote an exact answer is how the video would have won here;
+      * every pinned strip's bound must still admit it.
+    """
+    groups = _vote_clusters(voters, tolerance=tolerance)
+    if len(groups) < 2:
+        return None                       # unimodal: the ordinary median path owns this bank
+    exact = [group[0] for group in groups
+             if len(group) >= min_agreeing and group[0] == group[-1]]
+    if len(exact) != 1 or not _pins_allow(strips, exact[0]):
+        return None
+    return exact[0]
+
+
 def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, tolerance: int,
              min_agreeing: int, min_saturation: int, min_confidence: float, pin_margin: int,
              np) -> ShiftEstimate:
@@ -690,6 +771,29 @@ def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, t
             **common)
 
     consensus = int(round(float(np.median([s.delta_px for s in voters]))))
+    # THE BIMODAL CORRECTION (2026-08-16). The median above is the right statistic for one
+    # population and the wrong one for two, and a strip bank goes two-population whenever part
+    # of the frame moves independently of the page — an autoplaying video card being the case
+    # this repo has now met twice. When that happens the median lands BETWEEN the groups, on a
+    # value no strip reported, and the pair is refused for want of agreement with a number
+    # nothing ever measured.
+    #
+    # This runs ONLY when the median has already failed its own quorum, so a pair that measures
+    # today measures identically tomorrow: the rescue cannot reach a bank the ordinary rule
+    # accepts, and it can therefore only ever convert a REFUSAL into a measurement. See
+    # `_exact_cluster_shift` for the evidence bar, which is unanimity-or-nothing.
+    split_note = ""
+    if len([s for s in voters if abs(s.delta_px - consensus) <= tolerance]) < min_agreeing:
+        rescued = _exact_cluster_shift(strips, voters, tolerance=tolerance,
+                                       min_agreeing=min_agreeing)
+        if rescued is not None:
+            groups = _vote_clusters(voters, tolerance=tolerance)
+            split_note = (
+                f"; the bank split into {len(groups)} groups "
+                f"({', '.join('/'.join(f'{v:+d}' for v in g) for g in groups)}) so the "
+                f"{consensus:+d}px median described none of them, and only {rescued:+d}px is "
+                "reported by strips that agree to the pixel")
+            consensus = rescued
     agreeing = [s for s in voters if abs(s.delta_px - consensus) <= tolerance]
     dissenting = [s for s in voters if abs(s.delta_px - consensus) > tolerance]
     # Eligible = every strip that LOCATED ITSELF in frame B (matched or pinned) AND whose range
@@ -755,7 +859,7 @@ def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, t
     if len(agreeing) >= min_agreeing and confidence >= min_confidence:
         return ShiftEstimate(
             delta_px=consensus, status=SHIFT_MEASURED, saturated=False, consensus_px=consensus,
-            reason=f"content moved {consensus:+d}px — {counts}",
+            reason=f"content moved {consensus:+d}px — {counts}{split_note}",
             **common, **common_counts)
 
     return ShiftEstimate(

@@ -407,6 +407,310 @@ def test_dissenting_strips_are_outvoted_but_counted():
 
 
 # =====================================================================================
+# The 2026-08-16 bimodal-bank rescue: `_vote_clusters`, `_pins_allow` and
+# `_exact_cluster_shift`, spliced into `_resolve` at the point where the plain median has
+# already failed its own quorum. A median is the right consensus statistic for ONE moving
+# population; a strip bank that straddles a still page and an autoplaying video is TWO, and
+# the median lands on a value neither population ever reported, so every strip "dissents"
+# from a number nothing measured. The first two tests below are the exact live evidence —
+# a real Hinge profile capture that produced a whole 64-frame profile with zero numbered
+# items before this fix — reproduced strip-for-strip from the driver's own debug log. The
+# rest are hand-built banks that isolate one clause of the evidence bar each
+# (`_exact_cluster_shift`'s docstring: exactly one group pixel-exact AND at quorum; a
+# second such group is ambiguity, not a tiebreak; a larger inexact group neither wins nor
+# blocks; every pinned bound must still admit the winner), so a future change to one clause
+# cannot silently loosen another without a test noticing.
+# =====================================================================================
+
+def test_regression_bimodal_video_bank_pair_36_37_now_measures_145():
+    """THE failure this repair exists for, not a hypothetical: a 2026-08-16 Hinge profile
+    whose last card was an autoplaying video, captured mid read-scroll at pair 36/37 of 64
+    frames. Nine strips lying over ordinary page content — including the pinned strip at
+    y=442, whose peak sits on its own range's edge and so is a LOWER bound, not a vote —
+    measured the true shift identically to the pixel (+145, four times over). Five strips
+    lying over the playing video re-correlated against the video's own internal motion and
+    landed on a coherent-LOOKING but non-rigid cluster (+73..+81, no two exactly equal).
+    Before this fix the plain median of all ten voters landed at +113 — a value not one of
+    them reported — so the pair came back `SHIFT_NO_CONSENSUS` and the whole profile
+    produced zero numbered items.
+
+    +145 is independently corroborated by two things this module never looks at: the
+    Hinge mute-control glyph on that video card sat at y=1135 in frame 36 and y=990 in
+    frame 37 (exactly 145px), and `segment.py`'s own top/bottom/heart landmarks for the
+    surrounding cards all shifted 145px too. This is the live per-strip record from the
+    driver's debug log, unedited.
+    """
+    strips = [
+        _strip(300, frameshift.STRIP_WEAK, None,
+              search=(-1704, 0), score=0.2611, runner_up=0.1994),
+        _strip(442, frameshift.STRIP_PINNED, 142,
+              search=(-1562, 142), score=0.8001, runner_up=0.6468),
+        _strip(584, frameshift.STRIP_MATCHED, 145,
+              search=(-1420, 284), score=1.0000, runner_up=0.3939),
+        _strip(726, frameshift.STRIP_MATCHED, 145,
+              search=(-1278, 426), score=1.0000, runner_up=0.4205),
+        _strip(868, frameshift.STRIP_MATCHED, 145,
+              search=(-1136, 568), score=1.0000, runner_up=0.8414),
+        _strip(1010, frameshift.STRIP_MATCHED, 145,
+              search=(-994, 710), score=0.9779, runner_up=0.3344),
+        _strip(1152, frameshift.STRIP_MATCHED, 78,
+              search=(-852, 852), score=0.9290, runner_up=0.8091),
+        _strip(1294, frameshift.STRIP_MATCHED, 81,
+              search=(-710, 994), score=0.9897, runner_up=0.8680),
+        _strip(1436, frameshift.STRIP_MATCHED, 80,
+              search=(-568, 1136), score=0.9169, runner_up=0.7147),
+        _strip(1578, frameshift.STRIP_MATCHED, 77,
+              search=(-426, 1278), score=0.8966, runner_up=0.7671),
+        _strip(1720, frameshift.STRIP_MATCHED, 73,
+              search=(-284, 1420), score=0.8952, runner_up=0.7354),
+        _strip(1862, frameshift.STRIP_WEAK, None,
+              search=(-142, 1562), score=0.7273, runner_up=0.4965),
+        _strip(2004, frameshift.STRIP_MATCHED, 145,
+              search=(0, 1704), score=0.7985, runner_up=0.7171),
+    ]
+    r = _resolve(strips)
+
+    assert r.status == frameshift.SHIFT_MEASURED, r.reason
+    assert r.ok and r.delta_px == 145
+    assert r.consensus_px == 145
+    # Only the nine page strips agree; the five video strips and the two weak strips do
+    # not, which is exactly the 5-of-10 split the corpus recorded (STRIP_WEAK is excluded
+    # from the eligible denominator on its own separate grounds — see
+    # `test_weak_strips_are_silence_not_confidence_dissent_even_when_in_range` — leaving
+    # 10 of the bank's 13 strips as eligible: 9 matched + the 1 pinned strip whose range
+    # admits 145).
+    assert r.confidence == 0.5
+    assert r.agreeing == 5
+    assert r.eligible == 10
+    # The reason string has to say WHY a number came back where the old code refused: it
+    # must name the split, not just assert the delta.
+    assert "split into" in r.reason
+
+
+def test_regression_bimodal_saturated_bank_pair_43_44_measures_zero():
+    """The same profile, 7 pairs later: the read-scroll has hit the bottom of the page
+    while the video keeps playing. Ten strips over the now-motionless page unanimously
+    report +0 (two of them pinned there BY CONSTRUCTION — see
+    `test_a_still_frame_measures_zero_and_is_not_called_saturated` — which is fine, since
+    `_exact_cluster_shift`'s exact-group filter only requires internal agreement, not that
+    every member be `STRIP_MATCHED`... except pinned strips do not enter `voters` at all,
+    so the five 0-valued MATCHED strips plus a 0-valued pinned strip is what actually
+    forms the exact winning cluster below). Five strips over the still-playing video
+    report a coherent-looking -54..-57. The plain median before this fix landed at -27 — a
+    value no strip reported — refusing the one pair whose answer, 0px, IS the signal that
+    the profile has reached its bottom. Refusing it is not a neutral non-answer: it is
+    what let the capture keep issuing scroll commands against a page that could no longer
+    move, burning the rest of the run on a wall it could not detect.
+    """
+    strips = [
+        _strip(300, frameshift.STRIP_PINNED, 0,
+              search=(-1704, 0), score=1.0000, runner_up=0.6531),
+        _strip(442, frameshift.STRIP_MATCHED, 0,
+              search=(-1562, 142), score=1.0000, runner_up=0.3876),
+        _strip(584, frameshift.STRIP_MATCHED, 0,
+              search=(-1420, 284), score=1.0000, runner_up=0.4255),
+        _strip(726, frameshift.STRIP_MATCHED, 0,
+              search=(-1278, 426), score=1.0000, runner_up=0.8465),
+        _strip(868, frameshift.STRIP_MATCHED, 0,
+              search=(-1136, 568), score=0.9782, runner_up=0.3694),
+        _strip(1010, frameshift.STRIP_MATCHED, -57,
+              search=(-994, 710), score=0.8653, runner_up=0.7682),
+        _strip(1152, frameshift.STRIP_MATCHED, -54,
+              search=(-852, 852), score=0.9284, runner_up=0.8669),
+        _strip(1294, frameshift.STRIP_MATCHED, -54,
+              search=(-710, 994), score=0.9176, runner_up=0.6924),
+        _strip(1436, frameshift.STRIP_MATCHED, -56,
+              search=(-568, 1136), score=0.9102, runner_up=0.7931),
+        _strip(1578, frameshift.STRIP_MATCHED, -56,
+              search=(-426, 1278), score=0.8795, runner_up=0.7449),
+        _strip(1720, frameshift.STRIP_WEAK, None,
+              search=(-284, 1420), score=0.7408, runner_up=0.5247),
+        _strip(1862, frameshift.STRIP_MATCHED, 0,
+              search=(-142, 1562), score=0.9886, runner_up=0.8156),
+        _strip(2004, frameshift.STRIP_PINNED, 0,
+              search=(0, 1704), score=1.0000, runner_up=0.1848),
+    ]
+    r = _resolve(strips)
+
+    assert r.status == frameshift.SHIFT_MEASURED, r.reason
+    assert r.ok and r.delta_px == 0
+    assert r.consensus_px == 0
+    assert "split into" in r.reason
+
+
+def test_two_pixel_exact_quorate_groups_are_ambiguous_and_refused():
+    """The safety rail `_exact_cluster_shift`'s docstring states in words: a SECOND
+    pixel-exact quorate group is a genuine ambiguity, and is refused rather than resolved
+    by preferring the bigger one. Built as one group of 3 votes at +300 and one of 4 at
+    +900, both far apart and both internally unanimous — the same shape as the real
+    bimodal bank, except this one has no principled winner.
+
+    A bare 3-vs-4 split of nothing else would not even reach this code: with a clean
+    strict majority, the plain unweighted median already IS 900 (the literal 4th of 7
+    sorted values) and already has its own 4-strip quorum, so `_resolve` would return a
+    measurement without ever asking `_exact_cluster_shift` anything — see
+    `test_a_larger_inexact_group_does_not_win_or_block_the_exact_one` for the sibling test
+    where that is exactly the wrong outcome to want. A lone spoiler vote at -600, too small
+    a group (1) to ever reach quorum itself, is added only to pull the raw median off both
+    real clusters (to +600, a value nothing reported) so the ordinary path fails its own
+    quorum first and the ambiguity test is the one actually exercised.
+    """
+    group_a = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 300) for i in range(3)]
+    group_b = [_strip(1400 + i * 200, frameshift.STRIP_MATCHED, 900) for i in range(4)]
+    spoiler = [_strip(2200, frameshift.STRIP_MATCHED, -600)]
+    r = _resolve(group_a + group_b + spoiler)
+
+    assert r.status == frameshift.SHIFT_NO_CONSENSUS, r.reason
+    assert r.delta_px is None and not r.ok
+    assert r.consensus_px is None
+    assert 300 not in (r.delta_px, r.consensus_px)
+    assert 900 not in (r.delta_px, r.consensus_px)
+
+
+def test_a_larger_inexact_group_does_not_win_or_block_the_exact_one():
+    """Size is not evidence of rigidity — the video's strips in the real bank
+    outnumbered nothing here, but a future bank could easily have more video-straddling
+    strips than page strips, and the rescue must not let a bigger SPREAD cluster either
+    win outright or veto the smaller exact one. 3 votes sit exactly on +200; 6 more are
+    spread +90..+110 (20px of internal spread, comfortably outside the module's own
+    finding that agreeing strips land within 0px of each other — see
+    `_AGREEMENT_TOLERANCE_PX`'s corpus note), so `_vote_clusters` never welds them into
+    one block, let alone a pixel-exact one. The correct answer is +200 regardless of the
+    6-vs-3 headcount.
+
+    Each spread vote is given a search range (-50, 150) that geometrically cannot reach
+    200 — modelling a strip too low in the band to have searched that far — so the
+    `eligible` denominator counts only the 3 strips that could and did agree, rather than
+    being diluted by 6 strips that could never have voted for the winner in the first
+    place. Without that, `confidence` sits at 3/9 and the pair is refused for coverage
+    even though the winner is unambiguous, which is a different failure than the one this
+    test is pinning.
+    """
+    exact = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 200) for i in range(3)]
+    spread = [_strip(1400 + i * 150, frameshift.STRIP_MATCHED, d, search=(-50, 150))
+              for i, d in enumerate((90, 94, 98, 102, 106, 110))]
+    r = _resolve(exact + spread)
+
+    assert r.status == frameshift.SHIFT_MEASURED, r.reason
+    assert r.ok and r.delta_px == 200
+    assert r.consensus_px == 200
+    assert r.agreeing == 3 and r.eligible == 3
+    assert r.confidence == 1.0
+    assert r.dissenting == 6                      # counted, not silenced, just outvoted
+    assert "split into" in r.reason
+
+
+def test_no_group_pixel_exact_stays_refused():
+    """The rescue's bar is unanimity to the pixel, not merely tight agreement. Group A
+    spreads 199/200/201 and group B spreads 798/799/800/801 — both internally within
+    `_AGREEMENT_TOLERANCE_PX` of each other, so `_vote_clusters` still welds each into one
+    block, but neither block's own members are IDENTICAL, so neither clears
+    `_exact_cluster_shift`'s `group[0] == group[-1]` bar. With no exact candidate at all,
+    the pair must stay refused — there is nothing here as trustworthy as the real bank's
+    unanimous +145.
+
+    The spoiler at -600 plays the same role as in the ambiguity test above: without it the
+    4-vote group B would already form its own quorum under the plain median (its members
+    are within tolerance of each other even though not pixel-identical) and the ordinary
+    path would return a measurement before this test ever touched the rescue.
+    """
+    group_a = [_strip(300 + i * 150, frameshift.STRIP_MATCHED, 199 + i) for i in range(3)]
+    group_b = [_strip(1400 + i * 150, frameshift.STRIP_MATCHED, 798 + i) for i in range(4)]
+    spoiler = [_strip(2200, frameshift.STRIP_MATCHED, -600)]
+    r = _resolve(group_a + group_b + spoiler)
+
+    assert r.status == frameshift.SHIFT_NO_CONSENSUS, r.reason
+    assert r.delta_px is None and not r.ok
+    assert r.consensus_px is None
+
+
+def test_the_only_exact_group_under_quorum_stays_refused():
+    """Two strips agreeing to the pixel is not evidence — it is the same 2-is-not-enough
+    rule `test_the_quorum_is_what_separates_a_measurement_from_a_refusal` pins for the
+    ordinary path, and the rescue must hold the exact SAME line rather than relaxing it
+    because the two votes happen to be unanimous. Group A is 2 votes, pixel-exact, at
+    +300 — below `_MIN_AGREEING_STRIPS` — so `_exact_cluster_shift`'s own quorum filter
+    drops it before the "exactly one" check ever runs. Group B is 5 votes, quorate, but
+    spread +700..+712 (not pixel-exact), so it fails the OTHER half of the bar. Neither
+    group qualifies, `exact` ends up empty, and the pair is refused precisely because the
+    only unanimous evidence in the bank is too thin to trust.
+    """
+    group_a = [_strip(300 + i * 150, frameshift.STRIP_MATCHED, 300) for i in range(2)]
+    group_b = [_strip(1400 + i * 150, frameshift.STRIP_MATCHED, 700 + 3 * i) for i in range(5)]
+    spoiler = [_strip(2200, frameshift.STRIP_MATCHED, -100)]
+    r = _resolve(group_a + group_b + spoiler)
+
+    assert r.status == frameshift.SHIFT_NO_CONSENSUS, r.reason
+    assert r.delta_px is None and not r.ok
+    assert r.consensus_px is None
+
+
+def test_the_rescue_cannot_touch_a_bank_the_median_already_resolves():
+    """The load-bearing guarantee stated in `_resolve`'s own comment: the rescue runs
+    ONLY after the plain median has already failed its own quorum, so a pair that
+    measures today must measure IDENTICALLY tomorrow — same delta, same reason, no split
+    note appended — because the rescue was never consulted. This reuses
+    `test_dissenting_strips_are_outvoted_but_counted`'s unimodal bank (5 strips agreeing
+    at +363, one dissenting at -871): the plain median is already +363 with a 5-strip
+    quorum, so `_exact_cluster_shift` never runs, and the reason string must contain no
+    trace of clustering language.
+    """
+    strips = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 363) for i in range(5)]
+    strips.append(_strip(1500, frameshift.STRIP_MATCHED, -871))
+    r = _resolve(strips)
+
+    assert r.status == frameshift.SHIFT_MEASURED, r.reason
+    assert r.delta_px == 363
+    assert r.reason == "content moved +363px — 5 of 6 eligible strips agree within 3px (1 dissent, 6 matched)"
+    assert "split into" not in r.reason
+
+
+def test_pins_allow_vetoes_a_rescue_that_contradicts_a_pinned_bound():
+    """`_pins_allow` is the free extra constraint the rescue is held to even though the
+    ordinary median path has never needed it: a pinned strip's offset is a lower or upper
+    BOUND on the true shift, and the rescue must not report a value a pin has already
+    ruled out. This takes the passing bank from
+    `test_a_larger_inexact_group_does_not_win_or_block_the_exact_one` (which measures
+    +200 on its own) and adds one more strip, pinned at the HIGH end of its own search
+    range (`search=(0, 500)`, `delta_px=500 == hi`) — meaning that strip's true match is
+    AT LEAST 500, strictly more than the +200 the exact cluster would otherwise win on.
+    `_pins_allow` must veto it, `_exact_cluster_shift` must return None, and the pair must
+    fall back to the ordinary (still-failing) refusal rather than reporting a number one
+    of its own strips has already contradicted.
+    """
+    exact = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 200) for i in range(3)]
+    spread = [_strip(1400 + i * 150, frameshift.STRIP_MATCHED, d, search=(-50, 150))
+              for i, d in enumerate((90, 94, 98, 102, 106, 110))]
+    contradicting_pin = _strip(2600, frameshift.STRIP_PINNED, 500, search=(0, 500))
+
+    # Control: without the pin, this exact bank measures +200 (proven above).
+    assert _resolve(exact + spread).delta_px == 200
+
+    r = _resolve(exact + spread + [contradicting_pin])
+    assert r.status == frameshift.SHIFT_NO_CONSENSUS, r.reason
+    assert r.delta_px is None and not r.ok
+    assert 200 not in (r.delta_px, r.consensus_px)
+
+
+def test_vote_clusters_splits_on_gaps_over_tolerance_and_keeps_exact_ties_together():
+    """`_vote_clusters` in isolation, with no `_resolve` machinery around it. Values
+    exactly `tolerance` apart must stay in ONE group — the boundary is inclusive
+    (`delta - groups[-1][-1] > tolerance`, not `>=`) — while a gap one pixel wider must
+    start a new one. `STRIP_WEAK` strips carry `delta_px=None` and must be silently
+    dropped rather than raising or being treated as a zero.
+    """
+    voters = [
+        _strip(0, frameshift.STRIP_MATCHED, 100),
+        _strip(1, frameshift.STRIP_MATCHED, 103),   # exactly 3px from 100: same group
+        _strip(2, frameshift.STRIP_MATCHED, 107),   # 4px from 103: new group
+        _strip(3, frameshift.STRIP_WEAK, None),     # no vote at all
+    ]
+    groups = frameshift._vote_clusters(voters, tolerance=3)
+
+    assert groups == [[100, 103], [107]]
+
+
+# =====================================================================================
 # Fail loud: the cases where there is no result at all
 # =====================================================================================
 

@@ -285,6 +285,39 @@ def test_a_gutter_sized_background_span_does_split():
     assert r.blocks[2].kind == segment.BLOCK_SELECTABLE   # the fragment carrying the heart
 
 
+def test_heart_anchored_tall_media_gap_splits_without_widening_generic_gutters():
+    """Rebecca's 98..101px photo gap ends exactly one normal heart inset below item 1."""
+    f = _Frame()
+    f.card(200, 700, heart_y=611, radius=0)             # heart is 89px above the tall gap
+    f.card(801, 1400, heart_y=1311, radius=0)           # 101px page-coloured media gap
+    f.card(1453, _BAND1 + 100, heart_y=2000, radius=0)  # ordinary 53px control gutter
+
+    r = f.segment()
+
+    assert r.ok, r.failures
+    assert _extents(r) == [(_BAND0, 700), (801, 1400), (1453, _BAND1)]
+    tall_gap = next(run for run in r.runs if (run.y0, run.y1) == (700, 801))
+    assert tall_gap.kind == segment.RUN_HEART_ANCHORED_MEDIA_GUTTER
+    assert r.blocks[0].bottom.kind == segment.EDGE_HEART_ANCHORED_MEDIA_GUTTER
+    assert r.blocks[1].top.kind == segment.EDGE_HEART_ANCHORED_MEDIA_GUTTER
+    assert r.blocks[1].kind == segment.BLOCK_SELECTABLE
+
+
+def test_tall_media_gap_without_a_heart_at_the_known_bottom_inset_stays_unsplit():
+    """A generic 101px blank span remains conservative; it is not a relaxed gutter window."""
+    f = _Frame()
+    f.card(200, 700, heart_y=560, radius=0)             # 140px from the gap, outside the guard
+    f.card(801, 1400, heart_y=1311, radius=0)
+    f.card(1453, _BAND1 + 100, heart_y=2000, radius=0)
+
+    r = f.segment()
+
+    assert not r.ok
+    assert any("2 like hearts inside one block" in failure for failure in r.failures)
+    tall_gap = next(run for run in r.runs if (run.y0, run.y1) == (700, 801))
+    assert tall_gap.kind == segment.RUN_TOO_LONG
+
+
 # =====================================================================================
 # Doc 5.4 amendment two: a narrow element must not hide a gutter
 # =====================================================================================

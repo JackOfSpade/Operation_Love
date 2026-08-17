@@ -31,6 +31,7 @@ from operation_love.opener.opener import (
     REASON_TOO_MANY_SENTENCES,
     REASON_UNDELIVERABLE_CHARS,
     REASON_UNDELIVERABLE_SEQUENCE,
+    _ITEM_PREAMBLE,
     _SYSTEM,
     _image_media_type,
     _leading_ngram,
@@ -470,76 +471,64 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "low investment so she chases" not in lowered
     assert "tease her like a bratty little sister" not in lowered
 
-    # --- THE ONE RULE (doc 2). Replaces the deleted "Ground this opener in exactly ONE
-    # concrete detail..." sentence, which was root cause #1 of the over-description bug: it
-    # never distinguished being GROUNDED IN a detail from NAMING it, so the model recited the
-    # detail back inside a message she reads while looking at that exact item. The property
-    # that replaced it is falsifiability, so that is what is pinned now.
+    # Bug report 2026-08-16: unconditional falsifiability forced invented motives on items that
+    # offered no natural guess. A visible detail is legal setup; description only fails when it
+    # remains the final payoff. Claims are optional and minimum invention wins.
     assert "exactly one concrete detail" not in lowered
-    assert "the one rule: your opener must contain a claim that could be wrong" in lowered
-    assert "describing what is in the photo can never be wrong" in lowered
-    assert "she is not checking whether you have eyes" in lowered
-    assert "the thing you can see may be your premise. it may never be your point" in lowered
-    # Bug report 2026-08-15: "my money is on the French Alps" answered an imaginary location
-    # question without ever saying what was being guessed. Shared visual context can carry the
-    # photo detail; it cannot carry the missing proposition.
-    assert "self contained claim" in lowered
-    assert "not a shorthand answer to an imagined question" in lowered
-    assert "a bare option in an unstated guessing game" in lowered
-    assert "shared visual context lets you omit a description" in lowered
-    assert "a reader should never have to ask 'for what?'" in lowered
-    # Bug report 2026-08-15: an observation-deck photo produced a three-hop story about
-    # climbing stairs, jelly legs and beating a target time. Falsifiability is not permission
-    # to fabricate the premise. Keep one evidence-bound inference while preserving playful
-    # guesses directly licensed by a visible or stated fact.
-    assert "evidence boundary, one hop only" in lowered
-    assert "the premise must be plainly visible in the item or explicitly stated" in lowered
-    assert "never stack guesses" in lowered
-    assert "unseen action, route, effort, goal, cause, or sequence" in lowered
+    assert "conversational value rule" in lowered
+    assert "a visible detail may be named and may be the subject, premise, or setup" in lowered
+    assert "final conversational point is merely that description" in lowered
+    assert "perspective, grounded interpretation, playful framing, connection, or natural question" in lowered
+    assert "does not have to contain a guess or a claim that could be wrong" in lowered
+    assert "claims only when natural" in lowered
+    assert "a correctable inference is one available move, not a requirement" in lowered
+    assert "prefer a grounded observation or specific question over a forced guess" in lowered
+    assert "write the whole proposition rather than a shorthand answer" in lowered
+    assert "choose the least speculative interpretation" in lowered
+    assert "minimum invention" in lowered
+    assert "never invent a purpose, motive, cause, plan, sequence, effort, goal" in lowered
+    assert "do not assign why she chose or did something unless her profile states it" in lowered
+    assert "any literal premise must be plainly visible in the item or explicitly stated" in lowered
+    assert "never use one invented fact as the premise for another" in lowered
     assert "a setting or destination does not establish how she arrived" in lowered
     assert "what effort it took, or whether she pursued a goal" in lowered
-    assert "choose a different claim or a different item" in lowered
-    # One-hop alone is insufficient: an inference can still depend on an implausibly specific
-    # ownership or routine backstory. Keep the semantic boundary without a worked scenario.
-    assert "calibrate the guess: a hedge does not rescue a far-fetched premise" in lowered
-    assert "natural under most ordinary explanations of the scene" in lowered
-    assert "not only under one special backstory" in lowered
+    assert "a hedge does not rescue a far-fetched premise" in lowered
     assert "ownership, employment, a routine, a responsibility, or a relationship" in lowered
-    assert "guess about the visible interaction, not an unshown life story" in lowered
     assert "traceability test" in lowered
-    assert "she should instantly see which visible or stated clue led you there" in lowered
-    assert "if the clue to inference path needs an explanation" in lowered
-    assert "the inference is too remote and you have fantasized a backstory" in lowered
-    # The premise the whole rule rests on, and the only reason it can be unconditional (doc
-    # 1.2): on Hinge a like-with-comment is ALWAYS displayed attached to its item.
+    assert "for any inference, she should instantly see which visible or stated clue led there" in lowered
+    assert "playful hyperbole" in lowered
+    assert "unmistakably nonliteral exaggeration is allowed" in lowered
+    assert "does not license presenting an invented motive, circumstance, or event as literal fact" in lowered
     assert ("shared context rule: your message is displayed directly under the exact photo "
             "or prompt it attaches to") in lowered
     assert "she is looking at that item while she reads your words" in lowered
+    assert "photo header rule" in lowered
+    assert "title, caption, or prompt printed with a photo is part of that same item" in lowered
+    assert "defines how the photo is meant to be read" in lowered
+    assert "interpret the visible scene through that text before choosing an angle" in lowered
+    assert "never contradict, reverse, or ignore the header's framing" in lowered
 
-    # --- QUESTIONS ARE DEMOTED, NOT BANNED (doc 2.2). Replaces "one open, easy-to-answer
-    # question", which made an interview question one of the two default shapes. A guess she
-    # can correct is the easiest and most enjoyable reply a person can give, so the claim now
-    # leads and a question is only ever the second beat.
+    # A question may stand alone when it is more natural than a claim. Premise consistency still
+    # applies whenever a two-beat opener does begin with a claim.
     assert "one open, easy-to-answer question" not in lowered
-    assert "a claim she can correct beats a question she has to answer" in lowered
-    assert "a question is allowed as the second beat after a real claim" in lowered
-    assert "never as the whole message" in lowered
-    # Bug report 2026-08-16: the first beat guessed X, then the question either re-asked X,
-    # contradicted X, or drifted to a generic nearby topic. Sentence-level validity is not
-    # enough; the two beats must form one logically continuous move.
+    assert "a natural claim she can correct can be effective, but it is not mandatory" in lowered
+    assert "question may be the whole message when that is the strongest natural angle" in lowered
+    assert "never as the whole message" not in lowered
+    assert "setup payoff continuity" in lowered
+    assert "every visible detail you name must be necessary to, and used by" in lowered
+    assert "if removing a descriptive clause leaves the later point or question unchanged, cut it" in lowered
+    assert "question coherence" in lowered
+    assert "ask one coherent thing at a time" in lowered
+    assert "parallel, genuinely contrasting answers to that same underlying question" in lowered
+    assert "never to join unrelated dimensions" in lowered
     assert "premise consistency" in lowered
+    assert "if the first beat asserts or guesses x" in lowered
     assert "must accept x as its working premise and move forward from it" in lowered
-    assert "consequence, choice, or specific detail that makes sense if x is true" in lowered
     assert "never ask whether x itself was true" in lowered
     assert "ask about the opposite of x" in lowered
     assert "abandon x for a generic question about the surrounding scene" in lowered
-    assert "the second beat inherits the same evidence boundary" in lowered
-    assert "presuppose an unseen expectation, opinion, goal, difficulty, outcome" in lowered
-    assert "if no natural evidence bound question follows, stop after the claim" in lowered
-    # The old "Favor a sincere observation, a direct low-pressure invitation, or ..." default
-    # went with it: a sincere observation about a visible thing is unfalsifiable by
-    # construction, i.e. exactly what THE ONE RULE now forbids as the whole message.
-    assert "favor a sincere" not in lowered
+    assert "may extend the angle with clearly nonliteral hyperbole" in lowered
+    assert "may not add a literal invented fact, motive, or backstory" in lowered
 
     # --- LENGTH: the ceiling stays, the one-sentence PREFERENCE is gone (doc 3.2.1).
     # Preferring brevity for its own sake fought a claim that needs room to exist ("I know
@@ -547,9 +536,9 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     # strongest opener in the whole design). A regression here silently reinstates it.
     assert "one short sentence is preferred" not in lowered
     assert "application rule: two sentences is the absolute maximum" in lowered
-    assert "as short as the claim allows" in lowered
-    assert "spend no word on anything she can already see" in lowered
-    assert "never cut the claim itself" in lowered      # economy applies to padding, not substance
+    assert "as short as the angle allows" in lowered
+    assert "spend no word merely repeating what she can already see" in lowered
+    assert "never cut necessary setup or the conversational payoff" in lowered
 
     # --- THE THREE GUARDRAILS (doc 2.4). Safety rules rather than style preferences, which
     # is why they are stated in BOTH copies of the prompt rather than only in config.yaml.
@@ -585,7 +574,9 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert ("fill item_index, referenced, angle and item_description before you write the "
             "opener") in lowered
     assert "is never sent to her" in lowered
-    assert "keep its words out of the message" in lowered
+    assert "put the literal inventory there" in lowered
+    assert "message may use only the setup it needs" in lowered
+    assert "must add a conversational payoff" in lowered
     assert "angle is your own short wording for what your opener is doing" in lowered
     assert "item_description says in a few words what the item you picked is" in lowered
 
@@ -608,9 +599,10 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     # strong prior toward the best photograph, so the preference alone does not settle it. It is
     # THE ONE RULE applied one step earlier: the item is only the premise, so choosing by how the
     # item looks optimises the half that never becomes the message.
-    assert "the item you have the best angle on, not the most striking picture" in lowered
+    assert "the item you have the best conversational angle on, not the most striking picture" in lowered
+    assert "natural observation, question, connection, or playful framing" in lowered
     assert "beats a beautiful one you have nothing to say about" in lowered
-    assert "the item is only ever your premise and the claim is the message" in lowered
+    assert "the item supplies the material and the conversational payoff is the message" in lowered
     assert "pick that one even when another item is the better picture" in lowered
     # The inverted criterion must never come back: instructing the model to pick by how the item
     # LOOKS is the exact regression this block exists to catch, and it would not contradict any
@@ -627,6 +619,7 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     # to be stated at the stage it goes wrong, i.e. pick a different item.
     assert "the failure to avoid is picking a photo you have nothing to say about" in lowered
     assert "all that is left to write is what it looks like" in lowered
+    assert "never enough as the final point" in lowered
 
     # --- THE CONTEXT TIER, described rather than merely permitted (doc 5.3). The unnumbered
     # block is her vitals, confirmed from a live capture to carry no like heart, so it is
@@ -678,6 +671,14 @@ def test_system_prompt_contains_no_move_menu_or_concrete_opener_copy():
         "based on that ridgeline",
     ):
         assert copied_phrase not in lowered
+
+
+def test_item_preamble_binds_a_photo_header_to_its_numbered_photo():
+    """The crop contains both regions; the wire prompt must make them one meaning."""
+    lowered = _ITEM_PREAMBLE.lower()
+    assert "title, caption, or prompt above its photo" in lowered
+    assert "one compound item" in lowered
+    assert "must be read together" in lowered
 
 
 # ---------------------------------------------------------------------------------------

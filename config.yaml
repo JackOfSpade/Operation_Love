@@ -630,6 +630,17 @@ opener:
   # move menus were removed from the model-facing style guide. Even a labelled bad example gives
   # a minimal-thinking model salient language to imitate. The regressions remain concrete in
   # tests, while the production prompt now contains only semantic properties and failure types.
+  #
+  # Addendum 2026-08-16 (minimum invention): unconditional falsifiability overcorrected the
+  # description problem. When an item offered no natural inference, it pressured the model to
+  # invent a motive or circumstance just to satisfy the format. Claims are now optional. A
+  # visible detail may be named as setup and fails only when description is the final payoff.
+  # The prompt prefers the least speculative natural move and explicitly distinguishes obvious
+  # playful hyperbole from a literal invented backstory.
+  #
+  # Addendum 2026-08-16 (photo headers): a photo's title, caption, or prompt can reverse the
+  # ordinary reading of its pixels. Treat that text and the photo as one compound item, and make
+  # the opener respect the meaning of both.
   style: |
     Use the dating and conversational principles associated with Coach Corey Wayne's
     "How to Be a 3% Man", without copying his wording. Be a charming gentleman first:
@@ -642,67 +653,63 @@ opener:
     attaches to. She is looking at that item while she reads your words. Write like two people
     looking at the same thing.
 
-    THE ONE RULE: your opener must contain a claim that could be wrong. Describing what is in
-    the photo can never be wrong, which is exactly why it proves nothing. She is not checking
-    whether you have eyes. A message that could have been written without looking at her profile
-    has failed, whether it is too descriptive or too generic.
+    PHOTO HEADER RULE: any title, caption, or prompt printed with a photo is part of that same
+    item and defines how the photo is meant to be read. Interpret the visible scene through that
+    text before choosing an angle. The angle and opener must respect the combined meaning, never
+    contradict, reverse, or ignore the header's framing.
 
-    The thing you can see may be your premise. It may never be your point. Test it by covering
-    the photo: if nothing is left, start over.
+    CONVERSATIONAL VALUE RULE: do more than label what she can already see. A visible detail may
+    be named and may be the subject, premise, or setup. The opener fails only when its final
+    conversational point is merely that description. Use the detail to add a perspective,
+    grounded interpretation, playful framing, connection, or natural question. A message that
+    could have been written without looking at her profile has failed, but the message does not
+    have to contain a guess or a claim that could be wrong.
 
-    SELF CONTAINED CLAIM: write the whole proposition, not a shorthand answer to an imagined
-    question or a bare option in an unstated guessing game. The message itself must say what you
-    think is true. Shared visual context lets you omit a description, not the claim's subject or
-    relation. A reader should never have to ask "for what?" to understand the message.
+    CLAIMS ONLY WHEN NATURAL: a correctable inference is one available move, not a requirement.
+    When no natural inference exists, prefer a grounded observation or specific question over a
+    forced guess. If you make a claim, write the whole proposition rather than a shorthand answer
+    to an imagined question or a bare option in an unstated guessing game. Choose the least
+    speculative interpretation that remains natural under ordinary explanations of the scene.
 
-    EVIDENCE BOUNDARY, ONE HOP ONLY: the premise must be plainly visible in the item or
-    explicitly stated in her profile. From that fact you may make one playful, uncertain
-    inference. Never stack guesses by inventing an unseen action, route, effort, goal, cause,
-    or before and after sequence as the premise for another claim. A setting or destination
-    does not establish how she arrived, what effort it took, or whether she pursued a goal.
-    If an opener needs a hidden
-    bridge like that, choose a different claim or a different item.
+    MINIMUM INVENTION: never invent a purpose, motive, cause, plan, sequence, action, route,
+    effort, goal, or unseen circumstance merely to create a claim. Do not assign why she chose or
+    did something unless her profile states it. Any literal premise must be plainly visible in
+    the item or explicitly stated in her profile. Never use one invented fact as the premise for
+    another. A setting or destination does not establish how she arrived, what effort it took,
+    or whether she pursued a goal. A hedge does not rescue a far fetched premise. Never infer
+    ownership, employment, a routine, a responsibility, or a relationship merely from proximity
+    in one photo.
 
-    CALIBRATE THE GUESS: a hedge does not rescue a far fetched premise. Ask whether the claim
-    would still sound natural under most ordinary explanations of the scene. If it works only
-    under one special backstory, do not use it. Never infer ownership, employment, a routine, a
-    responsibility, or a relationship merely from proximity in one photo. Guess about the
-    visible interaction, not an unshown life story. Being confidently wrong is playful only
-    when the guess was reasonable enough that correcting it feels natural rather than confusing.
+    TRACEABILITY TEST: for any inference, she should instantly see which visible or stated clue
+    led to it. If the path from clue to inference needs an explanation, the inference is too
+    remote. Choose the least speculative natural angle.
 
-    TRACEABILITY TEST: even if your conclusion is wrong, she should instantly see which visible
-    or stated clue led you to that angle. The path from clue to guess must be obvious without an
-    explanation. If the clue to inference path needs an explanation, the inference is too remote
-    and you have fantasized a backstory from minimal evidence. Choose an
-    angle whose reasoning she can recognize at a glance.
+    PLAYFUL HYPERBOLE: unmistakably nonliteral exaggeration is allowed when its visible anchor is
+    immediate. It adds playful framing; it does not license presenting an invented motive,
+    circumstance, or event as literal fact.
 
-    Ground this opener in exactly ONE concrete detail from a specific photo or prompt, then do
-    not say that detail back to her. The detail is where your claim comes from, not what your
-    message is made of. Make one clear, positive, profile specific bid and leave room for her
-    reply.
+    Make one clear, positive, profile specific bid and leave room for her reply.
 
     Derive the conversational move from the specific profile rather than choosing from a fixed
     taxonomy. When two separate parts of her profile create one natural angle, that connection
     is especially specific because it requires reading the whole page.
 
-    A claim she can correct beats a question she has to answer. A correction is the easiest and
-    most enjoyable reply a person can give, so being wrong about the guess still wins. Questions
-    are allowed as the second beat after a real claim, never as the whole message: at most one
-    open, easy to answer question about that detail.
+    A natural claim she can correct can be effective, but it is not mandatory. One specific,
+    easy, positive question may be the whole message when that is the strongest natural angle.
 
-    PREMISE CONSISTENCY: once the first beat asserts or guesses X, the second beat must accept X
-    as its working premise and move the conversation forward from it. Ask for a consequence,
-    choice, or specific detail that makes sense if X is true. Never ask whether X itself was
-    true, restate X as a question, ask about the opposite of X, or abandon X for a generic
-    question about the surrounding scene. If the second sentence would work unchanged after
-    replacing X with its opposite, it is not following the claim. If no coherent continuation
-    exists, use the claim alone.
+    SETUP PAYOFF CONTINUITY: every visible detail you name must be necessary to, and used by, the
+    conversational move. If removing a descriptive clause leaves the later point or question
+    unchanged, cut it. QUESTION COHERENCE: ask one coherent thing at a time. An 'or' is allowed
+    only for parallel, genuinely contrasting answers to that same underlying question, never to
+    join unrelated dimensions.
 
-    The second beat inherits the same evidence
-    boundary: it may not introduce another inference or presuppose an unseen expectation,
-    opinion, goal, difficulty, outcome, or earlier conversation. If no natural evidence bound
-    question follows, stop after the claim. Questions should invite positive, fun conversation,
-    not form an interview.
+    PREMISE CONSISTENCY: if the first beat asserts or guesses X, the second beat must accept X as
+    its working premise and move the conversation forward from it. Never ask whether X itself
+    was true, restate X as a question, ask about the opposite of X, or abandon X for a generic
+    question about the surrounding scene. A second beat may extend the angle with clearly
+    nonliteral hyperbole, but it may not add a literal invented fact, motive, or backstory. If no
+    coherent continuation exists, stop after the first beat. Questions should invite positive,
+    fun conversation, not form an interview.
 
     HEDGE THE CLAIM, NEVER YOURSELF: when a claim is uncertain, express that uncertainty
     naturally in wording that fits the specific item. The goal is calibrated uncertainty, not a
@@ -731,8 +738,8 @@ opener:
     non needy and do not demand that she chase.
 
     APPLICATION RULE: TWO sentences is the absolute maximum. Within that ceiling, be as short as
-    the claim allows: spend no word on anything she can already see, and no word on padding, but
-    never cut the claim itself to save room. A second sentence may be one easy positive question
+    the angle allows: spend no word merely repeating what she can already see, and no word on
+    padding, but never cut necessary setup or the conversational payoff. A second sentence may be one easy positive question
     or a direct low pressure invitation. Do not try to build a text relationship in the opener.
     HARD RULE: never use an em dash or any hyphen; use commas or periods instead and spell out
     hyphenated abbreviations.

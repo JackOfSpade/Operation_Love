@@ -931,32 +931,77 @@ def _item_index_refusal_summary_md(lines: list[str]) -> str:
         numbered = [(i, float(step)) for i, step in enumerate(steps)
                     if isinstance(step, (int, float)) and not isinstance(step, bool)] \
             if isinstance(steps, list) else []
-        trailing_saturation = None
-        cadence = numbered
-        # A final short gesture is the natural signature of a scroll clamping at the card's
-        # bottom.  It is not a mid-capture spacing anomaly, so describe it separately rather
-        # than letting it poison min/median/max for the ordinary cadence.
-        if len(numbered) >= 4 and numbered[-1][0] == len(steps) - 1:
-            prior = [value for _i, value in numbered[:-1]]
-            ordered_prior = sorted(prior)
-            middle_prior = len(ordered_prior) // 2
-            prior_median = (ordered_prior[middle_prior] if len(ordered_prior) % 2 else
-                            (ordered_prior[middle_prior - 1] + ordered_prior[middle_prior]) / 2)
-            if numbered[-1][1] < prior_median * 0.25:
-                trailing_saturation = numbered[-1]
-                cadence = numbered[:-1]
+
+        def _median(values: list[float]) -> float:
+            ordered = sorted(values)
+            middle = len(ordered) // 2
+            return (ordered[middle] if len(ordered) % 2 else
+                    (ordered[middle - 1] + ordered[middle]) / 2)
+
+        # A capture that hits the card's bottom keeps swiping a page that cannot move: every
+        # step from there to the end is either a ~0px measured step or a refused pair, never a
+        # mid-capture spacing glitch.  Walk backwards from the very last step and grow that run
+        # for as long as each measured step is near-zero relative to the median of whatever
+        # still precedes the run (scale-free, so it works at any cadence). A refused pair
+        # (``None``) never breaks the run -- it sits inside the same saturated stretch.
+        run_indices: list[int] = []
+        if isinstance(steps, list):
+            i = len(steps) - 1
+            while i >= 0:
+                value = steps[i]
+                if value is None:
+                    run_indices.append(i)
+                    i -= 1
+                    continue
+                if not (isinstance(value, (int, float)) and not isinstance(value, bool)):
+                    break
+                prior_values = [v for idx, v in numbered if idx < i]
+                if not prior_values or float(value) >= _median(prior_values) * 0.25:
+                    break
+                run_indices.append(i)
+                i -= 1
+        run_indices.reverse()
+        run_set = set(run_indices)
+        run_measured = [(idx, value) for idx, value in numbered if idx in run_set]
+
+        trailing_saturation = None      # a single clamped final gesture (legacy phrasing)
+        trailing_run = None             # a genuine multi-step trailing saturation run
+        if len(run_measured) >= 2:
+            # Two or more near-zero measured steps in the run is what tells this apart from an
+            # ordinary final gesture clamping short: name the whole stretch as one fact instead
+            # of the single last element, and keep every one of its steps out of the cadence.
+            trailing_run = (run_indices[0], len(run_measured),
+                             len(run_indices) - len(run_measured),
+                             [value for _idx, value in run_measured])
+            cadence = [(idx, value) for idx, value in numbered if idx not in run_set]
+        elif len(run_measured) == 1:
+            trailing_saturation = run_measured[0]
+            cadence = [(idx, value) for idx, value in numbered
+                       if idx != trailing_saturation[0]]
+        else:
+            cadence = numbered
+
         cadence_values = [step for _i, step in cadence]
         if cadence_values:
-            ordered = sorted(cadence_values)
-            middle = len(ordered) // 2
-            median = (ordered[middle] if len(ordered) % 2 else
-                      (ordered[middle - 1] + ordered[middle]) / 2)
-            label = "realised steps" if trailing_saturation is None else "main realised cadence"
-            step_text = (f"{label} ({len(cadence_values)} measured): min {ordered[0]:g}px, "
-                         f"median {median:g}px, max {ordered[-1]:g}px")
+            median = _median(cadence_values)
+            label = ("realised steps" if trailing_saturation is None and trailing_run is None
+                      else "main realised cadence")
+            step_text = (f"{label} ({len(cadence_values)} measured): "
+                         f"min {min(cadence_values):g}px, median {median:g}px, "
+                         f"max {max(cadence_values):g}px")
             if trailing_saturation is not None:
                 step_text += (f"; trailing scroll saturation at step {trailing_saturation[0]} "
                               f"was {trailing_saturation[1]:g}px")
+            if trailing_run is not None:
+                start, measured_count, refused_count, run_values = trailing_run
+                value_text = (f"{run_values[0]:g}px" if len(set(run_values)) == 1 else
+                              f"{min(run_values):g}-{max(run_values):g}px")
+                refused_clause = f", {refused_count} refused" if refused_count else ""
+                step_text += (
+                    f"; scroll saturated from step {start} to the end of the capture "
+                    f"({measured_count} measured steps at {value_text}{refused_clause}): "
+                    f"the profile's bottom was reached there and the remaining frames repeat "
+                    f"the same page position")
             small = [(i, value) for i, value in cadence if value < median * 0.5]
             if small:
                 step_text += ("; mid-run small-step anomalies" if len(small) > 1

@@ -13,7 +13,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .page import _PAGE
-from .state import HubState
+from .state import HubState, validate_stop_after_seconds
 
 _BROWSER_SHUTDOWN_GRACE_S = 1.5
 _BROWSER_STALE_CHECK_S = 5.0
@@ -112,14 +112,23 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(raw) if raw else {}
         except ValueError:
-            body = {}
+            body = None
         if self.path == "/api/start":
+            if not isinstance(body, dict):
+                self._json({"ok": False, "msg": "start request must be a JSON object"}, 400)
+                return
             mpr = body.get("max_per_run")           # auto-mode per-run cap (0 = unlimited)
             try:
                 mpr = int(mpr) if mpr is not None else None
             except (TypeError, ValueError):
                 mpr = None
-            ok, msg = self.state.start(body.get("mode"), body.get("apps"), mpr)
+            valid_timeout, stop_after_seconds, timeout_error = validate_stop_after_seconds(
+                body.get("stop_after_seconds"))
+            if not valid_timeout:
+                self._json({"ok": False, "msg": timeout_error}, 400)
+                return
+            ok, msg = self.state.start(body.get("mode"), body.get("apps"), mpr,
+                                       stop_after_seconds)
             self._json({"ok": ok, "msg": msg}, 200 if ok else 409)
         elif self.path == "/api/stop":
             # HubState.stop() now returns (False, "no run is active") instead of an

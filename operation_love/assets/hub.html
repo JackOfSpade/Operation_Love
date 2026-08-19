@@ -596,9 +596,10 @@ function renderEval(e){
   // The model-quality gate may not have enough examples to score CV yet, but its
   // dataset size and preference balance are always useful. Compute dislike as the
   // complement so the displayed split sums to exactly 100.0% after rounding.
+  const training = e.training || e;
   const trainingMixHtml = () => {
-    const records = Math.max(0, Math.floor(Number(e.labels) || 0));
-    const likes = Math.max(0, Math.floor(Number(e.likes) || 0));
+    const records = Math.max(0, Math.floor(Number(training.labels) || 0));
+    const likes = Math.max(0, Math.floor(Number(training.likes) || 0));
     if(!records) return `<div class="muted" style="margin-top:4px">0 training records — no like/dislike split yet</div>`;
     const likePct = Math.max(0, Math.min(100, (likes / records) * 100));
     const dislikePct = 100 - likePct;
@@ -607,7 +608,11 @@ function renderEval(e){
   if(e.status !== 'ok'){
     $('#evalhint').textContent = (e.identities!=null) ? `${e.identities} identities` : '';
     $('#evalbody').style.color = '#9a9aa2';
-    $('#evalbody').innerHTML = `<div>${esc(e.message || 'evaluating…')}</div>` + trainingMixHtml() + refreshHtml();
+    const labels = Math.max(0, Math.floor(Number(training.labels) || 0));
+    const likes = Math.max(0, Math.floor(Number(training.likes) || 0));
+    const passes = Math.max(0, labels - likes);
+    const gate = `Need ≥10 labels with both like & pass (have ${labels}: ${likes} like / ${passes} pass).`;
+    $('#evalbody').innerHTML = `<div>${esc(e.status === 'insufficient_data' ? gate : (e.message || 'evaluating…'))}</div>` + trainingMixHtml() + refreshHtml();
     return;
   }
   // Accuracy % = ROC-AUC × 100 = P(ranks a profile you'd LIKE above one you'd PASS).

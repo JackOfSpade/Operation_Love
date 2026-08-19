@@ -462,6 +462,9 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "90/10 framework" in _SYSTEM
     assert "genuinely curious" in lowered
     assert "do not force teasing into every opener" in lowered
+    assert "profile text fact check" in lowered
+    assert "never ask for a fact, preference, activity, place, or opinion" in lowered
+    assert "if she says she likes apples, do not ask whether she likes apples" in lowered
     assert "positive, fun conversation" in lowered
     assert "brief greeting is optional" in lowered
     assert "two sentences is the absolute maximum" in lowered

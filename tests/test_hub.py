@@ -772,6 +772,35 @@ def test_hub_model_quality_card_shows_training_record_balance():
     assert "training record" in _PAGE
     assert "% like /" in _PAGE and "% dislike" in _PAGE
     assert "const dislikePct = 100 - likePct" in _PAGE
+    assert "const training = e.training || e" in _PAGE
+
+
+def test_cached_eval_uses_live_training_mix_without_waiting_for_next_cv_refresh():
+    class LiveObserve:
+        running = True
+        mode = "observe"
+        labels = 3
+
+    class LiveStore:
+        def load_labels(self):
+            return [(True, []), (False, []), (True, [])]
+
+    st = HubState("config.yaml")
+    with st._lock:
+        st._eval = {"status": "insufficient_data", "labels": 2, "likes": 1, "passes": 1}
+        st._eval_at = time.time()
+        st._eval_labels = 0
+        st._status = LiveObserve()
+        st._live_store = LiveStore()
+
+    # A running thread is how HubState distinguishes a live worker from a retained status.
+    st._thread = threading.Thread(target=lambda: time.sleep(0.05))
+    st._thread.start()
+    result = st.eval_snapshot(every=15)
+    st._thread.join()
+
+    assert result["labels"] == 2              # CV itself remains cached until its cadence
+    assert result["training"] == {"labels": 3, "likes": 2, "passes": 1}
 
 
 def test_attach_refresh_inactive_without_live_run():

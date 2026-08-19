@@ -544,9 +544,11 @@ class HubState:
         if cached is not None:
             if enough_new:
                 self._start_eval_refresh(every)
-                return self._attach_refresh(cached, every, live, base, status)
+                return self._attach_refresh(cached, every, live, base, status,
+                                            training=self._live_training_mix(status))
             if fresh_enough:
-                return self._attach_refresh(cached, every, live, base, status)
+                return self._attach_refresh(cached, every, live, base, status,
+                                            training=self._live_training_mix(status))
 
         return self._compute_eval_snapshot_singleflight(every)
 
@@ -578,7 +580,8 @@ class HubState:
                 cached = {"status": "error", "message": "eval computation did not complete",
                           "labels": None, "identities": None, "folds": 0,
                           "roc_auc": None, "pr_auc": None, "brier": None, "base_rate": 0.0}
-            return self._attach_refresh(cached, every, live, computed_at, status)
+            return self._attach_refresh(cached, every, live, computed_at, status,
+                                        training=self._live_training_mix(status))
         try:
             return self._compute_eval_snapshot(every)
         finally:
@@ -630,6 +633,7 @@ class HubState:
             result = evaluate(samples)
             result["trajectory"] = self._eval_trajectory(cfg, samples, result, every,
                                                          live_store if running else None)
+            training = self._training_mix(samples)
             # Gate baseline must use the SAME counter the gate compares against: the live
             # swipe counter (status.labels), not len(samples). Using len(samples) would lag
             # status.labels by the worker's unflushed buffer and re-fire the gate every poll.
@@ -639,11 +643,39 @@ class HubState:
                       "labels": None, "identities": None, "folds": 0,
                       "roc_auc": None, "pr_auc": None, "brier": None, "base_rate": 0.0}
             computed_at = live if live is not None else base
+            training = None
         with self._lock:
             self._eval, self._eval_at, self._eval_labels = result, time.time(), computed_at
             status = self._status
         live = getattr(status, "labels", None) if status is not None else None
-        return self._attach_refresh(result, every, live, computed_at, status)
+        return self._attach_refresh(result, every, live, computed_at, status, training=training)
+
+    @staticmethod
+    def _training_mix(samples) -> dict:
+        """Return current label totals for the hub without running another CV."""
+        rows = list(samples or [])
+        # Stores always return (liked, embedding) pairs. Keep the display helper tolerant of
+        # a malformed/testing row nevertheless: count the record but do not guess its class.
+        likes = sum(1 for row in rows if isinstance(row, tuple) and row and bool(row[0]))
+        return {"labels": len(rows), "likes": likes, "passes": len(rows) - likes}
+
+    def _live_training_mix(self, status) -> dict | None:
+        """Read the running store's cached labels, including its unflushed buffer.
+
+        This keeps the count that confirms a just-made swipe current while the grouped CV
+        refresh remains deliberately throttled. BigQueryStore serves this from its in-memory
+        cache after startup, so polling does not issue a BigQuery query every five seconds.
+        """
+        if not bool(getattr(status, "running", False)) or getattr(status, "mode", None) != "observe":
+            return None
+        with self._lock:
+            live_store = self._live_store
+        if live_store is None:
+            return None
+        try:
+            return self._training_mix(live_store.load_labels())
+        except Exception:  # noqa: BLE001 - the run may close the store between poll and read
+            return None
 
     def _eval_trajectory(self, cfg, samples, result, every: int, live_store=None) -> list:
         """Historical ranker accuracy curve vs label count, for the hub chart. Reads the
@@ -681,7 +713,8 @@ class HubState:
             return []
 
     @staticmethod
-    def _attach_refresh(result: dict, every: int, live, base, status) -> dict:
+    def _attach_refresh(result: dict, every: int, live, base, status,
+                        training: dict | None = None) -> dict:
         """Return a shallow copy of the cached/fresh eval with a `refresh` countdown
         attached (the cached dict itself stays refresh-free so the count stays live)."""
         every = max(1, every)
@@ -695,4 +728,7 @@ class HubState:
             refresh = {"every": every, "since": since,
                        "remaining": max(0, every - since) or every,
                        "live": True, "mode": mode}
-        return {**result, "refresh": refresh}
+        attached = {**result, "refresh": refresh}
+        if training is not None:
+            attached["training"] = training
+        return attached

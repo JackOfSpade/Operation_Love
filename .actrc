@@ -7,17 +7,17 @@
 # see .githooks/pre-push for cache controls and branch-sensitivity safeguards.
 #
 # Works around a real `act` bug (nektos/act#107), not anything in this repo:
-# under --container-architecture linux/amd64 on Apple Silicon (which the hook
-# forces so local results match GitHub's x86_64 runners), the FIRST
+# when an action's first
 # `::add-path::` in a job — actions/setup-python issues two — makes act rebuild
 # PATH for every later `docker exec` and substitute the HOST arch for its own
 # bundled-node toolcache entry. `.../node/<ver>/arm64/bin` does not exist in the
 # linux/amd64 image, so every later bare `node` fails with exit 127 — including
 # act's OWN internal node invocations used to run JS actions' Main/Post steps,
 # not just user `run:` steps. Pinning PATH to a stable symlink that the first
-# act-only CI step resolves to the image's real x64 toolcache dir fixes it for
-# the whole job without baking the image's current Node patch version in here.
+# act-only CI step resolves to the image's real Node toolcache dir fixes it for
+# the whole job without baking the image's current Node patch version or CPU
+# architecture in here.
 #
 # The bootstrap step runs before the first JavaScript action, so this may be a
 # dangling path for that one shell step on a freshly-pulled image.
---env PATH=/opt/acttoolcache/node/current/x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+--env PATH=/opt/acttoolcache/node/current/arm64/bin:/opt/acttoolcache/node/current/x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin

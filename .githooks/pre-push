@@ -4,7 +4,7 @@
 # Environment:
 #   SKIP_ACT=1                 bypass once
 #   ACT_PROTECTED_BRANCHES=... protected branch globs
-#   ACT_ARCH=native            disable Apple-Silicon linux/amd64 matching
+#   ACT_ARCH=amd64             use linux/amd64 containers instead of the native image
 #   ACT_ARGS=...               additional act flags
 #   ACT_JOBS=N                 concurrent jobs (default 1)
 #   ACT_CACHE=0                disable successful-result reuse
@@ -60,7 +60,7 @@ docker info >/dev/null 2>&1 || {
 }
 
 ARCH=""
-if [ "${ACT_ARCH:-}" != native ] && [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
+if [ "${ACT_ARCH:-native}" = amd64 ] && [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ]; then
 	ARCH="--container-architecture linux/amd64"
 fi
 JOBS=${ACT_JOBS:-1}

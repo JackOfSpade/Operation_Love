@@ -57,10 +57,9 @@
 
   <div class="card">
     <div class="row"><span class="muted">training data</span><span class="meta" id="traininghint" aria-live="polite"></span></div>
-    <div class="meta" style="margin-top:6px">Changes are available only when stopped. Removing the latest label is useful for a mistaken swipe; clearing labels starts the preference model over.</div>
+    <div class="meta" style="margin-top:6px">Available only when stopped. Remove the latest saved label after a mistaken swipe.</div>
     <div class="controls" style="margin-top:10px">
       <button id="removeLatestTraining">↶ Remove last saved label</button>
-      <button id="clearTraining" class="danger">Clear all training data</button>
     </div>
   </div>
 
@@ -594,10 +593,21 @@ function renderEval(e){
     const progress = Math.min(every, Math.max(0, Math.floor(Number(r.since) || 0)));
     return `<div class="muted" style="margin-top:4px">↻ ${progress}/${every} till next refresh</div>`;
   };
+  // The model-quality gate may not have enough examples to score CV yet, but its
+  // dataset size and preference balance are always useful. Compute dislike as the
+  // complement so the displayed split sums to exactly 100.0% after rounding.
+  const trainingMixHtml = () => {
+    const records = Math.max(0, Math.floor(Number(e.labels) || 0));
+    const likes = Math.max(0, Math.floor(Number(e.likes) || 0));
+    if(!records) return `<div class="muted" style="margin-top:4px">0 training records — no like/dislike split yet</div>`;
+    const likePct = Math.max(0, Math.min(100, (likes / records) * 100));
+    const dislikePct = 100 - likePct;
+    return `<div class="muted" style="margin-top:4px">${records} training record${records===1?'':'s'} · ${likePct.toFixed(1)}% like / ${dislikePct.toFixed(1)}% dislike</div>`;
+  };
   if(e.status !== 'ok'){
     $('#evalhint').textContent = (e.identities!=null) ? `${e.identities} identities` : '';
     $('#evalbody').style.color = '#9a9aa2';
-    $('#evalbody').innerHTML = `<div>${esc(e.message || 'evaluating…')}</div>` + refreshHtml();
+    $('#evalbody').innerHTML = `<div>${esc(e.message || 'evaluating…')}</div>` + trainingMixHtml() + refreshHtml();
     return;
   }
   // Accuracy % = ROC-AUC × 100 = P(ranks a profile you'd LIKE above one you'd PASS).
@@ -610,7 +620,7 @@ function renderEval(e){
   $('#evalbody').innerHTML =
     `<div>accuracy <b style="color:${col};font-size:18px">${acc.toFixed(3)}%</b>`
     + ` <span class="muted">±${band.toFixed(3)}% · ranks a like above a pass (50% = random)</span></div>`
-    + refreshHtml() + accSvg(e.trajectory);
+    + trainingMixHtml() + refreshHtml() + accSvg(e.trajectory);
 }
 async function tickEval(){ try { renderEval(await getJSON('/api/eval')); } catch(e){} }
 
@@ -777,15 +787,7 @@ async function removeLatestTrainingLabel(){
   hint.textContent = r.ok ? `removed ${r.result.profile_name}` : (r.result || 'could not remove label');
   tickEval();
 }
-async function clearTrainingData(){
-  if(!window.confirm('Clear every saved like/dislike training label? This cannot be undone.')) return;
-  const hint = $('#traininghint'); hint.textContent = 'clearing…';
-  const r = await postJSON('/api/training/clear', {});
-  hint.textContent = r.ok ? `cleared ${r.result.removed} label(s)` : (r.result || 'could not clear training data');
-  tickEval();
-}
 $('#removeLatestTraining').onclick = removeLatestTrainingLabel;
-$('#clearTraining').onclick = clearTrainingData;
 
 async function getReport(){          // generate fresh each time (Copy/Download do this implicitly)
   $('#bughint').textContent = 'generating…';

@@ -123,8 +123,8 @@ class _Handler(BaseHTTPRequestHandler):
             body = json.loads(raw) if raw else {}
         except ValueError:
             body = None
-        if self.path in {"/api/start", "/api/observe/action", "/api/training/clear",
-                         "/api/training/remove-latest", "/api/hub/open", "/api/hub/ping",
+        if self.path in {"/api/start", "/api/observe/action", "/api/training/remove-latest",
+                         "/api/hub/open", "/api/hub/ping",
                          "/api/hub/closed"} and not isinstance(body, dict):
             self._json({"ok": False, "msg": "request body must be a JSON object"}, 400)
             return
@@ -152,9 +152,6 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/observe/action":
             ok, result, code = self.state.submit_observe_action(body)
             self._json({"ok": ok, "result": result}, code)
-        elif self.path == "/api/training/clear":
-            ok, result = self.state.clear_training_data()
-            self._json({"ok": ok, "result": result}, 200 if ok else 409)
         elif self.path == "/api/training/remove-latest":
             ok, result = self.state.remove_latest_training_label()
             self._json({"ok": ok, "result": result}, 200 if ok else 409)

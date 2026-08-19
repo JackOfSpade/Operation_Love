@@ -409,14 +409,6 @@ class HubState:
         except Exception as exc:  # noqa: BLE001 - surface storage errors to the local operator
             return False, f"{type(exc).__name__}: {exc}"
 
-    def clear_training_data(self) -> tuple[bool, dict | str]:
-        ok, result = self._training_store_mutation("clear_training_data")
-        if not ok:
-            return False, result
-        count = int(result)
-        print(f"Training data cleared: removed {count} saved label(s).")
-        return True, {"removed": count}
-
     def remove_latest_training_label(self) -> tuple[bool, dict | str]:
         ok, result = self._training_store_mutation("remove_latest_training_label")
         if not ok:

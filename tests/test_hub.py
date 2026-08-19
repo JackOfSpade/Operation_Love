@@ -768,6 +768,12 @@ def test_hub_renders_accuracy_trajectory_chart():
     assert "accuracy over labels" in _PAGE
 
 
+def test_hub_model_quality_card_shows_training_record_balance():
+    assert "training record" in _PAGE
+    assert "% like /" in _PAGE and "% dislike" in _PAGE
+    assert "const dislikePct = 100 - likePct" in _PAGE
+
+
 def test_attach_refresh_inactive_without_live_run():
     # No run at all -> countdown is inactive (card hides it); cached dict is never mutated.
     payload = {"status": "ok"}

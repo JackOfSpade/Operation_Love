@@ -866,6 +866,37 @@ def test_two_negative_composer_pairs_do_not_spend_a_human_draft_as_sending(monke
     assert any(fields.get("composer_detection") == "unconfirmed" for fields in waiting)
 
 
+def test_many_negative_composer_pairs_remain_unconfirmed_until_positive_closure(monkeypatch):
+    """No arbitrary retry count may turn an edited draft into app-side sending.
+
+    The 2026-08-18 device trace lost the strict composer detector for three
+    confirmation pairs, then rediscovered the open sheet.  `like_sending` has
+    a finite watchdog, so emitting it from those negative reads can abandon a
+    human who is still composing.
+    """
+    adb = FakeAdb(
+        [b"negative-1", b"negative-2", b"negative-3", b"negative-4",
+         b"negative-5", b"negative-6", b"sheet"],
+        advance_on_screencap=True,
+    )
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
+    calls = {"n": 0}
+
+    def should_stop():
+        calls["n"] += 1
+        return calls["n"] > 4
+
+    sent, seen = drv._await_like_resolved(
+        b"base", None, should_stop, intent_notified=True)
+
+    assert sent is None and seen is True
+    waiting = [fields for name, fields in drv._dbg.calls if name == "observe_waiting"]
+    assert waiting and all(fields["reason"] == "like_sheet" for fields in waiting)
+    assert any(fields.get("composer_detection") == "unconfirmed" for fields in waiting)
+
+
 def test_focused_partial_composer_is_not_a_shared_composer_proof():
     """A selection overlay may hide the top input border while the keyboard remains open."""
     import cv2

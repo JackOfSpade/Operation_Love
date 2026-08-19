@@ -7522,7 +7522,6 @@ class AndroidDriver(DatingAppDriver):
         # A strict composer proof is required before any autonomous typing. Passive observe
         # mode keeps a short grace for detector flaps while an edited human draft is open; a
         # real closure still resolves immediately once the old card or a stable deck proves it.
-        unconfirmed_sheet_pairs = 0
         while deadline is None or time.monotonic() < deadline:
             if should_stop and should_stop():
                 return None, intent_notified
@@ -7546,7 +7545,6 @@ class AndroidDriver(DatingAppDriver):
             if self._observe_stuck_bail(cur) is not None:
                 return None, intent_notified
             if self._observe_like_sheet_visible(cur):
-                unconfirmed_sheet_pairs = 0
                 # Advanced on EVERY sheet poll, not just the first: the composer's last
                 # observed state is what the human actually sent, and it is minutes newer
                 # than the `base` anchor this resolver deliberately holds frozen.
@@ -7590,7 +7588,6 @@ class AndroidDriver(DatingAppDriver):
                 if confirm_sheet is None:
                     continue
                 if self._observe_like_sheet_visible(confirm_sheet):
-                    unconfirmed_sheet_pairs = 0
                     self._observe_like_evidence = confirm_sheet
                     self._notify_observe_like_intent(
                         on_like_intent, True, confirm_sheet, refresh=True)
@@ -7609,7 +7606,6 @@ class AndroidDriver(DatingAppDriver):
                 # postpones closure. It never refreshes the suggestion anchor or calls the
                 # intent callback, because weak evidence must not create or revise intent.
                 if self._focused_draft_composer_visible(cur):
-                    unconfirmed_sheet_pairs = 0
                     self._observe_recognized()
                     self._note_observe_waiting(
                         "like_sheet", cur, composer_detection="focused_partial")
@@ -7728,16 +7724,19 @@ class AndroidDriver(DatingAppDriver):
                         deck_ready=True,
                     )
                     return None, True
-            # Two negative confirmation pairs are still not affirmative evidence that the
-            # human sent. This protects an edited draft when strict input-outline detection
-            # briefly fails. Positive closure facts above (dismissal/ready deck) bypass it.
-            if intent_notified and unconfirmed_sheet_pairs < 2:
-                unconfirmed_sheet_pairs += 1
+            # A negative composer read is never affirmative evidence that the human sent.
+            # The live 2026-08-18 trace had three consecutive negative confirmation pairs
+            # before the very same sheet became detectable again.  A fixed retry count would
+            # merely convert a slow or edited draft into `like_sending` later, spending the
+            # app-work watchdog on a human-paced state.  Once a strict sheet established the
+            # intent, retain that conservative state until an affirmative dismissal/current
+            # card or a settled, identity-proven new deck above resolves it.  The blocked-screen
+            # detector still exits immediately for known Hinge error/paywall screens.
+            if intent_notified:
                 self._observe_recognized()
                 self._note_observe_waiting(
                     "like_sheet", cur,
-                    composer_detection="unconfirmed",
-                    unconfirmed_pairs=unconfirmed_sheet_pairs)
+                    composer_detection="unconfirmed")
                 time.sleep(_OBSERVE_POLL_S)
                 continue
 

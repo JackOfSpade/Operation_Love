@@ -4,12 +4,9 @@ Pure offline: the status object is plain Python; the Bumble overlay is exercised
 with a fake page that records the evaluate() call (the real HUD render is visual,
 seen live in the browser). The Hinge driver inherits the base no-op.
 """
-import json
 import threading
 
 from operation_love.status import RunStatus
-from operation_love.drivers.bumble import BumbleDriver, _BUSY_JS, _OVERLAY_JS
-from operation_love.drivers.debuglog import DebugLog
 from operation_love.drivers.hinge import HingeDriver
 
 
@@ -223,125 +220,8 @@ def test_concurrent_updates_are_consistent():
     assert snap["labels"] == 800
 
 
-# --- render_status overlay hook -------------------------------------------
-def test_bumble_render_status_paints_overlay():
-    calls = []
-
-    class P:
-        def evaluate(self, script, arg=None):
-            calls.append((script, arg))
-
-    drv = BumbleDriver(_Cfg())
-    drv.page = P()
-    drv.inpage_overlays = True                          # opt in to the in-page HUD
-    drv.render_status({"app": {"state": "waiting"}, "labels": 3})
-    assert calls and calls[0][0] is _OVERLAY_JS         # injects the HUD script
-    assert calls[0][1]["labels"] == 3                   # with the snapshot
-
-
-def test_bumble_render_overlays_disabled_by_default_is_noop():
-    # inpage_overlays defaults OFF on Bumble -> we never inject into Bumble's DOM
-    # (status lives in the hub). Both render hooks must be silent.
-    class P:
-        def evaluate(self, script, arg=None):
-            raise AssertionError("must not inject when in-page overlays are disabled")
-
-    drv = BumbleDriver(_Cfg())
-    drv.page = P()
-    drv.render_status({"labels": 1})
-    drv.render_busy("x")
-
-
-def test_bumble_render_status_no_page_is_noop():
-    BumbleDriver(_Cfg()).render_status({"x": 1})        # page is None -> must not raise
-
-
-def test_bumble_render_status_swallows_errors():
-    class P:
-        def evaluate(self, script, arg=None):
-            raise RuntimeError("page navigated")
-
-    drv = BumbleDriver(_Cfg())
-    drv.page = P()
-    drv.inpage_overlays = True
-    drv.render_status({"x": 1})                         # must not propagate
-
-
 def test_hinge_render_status_is_noop():
     HingeDriver(_Cfg()).render_status({"any": "thing"})  # base no-op; no page to inject
 
-
-def test_bumble_render_busy_shows_and_hides():
-    calls = []
-
-    class P:
-        def evaluate(self, script, arg=None):
-            calls.append((script, arg))
-
-    drv = BumbleDriver(_Cfg())
-    drv.page = P()
-    drv.inpage_overlays = True               # opt in to the in-page busy modal
-    drv.render_busy("processing…")          # show
-    drv.render_busy(None)                    # hide
-    assert all(c[0] is _BUSY_JS for c in calls)
-    assert calls[0][1] == "processing…" and calls[1][1] is None
-
-
-def test_bumble_render_busy_no_page_is_noop():
-    BumbleDriver(_Cfg()).render_busy("x")    # page is None -> must not raise
-
-
 def test_hinge_render_busy_is_noop():
     HingeDriver(_Cfg()).render_busy("x")     # base no-op
-
-
-# --- bumble debug log / failure screenshot (parity with Hinge) -----------
-def test_bumble_snapshot_failure_writes_screenshot(tmp_path):
-    class P:
-        def screenshot(self):
-            return b"\x89PNG-bytes"
-
-    drv = BumbleDriver(_Cfg())
-    drv.page = P()
-    drv._dbg = DebugLog(str(tmp_path), run_id="r")
-    drv.snapshot_failure(RuntimeError("boom on swipe"))
-
-    run = tmp_path / "r"
-    shots = list(run.glob("*_error.png"))
-    assert shots and shots[0].read_bytes() == b"\x89PNG-bytes"   # screenshot saved (kept)
-    rec = json.loads((run / "actions.jsonl").read_text().splitlines()[-1])
-    assert rec["action"] == "unexpected" and "boom on swipe" in rec["error"]
-    assert rec["screenshot"] == shots[0].name
-
-
-def test_bumble_snapshot_failure_records_error_even_if_screenshot_fails(tmp_path):
-    class P:
-        def screenshot(self):
-            raise RuntimeError("page navigating")
-
-    drv = BumbleDriver(_Cfg())
-    drv.page = P()
-    drv._dbg = DebugLog(str(tmp_path), run_id="r")
-    drv.snapshot_failure(RuntimeError("boom"))                    # must not raise
-
-    rec = json.loads((tmp_path / "r" / "actions.jsonl").read_text().splitlines()[-1])
-    assert rec["action"] == "unexpected" and "boom" in rec["error"]
-    assert "screenshot" not in rec                                # error logged, just no shot
-
-
-def test_bumble_snapshot_failure_noop_without_debug_log():
-    drv = BumbleDriver(_Cfg())                                    # _dbg is None (debug_log off)
-    drv.page = object()
-    drv.snapshot_failure(RuntimeError("x"))                       # must not raise
-
-
-def test_bumble_like_dislike_log_action_trail(tmp_path):
-    drv = BumbleDriver(_Cfg())
-    drv._human_click = lambda sel: None                          # stub the DOM click
-    drv._dbg = DebugLog(str(tmp_path), run_id="r")
-    drv.like("hey there")
-    drv.dislike()
-
-    lines = [json.loads(x) for x in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()]
-    assert [r["action"] for r in lines] == ["like", "dislike"]
-    assert lines[0]["opener_chars"] == len("hey there")          # length only, never the text

@@ -21,3 +21,9 @@
 # The bootstrap step runs before the first JavaScript action, so this may be a
 # dangling path for that one shell step on a freshly-pulled image.
 --env PATH=/opt/acttoolcache/node/current/arm64/bin:/opt/acttoolcache/node/current/x64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+
+# This checkout contains several GB of local datasets and historical artifacts.
+# Bind it into the local runner instead of copying it into every act container;
+# GitHub-hosted CI is unaffected, and the pre-push hook's detached worktree
+# keeps the validation input isolated from the caller's worktree.
+--bind

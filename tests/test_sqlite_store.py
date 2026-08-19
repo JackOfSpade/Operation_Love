@@ -540,6 +540,31 @@ def test_sqlite_record_profile_accepts_capture_truncated(tmp_path):
         store.close()
 
 
+def test_sqlite_remove_latest_training_label_reports_its_profile_name(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.add_label("r", "hinge", True, [1.0], profile_id="one", profile_name="Ada")
+        store.add_label("r", "hinge", False, [2.0], profile_id="two", profile_name="Bea")
+
+        assert store.remove_latest_training_label() == {"profile_name": "Bea", "profile_id": "two"}
+        assert store.load_labels() == [(True, [1.0])]
+    finally:
+        store.close()
+
+
+def test_sqlite_clear_training_data_removes_labels_and_their_names(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.add_label("r", "hinge", True, [1.0], profile_id="one", profile_name="Ada")
+        store.add_label("r", "hinge", False, [2.0], profile_id="two", profile_name="Bea")
+
+        assert store.clear_training_data() == 2
+        assert store.load_labels() == []
+        assert store.con.execute("SELECT COUNT(*) FROM training_label_names").fetchone()[0] == 0
+    finally:
+        store.close()
+
+
 def test_stats_show_uses_read_only_store(tmp_path, monkeypatch):
     """stats.show() only reads; it must ask make_store() for ensure=False so it doesn't
     run BigQuery table DDL / bucket IAM patching just to print a readout (hub.py and

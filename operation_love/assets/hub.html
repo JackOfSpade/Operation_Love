@@ -56,6 +56,15 @@
   </div>
 
   <div class="card">
+    <div class="row"><span class="muted">training data</span><span class="meta" id="traininghint" aria-live="polite"></span></div>
+    <div class="meta" style="margin-top:6px">Changes are available only when stopped. Removing the latest label is useful for a mistaken swipe; clearing labels starts the preference model over.</div>
+    <div class="controls" style="margin-top:10px">
+      <button id="removeLatestTraining">↶ Remove last saved label</button>
+      <button id="clearTraining" class="danger">Clear all training data</button>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="row"><span class="muted">live log</span><span class="meta" id="loghint"></span></div>
     <pre id="logs" style="max-height:320px;overflow:auto;background:#0c0c10;border:1px solid rgba(255,255,255,.09);border-radius:9px;padding:10px;margin-top:8px;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;color:#cfcfd6">waiting for output…</pre>
   </div>
@@ -761,6 +770,22 @@ $('#stop').onclick = async () => {
   await postJSON('/api/stop', {});
   tick();
 };
+
+async function removeLatestTrainingLabel(){
+  const hint = $('#traininghint'); hint.textContent = 'removing…';
+  const r = await postJSON('/api/training/remove-latest', {});
+  hint.textContent = r.ok ? `removed ${r.result.profile_name}` : (r.result || 'could not remove label');
+  tickEval();
+}
+async function clearTrainingData(){
+  if(!window.confirm('Clear every saved like/dislike training label? This cannot be undone.')) return;
+  const hint = $('#traininghint'); hint.textContent = 'clearing…';
+  const r = await postJSON('/api/training/clear', {});
+  hint.textContent = r.ok ? `cleared ${r.result.removed} label(s)` : (r.result || 'could not clear training data');
+  tickEval();
+}
+$('#removeLatestTraining').onclick = removeLatestTrainingLabel;
+$('#clearTraining').onclick = clearTrainingData;
 
 async function getReport(){          // generate fresh each time (Copy/Download do this implicitly)
   $('#bughint').textContent = 'generating…';

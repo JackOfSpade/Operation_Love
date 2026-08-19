@@ -1161,7 +1161,8 @@ class Worker(threading.Thread):
                 # must end the loop AFTER this label is saved (the while-loop condition
                 # below does that without starting a NEW capture), not discard work in hand.
                 self.store.add_label(self.run_id, self.app, liked, vec, source=decision_source,
-                                     profile_id=profile_id, **metadata)
+                                     profile_id=profile_id, profile_name=profile.name, **metadata)
+                print(f"Training label saved for profile: {profile.name or '<name unavailable>'}")
                 if self.status:
                     self.status.inc_labels(1)
                 self._render()

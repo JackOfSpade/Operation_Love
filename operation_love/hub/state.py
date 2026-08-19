@@ -383,6 +383,50 @@ class HubState:
     def submit_observe_action(self, body: dict) -> tuple[bool, dict, int]:
         return self._observe_actions.submit(body)
 
+    def _training_store_mutation(self, method_name: str) -> tuple[bool, dict | str]:
+        """Run an explicit training-set mutation only while no model is live.
+
+        A running supervisor keeps labels and a fitted model in memory.  Altering the
+        persisted set underneath it would make the hub claim a reset while that old model
+        still decides profiles, so the local control surface refuses until Stop completes.
+        """
+        with self._lock:
+            if self.is_running():
+                return False, "stop the active run before changing training data"
+        try:
+            from ..ranker import make_store
+            cfg = cfg_mod.load(self.config_path)
+            store = make_store(cfg)
+            try:
+                result = getattr(store, method_name)()
+            finally:
+                store.close()
+            with self._lock:
+                self._eval = None
+                self._eval_at = 0.0
+                self._eval_labels = None
+            return True, result
+        except Exception as exc:  # noqa: BLE001 - surface storage errors to the local operator
+            return False, f"{type(exc).__name__}: {exc}"
+
+    def clear_training_data(self) -> tuple[bool, dict | str]:
+        ok, result = self._training_store_mutation("clear_training_data")
+        if not ok:
+            return False, result
+        count = int(result)
+        print(f"Training data cleared: removed {count} saved label(s).")
+        return True, {"removed": count}
+
+    def remove_latest_training_label(self) -> tuple[bool, dict | str]:
+        ok, result = self._training_store_mutation("remove_latest_training_label")
+        if not ok:
+            return False, result
+        if result is None:
+            return False, "there is no saved training label to remove"
+        name = str(result.get("profile_name") or "<name unavailable>")
+        print(f"Training label removed for profile: {name}")
+        return True, {"profile_name": name}
+
     def _bind_observe_worker(self, worker) -> None:
         # Called by supervisor before Thread.start(), so no hub request can observe a half-bound
         # worker.  The worker subsequently registers itself at run entry as a harmless idempotent

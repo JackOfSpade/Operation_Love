@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS labels (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
     liked INTEGER, source TEXT, embedding TEXT, photo_count INTEGER, profile_id TEXT
 );
+CREATE TABLE IF NOT EXISTS training_label_names (
+    label_id INTEGER PRIMARY KEY, profile_name TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
     decision TEXT, score REAL, source TEXT, profile_id TEXT
@@ -158,7 +161,7 @@ class SQLiteStore:
         return True
 
     def add_label(self, run_id, app, liked, embedding, source="manual", photo_count=0,
-                  profile_id="", **_):
+                  profile_id="", profile_name="", **_):
         with self._lock:
             self.con.execute(
                 "INSERT INTO labels (run_id, app, created_at, liked, source, embedding,"
@@ -167,7 +170,37 @@ class SQLiteStore:
                  json.dumps(embedding, allow_nan=False),
                  photo_count, profile_id),
             )
+            label_id = self.con.execute("SELECT last_insert_rowid()").fetchone()[0]
+            self.con.execute("INSERT INTO training_label_names (label_id, profile_name) VALUES (?,?)",
+                             (label_id, str(profile_name or "")))
             self.con.commit()
+
+    def clear_training_data(self) -> int:
+        """Delete all preference labels (the ranker's training set), locally and atomically."""
+        with self._lock:
+            count = int(self.con.execute("SELECT COUNT(*) FROM labels").fetchone()[0])
+            self.con.execute("DELETE FROM labels")
+            self.con.execute("DELETE FROM training_label_names")
+            # Retractions only target labels and should not outlive the dataset they correct.
+            self.con.execute("DELETE FROM label_retractions")
+            self.con.commit()
+        return count
+
+    def remove_latest_training_label(self) -> dict | None:
+        """Delete and identify the newest currently-active training label."""
+        with self._lock:
+            row = self.con.execute("""SELECT l.id, n.profile_name, l.profile_id FROM labels AS l
+                LEFT JOIN training_label_names AS n ON n.label_id=l.id
+                WHERE NOT EXISTS (SELECT 1 FROM label_retractions AS r WHERE r.run_id=l.run_id
+                AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id
+                AND r.label_created_at=l.created_at)
+                ORDER BY l.created_at DESC, l.id DESC LIMIT 1""").fetchone()
+            if row is None:
+                return None
+            self.con.execute("DELETE FROM labels WHERE id=?", (row[0],))
+            self.con.execute("DELETE FROM training_label_names WHERE label_id=?", (row[0],))
+            self.con.commit()
+        return {"profile_name": str(row[1] or ""), "profile_id": str(row[2] or "")}
 
     def record_decision(self, run_id, app, decision, score, source="auto", profile_id="",
                         created_at=None):

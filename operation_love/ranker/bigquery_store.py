@@ -51,7 +51,7 @@ _TABLES = {
     ),
     "labels": (
         "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, liked BOOL, "
-        "source STRING, embedding ARRAY<FLOAT64>, photo_count INT64"
+        "source STRING, embedding ARRAY<FLOAT64>, photo_count INT64, profile_name STRING"
     ),
     "decisions": (
         "run_id STRING, app STRING, created_at TIMESTAMP, decision STRING, "
@@ -107,6 +107,7 @@ _TABLES = {
 # directions, so old rows simply read back NULL.
 _MIGRATIONS = (
     "ALTER TABLE `{labels}` ADD COLUMN IF NOT EXISTS profile_id STRING;",
+    "ALTER TABLE `{labels}` ADD COLUMN IF NOT EXISTS profile_name STRING;",
     "ALTER TABLE `{decisions}` ADD COLUMN IF NOT EXISTS source STRING;",
     "ALTER TABLE `{decisions}` ADD COLUMN IF NOT EXISTS profile_id STRING;",
     "ALTER TABLE `{profiles}` ADD COLUMN IF NOT EXISTS capture_truncated BOOL;",
@@ -847,18 +848,58 @@ class BigQueryStore:
                 print(f"BigQuery store warning: could not delete partial photo {uri}: {exc}")
 
     def add_label(self, run_id, app, liked, embedding, source="manual", photo_count=0,
-                  profile_id="", **_):
+                  profile_id="", profile_name="", **_):
         liked = bool(liked)
         embedding_vec = [float(x) for x in embedding]
         with self._lock:
             self._buf["labels"].append({
                 "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": _now(), "liked": liked,
                 "source": source, "embedding": embedding_vec, "photo_count": int(photo_count),
+                "profile_name": str(profile_name or ""),
             })
             label = (liked, list(embedding_vec))
             if self._labels_cache is not None:
                 self._labels_cache.append(label)
             self._maybe_flush("labels")
+
+    def clear_training_data(self) -> int:
+        """Delete all labels which train the preference model.
+
+        This is intentionally limited to the model dataset: decision and profile archives
+        remain an audit of real app actions, while the next run starts the ranker cold.
+        """
+        with self._lock:
+            self.flush()
+            rows = self.client.query(f"SELECT COUNT(*) AS c FROM `{self._tid('labels')}`").result()
+            count = next((int(row["c"]) for row in rows), 0)
+            self.client.query(f"DELETE FROM `{self._tid('labels')}` WHERE TRUE").result()
+            self.client.query(f"DELETE FROM `{self._tid('label_retractions')}` WHERE TRUE").result()
+            self._labels_cache = []
+        return count
+
+    def remove_latest_training_label(self) -> dict | None:
+        """Remove the latest visible label and return its operator-readable identity."""
+        from google.cloud import bigquery
+        with self._lock:
+            self.flush()
+            rows = self.client.query(
+                f"SELECT l.profile_id, l.profile_name, l.created_at FROM `{self._tid('labels')}` l "
+                f"WHERE NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
+                "WHERE r.run_id=l.run_id AND r.app=l.app AND r.source=l.source "
+                "AND r.profile_id=l.profile_id AND r.label_created_at=l.created_at) "
+                "ORDER BY l.created_at DESC LIMIT 1").result()
+            row = next(iter(rows), None)
+            if row is None:
+                return None
+            profile_id, created_at = str(row["profile_id"] or ""), row["created_at"]
+            job = bigquery.QueryJobConfig(query_parameters=[
+                bigquery.ScalarQueryParameter("profile_id", "STRING", profile_id),
+                bigquery.ScalarQueryParameter("created_at", "TIMESTAMP", created_at),
+            ])
+            self.client.query(f"DELETE FROM `{self._tid('labels')}` "
+                              "WHERE profile_id=@profile_id AND created_at=@created_at", job_config=job).result()
+            self._labels_cache = None
+        return {"profile_name": str(row["profile_name"] or ""), "profile_id": profile_id}
 
     def record_decision(self, run_id, app, decision, score, source="auto", profile_id="",
                         created_at=None):

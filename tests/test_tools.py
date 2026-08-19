@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-_TOOL_MODULES = ["tools.hinge_inspect", "tools.bumble_inspect", "tools.eval_aggregation"]
+_TOOL_MODULES = ["tools.hinge_inspect", "tools.eval_aggregation"]
 
 
 def _source_path(dotted_module: str) -> Path:

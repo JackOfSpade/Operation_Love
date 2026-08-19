@@ -303,7 +303,7 @@ def test_observe_label_persists_profile_metadata():
     # driver hit its screencap ceiling before reaching the bottom). This profile's meta says
     # nothing about truncation, which must read as False rather than raise -- meta is
     # driver-authored and the Bumble capture path populates a different key set entirely.
-    assert metadata == {"photo_count": 2, "capture_truncated": False}
+    assert metadata == {"photo_count": 2, "capture_truncated": False, "profile_name": ""}
     assert store.profiles[0][2]["photo_count"] == 2
     assert store.profiles[0][2]["capture_truncated"] is False
     assert "bio" not in store.profiles[0][2]

@@ -610,7 +610,7 @@ def test_wedged_worker_is_not_reported_as_unqualified_success(monkeypatch, tmp_p
 
 # --- registry guard: run() rejects an unrunnable platform selection up front ---------------
 
-def test_run_rejects_bumble_auto_before_touching_anything(monkeypatch, tmp_path):
+def test_run_rejects_bumble_observe_before_touching_anything(monkeypatch, tmp_path):
     """The check_runnable() guard at the top of run() must fire BEFORE any driver is built,
     using cfg_mod.validate()'s message verbatim (this exercises the guard itself, not just
     validate() -- see test_config.py for validate()'s own coverage of the same rule)."""
@@ -618,7 +618,6 @@ def test_run_rejects_bumble_auto_before_touching_anything(monkeypatch, tmp_path)
 
     cfg_text = _CONFIG.replace("enabled_apps: [hinge]", "enabled_apps: [bumble]").replace(
         "apps:\n  hinge: {}", "apps:\n  bumble: {}")
-    cfg_text = cfg_text.replace("mode: observe", "mode: auto")
     cfg_path = _write_cfg(tmp_path, cfg_text)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     built = []
@@ -630,7 +629,7 @@ def test_run_rejects_bumble_auto_before_touching_anything(monkeypatch, tmp_path)
     with pytest.raises(ValueError) as exc_info:
         sup.run(str(cfg_path), stop_event=threading.Event())
 
-    assert str(exc_info.value) == platforms.unavailable_reason("bumble", "auto")
+    assert str(exc_info.value) == platforms.unavailable_reason("bumble", "observe")
     assert built == []                            # no store, no driver -- rejected up front
 
 

@@ -403,6 +403,7 @@ def test_either_shipped_variant_confirms_scroll_top_under_default_matching(monke
     scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS,
     scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED,
     scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_CURRENT,
+    scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_CURRENT,
 ])
 def test_hingex_signals_chip_variants_are_default_scroll_top_candidates(monkeypatch, fp):
     """Selected and unselected HingeX Signals chips change the fixed filter strip.

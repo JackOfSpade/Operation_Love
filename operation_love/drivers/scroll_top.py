@@ -213,12 +213,24 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_CURRENT = (
     215, 88, 126, 120, 89, 218, 221, 196, 232, 233, 237, 198, 193, 226, 235, 236,
 )
 
+# Variant 6: current HingeX Signals filter strip, measured from Jaden's visibly top-of-card
+# Android capture on 2026-08-19.  It was 3.891 from the unselected Signals reference, just
+# outside the 3.0 confirm tolerance; registering this discrete chrome variant keeps the safety
+# dead zone intact rather than broadening it to admit unknown bands.
+_SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_CURRENT = (
+    254, 254, 254, 254, 254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    252, 251, 251, 250, 253, 241, 232, 232, 239, 249, 233, 233, 233, 233, 249, 237,
+    250, 237, 239, 241, 247, 235, 236, 242, 236, 232, 234, 233, 236, 240, 232, 235,
+    253, 213, 184, 207, 247, 239, 189, 214, 234, 235, 220, 182, 206, 231, 232, 235,
+)
+
 _SCROLL_TOP_BAND_FINGERPRINTS: tuple[tuple[int, ...], ...] = (
     _SCROLL_TOP_BAND_FINGERPRINT_COMPATIBLE,
     _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT,
     _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS,
     _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED,
     _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_CURRENT,
+    _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_CURRENT,
 )
 
 # Maintained for backwards compatibility:

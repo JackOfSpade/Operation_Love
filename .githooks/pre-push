@@ -151,11 +151,11 @@ while read -r branch sha before; do
 	set -f
 	if [ -f "$ROOT/.secrets" ]; then
 		# shellcheck disable=SC2086
-		act push --eventpath "$event" --secret-file "$ROOT/.secrets" $ARCH \
+		act push -j test --eventpath "$event" --secret-file "$ROOT/.secrets" $ARCH \
 			--concurrent-jobs "$JOBS" ${ACT_ARGS:-} </dev/null
 	else
 		# shellcheck disable=SC2086
-		act push --eventpath "$event" $ARCH --concurrent-jobs "$JOBS" ${ACT_ARGS:-} </dev/null
+		act push -j test --eventpath "$event" $ARCH --concurrent-jobs "$JOBS" ${ACT_ARGS:-} </dev/null
 	fi
 	status=$?
 	set +f

@@ -232,7 +232,11 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     # stops an uncalibrated/unavailable platform from ever getting this far. HubState.start()
     # applies the same check before it even spins up the run thread — this is the backstop
     # for callers that invoke supervisor.run() directly (CLI, tests) without going through it.
-    unrunnable = platforms.check_runnable(cfg.enabled_apps)
+    requested_modes = {
+        app: (((cfg.apps or {}).get(app, {}) or {}).get("mode", cfg.mode))
+        for app in cfg.enabled_apps
+    }
+    unrunnable = platforms.check_runnable(cfg.enabled_apps, modes=requested_modes)
     if unrunnable:
         raise ValueError(unrunnable)   # same exception type cfg_mod.validate() raises for this
 

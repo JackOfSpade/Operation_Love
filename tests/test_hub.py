@@ -1169,35 +1169,31 @@ def test_hubstate_start_rejects_empty_apps_list():
     assert st.is_running() is False
 
 
-def test_hubstate_start_rejects_unavailable_platform_with_registry_reason_verbatim(monkeypatch):
-    # This is the mechanism behind "select Web-based, press Start, see 'Additional work
-    # needed to get this to run...'" -- no frontend special-casing, the registry's reason
-    # flows straight through to the existing {ok, msg} shape the hub already renders into
-    # #hint. Also asserts no run/thread/driver is ever touched.
-    import operation_love.hub as hub
-    from operation_love import platforms
-
-    called = []
-    monkeypatch.setattr(hub.supervisor, "run", lambda config_path, **kw: called.append(kw))
-
-    st = HubState("config.yaml")
-    ok, msg = st.start(apps=["bumble_web"])
-    assert ok is False
-    assert msg == platforms.unavailable_reason("bumble_web")
-    assert st.is_running() is False
-    assert called == []                     # never reached supervisor.run
-
-
-def test_hubstate_start_rejects_uncalibrated_android_platform(monkeypatch):
+def test_hubstate_start_allows_bumble_auto_but_rejects_observe(monkeypatch):
     import operation_love.hub as hub
     from operation_love import platforms
 
     monkeypatch.setattr(hub.supervisor, "run", lambda config_path, **kw: None)
     st = HubState("config.yaml")
-    ok, msg = st.start(apps=["bumble"])
+    ok, msg = st.start(mode="auto", apps=["bumble"])
+    assert ok is True and msg == "started"
+
+    st = HubState("config.yaml")
+    ok, _ = st.start(mode="observe", apps=["bumble"])
     assert ok is False
-    assert msg == platforms.unavailable_reason("bumble")
-    assert st.is_running() is False
+
+
+def test_hub_config_exposes_bumble_as_an_auto_only_platform():
+    from operation_love import platforms
+
+    defaults = HubState("config.yaml").config_defaults()
+    app_platforms = [platform for kind in defaults["kinds"]
+                     if kind["kind"] == "android" for platform in kind["platforms"]]
+    modes = {platform["app"]: platform["modes"] for platform in app_platforms}
+
+    assert modes["hinge"] == {"observe": True, "auto": True}
+    assert modes["bumble"] == {"observe": False, "auto": True}
+    assert defaults["pending_platforms"] == []
 
 
 def test_hubstate_start_rejects_two_android_platforms_together(monkeypatch):
@@ -1590,13 +1586,14 @@ def test_observe_banner_shows_the_selected_item_after_a_heart_is_open():
         "status": {"apps": {"hinge": {
             "app": "hinge", "mode": "observe", "state": "waiting_for_send",
             "opener_suggestion": "Based on that ridgeline I'm going to guess Norway",
-            "opener_item": 3, "opener_item_description": "the ridgeline photo",
+            "opener_item": 3, "opener_media_ordinal": 3,
+            "opener_item_description": "the ridgeline photo",
             "opener_referenced": "the mountain behind her",
         }}},
     }
     html = _run_node(_observe_status_script(snap))["html"]
 
-    assert "item 3 selected" in html
+    assert "selected media item 3 — the ridgeline photo" in html
     assert "the ridgeline photo" in html
     m = re.search(r'type exactly this</div>\s*<div[^>]*>(.*?)</div>\s*<div[^>]*>(.*?)</div>',
                   html, re.S)
@@ -1623,21 +1620,22 @@ def test_observe_banner_keeps_the_pass_option_visible_while_a_suggestion_is_up()
         pytest.skip("node is not available on this machine")
     app = {"app": "hinge", "mode": "observe",
            "opener_suggestion": "Based on that ridgeline I'm going to guess Norway",
-           "opener_item": 3, "opener_item_description": "the ridgeline photo"}
+           "opener_item": 3, "opener_media_ordinal": 3,
+           "opener_item_description": "the ridgeline photo"}
 
     deciding = {"running": True,
                 "status": {"apps": {"hinge": dict(app, state="waiting")}}}
     html = _run_node(_observe_status_script(deciding))["html"]
     assert "Optional:" in html   # the suggestion is not a verdict
-    assert "if you choose to like, use item 3" in html  # its item is conditional help
+    assert "if you choose to like, use media item 3 — the ridgeline photo" in html
     assert "🟢" in html                                 # ...and it is still their turn
-    assert "tap X to pass, or tap the heart on item 3 to like" in html
+    assert "tap X to pass, or tap the heart on media item 3 to like" in html
     assert "then tap Send Like in Hinge" not in html   # no sheet is open yet
     m = re.search(r'then type exactly this</div>\s*<div[^>]*>(.*?)</div>\s*<div[^>]*>(.*?)</div>',
                   html, re.S)
     assert m, f"expected heading -> opener block -> chrome block structure, got:\n{html}"
     assert m.group(1) == "Based on that ridgeline I'm going to guess Norway"
-    assert "tap X to pass, or tap the heart on item 3 to like" in m.group(2)
+    assert "tap X to pass, or tap the heart on media item 3 to like" in m.group(2)
 
     # Once the sheet IS open the choice has been made, so the cue becomes the send instruction
     # and the pass wording goes away -- offering "pass X" under an open comment sheet would be
@@ -1654,6 +1652,24 @@ def test_observe_banner_keeps_the_pass_option_visible_while_a_suggestion_is_up()
     html3 = _run_node(_observe_status_script(other))["html"]
     assert "use the app's pass or like control" in html3
     assert "tap X to pass" not in html3
+
+
+def test_observe_banner_uses_the_media_ordinal_not_the_heart_ordinal():
+    """Written prompts must not make the fifth media card appear as an eighth item."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {"running": True, "status": {"apps": {"hinge": {
+        "app": "hinge", "mode": "observe", "state": "waiting",
+        "opener_suggestion": "Based on that ridgeline I'm going to guess Norway",
+        "opener_item": 5, "opener_media_ordinal": 5,
+        "opener_item_description": "the ridgeline photo",
+    }}}}
+    html = _run_node(_observe_status_script(snap))["html"]
+
+    assert "use media item 5 — the ridgeline photo" in html
+    assert "tap the heart on media item 5" in html
+    assert "item 8" not in html
+    assert "media item 8" not in html
 
 
 def test_observe_banner_replaces_the_opener_with_a_warning_on_a_mismatch():
@@ -1799,7 +1815,7 @@ def test_observe_banner_keeps_the_go_cue_while_the_suggestion_is_still_being_wri
                                       "opener_pending": False}}},
     }
     out2 = _run_node(_observe_status_script(settled))
-    assert "make your choice in the app" in out2["html"]
+    assert "make your choice: tap X to pass, or tap a heart to like" in out2["html"]
     assert "wait a moment for a suggestion" not in out2["html"]
 
     # The race doc 5.9 names: the human taps FASTER than the model answers, so the sheet is open

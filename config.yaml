@@ -2,75 +2,36 @@
 
 # Which platform to run. See operation_love/platforms.py for the registry.
 #
-# This used to list both apps and run them CONCURRENTLY, one worker each. That worked only
-# while they used different resources (Bumble in a browser, Hinge on the phone). Bumble
-# discontinued its web app in August 2026 and moved to Android, so both now contend for the
-# one physical Pixel — and Android foregrounds a single app: `adb exec-out screencap`
-# captures whatever is on top, and the virtual touchscreen delivers to whatever holds focus.
-# Two app-based platforms therefore cannot run at once; the registry rejects the pairing and
-# the supervisor takes an exclusive lock on the device serial. Run one, then the other.
+# Hinge and Bumble use the same physical Pixel, so only one can run at a time. The registry
+# rejects a combined selection and the supervisor holds an exclusive device lock.
 #
 #   hinge      — app-based, calibrated, the working path
-#   bumble     — app-based, NOT calibrated yet (placeholder coords; refuses to start)
-#   bumble_web — web-based, no live target since Bumble web shut down (refuses to start)
+#   bumble     — app-based, Auto acceptance testing pending
 enabled_apps: [hinge]
 
 # observe = YOU swipe manually on real profiles; the bot learns your taste live
 #           (no autonomous swiping). Start here to seed the ranker.
 # auto    = the bot swipes for you using the model it learned.
-mode: auto                  # observe | auto  (override per app under apps.<app>.mode)
+mode: observe               # observe | auto  (override per app under apps.<app>.mode)
 
-# Per-app options (headless toggle, login profile, DOM selectors to verify live).
+# Per-app options.
 apps:
   bumble:
-    # ⚠️ UNCALIBRATED Android target (Pixel over host-side ADB, same as Hinge below). Bumble
-    # discontinued its web app in August 2026 (see operation_love/platforms.py), so this is
-    # becoming a second Android app on the same phone. Nobody has run this against the real
-    # Bumble Android app yet: every coordinate here is a PLACEHOLDER GUESS, not a measurement.
-    # `calibrated=False` on BUMBLE_SPEC (operation_love/drivers/android/bumble.py) is what
-    # stops this actually running until it's verified live — do not treat any value below as
-    # trustworthy in the meantime.
+    # Bumble Auto remains unavailable until its acceptance test is completed.
     serial: "33111JEHN04475"    # same physical Pixel as Hinge; fill in adb_path below if adb isn't on PATH
     adb_path: adb
     touch_backend: auto
     package: com.bumble.app
     debug_log: true
-    debug_dir: ./data/bumble_android_debug   # deliberately distinct from bumble_web's debug_dir below
+    debug_dir: ./data/bumble_android_debug
     halt_on_error: true
-    coords:                     # PLACEHOLDER GUESSES ONLY — see BUMBLE_SPEC's module docstring
-      # Bumble decides by DRAGGING the card, not by tapping the button row: its paid
-      # SuperSwipe sits between Pass and Like, and a drifted tap could spend money. MEASURED
-      # live on the device 2026-08-10 (see BUMBLE_SPEC in
-      # operation_love/drivers/android/bumble.py for the full writeup): whether that mistake
-      # is caught by anything depends on the account's SuperSwipe balance. With a non-zero
-      # balance it is spent SILENTLY, no modal at all; only a zero balance shows a purchase
-      # confirmation sheet first. These three are the drag path (start mid-card, well above
-      # the button row) and are what actually gets used. Calibrate these first.
+    coords:
+      # If Auto is calibrated later, it must decide only by dragging the card body. The live
+      # deck places Compliment at lower-left and paid SuperSwipe at lower-right; neither is a
+      # decision target. These endpoints remain placeholders and Auto is mode-gated off.
       swipe_start: [0.50, 0.55]
       swipe_like_end: [0.92, 0.52]
       swipe_pass_end: [0.08, 0.52]
-      # Button positions, used only if decide_gesture is ever switched to "tap". They must
-      # stay outside BUMBLE_SPEC.forbidden_zones (the SuperSwipe no-go rect) or the driver
-      # will refuse the tap.
-      like_heart: [0.85, 0.90]
-      pass_x: [0.15, 0.90]
-  bumble_web:
-    # Renamed from `bumble` (2026-08): Bumble discontinued its web app, so this transport has
-    # no live target right now — see operation_love/platforms.py. Driver logic is kept as-is
-    # (generalised, site-agnostic hardening) in case a future web-based platform can reuse it.
-    # The Bumble ANDROID target now lives at apps.bumble above.
-    headless: false         # false = real backgrounded window (lower bot-detection, keeps your cursor)
-    user_data_dir: ./data/bumble_profile   # persists your manual login
-    url: https://bumble.com/app
-    browser_channel: chrome # drive the real Google Chrome binary (authentic WebGL/plugins/window.chrome); "" = bundled Chromium
-    inpage_overlays: false  # don't inject our status HUD into Bumble's DOM (lower footprint); status shows in the hub
-    debug_log: true         # silent debug log: data/bumble_debug/<run>/ = actions.jsonl + a page screenshot on failure
-    debug_dir: ./data/bumble_debug
-    selectors:              # live-verified on Bumble web (2026-06); override here if the DOM drifts
-      photo: 'img.media-box__picture-image, [data-qa-role="encounters-story-profile-image"] img'
-      bio: '[data-qa-role="encounters-user"]'   # whole-card text (Bumble has no isolated "about" hook)
-      prompt: '[data-qa-role="pill"]'           # structured attribute pills (height, drinking, …)
-      # like/pass confirmed live = code defaults; superlike is observe-only (bot never super-swipes)
   hinge:
     # Physical Pixel over HOST-SIDE ADB only — no uiautomator2 / on-device helper
     # (ops/HINGE-PIXEL-RUNBOOK.md). Taps/swipes are humanized motionevent gestures.
@@ -92,6 +53,10 @@ apps:
     scroll_captures: 12     # max screencaps while reading one profile
     dwell_s: 1.1            # per-card read dwell, humanized (Signals #1: read before deciding)
     read_scroll_frac: 0.55  # how far each read-scroll advances the profile
+    # Return navigation is intentionally longer than a read step: a single manual Hinge flick
+    # can travel from a deeply read card to its top. The driver still confirms the filter-chip
+    # header after every stroke and falls back to its bounded retry loop if this does not land.
+    rewind_scroll_frac: 0.78
     change_threshold: 9.0   # mean grayscale delta (0..255, 24x24) to call a frame region "changed"
     debug_log: true         # host debug log: data/hinge_debug/<run>/ = actions.jsonl + before/after screenshots
     debug_dir: ./data/hinge_debug
@@ -641,6 +606,19 @@ opener:
   # Addendum 2026-08-16 (photo headers): a photo's title, caption, or prompt can reverse the
   # ordinary reading of its pixels. Treat that text and the photo as one compound item, and make
   # the opener respect the meaning of both.
+  #
+  # Addendum 2026-08-17 (referent clarity): a live draft framed two people as the competitors,
+  # then used a shorthand noun in the question that could instead mean either their drinks or
+  # the photograph itself. Existing question coherence kept the question to one topic, and
+  # premise consistency prevented contradiction, but neither required the question's subject to
+  # resolve to the subject established by the setup. REFERENT CLARITY closes that narrow gap
+  # without banning any word or shipping concrete opener copy for the model to imitate.
+  #
+  # Addendum 2026-08-17 (reply comfort): a technically coherent question can still make its
+  # recipient choose between defending herself and diminishing herself. The opener should make
+  # the most natural honest reply feel good to give. This names the conversational property, not
+  # a stock wording or worked scenario, so it guides the choice of angle without teaching a
+  # template.
   style: |
     Use the dating and conversational principles associated with Coach Corey Wayne's
     "How to Be a 3% Man", without copying his wording. Be a charming gentleman first:
@@ -702,6 +680,22 @@ opener:
     unchanged, cut it. QUESTION COHERENCE: ask one coherent thing at a time. An 'or' is allowed
     only for parallel, genuinely contrasting answers to that same underlying question, never to
     join unrelated dimensions.
+
+    REFERENT CLARITY: every pronoun, shorthand noun, and question subject must have one
+    immediately obvious referent. Across two beats, keep the same referent unless the transition
+    to a new one is explicit and immediately clear. Do not make the reader choose between
+    different ordinary meanings of the same word.
+
+    ROLE CONSISTENCY: if you give a visible subject a playful role or rank, preserve that role
+    across every beat. Do not give the same subject an incompatible role later. If you mean a
+    different subject, name it explicitly.
+
+    REPLY COMFORT: make the most natural honest reply feel good to give. Invite her to share a
+    preference, perspective, inspiration, or experience, not self justification. Never test her
+    intelligence, sincerity, knowledge, effort, or whether a visible detail is genuine. Do not
+    offer a forced choice whose honest answers make her defend, diminish, or embarrass herself.
+    If a visible detail could have more than one explanation, respond to its visible effect or
+    choose another angle rather than asking her to verify its status.
 
     PREMISE CONSISTENCY: if the first beat asserts or guesses X, the second beat must accept X as
     its working premise and move the conversation forward from it. Never ask whether X itself

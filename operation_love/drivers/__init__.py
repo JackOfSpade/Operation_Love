@@ -1,17 +1,8 @@
 """Driver factory — one driver per registered platform.
 
 The mapping is keyed by the ids in operation_love/platforms.py, so "which platforms exist"
-is stated once (the registry) rather than duplicated here and drifting. Note `bumble` and
-`bumble_web` are DIFFERENT platforms driving the same dating app: `bumble` is the Android
-app on the physical Pixel, `bumble_web` is the preserved Playwright driver for the web app
-Bumble discontinued in August 2026. Being different platform ids, they do NOT share label
-history: the raw registry id is what reaches the store (supervisor.run() passes `app` into
-Worker, which passes self.app into add_label/record_decision/...). An earlier `store_key`
-that would have pooled them was removed as dead code -- see the note in platforms.py.
-
-Imports stay lazy inside each branch: the Android drivers pull in cv2/PIL/numpy and the web
-driver pulls in Playwright, and a run that uses one should not have to have the other's
-optional extra installed.
+is stated once (the registry) rather than duplicated here and drifting. Imports stay lazy
+inside each branch: Android drivers pull in cv2/PIL/numpy only when used.
 """
 from __future__ import annotations
 
@@ -36,10 +27,6 @@ def make_driver(app: str, cfg) -> DatingAppDriver:
     if app == "bumble":
         from .android.bumble import BumbleAndroidDriver
         return BumbleAndroidDriver(cfg)
-    if app == "bumble_web":
-        from .web.bumble_web import BumbleWebDriver
-        return BumbleWebDriver(cfg)
-
     # Registered in platforms.py but with no branch here — a half-added platform.
     raise ValueError(
         f"No driver is wired for registered platform '{app}'. Add a branch in "

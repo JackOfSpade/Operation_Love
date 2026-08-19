@@ -2558,6 +2558,24 @@ def test_scroll_to_top_returns_to_true_top_not_just_matching_swipe_count(monkeyp
     )
 
 
+def test_scroll_to_top_uses_the_long_configured_rewind_and_stops_on_confirmed_top(monkeypatch):
+    """A human-scale Hinge return flick needs no redundant settle swipe once top is proven."""
+    adb = FakeAdb([b"before", b"after"])
+    drv = _drv(adb, read_scroll_frac=0.55, rewind_scroll_frac=0.78)
+    drv._capture_scroll_ledger = [(0.55, 0.5)] * 6
+    drv._capture_scrolls = len(drv._capture_scroll_ledger)
+    gestures = []
+    monkeypatch.setattr(drv, "_swipe", lambda *args, **kwargs: gestures.append((args, kwargs)))
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top", lambda *_a, **_k: SimpleNamespace(confirmed=True))
+    monkeypatch.setattr(
+        drv, "_changed", lambda *_a, **_k: pytest.fail("confirmed top must stop immediately"))
+
+    assert drv._scroll_to_top() is True
+    assert gestures == [((540, 263, 540, 2136), {"duration_ms": 160})]
+    assert drv._capture_scroll_ledger == [] and drv._capture_scrolls == 0
+
+
 def test_auto_policy_undo_uses_ledger_but_not_a_one_for_one_reverse_replay(monkeypatch):
     class Policy:
         pass

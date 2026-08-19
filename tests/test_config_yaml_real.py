@@ -33,6 +33,13 @@ def test_config_yaml_loads_without_error(cfg):
     validate(cfg)
 
 
+def test_shipped_config_defaults_to_hinge_observe_with_bumble_auto_configured(cfg):
+    assert cfg.enabled_apps == ["hinge"] and cfg.mode == "observe"
+    coords = cfg.apps["bumble"].get("coords", {})
+    assert set(coords) == {"swipe_start", "swipe_like_end", "swipe_pass_end"}
+    assert "like_heart" not in coords and "pass_x" not in coords
+
+
 def test_opener_model_has_pricing_entry(cfg):
     """The model named in opener.model must have a pricing entry so spend tracking works."""
     model = cfg.opener.model
@@ -124,6 +131,21 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "ask one coherent thing at a time" in style
     assert "parallel, genuinely contrasting answers to that same underlying question" in style
     assert "never to join unrelated dimensions" in style
+    assert "referent clarity" in style
+    assert "every pronoun, shorthand noun, and question subject" in style
+    assert "must have one immediately obvious referent" in style
+    assert "keep the same referent unless the transition to a new one is explicit" in style
+    assert "different ordinary meanings of the same word" in style
+    assert "role consistency" in style
+    assert "preserve that role across every beat" in style
+    assert "same subject an incompatible role later" in style
+    assert "different subject, name it explicitly" in style
+    assert "reply comfort" in style
+    assert "most natural honest reply feel good to give" in style
+    assert "preference, perspective, inspiration, or experience, not self justification" in style
+    assert "intelligence, sincerity, knowledge, effort" in style
+    assert "forced choice whose honest answers make her defend, diminish, or embarrass herself" in style
+    assert "rather than asking her to verify its status" in style
     assert "premise consistency" in style
     assert "if the first beat asserts or guesses x" in style
     assert "must accept x as its working premise and move the conversation forward" in style

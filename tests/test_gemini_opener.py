@@ -240,9 +240,15 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert "every visible detail named in the opener" in angle_description
     assert "parallel, contrasting answers" in angle_description
     assert "never unrelated dimensions joined by 'or'" in angle_description
+    assert "identify the question's subject" in angle_description
+    assert "every pronoun or shorthand noun has one immediately obvious referent" in angle_description
+    assert "any change of referent must be explicit and immediately clear" in angle_description
     assert "every named setup detail must be necessary" in opener_description
     assert "cut it if the later point still works without it" in opener_description
     assert "parallel, contrasting answers to it" in opener_description
+    assert "every pronoun, shorthand noun, and question subject" in opener_description
+    assert "one immediately obvious referent" in opener_description
+    assert "any change of referent must be explicit and immediately clear" in opener_description
     # `angle` is free text and telemetry only (doc 3.5) -- an enum would force a pick from a
     # closed set, which is exactly the shoehorning the move list is designed to avoid.
     assert "enum" not in schema["properties"]["angle"]
@@ -1063,6 +1069,9 @@ def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     assert "ask one coherent thing at a time" in lower
     assert "parallel, genuinely contrasting answers to one underlying question" in lower
     assert "never unrelated dimensions" in lower
+    assert "every pronoun, shorthand noun, and question subject" in lower
+    assert "one immediately obvious referent" in lower
+    assert "any change of referent must be explicit and immediately clear" in lower
     assert "must still carry a claim that could be wrong" not in lower
 
 

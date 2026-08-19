@@ -304,6 +304,13 @@ _SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX = (60, 120)
 # boundary, and a heart at another vertical position is not evidence that its card ended here.
 _HEART_ANCHORED_MEDIA_GAP_PX = (90, 112)
 
+# A centred, low-contrast photo can leave a few rows of its outer card surface
+# indistinguishable from the page. In the reported live capture this made the visible page gap
+# between a prompt and the following photo 60px rather than the usual 52..53px. This is NOT a
+# wider generic gutter window: it applies only to this tiny near-gutter range when matched hearts
+# prove one Hinge item lies on each side.
+_HEART_SEPARATED_NEAR_GUTTER_PX = (59, 64)
+
 # Which half of the screen a like heart may appear on. Hinge puts it at the bottom-RIGHT of
 # every likeable item (hinge.py:770, enforced by _match_glyph's own side filter). Named rather
 # than inlined so the one place this assumption lives is greppable.
@@ -346,6 +353,8 @@ EDGE_SCROLL_TOP_MEDIA = "scroll_top_media"  # guarded frame-0 recovery for a pal
 EDGE_HEART_ANCHORED_MEDIA_GUTTER = "heart_anchored_media_gutter"
                                   # a tall, page-coloured gap starts at a proven media item's
                                   # lower edge even though its corner is obscured
+EDGE_HEART_SEPARATED_NEAR_GUTTER = "heart_separated_near_gutter"
+                                  # a 59..64px page-coloured gap lies between proven hearts
 EDGE_BAND_EDGE = "band_edge"      # the block runs straight into the analysed band's edge
 EDGE_BACKGROUND_RUN = "background_run"  # page background beyond this edge, but neither
                                   # gutter-length nor corner-confirmed, so what it MEANS is
@@ -359,6 +368,7 @@ RUN_CARD_EDGE = "card_edge"       # not gutter-length, but a card's own top corn
                                   # header chrome sits above item 1 instead of a gutter
 RUN_SCROLL_TOP_MEDIA = "scroll_top_media"  # distinct provenance for the guarded recovery
 RUN_HEART_ANCHORED_MEDIA_GUTTER = "heart_anchored_media_gutter"
+RUN_HEART_SEPARATED_NEAR_GUTTER = "heart_separated_near_gutter"
 RUN_TOO_SHORT = "too_short"
 RUN_TOO_LONG = "too_long"
 RUN_CLIPPED = "clipped"           # touches the analysed band's edge, so its length is a lower
@@ -759,6 +769,39 @@ def _heart_anchored_media_gutter(
     return len(anchored) == 1
 
 
+def _heart_separated_near_gutter(
+        runs: list[BackgroundRun], run_index: int, *, hearts: tuple[tuple[int, int], ...],
+        gutter_level_tolerance: float) -> bool:
+    """Whether a slightly overlong page gap is proven to separate two Hinge items.
+
+    The standard length rule rightly refuses to infer a boundary from a 59..64px blank span by
+    itself. Here, independently matched hearts above and below the page-coloured run provide the
+    missing proof: Hinge has one like heart per item, so they cannot belong to one card.
+    """
+    run = runs[run_index]
+    if run.kind != RUN_TOO_LONG or not (
+            _HEART_SEPARATED_NEAR_GUTTER_PX[0] <= run.height <=
+            _HEART_SEPARATED_NEAR_GUTTER_PX[1]):
+        return False
+    if run.median_level_delta > gutter_level_tolerance:
+        return False
+    boundary_kinds = {
+        RUN_GUTTER, RUN_CARD_EDGE, RUN_SCROLL_TOP_MEDIA,
+        RUN_HEART_ANCHORED_MEDIA_GUTTER,
+    }
+    previous = next((candidate for candidate in reversed(runs[:run_index])
+                     if candidate.kind in boundary_kinds), None)
+    following = next((candidate for candidate in runs[run_index + 1:]
+                      if candidate.kind in boundary_kinds), None)
+    # A heart farther down the profile is not evidence about this gap.  The lower card must
+    # expose its own heart before the next independently confirmed boundary.
+    if following is None:
+        return False
+    upper_start = previous.y1 if previous is not None else 0
+    return (any(upper_start <= y < run.y0 for _, y in hearts)
+            and any(run.y1 <= y < following.y0 for _, y in hearts))
+
+
 def _block_edge(*, y: int, cut: BackgroundRun | None, gap: int,
                 corner: float | None) -> BlockEdge:
     """One end of a block, resolved to a `BlockEdge`.
@@ -787,6 +830,9 @@ def _block_edge(*, y: int, cut: BackgroundRun | None, gap: int,
         return BlockEdge(y=y, observed=True, kind=EDGE_SCROLL_TOP_MEDIA, run_px=cut.height)
     if cut is not None and cut.kind == RUN_HEART_ANCHORED_MEDIA_GUTTER:
         return BlockEdge(y=y, observed=True, kind=EDGE_HEART_ANCHORED_MEDIA_GUTTER,
+                         run_px=cut.height)
+    if cut is not None and cut.kind == RUN_HEART_SEPARATED_NEAR_GUTTER:
+        return BlockEdge(y=y, observed=True, kind=EDGE_HEART_SEPARATED_NEAR_GUTTER,
                          run_px=cut.height)
     run_px = cut.height if cut is not None else (gap or None)
     if corner is not None:
@@ -1022,6 +1068,10 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
                 run, hearts=hearts,
                 gutter_level_tolerance=gutter_background_level_tolerance):
             runs[i] = replace(run, kind=RUN_HEART_ANCHORED_MEDIA_GUTTER)
+        elif _heart_separated_near_gutter(
+                runs, i, hearts=hearts,
+                gutter_level_tolerance=gutter_background_level_tolerance):
+            runs[i] = replace(run, kind=RUN_HEART_SEPARATED_NEAR_GUTTER)
         else:
             continue
         cuts.append(runs[i])

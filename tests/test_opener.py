@@ -521,6 +521,21 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "ask one coherent thing at a time" in lowered
     assert "parallel, genuinely contrasting answers to that same underlying question" in lowered
     assert "never to join unrelated dimensions" in lowered
+    assert "referent clarity" in lowered
+    assert "every pronoun, shorthand noun, and question subject" in lowered
+    assert "must have one immediately obvious referent" in lowered
+    assert "keep the same referent unless the transition to a new one is explicit" in lowered
+    assert "different ordinary meanings of the same word" in lowered
+    assert "role consistency" in lowered
+    assert "preserve that role across every beat" in lowered
+    assert "same subject an incompatible role later" in lowered
+    assert "different subject, name it explicitly" in lowered
+    assert "reply comfort" in lowered
+    assert "most natural honest reply feel good to give" in lowered
+    assert "preference, perspective, inspiration, or experience, not self justification" in lowered
+    assert "intelligence, sincerity, knowledge, effort" in lowered
+    assert "forced choice whose honest answers make her defend, diminish, or embarrass herself" in lowered
+    assert "rather than asking her to verify its status" in lowered
     assert "premise consistency" in lowered
     assert "if the first beat asserts or guesses x" in lowered
     assert "must accept x as its working premise and move forward from it" in lowered

@@ -168,9 +168,57 @@ _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT = (
     237, 233, 185, 222, 236, 248, 207, 182, 214, 237, 253, 224, 190, 196, 198, 196,
 )
 
+# Variant 3: `( Signals ) Age v Height v Dating Intent ...` (HingeX Signals selection).
+#
+# Measured from the Pixel 7a at a confirmed visual card top on 2026-08-18. The HingeX
+# "Most Compatible" card sits below the filter strip; it is not itself the signal the gate
+# reads.  This records only the 16x4 greyscale calibration fingerprint, never the profile
+# screenshot or its contents.
+#
+# The first calibration of this variant was 4.859 levels from a later, visibly confirmed Signals
+# top. That placed a real top in the deliberate 3..9 dead zone. This fingerprint is the later
+# top's shipped-band decode, so the gate is calibrated to the layout actually on the device.
+_SCROLL_TOP_BAND_FINGERPRINT_SIGNALS = (
+    254, 255, 255, 255, 255, 255, 254, 254, 254, 255, 255, 254, 254, 254, 255, 255,
+    254, 186, 150, 150, 189, 249, 232, 232, 231, 246, 236, 233, 234, 232, 240, 244,
+    223, 91, 91, 88, 88, 222, 235, 232, 239, 232, 236, 225, 225, 237, 235, 234,
+    220, 93, 123, 118, 95, 221, 225, 204, 236, 233, 238, 207, 201, 231, 236, 236,
+)
+
+# Variant 4: `( Signals ) Age v Height v Dating Intent ...` (HingeX Signals unselected).
+#
+# Captured on the same confirmed-top Most Compatible card on 2026-08-18.  It happened to be
+# 2.891 levels from the older Compatible reference -- inside the 3.0 tolerance, but too close to
+# the edge to leave as an accidental match.
+_SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED = (
+    254, 254, 254, 254, 254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    254, 251, 251, 250, 251, 250, 233, 232, 232, 249, 239, 233, 233, 232, 243, 247,
+    248, 244, 236, 239, 249, 238, 236, 239, 240, 232, 235, 233, 233, 240, 234, 233,
+    245, 240, 186, 191, 239, 242, 215, 193, 230, 233, 236, 193, 189, 223, 234, 235,
+)
+
+# Variant 5: `( Signals ) Age v Height v Dating Intent ...` (HingeX Signals selected, current
+# Android rendering).
+#
+# A second visually confirmed selected-Signals top on 2026-08-18 measured 3.281 levels from
+# Variant 3.  It is a genuine rendering variant rather than a looser threshold: the capture
+# visibly shows the profile-independent filter chips in this exact band, while a scrolled card
+# replaces the strip with the person's sticky header.  Keeping both calibrated fingerprints
+# preserves the 3.0 confirmation bound instead of admitting every unknown band between 3 and 9.
+# This records only the 16x4 greyscale filter-strip fingerprint, never a profile image or name.
+_SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_CURRENT = (
+    254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 200, 168, 168, 203, 251, 232, 232, 232, 248, 238, 232, 233, 231, 242, 246,
+    227, 87, 78, 75, 85, 223, 237, 237, 240, 232, 235, 230, 231, 239, 235, 233,
+    215, 88, 126, 120, 89, 218, 221, 196, 232, 233, 237, 198, 193, 226, 235, 236,
+)
+
 _SCROLL_TOP_BAND_FINGERPRINTS: tuple[tuple[int, ...], ...] = (
     _SCROLL_TOP_BAND_FINGERPRINT_COMPATIBLE,
     _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT,
+    _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS,
+    _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED,
+    _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_CURRENT,
 )
 
 # Maintained for backwards compatibility:

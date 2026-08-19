@@ -810,11 +810,8 @@ def _validate_verification(cfg: Config) -> None:
 # spec's own hardcoded defaults. Both are needed because they catch different authors' typos
 # at different times: a bad literal baked into HINGE_SPEC/BUMBLE_SPEC is a code-review-time
 # mistake (android_spec.py's job), while a bad value under `apps.<app>.coords` in config.yaml
-# is an OPERATOR's mistake made after the code shipped -- exactly Bumble's current state,
-# where every coordinate is an explicit placeholder awaiting a human typing real numbers in
-# (see BUMBLE_SPEC's module docstring). Scoped to KIND_ANDROID platforms only: a web app's
-# config (e.g. bumble_web's CSS `selectors`) has no coords/*_frac concept, and validating it
-# here would be a category error, not a safety net.
+# is an OPERATOR's mistake made after the code shipped. Scoped to KIND_ANDROID platforms
+# only, so future non-Android platform settings remain outside this safety check.
 def _validate_android_fractions(cfg: Config) -> None:
     for app, app_cfg in (cfg.apps or {}).items():
         if app not in platforms.KNOWN_APPS or platforms.get(app).kind != platforms.KIND_ANDROID:

@@ -497,47 +497,6 @@ def test_adb_binary_missing_fails_early_with_install_guidance(monkeypatch, tmp_p
     assert touched == []
 
 
-def test_web_only_selection_is_unaffected_by_the_adb_check(monkeypatch, tmp_path):
-    """The ADB hard gate exists only for Android-kind platforms (android_app is None for a
-    web-kind selection) -- a web selection must never even ATTEMPT `adb devices`, let
-    alone be blocked by one. Bumble's web app has no live target today (see
-    platforms.py), so it's flipped available=True here for this test only, restored
-    after -- same pattern tests/test_platforms.py uses to isolate registry mutation."""
-    saved_platforms, saved_by_app = platforms._PLATFORMS, platforms._BY_APP
-    try:
-        platforms._PLATFORMS = tuple(
-            platforms.Platform(app=p.app, label=p.label, kind=p.kind, available=True, reason=None)
-            if p.app == "bumble_web" else p
-            for p in platforms._PLATFORMS
-        )
-        platforms._BY_APP = {p.app: p for p in platforms._PLATFORMS}
-
-        cfg_text = (_CONFIG.replace("enabled_apps: [hinge]", "enabled_apps: [bumble_web]")
-                            .replace("apps:\n  hinge: {}", "apps:\n  bumble_web: {}"))
-        cfg_path = _write_cfg(tmp_path, cfg_text)
-
-        preflight_calls = []
-        monkeypatch.setattr(sup, "_android_adb_preflight",
-                            lambda app, cfg: preflight_calls.append(app))
-        monkeypatch.setattr(sup, "Capabilities", _Caps)
-        monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
-        monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
-        monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
-        monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
-        monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
-
-        captured = {}
-        sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-                stop_event=threading.Event())
-
-        assert preflight_calls == []    # never invoked for a web-kind platform
-        snap = captured["status"].snapshot()
-        assert snap["phase"] == "stopped"
-    finally:
-        platforms._PLATFORMS = saved_platforms
-        platforms._BY_APP = saved_by_app
-
-
 class _SpyWorker:
     """Stand-in for Worker that records construction without doing anything -- lets a test
     prove a worker was (or wasn't) ever launched, without touching drivers/threads."""
@@ -651,7 +610,7 @@ def test_wedged_worker_is_not_reported_as_unqualified_success(monkeypatch, tmp_p
 
 # --- registry guard: run() rejects an unrunnable platform selection up front ---------------
 
-def test_run_rejects_uncalibrated_platform_before_touching_anything(monkeypatch, tmp_path):
+def test_run_rejects_bumble_auto_before_touching_anything(monkeypatch, tmp_path):
     """The check_runnable() guard at the top of run() must fire BEFORE any driver is built,
     using cfg_mod.validate()'s message verbatim (this exercises the guard itself, not just
     validate() -- see test_config.py for validate()'s own coverage of the same rule)."""
@@ -659,6 +618,7 @@ def test_run_rejects_uncalibrated_platform_before_touching_anything(monkeypatch,
 
     cfg_text = _CONFIG.replace("enabled_apps: [hinge]", "enabled_apps: [bumble]").replace(
         "apps:\n  hinge: {}", "apps:\n  bumble: {}")
+    cfg_text = cfg_text.replace("mode: observe", "mode: auto")
     cfg_path = _write_cfg(tmp_path, cfg_text)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     built = []
@@ -670,7 +630,7 @@ def test_run_rejects_uncalibrated_platform_before_touching_anything(monkeypatch,
     with pytest.raises(ValueError) as exc_info:
         sup.run(str(cfg_path), stop_event=threading.Event())
 
-    assert str(exc_info.value) == platforms.unavailable_reason("bumble")
+    assert str(exc_info.value) == platforms.unavailable_reason("bumble", "auto")
     assert built == []                            # no store, no driver -- rejected up front
 
 

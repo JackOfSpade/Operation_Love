@@ -178,9 +178,13 @@ class UhidTouch:
         self._run_gesture(plan_tap(x, y, hz=self.hz, rng=self._rng))
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 450) -> None:
-        # duration_ms accepted for Adb.swipe interface parity; UHID timing comes from plan_swipe.
+        # Keep interface parity with Adb.  450ms is this transport's ordinary Fitts-law
+        # gesture class; a caller may explicitly request a shorter measured flick, which is
+        # scaled in the pure planner without compromising curved endpoints or pressure data.
+        duration_scale = max(0.20, min(2.0, float(duration_ms) / 450.0))
         self._run_gesture(plan_swipe(x1, y1, x2, y2, hz=self.hz, jitter_px=self.jitter_px,
-                                     width_px=self.width_px, rng=self._rng))
+                                     width_px=self.width_px, duration_scale=duration_scale,
+                                     rng=self._rng))
 
     def scroll_up(self, distance_frac: float = 0.55, x_frac: float = 0.5) -> None:
         # x jitter shared with Adb.scroll_up via adb.scroll_x() (HINGE-04): UHID is the

@@ -36,7 +36,9 @@ import pytest
 
 from operation_love.drivers import hinge
 from operation_love.drivers.adb import clamp_xy
-from operation_love.drivers.android.bumble import BUMBLE_SPEC
+from operation_love.drivers.android.bumble import (
+    BUMBLE_SPEC,
+)
 from operation_love.drivers.android_spec import AndroidAppSpec
 from operation_love.drivers.base import DriverClosed
 from operation_love.drivers.hinge import (
@@ -152,14 +154,302 @@ def test_bumble_drag_starts_clear_of_its_own_paid_zone():
     drv._assert_tap_allowed(int(sx * 1080), int(sy * 2400))   # must not raise
 
 
-def test_bumble_fallback_button_coords_stay_outside_the_paid_zone():
-    # These are only used if someone ever flips Bumble to decide_gesture="tap". If a future
-    # calibration drifts them into the SuperSwipe rect, that must surface here rather than
-    # on the phone.
-    drv = _drv(BUMBLE_SPEC, FakeAdb())
-    for name in ("like_heart", "pass_x"):
-        fx, fy = BUMBLE_SPEC.coords[name]
-        drv._assert_tap_allowed(int(fx * 1080), int(fy * 2400))
+def test_bumble_spec_has_no_action_button_fallback_coords():
+    # Observe is the only calibrated Bumble mode.  Omitting action-button coordinates means
+    # no future fallback can tap Like, Compliment, or SuperSwipe from this spec.
+    assert "like_heart" not in BUMBLE_SPEC.coords
+    assert "pass_x" not in BUMBLE_SPEC.coords
+
+
+def _removed_bumble_observe_uses_a_wide_fast_but_bounded_review_stroke():
+    # Bumble has no swipe-time item enumeration, so it can emulate a normal
+    # profile skim. Keep the shared driver's global geometry ceiling and paid-
+    # control guard rather than making a special unbounded gesture path.
+    assert BUMBLE_SPEC.read_scroll_frac == 0.70
+    assert BUMBLE_SPEC.dwell_s == 0.35
+
+
+def _removed_bumble_observe_prompt_refuses_the_visible_paid_or_compliment_controls():
+    # Its right/left preference path is the card gesture, not either visible yellow control.
+    assert BumbleAndroidDriver.observe_decision_instruction == (
+        "swipe the card right to Like or left to Pass; don't tap the yellow compliment "
+        "or SuperSwipe buttons")
+
+
+class _BumbleCaptureAdb(FakeAdb):
+    """Tiny scroll-position fake for the Bumble Observe review contract."""
+
+    def __init__(self, frames, *, advance_on_bottom_stasis=False):
+        super().__init__()
+        self.frames = list(frames)
+        self.position = 0
+        self.advance_on_bottom_stasis = advance_on_bottom_stasis
+
+    def screencap(self):
+        return self.frames[min(self.position, len(self.frames) - 1)]
+
+    def scroll_up(self, *_a, **_k):
+        self.scrolls += 1
+        candidate = min(self.position + 1, len(self.frames) - 1)
+        # A repeated frame is the profile bottom: the physical gesture occurred, but its
+        # content did not move, so a later reverse swipe starts from the last real position.
+        if (self.advance_on_bottom_stasis
+                or self.frames[candidate] != self.frames[self.position]):
+            self.position = candidate
+
+    def swipe(self, x1, y1, x2, y2, **_k):
+        super().swipe(x1, y1, x2, y2, **_k)
+        if y2 > y1:  # AndroidDriver's reverse scroll: content returns toward the top.
+            self.position = max(0, self.position - 1)
+
+
+def _bumble_observe_driver(adb, **overrides):
+    class C:
+        apps = {"bumble": {"halt_on_error": False, **overrides}}
+    drv = BumbleAndroidDriver(C())
+    drv._adb = adb
+    drv._touch = adb
+    drv._session_top_done = True  # isolate the per-profile review from one-time session setup
+    return drv
+
+
+def _removed_bumble_observe_captures_only_the_visible_deck_card_without_scrolling():
+    # Bumble's owner-facing Observe flow must not borrow Hinge's long-profile reader.
+    # It takes exactly one passive screenshot of the current deck card and leaves the UI alone.
+    adb = _BumbleCaptureAdb([b"first-photo", b"lower-profile", b"lower-profile"])
+    drv = _bumble_observe_driver(adb)
+
+    profile = drv.current_profile()
+
+    assert profile.photos[0] == b"first-photo"
+    assert profile.meta["capture_frames"] == 1
+    assert profile.meta["read_scrolls"] == 0
+    assert profile.meta["capture_truncated"] is False
+    assert adb.scrolls == 0
+    assert not adb.swipes
+    assert adb.position == 0
+    assert adb.taps == [], "Observe capture never taps an action, compliment, or SuperSwipe control"
+
+
+def _removed_bumble_auto_capture_entry_point_is_also_visible_card_only():
+    # Auto is currently refused by calibration policy, but its generic worker calls
+    # next_profile(). Pin that future entry point to the identical no-scroll capture.
+    adb = _BumbleCaptureAdb([b"first-photo", b"lower-profile"])
+    drv = _bumble_observe_driver(adb)
+
+    profile = drv.next_profile()
+
+    assert profile.photos == [b"first-photo"]
+    assert profile.meta["read_scrolls"] == 0
+    assert adb.scrolls == 0 and not adb.swipes and adb.taps == []
+
+
+@pytest.mark.parametrize(
+    ("raw_direction", "touch_dx", "expected"),
+    [("pass", 500, True), ("like", -500, False)],
+)
+def _removed_bumble_observe_uses_physical_touch_direction_not_animation_direction(
+        monkeypatch, raw_direction, touch_dx, expected):
+    adb = _BumbleCaptureAdb([b"first-photo"])
+    drv = _bumble_observe_driver(adb)
+
+    class Watcher:
+        def wait_for_swipe(self, **kwargs):
+            assert kwargs["timeout"] == 5
+            # current_profile arms the card before READY.  A swipe made immediately
+            # after READY can therefore be returned even if this wait starts a few
+            # scheduler turns later.
+            assert isinstance(kwargs["since"], float)
+            return ObservedSwipe(time.monotonic(), raw_direction, 18, 22.0)
+
+        def diagnostics(self):
+            return {"frames_seen": 40, "events_emitted": 1}
+
+    drv._screen_swipe_watcher = Watcher()
+    drv.current_profile()  # arms the decision window at capture, before READY/wait work
+    class TouchWatcher:
+        alive = True
+        event_count = 8
+        raw_line_count = 8
+        device_path = "/dev/input/event3"
+        device_name = "goodix_ts0"
+
+        def gestures_since(self, _since):
+            return [type("Gesture", (), {
+                "t_up": time.monotonic(),
+                "down": (300, 1200), "up": (300 + touch_dx, 1220),
+            })()]
+
+    drv._touch_watcher = TouchWatcher()
+    # Video motion only triggers the arrival check.  The actual finger direction labels the
+    # card, while Name/Age independently proves that a new card arrived.
+    drv._profile_name_age = ("sophia", 32)
+    names = iter((("maya", 31), ("maya", 31)))
+    monkeypatch.setattr(drv, "_read_name_age", lambda _frame: next(names))
+    assert drv.wait_for_decision(timeout=5) is expected
+    assert adb.taps == [] and not adb.swipes
+
+
+def _removed_bumble_observe_drops_settled_motion_without_a_repeated_new_name_age(monkeypatch):
+    adb = _BumbleCaptureAdb([b"first-photo"])
+    drv = _bumble_observe_driver(adb)
+
+    class Watcher:
+        def wait_for_swipe(self, **_kwargs):
+            return ObservedSwipe(10.0, "pass", 18, 22.0)
+
+        def diagnostics(self):
+            return {"frames_seen": 40, "events_emitted": 1}
+
+    drv._screen_swipe_watcher = Watcher()
+    drv.current_profile()
+    drv._profile_name_age = ("sophia", 32)
+    names = iter((("maya", 31), ("maria", 31)))
+    monkeypatch.setattr(drv, "_read_name_age", lambda _frame: next(names, None))
+
+    assert drv.wait_for_decision(timeout=5) is None
+    assert adb.taps == [] and not adb.swipes
+
+
+def _removed_bumble_observe_uses_released_motion_for_name_age_confirmation(monkeypatch):
+    """A card that keeps moving in the low-res video can still be proved by its new label."""
+    adb = _BumbleCaptureAdb([b"first-photo"])
+    drv = _bumble_observe_driver(adb)
+
+    class Watcher:
+        def wait_for_released_candidate(self, **kwargs):
+            assert kwargs["timeout"] == 5
+            return type("Candidate", (), {
+                "decision": "like", "accumulated_motion_px": 18,
+            })()
+
+        def wait_for_swipe(self, **_kwargs):
+            pytest.fail("the strict settled-event path must not be required")
+
+        def diagnostics(self):
+            return {"released_candidates_emitted": 1, "events_emitted": 0}
+
+    drv._screen_swipe_watcher = Watcher()
+    drv.current_profile()
+    class TouchWatcher:
+        alive = True
+        event_count = 4
+        raw_line_count = 4
+        device_path = "/dev/input/event3"
+        device_name = "goodix_ts0"
+
+        def gestures_since(self, _since):
+            return [type("Gesture", (), {
+                "t_up": time.monotonic(), "down": (800, 1200), "up": (250, 1210),
+            })()]
+
+    drv._touch_watcher = TouchWatcher()
+    drv._profile_name_age = ("alyssa", 32)
+    names = iter((("alyssa", 32), ("maya", 31), ("maya", 31)))
+    monkeypatch.setattr(drv, "_read_name_age", lambda _frame: next(names))
+
+    assert drv.wait_for_decision(timeout=5) is False
+
+
+def _removed_bumble_observe_never_uses_video_direction_when_touch_stream_has_no_events(monkeypatch):
+    adb = _BumbleCaptureAdb([b"first-photo"])
+    drv = _bumble_observe_driver(adb)
+
+    class Watcher:
+        def wait_for_swipe(self, **_kwargs):
+            return ObservedSwipe(time.monotonic(), "like", 18, 22.0)
+
+        def diagnostics(self):
+            return {"frames_seen": 40, "events_emitted": 1}
+
+    class TouchWatcher:
+        alive = True
+        event_count = 0
+        raw_line_count = 0
+        device_path = "/dev/input/event3"
+        device_name = "goodix_ts0"
+
+        def gestures_since(self, _since):
+            pytest.fail("a zero-event stream must not be trusted")
+
+    drv._screen_swipe_watcher = Watcher()
+    drv._touch_watcher = TouchWatcher()
+    drv.current_profile()
+    drv._profile_name_age = ("sophia", 32)
+    names = iter((("maya", 31), ("maya", 31)))
+    monkeypatch.setattr(drv, "_read_name_age", lambda _frame: next(names))
+
+    assert drv.wait_for_decision(timeout=5) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("Sophia 32", ("sophia", 32)), ("Sophia 32\nTeacher", ("sophia", 32)),
+     ("Sophia", None), ("Sophia 17", None), ("", None)],
+)
+def _removed_bumble_name_age_parser_requires_a_plausible_pair(text, expected):
+    assert bumble_android._parse_bumble_name_age(text) == expected
+
+
+def _removed_bumble_observe_never_guesses_when_passive_watcher_fails():
+    adb = _BumbleCaptureAdb([b"first-photo"])
+    drv = _bumble_observe_driver(adb)
+
+    class Watcher:
+        def wait_for_swipe(self, **_kwargs):
+            raise ScreenSwipeWatchUnavailable("decoder stopped")
+
+    drv._screen_swipe_watcher = Watcher()
+    with pytest.raises(DriverClosed, match="refusing to record"):
+        drv.wait_for_decision(timeout=None)
+    assert adb.taps == [] and not adb.swipes
+
+
+def _removed_bumble_auto_session_is_refused_before_adb_or_screen_observer(monkeypatch):
+    class C:
+        apps = {"bumble": {}}
+
+    drv = BumbleAndroidDriver(C())
+    drv.set_auto_session_policy(None)
+    monkeypatch.setattr(hinge, "Adb", lambda *_a, **_k: pytest.fail("ADB must not open"))
+    with pytest.raises(DriverClosed, match="manual Observe only"):
+        drv.open_session()
+    assert drv._screen_swipe_watcher is None
+
+
+def _removed_bumble_observe_session_does_not_need_the_shared_top_rewind(monkeypatch):
+    class C:
+        apps = {"bumble": {}}
+
+    drv = BumbleAndroidDriver(C())
+    drv._session_top_done = False
+    monkeypatch.setattr(hinge.AndroidDriver, "open_session", lambda self: None)
+
+    class Watcher:
+        def __init__(self, *_a, **_k): pass
+        def start(self): pass
+        def close(self): pass
+
+    monkeypatch.setattr(bumble_android, "ScreenSwipeWatcher", Watcher)
+    drv.open_session()
+    # current_profile() intentionally ignores the shared Hinge session-top gate: Bumble
+    # Observe captures the visible card only and must never scroll it before READY.
+    assert drv._session_top_done is False
+
+
+def _removed_bumble_observe_keeps_a_visible_mid_card_in_place_rather_than_rewinding():
+    # The Bumble deck capture is deliberately literal: if the UI is currently displaying a
+    # frame, capture that frame. It never makes a speculative vertical gesture to find a top.
+    adb = _BumbleCaptureAdb([b"first-photo", b"lower-profile", b"lower-profile"])
+    adb.position = 1
+    drv = _bumble_observe_driver(adb)
+    drv._session_top_done = False
+
+    profile = drv.current_profile()
+
+    assert profile.photos == [b"lower-profile"]
+    assert adb.position == 1
+    assert not adb.swipes
 
 
 # --- the forbidden-zone backstop -------------------------------------------
@@ -556,15 +846,21 @@ def _spec_with_scroll(frac):
     )
 
 
-def test_read_scroll_refuses_when_its_touch_down_lands_in_the_paid_zone():
-    # read_scroll_frac is documented as config-overridable and calibrated on-device, so
-    # raising it is an ordinary tweak -- not an abuse. At 0.65 the scroll's touch-down is
-    # y=0.825, inside Bumble's SuperSwipe rect (0.80..1.00). It must refuse, not scroll.
+def test_read_scroll_uses_the_safe_centre_lane_between_bumble_controls():
+    # The passively measured controls live on the outer lower lanes.  The shared reviewer
+    # scrolls through the centre and must never need to touch either side's action region.
     adb = FakeAdb()
     drv = _drv(_spec_with_scroll(0.65), adb)
+    drv._scroll_down_one()
+    assert adb.scrolls == 1 and adb.taps == []
+
+
+def test_read_scroll_refuses_when_its_column_enters_a_bumble_control_zone():
+    adb = FakeAdb()
+    drv = _drv(_spec_with_scroll(0.55), adb)
     with pytest.raises(ForbiddenTapError):
-        drv._scroll_down_one()
-    assert adb.swipes == [] and adb.taps == [], "nothing may reach the phone"
+        drv._scroll(0.55, x_frac=0.10)
+    assert adb.scrolls == 0 and adb.taps == []
 
 
 def test_read_scroll_is_allowed_when_clear_of_the_zone():

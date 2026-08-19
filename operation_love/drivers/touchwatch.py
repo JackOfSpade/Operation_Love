@@ -87,7 +87,13 @@ class Gesture:
 # getevent -lt line shape, values in HEX:
 # [   12345.678901] /dev/input/event3: EV_ABS       ABS_MT_POSITION_X    000001f4
 _LT_LINE_RE = re.compile(
-    r"^\[\s*[\d.]+\]\s+\S+:\s+(?P<ev>EV_\w+)\s+(?P<code>\S+)\s+(?P<value>\S+)\s*$"
+    # AOSP's getevent normally expands event and code names under ``-l``.  Recent builds
+    # expose the same stream as numeric Linux input codes even with that option, however:
+    # ``0003 0035 000001f4`` rather than ``EV_ABS ABS_MT_POSITION_X 000001f4``.  Both
+    # representations are the same event; accepting both keeps the observer tied to the
+    # actual kernel stream rather than a toolbox formatting detail.
+    r"^\[\s*[\d.]+\]\s+\S+:\s+(?P<ev>EV_\w+|[0-9a-fA-F]{4})\s+"
+    r"(?P<code>\S+)\s+(?P<value>\S+)\s*$"
 )
 
 # getevent -p device-selection shape. Real transcript (Pixel 7a, 2026-08-10):
@@ -109,6 +115,10 @@ _ABS_AXIS_RE = re.compile(r"([0-9a-fA-F]{4})\s*:\s*value\s+-?\d+,\s*min\s+-?\d+,
 
 ABS_MT_POSITION_X = "0035"
 ABS_MT_POSITION_Y = "0036"
+EV_ABS = "0003"
+EV_KEY = "0001"
+BTN_TOUCH = "014a"
+ABS_MT_TRACKING_ID = "0039"
 
 
 def _iter_device_blocks(getevent_p_output: str):
@@ -206,6 +216,7 @@ class TouchWatcher:
         # real screen touches, which is what settled it as a platform restriction rather than a
         # parsing bug. See tools/touch_selftest.py, which reports the two separately.
         self._raw_line_count = 0
+        self._unparsed_line_samples: deque[str] = deque(maxlen=3)
 
         # In-flight gesture-tracking state, all guarded by _lock.
         self._x: float | None = None
@@ -336,20 +347,34 @@ class TouchWatcher:
             self._raw_line_count += 1
         m = _LT_LINE_RE.match(line.strip())
         if not m:
+            # Keep only a scrubbed *format* sample for incident reports.  It contains no
+            # coordinates or profile pixels, but lets a future Android toolbox spelling be
+            # fixed from a report instead of asking the owner to reproduce it in a terminal.
+            sample = re.sub(r"\b(?:[0-9a-fA-F]{2,}|\d+(?:\.\d+)?)\b", "<n>", line.strip())
+            sample = re.sub(r"\s+", " ", sample)
+            if sample:
+                with self._lock:
+                    self._unparsed_line_samples.append(sample[:180])
             return
         ev, code, value = m.group("ev"), m.group("code"), m.group("value")
         with self._lock:
             self._event_count += 1
-            if ev == "EV_ABS" and code == "ABS_MT_POSITION_X":
+            numeric = len(ev) == 4 and all(ch in "0123456789abcdefABCDEF" for ch in ev)
+            if (ev == "EV_ABS" or (numeric and ev.lower() == EV_ABS)) and (
+                    code == "ABS_MT_POSITION_X" or code.lower() == ABS_MT_POSITION_X):
                 self._note_axis_locked("x", value)
-            elif ev == "EV_ABS" and code == "ABS_MT_POSITION_Y":
+            elif (ev == "EV_ABS" or (numeric and ev.lower() == EV_ABS)) and (
+                    code == "ABS_MT_POSITION_Y" or code.lower() == ABS_MT_POSITION_Y):
                 self._note_axis_locked("y", value)
-            elif ev == "EV_KEY" and code == "BTN_TOUCH":
-                if value == "DOWN":
+            elif (ev == "EV_KEY" or (numeric and ev.lower() == EV_KEY)) and (
+                    code == "BTN_TOUCH" or code.lower() == BTN_TOUCH):
+                if value == "DOWN" or value.lower() in {"1", "00000001"}:
                     self._begin_gesture_locked()
-                elif value == "UP":
+                elif value == "UP" or value.lower() in {"0", "00000000"}:
                     self._end_gesture_locked()
-            elif ev == "EV_ABS" and code == "ABS_MT_TRACKING_ID" and value.lower() == "ffffffff":
+            elif ((ev == "EV_ABS" or (numeric and ev.lower() == EV_ABS)) and
+                  (code == "ABS_MT_TRACKING_ID" or code.lower() == ABS_MT_TRACKING_ID) and
+                  value.lower() == "ffffffff"):
                 # Devices that omit BTN_TOUCH altogether signal release by resetting the
                 # multitouch tracking ID to -1 (the ffffffff 32-bit wraparound) instead --
                 # same boundary, different spelling. goodix_ts0 DOES declare BTN_TOUCH
@@ -466,6 +491,12 @@ class TouchWatcher:
         """Lines read off the stream, whether or not they parsed -- see _raw_line_count."""
         with self._lock:
             return self._raw_line_count
+
+    @property
+    def unparsed_line_samples(self) -> tuple[str, ...]:
+        """A tiny redacted format sample for diagnosing an unsupported getevent spelling."""
+        with self._lock:
+            return tuple(self._unparsed_line_samples)
 
     @property
     def alive(self) -> bool:

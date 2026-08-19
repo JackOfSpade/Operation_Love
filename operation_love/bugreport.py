@@ -232,8 +232,7 @@ def _opencv_md() -> str:
 def _first_android_app_cfg(apps: dict, enabled_apps: list) -> tuple[str, str | None] | None:
     """(adb_path, serial) for the ADB target a live run would actually probe.
 
-    Only Android-driven apps declare `adb_path` at all (bumble_web is a Playwright browser
-    and has none), so its presence is what distinguishes an Android app entry from a web one
+    Android-driven apps declare `adb_path`, so its presence distinguishes a device entry
     without hardcoding app names here. Prefers the first ENABLED app that declares one — that
     is the device a real run would actually talk to — and falls back to ANY app with
     `adb_path` so a report generated with a stale/mismatched `enabled_apps` (or none at all)

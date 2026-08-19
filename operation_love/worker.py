@@ -96,6 +96,21 @@ _OBSERVE_PRE_TAP_TARGETING_REFUSED = object()
 _THINK_TIME_BASELINE_S = PacingCfg().swipe_delay_s
 
 
+def _operator_items_unavailable_warning(reason: str) -> str:
+    """Turn a capture-only index failure into useful Observe-mode guidance.
+
+    The full reason belongs in Hinge's debug log and bug report, where frame numbers, strip
+    votes, and geometry are actionable. On the hub it only tells the person to count opaque
+    implementation details. A contradictory coordinate space can result from a changing profile
+    (commonly an active video) *or* an ambiguous card boundary, so do not present either one as
+    a fact. Neither makes the person's manual choice unsafe.
+    """
+    if "item index this capture produced contradicts itself" in reason:
+        return ("this profile's cards could not be reliably counted for an opener from this read. "
+                "You can still pass or like manually.")
+    return reason
+
+
 def _accepts_keywords(callback, *names: str) -> bool:
     """Whether a duck-typed persistence seam accepts all named keyword arguments.
 
@@ -152,6 +167,20 @@ def _item_type_preflight_mismatch(driver, pick) -> str:
     return ""
 
 
+def _display_media_ordinal(driver, pick) -> int | None:
+    """Return a proved human-countable photo/video number, otherwise no number at all."""
+    if getattr(pick, "index_space", None) != INDEX_SPACE_MODEL_ITEMS:
+        return None
+    resolve = getattr(driver, "model_item_media_ordinal", None)
+    if not callable(resolve):
+        return None
+    try:
+        ordinal = resolve(pick.index)
+    except Exception:  # noqa: BLE001 -- display advice must not affect suggestion safety
+        return None
+    return ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) and ordinal > 0 else None
+
+
 class _ObserveSuggestion:
     """Doc 5.9's INVERTED observe suggestion, for exactly one profile.
 
@@ -168,10 +197,13 @@ class _ObserveSuggestion:
     guarantee that the suggestion is about the item the comment will hang under, on the one path
     where a real message reaches a real person. The owner declined to log the human's disagreement
     as training data and declined any added friction, so the rule this class implements is
-    narrower and harder: DETECT the mismatch and SURFACE it. On a mismatch the hub gets a warning
-    and NO text to type. Never a silent wrong-item opener, never a question for the human, never
+    narrower and harder: DETECT an affirmative mismatch and SURFACE it. On a confirmed wrong
+    item the hub gets a warning and NO text to type. A sheet that cannot yet be measured is not
+    affirmative evidence of a wrong item: Hinge reflows the selected-card preview while the
+    keyboard opens, so Observe keeps the already-generated advisory text visible and rechecks
+    later sheet frames. Never a silent wrong-item opener, never a question for the human, never
     a stop (that is AUTO's answer to the same rule -- observe honours it by refusing to show
-    text, doc 5.9's own wording).
+    text only after proof of the mismatch).
 
     THE RACE IS REAL, WHICH IS WHY THIS IS A STATE MACHINE AND NOT A FUNCTION. Generation can take
     up to `opener.request_timeout_s` (90s shipped) and nothing bounds how fast a human who has
@@ -255,10 +287,10 @@ class _ObserveSuggestion:
     def sheet_opened(self, frame: bytes | None) -> None:
         """The human opened the app's own comment sheet on some item. `frame` is that screen.
 
-        A None frame is not a lesser version of this: it is the case where nothing can be checked,
-        so it must not read as "checked and fine". `_publish` turns it into a warning, on the same
-        terms as a genuine mismatch -- doc 5.9's "either guard refusing means refuse", applied to
-        the guard being unable to look at all.
+        A None frame is not a lesser version of this: it remains an inconclusive item check, not
+        a claim that the suggestion matches. Unlike a confirmed mismatch it does not hide advice:
+        the human already has a generated optional opener and Hinge may publish a measurable
+        preview on the next sheet frame.
         """
         with self._lock:
             if self._sheet is None:
@@ -332,7 +364,7 @@ class _ObserveSuggestion:
         worker = self._worker
         unavailable = getattr(self._profile, "items_unavailable", "")
         if unavailable:
-            return unavailable
+            return _operator_items_unavailable_warning(unavailable)
         if not getattr(self._profile, "items", ()):
             return ("this capture produced no numbered items, so there is nothing for the model "
                     "to choose from")
@@ -446,6 +478,7 @@ class _ObserveSuggestion:
             fields["opener_warning"] = self._warning
             return fields
         fields["opener_item"] = pick.index
+        fields["opener_media_ordinal"] = _display_media_ordinal(self._worker.driver, pick)
         fields["opener_item_description"] = pick.item_description or None
         if self._sheet is not None:
             mismatch = self._mismatch(pick)
@@ -466,7 +499,9 @@ class _ObserveSuggestion:
         The check itself lives on the driver (`observe_item_mismatch`) because that is where the
         crops, the index and this profile's identity fingerprint live. It is the same pair of
         comparisons, in the same order, that `driver.like()` makes on the auto path; only the
-        consequence differs.
+        consequence differs. An inconclusive layout/identity read remains advisory: it may be a
+        keyboard reflow rather than a different item, so it preserves the already-generated text
+        and is retried whenever the observer provides a fresher open-sheet frame.
         """
         if not self._sheet:
             current = ObserveItemCheck(
@@ -515,7 +550,7 @@ class _ObserveSuggestion:
                         pass
                 self._release_post_tap_recorded = True
             return ""
-        return effective.reason
+        return effective.reason if effective.state == OBSERVE_ITEM_MISMATCH else ""
 
     def _publish(self, *, announce_pick=None) -> None:
         with self._lock:
@@ -572,8 +607,14 @@ class _ObserveSuggestion:
             # If the sheet check replaced it with a warning, there is intentionally nothing to
             # announce as ready.
             if announce_pick is not None and fields["opener_suggestion"] == announce_pick.text:
-                print(f"   💬 optional suggestion ready: if you choose to like, use item {announce_pick.index}"
-                      f"{f' ({announce_pick.item_description})' if announce_pick.item_description else ''}; "
+                media_ordinal = fields["opener_media_ordinal"]
+                if media_ordinal is not None:
+                    target = (f"media item {media_ordinal} ({announce_pick.item_description})"
+                              if announce_pick.item_description else f"media item {media_ordinal}")
+                else:
+                    target = (f"the photo described as {announce_pick.item_description}"
+                              if announce_pick.item_description else "the described photo")
+                print(f"   💬 optional suggestion ready: if you choose to like, use {target}; "
                       f"the text to type is on the hub")
 
 
@@ -998,7 +1039,10 @@ class Worker(threading.Thread):
                 # who acts during the wait is never observed at all, because wait_for_decision
                 # would start against a card they had already left, losing that decision and
                 # mis-attributing the next one. The suggestion fills in behind this line.
-                print("✅ READY — use the app's pass/like controls for this profile.")
+                instruction = getattr(
+                    self.driver, "observe_decision_instruction",
+                    "use the app's pass/like controls")
+                print(f"✅ READY — {instruction} for this profile.")
                 self._warn_if_capture_truncated(profile)
                 action_card = (self.observe_action_bridge.begin_card(self)
                                if self.observe_action_bridge and self.observe_action_supported else None)

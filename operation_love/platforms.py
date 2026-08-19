@@ -1,36 +1,7 @@
-"""The platform registry: the single source of truth for what we can drive, and how.
+"""The platform registry: the single source of truth for Android app targets.
 
-Two things used to be conflated: *which dating app* (Bumble, Hinge) and *how we drive
-it* (a browser, or the phone). That was fine while the two happened to line up one to
-one, and it stopped being fine in August 2026 when Bumble discontinued its web app
-(https://support.bumble.com/hc/en-us/articles/30996192802973-An-update-on-Bumble-web).
-Bumble is now an Android target like Hinge, and "web" is a delivery mechanism with no
-live target behind it rather than a synonym for Bumble.
-
-So a platform is a (kind, app) pair:
-
-  kind  = how we drive it. "android" = host side ADB + vision on the Pixel;
-          "web" = Playwright/patchright against a real Chrome.
-  app   = which dating app, e.g. hinge / bumble.
-
-The hub renders exactly this structure: one button per kind, expanding to a single
-choice among that kind's targets.
-
-Availability is deliberately a property of the registry rather than something each
-driver discovers at runtime, so an unrunnable platform is rejected BEFORE any driver
-is constructed, any browser launches, or any tap reaches the phone. Two things make a
-platform unavailable:
-
-  * no live target      -- the web kind, since Bumble web shut down. The driver code is
-                           kept (see operation_love/drivers/web/) because the hardening
-                           in it is site agnostic and worth inheriting if we ever pick
-                           up another web based platform.
-  * not yet calibrated  -- an Android target whose tap coordinates and glyph templates
-                           are still placeholders. Running it would fire real touches at
-                           guessed coordinates on a real account, so it fails closed.
-
-Note there is deliberately NO per-platform storage-bucket field here; see the comment in
-`Platform` for why the one that existed was removed rather than left unread.
+Availability is checked before any driver is constructed or any touch reaches the
+phone. An uncalibrated target fails closed rather than acting at guessed coordinates.
 """
 from __future__ import annotations
 
@@ -38,22 +9,15 @@ from dataclasses import dataclass
 
 # How we drive a platform. The hub shows one button per kind, in this order.
 KIND_ANDROID = "android"
-KIND_WEB = "web"
 
-KIND_ORDER = (KIND_ANDROID, KIND_WEB)
-KIND_LABELS = {KIND_ANDROID: "App-based", KIND_WEB: "Web-based"}
+KIND_ORDER = (KIND_ANDROID,)
+KIND_LABELS = {KIND_ANDROID: "App-based"}
 
 # Every Android target contends for the one physical Pixel: Android shows exactly one
 # app in the foreground, `adb exec-out screencap` captures whatever is on top, and the
 # UHID virtual touchscreen delivers to whatever holds focus. So two Android platforms
 # can never run at once -- see _EXCLUSIVE below and supervisor's device lock.
 RESOURCE_ANDROID_DEVICE = "android-device"
-
-_WEB_NO_TARGET = (
-    "Additional work needed to get this to run. Bumble discontinued its web app in "
-    "August 2026, so the web path has no live target right now. The driver logic is "
-    "kept and generalised, ready for a future web based platform."
-)
 
 
 @dataclass(frozen=True)
@@ -62,25 +26,9 @@ class Platform:
 
     app: str                      # registry id; also the config key under `apps:`
     label: str                    # what the hub shows
-    kind: str                     # KIND_ANDROID | KIND_WEB
+    kind: str                     # KIND_ANDROID
     available: bool               # False => refuse to start, with `reason`
     reason: str | None = None     # why it cannot run; shown verbatim in the hub
-
-    # NOT here: a `store_key`/`bucket` that would pool Bumble-web and Bumble-app history
-    # under one id. That existed briefly and was DEAD CODE -- nothing outside this module
-    # ever read it. What actually reaches the store is the raw registry id, because
-    # supervisor.run() passes `app` straight into Worker(), which passes self.app into
-    # store.add_label/record_decision/record_profile/count_today.
-    #
-    # Removed rather than left in place, because a property that merely LOOKS like it
-    # groups history is worse than none: it invites the belief that daily rate-limit
-    # counting and photo archival already pool across a dating app's transports when they
-    # do not. (Ranker TRAINING is unaffected either way -- store.load_labels() has no
-    # per-app filter and already pools every app into one training set.)
-    #
-    # If a web platform ever goes live again alongside its Android twin, the pooling has to
-    # be wired at the store boundary -- supervisor/Worker would need to carry a storage id
-    # distinct from the display/registry id -- not re-added as an unread property here.
 
     @property
     def exclusive_resource(self) -> str | None:
@@ -112,13 +60,6 @@ _PLATFORMS: tuple[Platform, ...] = (
             "guessed points. Calibrate against the Pixel first."
         ),
     ),
-    Platform(
-        app="bumble_web",
-        label="Bumble (web)",
-        kind=KIND_WEB,
-        available=False,
-        reason=_WEB_NO_TARGET,
-    ),
 )
 
 # The hand-written entries above, captured before any calibration is applied. _apply_calibration
@@ -129,6 +70,14 @@ _PLATFORMS: tuple[Platform, ...] = (
 _ORIGINAL: dict[str, Platform] = {p.app: p for p in _PLATFORMS}
 
 _BY_APP = {p.app: p for p in _PLATFORMS}
+
+# Mode-specific readiness is separate from the coarse Platform.available bit.  The latter
+# answers whether the hub may offer a platform at all; this table answers whether the exact
+# requested run mode is licensed. Bumble supports its direct card-drag Auto path only.
+_AVAILABLE_MODES: dict[str, frozenset[str]] = {
+    "hinge": frozenset({"observe", "auto"}),
+    "bumble": frozenset(),
+}
 
 # Every registered id, for config validation. Replaces config._KNOWN_APPS.
 # Deliberately assigned exactly once: calibration can flip a platform's AVAILABILITY but
@@ -164,14 +113,26 @@ def for_kind(kind: str) -> tuple[Platform, ...]:
     return tuple(p for p in all_platforms() if p.kind == kind)
 
 
-def unavailable_reason(app: str) -> str | None:
+def unavailable_reason(app: str, mode: str | None = None) -> str | None:
     """Why `app` cannot run right now, or None if it can.
 
     Callers must check this before constructing a driver: it is the guard that keeps an
     uncalibrated spec from ever reaching the phone.
     """
     p = get(app)
+    if mode is not None:
+        if mode not in {"observe", "auto"}:
+            return f"Unsupported mode {mode!r}; choose 'observe' or 'auto'."
+        if mode in _AVAILABLE_MODES.get(app, frozenset()):
+            return None
+        if p.available:
+            return f"{p.label} supports Auto only; Observe is not available."
     return None if p.available else (p.reason or f"{p.label} is not available.")
+
+
+def mode_available(app: str, mode: str) -> bool:
+    """Whether the exact app/mode pair can be started by the hub."""
+    return unavailable_reason(app, mode) is None
 
 
 def check_selection(apps: list[str]) -> str | None:
@@ -209,7 +170,7 @@ def check_selection(apps: list[str]) -> str | None:
     return None
 
 
-def check_runnable(apps: list[str]) -> str | None:
+def check_runnable(apps: list[str], modes: dict[str, str] | str | None = None) -> str | None:
     """Everything check_selection() checks, PLUS whether each platform can run right now.
 
     This is the start-time gate -- the last thing between a selection and a driver that
@@ -221,7 +182,8 @@ def check_runnable(apps: list[str]) -> str | None:
     for app in apps:
         if app not in _BY_APP:
             continue          # let check_selection own the wording for unknown ids
-        reason = unavailable_reason(app)
+        mode = modes.get(app) if isinstance(modes, dict) else modes
+        reason = unavailable_reason(app, mode=mode)
         if reason:
             return reason
     return check_selection(apps)
@@ -256,7 +218,7 @@ def _ensure_calibration() -> None:
     from .drivers import android    # noqa: F401 -- imported for its registration side effect
 
 
-def _apply_calibration(calibrated: dict[str, bool]) -> None:
+def _apply_calibration(calibrated: dict[str, bool | dict[str, bool]]) -> None:
     """Re-derive Android availability from the driver specs' `calibrated` flags.
 
     Keeping the flag on the spec (next to the coordinates it describes) rather than
@@ -269,7 +231,7 @@ def _apply_calibration(calibrated: dict[str, bool]) -> None:
     calibrating cleared it to None, and de-calibrating then copied that None forward, so the
     hub degraded to a generic "Bumble is not available."
     """
-    global _PLATFORMS, _BY_APP
+    global _PLATFORMS, _BY_APP, _AVAILABLE_MODES
     unknown = set(calibrated) - set(_ORIGINAL)
     if unknown:
         raise ValueError(
@@ -280,7 +242,20 @@ def _apply_calibration(calibrated: dict[str, bool]) -> None:
     for p in _PLATFORMS:
         pristine = _ORIGINAL[p.app]
         if p.kind == KIND_ANDROID and p.app in calibrated:
-            is_cal = calibrated[p.app]
+            state = calibrated[p.app]
+            if isinstance(state, dict):
+                unexpected_modes = set(state) - {"observe", "auto"}
+                if unexpected_modes:
+                    raise ValueError(
+                        f"Calibration for {p.app!r} named unsupported mode(s): "
+                        f"{', '.join(sorted(unexpected_modes))}")
+                modes = frozenset(mode for mode in ("observe", "auto") if state.get(mode) is True)
+            else:
+                # Backwards-compatible test/tool API: the historic single flag licensed both
+                # modes. Production Android registration now supplies the explicit mapping.
+                modes = frozenset({"observe", "auto"}) if state else frozenset()
+            _AVAILABLE_MODES[p.app] = modes
+            is_cal = bool(modes)
             updated.append(Platform(
                 app=pristine.app,
                 label=pristine.label,

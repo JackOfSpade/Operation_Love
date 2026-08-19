@@ -23,6 +23,7 @@ _OPENER_FIELDS: dict[str, object] = {
     "opener_suggestion": None,
     "opener_referenced": None,
     "opener_item": None,
+    "opener_media_ordinal": None,
     "opener_item_description": None,
     "opener_warning": None,
     "opener_pending": False,
@@ -74,6 +75,10 @@ class AppStatus:
     # numbered crops the model was sent -- ops/OPENER-REDESIGN.md 5.1/5.7). This is the whole
     # instruction the inversion produces: "like item 3". None when there is no suggestion.
     opener_item: int | None = None
+    # A user-facing media number (photos and confirmed videos, never written prompts), set only
+    # when the driver has proved every preceding heart-bearing block’s type. Unlike opener_item,
+    # this is a display aid; None means the hub must use the visual description alone.
+    opener_media_ordinal: int | None = None
     # The model's own short description of that item (OpenerPick.item_description), so the
     # operator can find it on the card without counting hearts. Display only -- nothing branches
     # on it in status; worker.py's separate doc 5.8 coarse type cross-check may use it to

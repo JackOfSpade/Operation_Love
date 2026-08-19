@@ -61,7 +61,7 @@ def test_hinge_inspect_imports_cleanly():
     importlib.import_module("tools.hinge_inspect")
 
 
-def test_bumble_inspect_imports_cleanly():
+def _removed_bumble_inspect_imports_cleanly():
     importlib.import_module("tools.bumble_inspect")
 
 
@@ -120,7 +120,7 @@ def test_hinge_inspect_help_exits_cleanly_without_touching_device(monkeypatch):
         raise AssertionError("--help should have raised SystemExit")
 
 
-def test_bumble_inspect_help_exits_cleanly_without_touching_browser(monkeypatch):
+def _removed_bumble_inspect_help_exits_cleanly_without_touching_browser(monkeypatch):
     mod = importlib.import_module("tools.bumble_inspect")
     monkeypatch.setattr(sys, "argv", ["bumble_inspect.py", "--help"])
     try:
@@ -131,7 +131,7 @@ def test_bumble_inspect_help_exits_cleanly_without_touching_browser(monkeypatch)
         raise AssertionError("--help should have raised SystemExit")
 
 
-def test_bumble_inspect_exits_cleanly_on_platform_unavailable(monkeypatch):
+def _removed_bumble_inspect_exits_cleanly_on_platform_unavailable(monkeypatch):
     """tools/bumble_inspect.py targets the removed Playwright web driver (bumble_web --
     permanently unavailable since Bumble discontinued its web app in Aug 2026, see
     operation_love/platforms.py). BumbleDriver (a compatibility shim for BumbleWebDriver)

@@ -303,6 +303,36 @@ def test_heart_anchored_tall_media_gap_splits_without_widening_generic_gutters()
     assert r.blocks[1].kind == segment.BLOCK_SELECTABLE
 
 
+def test_two_hearts_prove_a_low_contrast_near_gutter_is_a_card_boundary():
+    """A 60px page-coloured gap must not merge a prompt and its following photo.
+
+    It remains too long for the ordinary 47..58px gutter rule.  The split is licensed only
+    because independently matched hearts prove Hinge items on both sides of it.
+    """
+    f = _Frame()
+    f.card(200, 799, heart_y=710, radius=0)
+    f.card(859, 1826, heart_y=1737, radius=0)          # 60px low-contrast boundary
+    f.card(1879, _BAND1 + 100, heart_y=2000, radius=0)
+
+    r = f.segment()
+
+    assert r.ok, r.failures
+    near_gap = next(run for run in r.runs if (run.y0, run.y1) == (799, 859))
+    assert near_gap.kind == segment.RUN_HEART_SEPARATED_NEAR_GUTTER
+    assert r.blocks[0].bottom.kind == segment.EDGE_HEART_SEPARATED_NEAR_GUTTER
+    assert r.blocks[1].top.kind == segment.EDGE_HEART_SEPARATED_NEAR_GUTTER
+    assert r.blocks[1].kind == segment.BLOCK_SELECTABLE
+
+    # The same slightly long blank span without a lower heart is not enough to invent a card.
+    unproven = _Frame()
+    unproven.card(200, 799, heart_y=710, radius=0)
+    unproven.card(859, 1826, radius=0)
+    unproven.card(1879, _BAND1 + 100, heart_y=2000, radius=0)
+    unproven_result = unproven.segment()
+    assert next(run for run in unproven_result.runs if (run.y0, run.y1) == (799, 859)).kind \
+        == segment.RUN_TOO_LONG
+
+
 def test_tall_media_gap_without_a_heart_at_the_known_bottom_inset_stays_unsplit():
     """A generic 101px blank span remains conservative; it is not a relaxed gutter window."""
     f = _Frame()

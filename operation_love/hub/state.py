@@ -54,7 +54,7 @@ def _selected_platform(enabled_apps: list[str]) -> "platforms.Platform":
     platform so the hub doesn't default to a selection that would just fail on Start; if
     nothing is available at all, fall back to the first platform overall."""
     first = enabled_apps[0] if enabled_apps else None
-    if first in platforms.KNOWN_APPS:
+    if first in platforms.KNOWN_APPS and platforms.get(first).available:
         return platforms.get(first)
     available = [p for p in platforms.all_platforms() if p.available]
     if available:
@@ -124,7 +124,7 @@ class HubState:
                 # up for the Web-based button with no frontend-side special-casing.
                 # (apps=None means "no override, fall back to config" and is checked at
                 # supervisor.run() instead, same as the empty-list case above.)
-                reason = platforms.check_runnable(apps)
+                reason = platforms.check_runnable(apps, modes=mode)
                 if reason:
                     return False, reason
             # No prior timer should survive into a replacement run.  The generation check in
@@ -453,16 +453,27 @@ class HubState:
     def config_defaults(self) -> dict:
         try:
             cfg = cfg_mod.load(self.config_path)
+            # The hub is an operational control surface, not a calibration console. Do not
+            # send unavailable apps to its picker: a dimmed option still looks selectable and
+            # made Bumble appear usable before its Auto acceptance test had passed.
             kinds = [
                 {
                     "kind": kind,
                     "label": platforms.KIND_LABELS[kind],
                     "platforms": [
-                        {"app": p.app, "label": p.label, "available": p.available, "reason": p.reason}
-                        for p in platforms.for_kind(kind)
+                        {"app": p.app, "label": p.label, "available": p.available,
+                         "reason": p.reason,
+                         "modes": {mode: platforms.mode_available(p.app, mode)
+                                   for mode in ("observe", "auto")}}
+                        for p in platforms.for_kind(kind) if p.available
                     ],
                 }
                 for kind in platforms.kinds()
+                if any(p.available for p in platforms.for_kind(kind))
+            ]
+            pending = [
+                {"app": p.app, "label": p.label, "reason": p.reason}
+                for p in platforms.all_platforms() if not p.available
             ]
             selected = _selected_platform(cfg.enabled_apps)
             return {
@@ -471,6 +482,7 @@ class HubState:
                 "enabled_apps": cfg.enabled_apps,
                 "all_apps": [p.app for p in platforms.all_platforms()],
                 "kinds": kinds,
+                "pending_platforms": pending,
                 "selected": {"kind": selected.kind, "app": selected.app},
             }
         except Exception as exc:  # noqa: BLE001

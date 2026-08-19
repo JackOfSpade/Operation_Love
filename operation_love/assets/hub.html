@@ -29,18 +29,15 @@
          background:#22222b; border:1px solid rgba(255,255,255,.14); border-radius:9px; cursor:pointer; }
   .err { color:#ff8585; font-size:12px; margin-top:8px; }
   .meta { font-size:12px; opacity:.7; }
-  /* Platform picker: tier 1 = how we drive it (App-based / Web-based), tier 2 = which app.
-     Tier 2 only appears when a kind has more than one target, so "Web-based" (one target,
-     unavailable) stays a single button rather than a pointless one-item list. */
+  /* Platform picker: kinds contain only apps that can actually run. */
   .seg { display:inline-flex; border:1px solid rgba(255,255,255,.14); border-radius:9px; overflow:hidden; }
   .seg button { border:0; border-radius:0; background:#22222b; padding:8px 14px; }
   .seg button + button { border-left:1px solid rgba(255,255,255,.14); }
   .seg button.on { background:#2f6df0; }
   .pick { display:inline-flex; flex-wrap:wrap; gap:8px; }
   .pick button.on { background:#2f6df0; border-color:#2f6df0; }
-  /* Unavailable targets stay clickable on purpose: pressing Start is what surfaces the
-     server's reason, so the UI never has to duplicate (and drift from) that logic. */
-  .pick button.na { opacity:.5; }
+  .current-app { display:inline-block; padding:8px 12px; background:#2f6df0;
+                 border:1px solid #2f6df0; border-radius:9px; font-weight:600; }
   .dot { width:6px; height:6px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle; }
 </style></head>
 <body><div class="wrap">
@@ -64,8 +61,8 @@
   </div>
 
   <div class="card">
-    <div class="controls">
-      <span class="muted">platform</span>
+    <div class="controls" id="platformrow">
+      <span class="muted">app</span>
       <span id="kindtabs" class="seg"></span>
     </div>
     <div class="controls" id="approw" style="margin-top:10px;display:none">
@@ -266,18 +263,10 @@ function renderSwipe(snap){
   // beside it: leaving text on screen next to a caveat is how a wrong-item opener gets typed
   // anyway. WAIT-coloured (🔴, per the owner's circle-only convention) because the one thing the
   // operator must not do is copy something -- there is deliberately nothing here to copy.
-  // The THIRD row is the operator's next action, and it is not decoration. Doc 5.9 says the
-  // warning replaces the OPENER BLOCK -- not the banner -- and this box is the only thing on
-  // screen while it is up, so without it a card whose suggestion failed says what went wrong and
-  // nothing about what to do, and a session where every suggestion fails (a dead quota, a driver
-  // that cannot enumerate) loses the 🟢 turn-taking cue entirely for its whole length. Same two
-  // cues, same wording, as the box above and as the no-suggestion fallbacks below, so the three
-  // teach one thing: there is nothing to copy, and the decision is still yours.
-  const openerWarnBox = (title, warning, next) => `<div style="${css.wait};border-radius:10px;padding:12px 14px;margin-top:8px">
-<div style="font-weight:700;font-size:15px">${title}</div>
-<div style="margin-top:4px;font-weight:400;font-size:12px;opacity:.9">${escHtml(warning)}</div>
-<div style="margin-top:6px;font-weight:400;font-size:12px;opacity:.8">${next}</div>
-</div>`;
+  // The operator's next action is part of this warning, not fine print.  A warning replaces the
+  // opener block, so render its title, reason, and manual-choice cue as one full-size notice.
+  const openerWarnBox = (title, warning, next) =>
+    box('wait', `${title}: ${escHtml(warning)} ${next}`);
   // The worker may publish an opener while Hinge's comment sheet is open.  The suggested text
   // replaces the ordinary instruction in this same banner; it never goes to terminal output.
   // Every dynamic value is escaped before it enters innerHTML.
@@ -337,16 +326,22 @@ function renderSwipe(snap){
       const referenced = typeof a.opener_referenced === 'string' ? a.opener_referenced.trim() : '';
       const aboutSub = referenced ? `about: ${escHtml(referenced)} · ` : '';
       const item = Number.isInteger(a.opener_item) ? a.opener_item : null;
+      const mediaOrdinal = Number.isInteger(a.opener_media_ordinal)
+        ? a.opener_media_ordinal : null;
       const desc = typeof a.opener_item_description === 'string' ? a.opener_item_description.trim() : '';
       // Before a heart is tapped this is conditional help, not a verdict on the profile. Once
       // the inline sheet is open, the human has already chosen to like, so use direct send copy.
-      const itemLabel = item === null ? '' : ` item ${item}${desc ? ` — ${escHtml(desc)}` : ''}`;
+      // Do not show the model index or heart ordinal. The driver supplies mediaOrdinal only
+      // when every earlier heart-bearing block was classified, so it is countable on screen.
+      // Otherwise a description is safer than a confident but wrong number.
+      const targetLabel = mediaOrdinal === null
+        ? `this photo${desc ? ` — ${escHtml(desc)}` : ''}`
+        : `media item ${mediaOrdinal}${desc ? ` — ${escHtml(desc)}` : ''}`;
       const heading = st === 'waiting_for_send'
-        ? (item === null ? '💬 selected item — type exactly this'
-                         : `💬 item ${item} selected${desc ? ` — ${escHtml(desc)}` : ''} — type exactly this`)
-        : (item === null
-          ? '💬 Optional: if you choose to like, type exactly this'
-          : `💬 Optional: if you choose to like, use${itemLabel}, then type exactly this`);
+        ? (item === null ? '💬 selected photo — type exactly this'
+                         : `💬 selected ${targetLabel} — type exactly this`)
+        : (item === null ? '💬 Optional: if you choose to like, type exactly this'
+                         : `💬 Optional: if you choose to like, use ${targetLabel}, then type exactly this`);
       // THE DECISION IS STILL THE HUMAN'S, AND THE PRE-TAP WINDOW IS WHERE THAT HAS TO BE SAID.
       // Before the inversion a suggestion could only appear AFTER the heart tap (state
       // 'waiting_for_send'), so it never competed with the 🟢 GO cue that tells the operator it
@@ -358,7 +353,8 @@ function renderSwipe(snap){
       // to comment on IF they like her; it is not the decision, and a hub that reads like an
       // order to like would bias the labels the ranker is trained on.
       const likeThisItem = a.app === 'hinge' && item !== null
-        ? `tap X to pass, or tap the heart on item ${item} to like`
+        ? (mediaOrdinal === null ? 'tap X to pass, or tap the heart on that photo to like'
+                                 : `tap X to pass, or tap the heart on media item ${mediaOrdinal} to like`)
         : controls;
       const chrome = st === 'waiting_for_send'
         ? `${aboutSub}then tap Send Like in Hinge`
@@ -375,9 +371,12 @@ function renderSwipe(snap){
       // The suggestion is generated while this cue is up (doc 5.9: READY is published
       // immediately and the suggestion fills in behind it), so this says so instead of leaving
       // the operator to wonder -- but it stays a GO cue, because nothing here asks them to wait.
-      const sub = a.opener_pending ? 'make your choice, or wait a moment for a suggestion'
-                                   : 'make your choice in the app';
-      return box('go', `🟢 ${app}: ${controls}`, sub);
+      const notice = a.opener_pending
+        ? `choose now: ${controls}, or wait a moment for a suggestion`
+        : `make your choice: ${controls}`;
+      // Keep this whole instruction at the banner's normal size.  The pending-suggestion
+      // reminder is part of the decision cue, not fine-print beside it.
+      return box('go', `🟢 ${app}: ${notice}`);
     }
     // "suggesting" USED TO BE A BLOCKING STATE and is deliberately not one any more (doc 5.9):
     // the suggestion is generated on its own thread while the operator is already free to act,
@@ -618,16 +617,8 @@ async function tickLogs(){
 }
 
 // --- platform picker ---------------------------------------------------------
-// Two tiers, because "which dating app" and "how we drive it" stopped lining up one
-// to one when Bumble discontinued its web app (Aug 2026) and became a second ANDROID
-// target alongside Hinge. Tier 1 picks the kind (App-based / Web-based), tier 2 picks
-// the app within it.
-//
-// Selection is SINGLE, not the old multi-checkbox: both dating apps now live on the
-// one physical Pixel, and Android runs a single app in the foreground -- screencap
-// captures whatever is on top and the virtual touchscreen delivers to whatever holds
-// focus -- so two app-based platforms can never run at once. The server enforces this
-// too (platforms.check_runnable); the UI just stops you asking for it.
+// The server sends runnable platforms only. Pending targets are shown as plain status,
+// never as controls that can be mistaken for a valid selection.
 //
 // These four are pure and named so the hub test suite can eval the real logic with
 // node rather than asserting a substring that a comment-only revert could dodge.
@@ -658,6 +649,11 @@ function escHtml(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, ch => 
 
 function renderPlatforms(){
   const ks = cfg.kinds || [];
+  const only = ks.length === 1 && (ks[0].platforms || []).length === 1;
+  const onlyPlatform = only ? ks[0].platforms[0] : null;
+  if (onlyPlatform) {
+    $('#kindtabs').innerHTML = `<span class="current-app">${escHtml(onlyPlatform.label)}</span>`;
+  } else {
   $('#kindtabs').innerHTML = ks.map(k =>
     `<button data-kind="${escHtml(k.kind)}" class="${k.kind === sel.kind ? 'on' : ''}">${escHtml(k.label)}</button>`
   ).join('');
@@ -665,15 +661,16 @@ function renderPlatforms(){
     const b = document.querySelector(`#kindtabs button[data-kind="${k.kind}"]`);
     if (b) b.onclick = () => { sel = {kind: k.kind, app: defaultAppForKind(k)}; renderPlatforms(); };
   });
+  }
 
   const entry = kindEntry(cfg, sel.kind);
   const plats = (entry && entry.platforms) || [];
-  const expand = shouldExpand(entry);
+  const expand = !only && shouldExpand(entry);
   $('#approw').style.display = expand ? '' : 'none';
   if (expand) {
     $('#apppicks').innerHTML = plats.map(p =>
       `<button data-app="${escHtml(p.app)}" class="${p.app === sel.app ? 'on' : ''}${p.available ? '' : ' na'}">`
-      + `${escHtml(p.label)}</button>`
+      + `${escHtml(p.label)}${p.modes && p.modes.auto && !p.modes.observe ? ' · Auto only' : ''}</button>`
     ).join('');
     plats.forEach(p => {
       const b = document.querySelector(`#apppicks button[data-app="${p.app}"]`);
@@ -681,15 +678,32 @@ function renderPlatforms(){
     });
   }
 
-  // A quiet marker only. The authoritative "why not" comes from the server when you
-  // press Start, so there is exactly one place that decides what can run.
-  const cur = plats.find(p => p.app === sel.app);
-  $('#platnote').innerHTML = (cur && !cur.available)
-    ? `<span class="dot" style="background:#f0b429"></span>${escHtml(cur.label)} is not runnable yet. Press Start for details.`
-    : '';
+  const pending = cfg.pending_platforms || [];
+  $('#platnote').innerHTML = pending.map(p =>
+    `<span class="dot" style="background:#f0b429"></span>${escHtml(p.label)} Auto is under safety testing and will appear here when it is ready.`
+  ).join('<br>');
+  syncModeAvailability();
+  syncModeUI();
 }
 function chosenApps(){ return sel.app ? [sel.app] : []; }
 
+function syncModeAvailability(){
+  // Availability is per app and mode. Keep unavailable choices out of reach instead of
+  // waiting until the operator presses Start to reject them.
+  const entry = kindEntry(cfg, sel.kind);
+  const platform = ((entry && entry.platforms) || []).find(p => p.app === sel.app);
+  const modes = (platform && platform.modes) || {};
+  const select = $('#mode');
+  for (const option of select.options) {
+    const unavailable = modes[option.value] === false;
+    option.disabled = unavailable;
+    option.hidden = unavailable;
+  }
+  if (select.options[select.selectedIndex] && select.options[select.selectedIndex].disabled) {
+    const allowed = Array.from(select.options).find(option => !option.disabled);
+    if (allowed) select.value = allowed.value;
+  }
+}
 function syncModeUI(){                         // the cap only applies in auto mode
   $('#maxrow').style.display = $('#mode').value === 'auto' ? '' : 'none';
   const off = $('#unlimited').checked;         // unlimited on -> show ∞, grey out + disable the number box

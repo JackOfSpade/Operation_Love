@@ -2429,6 +2429,23 @@ def test_observe_publishes_the_item_number_and_description_with_the_text():
     assert shown["opener_warning"] is None
 
 
+def test_observe_publishes_a_proved_media_ordinal_for_hinge_display():
+    from operation_love.status import RunStatus
+
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
+    driver.model_item_media_ordinal = lambda model_item: 4 if model_item == 3 else None
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService(suggestion="loved your trail photo", index=3,
+                                  item_description="the ridgeline photo")
+    Worker("hinge", driver, _ObserveDecider(), svc, FakeStore(), "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    shown = next(c for c in calls if c.get("opener_suggestion") == "loved your trail photo")
+    assert shown["opener_item"] == 3
+    assert shown["opener_media_ordinal"] == 4
+
+
 def test_observe_rejects_a_pick_in_any_non_model_item_index_space():
     """Observe's numbered crop request can only be interpreted in model-item space.
 
@@ -2645,14 +2662,12 @@ def test_a_mismatch_reaches_the_console_as_well_as_the_hub(capsys):
     assert "loved your trail photo" not in printed               # the TEXT stays hub-only
 
 
-def test_observe_warns_rather_than_trusting_a_sheet_it_could_not_be_given():
-    """A driver cannot always hand over the live sheet frame (a screencap glitch). Under the OLD
-    flow that meant "generate blind and badge it unanchored"; under the inversion it means the
-    one check standing between a suggestion and a wrong-item comment could not be made at all.
+def test_observe_keeps_advice_when_a_sheet_frame_is_temporarily_unavailable():
+    """A missing sheet frame is inconclusive, not proof the human chose a different item.
 
-    "Cannot look" must therefore render exactly like "looked and it is wrong" -- doc 5.9's
-    either-guard-refusing rule, applied to the guard being unable to run. The two call for the
-    same action from the operator, and only the diagnosis differs."""
+    Hinge can publish a usable frame on a later callback, so the optional generated opener stays
+    visible meanwhile. An affirmative mismatch remains the only condition that hides it.
+    """
     from operation_love.status import RunStatus
 
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
@@ -2665,8 +2680,8 @@ def test_observe_warns_rather_than_trusting_a_sheet_it_could_not_be_given():
 
     assert driver.checked == [], "nothing to check means the check must not be faked"
     sent = next(c for c in calls if c.get("state") == "waiting_for_send")
-    assert sent["opener_suggestion"] is None
-    assert "could not hand over a picture" in sent["opener_warning"]
+    assert sent["opener_suggestion"] == "hey there"
+    assert sent["opener_warning"] is None
 
 
 def test_observe_warns_and_never_asks_when_the_capture_could_not_be_enumerated():
@@ -2691,6 +2706,20 @@ def test_observe_warns_and_never_asks_when_the_capture_could_not_be_enumerated()
     warned = next(c for c in calls if c.get("opener_warning"))
     assert warned["opener_warning"] == "the scroll top was not confirmed"
     assert not w.stop_event.is_set() and len(store.labels) == 1
+
+
+def test_observe_summarizes_an_item_index_contradiction_for_the_hub():
+    """Strip votes are debug evidence, not instructions a person can act on."""
+    from operation_love.worker import _operator_items_unavailable_warning
+
+    raw = ("the item index this capture produced contradicts itself, so its numbering cannot be "
+           "trusted: frames 3 and 4 could not be put in one coordinate space: no_consensus")
+    warning = _operator_items_unavailable_warning(raw)
+
+    assert "could not be reliably counted" in warning
+    assert "changed while it was being read" not in warning
+    assert "pass or like manually" in warning
+    assert "frames 3 and 4" not in warning and "no_consensus" not in warning
 
 
 def test_observe_targeting_readiness_gate_withholds_text_before_the_provider_call(capsys):
@@ -2818,13 +2847,12 @@ def test_observe_dismissing_the_like_sheet_goes_back_to_the_instruction_and_drop
     assert dismissed["opener_item"] == 3
 
 
-def test_observe_rechecks_a_settling_sheet_and_restores_a_correct_item_suggestion():
-    """One verified composer frame is enough to start observing, not to freeze its preview.
+def test_observe_keeps_the_advice_visible_while_a_settling_sheet_is_rechecked():
+    """An unmeasurable first preview is not evidence the human opened a different item.
 
-    The Alex report's first sheet frame was vertically clipped enough for its correct item 3 to
-    be unmeasurable; the old driver sent no later anchor while the sheet remained open, so the
-    transient warning stayed until the human manually changed the screen.  A later settled frame
-    that verifies item 3 must restore the already-generated advice on its own.
+    The Hinge keyboard can reflow the selected-card preview above the composer. The temporary
+    layout failure must not remove an already-generated opener; a later settled frame still gets
+    the normal positive verification and only an affirmative wrong-item verdict may hide text.
     """
     from operation_love.status import RunStatus
 
@@ -2852,10 +2880,10 @@ def test_observe_rechecks_a_settling_sheet_and_restores_a_correct_item_suggestio
            threading.Event(), mode="observe", status=status).run()
 
     assert driver.checked == [(b"settling-sheet", 3), (b"settled-item-3-sheet", 3)]
-    assert any(c.get("opener_warning") for c in calls)
-    settled = [c for c in calls if c.get("state") == "waiting_for_send"][-1]
-    assert settled["opener_suggestion"] == "loved your trail photo"
-    assert settled["opener_warning"] is None
+    open_sheet = [c for c in calls if c.get("state") == "waiting_for_send"]
+    assert len(open_sheet) == 2
+    assert all(c.get("opener_suggestion") == "loved your trail photo" for c in open_sheet)
+    assert all(c.get("opener_warning") is None for c in open_sheet)
 
 
 def test_observe_keeps_a_verified_suggestion_through_inconclusive_typing_refreshes():

@@ -16,8 +16,10 @@ from ..hinge import HINGE_SPEC, AndroidDriver, HingeDriver
 from .bumble import BUMBLE_SPEC, BumbleAndroidDriver
 
 platforms._apply_calibration({
-    "hinge": HINGE_SPEC.calibrated,
-    "bumble": BUMBLE_SPEC.calibrated,
+    "hinge": {"observe": HINGE_SPEC.observe_ready, "auto": HINGE_SPEC.calibrated},
+    # Bumble's direct card-drag Auto path is supported. Manual observation is deliberately
+    # absent, so it must never inherit Auto readiness just because both share one spec.
+    "bumble": {"observe": False, "auto": True},
 })
 
 __all__ = [

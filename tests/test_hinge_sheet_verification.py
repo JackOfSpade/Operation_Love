@@ -849,6 +849,32 @@ def test_the_item_the_human_opened_matching_the_suggestion_is_confirmed_with_no_
         assert driver.observe_item_mismatch(_SHEETS[0], 1) == ""
 
 
+def test_observe_check_allows_a_structurally_confirmed_priority_like_surface(monkeypatch):
+    """Priority Like changes only the CTA label, never the passive item-check contract.
+
+    The lower template threshold is deliberately reached only after strict
+    action-level detection fails.  The returned surface still has to pass the
+    same profile and selected-item comparisons before advice is shown.
+    """
+    adb = SheetAdb(_SHEETS[0])
+    calls = []
+    with pytest.MonkeyPatch.context() as mp:
+        driver = _observing(adb, mp)
+
+        def priority_surface(_frame, _template, *, threshold):
+            calls.append(threshold)
+            if threshold == 0.8:
+                raise hinge.ComposerDetectionError("literal Send Like glyph is a Priority Like")
+            assert threshold == 0.68
+            return _COMPOSER_SURFACE
+
+        mp.setattr(hinge, "locate_inline_composer", priority_surface)
+        assert driver.observe_item_check(_SHEETS[0], 1).state == OBSERVE_ITEM_MATCH
+        assert driver._observe_like_sheet_detection == "priority_variant"
+    assert calls == [0.8, 0.68]
+    assert adb.calls == []
+
+
 def test_a_human_opening_a_different_item_is_reported_with_both_numbers():
     """DOC 5.9's headline case. The suggestion was written about item 1 and the human hearted
     item 2. The sentence has to name BOTH -- what they opened and what the text was for --

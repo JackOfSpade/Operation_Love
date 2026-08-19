@@ -573,14 +573,6 @@ def test_unknown_key_in_section_raises_clear_error():
 # start-time only: platforms.check_runnable(), asserted at supervisor.run() (see
 # test_supervisor.py) and HubState.start() (see test_hub.py) instead.
 
-def test_bumble_web_is_a_known_app_id_and_loads_fine_despite_being_unrunnable():
-    # bumble_web is a real registry id now (Bumble's web app is discontinued) -- config
-    # validation only cares that it's a KNOWN id; check_runnable (start-time) is what
-    # actually rejects running it.
-    d = {**BASE, "enabled_apps": ["bumble_web"]}
-    c.validate(_load(d))   # no raise
-
-
 def test_uncalibrated_android_app_loads_fine_at_config_time():
     # bumble is uncalibrated (unavailable) today, but that must not stop a config file that
     # merely enables it from loading -- see module docstring above.
@@ -758,15 +750,6 @@ def test_android_app_frac_and_coords_within_range_pass():
          "apps": {"bumble": {"read_scroll_frac": 0.6,
                              "coords": {"like_heart": [0.85, 0.9]}}}}
     c.validate(_load(d))   # no raise
-
-
-def test_web_app_config_is_not_subject_to_android_fraction_validation():
-    # bumble_web is a web (Playwright) platform with no coords/*_frac concept -- CSS
-    # `selectors` instead. This must not misfire on it even if a numeric-looking key there
-    # happened to end in `_frac`.
-    d = {**BASE, "enabled_apps": ["hinge"],
-         "apps": {"bumble_web": {"lookalike_frac": 5.0}}}
-    c.validate(_load(d))   # no raise -- bumble_web is not an Android app
 
 
 def test_shipped_hinge_and_bumble_app_blocks_pass_fraction_validation():

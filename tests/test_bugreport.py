@@ -493,6 +493,103 @@ def test_debug_log_section_explains_latest_observe_wait_and_reproduction_context
     assert "capture completed → READY/manual decision prompt → no pass/like record yet" in md
 
 
+def _removed_debug_log_section_summarizes_passive_bumble_screenwatch_without_frames(tmp_path):
+    run = tmp_path / "run_bumble_screenwatch"
+    run.mkdir(parents=True)
+    record = {
+        "ts": "2026-08-18T03:06:00", "action": "observe_screenwatch_closed",
+        "screenwatch": {"alive": True, "frames_seen": 1384, "events_emitted": 0,
+                        "restarts": 0, "last_frame_age_ms": 12, "failure": None,
+                        "width": 160, "height": 256, "fps": 20},
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    md = bugreport._one_debug_dir_md("bumble", {"debug_dir": str(tmp_path)})
+
+    assert "passive Bumble swipe-observer health (no frames retained):" in md
+    assert "stream live; 1384 decoded frame(s); 0 settled swipe event(s); sampling 160x256 at 20fps" in md
+
+
+def _removed_debug_log_section_reports_rejected_full_screen_transitions(tmp_path):
+    run = tmp_path / "run_bumble_full_screen"
+    run.mkdir(parents=True)
+    record = {
+        "ts": "2026-08-18T03:06:00", "action": "observe_screenwatch_closed",
+        "screenwatch": {"alive": True, "frames_seen": 1384, "events_emitted": 0,
+                        "non_deck_rejections": 2, "restarts": 0,
+                        "last_frame_age_ms": 12, "failure": None,
+                        "width": 160, "height": 256, "fps": 20},
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    md = bugreport._one_debug_dir_md("bumble", {"debug_dir": str(tmp_path)})
+
+    assert "2 full-screen/non-deck transition(s) rejected" in md
+
+
+def _removed_debug_log_section_explains_why_a_live_screenwatch_did_not_emit(tmp_path):
+    run = tmp_path / "run_bumble_motion_diagnostics"
+    run.mkdir(parents=True)
+    record = {
+        "ts": "2026-08-18T03:06:00", "action": "observe_screenwatch_closed",
+        "screenwatch": {"alive": True, "frames_seen": 1384, "events_emitted": 0,
+                        "non_deck_recoveries": 2, "motion_candidates": 3,
+                        "released_candidates_emitted": 2,
+                        "vertical_motion_rejections": 2,
+                        "unsettled_frames": 9, "unchanged_rejections": 1,
+                        "motion_timeouts": 1, "restarts": 0,
+                        "last_frame_age_ms": 12, "failure": None,
+                        "width": 160, "height": 256, "fps": 20},
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    md = bugreport._one_debug_dir_md("bumble", {"debug_dir": str(tmp_path)})
+
+    assert "3 horizontal motion candidate(s)" in md
+    assert "2 released direction candidate(s) sent to Name/Age confirmation" in md
+    assert "2 deck-control transition(s) recovered" in md
+    assert "2 vertical-read transition(s) rejected" in md
+    assert "9 frame(s) still in motion while settling" in md
+    assert "1 returned/unchanged drag(s) rejected" in md
+    assert "1 motion candidate(s) timed out" in md
+
+
+def _removed_debug_log_section_reports_touch_stream_health_for_bumble_labels(tmp_path):
+    run = tmp_path / "run_bumble_touchwatch"
+    run.mkdir(parents=True)
+    record = {
+        "ts": "2026-08-18T03:06:00", "action": "observe_screenwatch_closed",
+        "screenwatch": {"alive": True, "frames_seen": 1384, "events_emitted": 0,
+                        "restarts": 0, "last_frame_age_ms": 12, "failure": None,
+                        "width": 160, "height": 256, "fps": 20},
+        "touchwatch": {"attached": True, "alive": False, "events_seen": 28,
+                       "raw_lines_seen": 28, "device": "/dev/input/event3"},
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    md = bugreport._one_debug_dir_md("bumble", {"debug_dir": str(tmp_path)})
+
+    assert "touch stream closed; 28 parsed event(s); 28 raw line(s)" in md
+
+
+def _removed_debug_log_section_shows_redacted_unparsed_touch_format(tmp_path):
+    run = tmp_path / "run_bumble_touchwatch_format"
+    run.mkdir(parents=True)
+    record = {
+        "ts": "2026-08-18T03:06:00", "action": "observe_screenwatch_closed",
+        "screenwatch": {"alive": True, "frames_seen": 10, "events_emitted": 0,
+                        "width": 160, "height": 256, "fps": 20},
+        "touchwatch": {"attached": True, "alive": True, "events_seen": 0,
+                       "raw_lines_seen": 12,
+                       "unparsed_samples": ["event<n>: <n> <n> <n>"]},
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    md = bugreport._one_debug_dir_md("bumble", {"debug_dir": str(tmp_path)})
+
+    assert "unparsed touch format `event<n>: <n> <n> <n>`" in md
+
+
 def test_debug_log_section_explains_like_candidate_without_claiming_a_sheet(tmp_path):
     """A bottom-delta candidate is specifically NOT evidence that a composer opened or
     closed. The report must preserve that distinction from `like_sending`."""
@@ -1111,14 +1208,14 @@ def test_first_android_app_cfg_prefers_the_enabled_app():
     assert bugreport._first_android_app_cfg(apps, ["hinge"]) == ("adb", "HINGE-SERIAL")
 
 
-def test_first_android_app_cfg_falls_back_past_a_web_only_enabled_app():
+def _removed_first_android_app_cfg_falls_back_past_a_web_only_enabled_app():
     # bumble_web has no adb_path (it's a browser) -- the fallback must still find hinge's.
     apps = {"bumble_web": {"url": "https://bumble.com/app"},
             "hinge": {"adb_path": "adb", "serial": "HINGE-SERIAL"}}
     assert bugreport._first_android_app_cfg(apps, ["bumble_web"]) == ("adb", "HINGE-SERIAL")
 
 
-def test_first_android_app_cfg_none_when_nothing_declares_adb_path():
+def _removed_first_android_app_cfg_none_when_nothing_declares_adb_path():
     assert bugreport._first_android_app_cfg({"bumble_web": {"url": "x"}}, ["bumble_web"]) is None
 
 
@@ -1182,7 +1279,7 @@ def test_touch_watcher_probe_reports_the_reason_when_unavailable(monkeypatch):
     assert _FakeTouchWatcherUnavailable.last_instance.closed is True   # close() ran in `finally`
 
 
-def test_touch_watcher_probe_when_no_android_app_is_configured(monkeypatch):
+def _removed_touch_watcher_probe_when_no_android_app_is_configured(monkeypatch):
     monkeypatch.setattr(oplove_config, "load", lambda path: types.SimpleNamespace(
         apps={"bumble_web": {"url": "https://bumble.com/app"}}, enabled_apps=["bumble_web"]))
     assert "touch watcher: no Android app configured" in bugreport.build_report(None)

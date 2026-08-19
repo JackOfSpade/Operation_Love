@@ -50,6 +50,18 @@ class AndroidAppSpec:
     # numbers are still guesses; it is the one thing standing between a placeholder
     # coordinate and a real touch on a real account.
 
+    observe_calibrated: bool | None = None
+    # Whether the app's manual Observe path is safe to run. ``None`` follows
+    # ``calibrated`` for existing apps.  A separate True is useful for a target such as
+    # Bumble whose passive/manual-decision path needs only reviewed profile scrolling and
+    # read-only decision observation, while autonomous like/pass actions remain deliberately
+    # uncalibrated.  Platform start-up and AndroidDriver.open_session enforce the resolved
+    # mode independently, so enabling Observe can never implicitly enable Auto.
+
+    @property
+    def observe_ready(self) -> bool:
+        return self.calibrated if self.observe_calibrated is None else self.observe_calibrated
+
     coords: dict[str, tuple[float, float]] = field(default_factory=dict)
     # Action points as FRACTIONS of the screen (x, y in 0..1). Some are fixed taps (e.g.
     # Hinge's comment box / send button); others are only the FALLBACK used when vision

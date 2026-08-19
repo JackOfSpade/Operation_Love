@@ -403,6 +403,7 @@ def test_video_mute_exclusion_keeps_heart_space_but_removes_model_choice(monkeyp
     assert profile is not None and len(profile.items) == 3
     assert drv._current_item_index.heart_count == 4
     assert drv._current_item_payload.translation == (1, 3, 4)
+    assert drv.model_item_media_ordinal(2) == 3
     video = next(crop for crop in drv._current_item_payload.excluded
                  if crop.heart_ordinal == 2)
     assert video.number is None and video.image is None and not video.sent

@@ -1167,6 +1167,138 @@ def test_positioned_mute_card_track_rolls_every_repair_back_on_page_contradictio
     assert index.layout_repaired_shifts == ()
 
 
+@pytest.mark.parametrize("raw_status", (frameshift.SHIFT_NO_EVIDENCE,
+                                         frameshift.SHIFT_NO_CONSENSUS))
+@pytest.mark.parametrize("break_gate", (None, "marker_x", "anchor", "probe"))
+def test_positioned_mute_card_track_bridges_one_directly_proved_video_pair(
+        monkeypatch, break_gate, raw_status):
+    """A video may bridge one directly proved refusal without dropping cards below it.
+
+    This is the Marina shape: the animated card leaves no usable NCC strip between frames 2 and
+    3, but its app-owned control moves +241px at the same x, remains inside one segmented card
+    in both frames, and one card edge/heart corroborates that distance. This is sufficient for
+    either an all-weak or an under-quorum raw refusal. The test uses a normal complete synthetic
+    profile around that one forced failure so a positive proves the rebuilt index keeps items
+    both above and below the video rather than returning a trusted prefix.
+    """
+    scrolls = (0, 225, 459, 700, 939, 1172)
+    frames = [_frame(scroll) for scroll in scrolls]
+    real_shift = item_index.estimate_shift
+
+    def video_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(len(frames) - 1)
+                    if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair == 2:
+            return dataclasses.replace(
+                _shift_with_votes(result, [], status=raw_status),
+                confidence=0.0,
+                reason="synthetic animated card obscured every NCC strip")
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", video_pair)
+    if break_gate == "probe":
+        monkeypatch.setattr(
+            item_index, "_assemble",
+            lambda *args, **kwargs: ((), ("synthetic direct-marker page contradiction",), ()))
+
+    marker_x = 107 if break_gate == "marker_x" else 106
+    markers = tuple(
+        item_index.VideoMuteMarker(
+            frame_index=frame_index,
+            x=(marker_x if frame_index == 3 else 106),
+            y=1425 - scroll,
+            score=1.0)
+        for frame_index, scroll in zip(range(5), scrolls[:5], strict=True))
+    if break_gate == "anchor":
+        real_anchor_count = item_index._track_anchor_count
+
+        def marker_only_anchor_count(before, after, delta, *, before_marker, after_marker):
+            if before_marker is not None and after_marker is not None:
+                return 1
+            return real_anchor_count(
+                before, after, delta,
+                before_marker=before_marker, after_marker=after_marker)
+
+        monkeypatch.setattr(item_index, "_track_anchor_count", marker_only_anchor_count)
+
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        video_mute_markers=markers, _allow_frame_omission_recovery=False)
+
+    if break_gate is not None:
+        assert not index.usable
+        assert index.layout_repaired_shifts == ()
+        return
+    assert index.usable, index.failures
+    assert index.offsets == scrolls
+    assert [shift.delta_px for shift in index.shifts] == [225, 234, 241, 239, 233]
+    assert [(pair, raw.status, raw.delta_px)
+            for pair, raw in index.layout_repaired_shifts] == [
+                (2, raw_status, None)]
+    repair = index.repair_provenance[0]
+    assert (repair.pair_index, repair.path, repair.raw_status, repair.effective_status,
+            repair.effective_delta_px, repair.marker_frames) == (
+                2, "v12_mute_card_track", raw_status,
+                frameshift.SHIFT_MEASURED, 241, (2, 3))
+    assert "direct marker bridge" in index.shifts[2].reason
+
+
+@pytest.mark.parametrize("break_gate", (None, "still_visible", "weak_cluster"))
+def test_positioned_mute_card_track_reconnects_one_boundary_below_a_video(
+        monkeypatch, break_gate):
+    """The first transition below a proved video exit may rejoin the ordinary card sequence.
+
+    The mute control is present through frame 4. Its measured +233px exit puts its predicted
+    origin at row 253, above the 300px content band. The following pair has a deliberately
+    refused raw result despite three identical +247px strips; that one value may be used only
+    because the actively tracked card's heart also translates by +247px. This is the bridge that
+    preserves cards *below* a video rather than stopping at a safe prefix.
+    """
+    scrolls = (0, 225, 459, 700, 939, 1172, 1419)
+    frames = [_frame(scroll) for scroll in scrolls]
+    real_shift = item_index.estimate_shift
+
+    def exit_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(len(frames) - 1)
+                    if frame_a == frames[i] and frame_b == frames[i + 1])
+        if pair == 5:
+            votes = [247, 247, 247] if break_gate != "weak_cluster" else [247, 247, 248]
+            return dataclasses.replace(
+                _shift_with_votes(result, votes, status=frameshift.SHIFT_NO_CONSENSUS),
+                confidence=1 / 3, agreeing=3, dissenting=6, eligible=9,
+                reason="synthetic video-exit strip contradiction")
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", exit_pair)
+    marker_rows = tuple(1425 - scroll for scroll in scrolls[:5])
+    if break_gate == "still_visible":
+        # The control's expected next row remains in the band, so an absent observation is an
+        # identity break, not permission to bridge below it.
+        marker_rows = tuple(row + 240 for row in marker_rows)
+    markers = tuple(
+        item_index.VideoMuteMarker(frame_index=i, x=106, y=row, score=1.0)
+        for i, row in enumerate(marker_rows))
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        video_mute_markers=markers, _allow_frame_omission_recovery=False)
+
+    if break_gate is not None:
+        assert not index.usable
+        assert index.layout_repaired_shifts == ()
+        return
+    assert index.usable, index.failures
+    assert index.offsets == scrolls
+    assert [shift.delta_px for shift in index.shifts] == [225, 234, 241, 239, 233, 247]
+    assert [(pair, raw.status, raw.delta_px)
+            for pair, raw in index.layout_repaired_shifts] == [
+                (5, frameshift.SHIFT_NO_CONSENSUS, None)]
+    assert "post-exit bridge" in index.shifts[5].reason
+
+
 def test_positioned_mute_card_track_survives_a_static_page_stretch(monkeypatch):
     """The track's authority must reach PAST a run of genuine zero-pixel pairs.
 
@@ -2253,6 +2385,44 @@ def test_a_fragment_reaching_past_a_bounded_card_is_reported():
     assert len(blocks) == 1
     assert any("cannot reach past the card that contains it" in f for f in failures), failures
     assert notes == ()                    # one proven card is never a licence to discard data
+
+
+def test_repeated_near_gutter_with_cross_frame_boundary_proof_splits_only_partial_merges():
+    """A real 64px page-background run may overcount a gutter by a few pale card rows.
+
+    This is the Mackenzie regression: one frame fully bounded the heartless context card at
+    2224..2828, two others repeatedly saw a 64px page-coloured span at that exact bottom, and
+    earlier frames saw the next fragment begin 53px below it.  The spanning sightings are not a
+    changing profile -- they are a single-frame segmenter miss.  Keep their virtual pieces
+    partial, so this repair cannot fabricate a model-selectable item by itself.
+    """
+    observations = [
+        _obs(4, 2224, 2828),
+        _obs(4, 2881, 2997, complete=False),
+        _obs(5, 2224, 2828),
+        _obs(5, 2881, 3229, complete=False),
+        _obs(6, 2224, 3449, complete=False),
+        _obs(7, 2224, 3674, complete=False),
+        _obs(8, 2224, 3855, complete=False, hearts=(3766,)),
+    ]
+    repaired, notes = item_index._split_repeated_near_gutter_merges(
+        observations, ((6, 2828, 2892), (7, 2828, 2892), (8, 2828, 2892)),
+        tolerance=item_index._EXTENT_TOLERANCE_PX)
+    blocks, failures = _assemble(repaired)
+
+    assert failures == ()
+    assert [(block.page_y0, block.page_y1, block.kind) for block in blocks] == [
+        (2224, 2828, item_index.ITEM_CONTEXT),
+        (2881, 3855, item_index.ITEM_PARTIAL),
+    ]
+    assert blocks[1].hearts == ((_HEART_CX, 3766),
+                                ) and blocks[1].heart_ordinal == 1
+    assert len(notes) == 1 and "frames [6, 7, 8]" in notes[0]
+
+    # A lone 64px pale span is still just a segmenter ambiguity, never a licence to split.
+    unchanged, no_notes = item_index._split_repeated_near_gutter_merges(
+        observations, ((6, 2828, 2892),), tolerance=item_index._EXTENT_TOLERANCE_PX)
+    assert unchanged == tuple(observations) and no_notes == ()
 
 
 def test_live_f19_to_f29_bridging_shape_is_split_on_its_bounded_cards():

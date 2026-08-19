@@ -397,3 +397,47 @@ def test_either_shipped_variant_confirms_scroll_top_under_default_matching(monke
         verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
         assert verdict.confirmed is True
         assert verdict.distance == 0.0
+
+
+@pytest.mark.parametrize("fp", [
+    scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS,
+    scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED,
+    scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_CURRENT,
+])
+def test_hingex_signals_chip_variants_are_default_scroll_top_candidates(monkeypatch, fp):
+    """Selected and unselected HingeX Signals chips change the fixed filter strip.
+
+    The accompanying Most Compatible banner is below ``identity_band``.  This regression
+    confirms the actual top-of-card signal that must remain registered, without placing a real
+    dating-profile screenshot in the test suite.
+    """
+    assert fp in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS
+    arr = np.array(fp, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+
+    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+
+    assert verdict.confirmed is True
+    assert verdict.distance == 0.0
+
+
+def test_observed_selected_signals_top_is_not_rejected_into_the_dead_zone(monkeypatch):
+    """Regression for the live Signals top that formerly measured 3.281 and was refused.
+
+    This is the filter-strip fingerprint only: no profile pixels or identifying data are stored.
+    """
+    observed = (
+        254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        255, 200, 168, 168, 203, 251, 232, 232, 232, 248, 238, 232, 233, 231, 242, 246,
+        227, 87, 78, 75, 85, 223, 237, 237, 240, 232, 235, 230, 231, 239, 235, 233,
+        215, 88, 126, 120, 89, 218, 221, 196, 232, 233, 237, 198, 193, 226, 235, 236,
+    )
+    arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+
+    assert scroll_top.fingerprint_distance(
+        observed, scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS) == 3.28125
+    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+
+    assert verdict.confirmed is True
+    assert verdict.distance == 0.0

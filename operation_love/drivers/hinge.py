@@ -89,6 +89,7 @@ from .base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClo
                    snapshot_failure_frame)
 from .frameshift import SHIFT_MEASURED, ShiftEstimationError, estimate_shift
 from .item_crops import (
+    CROP_CONTEXT, CROP_EXCLUDED, CROP_ITEM, CROP_UNCROPPABLE, EXCLUSION_NON_PHOTO,
     PHOTO_ONLY_POLICY_ID, ItemCropError, build_item_payload, unnumber_unless_confident_photo)
 from .item_type_preflight import INCONCLUSIVE, ItemTypePreflight, preflight_item_type
 from .item_identity import IdentityError, compare_profile_identity
@@ -661,6 +662,10 @@ _PAYWALL_MAX_Y_FRAC = 0.30
 # mathematically-perfect hit on a flat/degraded frame, and a position gate costs nothing.
 
 _OBSERVE_STUCK_S = 90.0
+# The owner measured a single quick manual return flick on this Pixel. It is used solely after
+# profile capture, never for read-scrolling or a decision gesture. 160ms maps to a ~0.36x
+# Fitts-law stroke on UHID and to the same requested duration on the explicit ADB transport.
+_FAST_REWIND_SWIPE_DURATION_MS = 160
 # The FLOOR/anchor of the stuck-screen watchdog's budget, NOT the budget itself -- every arm
 # point draws its own value from _observe_stuck_budget() below, and this constant is only the
 # lower bound that draw can never fall under. This is the fix for the DEEPER defect the paywall
@@ -1594,7 +1599,7 @@ class AndroidDriver(DatingAppDriver):
     # dwell, and between _scroll_to_top's undo-swipes. Declared here (class-level, so both
     # Android bindings inherit it) because worker.py only passes the callable to a driver that
     # advertises it -- see DatingAppDriver.supports_interruptible_capture. It is True for the
-    # whole AndroidDriver family and not for BumbleWebDriver, whose own capture waits are not
+    # whole AndroidDriver family. Other driver families must opt in only if their capture waits are
     # stop-aware: a flag claiming a capability the code does not have would be worse than no
     # flag, since the worker would then believe Stop is handled when it silently is not.
     supports_interruptible_capture = True
@@ -1616,6 +1621,12 @@ class AndroidDriver(DatingAppDriver):
         self.scroll_captures = max(1, int(app_cfg.get("scroll_captures", spec.scroll_captures)))
         self.dwell_s = float(app_cfg.get("dwell_s", spec.dwell_s))
         self.read_scroll_frac = float(app_cfg.get("read_scroll_frac", spec.read_scroll_frac))
+        # Returning to the top is navigation, not the measured content-reading cadence.  Hinge
+        # supports a much longer manual return stroke, so keep an independent, validated
+        # minimum here.  Never let it be shorter than the forward read step: that would revive
+        # the historical under-travel bug this ledger exists to prevent.
+        self.rewind_scroll_frac = float(app_cfg.get(
+            "rewind_scroll_frac", self.read_scroll_frac))
         self.change_threshold = float(app_cfg.get("change_threshold", spec.change_threshold))
         self.coords = {**spec.coords, **(app_cfg.get("coords") or {})}
         # Observe-mode decision detection (see the module docstring's redesign notes): every
@@ -1897,7 +1908,8 @@ class AndroidDriver(DatingAppDriver):
         # coordinates. supervisor.run() and HubState.start() check earlier and more loudly;
         # this one catches anything that reached a driver by another path.
         from .. import platforms
-        reason = platforms.unavailable_reason(self.spec.app)
+        reason = platforms.unavailable_reason(
+            self.spec.app, mode="auto" if self._auto_session else "observe")
         if reason:
             raise DriverClosed(reason)
 
@@ -2131,7 +2143,7 @@ class AndroidDriver(DatingAppDriver):
         self._assert_tap_allowed(x, y, margin_px=self._TAP_ZONE_MARGIN_PX)
         self.touch.tap(x, y)
 
-    def _swipe(self, x1, y1, x2, y2) -> None:
+    def _swipe(self, x1, y1, x2, y2, *, duration_ms: int = 450) -> None:
         """Every explicit drag goes through here, for the same reason every tap goes
         through _tap(). Only the START point is zone-checked (margin_px=0: plan_swipe's
         first sample is pinned exactly to (x1, y1) with no jitter, so there is no drift to
@@ -2151,7 +2163,7 @@ class AndroidDriver(DatingAppDriver):
         nothing is purchased."""
         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
         self._assert_tap_allowed(x1, y1)
-        self.touch.swipe(x1, y1, x2, y2)
+        self.touch.swipe(x1, y1, x2, y2, duration_ms=duration_ms)
 
     def _scroll(self, frac: float, x_frac: float = 0.5, *, reverse: bool = False) -> None:
         """touch.scroll_up() with the forbidden-zone guard every other gesture gets.
@@ -2994,10 +3006,12 @@ class AndroidDriver(DatingAppDriver):
           leaves the profile scrolled down by N * (read_scroll_frac - 0.45) after N swipes,
           which compounds on a long profile (up to ~0.7 screen-heights short at the default
           scroll_captures=8). The two fractions must be tied together, not maintained as
-          separate magic numbers that can drift apart again. Observe mode therefore mirrors
-          read_scroll_frac exactly. Auto mode instead derives a bounded mean from the real
-          forward-scroll ledger, then samples broader return strokes and relies on the
-          screenshot settle check below rather than replaying one exact reverse per forward.
+          separate magic numbers that can drift apart again. ``rewind_scroll_frac`` is a
+          separately configured *minimum* for return strokes, so it may be deliberately longer
+          (the owner can return a Hinge profile with one long flick) but can never undercut a
+          recorded forward step. Auto mode still varies the return lane and distance around that
+          floor. In every mode the screenshot top/settle check below, not a planned swipe count,
+          decides when the rewind is done.
 
         _changed() still ends the loop the moment the view settles (its own safety net against
         an animated/video card whose frames never settle); the count is a ceiling, not a
@@ -3034,9 +3048,9 @@ class AndroidDriver(DatingAppDriver):
             # under-travel, not a target.  Screenshot settling still ends the loop as soon as
             # the real top is reached.  The bound prevents animated/video cards from spinning.
             max_swipes = len(ledger) + 3
-        # Mirror of touch.scroll_up(read_scroll_frac): same y-extents, reversed direction, so
-        # one undo-swipe travels exactly as far as one forward read-scroll.
-        legacy_frac = self.read_scroll_frac
+        # Never travel less than a recorded read step. Hinge's configured return stroke may be
+        # deliberately longer than that to replace a long replay with one human-scale flick.
+        legacy_frac = max(self.read_scroll_frac, self.rewind_scroll_frac)
         mean_forward = (sum(frac for frac, _lane in ledger) / len(ledger)
                         if ledger else legacy_frac)
         settled = False
@@ -3048,7 +3062,8 @@ class AndroidDriver(DatingAppDriver):
                 # reverse replay of N forward gestures: real people return to the top with a
                 # different hand motion/count, while the settle check below remains the source
                 # of truth.  Keep enough headroom from screen edges and paid-control zones.
-                undo_frac = max(0.30, min(0.72, mean_forward * random.uniform(1.10, 1.28)))
+                target_frac = max(mean_forward, self.rewind_scroll_frac)
+                undo_frac = max(0.30, min(0.82, target_frac * random.uniform(1.10, 1.28)))
                 x_frac = random.uniform(0.38, 0.62)
             else:
                 undo_frac = legacy_frac
@@ -3059,17 +3074,35 @@ class AndroidDriver(DatingAppDriver):
             before = self._screencap()
             if should_stop is not None and should_stop():
                 return False
-            self._swipe(x, y_near, x, y_far)
+            if self.rewind_scroll_frac > self.read_scroll_frac:
+                # The dedicated long return stroke is a fast flick, not a sequence of ordinary
+                # read drags. It is only reached while returning from an already-complete
+                # capture; no profile frames, labels, taps, or text are produced here.
+                self._swipe(x, y_near, x, y_far,
+                            duration_ms=_FAST_REWIND_SWIPE_DURATION_MS)
+            else:
+                self._swipe(x, y_near, x, y_far)
             if not self._interruptible_sleep(human_delay(0.3), should_stop):
                 return False               # stop landed inside the settle wait; same rule as above
-            if not self._changed(before, self._screencap()):
+            after = self._screencap()
+            # A long return flick can reach the real profile top in one gesture. Proving the
+            # Hinge filter-chip band is stronger and faster than issuing a redundant second
+            # stroke solely to discover that the pixels no longer move. Any unavailable or
+            # uncertain top verdict falls back to the old settled-frame heuristic.
+            try:
+                if confirm_scroll_top(after, identity_band=self.identity_band).confirmed:
+                    settled = True
+                    break
+            except ScrollTopError:
+                pass
+            if not self._changed(before, after):
                 settled = True
                 break
         self._capture_scrolls = 0
         self._capture_scroll_ledger = []   # confirmed (or ceiling-bounded) back at top
         return settled
 
-    def _ensure_session_top(self, should_stop=None) -> None:
+    def _ensure_session_top(self, should_stop=None) -> bool:
         """Once per session, before the first capture, put the card at a CONFIRMED scroll-top.
 
         _capture_current's identity anchor rests on one invariant: frame 0 of a capture is at
@@ -3098,9 +3131,11 @@ class AndroidDriver(DatingAppDriver):
         COUNT paragraph), and the worst case it must cover is a previous run's own read ceiling,
         hence scroll_captures.
 
-        Not fatal when it fails: a card that never settles (an animated/video profile) leaves
-        the invariant unrestored, and _identity_of's id_sig-is-None branch is what keeps that
-        honest -- it can answer 'top' or 'unknown', never a manufactured 'new'.
+        Returns ``True`` only when the shared rewind settled at the top.  Hinge can continue
+        conservatively when that proof is unavailable: its identity layer then treats the first
+        card as unresolved rather than manufacturing a profile identity.  Bindings with a
+        stricter capture contract use this return value to refuse recording
+        until the same shared rewind has been confirmed.
         """
         # An open like/comment sheet is not a card, and swiping under one would drag the sheet
         # the operator is composing in. _capture_current already refuses to read or scroll on a
@@ -3110,14 +3145,14 @@ class AndroidDriver(DatingAppDriver):
         # nothing was restored, so the next capture (after the sheet closes) should try again.
         frame = self._screencap(on_blank="none")
         if frame is not None and self._observe_like_sheet_visible(frame):
-            return
+            return False
         self._session_top_done = True     # one attempt per session, even if it fails below
         self._capture_scrolls = self.scroll_captures
         self._capture_scroll_ledger = []
         if self._scroll_to_top(should_stop):
-            return
+            return True
         if should_stop is not None and should_stop():
-            return                        # interrupted, not failed -- the run is ending anyway
+            return False                  # interrupted, not failed -- the run is ending anyway
         print(f"{self.spec.app}: could not confirm the card is scrolled to the top at session "
               f"start (it never stopped moving). The first profile's identity anchor may be "
               f"unavailable; decisions on it fall back to content matching.")
@@ -3126,6 +3161,7 @@ class AndroidDriver(DatingAppDriver):
                 self._dbg.action("session_top_unconfirmed", swipe_ceiling=self.scroll_captures)
             except Exception:  # noqa: BLE001 — debug logging must never break a session
                 pass
+        return False
 
     def _note_capture_aborted(self, frames: int) -> None:
         """Record that a profile read was abandoned because Stop was requested.
@@ -5233,6 +5269,53 @@ class AndroidDriver(DatingAppDriver):
                          hearts_counted=target.hearts_counted, reason=target.reason)
         return target.point
 
+    def model_item_media_ordinal(self, model_item_index: int) -> int | None:
+        """Return the user-countable photo/video position for a chosen photo.
+
+        A Hinge heart can belong to a still photo, video, written prompt, or a block we could
+        not classify. The heart ordinal therefore cannot be surfaced as a media position. Walk
+        the driver's capture instead: count approved photos and *confirmed* videos, skip proven
+        written prompts, and decline to number the target if any earlier heart-bearing block is
+        unknown. This deliberately answers ``None`` rather than making a user count a fiction.
+        """
+        payload = self._current_item_payload
+        if payload is None:
+            return None
+        try:
+            target = payload.item(model_item_index)
+        except ItemCropError:
+            return None
+        target_heart = target.heart_ordinal
+        if not isinstance(target_heart, int) or target_heart <= 0:
+            return None
+
+        media = 0
+        for crop in payload.crops:
+            heart = crop.heart_ordinal
+            if not isinstance(heart, int) or heart > target_heart:
+                continue
+            if crop.kind == CROP_ITEM:
+                media += 1
+                continue
+            if crop.kind == CROP_CONTEXT:
+                # A written prompt is not media. UNKNOWN must block the display number because
+                # it may be a photo the classifier could not safely select.
+                if crop.reason.startswith(
+                        f"{EXCLUSION_NON_PHOTO}: crop classified as written;"):
+                    continue
+                return None
+            if crop.kind == CROP_EXCLUDED:
+                # The mute-control detector is affirmative evidence of a video. Every other
+                # exclusion is fail-closed and could conceal a photo, so it cannot be counted.
+                if crop.reason.startswith("video_mute_v1: upper-left"):
+                    media += 1
+                    continue
+                return None
+            if crop.kind == CROP_UNCROPPABLE:
+                return None
+            return None
+        return media if media > 0 else None
+
     def _verify_like_landed(self, before) -> None:
         """comment_sheet flow only. A like is COMPLETE only when the comment sheet AND any
         paid-upsell modal are gone AND the deck has moved off the pre-tap card. If the sheet is
@@ -5673,14 +5756,19 @@ class AndroidDriver(DatingAppDriver):
                 f"this driver holds no numbered items for the profile on screen, so there is "
                 f"no way to tell whether the sheet is showing item {model_item_index}: "
                 f"{self._current_items_unavailable or 'no reason was recorded'}")
-        try:
-            composer = locate_inline_composer(
-                sheet, self._template("confirm"), threshold=0.8)
-        except ComposerDetectionError as exc:
+        # A normal Send Like surface is strict enough to be used by the action
+        # path.  Observe is different: it only needs to prove that the human
+        # has a real composer open before it can compare the selected item and
+        # show advice.  Re-use the same geometry-checked Priority Like fallback
+        # that keeps the passive watcher from treating this live UI as closed.
+        # `_locate_observed_inline_composer` never feeds an action; `like()`
+        # continues to use the 0.80-only `_locate_inline_composer` path.
+        composer = self._locate_observed_inline_composer(sheet)
+        if composer is None:
             return result(
                 OBSERVE_ITEM_INCONCLUSIVE,
-                f"the inline Send Like composer could not be structurally confirmed "
-                f"({exc}), so the suggestion is not offered")
+                "the inline Send Like composer could not be structurally confirmed, "
+                "so the suggestion is not offered")
         try:
             verdict = compare_profile_identity(
                 sheet, index.identity, identity_band=self.identity_band,
@@ -7754,20 +7842,44 @@ class HingeDriver(AndroidDriver):
         except ComposerDetectionError:
             return None
 
+    def _locate_observed_inline_composer(self, frame: bytes) -> ComposerSurface | None:
+        """Return passive-only composer geometry, including Priority Like's label variant.
+
+        Hinge inserts ``Priority`` into its CTA when the owner has a priority
+        like available.  That changes the legacy Send Like glyph's correlation
+        from 0.80 to about 0.71 on the live Pixel, while the independent input
+        and filled-CTA checks remain intact.  The reduced threshold is safe for
+        observation because ``locate_inline_composer`` still proves the entire
+        topology; it must not be used to type or send.
+        """
+        surface = self._locate_inline_composer(frame)
+        if surface is not None:
+            self._observe_like_sheet_detection = "strict"
+            return surface
+        try:
+            surface = locate_inline_composer(frame, self._template("confirm"), threshold=0.68)
+        except ComposerDetectionError:
+            self._observe_like_sheet_detection = "not_visible"
+            return None
+        self._observe_like_sheet_detection = "priority_variant"
+        return surface
+
     def _observe_like_sheet_visible(self, frame: bytes) -> bool:
         """Passive proof of Hinge's inline composer, never a bare text-template match.
 
         This shared predicate is used by capture/session/action verification as well as passive
-        observation, so it must remain strict. `_focused_draft_composer_visible` is intentionally
-        called only by `_await_like_resolved` after strict evidence already established a human
-        like-sheet intent; it can then postpone a closure decision, but cannot create intent or
-        alter the non-observe paths that call this method.
+        observation.  The normal 0.80 literal-template threshold remains the only path that
+        returns actionable typing geometry.  In observation, Hinge's live ``Send Priority Like``
+        CTA changes the old ``Send Like`` template's score to 0.71 even though the surrounding
+        comment input and filled CTA are exact.  Retry at 0.68 only to recognize that complete
+        passive surface; it never supplies a surface to the auto typing path.
+
+        `_focused_draft_composer_visible` is intentionally called only by
+        `_await_like_resolved` after strict evidence already established a human like-sheet
+        intent; it can then postpone a closure decision, but cannot create intent or alter the
+        non-observe paths that call this method.
         """
-        if self._locate_inline_composer(frame) is not None:
-            self._observe_like_sheet_detection = "strict"
-            return True
-        self._observe_like_sheet_detection = "not_visible"
-        return False
+        return self._locate_observed_inline_composer(frame) is not None
 
     def _focused_draft_composer_visible(self, frame: bytes) -> bool:
         """Read-only fallback for an edited inline composer with its keyboard still open."""

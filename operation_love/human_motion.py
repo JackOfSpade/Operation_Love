@@ -196,14 +196,19 @@ def _down_pressure(env, peak=_PRESSURE_PEAK, floor=_PRESSURE_FLOOR):
 
 
 def plan_swipe(x1, y1, x2, y2, *, width_px=_DEFAULT_WIDTH_PX, curve=0.12,
-               jitter_px=_JITTER_PX, hz=REPORT_HZ, rng=None):
+               jitter_px=_JITTER_PX, hz=REPORT_HZ, duration_scale=1.0, rng=None):
     """Synthesize a human swipe: arc-length-reparameterized curved path, asymmetric
-    velocity, correlated tremor, beta pressure/size. Returns a list of TouchSample
-    (tip=True for the drag, a final tip=False release). Endpoints land on target."""
+    velocity, correlated tremor, beta pressure/size. ``duration_scale`` is an explicit
+    caller-selected multiplier for a measured alternate gesture class (for example a quick
+    return-to-top flick); it changes timing, never the curved path or its safe endpoints.
+    Returns a list of TouchSample (tip=True for the drag, a final tip=False release)."""
     r = _rng(rng)
+    if (isinstance(duration_scale, bool) or not isinstance(duration_scale, (int, float))
+            or not math.isfinite(duration_scale) or duration_scale <= 0):
+        raise ValueError("duration_scale must be a positive finite number")
     dist = math.hypot(x2 - x1, y2 - y1)
     kin = _stroke_kinematics(r, float(hz))
-    dur = fitts_duration_s(dist, width_px) * kin["duration_scale"]
+    dur = fitts_duration_s(dist, width_px) * kin["duration_scale"] * float(duration_scale)
     n = max(2, int(round(dur * kin["report_hz"])))          # inter-sample steps
     dt = dur / n
     c1, c2 = _control_points((x1, y1), (x2, y2), curve, r)

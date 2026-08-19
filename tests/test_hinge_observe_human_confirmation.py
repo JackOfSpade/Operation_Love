@@ -154,6 +154,34 @@ def test_hinge_observe_deck_ready_rejects_inverted_heart():
     assert driver._observe_deck_ready(_deck_frame(invert_heart=True)) is False
 
 
+def test_hinge_observe_recognizes_priority_like_with_geometry_but_keeps_typing_strict(monkeypatch):
+    """The passive observer supports Hinge's ``Send Priority Like`` CTA variant only.
+
+    The reduced template score represents the live variant, where inserting ``Priority`` into
+    the label drops the old literal ``Send Like`` template from the typing threshold.  The
+    fallback remains safe because ``locate_inline_composer`` must still prove the CTA and input
+    geometry, and its result is intentionally discarded rather than offered to auto mode.
+    """
+    from operation_love.drivers.like_composer import ComposerSurface, Rect
+
+    driver = _hinge(_Adb([b"unused"]))
+    checked = []
+    surface = ComposerSurface("hinge_inline_v1", Rect(95, 1124, 985, 1302),
+                              Rect(390, 1334, 985, 1443), (630, 1383))
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: None)
+
+    def low_confidence_surface(frame, template, *, threshold):
+        checked.append((frame, template, threshold))
+        assert threshold == 0.68
+        return surface
+
+    monkeypatch.setattr(hinge, "locate_inline_composer", low_confidence_surface)
+
+    assert driver._observe_like_sheet_visible(b"priority-composer") is True
+    assert driver._observe_like_sheet_detection == "priority_variant"
+    assert checked == [(b"priority-composer", driver._template("confirm"), 0.68)]
+
+
 class _ScriptedDiff:
     def __init__(self, *pairs):
         self.pairs = list(pairs)

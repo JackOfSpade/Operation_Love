@@ -82,6 +82,16 @@ def test_swipe_sample_count_tracks_fitts_duration():
     assert median_n * 0.6 < len(s) - 2 < median_n * 1.5          # n+1 drag + release
 
 
+def test_swipe_duration_scale_creates_a_quick_flick_without_changing_endpoints():
+    ordinary = plan_swipe(540, 2100, 540, 300, rng=random.Random(19))
+    flick = plan_swipe(540, 2100, 540, 300, duration_scale=160 / 450,
+                       rng=random.Random(19))
+
+    assert (flick[0].x, flick[0].y, flick[-2].x, flick[-2].y) == (540, 2100, 540, 300)
+    assert flick[-2].t < ordinary[-2].t * 0.40
+    assert len(flick) < len(ordinary)
+
+
 def test_swipe_path_is_curved_not_straight():
     # FakeRng -> max perpendicular control offset, zero jitter: pure deterministic bow.
     # Measure MAX off-axis deviation (the bow peaks near the arc-length midpoint, which

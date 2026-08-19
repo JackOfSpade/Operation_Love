@@ -200,6 +200,24 @@ def test_feed_line_parses_lt_transcript_into_tap_and_drag_gestures():
     assert w.event_count == len(_LT_TRANSCRIPT.splitlines())
 
 
+def test_feed_line_parses_numeric_getevent_codes_when_toolbox_ignores_l_flag():
+    """Some Android builds keep ``-t`` timestamps but print numeric event/code fields."""
+    w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
+    for line in [
+        "[   1.000000] /dev/input/event3: 0003 0035 000001f4",
+        "[   1.000000] /dev/input/event3: 0003 0036 00000320",
+        "[   1.000000] /dev/input/event3: 0001 014a 00000001",
+        "[   1.050000] /dev/input/event3: 0003 0035 00000384",
+        "[   1.050000] /dev/input/event3: 0001 014a 00000000",
+    ]:
+        w._feed_line(line)
+
+    gestures = w.gestures_since(0)
+    assert len(gestures) == 1
+    assert gestures[0].down == (500, 800)
+    assert gestures[0].up == (900, 800)
+
+
 def test_feed_line_ignores_unmatched_and_malformed_lines_without_raising():
     w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
     w._feed_line("")                                     # blank

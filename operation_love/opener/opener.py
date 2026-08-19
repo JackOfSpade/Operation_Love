@@ -146,7 +146,12 @@ _SCHEMA = {
                            "For every visible detail named in the opener, state how it is used "
                            "by the conversational move. If it asks a question, name the one "
                            "underlying question; alternatives must be parallel, contrasting "
-                           "answers to it, never unrelated dimensions joined by 'or'. "
+                           "answers to it, never unrelated dimensions joined by 'or'. Identify "
+                           "the question's subject and confirm that every pronoun or shorthand "
+                           "noun has one immediately obvious referent. Across beats, any change "
+                           "of referent must be explicit and immediately clear. Confirm that its "
+                           "most natural honest reply lets her share a preference, perspective, "
+                           "inspiration, or experience rather than defend or diminish herself. "
                            "Free text, not a fixed list of choices. Recorded for analysis only, "
                            "never sent to her.",
         },
@@ -165,7 +170,12 @@ _SCHEMA = {
                            "must do something conversational beyond describing that detail. "
                            "Every named setup detail must be necessary to that move; cut it if "
                            "the later point still works without it. A question asks one coherent "
-                           "thing; use 'or' only for parallel, contrasting answers to it. "
+                           "thing; use 'or' only for parallel, contrasting answers to it. Every "
+                           "pronoun, shorthand noun, and question subject must have one "
+                           "immediately obvious referent. Across two beats, any change of "
+                           "referent must be explicit and immediately clear. Its most natural "
+                           "honest reply should let her share a preference, perspective, "
+                           "inspiration, or experience, never require self justification. "
                            "Maximum two sentences. No em dash, no hyphen.",
         },
     },
@@ -251,6 +261,18 @@ _SCHEMA = {
 # caption is not decoration: it can reverse the ordinary reading of the pixels, so the model
 # must inventory it before drafting and treat it as authoritative context for the photo.
 #
+# Addendum 2026-08-17 (referent clarity): a live draft established one subject in its setup and
+# silently switched to an ambiguous shorthand noun in its question. QUESTION COHERENCE already
+# constrains the number and shape of questions, while PREMISE CONSISTENCY constrains their logic
+# after a claim; neither says that a reader must be able to resolve what each noun refers to.
+# REFERENT CLARITY adds that semantic property without blacklisting a word or supplying concrete
+# copy that a minimal-thinking model could imitate.
+#
+# Addendum 2026-08-17 (reply comfort): coherence alone does not rule out a question whose honest
+# answer makes her defend her intelligence, sincerity, or effort, or acknowledge an unflattering
+# alternative. REPLY COMFORT tells the model to select an angle with an affirming answer space
+# while deliberately stating no worked opener or wording pattern for it to imitate.
+#
 # Addendum 2026-08-12 (Part B, ops/OPENER-REDESIGN.md 5.1/5.7): the model now CHOOSES the item
 # rather than labelling one after the fact, so two lines changed here and nothing else did.
 # "The images are her profile in scroll order; set referenced_index to the 0-based index of the
@@ -332,7 +354,19 @@ _SYSTEM = (
     "the conversational move. If removing a descriptive clause leaves the later point or "
     "question unchanged, cut it. QUESTION COHERENCE: ask one coherent thing at a time. An 'or' "
     "is allowed only for parallel, genuinely contrasting answers to that same underlying "
-    "question, never to join unrelated dimensions. "
+    "question, never to join unrelated dimensions. REFERENT CLARITY: every pronoun, shorthand "
+    "noun, and question subject must have one immediately obvious referent. Across two beats, "
+    "keep the same referent unless the transition to a new one is explicit and immediately "
+    "clear. Do not make the reader choose between different ordinary meanings of the same word. "
+    "ROLE CONSISTENCY: if you give a visible subject a playful role or rank, preserve that role "
+    "across every beat. Do not give the same subject an incompatible role later. If you mean a "
+    "different subject, name it explicitly. "
+    "REPLY COMFORT: make the most natural honest reply feel good to give. Invite her to share a "
+    "preference, perspective, inspiration, or experience, not self justification. Never test her "
+    "intelligence, sincerity, knowledge, effort, or whether a visible detail is genuine. Do not "
+    "offer a forced choice whose honest answers make her defend, diminish, or embarrass herself. "
+    "If a visible detail could have more than one explanation, respond to its visible effect or "
+    "choose another angle rather than asking her to verify its status. "
     "PREMISE CONSISTENCY: if the first beat asserts or guesses X, the second beat must accept X "
     "as its working premise and move forward from it. Never ask whether X itself was true, ask "
     "about the opposite of X, or abandon X for a generic question about the surrounding scene. "
@@ -1639,7 +1673,13 @@ class GeminiOpener:
                 "Every named visible detail must be necessary to the conversational move; cut "
                 "it if the later point works without it. Ask one coherent thing at a time. Use "
                 "'or' only for parallel, genuinely contrasting answers to one underlying "
-                "question, never unrelated dimensions. "
+                "question, never unrelated dimensions. Every pronoun, shorthand noun, and "
+                "question subject must have one immediately obvious referent. Across two beats, "
+                "any change of referent must be explicit and immediately clear. "
+                "Make the most natural honest reply feel good to give: invite a preference, "
+                "perspective, inspiration, or experience rather than self justification, and "
+                "never offer a forced choice that makes her defend, diminish, or embarrass "
+                "herself. "
                 "Write the "
                 "corrected opener now."
             )

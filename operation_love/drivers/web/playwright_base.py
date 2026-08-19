@@ -1,8 +1,6 @@
 """Generic Playwright/patchright driving base for browser-based dating platforms.
 
-Split out of the old operation_love/drivers/bumble.py (see this package's
-__init__.py for why that code is kept with no live target). Everything here is
-site-agnostic:
+Everything here is site-agnostic:
 
   * browser lifecycle (_import_playwright, _launch_context, open_session/close)
     and the anti-automation launch hygiene that goes with it
@@ -17,10 +15,8 @@ site-agnostic:
     on-screen profile before letting the caller record it as a real decision
   * debug-log wiring (_dbg_action) and snapshot_failure
 
-No CSS selector, no site URL, and no capture logic lives here -- those belong to a
-concrete subclass (see bumble_web.py) via the `selectors` dict this class expects
-subclasses to populate, plus a couple of overridable hooks (_after_goto, hud_label,
-platform_app).
+No CSS selector, site URL, or capture logic lives here. Those belong to a concrete
+subclass via the `selectors` dict and the overridable hooks.
 """
 from __future__ import annotations
 
@@ -193,7 +189,7 @@ _BUSY_JS = """
 # srcset, or the CSS background-image url() for a div-based card -- so two different
 # profiles are told apart even when their bio and photo COUNT happen to coincide
 # (common on Bumble: bio is optional/often blank, and photo counts cluster at the
-# app's max -- see BUMBLE-7 in bumble_web.py). Relies only on `sel` (the subclass's
+# app's max). Relies only on `sel` (the subclass's
 # selectors["photo"]), so it carries no site-specific knowledge itself.
 _CARD_PHOTO_IDS_JS = """
 (sel) => Array.from(document.querySelectorAll(sel)).map((el) => {
@@ -328,7 +324,7 @@ class PlaywrightDriver(DatingAppDriver):
 
     def _after_goto(self) -> None:
         """Hook for site-specific post-navigation cleanup (e.g. cookie banners /
-        startup interstitials). No-op by default; see bumble_web.py's override."""
+        startup interstitials). No-op by default."""
 
     @staticmethod
     def _import_playwright():
@@ -559,8 +555,8 @@ class PlaywrightDriver(DatingAppDriver):
     # distinct consecutive profiles sharing e.g. (False, "", 6) is entirely
     # plausible — that collision would read as "the card didn't change" and raise
     # ActionNotLandedError on a swipe that genuinely landed (this is BUMBLE-7's
-    # regression, fixed by adding _CARD_PHOTO_IDS_JS's per-photo image identity —
-    # see bumble_web.py's tests). Bio+count are still useful (free — already backed
+    # regression, fixed by adding _CARD_PHOTO_IDS_JS's per-photo image identity).
+    # Bio+count are still useful (free — already backed
     # by the selectors dict) but are no longer load-bearing alone.
     def _card_fingerprint(self) -> tuple | None:
         """Best-effort snapshot of the on-screen profile (bio text, empty-deck state, and the

@@ -65,6 +65,7 @@ independently-drifting copy of a timing constant.
 from __future__ import annotations
 
 import argparse
+from itertools import pairwise
 import json
 import math
 import statistics
@@ -77,6 +78,11 @@ from typing import Callable
 from operation_love import config as cfg_mod
 from operation_love.drivers import hinge
 from operation_love.drivers.hinge import HingeDriver
+from operation_love.private_files import (
+    atomic_write_private_bytes,
+    atomic_write_private_text,
+    ensure_private_dir,
+)
 
 _TOOL_VERSION = "1"
 
@@ -165,8 +171,8 @@ def neutralize_unsafe_methods(driver: HingeDriver) -> list[str]:
         declares (operation_love/drivers/base.py's abstract `like`/`dislike`); "pass" in
         Hinge's own vocabulary is `dislike`, not a method literally named `pass_`.
       - driver.adb.tap() / driver.adb.text() / driver.adb.keyevent() — the raw ADB transport.
-        `text()` matters even though scrolling never calls it: Hinge's comment box IS typed
-        via `self.adb.text(...)` (hinge.py:2703), not through the touch transport.
+        `text()` matters even though scrolling never calls it: Hinge's guarded `_text()`
+        choke point ultimately types through `self.adb.text(...)`, not the touch transport.
       - driver.touch.tap() / driver.touch.text() / driver.touch.keyevent() — the humanized
         touch transport actually used for gestures (hinge.py's `_tap`/`_swipe`/`_scroll`
         route through `self.touch`, not always `self.adb` — see `_make_touch`). This can be
@@ -289,7 +295,7 @@ def compute_heart_spacings_px(hearts_per_frame: list[list[tuple[int, int]]]) -> 
     spacings: list[float] = []
     for hearts in hearts_per_frame:
         ys = sorted(y for _x, y in hearts)
-        spacings.extend(b - a for a, b in zip(ys, ys[1:]))
+        spacings.extend(b - a for a, b in pairwise(ys))
     return spacings
 
 
@@ -758,11 +764,11 @@ def save_capture(photos: list[bytes], profile_meta: dict, driver: HingeDriver,
     silently claim "recorded, and empty") when the snapshot genuinely could not be taken — the
     manifest then records that honestly via `driver_scroll_ledger_note` instead of shipping an
     empty field that looks like data."""
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(out_dir)
     frames = []
     for i, png in enumerate(photos, start=1):
         name = f"{i:05d}.png"
-        (out_dir / name).write_bytes(png)
+        atomic_write_private_bytes(out_dir / name, png, parent=out_dir)
         frames.append({"file": name})
     manifest = {
         "tool_version": _TOOL_VERSION,
@@ -783,12 +789,17 @@ def save_capture(photos: list[bytes], profile_meta: dict, driver: HingeDriver,
         "content_band": list(driver.content_band),
         "screen_size": list(driver.adb.screen_size()),
     }
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    atomic_write_private_text(
+        out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n", parent=out_dir)
     return manifest
 
 
 def save_analysis(report: AnalysisReport, out_dir: Path) -> None:
-    (out_dir / "analysis.json").write_text(json.dumps(report.to_json_dict(), indent=2) + "\n")
+    ensure_private_dir(out_dir)
+    atomic_write_private_text(
+        out_dir / "analysis.json", json.dumps(report.to_json_dict(), indent=2) + "\n",
+        parent=out_dir,
+    )
 
 
 def print_report(report: AnalysisReport, *,

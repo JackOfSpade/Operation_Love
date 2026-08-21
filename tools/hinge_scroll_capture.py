@@ -46,6 +46,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from operation_love.drivers.adb import Adb, parse_devices_output
+from operation_love.private_files import (
+    atomic_write_private_bytes,
+    atomic_write_private_text,
+    ensure_private_dir,
+)
 
 _TOOL_VERSION = "1"
 # Matches the driver's own observe-mode sampling cadence (operation_love/drivers/hinge.py:208
@@ -63,7 +68,8 @@ def _list_ready_devices(adb_path: str = "adb") -> list[str]:
     enumeration sends no input to any device, but is kept off the `Adb` object this tool later
     builds for capture, so that object's call surface stays exactly `screencap()`, always."""
     try:
-        result = subprocess.run([adb_path, "devices"], capture_output=True, timeout=10)
+        result = subprocess.run(
+            [adb_path, "devices"], capture_output=True, timeout=10, check=False)
     except FileNotFoundError:
         print(f"ERROR: adb binary not found ({adb_path!r} not on PATH).", file=sys.stderr)
         sys.exit(1)
@@ -129,7 +135,7 @@ def capture(*, adb, seconds: float, interval: float, out_dir: Path,
     if not math.isfinite(interval) or interval < 0:
         raise ValueError("interval must be a finite value greater than or equal to zero")
 
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(out_dir)
     frames: list[dict] = []
     last_digest: str | None = None
     start_wall = time.monotonic()
@@ -148,7 +154,7 @@ def capture(*, adb, seconds: float, interval: float, out_dir: Path,
             if digest != last_digest:
                 idx = len(frames) + 1
                 name = f"{idx:05d}.png"
-                (out_dir / name).write_bytes(png)
+                atomic_write_private_bytes(out_dir / name, png, parent=out_dir)
                 offset_s = time.monotonic() - start_wall
                 frames.append({"file": name, "sha256": digest, "offset_s": round(offset_s, 3)})
                 last_digest = digest
@@ -177,7 +183,8 @@ def capture(*, adb, seconds: float, interval: float, out_dir: Path,
         "frame_count": len(frames),
         "frames": frames,
     }
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    atomic_write_private_text(
+        out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n", parent=out_dir)
     verb = "Stopped early (Ctrl-C)" if interrupted else "Done"
     print(f"{verb}. Wrote {len(frames)} frame(s) + manifest to {out_dir}")
     return manifest

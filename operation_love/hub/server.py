@@ -6,20 +6,40 @@ no bearing on what the backend can do.
 """
 from __future__ import annotations
 
+import errno
+import hmac
+import html
 import json
+import secrets
 import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 from .page import _PAGE
-from .state import HubState, validate_stop_after_seconds
+from .state import (HubState, validate_apps, validate_max_per_run,
+                    validate_stop_after_seconds)
 
 _BROWSER_SHUTDOWN_GRACE_S = 1.5
 _BROWSER_STALE_CHECK_S = 5.0
 # Hub requests only carry a few IDs and small action records.  Bound the body before reading it
 # so a malformed/local client cannot make a ThreadingHTTPServer worker buffer an unbounded body.
 _MAX_REQUEST_BODY_BYTES = 1_048_576
+_CSRF_TOKEN_FIELD = "_csrf_token"
+_CSRF_TOKEN_PLACEHOLDER = "__OPERATION_LOVE_CSRF_TOKEN__"
+_POST_FIELDS = {
+    "/api/start": {"mode", "apps", "max_per_run", "stop_after_seconds"},
+    "/api/stop": set(),
+    "/api/observe/action": {
+        "command", "run_id", "app", "profile_token", "suggestion_token", "item",
+        "idempotency_token",
+    },
+    "/api/training/remove-latest": set(),
+    "/api/hub/open": {"id"},
+    "/api/hub/ping": {"id"},
+    "/api/hub/closed": {"id"},
+}
 # Ctrl-C's grace period for an active run to flush/save before the process exits
 # anyway. Generous enough to cover the run's own bounded shutdown (supervisor.py
 # joins each of up to 2 app workers for up to 30s each) plus real save time, while
@@ -28,8 +48,26 @@ _MAX_REQUEST_BODY_BYTES = 1_048_576
 _SHUTDOWN_SAVE_TIMEOUT_S = 90.0
 
 
+class _HubHTTPServer(ThreadingHTTPServer):
+    csrf_token: str
+
+
 class _Handler(BaseHTTPRequestHandler):
     state: HubState | None = None           # set by serve()
+
+    def end_headers(self) -> None:
+        """Attach browser hardening to every response, including empty/error responses.
+
+        Keep CSP deliberately limited to framing: the self-contained Hub currently uses an
+        inline script/style, and adding a default-src/script-src policy without nonces would
+        disable its own controls. ``frame-ancestors`` alone closes clickjacking without that
+        compatibility break; X-Frame-Options covers older browsers.
+        """
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        super().end_headers()
 
     def _send(self, code: int, body, ctype: str) -> None:
         data = body.encode() if isinstance(body, str) else body
@@ -43,10 +81,79 @@ class _Handler(BaseHTTPRequestHandler):
     def _json(self, obj, code: int = 200) -> None:
         self._send(code, json.dumps(obj), "application/json")
 
+    def _request_authority(self) -> tuple[str, int] | None:
+        """Return the normalized loopback Host authority, or ``None`` if invalid.
+
+        The hub is deliberately local-only.  Checking the HTTP Host header as well as
+        binding to loopback prevents a public hostname that resolves to 127.0.0.1 from
+        using the browser as a DNS-rebinding bridge into the control API.
+        """
+        values = self.headers.get_all("Host", [])
+        if len(values) != 1:
+            return None
+        port = int(self.server.server_address[1])
+        authorities = {
+            f"127.0.0.1:{port}": ("127.0.0.1", port),
+            f"localhost:{port}": ("localhost", port),
+            f"[::1]:{port}": ("::1", port),
+        }
+        if port == 80:
+            authorities.update({
+                "127.0.0.1": ("127.0.0.1", port),
+                "localhost": ("localhost", port),
+                "[::1]": ("::1", port),
+            })
+        return authorities.get(values[0].strip().lower())
+
+    def _require_local_host(self) -> tuple[str, int] | None:
+        authority = self._request_authority()
+        if authority is None:
+            self._json({"ok": False, "msg": "invalid Host for local hub"}, 403)
+        return authority
+
+    def _origin_matches(self, authority: tuple[str, int]) -> bool:
+        """Accept an absent Origin for authenticated non-browser clients.
+
+        Browsers send Origin on these POSTs.  If present it must identify the exact
+        authority in Host: even two loopback aliases (localhost and 127.0.0.1) are
+        different web origins.
+        """
+        values = self.headers.get_all("Origin", [])
+        if not values:
+            return True
+        if len(values) != 1:
+            return False
+        try:
+            origin = urlsplit(values[0])
+            origin_port = origin.port
+        except ValueError:
+            return False
+        if (
+            origin.scheme.lower() != "http"
+            or origin.username is not None
+            or origin.password is not None
+            or origin.query
+            or origin.fragment
+            or origin.path
+            or origin.hostname is None
+        ):
+            return False
+        if origin_port is None:
+            origin_port = 80
+        return (origin.hostname.lower(), origin_port) == authority
+
+    def _render_page(self) -> str:
+        token = html.escape(str(getattr(self.server, "csrf_token", "")), quote=True)
+        if _PAGE.count(_CSRF_TOKEN_PLACEHOLDER) != 1:
+            raise RuntimeError("hub page must contain exactly one CSRF token placeholder")
+        return _PAGE.replace(_CSRF_TOKEN_PLACEHOLDER, token)
+
     def do_GET(self) -> None:
+        if self._require_local_host() is None:
+            return
         path = self.path.split("?", 1)[0]
         if path == "/":
-            self._send(200, _PAGE, "text/html; charset=utf-8")
+            self._send(200, self._render_page(), "text/html; charset=utf-8")
         elif path == "/favicon.ico":
             self.send_response(204)             # no icon; avoids a console 404
             self.end_headers()
@@ -110,8 +217,22 @@ class _Handler(BaseHTTPRequestHandler):
         threading.Thread(target=_target, name="hub-tab-stale-watch", daemon=True).start()
 
     def do_POST(self) -> None:
+        authority = self._require_local_host()
+        if authority is None:
+            return
+        if not self._origin_matches(authority):
+            self._json({"ok": False, "msg": "Origin does not match the local hub"}, 403)
+            return
+        content_types = self.headers.get_all("Content-Type", [])
+        if len(content_types) != 1 or self.headers.get_content_type() != "application/json":
+            self._json({"ok": False, "msg": "Content-Type must be application/json"}, 415)
+            return
+        content_lengths = self.headers.get_all("Content-Length", [])
+        if len(content_lengths) > 1:
+            self._json({"ok": False, "msg": "Content-Length must not be duplicated"}, 400)
+            return
         try:
-            length = int(self.headers.get("Content-Length", 0) or 0)
+            length = int(content_lengths[0] or 0) if content_lengths else 0
         except ValueError:
             self._json({"ok": False, "msg": "Content-Length must be an integer"}, 400)
             return
@@ -123,23 +244,42 @@ class _Handler(BaseHTTPRequestHandler):
             body = json.loads(raw) if raw else {}
         except ValueError:
             body = None
-        if self.path in {"/api/start", "/api/observe/action", "/api/training/remove-latest",
-                         "/api/hub/open", "/api/hub/ping",
-                         "/api/hub/closed"} and not isinstance(body, dict):
+        if not isinstance(body, dict):
             self._json({"ok": False, "msg": "request body must be a JSON object"}, 400)
             return
+        supplied_token = body.pop(_CSRF_TOKEN_FIELD, None)
+        expected_token = getattr(self.server, "csrf_token", "")
+        if (
+            not isinstance(supplied_token, str)
+            or not expected_token
+            or not hmac.compare_digest(supplied_token, expected_token)
+        ):
+            self._json({"ok": False, "msg": "invalid CSRF token"}, 403)
+            return
+        allowed_fields = _POST_FIELDS.get(self.path)
+        if allowed_fields is not None:
+            unknown_fields = set(body) - allowed_fields
+            if unknown_fields:
+                self._json({
+                    "ok": False,
+                    "msg": f"unknown request field(s): {sorted(unknown_fields)}",
+                }, 400)
+                return
         if self.path == "/api/start":
-            mpr = body.get("max_per_run")           # auto-mode per-run cap (0 = unlimited)
-            try:
-                mpr = int(mpr) if mpr is not None else None
-            except (TypeError, ValueError):
-                mpr = None
+            valid_cap, mpr, cap_error = validate_max_per_run(body.get("max_per_run"))
+            if not valid_cap:
+                self._json({"ok": False, "msg": cap_error}, 400)
+                return
             valid_timeout, stop_after_seconds, timeout_error = validate_stop_after_seconds(
                 body.get("stop_after_seconds"))
             if not valid_timeout:
                 self._json({"ok": False, "msg": timeout_error}, 400)
                 return
-            ok, msg = self.state.start(body.get("mode"), body.get("apps"), mpr,
+            valid_apps, apps, apps_error = validate_apps(body.get("apps"))
+            if not valid_apps:
+                self._json({"ok": False, "msg": apps_error}, 400)
+                return
+            ok, msg = self.state.start(body.get("mode"), apps, mpr,
                                        stop_after_seconds)
             self._json({"ok": ok, "msg": msg}, 200 if ok else 409)
         elif self.path == "/api/stop":
@@ -177,13 +317,22 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
-def _bind(host: str, port: int) -> ThreadingHTTPServer:
-    for p in range(port, port + 200):       # find a free port near the default
+def _bind(host: str, port: int) -> _HubHTTPServer:
+    if not isinstance(host, str) or host not in {"127.0.0.1", "localhost"}:
+        raise ValueError("Hub host must be localhost or 127.0.0.1")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("Hub port must be an integer from 1 to 65535")
+    last_port = min(port + 199, 65535)
+    for p in range(port, last_port + 1):       # find a free port near the default
         try:
-            return ThreadingHTTPServer((host, p), _Handler)
-        except OSError:
-            continue
-    raise SystemExit(f"Hub: no free port in {port}..{port + 199}")
+            httpd = _HubHTTPServer((host, p), _Handler)
+            httpd.csrf_token = secrets.token_urlsafe(32)
+            return httpd
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE or getattr(exc, "winerror", None) == 10048:
+                continue
+            raise
+    raise SystemExit(f"Hub: no free port in {port}..{last_port}")
 
 
 def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",

@@ -27,6 +27,8 @@ from __future__ import annotations
 import math
 import random
 from collections import namedtuple
+from itertools import pairwise
+from numbers import Real
 
 # A normalized touch sample. pressure/size in 0..1 (transport scales to raw range);
 # tip True while the finger is down.
@@ -63,10 +65,28 @@ _TAP_MICROSLIP_PX = 2.5          # finger-pad slide on impact
 _TAP_NOISE_SIGMA_PX = 0.22       # per-sample Gaussian noise std (plan_tap); named so
                                   # tap_jitter_margin_px's bound can't drift from the actual
                                   # draw it is bounding
+_MAX_GESTURE_SAMPLES = 10_000     # resource guard; normal Pixel plans are under ~200
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
+
+
+def _finite_real(name: str, value, *, minimum: float | None = None,
+                 strict_minimum: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite real number")
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a finite real number") from exc
+    if not math.isfinite(resolved):
+        raise ValueError(f"{name} must be a finite real number")
+    if minimum is not None and (
+            resolved <= minimum if strict_minimum else resolved < minimum):
+        relation = "greater than" if strict_minimum else "at least"
+        raise ValueError(f"{name} must be {relation} {minimum:g}")
+    return resolved
 
 
 def _stroke_kinematics(r, hz: float):
@@ -105,8 +125,14 @@ def _rng(rng: random.Random | None) -> random.Random:
 def fitts_duration_s(distance_px: float, width_px: float = _DEFAULT_WIDTH_PX,
                      a: float = _FITTS_A, b: float = _FITTS_B) -> float:
     """Shannon-formulation movement time for a gesture of the given amplitude."""
-    w = max(1.0, float(width_px))
-    return a + b * math.log2(max(0.0, float(distance_px)) / w + 1.0)
+    distance = _finite_real("distance_px", distance_px, minimum=0.0)
+    width = _finite_real("width_px", width_px, minimum=0.0, strict_minimum=True)
+    intercept = _finite_real("a", a, minimum=0.0)
+    slope = _finite_real("b", b, minimum=0.0)
+    duration = intercept + slope * math.log2(distance / width + 1.0)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("Fitts duration must be finite and positive")
+    return duration
 
 
 def _cubic(p0, c1, c2, p3, u):
@@ -133,7 +159,7 @@ def _arclen_table(p0, c1, c2, p3, segments=96):
     us = [i / segments for i in range(segments + 1)]
     pts = [_cubic(p0, c1, c2, p3, u) for u in us]
     cum = [0.0]
-    for a, b in zip(pts, pts[1:]):
+    for a, b in pairwise(pts):
         cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
     return us, cum
 
@@ -202,13 +228,24 @@ def plan_swipe(x1, y1, x2, y2, *, width_px=_DEFAULT_WIDTH_PX, curve=0.12,
     caller-selected multiplier for a measured alternate gesture class (for example a quick
     return-to-top flick); it changes timing, never the curved path or its safe endpoints.
     Returns a list of TouchSample (tip=True for the drag, a final tip=False release)."""
+    x1 = _finite_real("x1", x1)
+    y1 = _finite_real("y1", y1)
+    x2 = _finite_real("x2", x2)
+    y2 = _finite_real("y2", y2)
+    width_px = _finite_real("width_px", width_px, minimum=0.0, strict_minimum=True)
+    curve = _finite_real("curve", curve, minimum=0.0)
+    jitter_px = _finite_real("jitter_px", jitter_px, minimum=0.0)
+    hz = _finite_real("hz", hz, minimum=0.0, strict_minimum=True)
+    duration_scale = _finite_real(
+        "duration_scale", duration_scale, minimum=0.0, strict_minimum=True)
     r = _rng(rng)
-    if (isinstance(duration_scale, bool) or not isinstance(duration_scale, (int, float))
-            or not math.isfinite(duration_scale) or duration_scale <= 0):
-        raise ValueError("duration_scale must be a positive finite number")
     dist = math.hypot(x2 - x1, y2 - y1)
-    kin = _stroke_kinematics(r, float(hz))
-    dur = fitts_duration_s(dist, width_px) * kin["duration_scale"] * float(duration_scale)
+    kin = _stroke_kinematics(r, hz)
+    dur = fitts_duration_s(dist, width_px) * kin["duration_scale"] * duration_scale
+    estimated_steps = dur * kin["report_hz"]
+    if not math.isfinite(estimated_steps) or estimated_steps > _MAX_GESTURE_SAMPLES - 2:
+        raise ValueError(
+            f"swipe would exceed the {_MAX_GESTURE_SAMPLES}-sample resource limit")
     n = max(2, int(round(dur * kin["report_hz"])))          # inter-sample steps
     dt = dur / n
     c1, c2 = _control_points((x1, y1), (x2, y2), curve, r)
@@ -245,10 +282,18 @@ def plan_swipe(x1, y1, x2, y2, *, width_px=_DEFAULT_WIDTH_PX, curve=0.12,
 def plan_tap(x, y, *, hz=REPORT_HZ, jitter_px=_TAP_MICROSLIP_PX, rng=None):
     """Synthesize a human tap: a lognormal dwell with a damped micro-slip from the
     impact point and a beta pressure/size pulse. Final sample is the release."""
+    x = _finite_real("x", x)
+    y = _finite_real("y", y)
+    hz = _finite_real("hz", hz, minimum=0.0, strict_minimum=True)
+    jitter_px = _finite_real("jitter_px", jitter_px, minimum=0.0)
     r = _rng(rng)
     dwell = r.lognormvariate(math.log(_TAP_DWELL_MEDIAN_S), _TAP_DWELL_SIGMA)
     dwell = max(0.04, min(0.35, dwell))
-    report_hz = _clamp(r.gauss(float(hz), 12.0), float(hz) * 0.84, float(hz) * 1.14)
+    report_hz = _clamp(r.gauss(hz, 12.0), hz * 0.84, hz * 1.14)
+    estimated_steps = dwell * report_hz
+    if not math.isfinite(estimated_steps) or estimated_steps > _MAX_GESTURE_SAMPLES - 2:
+        raise ValueError(
+            f"tap would exceed the {_MAX_GESTURE_SAMPLES}-sample resource limit")
     n = max(2, int(round(dwell * report_hz)))
     dt = dwell / n
     # Aim and release are allowed to wander inside a small, bounded contact patch.
@@ -314,9 +359,11 @@ def tap_jitter_margin_px(jitter_px: float = _TAP_MICROSLIP_PX, *, sigma_mult: fl
     6*0.22 = 9.57px -- consistent with the "roughly 5-10px of unchecked drift" this was
     written to close.
     """
-    aim = max(1.0, float(jitter_px)) * 1.8
-    slip = float(jitter_px) * 1.5
-    noise = float(sigma_mult) * _TAP_NOISE_SIGMA_PX
+    jitter_px = _finite_real("jitter_px", jitter_px, minimum=0.0)
+    sigma_mult = _finite_real("sigma_mult", sigma_mult, minimum=0.0)
+    aim = max(1.0, jitter_px) * 1.8
+    slip = jitter_px * 1.5
+    noise = sigma_mult * _TAP_NOISE_SIGMA_PX
     return aim + slip + noise
 
 

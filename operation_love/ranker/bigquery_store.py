@@ -23,8 +23,10 @@ import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from ..bigquery_validation import validate_bigquery_identifier, validate_bigquery_photo_bucket
 from ..costing import Usage
-from .store import local_midnight_epoch
+from .store import (local_midnight_epoch, normalize_timestamp_datetime,
+                    normalize_timestamp_iso)
 
 _UPLOAD_ATTEMPTS = 3        # bounded retry so a transient GCS blip doesn't drop a swipe
 _UPLOAD_BACKOFF_S = 0.5
@@ -134,9 +136,7 @@ def _timestamp(value) -> str:
     """Normalize a shared action timestamp for BigQuery's JSON TIMESTAMP representation."""
     if value is None:
         return _now()
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
-    return str(value)
+    return normalize_timestamp_iso(value)
 
 
 def _copy_labels(labels: list[tuple[bool, list[float]]]) -> list[tuple[bool, list[float]]]:
@@ -216,35 +216,67 @@ class BigQueryStore:
     def __init__(self, project_id: str, dataset: str = "operation_love",
                  location: str = "US", photo_bucket: str = "", flush_every: int = DEFAULT_FLUSH_EVERY,
                  client=None, storage_client=None, ensure: bool = True):
-        if not project_id:
-            raise ValueError("Storage.bigquery.project_id is required for the BigQuery backend")
-        if not photo_bucket:
-            raise ValueError("Storage.bigquery.photo_bucket is required for the BigQuery backend")
-        self.project_id = project_id
-        self.dataset = dataset
-        self.location = location
+        self.project_id = validate_bigquery_identifier(project_id, "project_id")
+        self.dataset = validate_bigquery_identifier(dataset, "dataset")
+        self.location = validate_bigquery_identifier(location, "location")
+        photo_bucket = validate_bigquery_photo_bucket(photo_bucket)
+        if type(flush_every) is not int or flush_every <= 0:
+            raise ValueError(
+                f"BigQuery flush_every must be a positive integer (got {flush_every!r})")
+        if type(ensure) is not bool:
+            raise ValueError(f"BigQuery ensure must be true or false (got {ensure!r})")
         self.photo_bucket_name = photo_bucket
-        self._ensure = bool(ensure)
-        self.flush_every = max(1, int(flush_every))
-        if client is None:
-            from google.cloud import bigquery  # lazy: only needed for real use
-            client = bigquery.Client(project=project_id)
-        if storage_client is None:
-            from google.cloud import storage  # lazy: only needed for real use
-            storage_client = storage.Client(project=project_id)
-        self.client = client
-        self.storage_client = storage_client
-        self._buf: dict[str, list[dict]] = {name: [] for name in _TABLES}
-        self._written: dict[str, int] = {name: 0 for name in _TABLES}  # rows confirmed inserted this run
-        self._dropped: dict[str, int] = {name: 0 for name in _TABLES}  # rows permanently given up on (never inserted)
-        self._fail_counts: dict[str, int] = {}  # f"{table}:{row_id}" -> consecutive failed-insert attempts
-        self._labels_cache: list[tuple[bool, list[float]]] | None = None
-        self._retraction_ids: set[str] = set()  # closes the streaming-read visibility gap for retries
-        self._opener_retraction_ids: set[tuple[str, str]] = set()
-        self._lock = threading.RLock()  # shared across worker threads
-        self._photo_bucket = self._get_or_create_photo_bucket() if ensure else self.storage_client.bucket(photo_bucket)
-        if ensure:
-            self._ensure_tables()
+        self._ensure = ensure
+        self.flush_every = flush_every
+        owns_client = client is None
+        owns_storage_client = storage_client is None
+        # Keep the resources in locals until both constructors have succeeded. In particular,
+        # a credentials/transport failure while creating the Storage client must still close a
+        # BigQuery client this constructor just created moments earlier.
+        client_resource = client
+        storage_resource = storage_client
+        try:
+            if client_resource is None:
+                from google.cloud import bigquery  # lazy: only needed for real use
+                client_resource = bigquery.Client(project=project_id)
+            if storage_resource is None:
+                from google.cloud import storage  # lazy: only needed for real use
+                storage_resource = storage.Client(project=project_id)
+            self.client = client_resource
+            self.storage_client = storage_resource
+            self._buf: dict[str, list[dict]] = {name: [] for name in _TABLES}
+            # Rows confirmed inserted this run.
+            self._written: dict[str, int] = {name: 0 for name in _TABLES}
+            # Rows permanently given up on (never inserted).
+            self._dropped: dict[str, int] = {name: 0 for name in _TABLES}
+            # f"{table}:{row_id}" -> consecutive failed-insert attempts.
+            self._fail_counts: dict[str, int] = {}
+            self._labels_cache: list[tuple[bool, list[float]]] | None = None
+            # Close the streaming-read visibility gap for retries.
+            self._retraction_ids: set[str] = set()
+            self._opener_retraction_ids: set[tuple[str, str]] = set()
+            self._lock = threading.RLock()  # shared across worker threads
+            self._photo_bucket_private_verified = False
+            self._photo_bucket = (
+                self._get_or_create_photo_bucket()
+                if ensure else self.storage_client.bucket(photo_bucket)
+            )
+            self._photo_bucket_private_verified = ensure
+            if ensure:
+                self._ensure_tables()
+        except BaseException:
+            # SDK clients created here own HTTP resources. Constructor failure produces no
+            # usable store, so close only those owned clients and retain the setup exception.
+            for owned, resource in (
+                    (owns_storage_client, storage_resource),
+                    (owns_client, client_resource)):
+                close = getattr(resource, "close", None)
+                if owned and callable(close):
+                    try:
+                        close()
+                    except Exception:  # noqa: BLE001
+                        pass
+            raise
 
     # --- setup ----------------------------------------------------------
     def _tid(self, name: str) -> str:
@@ -290,9 +322,10 @@ class BigQueryStore:
 
         statements: list[str] = []
         missing_tables = [name for name in _TABLES if name not in existing]
-        for name in missing_tables:
-            statements.append(
-                f"CREATE TABLE IF NOT EXISTS `{self._tid(name)}` ({_TABLES[name]});")
+        statements.extend(
+            f"CREATE TABLE IF NOT EXISTS `{self._tid(name)}` ({_TABLES[name]});"
+            for name in missing_tables
+        )
 
         additions: dict[str, list[tuple[str, str]]] = {}
         for migration in _MIGRATIONS:
@@ -323,10 +356,6 @@ class BigQueryStore:
     def _get_or_create_photo_bucket(self):
         bucket = self.storage_client.bucket(self.photo_bucket_name)
         if bucket.exists():
-            try:
-                bucket.reload()             # fetch iam_configuration before inspecting it
-            except Exception:  # noqa: BLE001
-                pass
             self._lockdown_bucket(bucket, created=False)
             return bucket
         bucket = self.storage_client.create_bucket(bucket, location=self.location)
@@ -337,10 +366,11 @@ class BigQueryStore:
         """Make the photo bucket private: uniform bucket-level access + enforced public-
         access-prevention so it can never be exposed publicly. Applied to EXISTING buckets
         too (idempotently), not just freshly created ones — a bucket created before this
-        hardening would otherwise keep weaker defaults (e.g. fine-grained ACLs). Logs but
-        never raises: a permissions hiccup must not break startup, but it's a privacy gap
-        worth surfacing."""
+        hardening would otherwise keep weaker defaults (e.g. fine-grained ACLs). Any read,
+        patch, or verification failure aborts startup before profile photos can be uploaded."""
         try:
+            if not created:
+                bucket.reload()             # fetch authoritative IAM state before inspecting it
             iam = bucket.iam_configuration
             if (getattr(iam, "uniform_bucket_level_access_enabled", False)
                     and getattr(iam, "public_access_prevention", "") == "enforced"):
@@ -348,12 +378,19 @@ class BigQueryStore:
             iam.uniform_bucket_level_access_enabled = True
             iam.public_access_prevention = "enforced"
             bucket.patch()
+            bucket.reload()
+            iam = bucket.iam_configuration
+            if (not getattr(iam, "uniform_bucket_level_access_enabled", False)
+                    or getattr(iam, "public_access_prevention", "") != "enforced"):
+                raise RuntimeError("bucket IAM did not retain the required private settings")
             if not created:
                 print(f"BigQuery store: hardened existing photo bucket {self.photo_bucket_name} "
                       "(uniform bucket-level access + public-access-prevention enforced).")
         except Exception as exc:  # noqa: BLE001
-            print(f"BigQuery store warning: could not lock down bucket "
-                  f"{self.photo_bucket_name} (uniform access / public-access-prevention): {exc}")
+            raise RuntimeError(
+                f"Refusing BigQuery photo storage: could not verify private bucket "
+                f"{self.photo_bucket_name} (uniform access and public-access prevention)"
+            ) from exc
 
     # --- reads ----------------------------------------------------------
     def load_labels(self) -> list[tuple[bool, list[float]]]:
@@ -548,10 +585,16 @@ class BigQueryStore:
                         row[key] = item.astimezone(timezone.utc).isoformat()
                 out.append(row)
             return out
+        decisions = fetch(
+            "decisions", "profile_id, created_at, decision, score",
+            "ORDER BY created_at, decision, score")
+        for decision in decisions:
+            if decision.get("profile_id") in {None, ""}:
+                decision.pop("profile_id", None)
         return {"run_id": run_id, "app": app, "source": source,
                 "profiles": fetch("profiles", "profile_id", "ORDER BY profile_id"),
                 "labels": fetch("labels", "profile_id, created_at, liked", "ORDER BY created_at, profile_id"),
-                "decisions": fetch("decisions", "created_at, decision, score", "ORDER BY created_at, decision, score"),
+                "decisions": decisions,
                 "retractions": fetch("label_retractions", "correction_id, profile_id, label_created_at, "
                                       "decision_created_at, decision_fingerprint", "ORDER BY created_at, correction_id")}
 
@@ -571,9 +614,11 @@ class BigQueryStore:
         # hashed/reviewed; convert only at this transport boundary rather than relying
         # on SDK-version-dependent coercion of strings.
         try:
-            label_time = datetime.fromisoformat(str(row["label_created_at"]).replace("Z", "+00:00"))
-            decision_time = datetime.fromisoformat(str(row["decision_created_at"]).replace("Z", "+00:00"))
-        except ValueError as exc:
+            label_time = normalize_timestamp_datetime(
+                row["label_created_at"], label="label_created_at")
+            decision_time = normalize_timestamp_datetime(
+                row["decision_created_at"], label="decision_created_at")
+        except (KeyError, ValueError) as exc:
             raise RetractionRefused("BigQuery correction timestamps must be RFC-3339") from exc
         job = bigquery.QueryJobConfig(query_parameters=[
             bigquery.ScalarQueryParameter("correction_id", "STRING", correction_id)])
@@ -603,8 +648,11 @@ class BigQueryStore:
             if target:
                 raise RetractionRefused("target label/decision pair already has a different retraction")
             payload = dict(row)
-            for key in ("label_created_at", "decision_created_at", "created_at"):
-                payload[key] = datetime.fromisoformat(str(payload[key]).replace("Z", "+00:00")).isoformat()
+            try:
+                for key in ("label_created_at", "decision_created_at", "created_at"):
+                    payload[key] = normalize_timestamp_iso(payload[key], label=key)
+            except (KeyError, ValueError) as exc:
+                raise RetractionRefused("BigQuery correction timestamps must be RFC-3339") from exc
             errors = self.client.insert_rows_json(self._tid("label_retractions"), [payload],
                                                   row_ids=[correction_id])
             if errors:
@@ -680,8 +728,9 @@ class BigQueryStore:
         from .retractions import RetractionRefused, canonical_sha
         from google.cloud import bigquery
         try:
-            opener_at = datetime.fromisoformat(str(row["opener_created_at"]).replace("Z", "+00:00"))
-        except ValueError as exc:
+            opener_at = normalize_timestamp_datetime(
+                row["opener_created_at"], label="opener_created_at")
+        except (KeyError, ValueError) as exc:
             raise RetractionRefused("BigQuery opener correction timestamp must be RFC-3339") from exc
         correction_id = row["correction_id"]
         by_key = bigquery.QueryJobConfig(query_parameters=[
@@ -692,12 +741,13 @@ class BigQueryStore:
             bigquery.ScalarQueryParameter("app", "STRING", row["app"]),
             bigquery.ScalarQueryParameter("opener_created_at", "TIMESTAMP", opener_at),
         ])
-        key = (correction_id, row["opener_created_at"])
+        opener_stamp = opener_at.isoformat()
+        key = (correction_id, opener_stamp)
         with self._lock:
             if key in self._opener_retraction_ids:
                 return False
             if any(item.get("correction_id") == correction_id and
-                   item.get("opener_created_at") == row["opener_created_at"]
+                   item.get("opener_created_at") == opener_stamp
                    for item in self._buf["opener_retractions"]):
                 return False
             source = list(self.client.query(
@@ -712,7 +762,7 @@ class BigQueryStore:
             fingerprint = canonical_sha({"run_id": row["run_id"], "app": row["app"],
                                          "created_at": source_stamp, "model": str(source[0]["model"]),
                                          "opener": str(source[0]["opener"])})
-            if source_stamp != str(row["opener_created_at"]).replace("Z", "+00:00") \
+            if source_stamp != opener_stamp \
                     or fingerprint != row["opener_fingerprint"]:
                 raise RetractionRefused("target opener fingerprint no longer matches its cleanup plan")
             by_same_plan = list(self.client.query(
@@ -732,7 +782,7 @@ class BigQueryStore:
             if existing:
                 raise RetractionRefused("opener row already has a different cleanup tombstone")
             payload = dict(row)
-            payload["opener_created_at"] = opener_at.isoformat()
+            payload["opener_created_at"] = opener_stamp
             payload["created_at"] = datetime.now(timezone.utc).isoformat()
             errors = self.client.insert_rows_json(self._tid("opener_retractions"), [payload],
                                                   row_ids=[canonical_sha(row)])
@@ -745,19 +795,16 @@ class BigQueryStore:
     def spend_today(self) -> float:
         """Sum of cost_usd already committed to BigQuery today (LOCAL day — same
         boundary as SQLiteStore.spend_today, via local_midnight_epoch(), NOT a UTC
-        reporting day). Falls back to 0.0 on any error — used to seed the daily budget
-        floor."""
-        try:
-            start_dt = datetime.fromtimestamp(local_midnight_epoch(), tz=timezone.utc)
-            rows = self.client.query(
-                f"SELECT COALESCE(SUM(cost_usd), 0.0) AS total FROM `{self._tid('spend')}` "
-                "WHERE created_at >= @day_start",
-                job_config=_day_start_job_config(start_dt),
-            ).result()
-            for r in rows:
-                return float(r["total"])
-        except Exception:  # noqa: BLE001
-            pass
+        reporting day). Query/permission failures propagate: treating an unreadable spend
+        ledger as $0 would silently disable the configured daily-cost ceiling."""
+        start_dt = datetime.fromtimestamp(local_midnight_epoch(), tz=timezone.utc)
+        rows = self.client.query(
+            f"SELECT COALESCE(SUM(cost_usd), 0.0) AS total FROM `{self._tid('spend')}` "
+            "WHERE created_at >= @day_start",
+            job_config=_day_start_job_config(start_dt),
+        ).result()
+        for r in rows:
+            return float(r["total"])
         return 0.0
 
     # --- writes (buffered, thread-safe) --------------------------------
@@ -785,6 +832,10 @@ class BigQueryStore:
             print(f"BigQuery store warning: captured 0 photos for profile {profile_id}; "
                   "skipping profile archive.")
             return False
+        if not self._photo_bucket_private_verified:
+            raise RuntimeError(
+                "Refusing profile-photo upload: this BigQueryStore was created with "
+                "ensure=False and its bucket privacy policy was not verified")
         created_at = _now()
         photo_rows = self._upload_profile_photos(run_id, app, profile_id, created_at, photos)
         if len(photo_rows) != len(photos):
@@ -989,7 +1040,7 @@ class BigQueryStore:
             drop_ids = {rid for rid in bad_ids if self._fail_counts[f"{table}:{rid}"] >= _MAX_INSERT_ATTEMPTS}
             if drop_ids:
                 kept, dropped = [], []
-                for row, rid in zip(rows, row_ids):
+                for row, rid in zip(rows, row_ids, strict=True):
                     (dropped if rid in drop_ids else kept).append(row)
                 for row in dropped:
                     print(f"BigQuery store: DROPPING a row from '{table}' after "

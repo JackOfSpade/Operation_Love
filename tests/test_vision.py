@@ -2,6 +2,8 @@
 import math
 import types
 
+import pytest
+
 from operation_love.perception.capture import Profile
 from operation_love.vision.embed import (
     _COREML_PROVIDER_OPTIONS, Embedder, _is_onnx_provider_failure, _onnx_provider_options,
@@ -36,6 +38,29 @@ COREML_RUNTIME_ERROR = (
 def test_aggregate_mean():
     assert aggregate([[1.0, 2.0], [3.0, 4.0]]) == [2.0, 3.0]
     assert aggregate([]) == []
+
+
+@pytest.mark.parametrize("function", [aggregate, gem_pool, dedup_by_cosine])
+def test_vector_pooling_rejects_ragged_dimensions(function):
+    with pytest.raises(ValueError, match="dimension"):
+        function([[1.0, 2.0], [3.0]])
+
+
+@pytest.mark.parametrize("p", [
+    True, 0, -1, math.nan, math.inf, pytest.param(10 ** 10_000, id="huge_int"), "3",
+])
+def test_gem_pool_requires_a_positive_finite_exponent(p):
+    with pytest.raises(ValueError, match="positive finite"):
+        gem_pool([[1.0], [2.0]], p=p)
+
+
+@pytest.mark.parametrize("threshold", [
+    True, -1.1, 1.1, math.nan, math.inf,
+    pytest.param(10 ** 10_000, id="huge_int"), "0.8",
+])
+def test_cosine_dedup_requires_a_finite_cosine_threshold(threshold):
+    with pytest.raises(ValueError, match="threshold"):
+        dedup_by_cosine([[1.0], [0.0]], threshold=threshold)
 
 
 def test_concat():
@@ -287,6 +312,50 @@ def test_ensure_leaves_embedder_retryable_if_clip_load_fails(monkeypatch):
     assert calls["n"] == 1
 
 
+def test_ensure_publishes_nothing_if_arcface_load_fails_then_retries_cleanly(monkeypatch):
+    import sys
+
+    import operation_love.vision.embed as embed_mod
+
+    class _Clip:
+        def to(self, _device):
+            return self
+
+        def eval(self):
+            return self
+
+    open_clip = types.ModuleType("open_clip")
+    open_clip.create_model_and_transforms = lambda *_args, **_kwargs: (_Clip(), None, "prep")
+    onnxruntime = types.ModuleType("onnxruntime")
+    onnxruntime.get_available_providers = lambda: ["CPUExecutionProvider"]
+    monkeypatch.setitem(sys.modules, "open_clip", open_clip)
+    monkeypatch.setitem(sys.modules, "onnxruntime", onnxruntime)
+    monkeypatch.setattr(embed_mod, "best_device", lambda: "cpu")
+
+    embedder = Embedder()
+    attempts = []
+
+    def build_arc(providers):
+        attempts.append(list(providers))
+        if len(attempts) == 1:
+            raise RuntimeError("ArcFace weights are corrupt")
+        return object()
+
+    monkeypatch.setattr(embedder, "_build_arc", build_arc)
+    with pytest.raises(RuntimeError, match="ArcFace weights"):
+        embedder._ensure()
+    assert embedder._arc is None
+    assert embedder._clip is None
+    assert embedder._clip_preprocess is None
+    assert embedder._device is None
+    assert embedder._arc_providers is None
+
+    embedder._ensure()
+    assert attempts == [["CPUExecutionProvider"], ["CPUExecutionProvider"]]
+    assert embedder._arc is not None
+    assert embedder._clip is not None
+
+
 def test_embedder_warmup_reraises_init_failure(monkeypatch):
     """warmup() is meant to be called once, eagerly, on the main thread before workers
     start (see its docstring), precisely so a broken embedder is caught before any worker
@@ -320,6 +389,28 @@ def test_quality_gating_with_injected_scorer():
 def test_quality_disabled_keeps_all():
     qf = QualityFilter(enabled=False, min_score=0.9, scorer=lambda b: 0.0)
     assert qf.filter([b"a", b"b"]) == [b"a", b"b"]
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"enabled": 1, "min_score": 0.3},
+    {"enabled": True, "min_score": math.nan},
+    {"enabled": True, "min_score": 10 ** 10_000},
+    {"enabled": True, "min_score": 1.1},
+    {"enabled": True, "min_score": 0.3, "metric": ""},
+    {"enabled": True, "min_score": 0.3, "scorer": 1},
+])
+def test_quality_filter_validates_direct_construction(kwargs):
+    with pytest.raises(ValueError):
+        QualityFilter(**kwargs)
+
+
+@pytest.mark.parametrize("score", [
+    math.nan, math.inf, pytest.param(10 ** 10_000, id="huge_int"), "0.5", True,
+])
+def test_quality_filter_rejects_invalid_scorer_results(score):
+    qf = QualityFilter(enabled=True, min_score=0.3, scorer=lambda _image: score)
+    with pytest.raises(ValueError, match="quality scorer"):
+        qf.keep(b"image")
 
 
 def test_quality_fails_loud_on_scorer_error():

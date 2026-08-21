@@ -98,13 +98,14 @@ import yaml
 
 from operation_love import config as cfg_mod
 from operation_love.drivers import hinge as hinge_mod
-from operation_love.drivers.adb import parse_devices_output
+from operation_love.drivers.adb import parse_devices_output, quote_android_package_id
 from operation_love.drivers.frameshift import ShiftEstimationError
 from operation_love.drivers.hinge import HingeDriver
 from operation_love.drivers.item_crops import (
     PHOTO_ONLY_POLICY_ID, ItemCropError, ItemPayload, build_item_payload,
-    unnumber_unless_confident_photo)
-from operation_love.drivers.item_identity import IdentityError, ProfileIdentity, capture_profile_identity
+    unnumber_unless_confident_photo, unnumber_without_still_photo_evidence)
+from operation_love.drivers.item_identity import (
+    IdentityError, ProfileIdentity, capture_profile_identity, compare_profile_identity)
 from operation_love.drivers.item_index import ItemIndexError, build_item_index
 from operation_love.drivers.item_nav import ItemNavigationError, navigate_to_item
 from operation_love.drivers.item_verify import (
@@ -115,8 +116,14 @@ from operation_love.drivers.scroll_step import ScrollStepError, plan_scroll_step
 from operation_love.drivers.scroll_top import (
     ScrollTopError, band_fingerprint, confirm_scroll_top, fingerprint_distance)
 from operation_love.drivers.segment import SegmentationError, segment_frame
-from operation_love.human import human_delay
+from operation_love.human import human_cooldown, human_delay
 from operation_love.opener.opener import GeminiOpener
+from operation_love.private_files import (
+    atomic_write_private_bytes,
+    atomic_write_private_text,
+    ensure_private_dir,
+    load_private_dotenv,
+)
 
 _TOOL_VERSION = "5"
 _CALIBRATION_SCHEMA_VERSION = 3
@@ -130,6 +137,12 @@ _UNATTENDED_REVIEW_KIND = "hinge_unattended_calibration_independent_review"
 # It is a run-time acknowledgement, not a config switch that can accidentally become sticky.
 _UNATTENDED_CONFIRMATION = "I_ACCEPT_UNATTENDED_CIRCULAR_CALIBRATION_RISK"
 _HYBRID_REVIEW_CONFIRMATION = "I_ACCEPT_EXTERNAL_REVIEWED_AUTOMATION_RISK"
+# Owner-directed exception to the tool's default never-send design (see
+# _automated_pass_from_verified_composer): a real, permanent Send Priority Like in place of
+# Pass, requested for this account specifically because it runs unlimited HingeX likes. Kept
+# behind its own confirmation phrase, separate from _HYBRID_REVIEW_CONFIRMATION, so opting into
+# real sends is never a side effect of opting into hybrid review.
+_SEND_LIKE_CONFIRMATION = "I_ACCEPT_REAL_PRIORITY_LIKE_SEND_RISK"
 # Automated capture must never navigate again after Hinge has opened a persistent inline
 # composer.  Alternate the one calibrated photo depth by profile instead: odd profiles cover
 # photo model item 1 and even profiles cover photo model item 3.  The policy id is evidence,
@@ -183,6 +196,14 @@ _MAX_CARD_SCROLLS = 60
 # it is enough to recover from the deepest capture this tool can create, but never keeps
 # swiping a screen whose state it cannot prove.
 _MAX_AUTOMATED_TOP_REWIND_STEPS = _MAX_CARD_SCROLLS
+# Hinge 10.0.1 settles its filter-chips strip a few pixels after a card advance, so a screencap
+# taken mid-settle can land in scroll_top's deliberate 3..9 "cannot tell" dead zone even though
+# the very same screen reads an exact confirmed top a moment later (measured 2026-08-21: two live
+# captures aborted at 6.672 and 3.875 while the resting screen read 0.000). This re-READS the
+# screen a bounded number of times; it issues NO gesture and does not widen any bound, so
+# "cannot tell" still never becomes "at top" -- it just stops treating one transient frame as a
+# final answer.
+_MAX_UNSETTLED_TOP_REPROBES = 3
 
 _ROUND_NDIGITS = 4
 
@@ -476,9 +497,9 @@ class _HybridReviewGate:
     """
     def __init__(self, out_dir: Path, *, device: dict, config_provenance: dict,
                  reviewer_model: str, reviewer_process: str, reviewer_id: str | None = None,
-                 reviewer_version: str | None = None):
+        reviewer_version: str | None = None):
         self.dir = out_dir / "hybrid_review"
-        self.dir.mkdir(exist_ok=True)
+        ensure_private_dir(self.dir)
         self.device = device
         self.config_provenance = config_provenance
         self.reviewer = {"source": _HYBRID_REVIEW_SOURCE, "id": reviewer_id or reviewer_model,
@@ -490,18 +511,9 @@ class _HybridReviewGate:
     @staticmethod
     def _atomic_write(path: Path, data: bytes) -> None:
         """Durably publish one private checkpoint member without a partially-written file."""
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         try:
-            with temporary.open("xb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, path)
+            atomic_write_private_bytes(path, data, parent=path.parent)
         except OSError as exc:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
             raise _CaptureAbort(f"could not atomically write hybrid checkpoint {path.name}: {exc}") from exc
 
     def checkpoint(self, frame: bytes, *, claimed_state: str, action_plan: dict) -> dict:
@@ -620,7 +632,8 @@ def _preflight_serial(cfg) -> tuple[str, str]:
               file=sys.stderr)
         sys.exit(1)
     try:
-        result = subprocess.run([adb_path, "devices"], capture_output=True, timeout=10)
+        result = subprocess.run(
+            [adb_path, "devices"], capture_output=True, timeout=10, check=False)
     except FileNotFoundError:
         print(f"ERROR: adb binary not found ({adb_path!r} not on PATH).", file=sys.stderr)
         sys.exit(1)
@@ -648,7 +661,8 @@ def _device_evidence(driver: HingeDriver) -> dict:
     model = adb.shell("getprop ro.product.model").strip()
     w, h = adb.screen_size()
     density = adb.shell("wm density").strip()
-    dump = adb.shell(f"dumpsys package {driver.package} | grep versionName")
+    dump = adb.shell(
+        f"dumpsys package {quote_android_package_id(driver.package)} | grep versionName")
     version_name = None
     for line in dump.splitlines():
         line = line.strip()
@@ -692,6 +706,77 @@ def _plan_card_scroll(frame: bytes, *, content_band, like_template, like_thresho
     return step, profile_min_spacing_px
 
 
+def _verified_target_frame_block(driver: HingeDriver, target, *, frame: bytes,
+                                 content_band, like_template, like_threshold: float):
+    """Re-prove the exact target card/heart and absence of visible video UI on one frame."""
+    try:
+        segmentation = segment_frame(
+            frame, content_band=content_band, like_template=like_template,
+            like_threshold=like_threshold)
+        if not segmentation.ok:
+            raise SegmentationError("; ".join(segmentation.failures))
+        matching_blocks = [
+            block for block in segmentation.blocks
+            if (block.y0, block.y1) == target.block_frame_rows
+        ]
+        if (len(matching_blocks) != 1
+                or list(matching_blocks[0].hearts) != [target.point]):
+            raise SegmentationError(
+                "frame does not contain exactly one reviewed heart in the reviewed card")
+        screen = getattr(driver, "_target_frame_video_screen_reason", None)
+        if not callable(screen):
+            raise SegmentationError("driver has no exact target-frame video screen")
+        video_reason = screen(frame, matching_blocks[0])
+        if video_reason is not None:
+            raise SegmentationError(video_reason)
+    except SegmentationError as exc:
+        raise _CaptureAbort(
+            "target photo proof refused on the exact action frame: " + str(exc)) from exc
+    return matching_blocks[0]
+
+
+def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point: object,
+                                 content_band, like_template,
+                                 like_threshold: float) -> tuple[int, int]:
+    """Re-bind a reviewed heart target to the screen at the instant before its tap.
+
+    A hybrid review can take long enough for animated media or auto-hiding controls to change
+    the framebuffer.  Coordinates approved for the earlier PNG are therefore not authority for
+    a later screen.  Require byte identity, then independently re-run the card/heart and profile
+    identity gates on those fresh bytes.  No input is issued here; every refusal leaves the
+    driver's final foreground-package guard as the only operation immediately before a valid tap.
+    """
+    point = target.point
+    if (not isinstance(reviewed_point, list) or len(reviewed_point) != 2
+            or any(isinstance(value, bool) or not isinstance(value, int)
+                   for value in reviewed_point)
+            or tuple(reviewed_point) != point):
+        raise _CaptureAbort(
+            "hybrid heart refused: the approved action point no longer exactly binds the "
+            "navigator's reviewed target")
+
+    fresh = driver.adb.screencap()
+    if fresh != target.frame:
+        raise _CaptureAbort(
+            "hybrid heart refused: the framebuffer changed after review; refusing to spend "
+            "coordinates from a stale checkpoint")
+    try:
+        block = _verified_target_frame_block(
+            driver, target, frame=fresh, content_band=content_band,
+            like_template=like_template, like_threshold=like_threshold)
+        prior_identity = target.identity
+        fresh_identity = compare_profile_identity(
+            fresh, prior_identity.identity, identity_band=driver.identity_band,
+            match_max_dist=prior_identity.match_max)
+        if not fresh_identity.matched:
+            raise IdentityError(fresh_identity.reason)
+    except (IdentityError, SegmentationError) as exc:
+        raise _CaptureAbort(
+            "hybrid heart refused: fresh structural/identity revalidation failed: "
+            f"{type(exc).__name__}: {exc}") from exc
+    return block.hearts[0]
+
+
 def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: int,
                                                 identity_band, content_band, like_template,
                                                 like_threshold) -> bytes:
@@ -708,15 +793,27 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
     an unreadable detector, an unchanged post-gesture frame, a planning refusal, or exhaustion
     of the explicit cap all stop the run without another speculative gesture.
     """
+    def settled_verdict(frame: bytes, *, stage: str) -> tuple[bytes, object]:
+        """Re-read an unsettled scroll-top gate without touching the screen (see the constant)."""
+        for probe in range(_MAX_UNSETTLED_TOP_REPROBES + 1):
+            try:
+                verdict = confirm_scroll_top(frame, identity_band=identity_band)
+            except ScrollTopError as exc:
+                raise _CaptureAbort(
+                    f"automated profile {ordinal}: could not read the scroll-top gate {stage} "
+                    f"hybrid rewind: {exc}") from exc
+            if verdict.confirmed or verdict.refuted or probe >= _MAX_UNSETTLED_TOP_REPROBES:
+                return frame, verdict
+            # Humanized so the re-look is not a fixed-interval poll; `dwell_s` is absent on the
+            # narrow fakes used by the offline rewind tests, which never reach a real screen.
+            time.sleep(human_delay(getattr(driver, "dwell_s", 0.6)))
+            frame = driver.adb.screencap()
+        raise _CaptureAbort(f"automated profile {ordinal}: unreachable settle probe exhaustion")
+
     frame = driver.adb.screencap()
     min_spacing_px = None
     for attempt in range(_MAX_AUTOMATED_TOP_REWIND_STEPS + 1):
-        try:
-            verdict = confirm_scroll_top(frame, identity_band=identity_band)
-        except ScrollTopError as exc:
-            raise _CaptureAbort(
-                f"automated profile {ordinal}: could not read the scroll-top gate during "
-                f"hybrid rewind: {exc}") from exc
+        frame, verdict = settled_verdict(frame, stage="during")
         if verdict.confirmed:
             return frame
         if not verdict.refuted:
@@ -740,12 +837,7 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
         after = driver.adb.screencap()
         # Confirm after every real input first.  A byte-identical frame that still refutes top
         # proves the gesture made no observable progress; do not keep touching a stuck screen.
-        try:
-            after_verdict = confirm_scroll_top(after, identity_band=identity_band)
-        except ScrollTopError as exc:
-            raise _CaptureAbort(
-                f"automated profile {ordinal}: could not re-read the scroll-top gate after "
-                f"a hybrid rewind gesture: {exc}") from exc
+        after, after_verdict = settled_verdict(after, stage="after a gesture during")
         if after_verdict.confirmed:
             return after
         if not after_verdict.refuted:
@@ -1046,6 +1138,68 @@ def _automated_pass_from_verified_composer(driver: HingeDriver, *, frame: bytes,
         identity_band=identity_band, selected_item_verified=True)
 
 
+def _automated_send_from_verified_composer(driver: HingeDriver, *, frame: bytes,
+                                           confirm_template, payload: ItemPayload,
+                                           item_number: int,
+                                           reviewed_confirm_point: tuple[int, int]
+                                           ) -> tuple[bytes, dict]:
+    """Owner-opted-in path from a verified inline composer to a REAL, permanent Send.
+
+    Only reachable with ``capture --send-like --send-like-confirmation
+    I_ACCEPT_REAL_PRIORITY_LIKE_SEND_RISK``; the tool's default (see the Pass helper above)
+    never sends. Reuses the exact tap/upsell-dismiss/landed-verification the production
+    comment_sheet ``like()`` flow uses (``HingeDriver._handle_rose_upsell``,
+    ``HingeDriver._verify_like_landed``), so a real send from calibration is held to the same
+    safety bar as an ordinary AUTO/OBSERVE like -- never the paid Rose/upsell option, and a
+    like that did not structurally land raises rather than being recorded as sent.
+    """
+    if driver.halt_on_error is not True:
+        raise _CaptureAbort(
+            "automated Send refused: halt_on_error must be enabled so delivery is structurally "
+            "verified rather than merely attempted")
+    reviewed_surface = _verified_automated_composer(
+        frame, confirm_template=confirm_template, payload=payload, item_number=item_number)
+    if reviewed_surface.confirm_point != reviewed_confirm_point:
+        raise _CaptureAbort(
+            "automated Send refused: the checkpoint point does not exactly match the reviewed "
+            "composer confirmation point")
+
+    # This is deliberately the final read before `_tap`.  A reviewer can take long enough for
+    # video controls or the composer itself to move; never replay the approved coordinate on a
+    # different framebuffer, even when a fresh detector could find some other plausible Send.
+    fresh_frame = driver.adb.screencap()
+    if fresh_frame != frame:
+        raise _CaptureAbort(
+            "automated Send refused: the composer framebuffer changed after review; no stale "
+            "confirmation coordinate was tapped")
+    fresh_surface = _verified_automated_composer(
+        fresh_frame, confirm_template=confirm_template, payload=payload,
+        item_number=item_number)
+    if fresh_surface.confirm_point != reviewed_confirm_point:
+        raise _CaptureAbort(
+            "automated Send refused: fresh composer detection moved the confirmation point; "
+            "the reviewed action is no longer exact")
+    driver._tap(*fresh_surface.confirm_point)
+    time.sleep(human_cooldown(0.6))
+    driver._handle_rose_upsell()
+    driver._verify_like_landed(frame)
+    advance_frame = driver.adb.screencap()
+    return advance_frame, {
+        "action": "automated_send_priority_like",
+        "transport": ["HingeDriver._tap(confirm_point)", "HingeDriver._handle_rose_upsell",
+                      "HingeDriver._verify_like_landed"],
+        "pre_frame_sha256": _sha256(frame),
+        "post_frame_sha256": _sha256(advance_frame),
+        "send_like_tapped": True,
+        "confirm_point": list(fresh_surface.confirm_point),
+        "predicates": {
+            "inline_composer_and_selected_photo_verified_before_action": True,
+            "send_like_tapped": True,
+            "like_landed_verified": True,
+        },
+    }
+
+
 def _automated_pass_from_confirmed_composer(driver: HingeDriver, *, frame: bytes,
                                              confirm_template, identity: ProfileIdentity,
                                              identity_band,
@@ -1286,7 +1440,7 @@ def _save_frame(out_dir: Path, frames_meta: list, frame_counter: int, png: bytes
     captured, which is what `build_item_payload`'s frame-digest check requires."""
     frame_counter += 1
     name = f"{frame_counter:05d}.png"
-    (out_dir / name).write_bytes(png)
+    atomic_write_private_bytes(out_dir / name, png, parent=out_dir)
     frames_meta.append({
         "file": name,
         "sha256": _sha256(png),
@@ -1396,7 +1550,8 @@ def _entry_anchor_profile_report(*, ordinal: int, profile_id: str, card_frames: 
             card_frames, content_band=content_band, like_template=like_template,
             like_threshold=like_threshold, at_scroll_top=True, identity_band=identity_band)
         payload = build_item_payload(
-            card_frames, index, unnumber=unnumber_unless_confident_photo)
+            card_frames, index, unnumber=unnumber_unless_confident_photo,
+            unnumber_without_evidence=unnumber_without_still_photo_evidence)
     except (ItemIndexError, ItemCropError, SegmentationError, ShiftEstimationError) as exc:
         raise _MeasureRefused(
             f"profile {profile_id!r}: could not rebuild complete photo-only item numbering "
@@ -1545,7 +1700,7 @@ def _write_entry_anchor_ledger(out_dir: Path, *, frames_meta: list[dict], profil
         "profiles": reports,
     }
     path = out_dir / _ENTRY_ANCHOR_LEDGER_FILE
-    path.write_text(json.dumps(artifact, indent=2) + "\n")
+    atomic_write_private_text(path, json.dumps(artifact, indent=2) + "\n", parent=out_dir)
     return {"file": path.name, "sha256": _sha256(path.read_bytes())}
 
 
@@ -1633,7 +1788,8 @@ def _capture_one_profile(driver: HingeDriver, out_dir: Path, *, ordinal: int,
                 # the capture began at top, reached the end, and left no partial block out.
                 if index.usable and index.complete:
                     payload = build_item_payload(
-                        card_frames, index, unnumber=unnumber_unless_confident_photo)
+                        card_frames, index, unnumber=unnumber_unless_confident_photo,
+                        unnumber_without_evidence=unnumber_without_still_photo_evidence)
                     index_ok = payload.usable and len(payload.items) >= max(target_items)
                 else:
                     payload = None
@@ -1774,7 +1930,8 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                                     used_profile_ids: set[str],
                                     review_gate: _HybridReviewGate | None = None,
                                     skipped_attempts: list[dict] | None = None,
-                                    abort_recoveries: list[dict] | None = None) -> tuple[dict, int]:
+                                    abort_recoveries: list[dict] | None = None,
+                                    send_like: bool = False) -> tuple[dict, int]:
     """Capture one profile with explicitly-authorized device actions.
 
     This is deliberately separate from the supervised path above.  It uses the same bounded
@@ -1850,7 +2007,9 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
             # navigation and post-tap verification.  ``ItemIndex.complete`` remains mandatory
             # everywhere that constructs a production closed-set payload.
             payload = (build_item_payload(card_frames, index,
-                                          unnumber=unnumber_unless_confident_photo)
+                                          unnumber=unnumber_unless_confident_photo,
+                                          unnumber_without_evidence=
+                                          unnumber_without_still_photo_evidence)
                        if index.usable else None)
             target_scope_reason = (_target_scoped_prefix_reason(index, payload, target_items)
                                    if payload is not None else "photo-only payload unavailable")
@@ -1915,6 +2074,15 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                     f"item {item_number}: {type(exc).__name__}: {exc}")
                 raise skip_before_heart(retry, identity) from exc
             target_pre = target.frame
+            try:
+                _verified_target_frame_block(
+                    driver, target, frame=target_pre, content_band=content_band,
+                    like_template=like_template, like_threshold=like_threshold)
+            except _CaptureAbort as exc:
+                retry = _PreActionProfileRetry(
+                    "target_verification_blocked",
+                    f"item {item_number}: {exc}")
+                raise skip_before_heart(retry, identity) from exc
             if review_gate is None:
                 break
             review_before = review_gate.checkpoint(
@@ -1923,7 +2091,8 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                     "action": "automated_photo_heart", "photo_model_item": item_number,
                     "point": list(target.point), "point_source": "navigate_to_item",
                     "predicates": {
-                        "photo_only_item_verified": True,
+                        "positive_still_photo_evidence_verified": True,
+                        "target_frame_mute_control_screened_absent": True,
                         "verification_blocker_absent": True,
                         "target_heart_visible": True,
                         "forbidden_zone_guarded_transport": "HingeDriver._tap",
@@ -1959,8 +2128,19 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
             if adjustment_count > _HYBRID_MAX_ADJUSTMENTS_PER_ACTION:
                 raise _CaptureAbort("reviewer exceeded the bounded hybrid adjustment budget for one "
                                     "heart; abort and modify/relaunch rather than continue blind")
-        # _tap is the driver's forbidden-zone-checked humanized transport chokepoint.
-        driver._tap(*target.point)
+        # External review authorizes one exact frame and point, not a coordinate that remains
+        # valid indefinitely. Re-capture and re-run the structural/identity gates immediately
+        # before the driver's foreground-guarded transport choke point.
+        tap_point = target.point
+        if review_gate is not None:
+            plan = review_before.get("action_plan") if isinstance(review_before, dict) else None
+            tap_point = _fresh_reviewed_target_point(
+                driver, target,
+                reviewed_point=plan.get("point") if isinstance(plan, dict) else None,
+                content_band=content_band, like_template=like_template,
+                like_threshold=like_threshold)
+        # _tap is the driver's forbidden-zone/foreground-checked humanized transport chokepoint.
+        driver._tap(*tap_point)
         time.sleep(human_delay(driver.dwell_s))
         composer_open = driver.adb.screencap()
         try:
@@ -2040,8 +2220,9 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
     pass_frame = driver.adb.screencap()
     pass_item_number = target_items[-1]
     try:
-        _verified_automated_composer(pass_frame, confirm_template=confirm_template, payload=payload,
-                                     item_number=pass_item_number)
+        pass_surface = _verified_automated_composer(
+            pass_frame, confirm_template=confirm_template, payload=payload,
+            item_number=pass_item_number)
     except _CaptureAbort as exc:
         recovery = recover_unsent_composer(
             frame=pass_frame, item_number=pass_item_number,
@@ -2057,8 +2238,13 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                 pass_review = review_gate.checkpoint(
                     pass_frame, claimed_state="composer_open_before_pass",
                     action_plan={
-                        "action": "automated_pass", "photo_model_item": None, "point": None,
-                        "point_source": "calibration-only verified-composer Pass transport",
+                        "action": ("automated_send_priority_like" if send_like
+                                  else "automated_pass"),
+                        "photo_model_item": None,
+                        "point": (list(pass_surface.confirm_point) if send_like else None),
+                        "point_source": ("calibration-only verified-composer Send transport"
+                                        if send_like else
+                                        "calibration-only verified-composer Pass transport"),
                         "predicates": {
                             "inline_composer_and_selected_photo_verified_before_action": True,
                             "send_like_tapped": False,
@@ -2070,7 +2256,7 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                     frame=pass_frame, item_number=pass_item_number,
                     failure_stage="pre_pass_reviewer_checkpoint_aborted")
                 raise _CaptureAbort(
-                    "hybrid reviewer stopped before Pass after a real heart; abort cleanup "
+                    "hybrid reviewer stopped before Pass/Send after a real heart; abort cleanup "
                     f"outcome={recovery['outcome']}") from exc
             if pass_review["decision"] == "approved":
                 break
@@ -2090,7 +2276,7 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                 else:
                     driver._scroll_down_one(step.frac, step.x_frac)
                 pass_frame = driver.adb.screencap()
-                _verified_automated_composer(
+                pass_surface = _verified_automated_composer(
                     pass_frame, confirm_template=confirm_template, payload=payload,
                     item_number=pass_item_number)
             else:
@@ -2102,9 +2288,22 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                                     f"outcome={recovery['outcome']}")
             if pass_adjustments > _HYBRID_MAX_ADJUSTMENTS_PER_ACTION:
                 raise _CaptureAbort("reviewer exceeded bounded hybrid adjustment budget before Pass")
-    advance_frame, pass_trace = _automated_pass_from_verified_composer(
-        driver, frame=pass_frame, confirm_template=confirm_template, payload=payload,
-        item_number=pass_item_number, identity=identity, identity_band=identity_band)
+    if send_like:
+        plan = pass_review.get("action_plan") if isinstance(pass_review, dict) else None
+        reviewed_point = plan.get("point") if isinstance(plan, dict) else None
+        if (not isinstance(reviewed_point, list) or len(reviewed_point) != 2
+                or any(isinstance(value, bool) or not isinstance(value, int)
+                       for value in reviewed_point)):
+            raise _CaptureAbort(
+                "automated Send refused: no exact reviewer-approved confirmation point is bound "
+                "to the terminal checkpoint")
+        advance_frame, pass_trace = _automated_send_from_verified_composer(
+            driver, frame=pass_frame, confirm_template=confirm_template, payload=payload,
+            item_number=pass_item_number, reviewed_confirm_point=tuple(reviewed_point))
+    else:
+        advance_frame, pass_trace = _automated_pass_from_verified_composer(
+            driver, frame=pass_frame, confirm_template=confirm_template, payload=payload,
+            item_number=pass_item_number, identity=identity, identity_band=identity_band)
     staged_frames.append((advance_frame, "profile_advance_clear", None,
                           datetime.now(timezone.utc).isoformat()))
     pass_trace["review_checkpoints"] = ({"before": pass_review}
@@ -2171,7 +2370,7 @@ def _capture_out_dir(raw: str | None, *, prefix: str = "targeting") -> Path:
               "Use a fresh directory so two evidence sessions cannot be merged.",
               file=sys.stderr)
         sys.exit(1)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(out_dir)
     return out_dir
 
 
@@ -2336,9 +2535,8 @@ def _write_observe_check_evidence(out_dir: Path, evidence: dict) -> Path:
     body.pop("evidence_sha256", None)
     body["evidence_sha256"] = _canonical_json_digest(body)
     path = out_dir / "observe_check.json"
-    tmp = out_dir / ".observe_check.json.tmp"
-    tmp.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n")
-    tmp.replace(path)
+    atomic_write_private_text(
+        path, json.dumps(body, indent=2, sort_keys=True) + "\n", parent=out_dir)
     return path
 
 
@@ -2545,6 +2743,25 @@ def _cmd_capture(args: argparse.Namespace) -> None:
               "will label device actions and circular-risk acceptance explicitly.", file=sys.stderr)
         sys.exit(1)
 
+    send_like = bool(getattr(args, "send_like", False))
+    if send_like and not hybrid_review:
+        # Deliberately narrower than the other automated flags. A real Send Priority Like is
+        # permanent and cannot be retracted, so every one of them must pass a reviewer checkpoint
+        # first; fully unattended sending would deliver real likes with nothing in the loop. This
+        # also keeps the evidence path consistent: `_verified_automated_circular_evidence` (the
+        # --unattended validator) only authenticates the Pass-without-send terminal action, so an
+        # unattended send capture could never be measured anyway.
+        print("ERROR: --send-like requires --hybrid-review. Real Send Priority Likes are "
+              "permanent, so each one must be approved at a reviewer checkpoint; --unattended "
+              "has no reviewer in the loop.", file=sys.stderr)
+        sys.exit(1)
+    if send_like and getattr(args, "send_like_confirmation", None) != _SEND_LIKE_CONFIRMATION:
+        print("ERROR: --send-like requires the exact --send-like-confirmation "
+              f"{_SEND_LIKE_CONFIRMATION!r}, separate from --confirmation. It replaces every "
+              "calibration Pass with a REAL, PERMANENT Send Priority Like and is intentionally "
+              "not enabled by a short flag alone.", file=sys.stderr)
+        sys.exit(1)
+
     if not automated:
         print("HUMANIZED, NARROW-SCOPE: this tool only ever screencaps (read-only) and performs "
               "small humanized SCROLL gestures through the driver's own transport -- never a raw "
@@ -2559,10 +2776,17 @@ def _cmd_capture(args: argparse.Namespace) -> None:
               "human_ground_truth=false and cannot stand in for supervised operational evidence.")
     if hybrid_review:
         print("HYBRID / AI-REVIEWED AUTOMATION: guarded HingeDriver transport will heart photo "
-              "model item 1 on odd profiles and item 3 on even profiles, then Pass without "
-              "sending, but only after a private PNG+JSON "
-              "checkpoint is reviewed through stdin before every heart/Pass and after every "
-              "heart result. EOF, REFUSE, ABORT, or malformed input stops cleanly.")
+              "model item 1 on odd profiles and item 3 on even profiles, then "
+              f"{'send a REAL Priority Like' if send_like else 'Pass without sending'}, but only "
+              "after a private PNG+JSON checkpoint is reviewed through stdin before every "
+              "heart/Pass-or-Send and after every heart result. EOF, REFUSE, ABORT, or malformed "
+              "input stops cleanly.")
+    if send_like:
+        print("SEND-LIKE ENABLED: every profile captured this run ends with a REAL, PERMANENT "
+              "Send Priority Like instead of Pass -- owner-directed exception to this tool's "
+              "default never-send design, requested because this account runs unlimited HingeX "
+              "likes. Uses the exact same tap/upsell-dismiss/landed-verification as a normal "
+              "AUTO/OBSERVE like.")
     print("Frames are LOCAL-ONLY: ops/calibration/ is gitignored -- these are real people's "
           "dating profiles, so do not upload, copy outside the repo, or transmit them anywhere.")
 
@@ -2617,7 +2841,9 @@ def _cmd_capture(args: argparse.Namespace) -> None:
               f"{evidence['display_w']}x{evidence['display_h']} density={evidence['density']} "
               f"Hinge versionName={evidence['hinge_version_name']}")
         if hybrid_review:
-            assert config_provenance is not None
+            if config_provenance is None:
+                raise _CaptureAbort(
+                    "hybrid review cannot start without hash-bound config provenance")
             review_gate = _HybridReviewGate(
                 out_dir, device=evidence, config_provenance=config_provenance,
                 reviewer_model=getattr(args, "reviewer_model", _HYBRID_REVIEW_SOURCE),
@@ -2640,7 +2866,7 @@ def _cmd_capture(args: argparse.Namespace) -> None:
                             driver, out_dir, ordinal=ordinal, frame_counter=frame_counter,
                             frames_meta=frames_meta, used_profile_ids=used_profile_ids,
                             review_gate=review_gate, skipped_attempts=skipped_attempts,
-                            abort_recoveries=abort_recoveries)
+                            abort_recoveries=abort_recoveries, send_like=send_like)
                     else:
                         profile_meta, frame_counter = capture_fn(
                             driver, out_dir, ordinal=ordinal, frame_counter=frame_counter,
@@ -2714,6 +2940,14 @@ def _cmd_capture(args: argparse.Namespace) -> None:
             "provisional_identity_match_max_dist": _UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST,
             "not_independent_ground_truth": True,
             "not_supervised_operational_evidence": True,
+            # Owner-accepted real sends replace this capture's Pass-without-send terminal action.
+            # Recorded here (not inferred downstream) so `hinge_calibration_review`/`measure` can
+            # gate on an explicit acceptance instead of silently tolerating a send trace, and so
+            # the evidence never reads as Pass-only when real likes were actually delivered.
+            "send_like_accepted": send_like,
+            "send_like_confirmation": (_SEND_LIKE_CONFIRMATION if send_like else None),
+            "terminal_advance_action": ("automated_send_priority_like" if send_like
+                                        else "automated_pass"),
             "reviewer_protocol": ("stdin_checkpoint_sha256_v1" if review_gate is not None
                                   else None),
             "reviewer_source": (_HYBRID_REVIEW_SOURCE if review_gate is not None else None),
@@ -2744,7 +2978,8 @@ def _cmd_capture(args: argparse.Namespace) -> None:
         "entry_anchor_ledger": entry_anchor_ledger,
         "operational_checks": operational_checks,
     }
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    atomic_write_private_text(
+        out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n", parent=out_dir)
     print(f"\nWrote {len(frames_meta)} frame(s) across {len(profiles_meta)} profile(s) to "
           f"{out_dir}")
     if interrupted:
@@ -3142,7 +3377,8 @@ def _cmd_verify_entry_anchor(args: argparse.Namespace) -> None:
             content_band=session.content_band, like_template=replay_driver._template("like"),
             like_threshold=hinge_mod._LIKE_MATCH_THRESHOLD)
         session.manifest["entry_anchor_ledger"] = ref
-        manifest_path.write_text(json.dumps(session.manifest, indent=2) + "\n")
+        atomic_write_private_text(
+            manifest_path, json.dumps(session.manifest, indent=2) + "\n", parent=sess_dir)
         _validate_entry_anchor_ledger(sess_dir, session.manifest)
     except (OSError, RuntimeError, _MeasureRefused, ItemIndexError, ItemCropError,
             SegmentationError, ShiftEstimationError) as exc:
@@ -3162,7 +3398,6 @@ def _cmd_attach_operational_evidence(args: argparse.Namespace) -> None:
     is deliberately refused so this cannot be used to rewrite an established audit trail.
     """
     created_ledger: Path | None = None
-    manifest_tmp: Path | None = None
     try:
         sess_dir = _existing_calibration_session_dir(args.session)
         session = _load_session(sess_dir, require_entry_anchor_ledger=False)
@@ -3185,8 +3420,12 @@ def _cmd_attach_operational_evidence(args: argparse.Namespace) -> None:
             identity_band=session.identity_band)
         if reason:
             raise RuntimeError("supplied operational recorder artifact is invalid: " + reason)
-        op_manifest, _reason = _operational_evidence_manifest_path(args.operational_evidence)
-        assert op_manifest is not None
+        op_manifest, op_manifest_reason = _operational_evidence_manifest_path(
+            args.operational_evidence)
+        if op_manifest is None:
+            raise RuntimeError(
+                "validated operational evidence became unavailable: "
+                + (op_manifest_reason or "manifest path could not be resolved"))
 
         cfg = cfg_mod.load(args.config)
         replay_driver = HingeDriver(cfg)  # template lookup only; this command never opens ADB
@@ -3215,16 +3454,10 @@ def _cmd_attach_operational_evidence(args: argparse.Namespace) -> None:
         # Commit the one changed JSON file atomically only after every new relation validates.
         # If any prior check refused, the catch below removes the newly-created ledger too, so a
         # later run never mistakes an orphan side file for an attached audit trail.
-        manifest_tmp = manifest_path.with_name(f".{manifest_path.name}.attach.tmp")
-        if manifest_tmp.exists():
-            raise RuntimeError(f"temporary manifest path already exists: {manifest_tmp}")
-        manifest_tmp.write_text(json.dumps(session.manifest, indent=2) + "\n")
-        os.replace(manifest_tmp, manifest_path)
-        manifest_tmp = None
+        atomic_write_private_text(
+            manifest_path, json.dumps(session.manifest, indent=2) + "\n", parent=sess_dir)
     except (OSError, RuntimeError, _MeasureRefused, ItemIndexError, ItemCropError,
             SegmentationError, ShiftEstimationError) as exc:
-        if manifest_tmp is not None:
-            manifest_tmp.unlink(missing_ok=True)
         if created_ledger is not None:
             created_ledger.unlink(missing_ok=True)
         print(f"ERROR: offline operational-evidence attachment refused: {exc}", file=sys.stderr)
@@ -3447,7 +3680,8 @@ def _build_profile_payloads(profiles: list, *, content_band, identity_band, like
                 "included in calibration negatives")
         try:
             payload = build_item_payload(
-                p.card_frames, index, unnumber=unnumber_unless_confident_photo)
+                p.card_frames, index, unnumber=unnumber_unless_confident_photo,
+                unnumber_without_evidence=unnumber_without_still_photo_evidence)
         except ItemCropError as exc:
             raise _MeasureRefused(
                 f"profile {p.profile_id!r}: could not build item crops: {exc}") from exc
@@ -3717,7 +3951,8 @@ def _operational_evidence_reference_reason(reference: str, *, expected_device: d
     path, path_reason = _operational_evidence_manifest_path(reference)
     if path_reason:
         return path_reason
-    assert path is not None
+    if path is None:
+        return "could not resolve the operational-evidence manifest after validation"
     try:
         artifact = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -3768,7 +4003,8 @@ def _operational_evidence_reference_reason(reference: str, *, expected_device: d
         return f"{path} frame_count does not match its frame list"
     seen_names: set[str] = set()
     frame_bytes: list[bytes] = []
-    for ordinal, (frame, role) in enumerate(zip(frames, _OPERATIONAL_EVIDENCE_ROLES), 1):
+    for ordinal, (frame, role) in enumerate(
+            zip(frames, _OPERATIONAL_EVIDENCE_ROLES, strict=True), 1):
         if (not isinstance(frame, dict) or set(frame) != {"file", "sha256", "role", "captured_utc"}
                 or frame.get("role") != role or frame.get("file") != f"{ordinal:05d}.png"
                 or not isinstance(frame.get("sha256"), str) or len(frame["sha256"]) != 64
@@ -3921,9 +4157,12 @@ def _verified_operational_checks(sessions: list[_SessionData]) -> dict:
                         raise _MeasureRefused(
                             f"the {key} operational-check reference is invalid: "
                             + operational_reason)
-                    manifest_path, _reason = _operational_evidence_manifest_path(
+                    manifest_path, manifest_reason = _operational_evidence_manifest_path(
                         rec["evidence"].strip())
-                    assert manifest_path is not None
+                    if manifest_path is None:
+                        raise _MeasureRefused(
+                            f"the {key} operational-check manifest became unavailable after "
+                            f"validation: {manifest_reason or 'path could not be resolved'}")
                     operational_paths[key].add(manifest_path)
                 verified[key].append({
                     "session": str(sess.dir),
@@ -4014,6 +4253,92 @@ def _verified_automated_circular_evidence(sessions: list[_SessionData]) -> dict:
             "not_supervised_operational_evidence": True}
 
 
+def _approved_hybrid_decision(record: object, *, acceptance: dict, review: dict,
+                              action: str, item: int | None) -> bool:
+    """Return whether one ledger member is the exact approved action/item decision."""
+    plan = record.get("action_plan") if isinstance(record, dict) else None
+    return (isinstance(record, dict) and record.get("decision") == "approved"
+            and record.get("source") == acceptance.get("reviewer_source")
+            and record.get("reviewer") == acceptance.get("reviewer")
+            and record.get("human_ground_truth") is False
+            and isinstance(plan, dict) and plan.get("action") == action
+            and plan.get("photo_model_item") == item
+            and isinstance(record.get("checkpoint_evidence_sha256"), str)
+            and isinstance(record.get("frame_sha256"), str)
+            and record in review.get("decisions", []))
+
+
+def _exact_hybrid_terminal_checkpoint(action: object, *, session_dir: Path, manifest: dict,
+                                      acceptance: dict, review: dict,
+                                      expected_action: str,
+                                      expected_point: list[int] | None) -> bool:
+    """Authenticate the checkpoint JSON, PNG, ledger and exact terminal action plan."""
+    if not isinstance(action, dict):
+        return False
+    checks = action.get("review_checkpoints")
+    before = checks.get("before") if isinstance(checks, dict) else None
+    if (not _approved_hybrid_decision(
+            before, acceptance=acceptance, review=review,
+            action=expected_action, item=None)
+            or not isinstance(before, dict)):
+        return False
+    checkpoint_file, frame_file = before.get("checkpoint_file"), before.get("frame_file")
+    if not isinstance(checkpoint_file, str) or not isinstance(frame_file, str):
+        return False
+    try:
+        review_dir = (session_dir / "hybrid_review").resolve(strict=True)
+        checkpoint_path = Path(checkpoint_file).resolve(strict=True)
+        checkpoint_frame_path = Path(frame_file).resolve(strict=True)
+        if (checkpoint_path.parent != review_dir or checkpoint_frame_path.parent != review_dir
+                or not checkpoint_path.is_file() or not checkpoint_frame_path.is_file()):
+            return False
+        checkpoint_raw = checkpoint_path.read_bytes()
+        checkpoint = json.loads(checkpoint_raw)
+        checkpoint_frame_sha256 = _sha256(checkpoint_frame_path.read_bytes())
+    except (OSError, RuntimeError, json.JSONDecodeError):
+        return False
+    if not isinstance(checkpoint, dict):
+        return False
+    checkpoint_body = dict(checkpoint)
+    checkpoint_body.pop("evidence_sha256", None)
+    plan = checkpoint.get("action_plan")
+    predicates = plan.get("predicates") if isinstance(plan, dict) else None
+    frame = checkpoint.get("frame")
+    config_provenance = manifest.get("config_provenance")
+    config_sha256 = (config_provenance.get("sha256")
+                     if isinstance(config_provenance, dict) else None)
+    expected_source = ("calibration-only verified-composer Send transport"
+                       if expected_action == "automated_send_priority_like"
+                       else "calibration-only verified-composer Pass transport")
+    return (
+        before.get("checkpoint_sha256") == _sha256(checkpoint_raw)
+        and checkpoint.get("evidence_sha256") == before.get("checkpoint_evidence_sha256")
+        and checkpoint.get("evidence_sha256") == _canonical_json_digest(checkpoint_body)
+        and checkpoint.get("schema_version") == _HYBRID_CHECKPOINT_SCHEMA_VERSION
+        and checkpoint.get("kind") == _HYBRID_CHECKPOINT_KIND
+        and checkpoint.get("config_sha256") == config_sha256
+        and checkpoint.get("human_ground_truth") is False
+        and checkpoint.get("claimed_state") == "composer_open_before_pass"
+        and before.get("claimed_state") == checkpoint.get("claimed_state")
+        and plan == before.get("action_plan")
+        and isinstance(plan, dict)
+        and plan.get("action") == expected_action
+        and plan.get("photo_model_item") is None
+        and plan.get("point") == expected_point
+        and plan.get("point_source") == expected_source
+        and isinstance(predicates, dict)
+        and predicates.get(
+            "inline_composer_and_selected_photo_verified_before_action") is True
+        and predicates.get("send_like_tapped") is False
+        and predicates.get("forbidden_zone_guarded_transport") == "HingeDriver._tap"
+        and isinstance(frame, dict)
+        and frame.get("file") == checkpoint_frame_path.name
+        and frame.get("sha256") == before.get("frame_sha256")
+        and frame.get("sha256") == checkpoint_frame_sha256
+        and frame.get("sha256") == action.get("pre_frame_sha256")
+    )
+
+
 def _verified_hybrid_reviewed_evidence(sessions: list[_SessionData]) -> dict:
     """Validate the distinct AI-reviewed transport provenance; never call it human evidence."""
     records = []
@@ -4054,78 +4379,86 @@ def _verified_hybrid_reviewed_evidence(sessions: list[_SessionData]) -> dict:
                 or not isinstance(review.get("decisions"), list)):
             raise _MeasureRefused(f"{sess.dir} is not an exact hybrid AI-reviewed capture manifest")
         target_scoped = manifest.get("capture_evidence_scope") == _TARGET_SCOPED_PREFIX_PROOF_ID
-
-        def approved(record, *, action: str, item: int | None) -> bool:
-            plan = record.get("action_plan") if isinstance(record, dict) else None
-            return (isinstance(record, dict) and record.get("decision") == "approved"
-                    and record.get("source") == acceptance.get("reviewer_source")
-                    and record.get("reviewer") == acceptance["reviewer"]
-                    and record.get("human_ground_truth") is False
-                    and isinstance(plan, dict) and plan.get("action") == action
-                    and plan.get("photo_model_item") == item
-                    and isinstance(record.get("checkpoint_evidence_sha256"), str)
-                    and isinstance(record.get("frame_sha256"), str)
-                    and record in review["decisions"])
+        # See _SEND_LIKE_CONFIRMATION: a capture ends each profile with Pass-without-send unless
+        # the owner explicitly accepted real sends at capture time. Read the acceptance from the
+        # manifest so a send trace can never authorize itself.
+        send_like_accepted = acceptance.get("send_like_accepted")
+        if send_like_accepted is not None and type(send_like_accepted) is not bool:
+            raise _MeasureRefused(f"{sess.dir} has a non-boolean send_like_accepted acceptance")
+        send_like_accepted = bool(send_like_accepted)
+        if send_like_accepted and acceptance.get("send_like_confirmation") != _SEND_LIKE_CONFIRMATION:
+            raise _MeasureRefused(
+                f"{sess.dir} records accepted real sends without the exact send-like confirmation")
+        if not send_like_accepted and acceptance.get("send_like_confirmation") is not None:
+            raise _MeasureRefused(
+                f"{sess.dir} carries a send-like confirmation without accepting real sends")
+        terminal_action = ("automated_send_priority_like" if send_like_accepted
+                           else "automated_pass")
+        declared_terminal = acceptance.get("terminal_advance_action")
+        if declared_terminal is not None and declared_terminal != terminal_action:
+            raise _MeasureRefused(
+                f"{sess.dir} declares a terminal advance action that contradicts its acceptance")
 
         profiles_by_ordinal = {profile.ordinal: profile for profile in sess.profiles}
 
-        def has_exact_pass_summary(action: object, *, ordinal: int) -> bool:
+        def has_exact_send_summary(
+                action: object, *, ordinal: int,
+                send_like_accepted=send_like_accepted,
+                profiles_by_ordinal=profiles_by_ordinal, session_dir=sess.dir,
+                manifest=manifest, acceptance=acceptance, review=review) -> bool:
+            """Authenticate an owner-accepted REAL Send Priority Like terminal action.
+
+            Only reachable when this manifest carries the explicit send-like acceptance above.
+            It is a separate exact shape rather than a loosened Pass check: the composer and
+            selected photo are still proven before the tap, the transport is still the production
+            upsell-dismiss + landed-verification chain (never the paid Rose control), and the
+            advance frame is still bound.
+            """
+            if not isinstance(action, dict) or not send_like_accepted:
+                return False
+            profile_data = profiles_by_ordinal.get(ordinal)
+            action_predicates, transport = action.get("predicates"), action.get("transport")
+            point = action.get("confirm_point")
+            if (profile_data is None
+                    or not isinstance(action_predicates, dict) or not isinstance(transport, list)
+                    or transport != ["HingeDriver._tap(confirm_point)",
+                                     "HingeDriver._handle_rose_upsell",
+                                     "HingeDriver._verify_like_landed"]
+                    or action.get("send_like_tapped") is not True
+                    or action_predicates.get("send_like_tapped") is not True
+                    or action_predicates.get(
+                        "inline_composer_and_selected_photo_verified_before_action") is not True
+                    or action_predicates.get("like_landed_verified") is not True
+                    or action.get("post_frame_sha256") != _sha256(profile_data.profile_advance_clear)
+                    or not profile_data.profile_advance_identity):
+                return False
+            if (not isinstance(point, list) or len(point) != 2
+                    or any(isinstance(v, bool) or not isinstance(v, int) for v in point)):
+                return False
+            return _exact_hybrid_terminal_checkpoint(
+                action, session_dir=session_dir, manifest=manifest, acceptance=acceptance,
+                review=review, expected_action="automated_send_priority_like",
+                expected_point=point)
+
+        def has_exact_pass_summary(
+                action: object, *, ordinal: int,
+                profiles_by_ordinal=profiles_by_ordinal, session_dir=sess.dir,
+                manifest=manifest, acceptance=acceptance, review=review) -> bool:
             """Authenticate the pre-summary hybrid Pass format without inventing a summary."""
             if not isinstance(action, dict):
                 return False
             missing = object()
             sent = action.get("send_like_tapped", missing)
             clear = action.get("composer_clear_visible", missing)
-            if sent is not missing or clear is not missing:
-                return sent is False and clear is True
+            if ((sent is not missing or clear is not missing)
+                    and not (sent is False and clear is True)):
+                return False
             profile_data = profiles_by_ordinal.get(ordinal)
-            checks = action.get("review_checkpoints")
-            before = checks.get("before") if isinstance(checks, dict) else None
-            if (profile_data is None or not approved(before, action="automated_pass", item=None)
-                    or not isinstance(before, dict)):
-                return False
-            checkpoint_file, frame_file = before.get("checkpoint_file"), before.get("frame_file")
-            if not isinstance(checkpoint_file, str) or not isinstance(frame_file, str):
-                return False
-            declared_checkpoint_path = Path(checkpoint_file)
-            declared_checkpoint_frame_path = Path(frame_file)
-            try:
-                review_dir = (sess.dir / "hybrid_review").resolve(strict=True)
-                checkpoint_path = declared_checkpoint_path.resolve(strict=True)
-                checkpoint_frame_path = declared_checkpoint_frame_path.resolve(strict=True)
-                if (checkpoint_path.parent != review_dir or checkpoint_frame_path.parent != review_dir
-                        or not checkpoint_path.is_file() or not checkpoint_frame_path.is_file()):
-                    return False
-                checkpoint_raw = checkpoint_path.read_bytes()
-                checkpoint = json.loads(checkpoint_raw)
-                checkpoint_frame_sha256 = _sha256(checkpoint_frame_path.read_bytes())
-            except (OSError, RuntimeError, json.JSONDecodeError):
-                return False
-            checkpoint_body = dict(checkpoint) if isinstance(checkpoint, dict) else {}
-            checkpoint_body.pop("evidence_sha256", None)
-            plan = checkpoint.get("action_plan") if isinstance(checkpoint, dict) else None
-            predicates = plan.get("predicates") if isinstance(plan, dict) else None
-            frame = checkpoint.get("frame") if isinstance(checkpoint, dict) else None
-            config_sha256 = manifest.get("config_provenance", {}).get("sha256")
-            if (not isinstance(checkpoint, dict)
-                    or before.get("checkpoint_sha256") != _sha256(checkpoint_raw)
-                    or checkpoint.get("evidence_sha256") != before.get("checkpoint_evidence_sha256")
-                    or checkpoint.get("evidence_sha256") != _canonical_json_digest(checkpoint_body)
-                    or checkpoint.get("schema_version") != _HYBRID_CHECKPOINT_SCHEMA_VERSION
-                    or checkpoint.get("kind") != _HYBRID_CHECKPOINT_KIND
-                    or checkpoint.get("config_sha256") != config_sha256
-                    or checkpoint.get("human_ground_truth") is not False
-                    or plan != before.get("action_plan")
-                    or not isinstance(predicates, dict)
-                    or plan.get("action") != "automated_pass"
-                    or plan.get("photo_model_item") is not None
-                    or predicates.get("inline_composer_and_selected_photo_verified_before_action") is not True
-                    or predicates.get("send_like_tapped") is not False
-                    or predicates.get("forbidden_zone_guarded_transport") != "HingeDriver._tap"
-                    or not isinstance(frame, dict)
-                    or frame.get("sha256") != before.get("frame_sha256")
-                    or frame.get("sha256") != checkpoint_frame_sha256
-                    or frame.get("sha256") != action.get("pre_frame_sha256")):
+            if (profile_data is None
+                    or not _exact_hybrid_terminal_checkpoint(
+                        action, session_dir=session_dir, manifest=manifest,
+                        acceptance=acceptance, review=review,
+                        expected_action="automated_pass", expected_point=None)):
                 return False
             action_predicates, transport = action.get("predicates"), action.get("transport")
             if (not isinstance(action_predicates, dict) or not isinstance(transport, list)
@@ -4164,12 +4497,16 @@ def _verified_hybrid_reviewed_evidence(sessions: list[_SessionData]) -> dict:
                     or any(action.get("post_tap_composer_verified") is not True
                            or action.get("post_tap_item_relative_verified") is not True
                            or not isinstance(action.get("review_checkpoints"), dict)
-                           or not approved(action["review_checkpoints"].get("before"),
-                                           action="automated_photo_heart",
-                                           item=action.get("photo_model_item"))
-                           or not approved(action["review_checkpoints"].get("after"),
-                                           action="review_heart_result",
-                                           item=action.get("photo_model_item"))
+                           or not _approved_hybrid_decision(
+                               action["review_checkpoints"].get("before"),
+                               acceptance=acceptance, review=review,
+                               action="automated_photo_heart",
+                               item=action.get("photo_model_item"))
+                           or not _approved_hybrid_decision(
+                               action["review_checkpoints"].get("after"),
+                               acceptance=acceptance, review=review,
+                               action="review_heart_result",
+                               item=action.get("photo_model_item"))
                            for action in hearts)):
                 raise _MeasureRefused(f"{sess.dir} profile {profile.get('ordinal')!r} lacks exact "
                                       "approved hybrid heart checkpoints")
@@ -4177,14 +4514,24 @@ def _verified_hybrid_reviewed_evidence(sessions: list[_SessionData]) -> dict:
                 raise _MeasureRefused(f"{sess.dir} profile {profile.get('ordinal')!r} lacks exact "
                                       "target-scoped prefix proof")
             passes = [action for action in actions or []
-                      if isinstance(action, dict) and action.get("action") == "automated_pass"]
-            if (len(passes) != 1 or not has_exact_pass_summary(
-                    passes[0], ordinal=profile.get("ordinal"))
+                      if isinstance(action, dict) and action.get("action") == terminal_action]
+            summary_ok = (has_exact_send_summary if send_like_accepted else has_exact_pass_summary)
+            if (len(passes) != 1 or not summary_ok(passes[0], ordinal=profile.get("ordinal"))
                     or not isinstance(passes[0].get("review_checkpoints"), dict)
-                    or not approved(passes[0]["review_checkpoints"].get("before"),
-                                    action="automated_pass", item=None)):
-                raise _MeasureRefused(f"{sess.dir} profile {profile.get('ordinal')!r} lacks exact "
-                                      "approved hybrid Pass checkpoint")
+                    or not _approved_hybrid_decision(
+                        passes[0]["review_checkpoints"].get("before"),
+                        acceptance=acceptance, review=review,
+                        action=terminal_action, item=None)):
+                raise _MeasureRefused(
+                    f"{sess.dir} profile {profile.get('ordinal')!r} lacks exact approved hybrid "
+                    f"{'Send Priority Like' if send_like_accepted else 'Pass'} checkpoint")
+            other_action = ("automated_pass" if send_like_accepted
+                            else "automated_send_priority_like")
+            if any(isinstance(action, dict) and action.get("action") == other_action
+                   for action in actions or []):
+                raise _MeasureRefused(
+                    f"{sess.dir} profile {profile.get('ordinal')!r} mixes Pass and Send terminal "
+                    "actions in one ledger")
         records.append({"session": str(sess.dir), "manifest_sha256": _sha256(
             (sess.dir / "manifest.json").read_bytes()), "human_ground_truth": False,
             "reviewer": acceptance["reviewer"]})
@@ -4585,7 +4932,7 @@ def _cmd_measure(args: argparse.Namespace) -> None:
             "frozen_bound": inline_bound,
         },
         "device_serial": configured_serial,
-        "device_evidence": dict(zip(evidence_keys, device_evidence[0])),
+        "device_evidence": dict(zip(evidence_keys, device_evidence[0], strict=True)),
         "operational_checks": operational_check_evidence,
         "measurement_evidence_mode": (
             "automated_circular_risk_accepted" if unattended_evidence
@@ -4596,7 +4943,8 @@ def _cmd_measure(args: argparse.Namespace) -> None:
         "auto_release_requirements": list(_POST_CALIBRATION_OBSERVE_REQUIREMENTS),
     }
     ledger_path = newest.dir / "measurement_ledger.json"
-    ledger_path.write_text(json.dumps(ledger, indent=2) + "\n")
+    atomic_write_private_text(
+        ledger_path, json.dumps(ledger, indent=2) + "\n", parent=newest.dir)
     print(f"\nWrote measurement ledger to {ledger_path}")
 
     print("\n" + "=" * 78)
@@ -4622,14 +4970,9 @@ def _cmd_measure(args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> None:
     # Match ``python -m operation_love``: credentials used by the optional supervised
     # observe-check live in this project's own .env on the owner's machine.  Never walk parent
-    # directories, and fail loudly if the required dependency is missing instead of making the
-    # quota probe report a misleading absent-key refusal.
-    try:
-        from dotenv import load_dotenv
-    except ImportError as exc:
-        raise RuntimeError(
-            "python-dotenv is required so hinge_calibrate can load the project's local .env") from exc
-    load_dotenv(Path.cwd() / ".env")
+    # directories. The shared loader also refuses link leaves and tightens a real .env before
+    # reading it, so a quota probe cannot silently inherit credentials from an unsafe file.
+    load_private_dotenv(Path.cwd() / ".env")
 
     ap = argparse.ArgumentParser(
         prog="python -m tools.hinge_calibrate",
@@ -4680,6 +5023,13 @@ def main(argv: list[str] | None = None) -> None:
                      help="manifest-only reviewer model/version for --hybrid-review (defaults to process)")
     cap.add_argument("--reviewer-process", default="stdin_checkpoint_protocol",
                      help="manifest-only AI reviewer process/version for --hybrid-review")
+    cap.add_argument("--send-like", action="store_true",
+                     help="owner-directed exception to this tool's default never-send design: "
+                          "replace every calibration Pass with a REAL, PERMANENT Send Priority "
+                          "Like instead. Requires --hybrid-review (every send must clear a "
+                          "reviewer checkpoint) plus --send-like-confirmation")
+    cap.add_argument("--send-like-confirmation", default="",
+                     help=f"required exact phrase for --send-like: {_SEND_LIKE_CONFIRMATION}")
 
     mea = sub.add_parser(
         "measure",

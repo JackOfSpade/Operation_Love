@@ -19,8 +19,7 @@ fi
 
 if [ "$need_install" -eq 1 ]; then
   echo "> Installing / refreshing dependencies (first run can take a few minutes)..."
-  "$PY" -m pip install -e ".[ml,bq,bumble,hinge]" || { echo "x pip install failed."; notify "Setup failed at pip install." "Basso"; exit 1; }
-  "$PY" -m playwright install chromium >/dev/null 2>&1
+  "$PY" -m pip install -e ".[ml,bq,hinge]" || { echo "x pip install failed."; notify "Setup failed at pip install." "Basso"; exit 1; }
   "$PY" -m operation_love.runtime || { echo "x runtime check failed."; notify "Setup: runtime check failed." "Basso"; exit 1; }
   touch "$STAMP"
   notify "Operation Love is ready - launching." "Glass"
@@ -29,10 +28,13 @@ else
 fi
 
 echo "OK - launching the control hub (Ctrl-C to quit)..."
-TTY_NAME="$(tty)"
+TTY_NAME="$(tty 2>/dev/null || true)"
 "$PY" -m operation_love hub
 status=$?
-if [ "$status" -eq 0 ] && [ -n "$TTY_NAME" ]; then
+# `tty` reports a non-terminal invocation with a human-readable string on
+# some macOS versions. Only a real device path is safe to put in the
+# AppleScript matcher below; otherwise leave Terminal alone.
+if [ "$status" -eq 0 ] && [[ "$TTY_NAME" == /dev/* ]]; then
   /usr/bin/nohup /usr/bin/osascript \
     -e 'delay 0.2' \
     -e 'tell application "Terminal"' \

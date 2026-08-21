@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from operation_love import config as cfg_mod
+from operation_love.private_files import atomic_write_private_text, ensure_private_dir
 from operation_love.ranker import make_store
 from operation_love.ranker.opener_retractions import make_plan, tombstone_rows, verify_plan
 from operation_love.ranker.retractions import RetractionRefused
@@ -136,8 +137,10 @@ def main(argv: list[str] | None = None) -> None:
                                debug_actions=Path(args.debug_actions))
             finally:
                 store.close()
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
+            if not output.parent.exists():
+                ensure_private_dir(output.parent)
+            atomic_write_private_text(
+                output, json.dumps(plan, indent=2, sort_keys=True) + "\n", parent=output.parent)
             print(json.dumps({"plan": str(output), "plan_sha256": plan["plan_sha256"],
                               "confirmation": CONFIRM_PREFIX + plan["plan_sha256"]}))
         else:

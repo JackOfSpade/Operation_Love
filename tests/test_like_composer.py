@@ -235,8 +235,8 @@ def test_rejects_two_equally_plausible_send_like_glyphs_in_the_cta():
     canvas[_COMMENT.y0:_COMMENT.y0 + 2, _COMMENT.x0:_COMMENT.x1] = 222
     canvas[_COMMENT.y1 - 2:_COMMENT.y1, _COMMENT.x0:_COMMENT.x1] = 222
     canvas[_SEND.y0:_SEND.y1, _SEND.x0:_SEND.x1] = 228
-    _paint_glyph(canvas, center=(580, 1856))
-    _paint_glyph(canvas, center=(790, 1856))
+    _paint_glyph(canvas, center=(520, 1856))
+    _paint_glyph(canvas, center=(860, 1856))
 
     with pytest.raises(ComposerDetectionError, match="ambiguous"):
         locate_inline_composer(_png(canvas, color=False), _TEMPLATE)

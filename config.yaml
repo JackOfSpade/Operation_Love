@@ -6,7 +6,7 @@
 # rejects a combined selection and the supervisor holds an exclusive device lock.
 #
 #   hinge      — app-based, calibrated, the working path
-#   bumble     — app-based, Auto acceptance testing pending
+#   bumble     — app-based, uncalibrated; both modes fail closed
 enabled_apps: [hinge]
 
 # observe = YOU swipe manually on real profiles; the bot learns your taste live
@@ -17,7 +17,8 @@ mode: observe               # observe | auto  (override per app under apps.<app>
 # Per-app options.
 apps:
   bumble:
-    # Bumble Auto remains unavailable until its acceptance test is completed.
+    # Both Bumble modes remain unavailable until live calibration is completed and the
+    # required paid-upsell detection template exists.
     serial: "33111JEHN04475"    # same physical Pixel as Hinge; fill in adb_path below if adb isn't on PATH
     adb_path: adb
     touch_backend: auto
@@ -124,40 +125,25 @@ apps:
     # never persisted to the label store, but disabling it can leave real scroll-top advances
     # unresolved on this device because touch watching is unavailable. Keep true here.
     observe_name_ocr: true
-    # Hinge 9.134 inline-composer / photo-only targeting calibration. This release bound was
-    # measured from a four-profile calibration split and a separate three-profile heldout
-    # split using the explicitly accepted hybrid AI-reviewed workflow. It is a perception
-    # validated by the separate AI-reviewed production OBSERVE artifact bound below; AUTO is
-    # enabled only while both artifacts continue to match this exact device/build/frame.
-    targeting_calibration:
-      schema_version: 3
-      device: "33111JEHN04475"
-      hinge_version_name: "9.134.0"
-      frame_size_px: [1080, 2400]
-      composer_layout_id: hinge_inline_v1
-      item_selection_policy_id: hinge_photos_only_v1
-      identity_match_max_dist: 1.9721
-      inline_item_max_dist: 14.9099
-      calibrated_at: "2026-08-14T09:52:53.417382+00:00 — measured from session(s): targeting_20260814T_hybrid_alt6_calibration, targeting_20260814T_hybrid_alt7_heldout"
-      identity_band: [0.10, 0.048, 0.80, 0.094]
-      content_band: [0.125, 0.875]
-    # Explicitly accepted AI-reviewed production OBSERVE release gate. The referenced
-    # artifact binds the calibrated device/build/frame, exact debug run, independently
-    # reviewed action provenance, and persisted Pass/Like/opener evidence. It honestly
-    # records human_ground_truth=false and is distinct from the manual release gate.
-    ai_reviewed_observe_release_evidence:
-      schema_version: 1
-      acceptance: I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK
-      calibration_calibrated_at: "2026-08-14T09:52:53.417382+00:00 — measured from session(s): targeting_20260814T_hybrid_alt6_calibration, targeting_20260814T_hybrid_alt7_heldout"
-      calibration_sha256: 8df4ac29fc9282a106f665ab16ac999c529e2ff2481127c2d86fbdd137fd66da
-      device: "33111JEHN04475"
-      hinge_version_name: "9.134.0"
-      frame_size_px: [1080, 2400]
-      production_run_reference: data/hinge_debug/312b80bf4b50
-      production_run_id: 312b80bf4b50
-      verified_at: "2026-08-14T13:13:18.069677+00:00"
-      verification_file: ops/release/312b80bf4b50/release/hinge_ai_observe_release.json
-      verification_sha256: 60952f85f77f5f6ce89a825e08f2b41c7d4818d7ffc1ea7e39620d35b307c303
+    # TARGETED SUGGESTIONS AND AUTO RELEASE GATES INTENTIONALLY ABSENT (2026-08-21).
+    #
+    # The 10.0.1 numeric calibration remains archived as historical evidence, but it cannot
+    # license `hinge_photos_only_v1`: photographic pixels, low drift, and a clean mute-control
+    # screen do not positively exclude a paused/static video. Config validation structurally
+    # rejects reinstalling that mapping until a positive still-photo discriminator is available.
+    # OBSERVE remains usable without `targeting_calibration`; it reads profiles and records the
+    # owner's deck decisions but offers no numbered targeted suggestion.
+    #
+    # The previous `ai_reviewed_observe_release_evidence` block bound the 9.134.0 calibration
+    # (calibration_sha256 8df4ac29…, production run 312b80bf4b50). The archived 10.0.1 numeric
+    # calibration replaced it, so that artifact no longer validates the perception it was
+    # meant to release, and config.validate() would reject it the moment Hinge ran in AUTO.
+    # It is removed rather than edited: a release gate is earned by a production OBSERVE run on
+    # the build it releases, never by retargeting an older run's hashes at a newer calibration.
+    #
+    # Before AUTO can run again, first implement and measure positive still-photo proof, then
+    # produce a new targeting calibration and production OBSERVE release artifact — see
+    # ops/RUNBOOK.md. Changing mode or pasting either stale mapping fails closed.
 
 paths:
   data_dir: ./data
@@ -719,7 +705,11 @@ opener:
     GUESS THE WORLD, NOT HER IDENTITY: name a country, a region, a park, the way a well travelled
     friend would. Never a street, a neighbourhood, a hotel, a specific venue, or anywhere that
     could be where she lives. Never guess her employer, her school, or her age, and never
-    identify anyone else in the photo. You may know more than this. Do not show it.
+    identify anyone else in the photo. When a place comes from recognizing the image rather than
+    from her profile text, clearly identify it as a visual inference before building on it. Do
+    not state an inferred location as shared experience, and do not turn it into a generic
+    compliment. You may know more than this. Do
+    not show it.
 
     NEVER INVENT THE SENDER: you may not claim he has been somewhere, done something, or likes
     something. You do not know his history and he has to live with whatever you write.
@@ -737,6 +727,8 @@ opener:
     or a direct low pressure invitation. Do not try to build a text relationship in the opener.
     HARD RULE: never use an em dash or any hyphen; use commas or periods instead and spell out
     hyphenated abbreviations.
+    A terminal plain text smiley, :) is allowed only when it meaningfully makes an otherwise
+    potentially misread playful or teasing line clearly good natured. Never add it by default.
 
 # --- Cost control (see operation_love/costing.py) ---
 budget:

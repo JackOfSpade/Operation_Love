@@ -337,11 +337,12 @@ def test_hinge_spec_carries_the_paywall_template_and_headline_band():
     assert HINGE_SPEC.paywall_headline_band == (0.0556, 0.1958, 0.9537, 0.3000)
 
 
-def test_bumble_spec_keeps_manual_observation_unavailable():
+def test_bumble_spec_keeps_both_modes_unlicensed():
     assert BUMBLE_SPEC.app == "bumble"
     assert BUMBLE_SPEC.package == "com.bumble.app"
+    assert BUMBLE_SPEC.observe_calibrated is False
     assert BUMBLE_SPEC.observe_ready is False
-    assert BUMBLE_SPEC.calibrated is False          # mode readiness is registered separately
+    assert BUMBLE_SPEC.calibrated is False
     assert BUMBLE_SPEC.like_flow == "direct"
     assert BUMBLE_SPEC.accepts_opener is False       # match-first-then-message: no swipe-time opener
     assert BUMBLE_SPEC.think_time_calibrated is False
@@ -364,12 +365,13 @@ def test_bumble_android_driver_binds_bumble_spec():
     assert drv.think_time_calibrated is False
 
 
-def test_bumble_mode_registration_enables_auto_only():
+def test_bumble_mode_registration_derives_both_modes_and_fails_closed():
     from operation_love import platforms
     assert platforms.unavailable_reason("hinge") is None
-    observe_reason = platforms.unavailable_reason("bumble", "observe")
-    assert observe_reason and "Auto only" in observe_reason
-    assert platforms.unavailable_reason("bumble", "auto") is None
+    assert platforms.get("bumble").available is False
+    for mode in ("observe", "auto"):
+        reason = platforms.unavailable_reason("bumble", mode)
+        assert reason and "not calibrated" in reason
 
 
 # --- like_flow dispatch: driven by the spec, not hardcoded to "hinge" -------

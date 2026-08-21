@@ -307,7 +307,8 @@ class TouchWatcher:
             argv += ["-s", self._serial]
         argv += ["shell", "getevent", "-p"]
         try:
-            result = subprocess.run(argv, capture_output=True, timeout=self._probe_timeout)
+            result = subprocess.run(
+                argv, capture_output=True, timeout=self._probe_timeout, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise TouchWatchUnavailable(
                 f"could not probe input devices (`{' '.join(argv)}`): {exc}"
@@ -328,7 +329,9 @@ class TouchWatcher:
         error, anything -- through this `finally` is what keeps `alive` honest."""
         proc = self._proc
         try:
-            assert proc is not None and proc.stdout is not None
+            if proc is None or proc.stdout is None:
+                raise TouchWatchUnavailable(
+                    "getevent reader started without a live process/stdout stream")
             for line in proc.stdout:
                 self._feed_line(line)
         except Exception:  # noqa: BLE001 — see docstring: must never raise into the process

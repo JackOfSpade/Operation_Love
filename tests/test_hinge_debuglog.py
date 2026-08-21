@@ -1,8 +1,13 @@
-"""Host-side debug log for the Hinge driver — action records + rotating screenshots, with
-error shots kept forever (so a failure that halts the run is never rotated away)."""
+"""Host-side debug log for the Hinge driver — bounded action and evidence screenshots."""
 import json
+import os
+import stat
 
+import pytest
+
+from operation_love.drivers import debuglog as debuglog_module
 from operation_love.drivers.debuglog import HingeDebugLog
+from operation_love.private_files import UnsafePrivatePathError
 
 
 def _recs(d):
@@ -78,7 +83,7 @@ def test_action_can_preserve_an_identity_anchor_shot(tmp_path):
     assert (dl.dir / rec["anchor"]).read_bytes() == b"ANCHOR"
 
 
-def test_normal_shots_rotate_but_error_shots_are_kept(tmp_path):
+def test_normal_shots_rotate_separately_from_recent_error_evidence(tmp_path):
     dl = HingeDebugLog(str(tmp_path), run_id="r", keep_shots=4)
     dl.error("unexpected", b"CRITICAL", ValueError("boom"))   # error shot — must survive rotation
     for i in range(20):                                        # flood with normal shots
@@ -107,12 +112,32 @@ def test_logging_is_best_effort_no_frame(tmp_path):
     assert rec["action"] == "capture" and "before" not in rec
 
 
-def test_screenshot_write_failure_is_swallowed_but_record_still_written(tmp_path, monkeypatch):
-    import pathlib
+def test_action_fields_cannot_override_reserved_audit_identity(tmp_path):
     dl = HingeDebugLog(str(tmp_path), run_id="r")
-    def boom(self, data):                                      # disk dies mid-write
+    dl.action("real_action", action="forged_action", ts="forged timestamp")
+
+    rec = _recs(dl)[0]
+    assert rec["action"] == "real_action"
+    assert rec["ts"] != "forged timestamp"
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, 1.5, "5"])
+def test_keep_shots_requires_an_exact_positive_integer(value, tmp_path):
+    with pytest.raises(ValueError, match="keep_shots"):
+        HingeDebugLog(str(tmp_path), run_id="r", keep_shots=value)
+
+
+def test_keep_shots_rejects_values_above_bounded_maximum(tmp_path):
+    with pytest.raises(ValueError, match="keep_shots"):
+        HingeDebugLog(
+            str(tmp_path), run_id="r", keep_shots=debuglog_module._MAX_KEEP_SHOTS + 1)
+
+
+def test_screenshot_write_failure_is_swallowed_but_record_still_written(tmp_path, monkeypatch):
+    dl = HingeDebugLog(str(tmp_path), run_id="r")
+    def boom(*_args, **_kwargs):                               # disk dies mid-write
         raise OSError("disk full")
-    monkeypatch.setattr(pathlib.Path, "write_bytes", boom)
+    monkeypatch.setattr(debuglog_module, "write_private_bytes", boom)
     dl.action("like", before=b"PNGDATA")                       # must not raise despite the bad write
     dl.error("unexpected", b"PNGDATA", RuntimeError("x"))      # error shots are best-effort too
     recs = _recs(dl)
@@ -121,15 +146,70 @@ def test_screenshot_write_failure_is_swallowed_but_record_still_written(tmp_path
 
 
 def test_jsonl_append_failure_is_swallowed(tmp_path, monkeypatch):
-    import pathlib
     dl = HingeDebugLog(str(tmp_path), run_id="r")
-    real_open = pathlib.Path.open
-    def boom(self, *a, **k):                                   # only the actions.jsonl append fails
-        if self.name == "actions.jsonl":
-            raise OSError("disk full")
-        return real_open(self, *a, **k)
-    monkeypatch.setattr(pathlib.Path, "open", boom)
+    def boom(*_args, **_kwargs):                               # actions.jsonl append fails
+        raise OSError("disk full")
+    monkeypatch.setattr(debuglog_module, "append_private_text", boom)
     dl.action("dislike")                                       # must not raise despite the bad append
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_run_directory_and_all_managed_artifacts_are_private_across_restart(tmp_path):
+    base = tmp_path / "debug"
+    base.mkdir(mode=0o755)
+    base.chmod(0o755)
+    first = HingeDebugLog(str(base), run_id="r")
+    first.action("capture", before=b"BEFORE", after=b"AFTER")
+
+    run_dir = first.dir
+    actions = run_dir / "actions.jsonl"
+    managed = list(run_dir.glob("*.png"))
+    unrelated = run_dir / "notes.png"
+    unrelated.write_bytes(b"not managed by DebugLog")
+    run_dir.chmod(0o755)
+    actions.chmod(0o644)
+    for path in managed:
+        path.chmod(0o644)
+    unrelated.chmod(0o644)
+
+    HingeDebugLog(str(base), run_id="r")
+
+    assert stat.S_IMODE(base.stat().st_mode) == 0o700
+    assert stat.S_IMODE(run_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE(actions.stat().st_mode) == 0o600
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in managed)
+    assert stat.S_IMODE(unrelated.stat().st_mode) == 0o644
+
+
+@pytest.mark.skipif(os.name != "posix", reason="symlink and POSIX permission semantics")
+def test_existing_actions_symlink_is_rejected_without_touching_its_target(tmp_path):
+    run_dir = tmp_path / "r"
+    run_dir.mkdir()
+    unrelated = tmp_path / "unrelated.jsonl"
+    unrelated.write_text("private elsewhere\n")
+    unrelated.chmod(0o644)
+    (run_dir / "actions.jsonl").symlink_to(unrelated)
+
+    with pytest.raises(UnsafePrivatePathError):
+        HingeDebugLog(str(tmp_path), run_id="r")
+
+    assert unrelated.read_text() == "private elsewhere\n"
+    assert stat.S_IMODE(unrelated.stat().st_mode) == 0o644
+
+
+@pytest.mark.skipif(os.name != "posix", reason="symlink and POSIX permission semantics")
+def test_restart_skips_managed_png_symlink_without_reading_or_chmodding_target(tmp_path):
+    first = HingeDebugLog(str(tmp_path), run_id="r")
+    unrelated = tmp_path / "unrelated.png"
+    unrelated.write_bytes(b"outside profile image")
+    unrelated.chmod(0o644)
+    (first.dir / "99999_capture_before.png").symlink_to(unrelated)
+
+    second = HingeDebugLog(str(tmp_path), run_id="r")
+    second.action("capture", before=b"SAFE")
+
+    assert unrelated.read_bytes() == b"outside profile image"
+    assert stat.S_IMODE(unrelated.stat().st_mode) == 0o644
 
 
 # ── content-dedupe (§ observe_waiting heartbeat wrote ~30MB/run, 46.6% byte-identical) ──────
@@ -198,8 +278,7 @@ def test_rotated_away_duplicate_is_saved_fresh_not_pointed_at_a_deleted_file(tmp
 
 
 def test_error_shots_are_never_deduped_against_normal_shots(tmp_path):
-    """rotate=False (error) shots must keep behaving exactly as before dedup existed: always a
-    fresh write, kept forever, and -- per the scope documented in __init__ -- never consulted
+    """rotate=False (error) shots remain a fresh write and are never consulted
     as a dedup source for normal shots either, so this path stays as unconditional as it was."""
     dl = HingeDebugLog(str(tmp_path), run_id="r")
     dl.error("unexpected", b"SAME_BYTES", ValueError("boom"))
@@ -211,8 +290,7 @@ def test_error_shots_are_never_deduped_against_normal_shots(tmp_path):
 
 
 def test_two_identical_error_shots_both_write_their_own_file(tmp_path):
-    """Error shots were already exempt from rotation ("kept forever"); dedup must not change
-    that either -- two error shots with identical bytes still both land on disk."""
+    """Two recent error shots with identical bytes still both land on disk."""
     dl = HingeDebugLog(str(tmp_path), run_id="r")
     dl.error("unexpected", b"CRASH_FRAME", ValueError("boom1"))
     dl.error("unexpected", b"CRASH_FRAME", ValueError("boom2"))
@@ -220,6 +298,22 @@ def test_two_identical_error_shots_both_write_their_own_file(tmp_path):
     recs = _recs(dl)
     assert recs[0]["screenshot"] != recs[1]["screenshot"]
     assert len(list(dl.dir.glob("*.png"))) == 2
+
+
+def test_retained_error_pool_is_bounded_and_restart_keeps_only_newest(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(debuglog_module, "_MAX_RETAINED_SHOTS", 2)
+    first = HingeDebugLog(str(tmp_path), run_id="r")
+    first.error("unexpected", b"ERROR_1", RuntimeError("one"))
+    first.error("unexpected", b"ERROR_2", RuntimeError("two"))
+    first.error("unexpected", b"ERROR_3", RuntimeError("three"))
+
+    assert {path.read_bytes() for path in first.dir.glob("*.png")} == {b"ERROR_2", b"ERROR_3"}
+
+    second = HingeDebugLog(str(tmp_path), run_id="r")
+    assert {path.read_bytes() for path in second.dir.glob("*.png")} == {b"ERROR_2", b"ERROR_3"}
+    second.error("unexpected", b"ERROR_4", RuntimeError("four"))
+    assert {path.read_bytes() for path in second.dir.glob("*.png")} == {b"ERROR_3", b"ERROR_4"}
 
 
 def test_dedupe_never_files_one_action_s_frame_under_another_s_name(tmp_path):
@@ -251,3 +345,17 @@ def test_dedupe_still_collapses_the_repeat_that_actually_causes_the_bloat(tmp_pa
     assert len(list(log.dir.glob("*.png"))) == 1
     records = _recs(log)
     assert len(records) == 12 and len({r["before"] for r in records}) == 1
+
+
+def test_run_id_must_be_a_single_leaf_and_cannot_escape_base_dir(tmp_path):
+    base = tmp_path / "debug"
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o755)
+    outside.chmod(0o755)
+
+    for run_id in ("../outside", "nested/run", r"nested\\run", ".", "..", ""):
+        with pytest.raises(ValueError, match="one non-dot path component"):
+            HingeDebugLog(str(base), run_id=run_id)
+
+    assert not base.exists()
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o755

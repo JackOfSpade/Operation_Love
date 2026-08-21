@@ -35,7 +35,7 @@ import pytest
 from PIL import Image
 
 from operation_love.drivers import (
-    hinge, item_identity, item_index, scroll_step, scroll_top, segment)
+    hinge, item_crops, item_identity, item_index, scroll_step, scroll_top, segment)
 from operation_love.drivers.hinge import HingeDriver
 from operation_love.drivers.debuglog import HingeDebugLog
 
@@ -301,6 +301,8 @@ def _no_sleep(monkeypatch, request):
     # photo-only numbering tests; keep these capture/navigation tests focused on their declared
     # geometry by labelling every synthetic selectable card a photo.
     monkeypatch.setattr(hinge, "unnumber_unless_confident_photo", lambda _crop: None)
+    monkeypatch.setattr(
+        hinge, "unnumber_without_still_photo_evidence", lambda _drift, _frames: None)
     # Video screening has its own exact-template/ROI tests below. Every synthetic noise card here
     # is a successfully screened still by default.
     if request.node.name != "test_video_mute_template_is_a_near_perfect_app_ui_match":
@@ -425,6 +427,24 @@ def test_all_video_profile_fails_before_opener_or_targeting(monkeypatch):
     assert drv._current_item_index is None and drv._current_item_payload is None
 
 
+def test_driver_refuses_auto_hidden_video_risk_when_still_photo_evidence_is_absent(
+        monkeypatch):
+    """Clean mute screens alone never authorize a production numbered payload."""
+    monkeypatch.setattr(
+        hinge, "unnumber_without_still_photo_evidence",
+        item_crops.unnumber_without_still_photo_evidence)
+    monkeypatch.setattr(
+        HingeDriver, "_match_video_mute",
+        staticmethod(lambda _frame, _rect: (True, 0.0)))
+    drv = _drv(WorldAdb())
+
+    profile = drv._capture_current()
+
+    assert profile is not None and profile.items == ()
+    assert "no policy-approved selectable item" in profile.items_unavailable
+    assert drv._current_item_payload is None
+
+
 def test_video_screen_reads_only_card_local_upper_left_sightings(monkeypatch):
     """The Android mute status icon and card like-heart are never inside the searched ROI."""
     frames = [_frame(260 * i) for i in range(10)]
@@ -472,6 +492,29 @@ def test_video_screen_matcher_failure_fails_closed_with_bounded_roi_diagnostics(
         assert "matcher_failed@[" in reason
         assert "ocr" not in reason.lower() and "pixel" not in reason.lower()
         assert "b'" not in reason
+
+
+@pytest.mark.parametrize(
+    ("screen_result", "expected"),
+    [
+        ((True, 0.0), None),
+        ((True, 1.0), "selected media is a video"),
+        ((False, None), "screening could not be completed"),
+    ],
+    ids=["mute-absent", "mute-visible", "matcher-failed"],
+)
+def test_exact_target_frame_video_screen_fails_closed(monkeypatch, screen_result, expected):
+    monkeypatch.setattr(
+        HingeDriver, "_match_video_mute",
+        staticmethod(lambda _frame, _rect: screen_result))
+    block = SimpleNamespace(x0=_CARD_X0, x1=_CARD_X1, y0=700, y1=1674)
+
+    reason = _drv(WorldAdb())._target_frame_video_screen_reason(_frame(0), block)
+
+    if expected is None:
+        assert reason is None
+    else:
+        assert expected in reason
 
 
 def test_clipped_mute_roi_does_not_overrule_a_later_successful_no_mute_screen(monkeypatch):
@@ -657,7 +700,7 @@ def test_the_enumeration_step_is_sized_from_local_spacing_never_the_config_caden
     assert adb.gestures, "the read must have scrolled"
     floor_px = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
     ceiling_px = int(scroll_step._STEP_RATIO_MAX * min(
-        b - a for a, b in zip(_HEART_PAGE_Y, _HEART_PAGE_Y[1:])))
+        b - a for a, b in zip(_HEART_PAGE_Y, _HEART_PAGE_Y[1:], strict=False)))
     for frac, _lane in adb.gestures:
         assert frac != drv.read_scroll_frac
         assert floor_px <= scroll_step.step_px_for_frac(frac, _H) <= ceiling_px
@@ -1252,7 +1295,10 @@ def test_item_index_refusal_filesystem_evidence_failure_cannot_break_the_live_re
         monkeypatch, tmp_path):
     drv = _drv(WorldAdb())
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="item-index-dossier-disk-failure")
-    monkeypatch.setattr(Path, "write_bytes", lambda *_a, **_k: (_ for _ in ()).throw(OSError("full")))
+    monkeypatch.setattr(
+        hinge, "atomic_write_private_bytes",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("full")),
+    )
     assert drv._item_index_refused([b"first", b"last"], "frame 0 is unusable") == "frame 0 is unusable"
 
 

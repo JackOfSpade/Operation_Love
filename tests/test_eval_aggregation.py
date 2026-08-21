@@ -1,6 +1,8 @@
 """Identity grouping + result shape for leakage-free evaluation. Needs sklearn."""
 import importlib
 
+import pytest
+
 from operation_love.ranker.evaluate import (
     evaluate,
     format_report,
@@ -37,6 +39,13 @@ def test_evaluate_never_raises_on_malformed_embeddings():
     samples = [(i % 2 == 0, [0.0] * (1280 if i % 3 else 8)) for i in range(12)]
     r = evaluate(samples)
     assert r["status"] == "error"                    # handled gracefully, no traceback
+
+
+@pytest.mark.parametrize("samples", [None, ["junk"] * 12, [(1, [0.0])] * 12])
+def test_evaluate_never_raises_on_malformed_top_level_rows_or_labels(samples):
+    r = evaluate(samples)
+    assert r["status"] == "error"
+    assert "malformed" in r["message"]
 
 
 def test_evaluate_reports_no_sklearn_when_sklearn_is_unavailable(monkeypatch):

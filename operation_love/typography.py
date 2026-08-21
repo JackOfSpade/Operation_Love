@@ -52,7 +52,10 @@ def tidy_punctuation_spacing(text: str) -> str:
     both dash call sites clean up identically instead of drifting.
     """
     t = re.sub(r"\s+", " ", text)
-    t = re.sub(r"\s+([,.!?;:])", r"\1", t)        # no space before punctuation
+    # A colon normally takes no leading space, but ``:)`` is a deliberately allowed
+    # plain-text smiley in an opener and is conventionally separated from the preceding
+    # word. Keep that one pair intact while retaining normal colon cleanup everywhere else.
+    t = re.sub(r"\s+([,.!?;]|:(?!\)))", r"\1", t)  # no space before punctuation
     t = re.sub(r"([,;:])(\s*[,;:])+", r"\1", t)   # collapse runs created by dash->comma
     t = re.sub(r",\s*([.!?;:])", r"\1", t)        # drop a comma stranded before terminal punctuation
     t = re.sub(r"^[\s,;:]+|[\s,;:]+$", "", t)     # strip leading/trailing connective punct from a boundary dash

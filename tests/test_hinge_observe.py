@@ -103,6 +103,9 @@ class FakeAdb:
     def shell(self, command="", **_):
         return ""
 
+    def foreground_package(self):
+        return "co.hinge.app"
+
     def screencap(self):
         frame = self.frames[min(self.i, len(self.frames) - 1)]
         if self.advance_on_screencap and self.i < len(self.frames) - 1:
@@ -153,6 +156,116 @@ def test_capture_stops_when_scroll_repeats():
     assert adb.scrolls == 2
     assert profile.meta["capture_truncated"] is False    # the repeat proves the true bottom was seen
     assert drv._current_capture_truncated is False
+
+
+def test_system_ui_foreground_blocks_capture_before_a_scroll_top_verdict(monkeypatch):
+    """The Android notification shade is not a scrolled Hinge card.
+
+    Regression for the 2026-08-19 run: quick settings covered Hinge, but its dark system header
+    was compared with the filter-chip band and reported as ``confirmed_not_top``. The focused
+    window is independent evidence, so no capture or recovery swipe may start.
+    """
+    class SystemUiAdb(FakeAdb):
+        def foreground_package(self):
+            return "com.android.systemui"
+
+    adb = SystemUiAdb([b"quick-settings"])
+    drv = _drv(adb)
+    monkeypatch.setattr(drv, "out_of_profiles", lambda: False)
+    drv._session_top_done = True
+
+    assert drv.current_profile() is None
+    assert adb.scrolls == adb.swipes == 0
+    assert "quick-settings" in (drv.blocked_reason() or "")
+    assert "no Hinge profile" in drv.blocked_reason()
+
+
+def test_system_ui_mid_wait_pauses_then_resyncs_without_stopping_or_input():
+    """A shade opened while READY is a reversible Observe interruption, not a stuck deck.
+
+    Regression for the 2026-08-21 run: Hinge was unchanged through 01:38:41, System UI owned
+    the next frame at 01:38:48, and the generic unknown-screen watchdog stopped 94.7s later.
+    Observe must wait without touching anything, then recapture when Hinge returns.
+    """
+    class SwitchingForegroundAdb(FakeAdb):
+        def __init__(self):
+            super().__init__([b"hinge", b"system-ui", b"hinge-returned"],
+                             advance_on_screencap=True)
+            self.packages = iter([
+                "co.hinge.app",            # initial base handoff
+                "com.android.systemui",    # changed frame proves the interruption
+                "com.android.systemui",    # shade remains open for one pause poll
+                "co.hinge.app",            # owner/system closes it
+            ])
+
+        def foreground_package(self):
+            return next(self.packages, "co.hinge.app")
+
+    adb = SwitchingForegroundAdb()
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+
+    assert drv.wait_for_decision(timeout=5.0) is None
+    assert adb.taps == [] and adb.swipes == 0 and adb.scrolls == 0 and adb.texts == []
+    assert drv.blocked_reason() is None
+    names = [name for name, _fields in drv._dbg.calls]
+    assert names == ["observe_foreground_paused", "observe_foreground_resumed"]
+    resumed = drv._dbg.calls[1][1]
+    assert resumed["result"] == "recapture_without_decision"
+
+
+def test_completed_driver_inputs_are_audited_at_every_gesture_choke_point():
+    adb = FakeAdb([b"frame"])
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+
+    drv._tap(500, 1000)
+    drv._swipe(500, 1000, 500, 1500, duration_ms=321)
+    drv._scroll(0.2, 0.4)
+    drv._text("hello")
+
+    rows = [fields for name, fields in drv._dbg.calls if name == "device_input"]
+    assert [row["kind"] for row in rows] == ["tap", "swipe", "scroll", "text"]
+    assert rows[0]["start"] == rows[0]["end"] == [500, 1000]
+    assert rows[1]["start"] == [500, 1000]
+    assert rows[1]["end"] == [500, 1500]
+    assert rows[1]["duration_ms"] == 321
+    assert rows[2]["direction"] == "forward"
+    assert rows[2]["distance_frac"] == 0.2
+    assert rows[3]["chars"] == 5
+    assert adb.texts == ["hello"]
+    assert all(row["session_mode"] == "observe" for row in rows)
+    assert all(row["transport"] == "FakeAdb" for row in rows)
+
+
+def test_failed_text_transport_is_not_audited_as_completed_input():
+    class FailingTextAdb(FakeAdb):
+        def text(self, s):
+            raise RuntimeError("text transport failed")
+
+    drv = _drv(FailingTextAdb([b"frame"]))
+    drv._dbg = _FakeDbg()
+
+    with pytest.raises(RuntimeError, match="text transport failed"):
+        drv._text("hello")
+
+    assert not [fields for name, fields in drv._dbg.calls if name == "device_input"]
+
+
+def test_downward_swipe_cannot_start_in_android_notification_shade_zone():
+    adb = FakeAdb([b"frame"])
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+
+    with pytest.raises(hinge.HingeActionError, match="notification shade"):
+        drv._swipe(540, 100, 540, 1800)
+
+    assert adb.swipes == 0
+    assert not [fields for name, fields in drv._dbg.calls if name == "device_input"]
+
+    # The calibrated 0.78-screen Hinge rewind starts at 0.11h and remains legal.
+    drv._swipe(540, 264, 540, 2136)
+    assert adb.swipes == 1
 
 
 def test_capture_truncated_flag_set_when_ceiling_reached_without_a_natural_stop():
@@ -730,6 +843,46 @@ def test_observed_sheet_keeps_the_strict_content_rule_for_a_same_named_next_card
     assert notified is True
     resyncs = [fields for name, fields in drv._dbg.calls if name == "observe_resync"]
     assert [f["reason"] for f in resyncs] == ["like_send_identity_unproven"]
+
+
+def test_observed_sheet_treats_a_verified_content_scroll_as_a_dismissal(monkeypatch):
+    """A review scroll after opening a composer stays on the same profile.
+
+    The same-name guard remains strict: this succeeds only because the current card's content
+    also matches a captured frame at a measured vertical offset.
+    """
+    import numpy as np
+
+    adb = FakeAdb([b"scrolled", b"scrolled"], advance_on_screencap=True)
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+    identity = np.full((16, 64), 10, dtype="int16")
+    drv._identity_sig = identity
+    drv._identity_top_sig = np.full((16, 64), 150, dtype="int16")
+
+    r0, r1 = hinge._content_rows(drv.content_band, 24)
+    content = np.random.default_rng(91).integers(
+        0, 255, size=(r1 - r0, 24)).astype("int16")
+    captured = np.full((24, 24), -50, dtype="int16")
+    captured[r0:r1] = content
+    scrolled = np.full((24, 24), -50, dtype="int16")
+    shifted = np.full_like(content, -50)
+    shifted[4:] = content[:-4]
+    scrolled[r0:r1] = shifted
+    drv._current_sigs = [captured]
+
+    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect: identity)
+    monkeypatch.setattr(hinge, "_downsample", lambda *_a, **_k: scrolled)
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda _frame: True)
+
+    assert drv._is_current_profile_frame(b"scrolled", require_content=True)
+    sent, notified = drv._await_like_resolved(b"base", None, lambda: False,
+                                              intent_notified=True)
+
+    assert sent is False
+    assert notified is True
+    assert not [name for name, _fields in drv._dbg.calls if name == "observe_resync"]
 
 
 def test_observed_sheet_needs_identity_proven_new_deck_when_anchor_exists(monkeypatch):

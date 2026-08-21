@@ -698,7 +698,7 @@ def test_a_navigation_refusal_becomes_a_targeting_stop_with_nothing_typed():
         with pytest.MonkeyPatch.context() as mp:
             driver = _driver(adb, mp, payload=_payload(), anchor=b"ref")
 
-            def _raise(*_a, **_kw):
+            def _raise(*_a, failure=failure, **_kw):
                 raise failure
             mp.setattr(hinge, "navigate_to_item", _raise)
             with pytest.raises(HingeTargetingError) as exc:

@@ -66,7 +66,7 @@ import traceback
 import uuid
 from datetime import date
 
-from .config import PacingCfg
+from .config import PacingCfg, normalize_swipe_delay_s
 from .drivers.base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClosed,
                            ItemTargetingError, OBSERVE_ITEM_INCONCLUSIVE, OBSERVE_ITEM_MATCH,
                            OBSERVE_ITEM_MISMATCH, ObserveItemCheck)
@@ -732,8 +732,9 @@ class Worker(threading.Thread):
             return
         if reason:
             print(f"{self.app.title()} observe: targeted opener suggestions need setup "
-                  f"({reason}). Manual pass/like labels still work. Complete the Hinge "
-                  "targeted-opener calibration in ops/RUNBOOK.md to enable suggestions.")
+                  f"({reason}). Manual pass/like labels still work. Follow ops/RUNBOOK.md: "
+                  "positive still-photo proof must exist before a fresh calibration can "
+                  "enable suggestions.")
 
     def _capture_failure(self, exc: BaseException) -> None:
         """Let the driver snapshot the on-screen failure state into its debug log. Called from
@@ -892,9 +893,11 @@ class Worker(threading.Thread):
         if self.status:
             self.status.set_app(self.app, mode=self.mode)
         self._bind_debug_run()
-        if self.observe_action_bridge:
-            self.observe_action_bridge.register(self)
         while not self.stop_event.is_set():
+            # _finish_session unregisters after every loop attempt. Observe's explicit
+            # restart path therefore must renew the bridge binding for each new session.
+            if self.observe_action_bridge:
+                self.observe_action_bridge.register(self)
             try:
                 self._observe_loop() if self.mode == "observe" else self._auto_loop()
                 leave()
@@ -1178,6 +1181,16 @@ class Worker(threading.Thread):
                 if added % self.retrain_every == 0:
                     self._retrain_after_observe_labels(added)
                     last_retrained = added
+        except DeckBlockedError as exc:
+            # Reviewed Observe actions use the same guarded Android input boundaries as AUTO.
+            # If a foreign foreground or known paywall appears in that last-moment window,
+            # publish the ordinary blocked state and retain any labels completed beforehand;
+            # no decision exists for the interrupted card.
+            terminal_state = "blocked"
+            stop_reason = str(exc)
+            stop_kind = "deck_blocked"
+            self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
+            self.stop_event.set()
         except BaseException as exc:
             pending_error = True
             if isinstance(exc, Exception):
@@ -1406,7 +1419,7 @@ class Worker(threading.Thread):
             install_policy(self._auto_policy)
         else:
             try:
-                setattr(self.driver, "_auto_policy", self._auto_policy)
+                self.driver._auto_policy = self._auto_policy
             except (AttributeError, TypeError):
                 pass
         # Tell the driver whether an opener will actually be requested this session (audit fix,
@@ -1486,6 +1499,19 @@ class Worker(threading.Thread):
                 if self.stop_event.is_set():
                     break
                 if profile is None:
+                    # A foreground/package race can be discovered *inside* capture, after the
+                    # between-profile blocked_reason() probe above. AndroidDriver latches that
+                    # precise reason and returns no profile without issuing input. Re-read it
+                    # before treating ``None`` as an ordinary end of the deck, otherwise the
+                    # hub reports a clean stop for a run that is actually waiting on System UI.
+                    blocked = self.driver.blocked_reason()
+                    if blocked is not None:
+                        terminal_state = "blocked"
+                        stop_reason = blocked
+                        stop_kind = "deck_blocked"
+                        self._stat(state=terminal_state, stop_reason=stop_reason,
+                                   stop_kind=stop_kind)
+                        self.stop_event.set()
                     break
 
                 self._stat(state="scoring")
@@ -1829,20 +1855,6 @@ class Worker(threading.Thread):
                         if getattr(self.driver, "supports_interruptible_like_navigation", False):
                             like_kwargs["should_stop"] = self.stop_event.is_set
                         self.driver.like(pick.text if pick else None, **like_kwargs)
-                    except DeckBlockedError as exc:
-                        # Send Like can be refused only AFTER the action started: Hinge closes
-                        # the comment sheet and puts up its out-of-free-likes paywall.  This is
-                        # a known, normal blocking screen, not an unexpected action failure;
-                        # above all it is NOT a completed like.  Stop before the counter and
-                        # record_decision calls below, preserving the exact driver-facing reason
-                        # that the between-profile blocked_reason() path already publishes.
-                        terminal_state = "blocked"
-                        stop_reason = str(exc)
-                        stop_kind = "deck_blocked"
-                        self._stat(state=terminal_state, stop_reason=stop_reason,
-                                   stop_kind=stop_kind)
-                        self.stop_event.set()
-                        break
                     except ItemTargetingError as exc:
                         # DOC 5.6'S HARD STOP. The driver could not put this like on the item the
                         # opener was written about -- either it could not reach that item, or the
@@ -1942,6 +1954,18 @@ class Worker(threading.Thread):
             # This is an operator Stop observed at a driver action boundary, not an unexpected
             # failure.  Let run() finish it normally without capturing a failure frame.
             raise
+        except DeckBlockedError as exc:
+            # A known blocking screen can surface at any final Android input boundary: not only
+            # Send Like, but a pass gesture or a foreground race during navigation. It is an
+            # ordinary operator-actionable stop, never a completed decision and never an
+            # unexpected failure snapshot. Centralising the catch here keeps like and dislike
+            # semantically identical and prevents either from falling through run()'s red error
+            # path merely because their driver calls live in different branches above.
+            terminal_state = "blocked"
+            stop_reason = str(exc)
+            stop_kind = "deck_blocked"
+            self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
+            self.stop_event.set()
         except Exception as exc:  # noqa: BLE001
             self._capture_failure_if_unexpected(exc)          # snapshot WHILE the transport is live
             raise                                             # (the finally below closes it)
@@ -1949,34 +1973,25 @@ class Worker(threading.Thread):
             self._finish_session(terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
 
     def _pace(self, decision: str, *, profile=None, score: float | None = None) -> None:
-        # config.validate() already rejects a negative pacing.swipe_delay_s on every
-        # path that goes through it (see config.py), but Worker is a public class any
-        # caller can construct directly with a pacing object that skipped validation
-        # (the same class of gap an audit already found for opener_service=None — see
-        # the maybe_opener guards above). Event.wait() on a negative timeout returns
-        # immediately, so an unguarded negative anchor here would silently produce
-        # machine-speed swiping — a stronger bot signature than any jittered delay —
-        # instead of the loud failure the calibrated branch below already gets for
-        # free (post_action_delay_s's own `scale < 0` check, since scale is derived
-        # from this same swipe_delay_s). Raise here too so BOTH branches fail exactly
-        # the same way, not just the one that happens to route through that function.
-        if self.pacing.swipe_delay_s < 0:
-            raise ValueError("pacing.swipe_delay_s must be non-negative")
+        # Worker is public and can be constructed without config.validate(). Reuse the exact
+        # config invariant so strings/bools/non-finite values, near-zero anti-bot bypasses,
+        # and platform-timeout-sized values all fail before either pacing branch executes.
+        swipe_delay_s = normalize_swipe_delay_s(self.pacing.swipe_delay_s)
         # ``0`` is the documented test/no-pacing setting.  Do not consume the
         # session policy's random state merely to wait for zero seconds.
-        if self.pacing.swipe_delay_s == 0 and profile is not None:
+        if swipe_delay_s == 0 and profile is not None:
             return
         if not getattr(self.driver, "think_time_calibrated", False):
             # No app-specific calibration for this driver -> the flat, decision-agnostic
             # anchor (unchanged pre-existing behavior for e.g. Bumble).
-            self.stop_event.wait(human_delay(self.pacing.swipe_delay_s))
+            self.stop_event.wait(human_delay(swipe_delay_s))
             return
         # Decision-aware "think time" (measured like/pass dwell asymmetry), scaled by the
         # configured anchor so pacing.swipe_delay_s is a real knob rather than an on/off
         # switch. config.validate() bounds it: an unbounded scale lets a negative or
         # near-zero value collapse the wait to ~0 (Event.wait treats a negative timeout as
         # "return now"), i.e. machine-speed swiping on a live account.
-        scale = self.pacing.swipe_delay_s / _THINK_TIME_BASELINE_S
+        scale = swipe_delay_s / _THINK_TIME_BASELINE_S
         policy = getattr(self, "_auto_policy", None)
         if policy is not None and profile is not None:
             # Keep the old direct-call behavior for diagnostics and legacy tests;
@@ -2023,8 +2038,8 @@ class Worker(threading.Thread):
         configured ceiling exactly) was truncated.
 
         .get with a default rather than an index: `meta` is driver-authored, and the only
-        other capture path (Bumble web) populates a different key set entirely — a missing key
-        must mean "not truncated as far as anyone knows", never a KeyError in the label path.
+        future capture paths may populate a different key set entirely — a missing key must
+        mean "not truncated as far as anyone knows", never a KeyError in the label path.
         """
         meta = getattr(profile, "meta", None) or {}
         return {"photo_count": len(profile.photos),

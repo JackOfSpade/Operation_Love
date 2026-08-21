@@ -224,6 +224,100 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_CURRENT = (
     253, 213, 184, 207, 247, 239, 189, 214, 234, 235, 220, 182, 206, 231, 232, 235,
 )
 
+# Variant 7: `( Signals ) Age v Height v Dating Intent ...` (HingeX Signals selected, dark/
+# charcoal pill rendering).
+#
+# Measured from the Pixel 7a at a visually confirmed card-top on 2026-08-19 (Lana capture,
+# ce1de851af2e run).  The Signals pill renders dark/charcoal rather than purple in this
+# rendering mode.  Both available frames of this layout (00001 and 00008 of that run) measure
+# 2.594 from each other -- within the 3.0 confirm bound -- and 17.344--17.750 from the nearest
+# existing variant, confirming this is a discrete chrome state rather than capture noise.
+# Before this fingerprint was added, both frames were classified as `confirmed_not_top` (the
+# band exceeded the 9.0 refute threshold), causing the observe loop to stall for 5m33s while
+# the card was genuinely at its scroll top the whole time.
+# This records only the 16x4 greyscale filter-strip fingerprint, never a profile image or name.
+_SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL = (
+    255, 255, 255, 255, 254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    219, 181, 181, 206, 254, 234, 232, 232, 248, 242, 233, 235, 232, 241, 248, 233,
+     84,  65,  64,  68, 213, 239, 236, 239, 232, 233, 232, 233, 238, 234, 232, 231,
+     75, 129, 134,  82, 198, 231, 183, 228, 233, 238, 197, 182, 219, 233, 236, 216,
+)
+
+# Variant 8: `( Signals ) Age v Height v Dating Intent ...` (HingeX Signals selected, dark/
+# charcoal pill rendering — second calibration frame).
+#
+# Measured from the same Pixel 7a run (ce1de851af2e, 00008_observe_waiting_before.png, same
+# 2026-08-19 session as Variant 7).  The two frames measure 2.594 from each other (within the
+# 3.0 confirm bound), so they are unambiguously the same layout, but when compared against the
+# Variant-7 fingerprint 00008 lands at 3.547 — just outside the 3.0 confirm bound.  Keeping
+# both calibration points means each confirms the other rather than landing in the dead zone.
+# This records only the 16x4 greyscale filter-strip fingerprint, never a profile image or name.
+_SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL_B = (
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    207, 164, 164, 192, 252, 233, 233, 231, 246, 241, 234, 236, 232, 240, 247, 232,
+     81,  75,  74,  69, 210, 239, 232, 239, 231, 234, 228, 228, 236, 235, 233, 230,
+    81, 128, 133,  86, 201, 233, 187, 231, 233, 239, 202, 187, 223, 234, 237, 220,
+)
+
+# Variant 9: `Age v  Height v  Dating Intentions v  Active …` (current non-Signals
+# filter strip).
+#
+# Measured from a visibly top-of-card Pixel 7a capture on 2026-08-19 (Val,
+# c679dfb4e458, both the capture frame and the later settled observe frame).  The filter
+# controls are the familiar white outline pills, but their current text/raster layout is 7.203
+# from the preceding selected-Signals reference: inside the deliberate 3..9 uncertainty gap.
+# The two saved frames have an identical 16x4 fingerprint, and the screen visibly shows the
+# profile-independent filter chips above the card, so this is a discrete chrome variant rather
+# than evidence of a scrolled card.  Registering the measured variant preserves the narrow
+# confirmation bound rather than treating the dead zone as a permissive match.
+#
+# This contains only the 16x4 greyscale filter-strip fingerprint, never profile pixels or text.
+_SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_CURRENT = (
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    238, 233, 232, 241, 248, 233, 233, 232, 234, 249, 235, 233, 233, 233, 233, 233,
+    233, 236, 242, 235, 233, 234, 233, 237, 239, 232, 234, 231, 239, 235, 235, 236,
+    235, 187, 218, 234, 236, 215, 182, 210, 232, 233, 229, 191, 195, 200, 195, 199,
+)
+
+# Variant 10: `( Signals ) Age v Height v Dating Intent ...` (selected Signals, current
+# Android rendering with a purple profile banner below the filter strip).
+#
+# Measured from Jenny's visibly top-of-card capture on 2026-08-20
+# (b93807731946/00011_capture_before.png). The band visibly contains Hinge's filter controls;
+# the profile header, first media card, and purple "shows thoughtful signals" banner all begin
+# below it. It measured 8.953 from Variant 7, inside the deliberate 3..9 uncertainty gap, so
+# the capture was correctly *not* treated as a top until this discrete chrome rendering was
+# registered. Keeping the exact chrome-only fingerprint retains the 3.0 confirmation bound
+# rather than weakening the gate for unknown layouts.
+_SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_PURPLE_BANNER = (
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    243, 186, 181, 184, 241, 243, 232, 232, 239, 249, 233, 233, 233, 233, 249, 237,
+    159,  70,  72,  64, 149, 242, 236, 242, 236, 232, 234, 233, 236, 240, 232, 235,
+    138,  99, 130, 102, 130, 246, 190, 214, 234, 235, 220, 182, 206, 231, 232, 235,
+)
+
+# Variant 11: `Signals  Age v  Height v  Dating Intent ...` (unselected Signals pill, Hinge
+# 10.0.1 rendering).
+#
+# Measured 2026-08-21 after the Pixel 7a's Hinge app auto-updated from 9.134.0 to 10.0.1. Three
+# independent captures taken at different times that day -- phone_check3.png (10:26),
+# phone_after_abort2.png and phone_idle_check.png (10:33) -- all visibly show Stephanie's
+# profile at a genuine scroll top (chips row, name, first photo, no sticky header) and all three
+# decode to this EXACT 16x4 fingerprint, 0.000 apart, so this is a stable re-render rather than
+# capture jitter. Against every fingerprint already on file it measured 6.672 from Variant 4
+# (`SIGNALS_UNSELECTED`, the nearest) -- squarely inside the 3..9 dead zone, and the reason a
+# live calibration capture aborted twice before this variant was registered. It is the same
+# unselected-Signals chip content as Variant 4, redrawn by the updated app; keeping it as its
+# own discrete fingerprint retains the 3.0 confirmation bound instead of loosening it for a
+# whole app-version rendering change.
+# This records only the 16x4 greyscale filter-strip fingerprint, never a profile image or name.
+_SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_0_1 = (
+    254, 254, 253, 253, 254, 255, 251, 250, 251, 255, 253, 250, 250, 250, 254, 255,
+    253, 250, 252, 253, 251, 245, 233, 236, 233, 242, 235, 236, 236, 234, 238, 240,
+    247, 241, 214, 216, 244, 241, 228, 222, 236, 233, 237, 215, 215, 232, 236, 236,
+    247, 247, 214, 220, 245, 241, 231, 218, 242, 234, 240, 223, 216, 240, 237, 236,
+)
+
 _SCROLL_TOP_BAND_FINGERPRINTS: tuple[tuple[int, ...], ...] = (
     _SCROLL_TOP_BAND_FINGERPRINT_COMPATIBLE,
     _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT,
@@ -231,6 +325,11 @@ _SCROLL_TOP_BAND_FINGERPRINTS: tuple[tuple[int, ...], ...] = (
     _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED,
     _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_CURRENT,
     _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_CURRENT,
+    _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL,
+    _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL_B,
+    _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_CURRENT,
+    _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_PURPLE_BANNER,
+    _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_0_1,
 )
 
 # Maintained for backwards compatibility:
@@ -357,7 +456,8 @@ def fingerprint_distance(a: Sequence[int], b: Sequence[int]) -> float:
             "grids and no distance between them means anything")
     if not a:
         raise ScrollTopError("empty fingerprints have no distance")
-    return sum(abs(int(x) - int(y)) for x, y in zip(a, b)) / len(a)
+    # The explicit length guard above is part of this metric's public contract.
+    return sum(abs(int(x) - int(y)) for x, y in zip(a, b, strict=True)) / len(a)
 
 
 def band_fingerprint(frame: bytes, *, identity_band: tuple[float, float, float, float],

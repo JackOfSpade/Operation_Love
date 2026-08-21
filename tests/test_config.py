@@ -1,4 +1,6 @@
 """config.validate() — fail-fast checks (offline)."""
+import copy
+import math
 import tempfile
 
 import pytest
@@ -58,9 +60,84 @@ def test_valid_config_passes():
     c.validate(_load(BASE))   # no raise
 
 
+@pytest.mark.parametrize(("key", "value", "needle"), [
+    ("limts", {}, "top level"),
+    ("budegt", {}, "top level"),
+    ("paths", [], "paths"),
+    ("storage", "sqlite", "storage"),
+    ("budget", [], "budget"),
+    ("apps", [], "apps"),
+])
+def test_top_level_typos_and_non_mapping_sections_fail_cleanly(key, value, needle):
+    d = {**BASE, key: value}
+    if key in {"limts", "budegt"}:
+        d.pop("limits" if key == "limts" else "budget", None)
+    _expect_error(d, needle)
+
+
+@pytest.mark.parametrize(("section", "bad_key"), [
+    ("paths", "data_dr"),
+    ("storage", "backed"),
+])
+def test_hand_built_sections_reject_unknown_keys(section, bad_key):
+    d = copy.deepcopy(BASE)
+    d[section] = {bad_key: "typo"}
+    _expect_error(d, bad_key)
+
+
+@pytest.mark.parametrize("key", ["data_dir", "db_file"])
+@pytest.mark.parametrize("value", [None, [], {}, True, 12, ""])
+def test_paths_require_nonempty_string_scalars(key, value):
+    _expect_error({**BASE, "paths": {key: value}}, f"paths.{key}")
+
+
+def test_bigquery_section_rejects_non_mapping_and_unknown_keys():
+    for value in ([], "project"):
+        d = {**BASE, "storage": {"backend": "bigquery", "bigquery": value}}
+        _expect_error(d, "storage.bigquery")
+    d = {**BASE, "storage": {"backend": "bigquery", "bigquery": {
+        "project_id": "p", "photo_bucket": "b", "dataset": "d", "location": "US",
+        "flush_evry": 1,
+    }}}
+    _expect_error(d, "flush_evry")
+
+
+@pytest.mark.parametrize("value", ["hinge", 1, {}, ["hinge", "hinge"], [""], [1]])
+def test_enabled_apps_requires_unique_nonempty_string_list(value):
+    _expect_error({**BASE, "enabled_apps": value}, "enabled_apps")
+
+
+@pytest.mark.parametrize("value", [None, "", 1, []])
+def test_legacy_singular_app_requires_nonempty_string(value):
+    d = {k: v for k, v in BASE.items() if k != "enabled_apps"}
+    d["app"] = value
+    _expect_error(d, "legacy app")
+
+
+def test_enabled_apps_and_legacy_app_cannot_both_be_present():
+    _expect_error({**BASE, "app": "hinge"}, "not both")
+
+
+@pytest.mark.parametrize(("path", "value", "needle"), [
+    ("mode", ["auto"], "mode must be a string"),
+    ("apps", {"hinge": []}, "apps.hinge"),
+    ("apps", {"hinge": {"mode": ["auto"]}}, "apps.hinge.mode"),
+])
+def test_mode_and_app_blocks_fail_shape_checks_before_set_operations(path, value, needle):
+    _expect_error({**BASE, path: value}, needle)
+
+
 def test_unknown_app():
     d = {**BASE, "enabled_apps": ["tinder"]}
     _expect_error(d, "unknown app")
+
+
+def test_unknown_disabled_app_block_is_rejected_as_a_likely_typo():
+    _expect_error({**BASE, "apps": {"higne": {"dwell_s": 1.1}}}, "apps.higne")
+
+
+def test_known_disabled_app_block_remains_supported():
+    c.validate(_load({**BASE, "apps": {"bumble": {"debug_log": False}}}))
 
 
 def test_bad_mode():
@@ -76,6 +153,45 @@ def test_bigquery_requires_project_id():
 def test_bigquery_requires_photo_bucket():
     d = {**BASE, "storage": {"backend": "bigquery", "bigquery": {"project_id": "proj"}}}
     _expect_error(d, "photo_bucket")
+
+
+def test_bigquery_photo_bucket_rejects_surrounding_whitespace():
+    d = {**BASE, "storage": {"backend": "bigquery", "bigquery": {
+        "project_id": "proj", "photo_bucket": " bucket ",
+    }}}
+    _expect_error(d, "photo_bucket")
+
+
+def test_bigquery_dataset_and_location_defaults_remain_supported():
+    d = {**BASE, "storage": {"backend": "bigquery", "bigquery": {
+        "project_id": "valid-project", "photo_bucket": "valid-bucket",
+    }}}
+    c.validate(_load(d))
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, 1.5, "10"])
+def test_bigquery_flush_every_requires_an_exact_positive_integer(value):
+    d = {**BASE, "storage": {"backend": "bigquery", "bigquery": {
+        "project_id": "valid-project", "photo_bucket": "valid-bucket",
+        "flush_every": value,
+    }}}
+    _expect_error(d, "flush_every")
+
+
+@pytest.mark.parametrize(("key", "value"), [
+    ("project_id", "project.name"),
+    ("project_id", "project`name"),
+    ("dataset", "dataset.name"),
+    ("dataset", "dataset name"),
+    ("location", "US' OR 1=1"),
+    ("location", "north america"),
+])
+def test_bigquery_sql_identifiers_reject_unsafe_characters(key, value):
+    bq = {"project_id": "valid-project", "photo_bucket": "valid-bucket",
+          "dataset": "valid_dataset", "location": "northamerica-northeast1"}
+    bq[key] = value
+    _expect_error(
+        {**BASE, "storage": {"backend": "bigquery", "bigquery": bq}}, key)
 
 
 def test_opener_model_needs_pricing():
@@ -128,6 +244,15 @@ def test_gemini_explicit_empty_thinking_dict_passes():
          "opener": _gemini_opener(["gemini-primary"], {"gemini-primary": {}}),
          "budget": _gemini_budget(["gemini-primary"])}
     c.validate(_load(d))   # no raise
+
+
+def test_gemini_thinking_rejects_unconfigured_model_entries():
+    d = {**BASE,
+         "opener": _gemini_opener(
+             ["gemini-primary"],
+             {"gemini-primary": {}, "gemini-typo": {}}),
+         "budget": _gemini_budget(["gemini-primary"])}
+    _expect_error(d, "unconfigured model")
 
 
 def test_gemini_bad_thinking_level_value_fails_clearly():
@@ -230,9 +355,29 @@ def test_bad_app_mode_override():
     _expect_error(d, "observe")
 
 
-def test_hinge_auto_app_mode_override_requires_observe_release_evidence():
+def test_disabled_known_app_mode_is_still_validated():
+    d = {**BASE, "apps": {"bumble": {"mode": "automatic"}}}
+    _expect_error(d, "apps.bumble.mode")
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("halt_on_error", "true"),
+    ("limits", []),
+    ("limits", {"max_per_run": True}),
+])
+def test_disabled_known_app_safety_fields_are_still_validated(field, value):
+    d = {**BASE, "apps": {"bumble": {field: value}}}
+    _expect_error(d, f"apps.bumble.{field}")
+
+
+def test_disabled_known_app_cannot_stage_unverified_auto_halt_policy():
+    d = {**BASE, "apps": {"bumble": {"mode": "auto", "halt_on_error": False}}}
+    _expect_error(d, "halt_on_error=false")
+
+
+def test_hinge_auto_app_mode_override_reports_structural_targeting_blocker_first():
     d = {**BASE, "mode": "observe", "apps": {"hinge": {"mode": "auto"}}}
-    _expect_error(d, "observe_release_evidence")
+    _expect_error(d, "positive still-photo discriminator unavailable")
 
 
 def test_nonmanual_hinge_observe_source_requires_explicit_controller_metadata():
@@ -307,6 +452,73 @@ def test_stale_on_exhausted_is_not_a_confusing_generic_typeerror():
         assert "invalid 'budget' section" not in str(e)
     else:
         raise AssertionError("expected ValueError for stale budget.on_exhausted")
+
+
+@pytest.mark.parametrize("field", ["run_budget_usd", "day_budget_usd"])
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, -1, True, "5"])
+def test_budget_caps_require_finite_nonnegative_numbers_or_null(field, value):
+    budget = copy.deepcopy(BASE["budget"])
+    budget[field] = value
+    _expect_error({**BASE, "budget": budget}, f"budget.{field}")
+
+
+@pytest.mark.parametrize("budget", [None, {}, {"pricing": {}}])
+def test_omitted_run_budget_preserves_safe_five_dollar_default(budget):
+    d = {**BASE, "opener": {"enabled": False}, "budget": budget}
+    cfg = _load(d)
+    assert cfg.budget.run_budget_usd == 5.00
+    c.validate(cfg)
+
+
+@pytest.mark.parametrize(("value", "expected"), [(None, None), (0, 0)])
+def test_explicit_null_or_zero_run_budget_remains_distinct_from_omission(value, expected):
+    d = {**BASE, "opener": {"enabled": False}, "budget": {"run_budget_usd": value}}
+    cfg = _load(d)
+    assert cfg.budget.run_budget_usd is expected or cfg.budget.run_budget_usd == expected
+    c.validate(cfg)
+
+
+@pytest.mark.parametrize("field", ["run_budget_usd", "day_budget_usd"])
+@pytest.mark.parametrize("value", [None, 0, 5.25])
+def test_budget_caps_allow_null_zero_and_finite_nonnegative_values(field, value):
+    budget = copy.deepcopy(BASE["budget"])
+    budget[field] = value
+    c.validate(_load({**BASE, "budget": budget}))
+
+
+def test_budget_pricing_requires_mapping_model_ids_and_exact_record_keys():
+    for pricing, needle in [
+        ([], "budget.pricing"),
+        ({"": {"input": 0, "output": 0}}, "model ids"),
+        ({"m": []}, "budget.pricing['m']"),
+        ({"m": {"input": 0}}, "missing"),
+        ({"m": {"input": 0, "output": 0, "ouptut": 0}}, "unknown"),
+    ]:
+        budget = {**BASE["budget"], "pricing": pricing}
+        _expect_error({**BASE, "budget": budget}, needle)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("input", -1),
+    ("output", math.nan),
+    ("cache_read", math.inf),
+    ("cache_write", True),
+    ("input", "0"),
+])
+def test_budget_pricing_rejects_values_that_can_poison_spend(field, value):
+    record = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    record[field] = value
+    budget = {**BASE["budget"], "pricing": {"gemini-3.6-flash": record}}
+    _expect_error({**BASE, "budget": budget}, field)
+
+
+def test_budget_pricing_keeps_valid_free_tier_zero_rates_legal():
+    budget = {**BASE["budget"], "pricing": {
+        "gemini-3.6-flash": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
+    }}
+    cfg = _load({**BASE, "budget": budget})
+    c.validate(cfg)
+    assert cfg.budget.pricing["gemini-3.6-flash"].input == 0
 
 
 # --- opener.max_attempts: owner rule, "stop after 5 bad AI responses" ----------------------
@@ -428,6 +640,19 @@ def test_advisory_deadline_rejects_invalid_values(value):
     _expect_error(d, "advisory_deadline_s")
 
 
+@pytest.mark.parametrize(
+    "field", ["max_attempts", "advisory_max_attempts", "advisory_deadline_s",
+              "request_timeout_s"])
+def test_bounded_opener_numbers_report_huge_integers_as_config_errors(field):
+    cfg = _load(BASE)
+    setattr(cfg.opener, field, 1 << 20_000)
+
+    with pytest.raises(ValueError) as caught:
+        c.validate(cfg)
+
+    assert field in str(caught.value)
+
+
 # --- opener.request_timeout_s: the only bound on how long a single opener API call can run.
 # Previously unvalidated entirely (no type check, no floor, no ceiling). An unbounded value
 # here would silently undo opener.max_attempts' own new ceiling, since one stalled call could
@@ -495,6 +720,103 @@ def test_pacing_swipe_delay_floor_and_off_and_default_pass():
     for ok in (0, 1.0, 3.5):
         d = {**BASE, "pacing": {"swipe_delay_s": ok}}
         c.validate(_load(d))   # no raise
+
+
+def test_pacing_swipe_delay_rejects_values_that_can_overflow_event_wait():
+    _expect_error(
+        {**BASE, "pacing": {"swipe_delay_s": c._MAX_SWIPE_DELAY_S + 1}},
+        "swipe_delay_s")
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, True, "0.5", -0.1, 1.1])
+def test_ranker_like_threshold_requires_finite_probability(value):
+    _expect_error({**BASE, "ranker": {"like_threshold": value}}, "like_threshold")
+
+
+@pytest.mark.parametrize("field", ["min_labels_to_engage", "retrain_every", "min_per_class"])
+@pytest.mark.parametrize("value", [True, 1.5, "4", 0, -1])
+def test_ranker_counts_require_exact_positive_integers(field, value):
+    _expect_error({**BASE, "ranker": {field: value}}, field)
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("enabled", "true"),
+    ("enabled", 1),
+    ("metric", ""),
+    ("metric", "   "),
+    ("metric", 5),
+    ("min_score", math.nan),
+    ("min_score", math.inf),
+    ("min_score", True),
+    ("min_score", "0.3"),
+    ("min_score", -0.1),
+    ("min_score", 1.1),
+])
+def test_quality_filter_scalars_fail_cleanly(field, value):
+    _expect_error({**BASE, "quality_filter": {field: value}}, f"quality_filter.{field}")
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, True, "3.5"])
+def test_pacing_rejects_nonfinite_bool_and_non_numeric_values(value):
+    _expect_error({**BASE, "pacing": {"swipe_delay_s": value}}, "swipe_delay_s")
+
+
+def test_numeric_validation_rejects_enormous_integer_with_clean_value_error():
+    _expect_error(
+        {**BASE, "pacing": {"swipe_delay_s": 10 ** 1_000}},
+        "swipe_delay_s")
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("enabled", "false"),
+    ("preflight", 1),
+    ("provider", "   "),
+    ("model", ""),
+    ("model", " gemini-3.6-flash "),
+    ("style", None),
+    ("style", []),
+    ("max_tokens", True),
+    ("max_tokens", 1.5),
+    ("max_tokens", "400"),
+    ("max_tokens", 0),
+])
+def test_opener_scalar_shapes_fail_before_provider_calls(field, value):
+    opener = {**BASE["opener"], field: value}
+    _expect_error({**BASE, "opener": opener}, f"opener.{field}")
+
+
+@pytest.mark.parametrize(
+    "models", [["gemini-ok", "gemini-ok"], [""], ["   "], [" gemini-ok"], [1]])
+def test_opener_model_fallback_ids_are_unique_nonempty_strings(models):
+    opener = {**BASE["opener"], "models": models}
+    _expect_error({**BASE, "opener": opener}, "opener.models")
+
+
+@pytest.mark.parametrize("section", ["global", "per_app"])
+@pytest.mark.parametrize("value", [[], "none"])
+def test_limits_sections_must_be_mappings(section, value):
+    if section == "global":
+        d = {**BASE, "limits": value}
+    else:
+        d = {**BASE, "apps": {"hinge": {"limits": value}}}
+    _expect_error(d, "limits")
+
+
+@pytest.mark.parametrize("field", ["max_per_run", "max_per_day", "max_likes_per_run"])
+@pytest.mark.parametrize("value", [True, 1.5, "5", 0, -1])
+def test_limits_caps_require_exact_positive_integers(field, value):
+    _expect_error({**BASE, "limits": {field: value}}, field)
+
+
+@pytest.mark.parametrize("value", [True, "0.5", math.nan, math.inf, -math.inf, 0, 1, -0.1])
+def test_target_like_ratio_requires_finite_open_interval_probability(value):
+    _expect_error({**BASE, "limits": {"target_like_ratio": value}}, "target_like_ratio")
+
+
+def test_valid_global_and_per_app_limits_still_pass():
+    d = {**BASE, "limits": {"max_per_run": 8, "target_like_ratio": 0.5},
+         "apps": {"hinge": {"limits": {"max_per_day": 20}}}}
+    c.validate(_load(d))
 
 
 # --- a bare `key:` (YAML null) must be treated as "key omitted", not crash -----------
@@ -633,9 +955,9 @@ def test_halt_on_error_must_be_a_boolean():
     _expect_error(d, "must be true or false")
 
 
-def test_hinge_auto_mode_still_requires_release_evidence_when_halt_default_is_safe():
+def test_hinge_auto_mode_is_structurally_blocked_when_halt_default_is_safe():
     d = dict(BASE, mode="auto", apps={"hinge": {}})
-    _expect_error(d, "observe_release_evidence")
+    _expect_error(d, "positive still-photo discriminator unavailable")
 
 
 # --- enabled_apps: [] must not be silently rewritten to the default -------------------
@@ -719,6 +1041,47 @@ def test_android_app_coords_entry_out_of_range_is_rejected():
     _expect_error(d, "apps.bumble.coords.like_heart")
 
 
+@pytest.mark.parametrize("value", [None, "", "com", "1com.hinge", "com.hinge-app",
+                                    "com.hinge;echo injected", [], True])
+def test_android_package_requires_a_safe_dotted_identifier(value):
+    d = {**BASE, "apps": {"hinge": {"package": value}}}
+    _expect_error(d, "apps.hinge.package")
+
+
+def test_android_package_accepts_identifier_safe_segments():
+    d = {**BASE, "apps": {"hinge": {"package": "co.hinge_app.v10"}}}
+    c.validate(_load(d))
+
+
+@pytest.mark.parametrize(("key", "value"), [
+    ("scroll_captures", True), ("scroll_captures", 0),
+    ("scroll_captures", 1.5), ("scroll_captures", "12"),
+    ("scroll_captures", c._MAX_ANDROID_SCROLL_CAPTURES + 1),
+    ("dwell_s", math.nan), ("dwell_s", 0), ("dwell_s", -0.1),
+    ("dwell_s", c._MAX_ANDROID_DWELL_S + 1), ("dwell_s", "1.1"),
+    ("change_threshold", math.inf), ("change_threshold", 0),
+    ("change_threshold", 256), ("change_threshold", "9"),
+    ("debug_log", 1), ("observe_touch_watch", "false"),
+    ("observe_name_ocr", None), ("touch_backend", "fallback"),
+    ("touch_backend", []), ("adb_path", ""), ("debug_dir", None),
+    ("serial", "   "), ("serial", 123),
+])
+def test_android_operational_scalars_fail_cleanly(key, value):
+    d = {**BASE, "apps": {"hinge": {key: value}}}
+    _expect_error(d, f"apps.hinge.{key}")
+
+
+def test_android_operational_scalar_valid_boundaries_pass():
+    d = {**BASE, "apps": {"hinge": {
+        "scroll_captures": 1, "dwell_s": c._MIN_ANDROID_DWELL_S,
+        "change_threshold": 0.1,
+        "debug_log": False, "observe_touch_watch": False,
+        "observe_name_ocr": True, "touch_backend": "uhid", "adb_path": "adb",
+        "debug_dir": "./data/debug", "serial": None,
+    }}}
+    c.validate(_load(d))
+
+
 def test_android_app_coords_entry_negative_is_rejected():
     d = {**BASE, "enabled_apps": ["bumble"],
          "apps": {"bumble": {"coords": {"pass_x": [0.5, -0.2]}}}}
@@ -729,6 +1092,27 @@ def test_android_app_coords_entry_must_be_an_xy_pair():
     d = {**BASE, "enabled_apps": ["bumble"],
          "apps": {"bumble": {"coords": {"like_heart": [0.5, 0.5, 0.5]}}}}
     _expect_error(d, "apps.bumble.coords.like_heart")
+
+
+@pytest.mark.parametrize("value", [[], False, 0, "", ()])
+def test_supplied_falsy_android_coords_must_still_be_a_mapping(value):
+    cfg = _load(BASE)
+    cfg.apps = {"hinge": {"coords": value}}
+
+    with pytest.raises(ValueError, match=r"apps\.hinge\.coords must be a mapping"):
+        c.validate(cfg)
+
+
+def test_bounded_android_numbers_report_huge_integers_as_config_errors():
+    huge = 1 << 20_000
+    cfg = _load(BASE)
+    cfg.apps = {"hinge": {"scroll_captures": huge}}
+    with pytest.raises(ValueError, match="scroll_captures"):
+        c.validate(cfg)
+
+    cfg.apps = {"hinge": {"coords": {"like_heart": [huge, 0.5]}}}
+    with pytest.raises(ValueError, match="like_heart"):
+        c.validate(cfg)
 
 
 def test_android_app_frac_setting_out_of_range_is_rejected():
@@ -769,12 +1153,18 @@ def test_shipped_hinge_and_bumble_app_blocks_pass_fraction_validation():
 
 # --- Per-item targeting calibration: evidence-backed, fail closed at the driver --------
 
-def test_targeting_calibration_with_measured_bounds_and_evidence_passes():
+def test_stale_targeting_calibration_cannot_license_unavailable_still_photo_policy():
     d = {**BASE, "apps": {"hinge": {"serial": "synthetic-pixel", "targeting_calibration": {
         "identity_match_max_dist": 2.0, "inline_item_max_dist": 4.0,
         "device": "synthetic-pixel", "calibrated_at": "2026-08-12",
         **_TARGETING_SCHEMA_V2, **_TARGETING_GEOMETRY,
     }}}}
+    _expect_error(d, "positive still-photo discriminator unavailable")
+
+
+def test_hinge_observe_without_optional_targeting_calibration_remains_valid():
+    d = {**BASE, "mode": "observe", "apps": {"hinge": {"serial": "synthetic-pixel"}}}
+
     c.validate(_load(d))
 
 
@@ -857,4 +1247,4 @@ def test_targeting_calibration_must_bind_the_effective_identity_and_content_band
             "identity_band": [0.11, 0.048, 0.80, 0.094], "content_band": [0.13, 0.87],
         },
     }}}
-    c.validate(_load(matching))
+    _expect_error(matching, "positive still-photo discriminator unavailable")

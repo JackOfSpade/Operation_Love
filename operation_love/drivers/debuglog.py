@@ -1,10 +1,11 @@
-"""Host-side debug log for a driver (Hinge phone, Bumble browser).
+"""Host-side debug log shared by device and browser drivers.
 
 When an auto-mode run misbehaves, this reconstructs what the screen showed and what we did.
 Each session writes a per-run folder under the configured debug dir containing `actions.jsonl`
 (one record per capture / like / dislike / error) plus optional before/after screenshots, with
-a rotating cap so it never fills the disk. Hinge logs before/after shots per action; Bumble
-(a watchable browser) logs a text action trail plus a screenshot only on failure. Enabled via
+bounded normal and retained-evidence pools so it cannot grow without limit. Drivers may log
+before/after shots per action or
+a text trail plus failure screenshots. Enabled via
 `apps.<app>.debug_log`.
 
 All methods are best-effort and never raise — debug logging must not break a live run.
@@ -18,13 +19,39 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+from ..private_files import (
+    append_private_text,
+    ensure_private_dir,
+    tighten_private_file,
+    write_private_bytes,
+)
+
+
+_MAX_KEEP_SHOTS = 2_000
+_MAX_RETAINED_SHOTS = 100
+
 
 class DebugLog:
     def __init__(self, base_dir: str, *, keep_shots: int = 400, run_id: str | None = None):
+        if type(keep_shots) is not int or not 1 <= keep_shots <= _MAX_KEEP_SHOTS:
+            raise ValueError(
+                f"keep_shots must be an integer from 1 to {_MAX_KEEP_SHOTS} "
+                f"(got {keep_shots!r})")
+        if run_id is not None and (
+                not isinstance(run_id, str) or not run_id or run_id in {".", ".."}
+                or "/" in run_id or "\\" in run_id or Path(run_id).name != run_id):
+            raise ValueError("debug run_id must be one non-dot path component")
         stamp = run_id or datetime.now().strftime("run_%Y%m%d_%H%M%S")
-        self.dir = Path(base_dir) / stamp
-        self.dir.mkdir(parents=True, exist_ok=True)
+        base_path = Path(base_dir)
+        if base_path.name in {"", ".", ".."}:
+            raise ValueError("debug base_dir must name a dedicated leaf directory")
+        base = ensure_private_dir(base_path)
+        self.dir = ensure_private_dir(base / stamp)
         self._log = self.dir / "actions.jsonl"
+        # A restarted run can inherit files created under an older/default umask. Tighten the
+        # fixed log entry before reading it; a symlink is unsafe and disables this optional
+        # logger through open_debug_log's best-effort construction guard.
+        tighten_private_file(self._log, parent=self.dir, missing_ok=True)
         # A worker can restart a driver while retaining its run id. actions.jsonl
         # already appends in that case, so continue the screenshot sequence too:
         # restarting at zero would overwrite the first run's evidence while old
@@ -42,16 +69,15 @@ class DebugLog:
         # every record's screenshot named after its own action while still collapsing the case
         # that actually causes the bloat: the same action repeating on an unchanged screen.
         self._shot_hashes: dict[tuple[str, str], str] = {}
-        # Scoped to THIS pool deliberately: rotate=False error shots are kept forever already,
-        # so nothing referencing one can ever go stale, and never populating/consulting this
-        # map for them keeps that path exactly as simple and unconditional as it was before
-        # dedup existed (see _save_shot's `if not rotate` branch, which never touches this dict
-        # in either direction).
-        self._keep = max(1, int(keep_shots))
+        # Retained error/recovery evidence has its own bounded pool and is never a normal-shot
+        # dedup source. This preserves recent incident evidence without allowing repeated
+        # failures to grow a run forever.
+        self._keep = keep_shots
+        self._retained_shots: deque[Path] = deque()
         # A restart retains the run directory and JSONL. Rebuild the live normal-shot ring before
         # accepting any more frames, otherwise every restarted DebugLog gets a fresh cap and one
         # long run can grow without bound. The rare keep_before screenshot is named explicitly;
-        # error records already identify their permanently kept ``screenshot``. Any malformed or
+        # error records already identify their retained ``screenshot``. Any malformed or
         # missing record is handled as an ordinary numbered shot, so recovery remains best-effort
         # and never blocks a driver.
         self._restore_shot_state()
@@ -85,11 +111,13 @@ class DebugLog:
         self._n += 1
         name = f"{self._n:05d}_{label}.png"
         try:
-            (self.dir / name).write_bytes(frame)
+            write_private_bytes(self.dir / name, frame, parent=self.dir)
         except Exception:  # noqa: BLE001 — best-effort; logging must not break the run
             return None
         if not rotate:
-            return name                                    # error shots are kept forever (never rotated)
+            self._retained_shots.append(self.dir / name)
+            self._trim_retained_shots()
+            return name
         self._shot_hashes[key] = name
         self._shots.append((key, self.dir / name))
         self._trim_normal_shots()
@@ -100,13 +128,37 @@ class DebugLog:
 
         The directory is authoritative for liveness: old JSONL records may legitimately point
         at files already removed by rotation. New keep_before records name that exception, while
-        error logs retain their established ``screenshot`` convention; any other legacy numbered
-        PNG is treated as normal so the cap can still be recovered rather than silently abandoned.
+        error logs retain their established ``screenshot`` convention in a separate bounded
+        retained-evidence pool; any other legacy numbered PNG is treated as normal so the cap
+        can still be recovered rather than silently abandoned.
         """
-        protected = _protected_shot_names(self._log)
+        retained_names = _retained_shot_names(self._log)
+        retained_set = set(retained_names)
+        retained_seen: set[str] = set()
+        for name in retained_names:
+            if name in retained_seen:
+                continue
+            retained_seen.add(name)
+            path = self.dir / name
+            if _shot_sequence(path) is None:
+                continue
+            try:
+                tighten_private_file(path, parent=self.dir)
+            except Exception:  # noqa: BLE001 — restart recovery remains best-effort
+                continue
+            self._retained_shots.append(path)
+        self._trim_retained_shots()
         seen: set[str] = set()
         for path in sorted(self.dir.glob("*.png"), key=_shot_sort_key):
-            if path.name in protected or path.name in seen or _shot_sequence(path) is None:
+            if _shot_sequence(path) is None:
+                continue
+            try:
+                # Numeric PNGs are this logger's managed namespace. Never read/chmod through a
+                # planted symlink; a bad entry is simply not a restart dedup/rotation candidate.
+                tighten_private_file(path, parent=self.dir)
+            except Exception:  # noqa: BLE001 — restart recovery remains best-effort
+                continue
+            if path.name in retained_set or path.name in seen:
                 continue
             seen.add(path.name)
             key = _shot_key(path)
@@ -119,8 +171,17 @@ class DebugLog:
             self._shots.append((key, path))
         self._trim_normal_shots()
 
+    def _trim_retained_shots(self) -> None:
+        """Keep only the newest bounded error/recovery screenshots across restarts."""
+        while len(self._retained_shots) > _MAX_RETAINED_SHOTS:
+            old_path = self._retained_shots.popleft()
+            try:
+                old_path.unlink()
+            except Exception:  # noqa: BLE001 — evidence rotation is best-effort
+                pass
+
     def _trim_normal_shots(self) -> None:
-        """Enforce the run-wide cap without touching protected evidence."""
+        """Enforce the run-wide normal-shot cap without touching retained evidence."""
         while len(self._shots) > self._keep:
             old_key, old_path = self._shots.popleft()
             # Drop the hash entry together with the file it names. Without this, the NEXT
@@ -136,8 +197,8 @@ class DebugLog:
 
     def _write(self, record: dict) -> None:
         try:
-            with self._log.open("a") as f:
-                f.write(json.dumps(record) + "\n")
+            append_private_text(
+                self._log, json.dumps(record) + "\n", parent=self.dir)
         except Exception:  # noqa: BLE001
             pass
 
@@ -150,7 +211,8 @@ class DebugLog:
         to audit that recovery. Ordinary action screenshots remain in the bounded rotating set.
         """
         with self._lock:
-            rec = {"ts": datetime.now().isoformat(timespec="seconds"), "action": name, **fields}
+            # Reserved audit identity wins even if a direct caller passes colliding **fields.
+            rec = {**fields, "ts": datetime.now().isoformat(timespec="seconds"), "action": name}
             b = self._save_shot(f"{name}_before", before, rotate=not keep_before)
             a = self._save_shot(f"{name}_after", after)
             anchor_name = self._save_shot(f"{name}_anchor", anchor)
@@ -170,7 +232,7 @@ class DebugLog:
         with self._lock:
             rec = {"ts": datetime.now().isoformat(timespec="seconds"), "action": name,
                    "error": f"{type(exc).__name__}: {exc}"}
-            shot = self._save_shot(f"{name}_error", frame, rotate=False)   # kept forever (never rotated)
+            shot = self._save_shot(f"{name}_error", frame, rotate=False)
             if shot:
                 rec["screenshot"] = shot
             self._write(rec)
@@ -212,13 +274,13 @@ def _shot_key(path: Path) -> tuple[str, str] | None:
         return None
 
 
-def _protected_shot_names(log_path: Path) -> set[str]:
-    """Names that restart recovery must never put in the rotating pool."""
-    protected: set[str] = set()
+def _retained_shot_names(log_path: Path) -> list[str]:
+    """Retained screenshot names in JSONL chronology for restart cap enforcement."""
+    retained: list[str] = []
     try:
         lines = log_path.open()
     except Exception:  # noqa: BLE001 — absent/unreadable log is a recoverable empty history
-        return protected
+        return retained
     try:
         with lines:
             for line in lines:
@@ -228,11 +290,11 @@ def _protected_shot_names(log_path: Path) -> set[str]:
                     continue
                 kept_before = record.get("kept_before")
                 if isinstance(kept_before, str):
-                    protected.add(kept_before)
-                # Error records have always used this shape and were never rotating.
+                    retained.append(kept_before)
+                # Error records use this established shape.
                 screenshot = record.get("screenshot")
                 if isinstance(screenshot, str) and "error" in record:
-                    protected.add(screenshot)
+                    retained.append(screenshot)
     except Exception:  # noqa: BLE001 — a mid-read I/O failure keeps usable prior history
         pass
-    return protected
+    return retained

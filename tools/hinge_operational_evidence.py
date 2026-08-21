@@ -38,12 +38,17 @@ from pathlib import Path
 
 from operation_love import config as cfg_mod
 from operation_love.drivers import hinge
-from operation_love.drivers.adb import Adb
+from operation_love.drivers.adb import Adb, quote_android_package_id
 from operation_love.drivers.hinge import HINGE_SPEC
 from operation_love.drivers.item_identity import _IDENTITY_GRID, capture_profile_identity
 from operation_love.drivers.like_composer import ComposerDetectionError, ComposerSurface, locate_inline_composer
 from operation_love.drivers.scroll_top import (
     ScrollTopError, band_fingerprint, confirm_scroll_top, fingerprint_distance)
+from operation_love.private_files import (
+    atomic_write_private_bytes,
+    atomic_write_private_text,
+    ensure_private_dir,
+)
 
 _TOOL_VERSION = "2"
 _LAYOUT_ID = "hinge_inline_v1"
@@ -85,7 +90,7 @@ def _out_dir(raw: str | None) -> Path:
     if destination.exists() and any(destination.iterdir()):
         raise EvidenceRefused(
             f"output {destination} is not empty; use a fresh directory so evidence cannot merge")
-    destination.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(destination)
     return destination
 
 
@@ -118,7 +123,8 @@ def _read_device_evidence(adb: Adb, *, serial: str) -> dict:
     model = adb.shell("getprop ro.product.model").strip()
     width, height = adb.screen_size()
     density = adb.shell("wm density").strip()
-    package_dump = adb.shell(f"dumpsys package {_PACKAGE} | grep versionName")
+    package_dump = adb.shell(
+        f"dumpsys package {quote_android_package_id(_PACKAGE)} | grep versionName")
     version_name = None
     for line in package_dump.splitlines():
         line = line.strip()
@@ -193,7 +199,7 @@ def record(*, adb, serial: str, identity_band: tuple[float, float, float, float]
         if not isinstance(png, bytes) or not png:
             raise EvidenceRefused(f"could not capture {role}: screencap returned no PNG bytes")
         name = f"{len(frames) + 1:05d}.png"
-        (out_dir / name).write_bytes(png)
+        atomic_write_private_bytes(out_dir / name, png, parent=out_dir)
         frames.append({
             "file": name,
             "sha256": hashlib.sha256(png).hexdigest(),
@@ -355,7 +361,8 @@ def record(*, adb, serial: str, identity_band: tuple[float, float, float, float]
         # is not a signature and therefore does not claim to defend against a filesystem owner
         # who changes both the JSON and its digest.
         manifest["evidence_sha256"] = _canonical_json_digest(manifest)
-        (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        atomic_write_private_text(
+            out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n", parent=out_dir)
 
     if interrupted:
         raise EvidenceRefused("interrupted by Ctrl-C; evidence manifest is incomplete")

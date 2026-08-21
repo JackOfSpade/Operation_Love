@@ -72,16 +72,21 @@ import random
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
 
+from ..private_files import atomic_write_private_bytes, atomic_write_private_text
+
 from ..typography import format_duration
 from ..human import human_cooldown, human_delay
 from ..human_motion import tap_jitter_margin_px
 from ..perception.capture import Profile
-from .adb import SCROLL_X_JITTER_PX, Adb, AdbError, clamp_xy, scroll_x
+from .adb import (
+    SCROLL_X_JITTER_PX, Adb, AdbError, clamp_xy, quote_android_package_id, scroll_x,
+    validate_android_package_id)
 from .android_spec import AndroidAppSpec
 from .base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClosed,
                    ItemTargetingError, OBSERVE_ITEM_INCONCLUSIVE, OBSERVE_ITEM_MATCH,
@@ -90,7 +95,8 @@ from .base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClo
 from .frameshift import SHIFT_MEASURED, ShiftEstimationError, estimate_shift
 from .item_crops import (
     CROP_CONTEXT, CROP_EXCLUDED, CROP_ITEM, CROP_UNCROPPABLE, EXCLUSION_NON_PHOTO,
-    PHOTO_ONLY_POLICY_ID, ItemCropError, build_item_payload, unnumber_unless_confident_photo)
+    PHOTO_ONLY_POLICY_ID, ItemCropError, build_item_payload, unnumber_unless_confident_photo,
+    unnumber_without_still_photo_evidence)
 from .item_type_preflight import INCONCLUSIVE, ItemTypePreflight, preflight_item_type
 from .item_identity import IdentityError, compare_profile_identity
 from .item_index import (
@@ -666,6 +672,13 @@ _OBSERVE_STUCK_S = 90.0
 # profile capture, never for read-scrolling or a decision gesture. 160ms maps to a ~0.36x
 # Fitts-law stroke on UHID and to the same requested duration on the explicit ADB transport.
 _FAST_REWIND_SWIPE_DURATION_MS = 160
+# A downward gesture whose ACTION_DOWN begins in Android's top system strip belongs to System
+# UI, not the foreground app, and can expand the notification shade.  The Pixel 7a status bar
+# is well inside 8% of the 2400px panel; every calibrated Hinge gesture begins below 11%.
+# Guard the choke point as well as today's config so a future oversized rewind cannot silently
+# clamp/start in the system area.  Horizontal/back gestures and upward read-scrolls are not
+# affected because only a downward stroke can pull the shade open.
+_SYSTEM_SHADE_GUARD_Y_FRAC = 0.08
 # The FLOOR/anchor of the stuck-screen watchdog's budget, NOT the budget itself -- every arm
 # point draws its own value from _observe_stuck_budget() below, and this constant is only the
 # lower bound that draw can never fall under. This is the fix for the DEEPER defect the paywall
@@ -797,7 +810,11 @@ HINGE_SPEC = AndroidAppSpec(
         # reference for what it actually is -- do not repurpose it for "like".
         "like": "hinge_like_button.png",
         "pass": "hinge_pass_x.png",
-        "confirm": "hinge_send_like.png",              # inline composer's "Send Like" glyph
+        # Filename predates Hinge 10.0.1; the pixels are now the "Send Priority Like" glyph this
+        # HingeX-subscribed account renders (recropped 2026-08-21). If the literal on-screen text
+        # ever changes again (e.g. subscription lapses back to plain "Send Like"), detection fails
+        # closed rather than silently matching the wrong button -- recrop, don't rename mid-lineage.
+        "confirm": "hinge_send_like.png",              # inline composer's send-confirmation glyph
         "upsell_dismiss": "hinge_send_like_anyway.png",  # "Send Like anyway" — NEVER the Rose button
         # The "HingeX" tab wordmark of Hinge's full-screen upgrade paywall — the screen Hinge
         # shows INSTEAD of the deck once the account is out of free likes for the day. Cropped
@@ -1018,7 +1035,7 @@ def _frame_sig(frame: bytes) -> bytes:
     if arr is not None:
         return arr.tobytes()
     import hashlib
-    return hashlib.md5(frame).digest()
+    return hashlib.md5(frame, usedforsecurity=False).digest()
 
 
 # How many consecutive read-scrolls must be MEASURED to have moved the page 0px before the
@@ -1617,7 +1634,12 @@ class AndroidDriver(DatingAppDriver):
         app_cfg = (getattr(cfg, "apps", {}) or {}).get(spec.app, {})
         self.serial = app_cfg.get("serial") or None
         self.adb_path = app_cfg.get("adb_path", "adb")
-        self.package = app_cfg.get("package", spec.package)
+        try:
+            self.package = validate_android_package_id(
+                app_cfg.get("package", spec.package),
+                context=f"apps.{spec.app}.package")
+        except ValueError as exc:
+            raise DriverClosed(f"{spec.app}: {exc}") from exc
         self.scroll_captures = max(1, int(app_cfg.get("scroll_captures", spec.scroll_captures)))
         self.dwell_s = float(app_cfg.get("dwell_s", spec.dwell_s))
         self.read_scroll_frac = float(app_cfg.get("read_scroll_frac", spec.read_scroll_frac))
@@ -1928,7 +1950,8 @@ class AndroidDriver(DatingAppDriver):
         self._adb.screen_size()                       # cache geometry for clamping/coords
         if self.targeting_calibration is not None:
             self._targeting_runtime_frame_size = self._adb.screen_size()
-            package_dump = self._adb.shell(f"dumpsys package {self.package}")
+            package_dump = self._adb.shell(
+                f"dumpsys package {quote_android_package_id(self.package)}")
             match = re.search(r"(?m)^\s*versionName=(\S+)\s*$", package_dump)
             self._targeting_runtime_version_name = match.group(1) if match else None
             calibration = self.targeting_calibration
@@ -1940,7 +1963,9 @@ class AndroidDriver(DatingAppDriver):
                     f"calibration ({self._targeting_runtime_version_name!r}/"
                     f"{self._targeting_runtime_frame_size!r} != "
                     f"{calibration.hinge_version_name!r}/{calibration.frame_size_px!r})")
-        self._adb.shell(f"monkey -p {self.package} -c android.intent.category.LAUNCHER 1")
+        self._adb.shell(
+            f"monkey -p {quote_android_package_id(self.package)} "
+            "-c android.intent.category.LAUNCHER 1")
         time.sleep(human_cooldown(1.5))               # let the app come to the foreground
         self._touch = self._make_touch()              # genuine UHID touches; adb input fallback
         self._observe_ready = True                    # only True once fully open (touch ready too)
@@ -2066,10 +2091,11 @@ class AndroidDriver(DatingAppDriver):
                 f"deliberately."
             ) from exc
 
-    # --- tap choke point (forbidden-zone guard) -------------------------
-    # EVERY gesture this driver issues goes through _tap() / _swipe() / _scroll(), never the
-    # transport directly, so the no-go check cannot be bypassed by a new call site forgetting
-    # about it. This originally covered taps ONLY, and the comment claimed more than the code
+    # --- device-input choke points ---------------------------------------
+    # EVERY gesture this driver issues goes through _tap() / _swipe() / _scroll(), and every
+    # typed opener goes through _text(), never the transports directly. That keeps foreground
+    # ownership adjacent to the irreversible command; gesture helpers also enforce no-go zones.
+    # This originally covered taps ONLY, and the comment claimed more than the code
     # delivered: read-scrolls and scroll-to-top swipes went straight to the transport, so
     # their touch-down points were never zone-checked at all — on every profile, every run.
     #
@@ -2141,7 +2167,64 @@ class AndroidDriver(DatingAppDriver):
     def _tap(self, x, y) -> None:
         x, y = int(x), int(y)
         self._assert_tap_allowed(x, y, margin_px=self._TAP_ZONE_MARGIN_PX)
+        source = sys._getframe(1).f_code.co_name
+        self._require_foreground_owned_for_input()
         self.touch.tap(x, y)
+        self._audit_device_input("tap", source=source, start=[x, y], end=[x, y])
+
+    def _text(self, value: str) -> None:
+        """Type through the same final foreground-ownership boundary as every gesture.
+
+        The composer is verified before this call, but another app or System UI can take focus
+        in the screenshot-to-input gap.  A fresh package probe belongs immediately beside the
+        irreversible ADB text command, not at each caller.  Log only metadata (never message
+        contents), and only after :meth:`Adb.text` returns successfully.
+        """
+        source = sys._getframe(1).f_code.co_name
+        self._require_foreground_owned_for_input()
+        self.adb.text(value)
+        self._audit_device_input(
+            "text", source=source, chars=len(value), transport=type(self.adb).__name__)
+
+    def _require_foreground_owned_for_input(self) -> None:
+        """Refuse input when a proven foreign package owns Android's focused window.
+
+        Perception checks cannot close the gap between their screenshot and a later gesture: a
+        notification shade or another app can take focus in between.  Keep the final ownership
+        probe at the transport choke points instead.  An unavailable/unrecognised probe is
+        still ``None`` and preserves the existing visual fallback; only affirmative evidence of
+        a different package latches the worker-facing reason and raises before transport input.
+        """
+        if not self._refuse_foreground_block():
+            return
+        reason = self._blocked_reason or (
+            f"another Android surface owns the foreground instead of {self.spec.app}; "
+            "no input was sent")
+        # A proven foreign foreground is an ordinary, operator-actionable blocked state, not an
+        # unexplained gesture failure.  The dual-base error lets Worker publish that state when
+        # the race is detected inside a like, while existing conservative Android-action callers
+        # still stop on HingeActionError.
+        raise HingeDeckBlockedError(reason)
+
+    def _audit_device_input(self, kind: str, *, transport: str | None = None, **fields) -> None:
+        """Append a screenshot-free record after a device input completed successfully.
+
+        The action log historically recorded semantic outcomes (capture, like, pass) but not
+        the input transport itself.  That made a notification-shade incident impossible to
+        attribute: there was no timestamp proving whether the driver had emitted a downward
+        swipe immediately beforehand.  Keep this at the device-input choke points, after the
+        synchronous transport returns, so every row means input was actually delivered and a
+        quiet interval really does mean the driver sent nothing.
+        """
+        if self._dbg is None:
+            return
+        try:
+            self._dbg.action(
+                "device_input", kind=kind,
+                session_mode="auto" if self._auto_session else "observe",
+                transport=transport or type(self.touch).__name__, **fields)
+        except Exception:  # noqa: BLE001 -- diagnostics must never change a live action
+            pass
 
     def _swipe(self, x1, y1, x2, y2, *, duration_ms: int = 450) -> None:
         """Every explicit drag goes through here, for the same reason every tap goes
@@ -2163,7 +2246,19 @@ class AndroidDriver(DatingAppDriver):
         nothing is purchased."""
         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
         self._assert_tap_allowed(x1, y1)
+        _w, h = self.adb.screen_size()
+        if y2 > y1 and y1 <= int(h * _SYSTEM_SHADE_GUARD_Y_FRAC):
+            raise HingeActionError(
+                f"{self.spec.app}: refusing a downward swipe starting at y={y1} "
+                f"({y1 / h:.3f} of the screen), inside Android's top-system gesture guard "
+                f"(<= {_SYSTEM_SHADE_GUARD_Y_FRAC:.3f}); this could pull down the "
+                "notification shade instead of scrolling the profile")
+        source = sys._getframe(1).f_code.co_name
+        self._require_foreground_owned_for_input()
         self.touch.swipe(x1, y1, x2, y2, duration_ms=duration_ms)
+        self._audit_device_input(
+            "swipe", source=source, start=[x1, y1], end=[x2, y2],
+            duration_ms=int(duration_ms))
 
     def _scroll(self, frac: float, x_frac: float = 0.5, *, reverse: bool = False) -> None:
         """touch.scroll_up() with the forbidden-zone guard every other gesture gets.
@@ -2214,7 +2309,13 @@ class AndroidDriver(DatingAppDriver):
             if reverse:
                 self._assert_tap_allowed(x, y_high)
         if not reverse:
+            self._require_foreground_owned_for_input()
             self.touch.scroll_up(frac, x_frac)
+            self._audit_device_input(
+                "scroll", source=sys._getframe(1).f_code.co_name, direction="forward",
+                start=[nominal, y_low], end=[nominal, y_high],
+                x_jitter_px=SCROLL_X_JITTER_PX, distance_frac=round(float(frac), 6),
+                x_frac=round(float(x_frac), 6))
             return
         # scroll_x is the SHARED column jitter both transports' scroll_up() applies (HINGE-04),
         # called here rather than re-derived so a reverse read-scroll is not the one gesture in
@@ -3564,6 +3665,31 @@ class AndroidDriver(DatingAppDriver):
                     + outcome_summary(outcomes))
         return excluded
 
+    def _target_frame_video_screen_reason(self, frame: bytes, block) -> str | None:
+        """Fail closed unless this exact target frame has a readable, mute-free card ROI.
+
+        Payload numbering separately proves that the card was stable across source sightings.
+        This last-moment check closes the other half of the gate: navigation can make Hinge show
+        its auto-hidden video controls again, so an exact action frame with a mute match is a
+        video even when older enumeration frames looked clean.
+        """
+        card_width = block.x1 - block.x0
+        block_height = block.y1 - block.y0
+        x0 = block.x0 + round(_VIDEO_MUTE_X_BAND[0] * card_width)
+        x1 = block.x0 + round(_VIDEO_MUTE_X_BAND[1] * card_width)
+        y0 = block.y0 + round(_VIDEO_MUTE_Y_BAND[0] * block_height)
+        y1 = block.y0 + round(_VIDEO_MUTE_Y_BAND[1] * block_height)
+        if (x1 - x0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX
+                or y1 - y0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX):
+            return "target card does not expose a complete mute-control screening ROI"
+        screened, score = self._match_video_mute(frame, (x0, y0, x1, y1))
+        if not screened or score is None:
+            return "target card mute-control screening could not be completed"
+        if score >= _VIDEO_MUTE_MATCH_THRESHOLD:
+            return ("target frame contains Hinge's mute control "
+                    f"(score {score:.6f}); the selected media is a video")
+        return None
+
     def _index_captured_items(self, photos: list[bytes]) -> str:
         """Fold this capture's frames into doc 5.3's index and doc 5.2's crops.
 
@@ -3651,7 +3777,8 @@ class AndroidDriver(DatingAppDriver):
             payload = build_item_payload(
                 indexed_photos, index,
                 exclude=lambda block: video_exclusions.get(block.heart_ordinal),
-                unnumber=unnumber_unless_confident_photo)
+                unnumber=unnumber_unless_confident_photo,
+                unnumber_without_evidence=unnumber_without_still_photo_evidence)
             if not payload.usable:
                 return self._item_index_refused(
                     photos, "the item crops this capture produced are not a request the model can "
@@ -3954,14 +4081,15 @@ class AndroidDriver(DatingAppDriver):
                                           if isinstance(offset, int) else None),
                         },
                     })
-                runs = []
-                for run in tuple(getattr(segmentation, "runs", ()) or ())[:64]:
-                    runs.append({
+                runs = [
+                    {
                         "frame_rows": [getattr(run, "y0", None), getattr(run, "y1", None)],
                         "kind": getattr(run, "kind", None),
                         "widest_intruder_px": getattr(run, "widest_intruder_px", None),
                         "median_level_delta": getattr(run, "median_level_delta", None),
-                    })
+                    }
+                    for run in tuple(getattr(segmentation, "runs", ()) or ())[:64]
+                ]
                 record = {
                     "local_frame_index": local, "source_frame_index": original,
                     "offset_px": offsets[local] if local < len(offsets) else None,
@@ -3983,7 +4111,8 @@ class AndroidDriver(DatingAppDriver):
             for local in local_candidates:
                 original = source[local]
                 filename = f"item_index_refused_{dossier_id}_frame_{original}.png"
-                (debug_dir / filename).write_bytes(photos[original])
+                atomic_write_private_bytes(
+                    debug_dir / filename, photos[original], parent=debug_dir)
                 saved.append(filename)
                 records.append(geometry_record(local, filename))
 
@@ -3997,9 +4126,8 @@ class AndroidDriver(DatingAppDriver):
                 """Numeric raw evidence and local proposals for one adjacent frame pair."""
                 shift = shifts[local]
                 before, after = frames[local], frames[local + 1]
-                strips = []
-                for strip in tuple(getattr(shift, "strips", ()) or ())[:32]:
-                    strips.append({
+                strips = [
+                    {
                         "frame_rows": [getattr(strip, "y0", None), getattr(strip, "y1", None)],
                         "state": getattr(strip, "state", None),
                         "delta_px": getattr(strip, "delta_px", None),
@@ -4007,7 +4135,9 @@ class AndroidDriver(DatingAppDriver):
                         "runner_up": getattr(strip, "runner_up", None),
                         "stddev": getattr(strip, "stddev", None),
                         "search": list(getattr(strip, "search", ()) or ())[:2],
-                    })
+                    }
+                    for strip in tuple(getattr(shift, "strips", ()) or ())[:32]
+                ]
                 proposals = []
                 for kind, proposer in (
                     ("layout", lambda: _layout_repaired_shift(local, before, after, shift)),
@@ -4079,11 +4209,15 @@ class AndroidDriver(DatingAppDriver):
             # The image payload is capped at eight frames; structured geometry is bounded by the
             # capture ceiling, 64 blocks/runs per frame, and 12 hearts/block.  Reason remains
             # short because the full prose is already in actions.jsonl.
-            (debug_dir / sidecar).write_text(json.dumps({
-                "schema_version": 6, "reason": str(reason)[:2000],
-                "runtime": runtime_provenance, "frames": records,
-                "all_frame_geometry": all_frame_geometry,
-                "pair_evidence": pair_evidence}, separators=(",", ":")))
+            atomic_write_private_text(
+                debug_dir / sidecar,
+                json.dumps({
+                    "schema_version": 6, "reason": str(reason)[:2000],
+                    "runtime": runtime_provenance, "frames": records,
+                    "all_frame_geometry": all_frame_geometry,
+                    "pair_evidence": pair_evidence}, separators=(",", ":")),
+                parent=debug_dir,
+            )
             return sidecar, saved
         except Exception:  # noqa: BLE001 -- disk trouble cannot change a hard refusal
             return None, []
@@ -4313,6 +4447,11 @@ class AndroidDriver(DatingAppDriver):
         # read is a table pointing at somebody else's card.
         self._invalidate_item_index(
             "this profile's read has not finished, so nothing has been enumerated for it yet")
+        # A valid screencap can be Android System UI rather than Hinge (the notification shade
+        # in the reported run is one example). Do this before the scroll-top gate: comparing a
+        # System UI header to filter-chip pixels is not evidence that a Hinge card is scrolled.
+        if self._refuse_foreground_block():
+            return None
         # ENUMERATION (doc 5.2/5.3/5.5), decided BEFORE the loop because it sets the ceiling.
         # `enumeration_reason` is "" while the read is still on track to produce an item index
         # and a sentence the moment it is not -- the first sentence wins, so a later step's
@@ -4364,6 +4503,12 @@ class AndroidDriver(DatingAppDriver):
                 self._note_capture_aborted(len(photos))
                 return None
             frame = self._screencap()
+            # The foreground can change after capture starts: a notification shade may open
+            # while this card is being read. The first sticky-header mismatch is the point at
+            # which the old logic would call it a deck advance and then rewind the System UI.
+            # Refuse here before that recovery path can issue another gesture.
+            if self._refuse_foreground_block(frame=frame):
+                return None
             # A comment sheet is not profile content.  In observe mode it can be left open
             # while Hinge is still composing/sending a like; treating its changing pixels as
             # a card and then read-scrolling would move the sheet underneath the operator.
@@ -4784,8 +4929,12 @@ class AndroidDriver(DatingAppDriver):
     def next_profile(self, *, should_stop=None) -> Profile | None:
         if self.out_of_profiles():
             return None
+        if self._refuse_foreground_block():
+            return None
         if not self._session_top_done:
             self._ensure_session_top(should_stop)   # see its docstring: once per session
+        if self._refuse_foreground_block():
+            return None
         profile = self._capture_current(should_stop)
         self._recover_capture_split(should_stop)
         return profile
@@ -4817,8 +4966,12 @@ class AndroidDriver(DatingAppDriver):
         with self._observe_input_lease("current_profile"):
             if self.out_of_profiles():
                 return None
+            if self._refuse_foreground_block():
+                return None
             if not self._session_top_done:
                 self._ensure_session_top(should_stop)   # see its docstring: once per session
+            if self._refuse_foreground_block():
+                return None
             profile = self._capture_current(should_stop)
             if profile is not None:
                 # Also stop-aware: this unwind is roughly half of the total per-profile dead time
@@ -4851,12 +5004,16 @@ class AndroidDriver(DatingAppDriver):
         with self._observe_input_lease("current_profile_reviewed"):
             if self.out_of_profiles():
                 return None
+            if self._refuse_foreground_block():
+                return None
             # Unlike the manual path, a bridge pre-tap refusal may leave this same card at an
             # indexed intermediate position and immediately request a recapture.  Re-establish
             # the top attempt before *every* reviewed capture, not merely once per process, so
             # `_capture_current` can build absolute heart ordinals only from a fresh affirmative
             # top gate.  On the common already-top next card this is one bounded settle probe.
             self._ensure_session_top(should_stop)
+            if self._refuse_foreground_block():
+                return None
             profile = self._capture_current(should_stop)
             if profile is None:
                 self._recover_capture_split(should_stop)
@@ -4985,6 +5142,94 @@ class AndroidDriver(DatingAppDriver):
             return "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
         return "Hinge's Hinge+ upgrade screen is up — the deck is not available"
 
+    def _foreground_package(self) -> str | None:
+        """Best-effort focused package, isolated so Observe can poll it without latching."""
+        probe = getattr(self.adb, "foreground_package", None)
+        if not callable(probe):
+            return None
+        try:
+            return probe()
+        except DriverClosed:
+            # A disconnected device is not an inconclusive optional probe. Propagate the clean
+            # shutdown before a caller attempts touch/text on a transport already known dead.
+            raise
+        except Exception:  # noqa: BLE001 -- optional state must not stop a healthy deck
+            return None
+
+    def _foreground_reason(self, package: str | None) -> str | None:
+        """Describe a proven foreign foreground package without changing driver state."""
+        if package is None or package == self.package:
+            return None
+        app_label = self.spec.app.capitalize()
+        if package == "com.android.systemui":
+            surface = "Android's notification or quick-settings shade"
+        else:
+            surface = f"another Android app or system surface ({package})"
+        return (f"{surface} is covering {app_label}, so no {app_label} profile is currently on screen; "
+                "no profile was captured and no input was sent")
+
+    def _foreground_blocked_reason(self) -> str | None:
+        """Return a precise no-touch refusal when another Android surface owns the screen.
+
+        A screencap keeps returning valid pixels while the notification / quick-settings shade
+        covers the configured app. Its dark header can be far from that app's deck reference,
+        which formerly made a visual gate call SYSTEM UI a real card. A focused
+        package is independent of those pixels and lets us stop before a rewind gesture or a
+        second capture can turn a transient shade into a stale-profile suggestion.
+
+        The ADB probe is best-effort. ``None`` means we could not establish foreground state,
+        not that the configured app is absent, preserving the driver's existing visual-only
+        fallback on older Android builds and test transports.
+        """
+        return self._foreground_reason(self._foreground_package())
+
+    def _await_observe_foreground_return(self, frame: bytes, deadline, should_stop) -> bool:
+        """Pause a passive Observe wait while Android System UI/another app owns the screen.
+
+        Returns True only after a foreign foreground was positively observed.  The caller
+        then returns ``None`` so Worker recaptures the visible app card without inventing a
+        decision.  Unlike capture/AUTO entry points, this does *not* latch ``_blocked_reason``:
+        an operator opening the shade while deciding is a reversible interruption, not a deck
+        failure.  No command is issued to dismiss it; Observe remains genuinely passive.
+        """
+        package = self._foreground_package()
+        reason = self._foreground_reason(package)
+        if reason is None:
+            return False
+        if self._dbg is not None:
+            self._dbg.action("observe_foreground_paused", before=frame,
+                             package=package, reason=reason)
+        print(f"{self.spec.app}: PAUSED — {reason}. Close that surface to resume; "
+              "nothing will be recorded or touched while it is open.")
+        while deadline is None or time.monotonic() < deadline:
+            if should_stop and should_stop():
+                return True
+            time.sleep(human_delay(1.0))
+            package = self._foreground_package()
+            if package != self.package:
+                continue
+            resumed = self._screencap(on_blank="none")
+            if resumed is None:
+                continue
+            if self._dbg is not None:
+                self._dbg.action("observe_foreground_resumed", before=resumed,
+                                 package=package,
+                                 result="recapture_without_decision")
+            print(f"{self.spec.app}: Android foreground returned to "
+                  f"{self.spec.app.capitalize()} — recapturing the "
+                  "visible card, with no decision recorded for the interrupted wait.")
+            return True
+        return True
+
+    def _refuse_foreground_block(self, *, frame: bytes | None = None) -> bool:
+        """Latch a foreground-surface refusal for worker.py and preserve its evidence."""
+        reason = self._foreground_blocked_reason()
+        if reason is None:
+            return False
+        self._blocked_reason = reason
+        self._dbg_action("foreground_blocked", frame, reason=reason)
+        return True
+
     def blocked_reason(self) -> str | None:
         """Worker-facing: is the deck unavailable for a reason the operator must be told about?
 
@@ -5000,6 +5245,8 @@ class AndroidDriver(DatingAppDriver):
         deck. Reporting one as blocked would stop a perfectly healthy run.
         """
         if self._blocked_reason is not None:
+            return self._blocked_reason
+        if self._refuse_foreground_block():
             return self._blocked_reason
         try:
             frame = self._screencap(on_blank="none")
@@ -5420,7 +5667,8 @@ class AndroidDriver(DatingAppDriver):
         calibration = self.targeting_calibration
         if calibration is not None:
             if self._adb is not None:
-                package_dump = self.adb.shell(f"dumpsys package {self.package}")
+                package_dump = self.adb.shell(
+                    f"dumpsys package {quote_android_package_id(self.package)}")
                 match = re.search(r"(?m)^\s*versionName=(\S+)\s*$", package_dump)
                 version = match.group(1) if match else None
             else:
@@ -5917,7 +6165,7 @@ class AndroidDriver(DatingAppDriver):
             self._verify_sheet_shows(focused, payload, model_item_index, before,
                                      composer_surface=focused_composer, allow_top_identity=False)
             self._raise_if_action_cancelled(should_stop, boundary="reviewed text entry")
-            self.adb.text(opener)
+            self._text(opener)
             if not self._interruptible_sleep(human_delay(0.6), should_stop):
                 self._raise_if_action_cancelled(should_stop, boundary="reviewed send")
             send_composer = self._await_sheet_open(tries=3)
@@ -6075,7 +6323,7 @@ class AndroidDriver(DatingAppDriver):
                     "nothing was typed or sent") from exc
         # DOC 5.6'S POST-TAP CHECK, AND IT IS THE FIRST THING THAT LOOKS AT THE OPEN SHEET.
         # Placed above every branch that can type: the ordering IS the guarantee ("verify, then
-        # type"), and there is no path from here to `self.adb.text(...)` that does not pass
+        # type"), and there is no path from here to `_text(...)` that does not pass
         # through `verdict.matched`. `_verify_sheet_shows` raises on anything but a match.
         if payload is not None:
             # Item 1 opens with Hinge's profile-independent filter chips in identity_band.  That
@@ -6119,7 +6367,7 @@ class AndroidDriver(DatingAppDriver):
                     focused, payload, model_item_index, before,
                     composer_surface=focused_composer, allow_top_identity=False)
             self._raise_if_action_cancelled(should_stop, boundary="text entry")
-            self.adb.text(opener)                     # opener sent WITH the like (Signals #2)
+            self._text(opener)                        # opener sent WITH the like (Signals #2)
             if not self._interruptible_sleep(human_delay(0.6), should_stop):
                 self._raise_if_action_cancelled(should_stop, boundary="send like")
         self._raise_if_action_cancelled(should_stop, boundary="send like")
@@ -6305,7 +6553,9 @@ class AndroidDriver(DatingAppDriver):
         tesseract = shutil.which("tesseract")
         if tesseract is None:
             return None
-        cache_key = (rect, psm, white_text_threshold, hashlib.sha1(frame).digest())
+        cache_key = (
+            rect, psm, white_text_threshold,
+            hashlib.sha1(frame, usedforsecurity=False).digest())
         cached = self._ocr_band_cache.get(cache_key, self._OCR_BAND_CACHE_MISS)
         if cached is not self._OCR_BAND_CACHE_MISS:
             return cached
@@ -6329,7 +6579,7 @@ class AndroidDriver(DatingAppDriver):
             crop.save(buf, format="PNG")
             result = subprocess.run(
                 [tesseract, "stdin", "stdout", "--psm", psm],
-                input=buf.getvalue(), capture_output=True, timeout=5.0,
+                input=buf.getvalue(), capture_output=True, timeout=5.0, check=False,
             )
             # Preserve Tesseract's line segmentation.  The scroll-top card-header crop is a
             # small block, not a single line: line 1 is the profile name, while line 2 holds
@@ -6985,6 +7235,10 @@ class AndroidDriver(DatingAppDriver):
         base = self._await_live_frame(deadline, should_stop)
         if base is None:
             return None
+        # A shade/app switch can land in the narrow capture -> wait handoff.  In that case
+        # ``base`` itself is foreign, so no pixel delta inside the loop could ever expose it.
+        if self._await_observe_foreground_return(base, deadline, should_stop):
+            return None
         # "When this profile became READY" for _observe_gesture_verdict's gesture-window
         # query below -- set once per call, before the poll loop, so a tap the human made
         # while still reading (before this wait even started watching) can never be
@@ -7015,6 +7269,13 @@ class AndroidDriver(DatingAppDriver):
             if cur is None:                           # screen asleep: the owner stepped away.
                 time.sleep(_OBSERVE_POLL_S)           # keep watching — do NOT diff a black frame
                 continue                              # against `base` (that reads as a phantom pass)
+
+            # Foreground ownership is independent evidence.  Probe only after pixels changed,
+            # avoiding a dumpsys call on every passive poll while still catching the very first
+            # notification-shade frame before identity/deck classifiers can call it a card.
+            if cur != base and self._await_observe_foreground_return(
+                    cur, deadline, should_stop):
+                return None
 
             # Checked here, at the top of the poll, against everything the PREVIOUS polls
             # concluded -- so it fires only after this arm's drawn budget (floored at
@@ -7529,6 +7790,9 @@ class AndroidDriver(DatingAppDriver):
             if cur is None:                           # screen asleep mid-wait: keep watching
                 time.sleep(_OBSERVE_POLL_S)           # (never diff a black frame against base)
                 continue
+            if cur != base and self._await_observe_foreground_return(
+                    cur, deadline, should_stop):
+                return None, intent_notified
             # The screen that can make this resolver wait forever is recognisable now.  Do not
             # make a human wait for the generic stuck-screen budget just because the paywall
             # appeared mid-wait (after Send Like rather than between profile loops).  Memoize the
@@ -7587,6 +7851,9 @@ class AndroidDriver(DatingAppDriver):
                 confirm_sheet = self._screencap(on_blank="none")
                 if confirm_sheet is None:
                     continue
+                if confirm_sheet != base and self._await_observe_foreground_return(
+                        confirm_sheet, deadline, should_stop):
+                    return None, intent_notified
                 if self._observe_like_sheet_visible(confirm_sheet):
                     self._observe_like_evidence = confirm_sheet
                     self._notify_observe_like_intent(
@@ -7650,6 +7917,9 @@ class AndroidDriver(DatingAppDriver):
                 confirm = self._screencap(on_blank="none")
                 if confirm is None:
                     continue                          # can't confirm blind -> re-poll
+                if confirm != base and self._await_observe_foreground_return(
+                        confirm, deadline, should_stop):
+                    return None, intent_notified
                 if self._observe_like_sheet_visible(confirm):
                     continue                          # sheet reappeared / animation still resolving
                 confirm_current = confirm == base or self._is_current_profile_frame(
@@ -7790,8 +8060,10 @@ class AndroidDriver(DatingAppDriver):
         _await_like_resolved, ONCE A COMPOSER HAS BEEN OBSERVED, it DISCARDS: a like the human
         actually sent reads as a dismissal and is silently dropped. So that caller passes
         require_content=True in that state and gets 'same' only when the header AND the photos
-        agree -- two independent signals that would both have to collide at once -- while the
-        cheap identity-only path stays for the callers whose worst case is patience.
+        agree -- two independent signals that would both have to collide at once. "Agree"
+        includes a bounded vertical content-shift match, so reviewing an opener by scrolling
+        back through the same profile does not require landing on a capture-time scroll stop.
+        The cheap identity-only path stays for the callers whose worst case is patience.
 
         That same resolver passes require_content=False BEFORE any sheet has been observed, and
         the reason is that the sentence above stops being true there: with no composer seen it
@@ -7807,6 +8079,17 @@ class AndroidDriver(DatingAppDriver):
         if ds is not None and sigs:
             import numpy as np
             content_match = min(float(np.mean(np.abs(ds - s))) for s in sigs) < self.change_threshold
+            if require_content and not content_match:
+                # Exact downsamples only recognize the automated capture stops. After a
+                # composer has been observed, require a second signal but allow the same
+                # measured content-band shift proof used by the outer observe loop: a manual
+                # review scroll translates one card's content, whereas a same-name next card
+                # would also have to coincide at a real vertical offset to look current.
+                rows = _content_rows(self.content_band, ds.shape[0])
+                content_match = any(
+                    _vertical_shift_match(
+                        ds, sig, threshold=self.change_threshold, rows=rows)[0]
+                    for sig in sigs)
         if state == "same":
             return content_match if require_content else True
         return content_match                          # 'top'/'unknown': photos are all there is
@@ -7917,7 +8200,7 @@ class HingeDriver(AndroidDriver):
                     changes = np.diff(padded.astype(np.int8))
                     starts, ends = np.flatnonzero(changes == 1), np.flatnonzero(changes == -1)
                     if any(end - start >= round(width * 0.72)
-                           for start, end in zip(starts, ends)):
+                           for start, end in zip(starts, ends, strict=True)):
                         return True
         except Exception:  # noqa: BLE001 -- passive evidence must never block observation
             return False

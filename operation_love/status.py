@@ -7,9 +7,12 @@ with snapshot(), or one app's view (global + that app) with app_view(app).
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
+from collections.abc import Collection
 from dataclasses import asdict, dataclass, field
+from numbers import Real
 
 
 # The per-card opener suggestion, as a SET, with each field's blank value. Every one of them
@@ -146,21 +149,58 @@ class AppStatus:
     updated_at: float = field(default_factory=time.time)
 
 
+_APP_MUTABLE_FIELDS = frozenset(AppStatus.__dataclass_fields__) - {"app", "updated_at"}
+_GLOBAL_MUTABLE_FIELDS = frozenset({
+    "mode", "min_labels", "budget_cap", "phase", "labels", "ranker_ready",
+    "budget_spent", "openers", "running", "stopping",
+})
+
+
 class RunStatus:
     """Mutable, lock-guarded run state shared across worker threads + readers."""
 
     def __init__(self, run_id: str, apps, *, min_labels: int, mode: str,
                  budget_cap: float | None = None, labels: int = 0, ranker_ready: bool = False):
+        if not isinstance(run_id, str) or not run_id or run_id != run_id.strip():
+            raise ValueError("run_id must be a nonempty string without surrounding whitespace")
+        if not isinstance(mode, str) or mode not in {"observe", "auto"}:
+            raise ValueError("mode must be exactly 'observe' or 'auto'")
+        if isinstance(apps, (str, bytes)) or not isinstance(apps, Collection):
+            raise ValueError("apps must be a finite collection of app-name strings")
+        app_names = list(apps)
+        if any(not isinstance(app, str) or not app or app != app.strip() for app in app_names):
+            raise ValueError(
+                "app names must be nonempty strings without surrounding whitespace")
+        if len(set(app_names)) != len(app_names):
+            raise ValueError("app names must not contain duplicates")
+        if type(min_labels) is not int or min_labels < 0:
+            raise ValueError("min_labels must be a nonnegative integer")
+        if type(labels) is not int or labels < 0:
+            raise ValueError("labels must be a nonnegative integer")
+        if type(ranker_ready) is not bool:
+            raise ValueError("ranker_ready must be exactly bool")
+        if budget_cap is None:
+            resolved_budget_cap = None
+        else:
+            if isinstance(budget_cap, bool) or not isinstance(budget_cap, Real):
+                raise ValueError("budget_cap must be a finite nonnegative number or None")
+            try:
+                resolved_budget_cap = float(budget_cap)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    "budget_cap must be a finite nonnegative number or None") from exc
+            if not math.isfinite(resolved_budget_cap) or resolved_budget_cap < 0:
+                raise ValueError("budget_cap must be a finite nonnegative number or None")
         self._lock = threading.RLock()
         self.run_id = run_id
         self.started_at = time.time()
         self.mode = mode
-        self.min_labels = int(min_labels)
-        self.budget_cap = budget_cap
+        self.min_labels = min_labels
+        self.budget_cap = resolved_budget_cap
         # global slice
         self.phase = "starting"             # starting | loading saved data | training ranker | loading ML models | live | stopping | saving data | stopped | wedged | save_failed
-        self.labels = int(labels)
-        self.ranker_ready = bool(ranker_ready)
+        self.labels = labels
+        self.ranker_ready = ranker_ready
         self.budget_spent = 0.0
         self.openers = 0
         self.running = True
@@ -177,10 +217,13 @@ class RunStatus:
         # phase is published -- so it covers the join-wait AND the flush/save tail, the whole
         # span during which nothing the operator does on screen will be recorded.
         self.stopping = False
-        self._apps: dict[str, AppStatus] = {a: AppStatus(app=a) for a in apps}
+        self._apps: dict[str, AppStatus] = {a: AppStatus(app=a) for a in app_names}
 
     # --- per-app updates (workers) -------------------------------------
     def set_app(self, app: str, **fields) -> None:
+        unknown = set(fields) - _APP_MUTABLE_FIELDS
+        if unknown:
+            raise ValueError(f"unknown AppStatus field(s): {sorted(unknown)}")
         with self._lock:
             s = self._apps.setdefault(app, AppStatus(app=app))
             for k, v in fields.items():
@@ -200,7 +243,7 @@ class RunStatus:
             # explicit clears so a field added to one cannot be forgotten by the other.
             if (fields.get("state") in {"waiting", "capturing", "suggesting", "acting",
                                         "out_of_profiles", "rate_limited", "saving", "stopped",
-                                        "error", "wedged"}
+                                        "error", "wedged", "blocked"}
                     and "opener_suggestion" not in fields):
                 for name, blank in _OPENER_FIELDS.items():
                     setattr(s, name, blank)
@@ -221,10 +264,15 @@ class RunStatus:
 
     # --- global updates (supervisor / decider) -------------------------
     def inc_labels(self, n: int = 1) -> None:
+        if type(n) is not int or n < 0:
+            raise ValueError("label increment must be a nonnegative integer")
         with self._lock:
             self.labels += n
 
     def set_global(self, **fields) -> None:
+        unknown = set(fields) - _GLOBAL_MUTABLE_FIELDS
+        if unknown:
+            raise ValueError(f"unknown RunStatus global field(s): {sorted(unknown)}")
         with self._lock:
             for k, v in fields.items():
                 setattr(self, k, v)

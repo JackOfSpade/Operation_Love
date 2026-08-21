@@ -18,6 +18,7 @@ from collections import OrderedDict
 # through arbitrarily many cards and runs.  Keep a generous recent window without turning an
 # otherwise long-lived local hub into an unbounded in-memory action log.
 _MAX_COMPLETED_RESULTS = 256
+_MAX_PROTOCOL_STRING_LENGTH = 256
 
 
 class ObserveActionBridge:
@@ -44,6 +45,10 @@ class ObserveActionBridge:
     def unregister(self, worker) -> None:
         key = (worker.run_id, worker.app)
         with self._lock:
+            # A delayed teardown from an old Worker must not unregister a replacement that
+            # has already claimed the same run/app identity.
+            if self._workers.get(key) is not worker:
+                return
             self._workers.pop(key, None)
             card = self._cards.pop(key, None)
             if card and card.get("pending"):
@@ -115,10 +120,12 @@ class ObserveActionBridge:
 
     def snapshot(self, *, run_id: str | None = None, app: str | None = None) -> dict:
         with self._lock:
-            cards = []
-            for card in self._cards.values():
-                if (run_id is None or card["run_id"] == run_id) and (app is None or card["app"] == app):
-                    cards.append({k: v for k, v in card.items() if k != "pending"})
+            cards = [
+                {k: v for k, v in card.items() if k != "pending"}
+                for card in self._cards.values()
+                if (run_id is None or card["run_id"] == run_id)
+                and (app is None or card["app"] == app)
+            ]
             results = [v for v in self._results.values()
                        if (run_id is None or v["run_id"] == run_id)
                        and (app is None or v["app"] == app)]
@@ -133,6 +140,13 @@ class ObserveActionBridge:
             return False, {"status": "rejected", "reason": "unsupported command"}, 400
         if not all(isinstance(x, str) and x for x in (run_id, app, profile_token, suggestion_token, token)):
             return False, {"status": "rejected", "reason": "run, app, profile, suggestion, and idempotency tokens are required"}, 400
+        if any(len(value) > _MAX_PROTOCOL_STRING_LENGTH
+               for value in (run_id, app, profile_token, suggestion_token, token)):
+            return False, {
+                "status": "rejected",
+                "reason": ("run, app, profile, suggestion, and idempotency tokens must be at "
+                           f"most {_MAX_PROTOCOL_STRING_LENGTH} characters"),
+            }, 400
         # The public grammar is intentionally closed.  Reject rather than ignore fields that
         # could otherwise turn this reviewed protocol into arbitrary device control.
         allowed = {"command", "run_id", "app", "profile_token", "suggestion_token", "item", "idempotency_token"}

@@ -20,6 +20,7 @@ from pathlib import Path
 import yaml
 
 from operation_love import config as cfg_mod
+from operation_love.private_files import atomic_write_private_bytes, ensure_private_dir
 from operation_love.ranker import make_store
 
 _ARTIFACT_KEYS = {
@@ -165,10 +166,10 @@ def verify(*, cfg, run_dir: Path, run_id: str, out_dir: Path, store=None) -> tup
     }
     if set(artifact) != _ARTIFACT_KEYS:
         raise AssertionError("release artifact schema drift")
-    out_dir.mkdir(parents=True, exist_ok=False)
+    ensure_private_dir(out_dir, exist_ok=False)
     artifact_path = out_dir / "hinge_observe_release.json"
     artifact_bytes = json.dumps(artifact, indent=2, sort_keys=True).encode("utf-8") + b"\n"
-    artifact_path.write_bytes(artifact_bytes)
+    atomic_write_private_bytes(artifact_path, artifact_bytes, parent=out_dir)
     try:
         artifact_ref = str(artifact_path.resolve().relative_to(root))
     except ValueError as exc:  # defensive: output is restricted by CLI before creation

@@ -1,11 +1,7 @@
 import cv2
-import dlib
-import numpy as np
 import os
 import shutil
 import subprocess
-import torchvision.transforms as transforms
-from PIL import Image, ImageOps
 from retinaface import RetinaFace
 import uuid
 
@@ -13,7 +9,8 @@ import uuid
 def run_in_env(script_command, env_path):
     activate_env_command = f'{env_path}\\Scripts\\Activate.ps1'
     command = f'{activate_env_command}; {script_command}'
-    result = subprocess.run(['powershell', '-Command', command], capture_output=True, text=True)
+    result = subprocess.run(
+        ['powershell', '-Command', command], capture_output=True, text=True, check=False)
     return result.stdout, result.stderr
 
 

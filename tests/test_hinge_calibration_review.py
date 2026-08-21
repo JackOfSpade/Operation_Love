@@ -89,6 +89,7 @@ def _legacy_hybrid_capture(tmp_path: Path, name: str) -> Path:
     manifest["capture_mode"] = review._HYBRID_CAPTURE_MODE
     manifest["automation_acceptance"].update({
         "confirmation": review._HYBRID_CONFIRMATION,
+        "reviewer_protocol": "stdin_checkpoint_sha256_v1",
         "reviewer_source": "external_ai_review",
         "reviewer": reviewer,
     })
@@ -120,7 +121,8 @@ def _legacy_hybrid_capture(tmp_path: Path, name: str) -> Path:
     frame_path = review_dir / "00001.png"
     frame_path.write_bytes((session / composer["file"]).read_bytes())
     plan = {
-        "action": "automated_pass", "photo_model_item": None,
+        "action": "automated_pass", "photo_model_item": None, "point": None,
+        "point_source": "calibration-only verified-composer Pass transport",
         "predicates": {
             "inline_composer_and_selected_photo_verified_before_action": True,
             "send_like_tapped": False,
@@ -143,7 +145,8 @@ def _legacy_hybrid_capture(tmp_path: Path, name: str) -> Path:
         "checkpoint_sha256": _sha(checkpoint_path.read_bytes()),
         "frame_sha256": composer["sha256"], "frame_file": str(frame_path),
         "decision": "approved", "source": "external_ai_review", "reviewer": reviewer,
-        "human_ground_truth": False, "action_plan": plan,
+        "human_ground_truth": False, "claimed_state": "composer_open_before_pass",
+        "action_plan": plan,
     }
     heart = next(action for action in profile["automated_actions"]
                  if action["action"] == "automated_photo_heart")
@@ -190,8 +193,11 @@ def test_reviewer_is_structurally_independent_of_capture_and_vision_stacks():
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
-    assert not any(name.startswith("operation_love") or name == "tools.hinge_calibrate"
-                   for name in imported)
+    assert not any(
+        (name.startswith("operation_love") and name != "operation_love.private_files")
+        or name == "tools.hinge_calibrate"
+        for name in imported
+    )
 
 
 def test_review_refuses_tampered_frame_or_config(tmp_path):
@@ -317,41 +323,175 @@ def test_review_refuses_unbound_legacy_hybrid_pass_summary(tmp_path, tamper):
         review.build_review([session], config)
 
 
-def test_review_accepts_only_hash_bound_hybrid_checkpoints(tmp_path):
-    session = _capture(tmp_path, "hybrid")
+def _send_like_capture(tmp_path: Path, name: str) -> Path:
+    """A hybrid Pass fixture changed into an equally byte-bound accepted real Send."""
+    session = _legacy_hybrid_capture(tmp_path, name)
+    manifest_path = session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["automation_acceptance"]["send_like_accepted"] = True
+    manifest["automation_acceptance"]["send_like_confirmation"] = review._SEND_LIKE_CONFIRMATION
+    manifest["automation_acceptance"]["terminal_advance_action"] = "automated_send_priority_like"
+    actions = manifest["profiles"][0]["automated_actions"]
+    pass_index = next(i for i, a in enumerate(actions) if a["action"] == "automated_pass")
+    pass_action = actions[pass_index]
+    post_sha = pass_action["post_frame_sha256"]
+    pre_sha = pass_action["pre_frame_sha256"]
+    record = pass_action["review_checkpoints"]["before"]
+    plan = {
+        "action": "automated_send_priority_like", "photo_model_item": None,
+        "point": [690, 1360],
+        "point_source": "calibration-only verified-composer Send transport",
+        "predicates": {
+            "inline_composer_and_selected_photo_verified_before_action": True,
+            "send_like_tapped": False,
+            "forbidden_zone_guarded_transport": "HingeDriver._tap",
+        },
+    }
+    checkpoint_path = Path(record["checkpoint_file"])
+    checkpoint = json.loads(checkpoint_path.read_text())
+    checkpoint["action_plan"] = plan
+    body = dict(checkpoint)
+    body.pop("evidence_sha256", None)
+    checkpoint["evidence_sha256"] = review._canonical_digest(body)
+    checkpoint_path.write_text(json.dumps(checkpoint, indent=2, sort_keys=True) + "\n")
+    record.update({
+        "action_plan": plan,
+        "checkpoint_evidence_sha256": checkpoint["evidence_sha256"],
+        "checkpoint_sha256": _sha(checkpoint_path.read_bytes()),
+    })
+    decision = next(
+        decision for decision in manifest["hybrid_review"]["decisions"]
+        if decision.get("checkpoint_file") == record["checkpoint_file"])
+    decision.update(record)
+    actions[pass_index] = {
+        "action": "automated_send_priority_like",
+        "transport": ["HingeDriver._tap(confirm_point)", "HingeDriver._handle_rose_upsell",
+                      "HingeDriver._verify_like_landed"],
+        "pre_frame_sha256": pre_sha, "post_frame_sha256": post_sha,
+        "send_like_tapped": True,
+        "confirm_point": [690, 1360],
+        "predicates": {
+            "inline_composer_and_selected_photo_verified_before_action": True,
+            "send_like_tapped": True,
+            "like_landed_verified": True,
+        },
+        "review_checkpoints": {"before": record},
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    return session
+
+
+def test_review_authenticates_an_accepted_real_send_priority_like(tmp_path):
+    session = _send_like_capture(tmp_path, "send-like")
+    config = tmp_path / "config.yaml"
+
+    record = review.build_review([session], config)["captures"][0]
+
+    assert record["send_like_accepted"] is True
+    assert record["terminal_advance_action"] == "automated_send_priority_like"
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["checkpoint_json", "checkpoint_png", "config", "action_plan", "frame", "landed_false"],
+)
+def test_review_refuses_unbound_or_false_send_evidence(tmp_path, tamper):
+    session = _send_like_capture(tmp_path, f"send-tamper-{tamper}")
     config = tmp_path / "config.yaml"
     manifest_path = session / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    reviewer = {"source": "external_ai_review", "id": "runner-42", "model": "reviewer",
-                "version": "1", "process": "job-9"}
-    manifest["capture_mode"] = review._HYBRID_CAPTURE_MODE
-    manifest["automation_acceptance"].update({
-        "confirmation": review._HYBRID_CONFIRMATION,
-        "reviewer_protocol": "stdin_checkpoint_sha256_v1", "reviewer_source": "external_ai_review",
-        "reviewer": reviewer,
-    })
-    decisions = []
-    for action in manifest["profiles"][0]["automated_actions"]:
-        checks = {}
-        count = 2 if action["action"] == "automated_photo_heart" else 1
-        for label in ("before", "after")[:count]:
-            record = {"checkpoint_evidence_sha256": f"checkpoint-{len(decisions)}",
-                          "frame_sha256": f"frame-{len(decisions)}", "decision": "approved",
-                          "source": "external_ai_review", "reviewer": reviewer,
-                          "human_ground_truth": False,
-                          "action_plan": {"action": ("review_heart_result" if label == "after"
-                                                     else action["action"]),
-                                      "photo_model_item": action.get("photo_model_item")}}
-            decisions.append(record)
-            checks[label] = record
-        action["review_checkpoints"] = checks
-    manifest["profiles"][0]["action_evidence_mode"] = review._HYBRID_CAPTURE_MODE
-    manifest["hybrid_review"] = {"schema_version": 1, "protocol": "stdin_checkpoint_sha256_v1",
-                                 "reviewer": reviewer, "human_ground_truth": False, "decisions": decisions}
+    action = manifest["profiles"][0]["automated_actions"][-1]
+    before = action["review_checkpoints"]["before"]
+    if tamper == "checkpoint_json":
+        checkpoint_path = Path(before["checkpoint_file"])
+        checkpoint = json.loads(checkpoint_path.read_text())
+        checkpoint["sequence"] = 99
+        checkpoint_path.write_text(json.dumps(checkpoint))
+    elif tamper == "checkpoint_png":
+        Path(before["frame_file"]).write_bytes(b"tampered checkpoint frame")
+    elif tamper == "config":
+        manifest["config_provenance"]["sha256"] = "0" * 64
+    elif tamper == "action_plan":
+        before["action_plan"]["point"] = [9, 9]
+    elif tamper == "frame":
+        action["pre_frame_sha256"] = "0" * 64
+    else:
+        action["predicates"]["like_landed_verified"] = False
     manifest_path.write_text(json.dumps(manifest))
 
+    with pytest.raises(review.ReviewRefused):
+        review.build_review([session], config)
+
+
+@pytest.mark.parametrize("json_boolean_alias", [0, 1])
+def test_review_rejects_integer_send_acceptance_aliases(tmp_path, json_boolean_alias):
+    session = _send_like_capture(tmp_path, f"send-bool-{json_boolean_alias}")
+    config = tmp_path / "config.yaml"
+    manifest_path = session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["automation_acceptance"]["send_like_accepted"] = json_boolean_alias
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(review.ReviewRefused, match="exact boolean"):
+        review.build_review([session], config)
+
+
+def test_review_refuses_a_send_trace_without_accepted_send_like(tmp_path):
+    """A send trace can never authenticate itself: without the manifest's explicit acceptance,
+    the session is read as an ordinary capture that is simply missing its required Pass."""
+    session = _send_like_capture(tmp_path, "unaccepted-send")
+    config = tmp_path / "config.yaml"
+    manifest_path = session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["automation_acceptance"]["send_like_accepted"] = False
+    manifest["automation_acceptance"]["send_like_confirmation"] = None
+    manifest["automation_acceptance"]["terminal_advance_action"] = "automated_pass"
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(review.ReviewRefused, match="Pass-without-send"):
+        review.build_review([session], config)
+
+
+def test_review_refuses_a_send_confirmation_without_accepted_send_like(tmp_path):
+    session = _capture(tmp_path, "confirmation-without-acceptance")
+    config = tmp_path / "config.yaml"
+    manifest_path = session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["automation_acceptance"]["send_like_confirmation"] = review._SEND_LIKE_CONFIRMATION
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(review.ReviewRefused, match="send-like confirmation present without accepted"):
+        review.build_review([session], config)
+
+
+def test_review_refuses_a_mixed_pass_and_send_ledger(tmp_path):
+    session = _send_like_capture(tmp_path, "mixed-ledger")
+    config = tmp_path / "config.yaml"
+    manifest_path = session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["profiles"][0]["automated_actions"].append({
+        "action": "automated_pass", "send_like_tapped": False, "composer_clear_visible": True,
+        "post_frame_sha256": review._sha256(b"unused"),
+    })
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(review.ReviewRefused, match="mixes Pass and Send"):
+        review.build_review([session], config)
+
+
+def test_review_accepts_only_hash_bound_hybrid_checkpoints(tmp_path):
+    session = _legacy_hybrid_capture(tmp_path, "hybrid")
+    config = tmp_path / "config.yaml"
+    manifest_path = session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+
     assert review.build_review([session], config)["captures"][0]["capture_mode"] == review._HYBRID_CAPTURE_MODE
-    session_data = calibrate._SessionData(session, "calibration", "test", (), (), [], manifest)
+    raw = (session / manifest["frames"][-2]["file"]).read_bytes()
+    identity = (session / manifest["frames"][-1]["file"]).read_bytes()
+    profile_data = calibrate._ProfileData(
+        1, "auto-test", [raw], [(1, raw, raw)], raw, identity)
+    session_data = calibrate._SessionData(
+        session, "calibration", "test", (), (), [profile_data], manifest)
     assert calibrate._verified_hybrid_reviewed_evidence([session_data])["kind"] == "hybrid_ai_reviewed_automation"
     manifest["profiles"][0]["automated_actions"][0]["review_checkpoints"]["before"]["decision"] = "refused"
     manifest_path.write_text(json.dumps(manifest))

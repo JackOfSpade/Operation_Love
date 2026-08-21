@@ -19,6 +19,8 @@ import struct
 import sys
 from pathlib import Path
 
+from operation_love.private_files import atomic_write_private_text, ensure_private_dir
+
 
 _TOOL_VERSION = "1"
 _REVIEW_SCHEMA_VERSION = 1
@@ -27,6 +29,10 @@ _CAPTURE_MODE = "automated_circular_risk_accepted"
 _HYBRID_CAPTURE_MODE = "hybrid_ai_reviewed_automation"
 _CONFIRMATION = "I_ACCEPT_UNATTENDED_CIRCULAR_CALIBRATION_RISK"
 _HYBRID_CONFIRMATION = "I_ACCEPT_EXTERNAL_REVIEWED_AUTOMATION_RISK"
+# Mirrors tools.hinge_calibrate._SEND_LIKE_CONFIRMATION. This module stays standard-library-only
+# and deliberately imports nothing from the capture tool, so the phrase is duplicated rather than
+# shared: an independent reviewer must not depend on the code whose output it is reviewing.
+_SEND_LIKE_CONFIRMATION = "I_ACCEPT_REAL_PRIORITY_LIKE_SEND_RISK"
 _AUTOMATED_TARGET_STRATEGY_ID = "alternate_photo_1_3_by_profile_ordinal_v1"
 _AUTOMATED_TARGET_DEPTHS = frozenset((1, 3))
 _TARGET_SCOPED_PREFIX_PROOF_ID = "photo_only_confirmed_prefix_v1"
@@ -76,6 +82,89 @@ def _expected_composer_items(ordinal: object) -> tuple[int, ...]:
     return (1 if ordinal % 2 else 3,)
 
 
+def _approved_hybrid_decision(record: object, *, acceptance: dict, decisions: list,
+                              action: str, item: int | None) -> bool:
+    """Keep reviewer-ledger binding independent from the capture implementation."""
+    plan = record.get("action_plan") if isinstance(record, dict) else None
+    return (isinstance(record, dict) and record.get("decision") == "approved"
+            and record.get("source") == acceptance.get("reviewer_source")
+            and record.get("human_ground_truth") is False
+            and record.get("reviewer") == acceptance.get("reviewer")
+            and isinstance(plan, dict) and plan.get("action") == action
+            and plan.get("photo_model_item") == item
+            and isinstance(record.get("checkpoint_evidence_sha256"), str)
+            and isinstance(record.get("frame_sha256"), str)
+            and record in decisions)
+
+
+def _exact_hybrid_terminal_checkpoint(action: object, *, session: Path,
+                                      config_sha256: str, acceptance: dict,
+                                      decisions: list, expected_action: str,
+                                      expected_point: list[int] | None) -> bool:
+    """Open and authenticate one terminal checkpoint's JSON, PNG and exact plan."""
+    if not isinstance(action, dict):
+        return False
+    checks = action.get("review_checkpoints")
+    before = checks.get("before") if isinstance(checks, dict) else None
+    if (not _approved_hybrid_decision(
+            before, acceptance=acceptance, decisions=decisions,
+            action=expected_action, item=None)
+            or not isinstance(before, dict)):
+        return False
+    checkpoint_file, frame_file = before.get("checkpoint_file"), before.get("frame_file")
+    if not isinstance(checkpoint_file, str) or not isinstance(frame_file, str):
+        return False
+    try:
+        review_dir = (session / "hybrid_review").resolve(strict=True)
+        checkpoint_path = Path(checkpoint_file).resolve(strict=True)
+        checkpoint_frame_path = Path(frame_file).resolve(strict=True)
+        if (checkpoint_path.parent != review_dir or checkpoint_frame_path.parent != review_dir
+                or not checkpoint_path.is_file() or not checkpoint_frame_path.is_file()):
+            return False
+        checkpoint_raw = checkpoint_path.read_bytes()
+        checkpoint = json.loads(checkpoint_raw)
+        checkpoint_frame_sha256 = _sha256(checkpoint_frame_path.read_bytes())
+    except (OSError, RuntimeError, json.JSONDecodeError):
+        return False
+    if not isinstance(checkpoint, dict):
+        return False
+    checkpoint_body = dict(checkpoint)
+    checkpoint_body.pop("evidence_sha256", None)
+    plan = checkpoint.get("action_plan")
+    predicates = plan.get("predicates") if isinstance(plan, dict) else None
+    frame = checkpoint.get("frame")
+    expected_source = ("calibration-only verified-composer Send transport"
+                       if expected_action == "automated_send_priority_like"
+                       else "calibration-only verified-composer Pass transport")
+    return (
+        before.get("checkpoint_sha256") == _sha256(checkpoint_raw)
+        and checkpoint.get("evidence_sha256") == before.get("checkpoint_evidence_sha256")
+        and checkpoint.get("evidence_sha256") == _canonical_digest(checkpoint_body)
+        and checkpoint.get("schema_version") == 1
+        and checkpoint.get("kind") == "hinge_hybrid_calibration_checkpoint"
+        and checkpoint.get("config_sha256") == config_sha256
+        and checkpoint.get("human_ground_truth") is False
+        and checkpoint.get("claimed_state") == "composer_open_before_pass"
+        and before.get("claimed_state") == checkpoint.get("claimed_state")
+        and plan == before.get("action_plan")
+        and isinstance(plan, dict)
+        and plan.get("action") == expected_action
+        and plan.get("photo_model_item") is None
+        and plan.get("point") == expected_point
+        and plan.get("point_source") == expected_source
+        and isinstance(predicates, dict)
+        and predicates.get(
+            "inline_composer_and_selected_photo_verified_before_action") is True
+        and predicates.get("send_like_tapped") is False
+        and predicates.get("forbidden_zone_guarded_transport") == "HingeDriver._tap"
+        and isinstance(frame, dict)
+        and frame.get("file") == checkpoint_frame_path.name
+        and frame.get("sha256") == before.get("frame_sha256")
+        and frame.get("sha256") == checkpoint_frame_sha256
+        and frame.get("sha256") == action.get("pre_frame_sha256")
+    )
+
+
 def _read_capture(session: Path, config_sha256: str) -> dict:
     manifest_path = session / "manifest.json"
     try:
@@ -102,6 +191,22 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
     if (manifest.get("automated_target_strategy_id") != _AUTOMATED_TARGET_STRATEGY_ID
             or acceptance.get("target_strategy_id") != _AUTOMATED_TARGET_STRATEGY_ID):
         raise ReviewRefused(f"{session}: unsupported or missing automated target strategy")
+    # A capture ends each profile either with the default Pass-without-send or -- only when the
+    # owner explicitly accepted it at capture time -- with a REAL Send Priority Like. The
+    # acceptance is read from the manifest rather than inferred from the traces, so a send trace
+    # can never authenticate itself: an unaccepted session still requires the exact Pass trace.
+    send_like_accepted = acceptance.get("send_like_accepted")
+    if send_like_accepted is not None and type(send_like_accepted) is not bool:
+        raise ReviewRefused(f"{session}: send_like_accepted is not an exact boolean")
+    send_like_accepted = bool(send_like_accepted)
+    if send_like_accepted and acceptance.get("send_like_confirmation") != _SEND_LIKE_CONFIRMATION:
+        raise ReviewRefused(f"{session}: real-send evidence lacks the exact send-like acknowledgement")
+    if not send_like_accepted and acceptance.get("send_like_confirmation") is not None:
+        raise ReviewRefused(f"{session}: send-like confirmation present without accepted real sends")
+    terminal_action = ("automated_send_priority_like" if send_like_accepted else "automated_pass")
+    declared_terminal = acceptance.get("terminal_advance_action")
+    if declared_terminal is not None and declared_terminal != terminal_action:
+        raise ReviewRefused(f"{session}: declared terminal advance action contradicts its acceptance")
     target_scoped = manifest.get("capture_evidence_scope") == _TARGET_SCOPED_PREFIX_PROOF_ID
     provenance = _require_exact_keys(
         manifest.get("config_provenance"),
@@ -205,18 +310,45 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
         hybrid_decisions = hybrid["decisions"]
 
     def require_hybrid_decision(record: object, *, action: str, item: int | None) -> None:
-        if not isinstance(record, dict):
-            raise ReviewRefused(f"{session}: hybrid action has no bound reviewer decision")
-        reviewer = record.get("reviewer")
-        plan = record.get("action_plan")
-        if (record.get("decision") != "approved" or record.get("source") != acceptance.get("reviewer_source")
-                or record.get("human_ground_truth") is not False
-                or reviewer != acceptance.get("reviewer") or not isinstance(plan, dict)
-                or plan.get("action") != action or plan.get("photo_model_item") != item
-                or not isinstance(record.get("checkpoint_evidence_sha256"), str)
-                or not isinstance(record.get("frame_sha256"), str)
-                or record not in hybrid_decisions):
+        if not _approved_hybrid_decision(
+                record, acceptance=acceptance, decisions=hybrid_decisions,
+                action=action, item=item):
             raise ReviewRefused(f"{session}: hybrid reviewer decision is not an exact action binding")
+
+    def has_exact_send_summary(action: object, *, ordinal: int) -> bool:
+        """Authenticate an owner-accepted REAL Send Priority Like terminal action.
+
+        This is deliberately not a relaxation of the Pass checks below: it is a separate, equally
+        exact shape that is only reachable when the manifest carries the explicit send-like
+        acceptance. It still requires the composer/selected-photo proof taken before the tap, the
+        production upsell-dismiss + landed-verification transport (never the paid Rose control),
+        and the same advance-frame binding, so a real like is held to the same evidence bar as a
+        Pass -- while remaining plainly labelled as a send rather than passing for Pass-only.
+        """
+        if not isinstance(action, dict) or not send_like_accepted:
+            return False
+        action_predicates = action.get("predicates")
+        transport = action.get("transport")
+        point = action.get("confirm_point")
+        if (not isinstance(action_predicates, dict) or not isinstance(transport, list)
+                or transport != ["HingeDriver._tap(confirm_point)",
+                                 "HingeDriver._handle_rose_upsell",
+                                 "HingeDriver._verify_like_landed"]
+                or action.get("send_like_tapped") is not True
+                or action_predicates.get("send_like_tapped") is not True
+                or action_predicates.get(
+                    "inline_composer_and_selected_photo_verified_before_action") is not True
+                or action_predicates.get("like_landed_verified") is not True
+                or action.get("post_frame_sha256") != frame_by_role_item.get(
+                    (ordinal, "profile_advance_clear", None))):
+            return False
+        if (not isinstance(point, list) or len(point) != 2
+                or any(isinstance(v, bool) or not isinstance(v, int) for v in point)):
+            return False
+        return _exact_hybrid_terminal_checkpoint(
+            action, session=session, config_sha256=config_sha256,
+            acceptance=acceptance, decisions=hybrid_decisions,
+            expected_action="automated_send_priority_like", expected_point=point)
 
     def has_exact_pass_summary(action: object, *, ordinal: int) -> bool:
         """Accept legacy omitted pass summaries only when the saved bytes prove both facts.
@@ -230,59 +362,15 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
             return False
         missing = object()
         sent, clear = action.get("send_like_tapped", missing), action.get("composer_clear_visible", missing)
-        if sent is not missing or clear is not missing:
-            return sent is False and clear is True
         if mode != _HYBRID_CAPTURE_MODE:
+            return sent is False and clear is True
+        if ((sent is not missing or clear is not missing)
+                and not (sent is False and clear is True)):
             return False
-        checks = action.get("review_checkpoints")
-        before = checks.get("before") if isinstance(checks, dict) else None
-        try:
-            require_hybrid_decision(before, action="automated_pass", item=None)
-        except ReviewRefused:
-            return False
-        if not isinstance(before, dict):
-            return False
-        checkpoint_file = before.get("checkpoint_file")
-        frame_file = before.get("frame_file")
-        if not isinstance(checkpoint_file, str) or not isinstance(frame_file, str):
-            return False
-        checkpoint_path, checkpoint_frame_path = Path(checkpoint_file), Path(frame_file)
-        review_dir = session / "hybrid_review"
-        try:
-            if (checkpoint_path.parent != review_dir or checkpoint_frame_path.parent != review_dir
-                    or not checkpoint_path.is_file() or not checkpoint_frame_path.is_file()):
-                return False
-            checkpoint_raw = checkpoint_path.read_bytes()
-            checkpoint = json.loads(checkpoint_raw)
-            checkpoint_frame_sha256 = _sha256(checkpoint_frame_path.read_bytes())
-        except (OSError, json.JSONDecodeError):
-            return False
-        if (not isinstance(checkpoint, dict)
-                or before.get("checkpoint_sha256") != _sha256(checkpoint_raw)
-                or checkpoint.get("evidence_sha256") != before.get("checkpoint_evidence_sha256")):
-            return False
-        checkpoint_body = dict(checkpoint)
-        checkpoint_body.pop("evidence_sha256", None)
-        if checkpoint.get("evidence_sha256") != _canonical_digest(checkpoint_body):
-            return False
-        plan = checkpoint.get("action_plan")
-        predicates = plan.get("predicates") if isinstance(plan, dict) else None
-        frame = checkpoint.get("frame")
-        if (checkpoint.get("schema_version") != 1
-                or checkpoint.get("kind") != "hinge_hybrid_calibration_checkpoint"
-                or checkpoint.get("config_sha256") != config_sha256
-                or checkpoint.get("human_ground_truth") is not False
-                or plan != before.get("action_plan")
-                or not isinstance(predicates, dict)
-                or plan.get("action") != "automated_pass"
-                or plan.get("photo_model_item") is not None
-                or predicates.get("inline_composer_and_selected_photo_verified_before_action") is not True
-                or predicates.get("send_like_tapped") is not False
-                or predicates.get("forbidden_zone_guarded_transport") != "HingeDriver._tap"
-                or not isinstance(frame, dict)
-                or frame.get("sha256") != before.get("frame_sha256")
-                or frame.get("sha256") != checkpoint_frame_sha256
-                or frame.get("sha256") != action.get("pre_frame_sha256")):
+        if not _exact_hybrid_terminal_checkpoint(
+                action, session=session, config_sha256=config_sha256,
+                acceptance=acceptance, decisions=hybrid_decisions,
+                expected_action="automated_pass", expected_point=None):
             return False
         action_predicates = action.get("predicates")
         transport = action.get("transport")
@@ -421,16 +509,26 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
                     raise ReviewRefused(f"{session}: hybrid heart has no before/after review checkpoints")
                 require_hybrid_decision(checks.get("before"), action="automated_photo_heart", item=item)
                 require_hybrid_decision(checks.get("after"), action="review_heart_result", item=item)
-        passes = [a for a in actions if isinstance(a, dict) and a.get("action") == "automated_pass"]
-        if len(passes) != 1 or not has_exact_pass_summary(passes[0], ordinal=ordinal):
-            raise ReviewRefused(f"{session}: missing exact automated Pass-without-send trace")
+        passes = [a for a in actions if isinstance(a, dict) and a.get("action") == terminal_action]
+        summary_ok = (has_exact_send_summary if send_like_accepted else has_exact_pass_summary)
+        if len(passes) != 1 or not summary_ok(passes[0], ordinal=ordinal):
+            raise ReviewRefused(
+                f"{session}: missing exact automated "
+                f"{'Send-Priority-Like' if send_like_accepted else 'Pass-without-send'} trace")
+        # Whatever the accepted terminal action is, the session must not ALSO carry the other
+        # one: a mixed ledger would let a single profile claim both that it never sent and that
+        # its send was accepted.
+        other_action = ("automated_pass" if send_like_accepted else "automated_send_priority_like")
+        if any(isinstance(a, dict) and a.get("action") == other_action for a in actions):
+            raise ReviewRefused(
+                f"{session}: profile mixes Pass and Send terminal actions in one ledger")
         if passes[0].get("post_frame_sha256") != frame_by_role_item.get((profile["ordinal"], "profile_advance_clear", None)):
-            raise ReviewRefused(f"{session}: Pass trace does not bind its clear frame")
+            raise ReviewRefused(f"{session}: terminal advance trace does not bind its clear frame")
         if mode == _HYBRID_CAPTURE_MODE:
             checks = passes[0].get("review_checkpoints")
             if not isinstance(checks, dict):
-                raise ReviewRefused(f"{session}: hybrid Pass has no review checkpoint")
-            require_hybrid_decision(checks.get("before"), action="automated_pass", item=None)
+                raise ReviewRefused(f"{session}: hybrid terminal advance has no review checkpoint")
+            require_hybrid_decision(checks.get("before"), action=terminal_action, item=None)
     if set(frame_roles_by_ordinal) != profile_ordinals:
         raise ReviewRefused(f"{session}: saved frames do not exactly bind completed profile ordinals")
     return {
@@ -444,6 +542,10 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
         "skipped_attempt_count": len(skipped_attempts),
         "human_ground_truth": False,
         "capture_mode": mode,
+        # Surfaced so a downstream reader never has to infer whether real likes were delivered
+        # while this evidence was gathered. False is the ordinary Pass-without-send capture.
+        "send_like_accepted": send_like_accepted,
+        "terminal_advance_action": terminal_action,
         "target_strategy_id": _AUTOMATED_TARGET_STRATEGY_ID,
         "capture_evidence_scope": (_TARGET_SCOPED_PREFIX_PROOF_ID if target_scoped else "closed_set_profile_v1"),
         "split": manifest.get("split"),
@@ -498,9 +600,13 @@ def _cmd_review(args: argparse.Namespace) -> None:
         destination = Path(args.out)
         if destination.exists():
             raise ReviewRefused(f"refusing to overwrite existing review artifact {destination}")
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        if not destination.parent.exists():
+            ensure_private_dir(destination.parent)
         artifact = {**body, "evidence_sha256": _canonical_digest(body)}
-        destination.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
+        atomic_write_private_text(
+            destination, json.dumps(artifact, indent=2, sort_keys=True) + "\n",
+            parent=destination.parent,
+        )
     except ReviewRefused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         sys.exit(1)

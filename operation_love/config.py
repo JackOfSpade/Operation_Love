@@ -4,13 +4,19 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from numbers import Real
 from pathlib import Path
 
 import yaml
 
+from .targeting_policy import (
+    HINGE_PHOTO_SELECTION_POLICY_ID, hinge_targeting_unavailable_reason)
+
 from . import platforms
 from .costing import ModelPricing
+from .bigquery_validation import BIGQUERY_IDENTIFIER_PATTERNS, validate_bigquery_photo_bucket
 
 
 @dataclass
@@ -116,9 +122,9 @@ class StorageCfg:
 
 @dataclass
 class Config:
-    enabled_apps: list[str]          # e.g. ["bumble", "hinge"] — run concurrently
+    enabled_apps: list[str]          # requested targets; registry enforces coexistence/readiness
     mode: str                        # "observe" (learn from your swipes) | "auto"
-    apps: dict                       # per-app options (headless, selectors, ...)
+    apps: dict                       # per-app device, perception, and action options
     limits: dict                     # auto-mode caps: {max_per_run, max_per_day}
     data_dir: Path
     db_file: Path
@@ -130,7 +136,16 @@ class Config:
     storage: StorageCfg
 
 
+_TOP_LEVEL_KEYS = {
+    "enabled_apps", "app", "mode", "apps", "paths", "storage", "ranker",
+    "quality_filter", "opener", "budget", "pacing", "limits",
+}
+_PATHS_KEYS = {"data_dir", "db_file"}
+_STORAGE_KEYS = {"backend", "bigquery"}
+_BIGQUERY_KEYS = {"project_id", "dataset", "location", "photo_bucket", "flush_every"}
 _BUDGET_KEYS = {"run_budget_usd", "day_budget_usd", "pricing"}
+_PRICING_KEYS = {"input", "output", "cache_read", "cache_write"}
+_PRICING_REQUIRED_KEYS = {"input", "output"}
 
 # AUTO may only consume a Hinge targeting calibration after a separate production OBSERVE run
 # has exercised the Worker/hub/store path on that exact device/build.  Keep this separate from
@@ -188,6 +203,58 @@ def _section(cls, name: str, raw_section):
         raise ValueError(f"Config: invalid '{name}' section ({exc})") from exc
 
 
+def _mapping_or_empty(value, name: str) -> dict:
+    """Normalize an optional YAML mapping while retaining clean shape errors."""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError(f"Config: '{name}' section must be a mapping "
+                         f"(got {type(value).__name__})")
+    return dict(value)
+
+
+def _path_from_raw(paths: Mapping, key: str, default: str) -> Path:
+    """Construct one YAML path with a clean error for null/collection/bool values."""
+    value = paths.get(key, default)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Config: paths.{key} must be a non-empty path string "
+                         f"(got {value!r})")
+    return Path(value)
+
+
+def _reject_unknown_keys(section: Mapping, allowed: set[str], name: str) -> None:
+    unknown = set(section) - allowed
+    if unknown:
+        rendered = sorted(repr(key) for key in unknown)
+        raise ValueError(f"Config: unknown key(s) under {name}: {rendered}; "
+                         f"supported: {sorted(allowed)}")
+
+
+def _pricing_from_raw(raw_pricing) -> dict[str, ModelPricing]:
+    pricing = _mapping_or_empty(raw_pricing, "budget.pricing")
+    result: dict[str, ModelPricing] = {}
+    for model, record in pricing.items():
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("Config: budget.pricing model ids must be non-empty strings")
+        values = _mapping_or_empty(record, f"budget.pricing[{model!r}]")
+        unknown = set(values) - _PRICING_KEYS
+        missing = _PRICING_REQUIRED_KEYS - set(values)
+        if unknown or missing:
+            details = []
+            if missing:
+                details.append(f"missing {sorted(missing)}")
+            if unknown:
+                details.append(f"unknown {sorted(unknown)}")
+            raise ValueError(
+                f"Config: budget.pricing[{model!r}] must contain input/output and only "
+                f"supported keys {sorted(_PRICING_KEYS)} ({'; '.join(details)})")
+        try:
+            result[model] = ModelPricing.from_dict(values)
+        except ValueError as exc:
+            raise ValueError(f"Config: budget.pricing[{model!r}] {exc}") from exc
+    return result
+
+
 def load(path: str | Path = "config.yaml") -> Config:
     raw = yaml.safe_load(Path(path).read_text())
     if raw is None:                 # empty / comment-only YAML -> defaults everywhere
@@ -195,12 +262,11 @@ def load(path: str | Path = "config.yaml") -> Config:
     if not isinstance(raw, dict):
         raise ValueError(f"Config: {path} must be a YAML mapping at the top level "
                          f"(got {type(raw).__name__})")
-    # `or {}` on every hand-built section: the {} default only covers a MISSING key. A key
-    # present but written bare (YAML null, e.g. `budget:` with nothing after it) makes
-    # .get() return None right past that default, and None is then indexed/spread a few
-    # lines below — a raw TypeError instead of the clean ValueError this module owes.
-    paths = raw.get("paths", {}) or {}
-    b = raw.get("budget", {}) or {}
+    _reject_unknown_keys(raw, _TOP_LEVEL_KEYS, "the top level")
+
+    paths = _mapping_or_empty(raw.get("paths"), "paths")
+    _reject_unknown_keys(paths, _PATHS_KEYS, "paths")
+    b = _mapping_or_empty(raw.get("budget"), "budget")
     if "on_exhausted" in b:
         # Dedicated, actionable guard -- ahead of the generic unknown-key check below, which
         # would otherwise just say "unknown key(s) under budget: ['on_exhausted']" and leave
@@ -221,14 +287,8 @@ def load(path: str | Path = "config.yaml") -> Config:
             "'on_exhausted: swipe_without_opener', that mode has been removed entirely: "
             "delete the line, and see opener.max_attempts for how many times a rejected "
             "AI response is re-asked before the run stops instead.")
-    unknown = set(b) - _BUDGET_KEYS
-    if unknown:
-        # budget: is a money control, and it's hand-built with .get() rather than through
-        # _section(), so it needs its own typo guard — a typo'd key (run_budget vs
-        # run_budget_usd) must fail loudly, not silently yield an unlimited spend cap.
-        raise ValueError(f"Config: unknown key(s) under budget: {sorted(unknown)}; "
-                         f"supported: {sorted(_BUDGET_KEYS)}")
-    pricing = {m: ModelPricing.from_dict(d) for m, d in (b.get("pricing", {}) or {}).items()}
+    _reject_unknown_keys(b, _BUDGET_KEYS, "budget")
+    pricing = _pricing_from_raw(b.get("pricing"))
     # Legacy singular `app:` key is still honoured. The old "nothing configured" default of
     # ["bumble"] made sense when Bumble meant the (always-live) web app; since Aug 2026 Bumble
     # is an Android target like Hinge and starts out UNCALIBRATED (platforms.py), so defaulting
@@ -248,32 +308,56 @@ def load(path: str | Path = "config.yaml") -> Config:
     # "the key is present but nothing was written," not "the key was never mentioned" -- both
     # pass straight through as `[]` and hit that already-existing, already-actionable guard.
     # Only a genuinely ABSENT key still falls back to today's default.
+    if "enabled_apps" in raw and "app" in raw:
+        raise ValueError("Config: specify enabled_apps or legacy app, not both")
     if "enabled_apps" in raw:
-        enabled_apps = list(raw["enabled_apps"] or [])
+        configured_apps = raw["enabled_apps"]
+        if configured_apps is None:
+            enabled_apps = []
+        elif not isinstance(configured_apps, list):
+            raise ValueError("Config: enabled_apps must be a YAML list of app ids")
+        else:
+            enabled_apps = list(configured_apps)
     elif "app" in raw:
-        enabled_apps = [raw["app"]]
+        legacy_app = raw["app"]
+        if not isinstance(legacy_app, str) or not legacy_app.strip():
+            raise ValueError("Config: legacy app must be a non-empty app id string")
+        enabled_apps = [legacy_app]
     else:
         enabled_apps = ["hinge"]
-    storage_raw = raw.get("storage", {}) or {}
+    apps_raw = _mapping_or_empty(raw.get("apps"), "apps")
+    for app, app_cfg in apps_raw.items():
+        if not isinstance(app, str) or not app.strip():
+            raise ValueError("Config: apps keys must be non-empty app id strings")
+        if not isinstance(app_cfg, Mapping):
+            raise ValueError(f"Config: apps.{app} must be a mapping "
+                             f"(got {type(app_cfg).__name__})")
+    storage_raw = _mapping_or_empty(raw.get("storage"), "storage")
+    _reject_unknown_keys(storage_raw, _STORAGE_KEYS, "storage")
+    bigquery_raw = _mapping_or_empty(storage_raw.get("bigquery"), "storage.bigquery")
+    _reject_unknown_keys(bigquery_raw, _BIGQUERY_KEYS, "storage.bigquery")
+    limits_raw = {} if raw.get("limits") is None else raw.get("limits")
     return Config(
         enabled_apps=list(enabled_apps),
         mode=raw.get("mode", "observe"),
-        apps=raw.get("apps", {}) or {},
-        limits=raw.get("limits", {}) or {},
-        data_dir=Path(paths.get("data_dir", "./data")),
-        db_file=Path(paths.get("db_file", "./data/operation_love.db")),
+        apps=apps_raw,
+        limits=limits_raw,
+        data_dir=_path_from_raw(paths, "data_dir", "./data"),
+        db_file=_path_from_raw(paths, "db_file", "./data/operation_love.db"),
         ranker=_section(RankerCfg, "ranker", raw.get("ranker", {})),
         quality_filter=_section(QualityCfg, "quality_filter", raw.get("quality_filter", {})),
         opener=_section(OpenerCfg, "opener", raw.get("opener", {})),
         budget=BudgetCfg(
-            run_budget_usd=b.get("run_budget_usd"),
+            # Absence keeps BudgetCfg's safe $5 default. Explicit null still means unlimited,
+            # and explicit zero remains a valid immediate-stop/free-tier budget.
+            run_budget_usd=b.get("run_budget_usd", 5.00),
             day_budget_usd=b.get("day_budget_usd"),
             pricing=pricing,
         ),
         pacing=_section(PacingCfg, "pacing", raw.get("pacing", {})),
         storage=StorageCfg(
             backend=storage_raw.get("backend", "bigquery"),
-            bigquery=storage_raw.get("bigquery", {}) or {},
+            bigquery=bigquery_raw,
         ),
     )
 
@@ -301,13 +385,32 @@ _TARGETING_CALIBRATION_KEYS = {
 }
 
 
+def _is_finite_number(value: object) -> bool:
+    """math.isfinite without leaking OverflowError for enormous Python integers."""
+    try:
+        return math.isfinite(value)
+    except (TypeError, OverflowError):
+        return False
+
+
+def _safe_value_repr(value: object) -> str:
+    """Diagnostic repr that also works beyond Python's integer digit safety limit."""
+    try:
+        return repr(value)
+    except ValueError:
+        if isinstance(value, int):
+            return f"<integer with {value.bit_length()} bits>"
+        return f"<{type(value).__name__}>"
+
+
 def _targeting_band(value, *, key: str, length: int) -> tuple[float, ...]:
     """Return one normalised geometry record or reject an unusable calibration input."""
+    rendered = _safe_value_repr(value)
     if not isinstance(value, (list, tuple)) or len(value) != length:
-        raise ValueError(f"{key} must be a {length}-number array/tuple (got {value!r})")
-    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+        raise ValueError(f"{key} must be a {length}-number array/tuple (got {rendered})")
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not _is_finite_number(v)
            for v in value):
-        raise ValueError(f"{key} must contain only finite numbers (got {value!r})")
+        raise ValueError(f"{key} must contain only finite numbers (got {rendered})")
     result = tuple(float(v) for v in value)
     if length == 4:
         x0, y0, x1, y1 = result
@@ -316,7 +419,7 @@ def _targeting_band(value, *, key: str, length: int) -> tuple[float, ...]:
         y0, y1 = result
         valid = 0.0 <= y0 < y1 <= 1.0
     if not valid:
-        raise ValueError(f"{key} must be an ordered normalised band (got {value!r})")
+        raise ValueError(f"{key} must be an ordered normalised band (got {rendered})")
     return result
 
 
@@ -368,44 +471,44 @@ def _validate_targeting_calibration(cfg: Config) -> None:
         if type(calibration["schema_version"]) is not int or calibration["schema_version"] != 3:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.schema_version must be the exact "
-                f"integer 3 (got {calibration['schema_version']!r})")
+                f"integer 3 (got {_safe_value_repr(calibration['schema_version'])})")
         if calibration["composer_layout_id"] != "hinge_inline_v1":
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.composer_layout_id must be "
                 f"'hinge_inline_v1' (got {calibration['composer_layout_id']!r})")
-        if calibration["item_selection_policy_id"] != "hinge_photos_only_v1":
+        if calibration["item_selection_policy_id"] != HINGE_PHOTO_SELECTION_POLICY_ID:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.item_selection_policy_id must be "
-                "'hinge_photos_only_v1' "
+                f"{HINGE_PHOTO_SELECTION_POLICY_ID!r} "
                 f"(got {calibration['item_selection_policy_id']!r})")
         frame_size = calibration["frame_size_px"]
         if (not isinstance(frame_size, (list, tuple)) or len(frame_size) != 2
                 or any(type(v) is not int or v <= 0 for v in frame_size)):
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.frame_size_px must be two positive "
-                f"integers (got {frame_size!r})")
+                f"integers (got {_safe_value_repr(frame_size)})")
         for key in ("identity_match_max_dist", "inline_item_max_dist"):
             value = calibration[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(
                     f"Config: apps.{app}.targeting_calibration.{key} must be a number "
-                    f"(got {value!r})")
-            if not math.isfinite(value) or value <= 0:
+                    f"(got {_safe_value_repr(value)})")
+            if not _is_finite_number(value) or value <= 0:
                 raise ValueError(
                     f"Config: apps.{app}.targeting_calibration.{key} must be finite and > 0 "
-                    f"(got {value!r})")
+                    f"(got {_safe_value_repr(value)})")
         identity_max = calibration["identity_match_max_dist"]
         if identity_max >= _TARGETING_IDENTITY_FALSE_MATCH_DISTANCE:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.identity_match_max_dist must be "
                 f"strictly below {_TARGETING_IDENTITY_FALSE_MATCH_DISTANCE}, the known "
-                f"different-profile false-match distance (got {identity_max!r})")
+                f"different-profile false-match distance (got {_safe_value_repr(identity_max)})")
         sheet_max = calibration["inline_item_max_dist"]
         if sheet_max >= _TARGETING_SHEET_FALSE_MATCH_DISTANCE:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.inline_item_max_dist must be "
                 f"strictly below {_TARGETING_SHEET_FALSE_MATCH_DISTANCE}, the nearest known "
-                f"foreign-card false-match distance (got {sheet_max!r})")
+                f"foreign-card false-match distance (got {_safe_value_repr(sheet_max)})")
         for key in ("device", "calibrated_at", "hinge_version_name"):
             value = calibration[key]
             if not isinstance(value, str) or not value.strip():
@@ -446,6 +549,13 @@ def _validate_targeting_calibration(cfg: Config) -> None:
                 f"Config: apps.{app}.targeting_calibration.content_band must exactly equal "
                 f"the effective apps.{app}.content_band ({calibrated_content!r} != "
                 f"{effective_content!r})")
+        if app == "hinge":
+            policy_blocker = hinge_targeting_unavailable_reason()
+            if policy_blocker is not None:
+                raise ValueError(
+                    "Config: apps.hinge.targeting_calibration cannot license numbered "
+                    f"targeting because {policy_blocker}. Remove the optional mapping; Hinge "
+                    "Observe remains available without targeted suggestions")
 
 
 def _canonical_sha256(value) -> str:
@@ -465,6 +575,12 @@ def _validate_hinge_auto_release_evidence(cfg: Config) -> None:
     app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
     if app_cfg.get("mode", cfg.mode) != "auto":
         return
+    policy_blocker = hinge_targeting_unavailable_reason()
+    if policy_blocker is not None:
+        raise ValueError(
+            "Config: Hinge AUTO is blocked because numbered still-photo targeting cannot "
+            f"be licensed: {policy_blocker}. Observe remains available without targeted "
+            "suggestions")
     calibration = app_cfg.get("targeting_calibration")
     if not isinstance(calibration, dict):
         raise ValueError(
@@ -671,23 +787,196 @@ def _validate_hinge_ai_observe_controller(cfg: Config) -> None:
 # prevent (see ops/ANTI-BOT-RESEARCH.md). 0 is a separate, explicit "pacing off" sentinel
 # (PacingCfg docstring) and is exempted below, not folded into this floor.
 _MIN_SWIPE_DELAY_S = 1.0
+# A one-hour tuning anchor is already orders of magnitude beyond plausible human pacing and
+# still leaves ample headroom when Worker scales its random pause before Event.wait(). Without
+# any ceiling, values such as 1e300 pass finite-number validation and overflow the platform
+# timeout conversion instead of producing a controlled wait.
+_MAX_SWIPE_DELAY_S = 3600.0
+# Android read cadence is repeated once per capture, so bound both operands: values above
+# these are operational mistakes, not useful tuning. A tenth of a second is the smallest
+# deliberate dwell; one minute per frame and 100 frames are already extremely conservative
+# diagnostic ceilings while remaining far below Event.wait's platform overflow range.
+_MIN_ANDROID_DWELL_S = 0.1
+_MAX_ANDROID_DWELL_S = 60.0
+_MAX_ANDROID_SCROLL_CAPTURES = 100
 
 
-def _validate_limits(label: str, lim: dict) -> None:
+def _require_bool(value, label: str) -> None:
+    if not isinstance(value, bool):
+        raise ValueError(f"Config: {label} must be true or false (got {value!r})")
+
+
+def _require_nonempty_text(value, label: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Config: {label} must be a non-empty string (got {value!r})")
+
+
+def _require_positive_int(value, label: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(
+            f"Config: {label} must be a positive integer (got {_safe_value_repr(value)})")
+
+
+def _require_finite_real(value, label: str, *, minimum: float | None = None,
+                         maximum: float | None = None) -> None:
+    rendered = _safe_value_repr(value)
+    if isinstance(value, bool) or not isinstance(value, Real) or not _is_finite_number(value):
+        raise ValueError(f"Config: {label} must be a finite number (got {rendered})")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"Config: {label} must be >= {minimum} (got {rendered})")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"Config: {label} must be <= {maximum} (got {rendered})")
+
+
+def normalize_swipe_delay_s(value: object) -> float:
+    """Return the validated pacing anchor shared by config and direct Workers."""
+    _require_finite_real(value, "pacing.swipe_delay_s", maximum=_MAX_SWIPE_DELAY_S)
+    if value != 0 and value < _MIN_SWIPE_DELAY_S:
+        raise ValueError(f"Config: pacing.swipe_delay_s must be 0 (pacing off) or "
+                         f">= {_MIN_SWIPE_DELAY_S} (got {value}); smaller values scale "
+                         "worker._pace's human-pause distribution down to machine-speed "
+                         "swiping")
+    return float(value)
+
+
+def _validate_config_shape(cfg: Config) -> None:
+    if not isinstance(cfg.enabled_apps, list):
+        raise ValueError("Config: enabled_apps must be a YAML list of app ids")
+    if any(not isinstance(app, str) or not app.strip() for app in cfg.enabled_apps):
+        raise ValueError("Config: enabled_apps must contain only non-empty app id strings")
+    if len(set(cfg.enabled_apps)) != len(cfg.enabled_apps):
+        raise ValueError("Config: enabled_apps must not contain duplicate app ids")
+    if not isinstance(cfg.mode, str):
+        raise ValueError(f"Config: mode must be a string (got {cfg.mode!r})")
+    if not isinstance(cfg.apps, Mapping):
+        raise ValueError(f"Config: apps must be a mapping (got {type(cfg.apps).__name__})")
+    for app, app_cfg in cfg.apps.items():
+        if not isinstance(app, str) or not app.strip():
+            raise ValueError("Config: apps keys must be non-empty app id strings")
+        if app not in platforms.KNOWN_APPS:
+            raise ValueError(
+                f"Config: unknown app block apps.{app}; supported: "
+                f"{sorted(platforms.KNOWN_APPS)}")
+        if not isinstance(app_cfg, Mapping):
+            raise ValueError(f"Config: apps.{app} must be a mapping "
+                             f"(got {type(app_cfg).__name__})")
+        if "mode" in app_cfg and not isinstance(app_cfg["mode"], str):
+            raise ValueError(f"Config: apps.{app}.mode must be a string "
+                             f"(got {app_cfg['mode']!r})")
+        if "mode" in app_cfg and app_cfg["mode"] not in {"observe", "auto"}:
+            raise ValueError(
+                f"Config: apps.{app}.mode must be 'observe' or 'auto' "
+                f"(got {app_cfg['mode']!r})")
+
+
+def _validate_core_scalars(cfg: Config) -> None:
+    _require_finite_real(cfg.ranker.like_threshold, "ranker.like_threshold",
+                         minimum=0, maximum=1)
+    for name in ("min_labels_to_engage", "retrain_every", "min_per_class"):
+        _require_positive_int(getattr(cfg.ranker, name), f"ranker.{name}")
+
+    _require_bool(cfg.quality_filter.enabled, "quality_filter.enabled")
+    _require_nonempty_text(cfg.quality_filter.metric, "quality_filter.metric")
+    _require_finite_real(cfg.quality_filter.min_score, "quality_filter.min_score",
+                         minimum=0, maximum=1)
+
+    normalize_swipe_delay_s(cfg.pacing.swipe_delay_s)
+
+
+def _validate_opener_scalars(opener: OpenerCfg) -> None:
+    _require_bool(opener.enabled, "opener.enabled")
+    _require_bool(opener.preflight, "opener.preflight")
+    _require_nonempty_text(opener.provider, "opener.provider")
+    _require_nonempty_text(opener.model, "opener.model")
+    if opener.model != opener.model.strip():
+        raise ValueError(
+            f"Config: opener.model must not contain surrounding whitespace "
+            f"(got {opener.model!r})")
+    if not isinstance(opener.style, str):
+        raise ValueError(f"Config: opener.style must be a string (got {opener.style!r})")
+    _require_positive_int(opener.max_tokens, "opener.max_tokens")
+    if not isinstance(opener.models, list):
+        raise ValueError("Config: opener.models must be a YAML list of model ids")
+    if any(not isinstance(model, str) or not model.strip() for model in opener.models):
+        raise ValueError("Config: opener.models must contain only non-empty model ids")
+    if any(model != model.strip() for model in opener.models):
+        raise ValueError(
+            "Config: opener.models model ids must not contain surrounding whitespace")
+    if len(set(opener.models)) != len(opener.models):
+        raise ValueError("Config: opener.models must not contain duplicate model ids")
+
+
+def _validate_budget(cfg: Config) -> None:
+    for name in ("run_budget_usd", "day_budget_usd"):
+        value = getattr(cfg.budget, name)
+        if value is not None:
+            _require_finite_real(value, f"budget.{name}", minimum=0)
+    if not isinstance(cfg.budget.pricing, Mapping):
+        raise ValueError("Config: budget.pricing must be a mapping")
+    for model, pricing in cfg.budget.pricing.items():
+        _require_nonempty_text(model, "budget.pricing model id")
+        if not isinstance(pricing, ModelPricing):
+            raise ValueError(f"Config: budget.pricing[{model!r}] must be a pricing mapping")
+
+
+def _validate_storage(cfg: Config) -> None:
+    if not isinstance(cfg.storage.backend, str):
+        raise ValueError(f"Config: storage.backend must be a string "
+                         f"(got {cfg.storage.backend!r})")
+    if cfg.storage.backend not in {"bigquery", "sqlite"}:
+        raise ValueError(f"Config: storage.backend must be 'bigquery' or 'sqlite' "
+                         f"(got {cfg.storage.backend})")
+    if not isinstance(cfg.storage.bigquery, Mapping):
+        raise ValueError("Config: storage.bigquery must be a mapping")
+    _reject_unknown_keys(cfg.storage.bigquery, _BIGQUERY_KEYS, "storage.bigquery")
+    if "flush_every" in cfg.storage.bigquery:
+        _require_positive_int(cfg.storage.bigquery["flush_every"],
+                              "storage.bigquery.flush_every")
+    if cfg.storage.backend == "bigquery":
+        for key in ("project_id", "photo_bucket"):
+            _require_nonempty_text(cfg.storage.bigquery.get(key), f"storage.bigquery.{key}")
+        try:
+            validate_bigquery_photo_bucket(cfg.storage.bigquery["photo_bucket"])
+        except ValueError as exc:
+            raise ValueError(f"Config: storage.bigquery.photo_bucket is invalid: {exc}") from exc
+        # BigQueryStore's long-standing public defaults remain valid when omitted. Validate
+        # the values that will actually be interpolated into SQL, including those defaults.
+        effective = {
+            "project_id": cfg.storage.bigquery["project_id"],
+            "dataset": cfg.storage.bigquery.get("dataset", "operation_love"),
+            "location": cfg.storage.bigquery.get("location", "US"),
+        }
+        _require_nonempty_text(effective["dataset"], "storage.bigquery.dataset")
+        _require_nonempty_text(effective["location"], "storage.bigquery.location")
+        for key, pattern in BIGQUERY_IDENTIFIER_PATTERNS.items():
+            value = effective[key]
+            if pattern.fullmatch(value) is None:
+                raise ValueError(
+                    f"Config: storage.bigquery.{key} contains unsupported characters "
+                    f"(got {value!r})")
+
+
+def _validate_limits(label: str, lim: Mapping) -> None:
     """Shared rule set for the global `limits:` block AND any per-app `apps.<app>.limits`
     override (supervisor.py merges them: `{**cfg.limits, **app_cfg.get("limits", {})}`) —
     factored so the two paths can never drift out of sync."""
+    if not isinstance(lim, Mapping):
+        raise ValueError(f"Config: {label} must be a mapping "
+                         f"(got {type(lim).__name__})")
     unknown = set(lim) - _LIMITS_KEYS
     if unknown:
         raise ValueError(f"Config: unknown key(s) under {label}: {sorted(unknown)}; "
                          f"supported: {sorted(_LIMITS_KEYS)}")
     for key in ("max_per_run", "max_per_day", "max_likes_per_run"):
         val = lim.get(key)
-        if val is not None and val <= 0:
-            raise ValueError(f"Config: {label}.{key} must be > 0 (got {val})")
+        if val is not None:
+            _require_positive_int(val, f"{label}.{key}")
     ratio = lim.get("target_like_ratio")
-    if ratio is not None and not (0 < ratio < 1):
-        raise ValueError(f"Config: {label}.target_like_ratio must be in (0, 1) (got {ratio})")
+    if ratio is not None:
+        _require_finite_real(ratio, f"{label}.target_like_ratio")
+        if not 0 < ratio < 1:
+            raise ValueError(
+                f"Config: {label}.target_like_ratio must be in (0, 1) (got {ratio})")
 
 
 # Gemini's generationConfig.thinkingConfig recognizes exactly these two keys -- the field
@@ -733,6 +1022,13 @@ def _validate_gemini_thinking(opener: OpenerCfg) -> None:
             "{thinkingLevel: ...} / {thinkingBudget: ...} mapping to override it. Thinking "
             "is on by default for nearly every free-tier model and is billed against "
             "opener.max_tokens, so an unset entry risks silently truncating every opener.")
+    configured_models = set(opener.effective_models)
+    unknown_models = set(thinking) - configured_models
+    if unknown_models:
+        raise ValueError(
+            f"Config: opener.thinking contains unconfigured model id(s) "
+            f"{sorted(unknown_models, key=repr)!r}; entries must exactly match "
+            "opener.models (or the legacy opener.model).")
     for model, entry in thinking.items():
         if not isinstance(entry, dict):
             raise ValueError(
@@ -758,11 +1054,11 @@ def _validate_gemini_thinking(opener: OpenerCfg) -> None:
             if isinstance(budget, bool) or not isinstance(budget, int):
                 raise ValueError(
                     f"Config: opener.thinking[{model!r}].thinkingBudget must be an integer "
-                    f"(got {budget!r})")
+                    f"(got {_safe_value_repr(budget)})")
             if budget < 0:
                 raise ValueError(
                     f"Config: opener.thinking[{model!r}].thinkingBudget must be >= 0 "
-                    f"(0 disables thinking; got {budget!r})")
+                    f"(0 disables thinking; got {_safe_value_repr(budget)})")
 
 
 def _validate_verification(cfg: Config) -> None:
@@ -782,8 +1078,8 @@ def _validate_verification(cfg: Config) -> None:
     Until now this key had no validation at all -- no type check, no enum, no warning --
     so a stale or copy-pasted config block could disable verification invisibly.
     """
-    for app in cfg.enabled_apps:
-        app_cfg = (cfg.apps or {}).get(app, {}) or {}
+    for app, app_cfg in (cfg.apps or {}).items():
+        app_cfg = app_cfg or {}
         if "halt_on_error" not in app_cfg:
             continue
         value = app_cfg["halt_on_error"]
@@ -813,11 +1109,58 @@ def _validate_verification(cfg: Config) -> None:
 # is an OPERATOR's mistake made after the code shipped. Scoped to KIND_ANDROID platforms
 # only, so future non-Android platform settings remain outside this safety check.
 def _validate_android_fractions(cfg: Config) -> None:
+    from .drivers.adb import validate_android_package_id
+
     for app, app_cfg in (cfg.apps or {}).items():
         if app not in platforms.KNOWN_APPS or platforms.get(app).kind != platforms.KIND_ANDROID:
             continue          # not a known Android app -- nothing here to validate
         app_cfg = app_cfg or {}
-        coords = app_cfg.get("coords") or {}
+        if "package" in app_cfg:
+            try:
+                validate_android_package_id(
+                    app_cfg["package"], context=f"apps.{app}.package")
+            except ValueError as exc:
+                raise ValueError(f"Config: {exc}") from exc
+        for key in ("adb_path", "debug_dir"):
+            if key in app_cfg:
+                _require_nonempty_text(app_cfg[key], f"apps.{app}.{key}")
+        if "serial" in app_cfg:
+            serial = app_cfg["serial"]
+            if serial is not None:
+                _require_nonempty_text(serial, f"apps.{app}.serial")
+        for key in ("debug_log", "observe_touch_watch", "observe_name_ocr"):
+            if key in app_cfg:
+                _require_bool(app_cfg[key], f"apps.{app}.{key}")
+        if "touch_backend" in app_cfg:
+            backend = app_cfg["touch_backend"]
+            if not isinstance(backend, str) or backend not in {"auto", "uhid", "adb"}:
+                raise ValueError(
+                    f"Config: apps.{app}.touch_backend must be auto, uhid, or adb "
+                    f"(got {backend!r})")
+        if "scroll_captures" in app_cfg:
+            _require_positive_int(app_cfg["scroll_captures"],
+                                  f"apps.{app}.scroll_captures")
+            if app_cfg["scroll_captures"] > _MAX_ANDROID_SCROLL_CAPTURES:
+                raise ValueError(
+                    f"Config: apps.{app}.scroll_captures must not exceed "
+                    f"{_MAX_ANDROID_SCROLL_CAPTURES} "
+                    f"(got {_safe_value_repr(app_cfg['scroll_captures'])})")
+        if "dwell_s" in app_cfg:
+            _require_finite_real(app_cfg["dwell_s"], f"apps.{app}.dwell_s",
+                                 minimum=_MIN_ANDROID_DWELL_S,
+                                 maximum=_MAX_ANDROID_DWELL_S)
+        if "change_threshold" in app_cfg:
+            _require_finite_real(app_cfg["change_threshold"],
+                                 f"apps.{app}.change_threshold")
+            if not 0 < app_cfg["change_threshold"] <= 255:
+                raise ValueError(
+                    f"Config: apps.{app}.change_threshold must be in (0, 255] "
+                    f"(got {app_cfg['change_threshold']!r})")
+        # A missing/null block means "no coordinate overrides". Other falsy values are
+        # supplied malformed configuration, not an alternate spelling of an empty mapping.
+        coords = app_cfg.get("coords")
+        if coords is None:
+            coords = {}
         if not isinstance(coords, dict):
             raise ValueError(
                 f"Config: apps.{app}.coords must be a mapping of name -> [x, y] "
@@ -827,11 +1170,12 @@ def _validate_android_fractions(cfg: Config) -> None:
                     or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in value)):
                 raise ValueError(
                     f"Config: apps.{app}.coords.{key} must be a [x, y] pair of numbers "
-                    f"(got {value!r})")
-            for axis, v in zip("xy", value):
-                if not (math.isfinite(v) and 0.0 <= v <= 1.0):
+                    f"(got {_safe_value_repr(value)})")
+            for axis, v in zip("xy", value, strict=True):
+                if not (_is_finite_number(v) and 0.0 <= v <= 1.0):
                     raise ValueError(
-                        f"Config: apps.{app}.coords.{key} {axis}={v!r} must be in 0..1 -- "
+                        f"Config: apps.{app}.coords.{key} "
+                        f"{axis}={_safe_value_repr(v)} must be in 0..1 -- "
                         f"coords are FRACTIONS of the screen, never pixels. An out-of-range "
                         f"value is never a legitimate tap target: the real touch transport "
                         f"clamps it onto a screen edge instead of failing, which can land "
@@ -841,11 +1185,14 @@ def _validate_android_fractions(cfg: Config) -> None:
             if not key.endswith("_frac"):
                 continue
             if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValueError(f"Config: apps.{app}.{key} must be a number (got {value!r})")
-            if not (math.isfinite(value) and 0.0 <= value <= 1.0):
+                raise ValueError(
+                    f"Config: apps.{app}.{key} must be a number "
+                    f"(got {_safe_value_repr(value)})")
+            if not (_is_finite_number(value) and 0.0 <= value <= 1.0):
                 raise ValueError(
                     f"Config: apps.{app}.{key} must be in 0..1 (a fraction of the screen) -- "
-                    f"got {value!r}. This knob feeds a touch-down coordinate computation "
+                    f"got {_safe_value_repr(value)}. This knob feeds a touch-down coordinate "
+                    "computation "
                     f"(operation_love/drivers/hinge.py's AndroidDriver); an out-of-range "
                     f"value clamps onto a screen edge on a real device instead of failing, "
                     f"which can land inside a forbidden zone undetected.")
@@ -921,6 +1268,7 @@ _MAX_ADVISORY_DEADLINE_S = 300.0
 
 def validate(cfg: Config) -> None:
     """Fail fast with a clear message on misconfig (called by the entry points)."""
+    _validate_config_shape(cfg)
     if not cfg.enabled_apps:
         raise ValueError("Config: enabled_apps is empty")
     unknown = [a for a in cfg.enabled_apps if a not in platforms.KNOWN_APPS]
@@ -929,7 +1277,7 @@ def validate(cfg: Config) -> None:
     # Registry-level guard: STRUCTURAL only (check_selection, not check_runnable) -- two
     # Android platforms requested together (one physical phone, one foreground app at a
     # time). Deliberately does NOT reject an unavailable platform (uncalibrated Android
-    # target, or a web target with no live site behind it): availability is a property of
+    # target, or a future target with no live service behind it): availability is a property of
     # the world that changes without the config file changing, and writing Bumble's
     # coordinates into config.yaml is exactly how Bumble GETS calibrated -- a config file
     # merely naming an uncalibrated platform must still load. The availability gate lives
@@ -938,21 +1286,21 @@ def validate(cfg: Config) -> None:
     incoherent = platforms.check_selection(cfg.enabled_apps)
     if incoherent:
         raise ValueError(incoherent)
-    modes = {cfg.mode} | {((cfg.apps or {}).get(a, {}) or {}).get("mode", cfg.mode) for a in cfg.enabled_apps}
-    bad_modes = sorted(m for m in modes if m not in {"observe", "auto"})
+    modes = [cfg.mode]
+    modes.extend((cfg.apps.get(a, {}) or {}).get("mode", cfg.mode)
+                 for a in cfg.enabled_apps)
+    bad_modes = [mode for mode in modes if mode not in {"observe", "auto"}]
     if bad_modes:
         raise ValueError(f"Config: mode must be 'observe' or 'auto' (got {bad_modes})")
+    _validate_core_scalars(cfg)
+    _validate_opener_scalars(cfg.opener)
+    _validate_budget(cfg)
+    _validate_storage(cfg)
     _validate_verification(cfg)
     _validate_android_fractions(cfg)
     _validate_targeting_calibration(cfg)
     _validate_hinge_ai_observe_controller(cfg)
     _validate_hinge_auto_release_gate(cfg)
-    if cfg.storage.backend not in {"bigquery", "sqlite"}:
-        raise ValueError(f"Config: storage.backend must be 'bigquery' or 'sqlite' (got {cfg.storage.backend})")
-    if cfg.storage.backend == "bigquery" and not (cfg.storage.bigquery or {}).get("project_id"):
-        raise ValueError("Config: storage.backend=bigquery requires storage.bigquery.project_id")
-    if cfg.storage.backend == "bigquery" and not (cfg.storage.bigquery or {}).get("photo_bucket"):
-        raise ValueError("Config: storage.backend=bigquery requires storage.bigquery.photo_bucket")
     if cfg.opener.provider != "gemini":
         # Not merely "unsupported" -- the Anthropic/Claude opener path was deleted from the
         # codebase outright (operation_love/opener/opener.py no longer defines
@@ -965,10 +1313,6 @@ def validate(cfg: Config) -> None:
             "Config: opener.provider must be 'gemini' -- the Anthropic/Claude opener path "
             "has been removed entirely; openers run on Gemini or the run fails loudly "
             f"(got {cfg.opener.provider!r})")
-    if not isinstance(cfg.opener.models, list):
-        raise ValueError("Config: opener.models must be a YAML list of model ids")
-    if not cfg.opener.effective_models or any(not isinstance(m, str) or not m for m in cfg.opener.effective_models):
-        raise ValueError("Config: opener.models must contain one or more non-empty model ids")
     if cfg.opener.enabled:
         missing_pricing = [m for m in cfg.opener.effective_models if m not in cfg.budget.pricing]
         if missing_pricing:
@@ -989,12 +1333,14 @@ def validate(cfg: Config) -> None:
     # silently skipping the opener on every profile without ever asking Gemini once.
     if isinstance(cfg.opener.max_attempts, bool) or not isinstance(cfg.opener.max_attempts, int):
         raise ValueError(
-            f"Config: opener.max_attempts must be an integer (got {cfg.opener.max_attempts!r}). "
+            f"Config: opener.max_attempts must be an integer "
+            f"(got {_safe_value_repr(cfg.opener.max_attempts)}). "
             "This is how many times a rejected AI response is re-asked (with a correction "
             "hint) before the run stops rather than send a commentless like.")
     if cfg.opener.max_attempts < 1:
         raise ValueError(
-            f"Config: opener.max_attempts must be >= 1 (got {cfg.opener.max_attempts}). "
+            f"Config: opener.max_attempts must be >= 1 "
+            f"(got {_safe_value_repr(cfg.opener.max_attempts)}). "
             "It must allow at least one real attempt at generating an opener before the "
             "run can decide the response is unusable and stop.")
     if cfg.opener.max_attempts > _MAX_ATTEMPTS_CEILING:
@@ -1007,7 +1353,8 @@ def validate(cfg: Config) -> None:
         # hours. See _MAX_ATTEMPTS_CEILING above for the exact arithmetic behind this number.
         raise ValueError(
             f"Config: opener.max_attempts must be between 1 and {_MAX_ATTEMPTS_CEILING} "
-            f"(got {cfg.opener.max_attempts}). Each attempt is a real, billed API call "
+            f"(got {_safe_value_repr(cfg.opener.max_attempts)}). Each attempt is a real, "
+            "billed API call "
             "against a small daily quota (as few as 20 requests/day for the best models in "
             "this project's cascade), and consecutive retries for one profile ordinarily hit "
             "the SAME model rather than advancing through the fallback chain, so an uncapped "
@@ -1032,19 +1379,22 @@ def validate(cfg: Config) -> None:
     if isinstance(cfg.opener.advisory_max_attempts, bool) or not isinstance(cfg.opener.advisory_max_attempts, int):
         raise ValueError(
             f"Config: opener.advisory_max_attempts must be an integer (got "
-            f"{cfg.opener.advisory_max_attempts!r}). This is how many times an observe-mode "
+            f"{_safe_value_repr(cfg.opener.advisory_max_attempts)}). This is how many times "
+            "an observe-mode "
             "opener SUGGESTION is re-asked before the profile is skipped with no suggestion.")
     if cfg.opener.advisory_max_attempts < 1:
         raise ValueError(
             f"Config: opener.advisory_max_attempts must be >= 1 (got "
-            f"{cfg.opener.advisory_max_attempts}). It must allow at least one real attempt at "
+            f"{_safe_value_repr(cfg.opener.advisory_max_attempts)}). It must allow at least "
+            "one real attempt at "
             "generating a suggestion; 0 would silently show no opener on every observe profile "
             "without ever asking Gemini once. To turn openers off entirely, set "
             "opener.enabled: false instead -- that is the explicit, visible way to say it.")
     if cfg.opener.advisory_max_attempts > _MAX_ATTEMPTS_CEILING:
         raise ValueError(
             f"Config: opener.advisory_max_attempts must be between 1 and "
-            f"{_MAX_ATTEMPTS_CEILING} (got {cfg.opener.advisory_max_attempts}). An advisory "
+            f"{_MAX_ATTEMPTS_CEILING} "
+            f"(got {_safe_value_repr(cfg.opener.advisory_max_attempts)}). An advisory "
             "attempt is a real, billed API call against the same small daily quota as an auto "
             "attempt (as few as 20 requests/day for the best models in this project's "
             "cascade), so it carries the identical ceiling. Lower this rather than raise it: a "
@@ -1058,8 +1408,10 @@ def validate(cfg: Config) -> None:
         # value here would not do what it says -- it would be silently clamped, leaving a
         # config file that reads as one policy and behaves as another. Fail loudly instead.
         raise ValueError(
-            f"Config: opener.advisory_max_attempts ({cfg.opener.advisory_max_attempts}) must "
-            f"be <= opener.max_attempts ({cfg.opener.max_attempts}). Advisory is a SHORTENED "
+            "Config: opener.advisory_max_attempts "
+            f"({_safe_value_repr(cfg.opener.advisory_max_attempts)}) must be <= "
+            f"opener.max_attempts ({_safe_value_repr(cfg.opener.max_attempts)}). Advisory is "
+            "a SHORTENED "
             "form of the SAME retry budget -- the observe-mode path gives up sooner because a "
             "human is standing at the phone waiting and nothing irreversible depends on the "
             "result -- so it can never exceed the full budget it is a shortening of. Either "
@@ -1077,11 +1429,12 @@ def validate(cfg: Config) -> None:
     if isinstance(cfg.opener.advisory_deadline_s, bool) or not isinstance(cfg.opener.advisory_deadline_s, (int, float)):
         raise ValueError(
             f"Config: opener.advisory_deadline_s must be a number of seconds (got "
-            f"{cfg.opener.advisory_deadline_s!r}).")
+            f"{_safe_value_repr(cfg.opener.advisory_deadline_s)}).")
     if not (0 < cfg.opener.advisory_deadline_s <= _MAX_ADVISORY_DEADLINE_S):
         raise ValueError(
             f"Config: opener.advisory_deadline_s must be > 0 and <= "
-            f"{_MAX_ADVISORY_DEADLINE_S} (got {cfg.opener.advisory_deadline_s}). This is the "
+            f"{_MAX_ADVISORY_DEADLINE_S} "
+            f"(got {_safe_value_repr(cfg.opener.advisory_deadline_s)}). This is the "
             "only thing bounding how long a human stands at the phone waiting for a suggested "
             "opener: opener.advisory_max_attempts bounds the COUNT of advisory attempts but "
             "not their duration, so without this a run at the shipped opener.request_timeout_s "
@@ -1104,11 +1457,12 @@ def validate(cfg: Config) -> None:
     if isinstance(cfg.opener.request_timeout_s, bool) or not isinstance(cfg.opener.request_timeout_s, (int, float)):
         raise ValueError(
             f"Config: opener.request_timeout_s must be a number of seconds (got "
-            f"{cfg.opener.request_timeout_s!r}).")
+            f"{_safe_value_repr(cfg.opener.request_timeout_s)}).")
     if not (0 < cfg.opener.request_timeout_s <= _MAX_REQUEST_TIMEOUT_S):
         raise ValueError(
             f"Config: opener.request_timeout_s must be > 0 and <= {_MAX_REQUEST_TIMEOUT_S} "
-            f"(got {cfg.opener.request_timeout_s}). This is the only thing bounding how long a "
+            f"(got {_safe_value_repr(cfg.opener.request_timeout_s)}). This is the only thing "
+            "bounding how long a "
             "single opener API call can run, and an unbounded value here would defeat "
             "opener.max_attempts' own ceiling by letting one stalled call hang a profile "
             f"indefinitely no matter how few retries are allowed. {_MAX_REQUEST_TIMEOUT_S} is "
@@ -1129,21 +1483,10 @@ def validate(cfg: Config) -> None:
     # hits GeminiOpener._parse's MAX_TOKENS diagnostic (a normal OpenerParseError), which is
     # already bounded by opener.max_attempts above, so it stops the run within the same
     # already-enforced ceiling rather than opening a new unbounded harm vector.
-    if cfg.ranker.retrain_every < 1:
-        raise ValueError(f"Config: ranker.retrain_every must be >= 1 (got {cfg.ranker.retrain_every})")
-    if cfg.pacing.swipe_delay_s != 0 and cfg.pacing.swipe_delay_s < _MIN_SWIPE_DELAY_S:
-        # 0 is the documented "pacing off" sentinel (see PacingCfg) and is exempt. Anything
-        # else — including negatives — must clear the floor: worker.py's _pace() feeds this
-        # straight into threading.Event.wait() as a scale on the whole delay distribution,
-        # and Event.wait() treats a negative/near-zero timeout as "return immediately", i.e.
-        # machine-speed swiping on a live account with no exception raised. See _MIN_SWIPE_DELAY_S.
-        raise ValueError(f"Config: pacing.swipe_delay_s must be 0 (pacing off) or "
-                         f">= {_MIN_SWIPE_DELAY_S} (got {cfg.pacing.swipe_delay_s}); smaller "
-                         "values scale worker._pace's human-pause distribution down to "
-                         "machine-speed swiping")
-    _validate_limits("limits", cfg.limits or {})
-    for a in cfg.enabled_apps:
+    _validate_limits("limits", cfg.limits)
+    for a, app_cfg in cfg.apps.items():
         # per-app limits override reaches RateLimiter the same way the global block does
         # (supervisor.py merges them) — validate with the exact same rules, or a per-app
         # max_per_run: 0 silently bypasses the safety cap entirely.
-        _validate_limits(f"apps.{a}.limits", ((cfg.apps or {}).get(a, {}) or {}).get("limits", {}) or {})
+        app_limits = (app_cfg or {}).get("limits")
+        _validate_limits(f"apps.{a}.limits", {} if app_limits is None else app_limits)

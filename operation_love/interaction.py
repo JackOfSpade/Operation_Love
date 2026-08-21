@@ -12,6 +12,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 import math
 import random
+from collections.abc import Mapping
+from numbers import Real
 from typing import Callable
 
 from .human_motion import think_time_s
@@ -50,6 +52,25 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def _finite_real(name: str, value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite real number")
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a finite real number") from exc
+    if not math.isfinite(resolved):
+        raise ValueError(f"{name} must be a finite real number")
+    return resolved
+
+
+def _exact_nonnegative_int(name: str, value: int, *, minimum: int = 0) -> int:
+    if type(value) is not int or value < minimum:
+        qualifier = "positive" if minimum == 1 else "nonnegative"
+        raise ValueError(f"{name} must be a {qualifier} integer")
+    return value
+
+
 class AutoSessionPolicy:
     """Small, bounded behavioural state for one autonomous worker session.
 
@@ -62,6 +83,8 @@ class AutoSessionPolicy:
                  local_hour: Callable[[], int] | None = None,
                  base_threshold: float = 0.5,
                  max_threshold_lift: float = _THRESHOLD_MAX_LIFT):
+        base_threshold = _finite_real("base_threshold", base_threshold)
+        max_threshold_lift = _finite_real("max_threshold_lift", max_threshold_lift)
         if not 0.0 < base_threshold < 1.0:
             raise ValueError("base_threshold must be in (0, 1)")
         if not 0.0 <= max_threshold_lift <= _THRESHOLD_MAX_LIFT:
@@ -69,8 +92,8 @@ class AutoSessionPolicy:
                 f"max_threshold_lift must be in [0, {_THRESHOLD_MAX_LIFT}]")
         self.rng = rng if rng is not None else random.Random()
         self._local_hour = local_hour or (lambda: datetime.now().hour)
-        self.base_threshold = float(base_threshold)
-        self.max_threshold_lift = float(max_threshold_lift)
+        self.base_threshold = base_threshold
+        self.max_threshold_lift = max_threshold_lift
 
         # Individual sessions have a coherent pace/strictness instead of every
         # card being an independent draw from exactly the same distribution.
@@ -95,8 +118,9 @@ class AutoSessionPolicy:
         not model features.  The caller retains the delivered geometry so its
         screenshot-guided return-to-top routine has an accurate travel ledger.
         """
-        depth = max(0, int(depth))
-        captured_frames = max(1, int(captured_frames))
+        depth = _exact_nonnegative_int("depth", depth)
+        captured_frames = _exact_nonnegative_int(
+            "captured_frames", captured_frames, minimum=1)
         complexity = min(1.0, (captured_frames - 1) / 7.0)
         # Deeper cards get slightly shorter advances, avoiding a mechanically
         # identical 55%-of-screen sequence while still remaining in a safe range.
@@ -112,7 +136,7 @@ class AutoSessionPolicy:
 
     def capture_limit(self, baseline: int) -> int:
         """Vary only the emergency ceiling, never truncate configured coverage."""
-        baseline = max(1, int(baseline))
+        baseline = _exact_nonnegative_int("baseline", baseline, minimum=1)
         return baseline + self.rng.choice((0, 0, 1, 1, 2))
 
     def post_action_delay_s(self, decision: str, profile: Profile, score: float,
@@ -130,17 +154,19 @@ class AutoSessionPolicy:
         # not a zero scale reaching this far in; the caller re-derives an equally
         # loud failure for a negative pacing.swipe_delay_s from this same check,
         # since scale is computed directly from it.
+        scale = _finite_real("scale", scale)
         if scale <= 0:
             raise ValueError("scale must be positive")
+        score = _finite_real("score", score)
         bucket = "like" if decision == "like" else "pass"
         base = think_time_s(bucket, rng=self.rng)
         complexity = self._profile_complexity(profile)
-        uncertainty = 1.0 - min(1.0, abs(float(score) - self.base_threshold) / 0.25)
+        uncertainty = 1.0 - min(1.0, abs(score - self.base_threshold) / 0.25)
         fatigue = min(1.0, self.actions / 35.0)
         streak = min(1.0, self._streak / 6.0)
         # Local time is deliberately a small, bounded modifier. It does not
         # attempt to infer identity or replace the user's learned preferences.
-        hour = _clamp(float(self._local_hour()), 0.0, 23.0)
+        hour = _clamp(_finite_real("local_hour", self._local_hour()), 0.0, 23.0)
         night = 1.0 if hour < 6.0 else (0.5 if hour < 9.0 or hour >= 22.0 else 0.0)
         self._delay_noise = 0.55 * self._delay_noise + 0.45 * self.rng.gauss(0.0, 0.16)
         multiplier = self._tempo
@@ -191,10 +217,11 @@ class AutoSessionPolicy:
         complexity = self._profile_complexity(profile)
         # Only ambiguity near the configured boundary needs a second look.  A
         # confident score has no added strictness beyond the session baseline.
-        uncertainty = 1.0 - min(1.0, abs(float(score) - self.base_threshold) / 0.10)
+        score = _finite_real("score", score)
+        uncertainty = 1.0 - min(1.0, abs(score - self.base_threshold) / 0.10)
         fatigue = min(1.0, self.actions / 35.0)
         like_streak = min(1.0, self._streak / 5.0) if self._last_action == "like" else 0.0
-        hour = _clamp(float(self._local_hour()), 0.0, 23.0)
+        hour = _clamp(_finite_real("local_hour", self._local_hour()), 0.0, 23.0)
         night = 1.0 if hour < 6.0 or hour >= 22.0 else 0.0
         # Context determines a bounded *available* lift, while a fresh beta draw
         # determines how much of it this card actually receives.  That avoids
@@ -209,7 +236,7 @@ class AutoSessionPolicy:
                       self.base_threshold + self.max_threshold_lift)
 
     @staticmethod
-    def _safe_meta_int(meta: dict, key: str, default: int) -> int:
+    def _safe_meta_int(meta: Mapping, key: str, default: int) -> int:
         """Read one int-like pacing-metadata field, tolerating whatever a driver's
         capture layer hands back instead of raising.
 
@@ -245,6 +272,8 @@ class AutoSessionPolicy:
         photos = len(getattr(profile, "photos", []) or [])
         text = len(profile.text_blob()) if hasattr(profile, "text_blob") else 0
         meta = getattr(profile, "meta", {}) or {}
+        if not isinstance(meta, Mapping):
+            meta = {}
         capture_frames = cls._safe_meta_int(meta, "capture_frames", photos)
         read_scrolls = cls._safe_meta_int(meta, "read_scrolls", max(0, capture_frames - 1))
         # Cap every observed dimension so a malformed meta value cannot generate

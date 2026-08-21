@@ -1,10 +1,25 @@
-# Handoff — Hinge 9.134 inline-composer calibration
+# Historical handoff — Hinge 9.134 inline-composer calibration (superseded)
 
-This is the current operational handoff. It replaces the old paused-PTY,
-manual-only, and pending-release instructions. The AI-reviewed production
-OBSERVE release artifact is installed and **AUTO is enabled**.
+> **Do not use this file as current release authorization.** It preserves the
+> 2026-08-14 Hinge 9.134 forensic record below. The live configuration now targets
+> Hinge **10.0.1**, runs in `mode: observe`, and deliberately contains **no**
+> targeting calibration or production-Observe release mapping. A 10.0.1 numeric
+> campaign is archived as historical evidence only: the current signals do not
+> positively distinguish a still photo from a paused/static video, so config validation
+> rejects reinstalling the `hinge_photos_only_v1` mapping. Observe remains usable for
+> manual deck decisions, but numbered targeted suggestions are withheld.
+> The 9.134 AI-reviewed artifact is hash-bound to the superseded build/calibration
+> and cannot be reused or edited. Hinge Auto is structurally blocked; a new release
+> mapping alone cannot enable it. Positive still-photo proof must first be implemented
+> and measured, followed by a fresh build/device-bound calibration and only then a new
+> production-Observe release cycle. Follow [ops/RUNBOOK.md](ops/RUNBOOK.md),
+> especially sections 2 and 4, for current instructions.
 
-## Completed calibration
+At the time it was written, this handoff replaced the old paused-PTY, manual-only,
+and pending-release instructions, and the 9.134 AI-reviewed production-Observe
+artifact enabled Auto for that exact historical calibration only.
+
+## Historical completed calibration (Hinge 9.134.0)
 
 - Hinge 9.134 is calibrated for its inline composer, with photo-only targets.
   Prompt/context cards are readable context but are never selected or tapped.
@@ -36,7 +51,7 @@ OBSERVE release artifact is installed and **AUTO is enabled**.
   Frozen bounds are `identity_match_max_dist: 1.9721` and
   `inline_item_max_dist: 14.9099`; held-out results are zero foreign accepts
   and zero false refusals for both checks.
-- `config.yaml` has the measured schema-v3 `targeting_calibration` installed
+- `config.yaml` then had the measured schema-v3 `targeting_calibration` installed
   for Pixel 7a serial `33111JEHN04475`, Hinge `9.134.0`, `1080x2400`, inline
   layout, and photo-only policy.
 - Production OBSERVE run `312b80bf4b50` persisted two reviewed Passes, one
@@ -49,20 +64,23 @@ OBSERVE release artifact is installed and **AUTO is enabled**.
   The separate Terra review is
   `ops/release/312b80bf4b50/independent-review/hinge_ai_observe_independent_review.json`
   (SHA-256 `e7244ae68da4f42664dfd02cdb91a796598ed6ab53b9e23b36f558035c9667e5`).
-- The verified release artifact is
+- The verified historical release artifact is
   `ops/release/312b80bf4b50/release/hinge_ai_observe_release.json`
   (SHA-256 `60952f85f77f5f6ce89a825e08f2b41c7d4818d7ffc1ea7e39620d35b307c303`).
-  `config.yaml` binds it under `ai_reviewed_observe_release_evidence`, removes
-  the OBSERVE-only controller fields, and sets global mode to `auto`.
+  The 9.134 configuration bound it under `ai_reviewed_observe_release_evidence`,
+  removed the Observe-only controller fields, and set global mode to `auto`.
+  The current 10.0.1 configuration intentionally contains none of that mapping.
 - The artifact truthfully records `human_ground_truth: false`; this is an
   explicitly accepted AI-reviewed release, not manual evidence.
 
-## Current live state
+## Historical live state at the 9.134 handoff
 
-No hub or Worker is running. The phone is on Melissa with no composer open and
-was deliberately left six capture scrolls below profile top when the completed
-run stopped. A subsequent Worker-owned capture must restore/confirm top before
-enumeration; do not reuse a stale profile token or anchor.
+This is a timestamped forensic note, not a claim about the phone's current screen.
+At that handoff, no hub or Worker was running. The phone was on Melissa with no
+composer open and was deliberately left six capture scrolls below profile top
+when the completed run stopped. A subsequent Worker-owned capture must
+restore/confirm top before enumeration; do not reuse a stale profile token or
+anchor.
 
 The owner approved sending Hinge profile data to Gemini and storing the run in
 the configured BigQuery/GCS. The release run completed under that approval.
@@ -85,8 +103,8 @@ rows, zero opener/Like mismatches across all Hinge runs, and no orphan
 label/photo/retraction records. The consolidated audit is
 `ops/corrections/phantom_openers_20260814.json`.
 
-Generation is now staged in both OBSERVE and AUTO. Billing spend is recorded
-when the provider call happens, but profile-attributable opener telemetry is
+At that handoff, generation was staged in both Observe and Auto. Billing spend
+is recorded when the provider call happens, but profile-attributable opener telemetry is
 committed only after a verified Like and after its durable decision. New
 opener rows carry nullable action lineage (`profile_id`, decision/source/time,
 and model item index). Pass, Stop, resync, targeting refusal, paywall, and
@@ -94,8 +112,10 @@ failed send paths leave no committed opener row.
 
 ## Reusable production OBSERVE release sequence
 
-After a future Hinge build/layout recalibration, keep Hinge in OBSERVE and
-repeat one Worker-owned reviewed Pass/Like cycle. Produce provenance, have a
+This sequence is retained as a historical template and must not be run as a route
+around the current targeting blocker. Only after positive still-photo proof exists and a
+fresh calibration passes the current policy may you keep Hinge in OBSERVE and repeat one
+Worker-owned reviewed Pass/Like cycle. Produce provenance, have a
 different reviewer identity/process review it, then verify against the active
 store:
 
@@ -106,7 +126,7 @@ store:
      --source external_ai_review \
      --acceptance I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK \
      --executor-model gpt-5.6-sol --executor-id codex-root \
-     --executor-version 2026-08-14 \
+     --executor-version <executor-version> \
      --executor-process codex-live-observe-controller-v1
 
    python -m tools.hinge_observe_ai_release review \
@@ -114,7 +134,7 @@ store:
      --provenance ops/release/<worker-run-id>/provenance/hinge_ai_observe_action_provenance.json \
      --out ops/release/<worker-run-id>/independent-review \
      --reviewer-model gpt-5.6-terra --reviewer-id <different-id> \
-     --reviewer-version 2026-08-14 --reviewer-process <different-process>
+     --reviewer-version <reviewer-version> --reviewer-process <different-process>
 
    python -m tools.hinge_observe_ai_release verify \
      --debug-run data/hinge_debug/<worker-run-id> --run-id <worker-run-id> \
@@ -124,17 +144,29 @@ store:
      --acceptance I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK
    ```
 
-Install only the emitted `ai_reviewed_observe_release_evidence` mapping,
-validate configuration, rerun the full suite, then and only then change `mode`
-to `auto`. Never reuse the current release artifact after its calibration,
-device, Hinge build, framebuffer, or action log binding changes.
+After the positive-discriminator prerequisite and fresh calibration are satisfied,
+install only the emitted `ai_reviewed_observe_release_evidence` mapping, validate
+configuration, and rerun the full suite before changing `mode` to `auto`. The current
+code correctly refuses this step. Never reuse the historical 9.134 release artifact—or any release
+artifact—after its calibration, device, Hinge build, framebuffer, or action-log
+binding changes.
 
 ## Reusable recalibration command set
 
-Use fresh campaign directories under an unchanged `config.yaml`; do not append
-to or relabel a prior session. The target strategy stays one photo heart then
-Pass per profile (`[1,3,1,3]` calibration and `[1,3,1]` held-out), with no
-navigation after the inline composer opens.
+These commands are a forensic workflow template, not a currently runnable authorization:
+the current reviewer/config policy must refuse a campaign that cannot positively prove a
+still-photo target. Once that prerequisite exists, use fresh campaign directories under an
+unchanged `config.yaml`; do not append
+to or relabel a prior session. The safe default is one photo heart followed by
+the reviewed Pass-without-send terminal path per profile (`[1,3,1,3]`
+calibration and `[1,3,1]` held-out), with no extra item navigation after the
+inline composer opens. The archived 10.0.1 numeric campaign used the RUNBOOK's
+explicitly opted-in real-send variant, but that does not establish still-photo proof and
+cannot be installed. It used `--hybrid-review --send-like` plus the
+separate exact `--send-like-confirmation I_ACCEPT_REAL_PRIORITY_LIKE_SEND_RISK`.
+Those permanent Send Priority Likes are never implied by the commands below;
+add that complete opt-in only when the owner has explicitly accepted it, and
+never add it to unattended capture or abort cleanup. See RUNBOOK section 2.
 
 ```bash
 python -m tools.hinge_calibrate capture --split calibration --profiles 4 --hybrid-review \
@@ -163,13 +195,13 @@ ADB, capture, or vision code. A refusal, stale hash, malformed reviewer input,
 interruption, or unresolved screen state ends that session. Preserve it for
 diagnosis and start a fresh session from a confirmed profile top.
 
-## Verification status
+## Historical verification status at the 9.134 handoff
 
 - Full test suite after AUTO release installation and no-decision advisory fix:
   **2175 passed, 2 skipped**.
 - Ruff is clean for `operation_love`, `tools`, and `tests`; `git diff --check`
   is clean.
-- Full-repository Ruff still reports pre-existing legacy-only errors. Do not
-  hide them by weakening the scoped quality gate.
+- These counts and quality notes describe the superseded 9.134 handoff, not the
+  current 10.0.1 release state. Use the current CI run for present verification.
 - Real profile/debug artifacts under `ops/calibration/` and
   `data/hinge_debug/` are private and gitignored; do not upload or commit them.

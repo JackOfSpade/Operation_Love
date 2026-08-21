@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import sqlite3
 import threading
 import time
 from pathlib import Path
 
 from ..costing import Usage
+from ..private_files import ensure_private_dir, tighten_private_file, write_private_bytes
 
 
 def local_midnight_epoch() -> float:
@@ -24,6 +26,87 @@ def local_midnight_epoch() -> float:
     BOTH store backends derive "today" from this one function and can't drift apart
     again (see BigQueryStore.count_today / spend_today)."""
     return datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def _invalid_timestamp(label: str) -> ValueError:
+    """One stable public error for timestamp values neither store can represent."""
+    return ValueError(
+        f"{label} must be a finite epoch number or a timezone-aware ISO-8601 timestamp")
+
+
+def _timestamp_parts(value: object, *, label: str,
+                     allow_epoch_text: bool = False) -> tuple[float, datetime.datetime]:
+    """Validate a portable timestamp and return its exact epoch plus UTC datetime.
+
+    Numeric epoch values remain exact (important for SQLite's equality-bound correction
+    records).  Normal action/correction documents use timezone-aware ISO text; SQLite's
+    correction planner additionally emits a ``.17g`` decimal epoch spelling, enabled only
+    by callers that need that documented round-trip contract.
+    """
+    if isinstance(value, bool):
+        raise _invalid_timestamp(label)
+
+    numeric: float | None = None
+    if isinstance(value, (int, float)):
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise _invalid_timestamp(label) from exc
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise _invalid_timestamp(label)
+        # A terminal Z is the RFC-3339 spelling for UTC; avoid a broad replace that
+        # could turn malformed text into something datetime.fromisoformat accepts.
+        iso_text = text[:-1] + "+00:00" if text.endswith("Z") else text
+        try:
+            parsed = datetime.datetime.fromisoformat(iso_text)
+        except ValueError as iso_error:
+            if not allow_epoch_text:
+                raise _invalid_timestamp(label) from iso_error
+            try:
+                numeric = float(text)
+            except (TypeError, ValueError, OverflowError) as numeric_error:
+                raise _invalid_timestamp(label) from numeric_error
+        else:
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise _invalid_timestamp(label)
+            try:
+                epoch = parsed.timestamp()
+            except (OSError, OverflowError, ValueError) as exc:
+                raise _invalid_timestamp(label) from exc
+            if not math.isfinite(epoch):
+                raise _invalid_timestamp(label)
+            return epoch, parsed.astimezone(datetime.timezone.utc)
+    else:
+        raise _invalid_timestamp(label)
+
+    assert numeric is not None
+    if not math.isfinite(numeric):
+        raise _invalid_timestamp(label)
+    try:
+        parsed = datetime.datetime.fromtimestamp(numeric, tz=datetime.timezone.utc)
+    except (OSError, OverflowError, ValueError) as exc:
+        raise _invalid_timestamp(label) from exc
+    return numeric, parsed
+
+
+def normalize_timestamp_epoch(value: object, *, label: str = "timestamp",
+                              allow_epoch_text: bool = False) -> float:
+    """Return a strict, SQLite-safe epoch timestamp without lossy coercion."""
+    return _timestamp_parts(value, label=label, allow_epoch_text=allow_epoch_text)[0]
+
+
+def normalize_timestamp_iso(value: object, *, label: str = "timestamp",
+                            allow_epoch_text: bool = False) -> str:
+    """Return a strict UTC ISO timestamp suitable for BigQuery JSON TIMESTAMP fields."""
+    return _timestamp_parts(value, label=label, allow_epoch_text=allow_epoch_text)[1].isoformat()
+
+
+def normalize_timestamp_datetime(value: object, *, label: str = "timestamp",
+                                 allow_epoch_text: bool = False) -> datetime.datetime:
+    """Return the strict UTC ``datetime`` needed for bound BigQuery TIMESTAMP parameters."""
+    return _timestamp_parts(value, label=label, allow_epoch_text=allow_epoch_text)[1]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS labels (
@@ -71,9 +154,44 @@ class SQLiteStore:
     """Local, offline, zero-dependency backend. Good default / fallback."""
 
     def __init__(self, db_file: str | Path):
-        Path(db_file).parent.mkdir(parents=True, exist_ok=True)
+        db_text = str(db_file)
+        self._db_path: Path | None = None
+        if db_text != ":memory:":
+            db_path = Path(db_file)
+            parent = db_path.parent
+            # Only the configured leaf data directory is tightened. A bare filename means the
+            # caller chose the current (potentially shared repository) directory, whose mode is
+            # outside this store's authority; root is likewise never a chmod target.
+            if parent != Path(".") and parent != Path(parent.anchor):
+                ensure_private_dir(parent)
+            else:
+                parent.mkdir(parents=True, exist_ok=True)
+            self._db_path = db_path
+            # Refuse a planted DB or sidecar symlink before SQLite can follow it. Pre-creating a
+            # new DB with O_EXCL closes the default-umask exposure window before sqlite3 opens it.
+            self._tighten_private_files()
+            if not db_path.exists():
+                write_private_bytes(db_path, b"", parent=parent)
+            else:
+                tighten_private_file(db_path, parent=parent)
         # check_same_thread=False + a lock: safe to share across worker threads.
-        self.con = sqlite3.connect(str(db_file), check_same_thread=False)
+        self.con = sqlite3.connect(db_text, check_same_thread=False)
+        try:
+            self._initialize_schema()
+        except BaseException:
+            # A failed migration/privacy-sidecar check must not leave a live connection (and
+            # therefore SQLite file handles) behind. Closing is cleanup only; retain the actual
+            # initialization failure if a test double or damaged driver also fails to close.
+            try:
+                self.con.close()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        self._lock = threading.Lock()
+
+    def _initialize_schema(self) -> None:
+        """Create/migrate the schema after connect; caller owns failure cleanup."""
+        self._tighten_private_files()
         self.con.executescript(_SCHEMA)
         try:
             self.con.execute("ALTER TABLE decisions ADD COLUMN source TEXT")
@@ -119,8 +237,22 @@ class SQLiteStore:
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+        self._commit()
+
+    def _private_paths(self) -> tuple[Path, ...]:
+        if self._db_path is None:
+            return ()
+        text = str(self._db_path)
+        return (self._db_path, *(Path(text + suffix) for suffix in ("-wal", "-shm", "-journal")))
+
+    def _tighten_private_files(self) -> None:
+        """Tighten the DB and any live SQLite sidecars, rejecting symlink leaves."""
+        for path in self._private_paths():
+            tighten_private_file(path, parent=path.parent, missing_ok=True)
+
+    def _commit(self) -> None:
         self.con.commit()
-        self._lock = threading.Lock()
+        self._tighten_private_files()
 
     def load_labels(self) -> list[tuple[bool, list[float]]]:
         with self._lock:
@@ -173,7 +305,7 @@ class SQLiteStore:
             label_id = self.con.execute("SELECT last_insert_rowid()").fetchone()[0]
             self.con.execute("INSERT INTO training_label_names (label_id, profile_name) VALUES (?,?)",
                              (label_id, str(profile_name or "")))
-            self.con.commit()
+            self._commit()
 
     def clear_training_data(self) -> int:
         """Delete all preference labels (the ranker's training set), locally and atomically."""
@@ -183,7 +315,7 @@ class SQLiteStore:
             self.con.execute("DELETE FROM training_label_names")
             # Retractions only target labels and should not outlive the dataset they correct.
             self.con.execute("DELETE FROM label_retractions")
-            self.con.commit()
+            self._commit()
         return count
 
     def remove_latest_training_label(self) -> dict | None:
@@ -199,19 +331,21 @@ class SQLiteStore:
                 return None
             self.con.execute("DELETE FROM labels WHERE id=?", (row[0],))
             self.con.execute("DELETE FROM training_label_names WHERE label_id=?", (row[0],))
-            self.con.commit()
+            self._commit()
         return {"profile_name": str(row[1] or ""), "profile_id": str(row[2] or "")}
 
     def record_decision(self, run_id, app, decision, score, source="auto", profile_id="",
                         created_at=None):
+        timestamp = (time.time() if created_at is None else normalize_timestamp_epoch(
+            created_at, label="created_at"))
         with self._lock:
             self.con.execute(
                 "INSERT INTO decisions (run_id, app, created_at, decision, score, source, profile_id) "
                 "VALUES (?,?,?,?,?,?,?)",
-                (run_id, app, time.time() if created_at is None else float(created_at), decision, score,
+                (run_id, app, timestamp, decision, score,
                  source, profile_id),
             )
-            self.con.commit()
+            self._commit()
 
     def retraction_run_rows(self, run_id: str, app: str, source: str) -> dict:
         """Exact minimal run rows used by the correction planner; no embeddings/photos."""
@@ -219,7 +353,7 @@ class SQLiteStore:
             labels = self.con.execute("""SELECT profile_id, created_at, liked
                 FROM labels WHERE run_id=? AND app=? AND source=? ORDER BY created_at, id""",
                 (run_id, app, source)).fetchall()
-            decisions = self.con.execute("""SELECT created_at, decision, score
+            decisions = self.con.execute("""SELECT profile_id, created_at, decision, score
                 FROM decisions WHERE run_id=? AND app=? AND source=? ORDER BY created_at, id""",
                 (run_id, app, source)).fetchall()
             retractions = self.con.execute("""SELECT correction_id, profile_id, label_created_at,
@@ -239,8 +373,9 @@ class SQLiteStore:
         return {"run_id": run_id, "app": app, "source": source, "profiles": [],
                 "labels": [{"profile_id": p, "created_at": exact_epoch(t), "liked": bool(liked)}
                            for p, t, liked in labels],
-                "decisions": [{"created_at": exact_epoch(t), "decision": d, "score": s}
-                              for t, d, s in decisions],
+                "decisions": [({"created_at": exact_epoch(t), "decision": d, "score": s}
+                               | ({"profile_id": p} if p not in {None, ""} else {}))
+                              for p, t, d, s in decisions],
                 "retractions": [{"correction_id": c, "profile_id": p,
                                   "label_created_at": exact_epoch(label_time),
                                   "decision_created_at": exact_epoch(d),
@@ -256,17 +391,16 @@ class SQLiteStore:
         window for another local process.
         """
         from .retractions import RetractionRefused
-        def epoch(value):
-            text = str(value)
-            try:
-                return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
-            except ValueError:
-                # See exact_epoch above.  `float` reconstructs precisely the REAL we
-                # read from SQLite; this is not a fuzzy timestamp comparison.
-                return float(text)
-        values = (row["correction_id"], row["run_id"], row["app"], row["source"], row["profile_id"],
-                  epoch(row["label_created_at"]), epoch(row["decision_created_at"]),
-                  row["decision_fingerprint"], row["reason"], row["evidence_ref"], time.time())
+        try:
+            values = (
+                row["correction_id"], row["run_id"], row["app"], row["source"], row["profile_id"],
+                normalize_timestamp_epoch(row["label_created_at"], label="label_created_at",
+                                          allow_epoch_text=True),
+                normalize_timestamp_epoch(row["decision_created_at"], label="decision_created_at",
+                                          allow_epoch_text=True),
+                row["decision_fingerprint"], row["reason"], row["evidence_ref"], time.time())
+        except (KeyError, ValueError) as exc:
+            raise RetractionRefused("SQLite correction timestamps are invalid") from exc
         with self._lock:
             existing = self.con.execute("""SELECT correction_id FROM label_retractions
                 WHERE run_id=? AND app=? AND source=? AND profile_id=?
@@ -278,7 +412,7 @@ class SQLiteStore:
             cur = self.con.execute("""INSERT OR IGNORE INTO label_retractions
                 (correction_id,run_id,app,source,profile_id,label_created_at,decision_created_at,
                 decision_fingerprint,reason,evidence_ref,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)""", values)
-            self.con.commit()
+            self._commit()
         return cur.rowcount == 1
 
     def observe_release_persistence_summary(self, run_id: str, app: str) -> dict[str, int]:
@@ -402,23 +536,30 @@ class SQLiteStore:
 
     def append_opener_retraction(self, row: dict) -> bool:
         from .retractions import RetractionRefused, canonical_sha
-        values = (row["correction_id"], row["run_id"], row["app"], float(row["opener_created_at"]),
-                  row["model"], row["opener_fingerprint"], row["reason"], row["evidence_ref"], time.time())
+        try:
+            opener_at = normalize_timestamp_epoch(row["opener_created_at"],
+                                                  label="opener_created_at",
+                                                  allow_epoch_text=True)
+            values = (row["correction_id"], row["run_id"], row["app"], opener_at,
+                      row["model"], row["opener_fingerprint"], row["reason"],
+                      row["evidence_ref"], time.time())
+        except (KeyError, ValueError) as exc:
+            raise RetractionRefused("SQLite opener correction timestamp is invalid") from exc
         with self._lock:
             source = self.con.execute(
                 "SELECT model,opener FROM openers WHERE run_id=? AND app=? AND created_at=?",
-                (row["run_id"], row["app"], float(row["opener_created_at"]))).fetchall()
+                (row["run_id"], row["app"], opener_at)).fetchall()
             if len(source) != 1 or str(source[0][0]) != row["model"]:
                 raise RetractionRefused("target opener row is missing or does not match its cleanup plan")
             fingerprint = canonical_sha({"run_id": row["run_id"], "app": row["app"],
-                                         "created_at": format(float(row["opener_created_at"]), ".17g"),
+                                         "created_at": format(opener_at, ".17g"),
                                          "model": str(source[0][0]), "opener": str(source[0][1])})
             if fingerprint != row["opener_fingerprint"]:
                 raise RetractionRefused("target opener fingerprint no longer matches its cleanup plan")
             existing = self.con.execute(
                 "SELECT correction_id,model,opener_fingerprint,reason,evidence_ref FROM opener_retractions "
                 "WHERE run_id=? AND app=? AND opener_created_at=?",
-                (row["run_id"], row["app"], float(row["opener_created_at"]))).fetchone()
+                (row["run_id"], row["app"], opener_at)).fetchone()
             if existing:
                 actual = {"correction_id": existing[0], "model": existing[1],
                           "opener_fingerprint": existing[2], "reason": existing[3],
@@ -430,7 +571,7 @@ class SQLiteStore:
             cur = self.con.execute("INSERT OR IGNORE INTO opener_retractions "
                 "(correction_id,run_id,app,opener_created_at,model,opener_fingerprint,reason,evidence_ref,created_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?)", values)
-            self.con.commit()
+            self._commit()
         return cur.rowcount == 1
 
     def record_opener(self, run_id, app, model, opener, referenced, angle="",
@@ -446,16 +587,17 @@ class SQLiteStore:
         # from `referenced`: that column holds the DETAIL the opener reacts to, this one holds
         # what the item IS. Persisted in both modes so a wrong-item report can later be checked
         # against what the model believed it picked. Same trailing-default rule as `angle`.
+        timestamp = (None if decision_created_at is None else normalize_timestamp_epoch(
+            decision_created_at, label="decision_created_at"))
         with self._lock:
             self.con.execute(
                 "INSERT INTO openers (run_id, app, created_at, model, opener, referenced, angle,"
                 " item_description, profile_id, decision, decision_source, decision_created_at,"
                 " model_item_index) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, app, time.time(), model, opener, referenced, angle, item_description,
-                 profile_id, decision, decision_source,
-                 None if decision_created_at is None else float(decision_created_at), model_item_index),
+                 profile_id, decision, decision_source, timestamp, model_item_index),
             )
-            self.con.commit()
+            self._commit()
 
     def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener):
         with self._lock:
@@ -464,7 +606,7 @@ class SQLiteStore:
                 " reason_code, reason, raw_opener) VALUES (?,?,?,?,?,?,?,?)",
                 (run_id, app, time.time(), model, attempt, reason_code, reason, raw_opener),
             )
-            self.con.commit()
+            self._commit()
 
     def record_spend(self, run_id, model, usage: Usage, cost):
         with self._lock:
@@ -474,7 +616,7 @@ class SQLiteStore:
                 (run_id, time.time(), model, usage.input_tokens, usage.output_tokens,
                  usage.cache_read_input_tokens, usage.cache_creation_input_tokens, cost),
             )
-            self.con.commit()
+            self._commit()
 
     def count_today(self, app: str) -> int:
         """Auto-mode swipes recorded today (LOCAL day, i.e. since local midnight)."""
@@ -497,8 +639,11 @@ class SQLiteStore:
 
     def flush(self) -> None:
         with self._lock:
-            self.con.commit()
+            self._commit()
 
     def close(self) -> None:
         with self._lock:
-            self.con.close()
+            try:
+                self.con.close()
+            finally:
+                self._tighten_private_files()

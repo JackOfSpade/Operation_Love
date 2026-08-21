@@ -16,12 +16,36 @@ from .. import supervisor
 from ..observe_actions import ObserveActionBridge
 
 # Chrome (and others) throttle setInterval in a hidden tab to ~once/minute after 5min hidden —
-# very plausible during a real run (owner watching the phone/Playwright window, or the display
+# very plausible during a real run (owner watching the phone or another window, or the display
 # asleep). The stale window has to clear that worst case with margin, or a throttled tab looks
 # "gone" and stop()s a live run out from under the owner.
 _BROWSER_CLIENT_STALE_S = 120.0
 _CLOSED_BROWSER_CLIENT_TTL_S = 30.0
 _EVAL_COLD_WAIT_S = 60.0  # bound on a cold-eval waiter so a dead computer thread can't hang it
+def validate_max_per_run(value: object) -> tuple[bool, int | None, str | None]:
+    """Normalize the optional Hub run-cap override without coercing malformed JSON.
+
+    ``None`` delegates to config, zero explicitly removes a configured cap for this run,
+    and a positive integer sets a temporary cap. Booleans are rejected even though Python
+    treats them as integers.
+    """
+    try:
+        return True, supervisor.normalize_max_per_run(value), None
+    except ValueError as exc:
+        return False, None, str(exc)
+
+
+def validate_apps(value: object) -> tuple[bool, list[str] | None, str | None]:
+    """Validate the optional API app-id list before selection logic calls ``len`` on it."""
+    if value is None:
+        return True, None, None
+    if not isinstance(value, list):
+        return False, None, "apps must be null or a list of app ids"
+    if any(not isinstance(app, str) or not app.strip() for app in value):
+        return False, None, "apps must contain only non-empty app ids"
+    if len(set(value)) != len(value):
+        return False, None, "apps must not contain duplicate app ids"
+    return True, list(value), None
 
 
 def validate_stop_after_seconds(value: object) -> tuple[bool, int | None, str | None]:
@@ -31,13 +55,11 @@ def validate_stop_after_seconds(value: object) -> tuple[bool, int | None, str | 
     booleans here: accepting a surprising JSON value for an operation that can stop a
     live run makes a typo look like a successful configuration.
     """
-    if value is None or value == 0:
-        # bool is an int subclass, and False compares equal to zero, so reject it before
-        # applying the unlimited shorthand.
-        if isinstance(value, bool):
-            return False, None, "stop_after_seconds must be null, 0, or a positive integer"
+    if value is None:
         return True, None, None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+    if type(value) is int and value == 0:
+        return True, None, None
+    if type(value) is not int or value < 1:
         return False, None, "stop_after_seconds must be null, 0, or a positive integer"
     # Event.wait (used by threading.Timer) rejects an excessively large timeout on some
     # platforms.  Keep API validation deterministic instead of letting a background thread
@@ -101,32 +123,50 @@ class HubState:
     def start(self, mode: str | None = None, apps=None,
               max_per_run: int | None = None,
               stop_after_seconds: int | None = None) -> tuple[bool, str]:
+        valid_cap, max_per_run, cap_error = validate_max_per_run(max_per_run)
+        if not valid_cap:
+            return False, cap_error or "invalid max-per-run override"
         valid_timeout, stop_after_seconds, timeout_error = validate_stop_after_seconds(
             stop_after_seconds)
         if not valid_timeout:
             return False, timeout_error or "invalid timed-stop duration"
+        valid_apps, apps, apps_error = validate_apps(apps)
+        if not valid_apps:
+            return False, apps_error or "invalid app selection"
         with self._lock:
             if self.is_running():
                 return False, "a run is already active"
             if apps is not None and len(apps) == 0:
-                # chosenApps() sends [] when every app checkbox is unchecked. supervisor.run
-                # treats a falsy enabled_apps override as "not overridden" and falls back to
-                # config.enabled_apps — so silently starting here would run the apps the user
-                # just deselected. Refuse instead; apps=None (no override argument at all)
-                # still falls through to config, unchanged.
+                # chosenApps() sends [] when every app checkbox is unchecked. The shared
+                # supervisor gate also rejects this, but the Hub can give the owner a clearer
+                # selection-specific message. apps=None (no override argument at all) still
+                # falls through to config, unchanged.
                 return False, "no apps selected — check at least one app before starting"
-            if apps is not None:
-                # Registry guard, before anything else happens: an unavailable platform
-                # (uncalibrated Android target, or a web target with no live site behind
-                # it) or two Android platforms requested together must never get as far as
-                # a thread/driver. Verbatim reason — the hub renders it straight into
-                # #hint, which is how "Additional work needed to get this to run..." shows
-                # up for the Web-based button with no frontend-side special-casing.
-                # (apps=None means "no override, fall back to config" and is checked at
-                # supervisor.run() instead, same as the empty-list case above.)
-                reason = platforms.check_runnable(apps, modes=mode)
-                if reason:
-                    return False, reason
+            try:
+                # Validate the complete EFFECTIVE config synchronously. Registry readiness
+                # alone is insufficient: a platform can implement Auto while config-level
+                # release evidence still deliberately blocks it. This shared helper also
+                # resolves apps=None through config.yaml and honors per-app mode overrides,
+                # exactly as supervisor.run() does in its direct-caller backstop.
+                supervisor.load_effective_config(
+                    self.config_path, mode=mode, enabled_apps=apps)
+            except Exception as exc:  # noqa: BLE001 — configuration/load errors are user-facing
+                return False, str(exc)
+            # Treat background allocation as a transaction. A completed run's status/error
+            # remains the Hub's last diagnostic snapshot unless both the optional timer and
+            # the replacement run thread start successfully.
+            previous_run = (
+                self._run_generation, self._thread, self._stop, self._status, self._error,
+                self._live_store, self._opener_service,
+            )
+
+            def _restore_failed_start() -> None:
+                self._cancel_timed_stop_locked(clear=True)
+                (
+                    self._run_generation, self._thread, self._stop, self._status, self._error,
+                    self._live_store, self._opener_service,
+                ) = previous_run
+
             # No prior timer should survive into a replacement run.  The generation check in
             # its callback is a second guard for a callback that was already queued when it
             # was cancelled.
@@ -138,11 +178,6 @@ class HubState:
             self._error = None
             self._live_store = None
             self._opener_service = None
-            # A new run supersedes the last run's diagnostic paper trail immediately.  While
-            # it is active, reports must not accidentally present prior-run opener text as if
-            # it belonged to the card currently on screen.
-            self._completed_openers = []
-            self._completed_opener_rejections = []
             stop = self._stop
 
             if stop_after_seconds is not None:
@@ -199,9 +234,28 @@ class HubState:
                         self._opener_service = None   # same reason: don't read a torn-down object after the supervisor tore the run down
 
             self._thread = threading.Thread(target=_target, name="hub-run", daemon=True)
-            self._thread.start()
+            # Start the optional timer first while holding _lock. Its callback also needs
+            # _lock, so it cannot observe a half-started run. If timer allocation/start fails,
+            # no worker exists yet. If the worker start then fails, cancellation plus the stop
+            # identity reset makes even an already-queued timer callback inert.
             if self._timed_stop_timer is not None:
-                self._timed_stop_timer.start()
+                try:
+                    self._timed_stop_timer.start()
+                except Exception as exc:  # noqa: BLE001 — user-facing lifecycle refusal
+                    _restore_failed_start()
+                    return False, (
+                        "could not start timed-stop timer: "
+                        f"{type(exc).__name__}: {exc}")
+            try:
+                self._thread.start()
+            except Exception as exc:  # noqa: BLE001 — never leave half-started Hub state
+                _restore_failed_start()
+                return False, f"could not start run thread: {type(exc).__name__}: {exc}"
+            # Only a successfully started run supersedes the last completed run's diagnostic
+            # paper trail. While active, reports must not present prior-run opener text as if
+            # it belonged to the card currently on screen.
+            self._completed_openers = []
+            self._completed_opener_rejections = []
             return True, "started"
 
     def stop(self) -> tuple[bool, str]:
@@ -278,7 +332,7 @@ class HubState:
         """Mark a hub page as alive. Return True when a stale-client watch should start."""
         if not client_id:
             return False
-        now = time.time()
+        now = time.monotonic()
         with self._lock:
             self._prune_closed_browser_clients_locked(now)
             if client_id in self._closed_browser_clients:
@@ -298,7 +352,7 @@ class HubState:
         """Return True once, when the last known hub page has gone away."""
         if not client_id:
             return False
-        now = time.time()
+        now = time.monotonic()
         with self._lock:
             self._prune_closed_browser_clients_locked(now)
             self._browser_clients.pop(client_id, None)
@@ -322,7 +376,7 @@ class HubState:
 
         Return True once if that leaves no live browser pages and should shut down the hub.
         """
-        now = time.time()
+        now = time.monotonic()
         cutoff = now - _BROWSER_CLIENT_STALE_S
         with self._lock:
             self._browser_clients = {
@@ -489,18 +543,40 @@ class HubState:
     def config_defaults(self) -> dict:
         try:
             cfg = cfg_mod.load(self.config_path)
+
+            def _mode_status(app: str, mode: str) -> tuple[bool, str | None]:
+                registry_reason = platforms.unavailable_reason(app, mode)
+                if registry_reason:
+                    return False, registry_reason
+                try:
+                    supervisor.load_effective_config(
+                        self.config_path, mode=mode, enabled_apps=[app])
+                except Exception as exc:  # noqa: BLE001 — exact start reason is picker help
+                    return False, str(exc)
+                return True, None
+
+            def _platform_payload(p: "platforms.Platform") -> dict:
+                status = {mode: _mode_status(p.app, mode)
+                          for mode in ("observe", "auto")}
+                return {
+                    "app": p.app,
+                    "label": p.label,
+                    "available": p.available,
+                    "reason": p.reason,
+                    # Keep the established boolean contract and add diagnostic detail beside it.
+                    "modes": {mode: available for mode, (available, _) in status.items()},
+                    "mode_reasons": {mode: reason for mode, (_, reason) in status.items()},
+                }
+
             # The hub is an operational control surface, not a calibration console. Do not
             # send unavailable apps to its picker: a dimmed option still looks selectable and
-            # made Bumble appear usable before its Auto acceptance test had passed.
+            # made Bumble appear usable before its safety calibration was complete.
             kinds = [
                 {
                     "kind": kind,
                     "label": platforms.KIND_LABELS[kind],
                     "platforms": [
-                        {"app": p.app, "label": p.label, "available": p.available,
-                         "reason": p.reason,
-                         "modes": {mode: platforms.mode_available(p.app, mode)
-                                   for mode in ("observe", "auto")}}
+                        _platform_payload(p)
                         for p in platforms.for_kind(kind) if p.available
                     ],
                 }

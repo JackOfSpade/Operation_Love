@@ -1,7 +1,9 @@
 """BigQueryStore tests with a fake client — no google SDK or network required."""
 import inspect
+import math
 import re
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -123,6 +125,30 @@ class _FakeStorage:
 def _store(client, flush_every=25):
     return BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=flush_every,
                          client=client, storage_client=_FakeStorage(), ensure=False)
+
+
+@pytest.mark.parametrize("value", [True, math.nan, math.inf, -math.inf, 1e300, 10 ** 10_000,
+                                   "2026-01-01T00:00:00"],
+                         ids=["bool", "nan", "inf", "negative-inf", "out-of-range-float",
+                              "huge-int", "naive-iso"])
+def test_bigquery_action_writes_reject_invalid_timestamp_values_without_overflow(value):
+    store = _store(_FakeBQ(), flush_every=100)
+    with pytest.raises(ValueError, match="timestamp"):
+        store.record_decision("r", "hinge", "like", 1.0, created_at=value)
+    with pytest.raises(ValueError, match="timestamp"):
+        store.record_opener(
+            "r", "hinge", "model", "opener", "reference",
+            decision_created_at=value,
+        )
+    assert store._buf["decisions"] == []
+    assert store._buf["openers"] == []
+
+
+def test_bigquery_action_timestamp_normalizes_timezone_aware_iso_text():
+    store = _store(_FakeBQ(), flush_every=100)
+    store.record_decision("r", "hinge", "like", 1.0,
+                          created_at="2026-01-01T00:00:00Z")
+    assert store._buf["decisions"][0]["created_at"] == "2026-01-01T00:00:00+00:00"
 
 
 def _schema_rows_without(*missing: tuple[str, str]) -> list[dict[str, str]]:
@@ -328,7 +354,8 @@ def test_bigquery_retraction_rows_normalize_timestamps_and_append_is_bound_idemp
                 return _FakeJob([{"profile_id": "profile", "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
                                   "liked": False}])
             if "FROM `proj.ds.decisions`" in sql:
-                return _FakeJob([{"created_at": datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+                return _FakeJob([{"profile_id": "profile",
+                                  "created_at": datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
                                   "decision": "dislike", "score": 0.0}])
             return _FakeJob([])
 
@@ -336,6 +363,7 @@ def test_bigquery_retraction_rows_normalize_timestamps_and_append_is_bound_idemp
     store = _store(client)
     rows = store.retraction_run_rows("run'unsafe", "hinge", "external_ai_review")
     assert rows["labels"][0]["created_at"] == "2026-01-01T00:00:00+00:00"
+    assert rows["decisions"][0]["profile_id"] == "profile"
     assert "run'unsafe" not in client.queries[-1]
     assert [(p.name, p.value) for p in client.job_configs[-1].query_parameters] == [
         ("run_id", "run'unsafe"), ("app", "hinge"), ("source", "external_ai_review")]
@@ -345,7 +373,8 @@ def test_bigquery_retraction_rows_normalize_timestamps_and_append_is_bound_idemp
            "reason": "false", "evidence_ref": "debug#225", "created_at": "2026-01-01T00:01:00+00:00"}
     assert store.append_label_retraction(row) is True
     assert store.append_label_retraction(row) is False
-    target_job = next(config for sql, config in zip(client.queries, client.job_configs)
+    target_job = next(config for sql, config in zip(
+                      client.queries, client.job_configs, strict=True)
                       if "label_created_at=@label_created_at" in sql)
     assert [(p.name, p.value) for p in target_job.query_parameters][-2:] == [
         ("label_created_at", datetime(2026, 1, 1, tzinfo=timezone.utc)),
@@ -730,7 +759,7 @@ def test_record_profile_uploads_photos_and_manifest_rows():
     client = _FakeBQ()
     storage = _FakeStorage()
     s = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
-                      client=client, storage_client=storage, ensure=False)
+                      client=client, storage_client=storage, ensure=True)
     png = b"\x89PNG\r\n\x1a\nprofile"
     jpg = b"\xff\xd8\xffprofile"
 
@@ -754,6 +783,24 @@ def test_record_profile_uploads_photos_and_manifest_rows():
     assert all(not blob.public for blob in blobs.values())
 
 
+def test_ensure_false_store_refuses_profile_photos_without_touching_bucket():
+    client = _FakeBQ()
+    storage = _FakeStorage()
+    store = BigQueryStore(
+        "proj", "ds", photo_bucket="photos", client=client,
+        storage_client=storage, ensure=False,
+    )
+
+    with pytest.raises(RuntimeError, match="bucket privacy policy was not verified"):
+        store.record_profile(
+            "r", "hinge", "private-profile", True,
+            photos=[b"\x89PNG\r\n\x1a\nprivate"], photo_count=1,
+        )
+
+    assert storage.bucket("photos").blobs == {}
+    assert client.inserted == {}
+
+
 def test_record_profile_rejects_empty_photo_set():
     client = _FakeBQ()
     s = _store(client, flush_every=1)
@@ -770,7 +817,7 @@ def test_record_profile_returns_false_and_records_nothing_when_all_uploads_fail(
     client = _FakeBQ()
     storage = _FakeStorage(fail_uploads=True)
     s = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=1,
-                      client=client, storage_client=storage, ensure=False)
+                      client=client, storage_client=storage, ensure=True)
 
     ok = s.record_profile("r", "bumble", "profile-x", True, photos=[b"\x89PNG\r\n\x1a\nx"], photo_count=1)
     s.flush()
@@ -785,7 +832,7 @@ def test_record_profile_rolls_back_partial_upload_failure():
     storage = _FakeStorage()
     bucket = storage.bucket("photos")
     s = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
-                      client=client, storage_client=storage, ensure=False)
+                      client=client, storage_client=storage, ensure=True)
 
     # Make only the 2nd photo's blob fail (object path carries the photo index "/01-").
     real_blob = bucket.blob
@@ -810,7 +857,10 @@ def test_record_profile_persists_capture_truncated():
     column that lets a later BigQuery query separate truncated-read labels out, e.g.
     to check whether they're noisier than complete reads."""
     client = _FakeBQ()
-    s = _store(client, flush_every=100)
+    s = BigQueryStore(
+        "proj", "ds", photo_bucket="photos", flush_every=100,
+        client=client, storage_client=_FakeStorage(), ensure=True,
+    )
     s.record_profile("r", "hinge", "profile-2", True, photos=[b"\x89PNG\r\n\x1a\nx"],
                      photo_count=1, capture_truncated=True)
     s.flush()
@@ -821,7 +871,10 @@ def test_record_profile_persists_capture_truncated():
 
 def test_record_profile_defaults_capture_truncated_to_false():
     client = _FakeBQ()
-    s = _store(client, flush_every=100)
+    s = BigQueryStore(
+        "proj", "ds", photo_bucket="photos", flush_every=100,
+        client=client, storage_client=_FakeStorage(), ensure=True,
+    )
     s.record_profile("r", "hinge", "profile-3", True, photos=[b"\x89PNG\r\n\x1a\nx"], photo_count=1)
     s.flush()
 
@@ -874,6 +927,48 @@ def test_already_hardened_bucket_is_not_repatched():
     BigQueryStore("proj", "ds", photo_bucket="locked", client=client,
                   storage_client=storage, ensure=True)
     assert storage.buckets["locked"].patched is False   # no needless write
+
+
+@pytest.mark.parametrize("operation", ["reload", "patch"])
+def test_existing_bucket_hardening_failure_aborts_before_store_is_usable(operation):
+    client = _FakeBQ()
+    storage = _FakeStorage(bucket_exists=True)
+    bucket = storage.bucket("private-required")
+
+    def refused():
+        raise PermissionError(f"{operation} denied")
+
+    setattr(bucket, operation, refused)
+    with pytest.raises(RuntimeError, match="Refusing BigQuery photo storage") as caught:
+        BigQueryStore("proj", "ds", photo_bucket="private-required", client=client,
+                      storage_client=storage, ensure=True)
+
+    assert isinstance(caught.value.__cause__, PermissionError)
+    assert bucket.blobs == {}
+    assert client.queries == []
+
+
+def test_bucket_hardening_reloads_and_refuses_if_settings_did_not_persist():
+    client = _FakeBQ()
+    storage = _FakeStorage(bucket_exists=True)
+    bucket = storage.bucket("nonpersistent-policy")
+    reloads = 0
+
+    def reload_without_persisting_patch():
+        nonlocal reloads
+        reloads += 1
+        if bucket.patched:
+            bucket.iam_configuration.uniform_bucket_level_access_enabled = False
+            bucket.iam_configuration.public_access_prevention = "inherited"
+
+    bucket.reload = reload_without_persisting_patch
+    with pytest.raises(RuntimeError, match="Refusing BigQuery photo storage") as caught:
+        BigQueryStore("proj", "ds", photo_bucket="nonpersistent-policy", client=client,
+                      storage_client=storage, ensure=True)
+
+    assert reloads == 2
+    assert "did not retain" in str(caught.value.__cause__)
+    assert bucket.blobs == {}
 
 
 def test_load_labels_includes_buffered_labels_after_initial_load():
@@ -1000,6 +1095,100 @@ def test_requires_photo_bucket():
         raise AssertionError("expected ValueError without photo_bucket")
 
 
+@pytest.mark.parametrize(("field", "value"), [
+    ("project_id", None),
+    ("project_id", True),
+    ("project_id", "project.name"),
+    ("dataset", "dataset name"),
+    ("dataset", "dataset.name"),
+    ("location", "US' OR 1=1"),
+    ("location", 123),
+    ("photo_bucket", None),
+    ("photo_bucket", "   "),
+    ("photo_bucket", " bucket "),
+])
+def test_constructor_strictly_validates_cloud_identifiers_and_bucket(field, value):
+    kwargs = {
+        "project_id": "valid-project",
+        "dataset": "valid_dataset",
+        "location": "northamerica-northeast1",
+        "photo_bucket": "valid-bucket",
+    }
+    kwargs[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        BigQueryStore(
+            **kwargs, client=_FakeBQ(), storage_client=_FakeStorage(), ensure=False)
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, 1.0, "10"])
+def test_constructor_requires_exact_positive_integer_flush_every(value):
+    with pytest.raises(ValueError, match="flush_every"):
+        BigQueryStore(
+            "proj", "ds", photo_bucket="photos", flush_every=value,
+            client=_FakeBQ(), storage_client=_FakeStorage(), ensure=False,
+        )
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "false"])
+def test_constructor_requires_exact_boolean_ensure(value):
+    with pytest.raises(ValueError, match="ensure"):
+        BigQueryStore(
+            "proj", "ds", photo_bucket="photos", client=_FakeBQ(),
+            storage_client=_FakeStorage(), ensure=value,
+        )
+
+
+def test_constructor_closes_owned_bigquery_client_if_storage_client_creation_fails(
+        monkeypatch):
+    import sys
+
+    class OwnedBigQueryClient:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    owned = OwnedBigQueryClient()
+
+    class BrokenStorageClient:
+        def __init__(self, **_kwargs):
+            raise RuntimeError("storage credentials failed")
+
+    monkeypatch.setitem(sys.modules, "google.cloud", SimpleNamespace(
+        bigquery=SimpleNamespace(Client=lambda **_kwargs: owned),
+        storage=SimpleNamespace(Client=BrokenStorageClient),
+    ))
+
+    with pytest.raises(RuntimeError, match="storage credentials failed"):
+        BigQueryStore("proj", "ds", photo_bucket="photos", ensure=False)
+
+    assert owned.closed is True
+
+
+def test_make_store_does_not_coerce_invalid_flush_every_before_constructor(monkeypatch):
+    import operation_love.ranker as ranker
+    import operation_love.ranker.bigquery_store as bigquery_module
+
+    captured = {}
+
+    def fake_store(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(bigquery_module, "BigQueryStore", fake_store)
+    cfg = SimpleNamespace(
+        storage=SimpleNamespace(
+            backend="bigquery",
+            bigquery={"project_id": "proj", "photo_bucket": "photos", "flush_every": "9"},
+        ),
+    )
+
+    ranker.make_store(cfg)
+
+    assert captured["flush_every"] == "9"
+
+
 def test_load_labels_ordered_queries_in_created_at_order():
     client = _FakeBQ(label_rows=[{"liked": True, "embedding": [0.1]}])
     s = _store(client)
@@ -1052,6 +1241,19 @@ def test_spend_today_parameterizes_local_midnight_and_sums_cost():
     assert param.name == "day_start"
     expected = datetime.fromtimestamp(local_midnight_epoch(), tz=timezone.utc)
     assert abs((param.value - expected).total_seconds()) < 2
+
+
+def test_spend_today_propagates_query_failure_instead_of_disabling_daily_cap():
+    class FailedJob:
+        def result(self):
+            raise PermissionError("spend ledger unreadable")
+
+    client = _FakeBQ()
+    client.query = lambda *_args, **_kwargs: FailedJob()
+    store = _store(client)
+
+    with pytest.raises(PermissionError, match="spend ledger unreadable"):
+        store.spend_today()
 
 
 class _PoisonRowBQ(_FakeBQ):

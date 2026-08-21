@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import math
 import os
 import re
 import threading
@@ -394,7 +395,10 @@ _SYSTEM = (
     "THE WORLD, NOT HER IDENTITY: name a country, a region, or a park the way a well travelled "
     "friend would, never a street, a neighbourhood, a hotel, a specific venue, or anywhere that "
     "could be where she lives, and never guess her employer, her school, or her age, or identify "
-    "anyone else in the photo. NEVER INVENT THE SENDER: you may not claim he has been somewhere, "
+    "anyone else in the photo. When a place comes from recognizing the image rather than from her "
+    "profile text, clearly identify it as a visual inference before building on it. Do not state "
+    "an inferred location as shared experience, "
+    "and do not turn it into a generic compliment. NEVER INVENT THE SENDER: you may not claim he has been somewhere, "
     "done something, or likes something, because you do not know his history and he has to live "
     "with whatever you write. PICK THE ITEM YOURSELF: the numbered images are her profile photos, "
     "numbered from 1 in the order they are given, and you choose which one to write about. Choose "
@@ -421,7 +425,9 @@ _SYSTEM = (
     "or a direct low-pressure invitation. Do not try to build a text relationship in the opener. "
     "HARD RULE: never use an em dash or any hyphen; use commas or periods instead and spell out "
     "hyphenated abbreviations. HARD RULE: write the opener in plain ASCII letters and punctuation "
-    "only; use no emoji and transliterate accented or non-English letters to plain ASCII. "
+    "only; use no emoji and transliterate accented or non-English letters to plain ASCII. A "
+    "terminal plain text smiley, :) is allowed only when it meaningfully makes an otherwise "
+    "potentially misread playful or teasing line clearly good natured; never add it by default. "
     "Fill item_index, referenced, angle and item_description before you write the opener: "
     "referenced is the "
     "full description of what you are reacting to and is never sent to her, so put the literal "
@@ -672,7 +678,7 @@ def _truncated_repr(value: Any) -> str:
 def _image_media_type(data: bytes) -> str:
     """Sniff the real image format from magic bytes. Gemini 400s if the declared mimeType
     doesn't match the actual bytes, so we can't just hardcode one. Defaults to PNG since
-    every capture path here (Playwright screenshot, adb screencap) produces PNG."""
+    every current device or reference browser capture path produces PNG."""
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if data.startswith(b"\xff\xd8\xff"):
@@ -1219,6 +1225,17 @@ GeminiTransport = Callable[..., tuple[int, Any]]
 
 # ListModels (used by preflight()) has no request body of its own.
 _GEMINI_MODELS_LIST_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+# Keep direct construction as safe as the config-backed path.  Config validation uses the
+# same measured three-minute ceiling; GeminiOpener is also instantiated directly by tests and
+# small tools, so relying on that upstream gate alone leaves one HTTP call effectively
+# unbounded.
+_MAX_REQUEST_TIMEOUT_S = 180.0
+_MAX_PREFLIGHT_PAGES = 100
+_MAX_GEMINI_RESPONSE_BYTES = 1 * 1024 * 1024
+_MAX_REQUEST_IMAGES = 64
+_MAX_RAW_IMAGE_BYTES = 64 * 1024 * 1024
+_THINKING_KEYS = frozenset({"thinkingLevel", "thinkingBudget"})
+_THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
 
 # Gemini hard-caps a request's TOTAL encoded size (text + system instruction + inline image
 # bytes) at 20MB. We budget under that with real headroom: base64 already inflates raw photo
@@ -1426,12 +1443,21 @@ def _stdlib_gemini_transport(url: str, payload: dict[str, Any] | None, headers: 
     """
     data = json.dumps(payload).encode("utf-8") if method == "POST" and payload is not None else None
     request = Request(url, data=data, headers=headers, method=method)
+
+    def read_body(response) -> bytes:
+        raw_body = response.read(_MAX_GEMINI_RESPONSE_BYTES + 1)
+        if len(raw_body) > _MAX_GEMINI_RESPONSE_BYTES:
+            raise RuntimeError(
+                "Gemini response exceeded the "
+                f"{_MAX_GEMINI_RESPONSE_BYTES}-byte safety limit")
+        return raw_body
+
     try:
         with urlopen(request, timeout=timeout) as response:  # noqa: S310 - URL is fixed Gemini endpoint
-            raw = response.read().decode("utf-8")
+            raw = read_body(response).decode("utf-8")
             return int(response.status), json.loads(raw) if raw else {}
     except HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
+        raw = read_body(exc).decode("utf-8", errors="replace")
         try:
             body: Any = json.loads(raw) if raw else {}
         except json.JSONDecodeError:
@@ -1492,20 +1518,86 @@ class GeminiOpener:
                  env: Mapping[str, str] | None = None,
                  transport: GeminiTransport | None = None,
                  thinking: Mapping[str, Mapping[str, Any]] | None = None):
-        self.models = tuple(str(model) for model in models if str(model).strip())
-        if not self.models:
-            raise ValueError("GeminiOpener requires at least one configured model")
+        if not isinstance(models, (list, tuple)):
+            raise ValueError("GeminiOpener models must be a list or tuple of model ids")
+        if not models or any(not isinstance(model, str) or not model.strip()
+                             or model != model.strip() for model in models):
+            raise ValueError(
+                "GeminiOpener requires at least one configured model; model ids must be "
+                "nonempty strings without surrounding whitespace")
+        if len(set(models)) != len(models):
+            raise ValueError("GeminiOpener model ids must not contain duplicates")
+        if type(max_tokens) is not int or max_tokens <= 0:
+            raise ValueError("GeminiOpener max_tokens must be a positive integer")
+        try:
+            timeout = (
+                float(request_timeout_s)
+                if not isinstance(request_timeout_s, bool)
+                and isinstance(request_timeout_s, (int, float))
+                else None
+            )
+        except (TypeError, ValueError, OverflowError):
+            timeout = None
+        if (timeout is None or not math.isfinite(timeout)
+                or not 0 < timeout <= _MAX_REQUEST_TIMEOUT_S):
+            raise ValueError(
+                "GeminiOpener request_timeout_s must be a finite number in "
+                f"(0, {_MAX_REQUEST_TIMEOUT_S:g}]")
+
+        self.models = tuple(models)
         environment = os.environ if env is None else env
         self.api_key = api_key if api_key is not None else environment.get("GEMINI_API_KEY")
-        if not self.api_key:
+        if self.api_key is None:
             raise RuntimeError("GEMINI_API_KEY is not set")
+        if (not isinstance(self.api_key, str) or not self.api_key.strip()
+                or self.api_key != self.api_key.strip()):
+            raise RuntimeError(
+                "GEMINI_API_KEY must be a nonempty string without surrounding whitespace")
         self.max_tokens = max_tokens
-        self.request_timeout_s = request_timeout_s
+        self.request_timeout_s = timeout
         self.transport = transport or _stdlib_gemini_transport
         # model id -> the exact generationConfig.thinkingConfig dict to send for that model,
         # e.g. {"thinkingLevel": "minimal"} (3.x family) or {"thinkingBudget": 0} (2.5 family).
         # A model with no entry gets no thinkingConfig at all, so its own default applies.
-        self.thinking: Mapping[str, Mapping[str, Any]] = thinking or {}
+        if thinking is None:
+            resolved_thinking: dict[str, dict[str, Any]] = {}
+        elif not isinstance(thinking, Mapping):
+            raise ValueError("GeminiOpener thinking must map model ids to thinkingConfig mappings")
+        else:
+            resolved_thinking = {}
+            extra_models = set(thinking) - set(self.models)
+            if extra_models:
+                raise ValueError(
+                    "GeminiOpener thinking contains entries for unconfigured model id(s): "
+                    f"{sorted(extra_models, key=repr)}")
+            for model, entry in thinking.items():
+                if (not isinstance(model, str) or not model.strip()
+                        or model != model.strip()):
+                    raise ValueError("GeminiOpener thinking keys must be nonempty string model ids")
+                if not isinstance(entry, Mapping):
+                    raise ValueError(
+                        f"GeminiOpener thinking[{model!r}] must be a thinkingConfig mapping")
+                config = dict(entry)
+                unknown = set(config) - _THINKING_KEYS
+                if unknown:
+                    raise ValueError(
+                        f"GeminiOpener thinking[{model!r}] has unsupported key(s): "
+                        f"{sorted(unknown)}")
+                level = config.get("thinkingLevel")
+                if "thinkingLevel" in config and level not in _THINKING_LEVELS:
+                    raise ValueError(
+                        f"GeminiOpener thinking[{model!r}].thinkingLevel must be one of "
+                        f"{sorted(_THINKING_LEVELS)}")
+                if "thinkingBudget" in config:
+                    budget = config["thinkingBudget"]
+                    if type(budget) is not int or budget < 0:
+                        raise ValueError(
+                            f"GeminiOpener thinking[{model!r}].thinkingBudget must be a "
+                            "nonnegative integer")
+                resolved_thinking[model] = config
+        # Copy both mapping levels so a caller cannot mutate the request shape while another
+        # thread is inside generate().
+        self.thinking: Mapping[str, Mapping[str, Any]] = resolved_thinking
         # model id -> the scope ("day" or "gone") it was permanently retired under earlier
         # THIS run. A dict rather than a set because a later all-exhausted stop must report
         # each retired model under the scope it actually failed with, not a hardcoded one --
@@ -1539,6 +1631,17 @@ class GeminiOpener:
         method stays the single place that knows how to turn bytes into an inlineData part and
         knows nothing about what any of them mean.
         """
+        if len(images) > _MAX_REQUEST_IMAGES:
+            raise OpenerError(
+                f"Gemini opener request has {len(images)} images; refusing more than "
+                f"{_MAX_REQUEST_IMAGES}")
+        if any(not isinstance(image, bytes) for image in images):
+            raise OpenerError("Gemini opener request images must be bytes")
+        raw_bytes = sum(len(image) for image in images)
+        if raw_bytes > _MAX_RAW_IMAGE_BYTES:
+            raise OpenerError(
+                f"Gemini opener request has {raw_bytes} raw image bytes; refusing more than "
+                f"{_MAX_RAW_IMAGE_BYTES} before base64 encoding")
         return [{
             "inlineData": {
                 "mimeType": _image_media_type(image),
@@ -1941,20 +2044,14 @@ class GeminiOpener:
         if not isinstance(metadata, Mapping):
             metadata = {}
 
-        def token_count(name: str) -> int:
-            try:
-                return int(metadata.get(name, 0) or 0)
-            except (TypeError, ValueError):
-                return 0
-
         # Convert REST's camelCase field names to the provider-neutral normalizer.
         # In particular, cached content is a subset of prompt tokens, so the normalizer
         # prevents charging that same token count at both input and cache-read rates.
         return Usage.from_gemini(SimpleNamespace(
-            prompt_token_count=token_count("promptTokenCount"),
-            candidates_token_count=token_count("candidatesTokenCount"),
-            thoughts_token_count=token_count("thoughtsTokenCount"),
-            cached_content_token_count=token_count("cachedContentTokenCount"),
+            prompt_token_count=metadata.get("promptTokenCount", 0),
+            candidates_token_count=metadata.get("candidatesTokenCount", 0),
+            thoughts_token_count=metadata.get("thoughtsTokenCount", 0),
+            cached_content_token_count=metadata.get("cachedContentTokenCount", 0),
         ))
 
     @staticmethod
@@ -2078,8 +2175,8 @@ class GeminiOpener:
         # or a non-string value despite "opener" being listed as required. Left unchecked,
         # _sanitize()'s str(text) would silently turn None into the literal string "None"
         # (truthy) or an int like 42 into "42" -- both pass the sentence-count guard below
-        # and parse SUCCESSFULLY, and worker.py's `if opener: self.adb.text(opener)` then
-        # types that literal text into the Hinge comment box and sends it to a real person.
+        # and parse SUCCESSFULLY, and HingeDriver's guarded text path would then type that
+        # literal text into the comment box and send it to a real person.
         # So the type is re-verified here, at the boundary, rather than trusted.
         if not isinstance(opener, str):
             # raw_opener is the repr of the non-string value itself (pre-sanitize -- this
@@ -2306,9 +2403,10 @@ class GeminiOpener:
         # capture's truncation flag. When present it REPLACES profile.photos as the model's view
         # of her -- the raw scroll frames are not sent at all, which is doc 5.7's "Not sent:
         # full screenshots, scroll frames, the anchor, endorsement blocks". profile is still
-        # passed and still contributes its TEXT (profile.text_blob(), empty on Hinge, real on
-        # Bumble web); only its photos go unused, deliberately and silently, because the caller
-        # that has crops also still has the frames and needs them for ranking and embedding.
+        # passed and still contributes its TEXT (profile.text_blob(), empty on Hinge but
+        # potentially populated by a future browser driver); only its photos go unused,
+        # deliberately and silently, because the caller that has crops also still has the
+        # frames and needs them for ranking and embedding.
         #
         # REACHABLE FROM PRODUCTION AS OF 2026-08-12. The chain is: hinge._capture_current
         # enumerates the profile (doc 5.5's closed loop) and builds a
@@ -2366,6 +2464,13 @@ class GeminiOpener:
         # rather than able to interleave and both hit the same about-to-be-retired model with
         # a real, billed request (see the class docstring's THREAD SAFETY note).
         with self._lock:
+            if should_stop is not None and should_stop():
+                # Image base64/recompression is the expensive part of request construction.
+                # A run already known to be stopping must not spend that CPU/memory before the
+                # first per-model stop check gets a chance to run.
+                raise OpenerAborted(
+                    "Opener cascade aborted before preparing images: the run is stopping "
+                    "(should_stop signaled), not a provider failure")
             # Encode once, reuse across every model tried in this call's cascade -- base64 and
             # (when a profile needs it) recompression are the expensive parts of building a
             # request, and neither depends on which model ends up serving it (nor on
@@ -2406,8 +2511,11 @@ class GeminiOpener:
             # shows this verbatim, and "wait until midnight Pacific" vs "retry in a minute" are
             # very different instructions to give the operator.
             scopes: dict[str, str] = {}
-            for model in self.models:
-                if should_stop is not None and should_stop():
+            for model_index, model in enumerate(self.models):
+                # The first model's stop check already ran before image preparation above.
+                # Reusing that result avoids a second callback between encoding and the first
+                # request while retaining one check for every model (including retired ones).
+                if model_index > 0 and should_stop is not None and should_stop():
                     # Checked before even the "already retired" skip below, so a stop signaled
                     # right after this model's slot comes up never issues a request for it --
                     # see this method's should_stop docstring paragraph for the full rationale.
@@ -2614,8 +2722,11 @@ class GeminiOpener:
         model will work once a run is live.
         """
         seen: dict[str, list[str]] = {}
-        url: str | None = _GEMINI_MODELS_LIST_URL
-        while url:
+        page_token: str | None = None
+        seen_page_tokens: set[str] = set()
+        for _page_number in range(1, _MAX_PREFLIGHT_PAGES + 1):
+            url = (_GEMINI_MODELS_LIST_URL if page_token is None else
+                   f"{_GEMINI_MODELS_LIST_URL}?pageToken={quote(page_token, safe='')}")
             code, response = self.transport(
                 url, None, {"X-goog-api-key": self.api_key}, self.request_timeout_s,
                 method="GET",
@@ -2642,8 +2753,19 @@ class GeminiOpener:
                 methods = entry.get("supportedGenerationMethods")
                 seen[model_id] = [str(m) for m in methods] if isinstance(methods, list) else []
             next_token = response.get("nextPageToken")
-            url = f"{_GEMINI_MODELS_LIST_URL}?pageToken={quote(str(next_token), safe='')}" \
-                if next_token else None
+            if next_token in (None, ""):
+                break
+            if not isinstance(next_token, str) or not next_token.strip():
+                raise RuntimeError(
+                    "Gemini preflight failed: ListModels returned a malformed nextPageToken")
+            if next_token in seen_page_tokens:
+                raise RuntimeError(
+                    "Gemini preflight failed: ListModels repeated a pagination token")
+            seen_page_tokens.add(next_token)
+            page_token = next_token
+        else:
+            raise RuntimeError(
+                f"Gemini preflight failed: ListModels exceeded {_MAX_PREFLIGHT_PAGES} pages")
 
         missing = [m for m in self.models if m not in seen]
         unusable = [m for m in self.models if m in seen and "generateContent" not in seen[m]]

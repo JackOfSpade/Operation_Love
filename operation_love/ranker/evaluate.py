@@ -35,8 +35,26 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5,
     """Identity-grouped, stratified K-fold CV. Returns a JSON-able dict: status,
     label counts, distinct identities, and (when ok) ROC-AUC / PR-AUC / Brier as
     [mean, std]. Never raises — failure modes come back as a status + message."""
-    n = len(samples)
-    y = [1 if liked else 0 for liked, _ in samples]
+    empty_base = {
+        "labels": 0, "likes": 0, "passes": 0, "identities": None,
+        "folds": 0, "roc_auc": None, "pr_auc": None, "brier": None,
+        "base_rate": 0.0,
+    }
+    try:
+        rows = list(samples)
+        y: list[int] = []
+        for ordinal, sample in enumerate(rows):
+            if not isinstance(sample, (list, tuple)) or len(sample) != 2:
+                raise ValueError(f"sample {ordinal} is not a (liked, embedding) pair")
+            liked, _ = sample
+            if type(liked) is not bool:
+                raise ValueError(f"sample {ordinal} liked label is not exactly bool")
+            y.append(1 if liked else 0)
+    except Exception as exc:  # noqa: BLE001 - this API promises a status dict for all inputs
+        return {**empty_base, "status": "error",
+                "message": f"evaluation input is malformed: {type(exc).__name__}: {exc}"}
+
+    n = len(rows)
     likes, passes = sum(y), n - sum(y)
     base = {
         "labels": n, "likes": likes, "passes": passes, "identities": None,
@@ -57,7 +75,7 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5,
     # Wrapped so this never raises (malformed/ragged embeddings, sklearn edge cases):
     # the GUI relies on a status dict, and the CLI calls evaluate() with no guard.
     try:
-        X = np.asarray([emb for _, emb in samples], dtype=float)
+        X = np.asarray([emb for _, emb in rows], dtype=float)
         yv = np.asarray(y, dtype=int)
         if X.ndim != 2 or X.shape[1] == 0:
             return {**base, "status": "error", "message": "stored embeddings are malformed."}
@@ -66,7 +84,7 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5,
         n_groups = len(set(groups))
         base = {**base, "identities": n_groups}
 
-        splits = min(n_splits, n_groups, min(likes, passes))
+        splits = min(n_splits, n_groups, likes, passes)
         if splits < 2:
             return {**base, "status": "insufficient_groups",
                     "message": f"Too few distinct identities / minority samples for grouped "

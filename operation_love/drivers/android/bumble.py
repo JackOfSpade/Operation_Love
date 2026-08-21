@@ -1,7 +1,8 @@
-"""Bumble's Android Auto binding.
+"""Bumble's staged, currently unlicensed Android binding.
 
-This app uses only direct card-body drags for automated decisions. It has no
-manual-observation path.
+The future Auto path uses direct card-body drags, whose pure mechanics remain unit-testable.
+No real session may start while ``BUMBLE_SPEC.calibrated`` and ``observe_ready`` are false;
+the paid-upsell detection template is intentionally absent until it is measured live.
 """
 from __future__ import annotations
 
@@ -13,9 +14,12 @@ from ...perception.capture import Profile
 BUMBLE_SPEC = AndroidAppSpec(
     app="bumble",
     package="com.bumble.app",
-    # Platform readiness is mode-specific in drivers/android/__init__.py: Auto is enabled,
-    # while Observe is deliberately unavailable.
+    # drivers/android/__init__.py derives Auto and Observe readiness from this spec.  False
+    # therefore keeps BOTH modes out of production even though card-drag logic has unit tests.
     calibrated=False,
+    # Bumble has no reviewed manual-observation path. Keep this explicit so a future Auto
+    # calibration cannot accidentally license Observe merely by changing `calibrated`.
+    observe_calibrated=False,
     coords={
         # Card-body drags avoid the lower action row, including paid SuperSwipe.
         "swipe_start": (0.50, 0.55),
@@ -38,7 +42,7 @@ BUMBLE_SPEC = AndroidAppSpec(
 
 
 class BumbleAndroidDriver(AndroidDriver):
-    """Bumble's direct-card Auto binding."""
+    """Bumble's staged direct-card binding; production readiness lives on BUMBLE_SPEC."""
 
     def __init__(self, cfg):
         super().__init__(cfg, BUMBLE_SPEC)
@@ -46,13 +50,20 @@ class BumbleAndroidDriver(AndroidDriver):
     def next_profile(self, *, should_stop=None) -> Profile | None:
         """Capture the visible deck card without borrowing Hinge's profile reader.
 
-        Bumble Auto makes card-body drags; it does not need the Hinge-only long-profile
-        scroll, reverse-scroll, item enumeration, or swipe-time opener machinery.
+        The prospective Auto path makes card-body drags; it does not need the Hinge-only
+        long-profile scroll, reverse-scroll, item enumeration, or swipe-time opener machinery.
         """
         if should_stop is not None and should_stop():
             return None
+        # This override deliberately skips Hinge's long capture implementation, but foreground
+        # ownership is app-agnostic. Probe on both sides of the screencap so System UI cannot be
+        # returned as a Bumble card if focus changes during the capture command.
+        if self._refuse_foreground_block():
+            return None
         frame = self._screencap(on_blank="none")
         if frame is None:
+            return None
+        if self._refuse_foreground_block(frame=frame):
             return None
         self._capture_scrolls = 0
         self._capture_scroll_ledger = []

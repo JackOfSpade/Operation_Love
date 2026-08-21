@@ -11,6 +11,8 @@ spawns a real `adb` process or opens a real connection.
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -106,7 +108,7 @@ def test_manifest_well_formed_and_frame_numbering_sequential_with_no_gaps(tmp_pa
         assert (out_dir / f["file"]).exists()
     # per-frame sha256 matches the bytes actually written, and offsets are non-decreasing
     prev_offset = -1.0
-    for f, raw in zip(manifest["frames"], [b"one", b"two", b"three"]):
+    for f, raw in zip(manifest["frames"], [b"one", b"two", b"three"], strict=True):
         assert f["sha256"] == _sha256(raw)
         assert f["offset_s"] >= prev_offset
         prev_offset = f["offset_s"]
@@ -114,6 +116,10 @@ def test_manifest_well_formed_and_frame_numbering_sequential_with_no_gaps(tmp_pa
     # manifest.json on disk matches the returned dict exactly
     on_disk = json.loads((out_dir / "manifest.json").read_text())
     assert on_disk == manifest
+    if os.name == "posix":
+        assert stat.S_IMODE(out_dir.stat().st_mode) == 0o700
+        assert all(stat.S_IMODE(path.stat().st_mode) == 0o600
+                   for path in out_dir.iterdir() if path.is_file())
 
 
 # --- Ctrl-C / early termination ------------------------------------------------------------

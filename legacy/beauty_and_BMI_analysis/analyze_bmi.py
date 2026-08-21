@@ -7,7 +7,6 @@ from torchvision import transforms
 from tqdm import tqdm
 from urllib.request import urlretrieve
 from face_to_bmi_vit.scripts.loader import vit_transforms
-from face_to_bmi_vit.scripts.models import get_model
 
 
 class TqdmUpTo(tqdm):

@@ -104,6 +104,97 @@ def _opener(transport, models=("gemini-primary",), **kwargs):
     return GeminiOpener(models, api_key="test-key", transport=transport, **kwargs)
 
 
+@pytest.mark.parametrize("models", [
+    "gemini-primary", [123], [""], [" gemini-a"], ["gemini-a "],
+    ["gemini-a", "gemini-a"],
+])
+def test_direct_constructor_rejects_invalid_model_collections_without_string_coercion(models):
+    with pytest.raises(ValueError, match="model"):
+        GeminiOpener(models, api_key="test-key", transport=_Transport([]))
+
+
+@pytest.mark.parametrize("max_tokens", [True, 0, -1, 1.5, "400"])
+def test_direct_constructor_requires_an_exact_positive_max_tokens(max_tokens):
+    with pytest.raises(ValueError, match="max_tokens"):
+        _opener(_Transport([]), max_tokens=max_tokens)
+
+
+@pytest.mark.parametrize("timeout", [
+    True, 0, -1, float("nan"), float("inf"),
+    pytest.param(10 ** 10_000, id="huge_int"), 180.1, "30",
+])
+def test_direct_constructor_requires_a_finite_bounded_request_timeout(timeout):
+    with pytest.raises(ValueError, match="request_timeout_s"):
+        _opener(_Transport([]), request_timeout_s=timeout)
+
+
+@pytest.mark.parametrize("api_key", [None, "", "   ", " secret", "secret ", 123, True])
+def test_direct_constructor_requires_a_nonempty_string_api_key(api_key):
+    with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
+        GeminiOpener(["gemini-primary"], api_key=api_key, env={}, transport=_Transport([]))
+
+
+@pytest.mark.parametrize("thinking", [
+    [],
+    {"gemini-primary": []},
+    {"gemini-primary": {"unknown": 1}},
+    {"gemini-primary": {"thinkingLevel": "extreme"}},
+    {"gemini-primary": {"thinkingBudget": True}},
+    {"gemini-primary": {"thinkingBudget": -1}},
+    {"some-other-model": {}},
+])
+def test_direct_constructor_rejects_malformed_thinking_config(thinking):
+    with pytest.raises(ValueError, match="thinking"):
+        _opener(_Transport([]), thinking=thinking)
+
+
+class _OversizedHTTPResponse:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self, size):
+        assert size == opener_module._MAX_GEMINI_RESPONSE_BYTES + 1
+        return b"x" * size
+
+
+def test_stdlib_transport_bounds_success_response_body(monkeypatch):
+    monkeypatch.setattr(opener_module, "urlopen", lambda *_args, **_kwargs: _OversizedHTTPResponse())
+    with pytest.raises(RuntimeError, match="response exceeded"):
+        opener_module._stdlib_gemini_transport(
+            "https://generativelanguage.googleapis.com/v1beta/models", None,
+            {"X-goog-api-key": "test-key"}, 1.0, method="GET")
+
+
+def test_stdlib_transport_bounds_http_error_body(monkeypatch):
+    oversized = io.BytesIO(b"x" * (opener_module._MAX_GEMINI_RESPONSE_BYTES + 1))
+    error = urllib.error.HTTPError("https://example.invalid", 500, "error", {}, oversized)
+
+    def raise_http_error(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(opener_module, "urlopen", raise_http_error)
+    with pytest.raises(RuntimeError, match="response exceeded"):
+        opener_module._stdlib_gemini_transport(
+            "https://generativelanguage.googleapis.com/v1beta/models", None,
+            {"X-goog-api-key": "test-key"}, 1.0, method="GET")
+
+
+def test_image_encoding_has_count_and_raw_byte_resource_limits(monkeypatch):
+    opener = _opener(_Transport([]))
+    monkeypatch.setattr(opener_module, "_MAX_REQUEST_IMAGES", 2)
+    with pytest.raises(OpenerError, match="more than 2"):
+        opener._image_parts([b"a", b"b", b"c"])
+
+    monkeypatch.setattr(opener_module, "_MAX_RAW_IMAGE_BYTES", 4)
+    with pytest.raises(OpenerError, match="before base64 encoding"):
+        opener._image_parts([b"abc", b"de"])
+
+
 def test_generate_posts_structured_multimodal_request_and_maps_usage():
     transport = _Transport([(200, _success(opener="Matcha and yoga — noted"))])
     png = b"\x89PNG\r\n\x1a\nfirst"
@@ -1521,10 +1612,9 @@ def test_thinking_config_is_included_verbatim_for_a_configured_model():
 
 def test_thinking_config_is_omitted_entirely_for_a_model_with_no_entry():
     transport = _Transport([(200, _success())])
-    # thinking is configured for a DIFFERENT model id, so gemini-plain must get no
-    # thinkingConfig key at all -- not an empty dict, not a guessed default.
-    opener = _opener(transport, models=("gemini-plain",),
-                     thinking={"some-other-model": {"thinkingBudget": 0}})
+    # No entry means gemini-plain gets no thinkingConfig key at all -- not an empty dict,
+    # not a guessed default. Entries for unconfigured model ids are rejected at construction.
+    opener = _opener(transport, models=("gemini-plain",), thinking={})
     opener.generate(Profile(), style="s")
     payload = transport.calls[0][1]
     assert "thinkingConfig" not in payload["generationConfig"]
@@ -1811,6 +1901,21 @@ def test_should_stop_true_from_the_start_issues_no_requests_at_all():
     assert len(transport.calls) == 0
 
 
+def test_should_stop_true_from_start_aborts_before_expensive_image_encoding(monkeypatch):
+    opener = _opener(_Transport([(200, _success())]))
+    encoded = []
+
+    def unexpected_encode(_images):
+        encoded.append(True)
+        raise AssertionError("images must not be encoded after stop")
+
+    monkeypatch.setattr(opener, "_image_parts", unexpected_encode)
+    with pytest.raises(OpenerAborted):
+        opener.generate(Profile(photos=[b"large-image"]), style="s", should_stop=lambda: True)
+
+    assert encoded == []
+
+
 def test_should_stop_is_checked_for_every_model_including_an_already_retired_one():
     """HOLE 2 (mutation audit): both the class docstring (THREAD SAFETY paragraph) and
     generate()'s own should_stop docstring promise the should_stop() check runs at the TOP
@@ -1909,6 +2014,34 @@ def test_preflight_follows_nextpagetoken_pagination():
 
     assert len(transport.calls) == 2
     assert "pageToken=tok-2" in transport.calls[1][0]
+
+
+def test_preflight_refuses_a_repeated_pagination_token_without_looping_forever():
+    transport = _Transport([
+        _models_page([], next_token="same-token"),
+        _models_page([], next_token="same-token"),
+    ])
+    opener = _opener(transport)
+
+    with pytest.raises(RuntimeError, match="repeated a pagination token"):
+        opener.preflight()
+
+    assert len(transport.calls) == 2
+
+
+def test_preflight_caps_unique_pagination_pages(monkeypatch):
+    monkeypatch.setattr(opener_module, "_MAX_PREFLIGHT_PAGES", 3)
+    transport = _Transport([
+        _models_page([], next_token="token-1"),
+        _models_page([], next_token="token-2"),
+        _models_page([], next_token="token-3"),
+    ])
+    opener = _opener(transport)
+
+    with pytest.raises(RuntimeError, match="exceeded 3 pages"):
+        opener.preflight()
+
+    assert len(transport.calls) == 3
 
 
 def test_preflight_translates_invalid_api_key_400_without_leaking_the_key():

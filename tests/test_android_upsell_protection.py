@@ -220,9 +220,9 @@ def test_unconfirmed_screen_error_halts_the_run_rather_than_being_routine():
 
 def test_deck_confirm_guard_is_a_noop_for_a_spec_declaring_no_like_or_pass_template():
     # BUMBLE_SPEC's real, current state: no templates at all. This is deliberately NOT a
-    # loophole -- see UnconfirmedScreenError's docstring -- but it must not regress the
-    # already-pinned behaviour in tests/test_android_safety.py (a card_swipe like/pass
-    # issues exactly one drag and zero taps).
+    # production loophole: platform selection and open_session refuse the unlicensed spec.
+    # Direct fake-driver calls remain useful unit coverage, and must not regress the
+    # already-pinned card_swipe contract (exactly one drag and zero taps).
     adb = FakeAdb([b""])
     drv = _drv(BUMBLE_SPEC, adb)
     drv.like()

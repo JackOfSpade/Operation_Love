@@ -8,10 +8,9 @@ driver (`AndroidDriver`, defined in hinge.py — see that module's docstring for
 not forking the perception/action code.
 
 Pure data: no adb/cv2/touch imports here, so importing a spec can never fire a touch or open
-a device. `calibrated` is the field that matters for safety — see
-operation_love/platforms.py's `_apply_calibration`, which derives whether a platform is even
-allowed to start from this flag, and operation_love/drivers/android/__init__.py, which wires
-each spec's flag into that registry.
+a device. `calibrated` licenses Auto and `observe_ready` resolves Observe readiness — see
+operation_love/platforms.py's `_apply_calibration` and
+operation_love/drivers/android/__init__.py, which wire both values into the registry.
 """
 from __future__ import annotations
 
@@ -52,11 +51,10 @@ class AndroidAppSpec:
 
     observe_calibrated: bool | None = None
     # Whether the app's manual Observe path is safe to run. ``None`` follows
-    # ``calibrated`` for existing apps.  A separate True is useful for a target such as
-    # Bumble whose passive/manual-decision path needs only reviewed profile scrolling and
-    # read-only decision observation, while autonomous like/pass actions remain deliberately
-    # uncalibrated.  Platform start-up and AndroidDriver.open_session enforce the resolved
-    # mode independently, so enabling Observe can never implicitly enable Auto.
+    # ``calibrated`` for existing apps; an explicit value lets a future target license the
+    # modes independently. Platform start-up and AndroidDriver.open_session enforce the
+    # resolved mode independently, so readiness for one mode never implies readiness for the
+    # other. Bumble currently licenses neither mode.
 
     @property
     def observe_ready(self) -> bool:
@@ -422,7 +420,9 @@ class AndroidAppSpec:
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).coords[{key!r}] must be an (x, y) tuple "
                     f"of numbers (got {value!r})")
-            for axis, v in zip("xy", value):
+            # The tuple-length check above establishes this 2:2 invariant. Keep strict=True so
+            # a future coords shape change cannot silently skip an axis validation.
+            for axis, v in zip("xy", value, strict=True):
                 if not (math.isfinite(v) and 0.0 <= v <= 1.0):
                     raise ValueError(
                         f"AndroidAppSpec({self.app!r}).coords[{key!r}].{axis} = {v!r} is not "

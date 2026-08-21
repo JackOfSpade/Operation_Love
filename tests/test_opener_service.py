@@ -4,8 +4,9 @@ The service is the GLOBAL, budget-aware gate for openers shared by every worker.
 It's exercised indirectly elsewhere; this pins its own decision branches with
 lightweight fakes (no provider SDK/network).
 """
-from types import SimpleNamespace
+import math
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -1065,14 +1066,47 @@ def test_should_stop_defaults_to_none_and_never_short_circuits_when_omitted():
 # (and by any future direct call site), so the invariant must hold here too.
 # ---------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("bad_max_attempts", [0, -1, True, "5", 2.5], ids=[
-    "zero", "negative", "bool_true", "string", "float"])
+@pytest.mark.parametrize("bad_max_attempts", [0, -1, 16, True, "5", 2.5], ids=[
+    "zero", "negative", "over_ceiling", "bool_true", "string", "float"])
 def test_max_attempts_must_be_a_positive_int(bad_max_attempts):
     """bool is rejected explicitly even though it IS an int subclass in Python (True == 1):
     silently coercing max_attempts=True into 1 would be a confusing accident, not a real
     configuration choice."""
     with pytest.raises(ValueError, match="max_attempts"):
         OpenerService(_Client(), _Tracker(), _Store(), "casual", max_attempts=bad_max_attempts)
+
+
+@pytest.mark.parametrize("bad_attempts", [0, -1, 16, True, "3", 2.5])
+def test_advisory_max_attempts_must_be_a_bounded_positive_int(bad_attempts):
+    with pytest.raises(ValueError, match="advisory_max_attempts"):
+        OpenerService(
+            _Client(), _Tracker(), _Store(), "casual",
+            max_attempts=15, advisory_max_attempts=bad_attempts,
+        )
+
+
+@pytest.mark.parametrize("bad_deadline", [
+    0,
+    -1,
+    301,
+    True,
+    "60",
+    math.nan,
+    math.inf,
+    -math.inf,
+    pytest.param(10 ** 10_000, id="huge_int"),
+])
+def test_advisory_deadline_must_be_finite_positive_and_bounded(bad_deadline):
+    with pytest.raises(ValueError, match="advisory_deadline_s"):
+        OpenerService(
+            _Client(), _Tracker(), _Store(), "casual", advisory_deadline_s=bad_deadline,
+        )
+
+
+@pytest.mark.parametrize("bad_style", [None, 1, True, ["casual"]])
+def test_style_must_be_a_string(bad_style):
+    with pytest.raises(ValueError, match="style"):
+        OpenerService(_Client(), _Tracker(), _Store(), bad_style)
 
 
 # ---------------------------------------------------------------------------------------

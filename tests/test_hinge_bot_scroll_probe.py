@@ -15,6 +15,8 @@ contract:
 from __future__ import annotations
 
 import json
+import os
+import stat
 
 import pytest
 
@@ -604,6 +606,10 @@ def test_save_capture_records_the_given_pre_reset_ledger(tmp_path):
     assert manifest["scroll_captures"] == 48
     on_disk = json.loads((tmp_path / "out" / "manifest.json").read_text())
     assert on_disk == manifest
+    if os.name == "posix":
+        assert stat.S_IMODE((tmp_path / "out").stat().st_mode) == 0o700
+        assert all(stat.S_IMODE(path.stat().st_mode) == 0o600
+                   for path in (tmp_path / "out").iterdir())
 
 
 def test_save_capture_notes_honestly_when_the_ledger_could_not_be_captured(tmp_path):

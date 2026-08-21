@@ -2,7 +2,7 @@
 name = "operation-love"
 version = "2.0.0"
 description = "Personal dating-app assistant: local preference ranker + configurable AI openers."
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.0",    # load a local GEMINI_API_KEY from .env
@@ -38,16 +38,20 @@ ml = [
     # removing it reopens the crash the moment a bare/newer resolver is used.
     "setuptools<82",
 ]
-# App drivers
-bumble = ["playwright>=1.44", "patchright>=1.44"]   # patchright = stealth-patched Playwright (no Runtime.enable CDP leak)
+# App drivers. Browser support is reference-only and deliberately not installed by launchers.
+web = ["playwright>=1.44", "patchright>=1.44"]   # patchright = stealth-patched Playwright (no Runtime.enable CDP leak)
 hinge = ["opencv-python>=4.8"]   # host-side ADB (needs `adb` CLI on PATH) + the `ml` extra (Pillow) for screencap diff; opencv template-matches the like/pass button glyphs
 # Cloud storage (system-of-record + analytics)
 bq = ["google-cloud-bigquery>=3.20", "google-cloud-storage>=2.16"]
-dev = ["pytest>=8.0"]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.15,<0.16",
+]
 
-# Only ship the library package; ops/, legacy/, tools/, tests/ are repo-only.
-# (Without this, setuptools' flat-layout auto-discovery errors on the extra
-# top-level dirs. tools/ and tests/ stay importable via cwd from the repo root.)
+# Only install the library package in wheels. Setuptools keeps tests in the source
+# distribution for downstream verification, while ops/, legacy/, and tools/ stay repo-only.
+# (Without this, flat-layout auto-discovery errors on the extra top-level dirs. tools/ and
+# tests/ stay importable via cwd from the repository root.)
 [tool.setuptools.packages.find]
 include = ["operation_love*"]
 
@@ -59,6 +63,27 @@ operation_love = ["drivers/assets/*.png", "assets/*.html"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py311"
+# These archived research implementations were imported from their upstream projects and are
+# not part of the maintained package. Other first-party Python under legacy/ remains linted.
+extend-exclude = [
+    "legacy/beauty_and_BMI_analysis/ComboLoss",
+    "legacy/beauty_and_BMI_analysis/face_to_bmi_vit",
+]
+
+[tool.ruff.lint]
+# Make the established baseline explicit. Broader modernization/style rule sets
+# can be adopted separately without turning a dependency upgrade into a surprise
+# repository-wide rewrite.
+select = ["E4", "E7", "E9", "F"]
+# These focused checks catch silent truncation, unused loop bindings, late-bound closures,
+# dynamic assignment of constant attributes, implicit subprocess failure semantics, and readable
+# transformed-list/extrema simplifications without imposing a broader style migration.
+extend-select = [
+    "B007", "B010", "B023", "B905", "PERF401", "PLW1510", "PLW3301",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -18,11 +18,39 @@ from ..device import best_device
 from ..perception.capture import Profile
 
 
+def _finite_builtin_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        converted = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return converted if math.isfinite(converted) else None
+
+
+def _vector_dimension(vectors: list[list[float]]) -> int:
+    try:
+        dimension = len(vectors[0])
+    except (IndexError, TypeError) as exc:
+        raise ValueError("vectors must contain nonempty sequences") from exc
+    if dimension == 0:
+        raise ValueError("vectors must have a nonzero dimension")
+    for ordinal, vector in enumerate(vectors):
+        try:
+            actual = len(vector)
+        except TypeError as exc:
+            raise ValueError(f"vector {ordinal} is not a sequence") from exc
+        if actual != dimension:
+            raise ValueError(
+                f"vector {ordinal} has dimension {actual}; expected {dimension}")
+    return dimension
+
+
 def aggregate(vectors: list[list[float]]) -> list[float]:
     """Per-dimension mean across photos. Pure-Python; unit-tested."""
     if not vectors:
         return []
-    d = len(vectors[0])
+    d = _vector_dimension(vectors)
     n = len(vectors)
     return [sum(v[j] for v in vectors) / n for j in range(d)]
 
@@ -49,15 +77,19 @@ def gem_pool(vectors: list[list[float]], p: float = 3.0) -> list[float]:
     the full noise-sensitivity of max pooling: p=1 is the mean, p->inf approaches
     max. Sign-preserving so it works on CLIP's signed features. Pure-Python.
     """
+    exponent = _finite_builtin_number(p)
+    if exponent is None or exponent <= 0:
+        raise ValueError("p must be a positive finite number")
     if not vectors:
         return []
+    dimension = _vector_dimension(vectors)
     if len(vectors) == 1:
         return list(vectors[0])
     k = len(vectors)
     out: list[float] = []
-    for j in range(len(vectors[0])):
+    for j in range(dimension):
         col = [v[j] for v in vectors]
-        mag = (sum(abs(x) ** p for x in col) / k) ** (1.0 / p)
+        mag = (sum(abs(x) ** exponent for x in col) / k) ** (1.0 / exponent)
         out.append(mag if sum(col) >= 0 else -mag)   # restore the bag's dominant sign
     return out
 
@@ -83,9 +115,17 @@ def dedup_by_cosine(vectors: list[list[float]], threshold: float = 0.85) -> list
     """Drop near-duplicate vectors (cosine > threshold vs an already-kept one), so a
     burst of near-identical photos can't dominate the pool. Assumes L2-normalized
     inputs (cosine == dot product). Keeps the first of each group. Pure-Python."""
+    threshold_value = _finite_builtin_number(threshold)
+    if threshold_value is None or not -1.0 <= threshold_value <= 1.0:
+        raise ValueError("threshold must be a finite number in [-1, 1]")
+    if not vectors:
+        return []
+    _vector_dimension(vectors)
     kept: list[list[float]] = []
     for v in vectors:
-        if any(sum(a * b for a, b in zip(v, u, strict=True)) > threshold for u in kept):
+        if any(
+                sum(a * b for a, b in zip(v, u, strict=True)) > threshold_value
+                for u in kept):
             continue
         kept.append(v)
     return kept
@@ -290,7 +330,7 @@ class Embedder:
             import open_clip  # lazy
             import onnxruntime as ort
 
-            self._device = best_device()
+            device = best_device()
 
             # Build CLIP FIRST and commit self._arc LAST. self._arc is the sentinel the guard
             # above short-circuits on, so it must only be set once BOTH models have loaded. If
@@ -303,11 +343,19 @@ class Embedder:
             model, _, preprocess = open_clip.create_model_and_transforms(
                 "ViT-L-14-quickgelu", pretrained="openai"
             )
-            self._clip = model.to(self._device).eval()
-            self._clip_preprocess = preprocess
+            clip = model.to(device).eval()
 
-            providers = _select_onnx_providers(self._device, ort.get_available_providers())
-            self._set_arc_providers(providers)     # sets self._arc — LAST, after CLIP succeeded
+            providers = _select_onnx_providers(device, ort.get_available_providers())
+            arc = self._build_arc(providers)
+            # Publish the complete model bundle atomically under the lock.  In particular, an
+            # ArcFace build failure must not retain a heavyweight CLIP object or a device from a
+            # half-finished attempt; the next _ensure() starts from the same clean state.
+            self._device = device
+            self._clip = clip
+            self._clip_preprocess = preprocess
+            self._arc_providers = list(providers)
+            self._arc_on_cpu = self._arc_providers == ["CPUExecutionProvider"]
+            self._arc = arc                    # initialization sentinel is committed last
             # Say what ArcFace actually ended up on, once, at init. Before the detector pin
             # the operator's only evidence was a CoreML stack trace at warmup followed by a
             # silently CPU-only session; a provider split this consequential (~9x on the

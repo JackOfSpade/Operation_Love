@@ -168,7 +168,8 @@ class _FakePopen:
         pass
 
 
-def _fake_run_ok(argv, capture_output=True, timeout=None):
+def _fake_run_ok(argv, capture_output=True, timeout=None, check=None):
+    assert check is False
     return subprocess.CompletedProcess(argv, 0, stdout=_GETEVENT_P_TRANSCRIPT.encode(), stderr=b"")
 
 
@@ -350,7 +351,8 @@ def test_close_without_start_does_not_raise():
 
 
 def test_start_raises_touchwatch_unavailable_when_probe_process_cannot_start(monkeypatch):
-    def _boom(argv, capture_output=True, timeout=None):
+    def _boom(argv, capture_output=True, timeout=None, check=None):
+        assert check is False
         raise FileNotFoundError("adb not on PATH")
 
     monkeypatch.setattr(touchwatch.subprocess, "run", _boom)
@@ -361,7 +363,8 @@ def test_start_raises_touchwatch_unavailable_when_probe_process_cannot_start(mon
 
 
 def test_start_raises_touchwatch_unavailable_when_probe_exits_nonzero(monkeypatch):
-    def _fail_run(argv, capture_output=True, timeout=None):
+    def _fail_run(argv, capture_output=True, timeout=None, check=None):
+        assert check is False
         return subprocess.CompletedProcess(
             argv, 1, stdout=b"", stderr=b"error: no devices/emulators found",
         )
@@ -374,7 +377,8 @@ def test_start_raises_touchwatch_unavailable_when_probe_exits_nonzero(monkeypatc
 
 
 def test_start_raises_touchwatch_unavailable_when_no_touch_device_present(monkeypatch):
-    def _no_touch_run(argv, capture_output=True, timeout=None):
+    def _no_touch_run(argv, capture_output=True, timeout=None, check=None):
+        assert check is False
         return subprocess.CompletedProcess(argv, 0, stdout=_NO_TOUCH_TRANSCRIPT.encode(), stderr=b"")
 
     monkeypatch.setattr(touchwatch.subprocess, "run", _no_touch_run)

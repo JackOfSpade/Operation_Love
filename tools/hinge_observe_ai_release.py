@@ -17,6 +17,7 @@ from pathlib import Path
 import yaml
 
 from operation_love import config as cfg_mod
+from operation_love.private_files import atomic_write_private_bytes, atomic_write_private_text, ensure_private_dir
 from operation_love.ranker import make_store
 
 ACCEPTANCE = "I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK"
@@ -235,9 +236,12 @@ def review(*, run_dir: Path, run_id: str, provenance_path: Path, out_dir: Path,
     }
     if set(artifact) != REVIEW_KEYS:
         raise AssertionError("AI review schema drift")
-    out_dir.mkdir(parents=True, exist_ok=False)
-    (out_dir / "hinge_ai_observe_independent_review.json").write_text(
-        json.dumps(artifact, indent=2, sort_keys=True) + "\n")
+    ensure_private_dir(out_dir, exist_ok=False)
+    atomic_write_private_text(
+        out_dir / "hinge_ai_observe_independent_review.json",
+        json.dumps(artifact, indent=2, sort_keys=True) + "\n",
+        parent=out_dir,
+    )
     return artifact
 
 
@@ -332,9 +336,12 @@ def record_provenance(*, cfg, run_dir: Path, run_id: str, out_dir: Path, source:
     _verify_provenance(artifact, json.dumps(artifact, sort_keys=True).encode(), run_dir=run_dir,
                        run_id=run_id, rows=rows, actions_raw=actions_raw)
     _inside_repo(out_dir, label="AI action provenance output")
-    out_dir.mkdir(parents=True, exist_ok=False)
-    (out_dir / "hinge_ai_observe_action_provenance.json").write_text(
-        json.dumps(artifact, indent=2, sort_keys=True) + "\n")
+    ensure_private_dir(out_dir, exist_ok=False)
+    atomic_write_private_text(
+        out_dir / "hinge_ai_observe_action_provenance.json",
+        json.dumps(artifact, indent=2, sort_keys=True) + "\n",
+        parent=out_dir,
+    )
     return artifact
 
 
@@ -384,10 +391,10 @@ def verify(*, cfg, run_dir: Path, run_id: str, provenance_path: Path, review_pat
     }
     if set(artifact) != ARTIFACT_KEYS:
         raise AssertionError("AI release artifact schema drift")
-    out_dir.mkdir(parents=True, exist_ok=False)
+    ensure_private_dir(out_dir, exist_ok=False)
     output = out_dir / "hinge_ai_observe_release.json"
     output_raw = json.dumps(artifact, indent=2, sort_keys=True).encode() + b"\n"
-    output.write_bytes(output_raw)
+    atomic_write_private_bytes(output, output_raw, parent=out_dir)
     paste = {key: artifact[key] for key in (
         "schema_version", "acceptance", "calibration_calibrated_at", "calibration_sha256", "device",
         "hinge_version_name", "frame_size_px", "production_run_reference", "production_run_id", "verified_at")}

@@ -1,10 +1,18 @@
 """SQLiteStore source-tagging and daily-limit behavior."""
 import json
+import math
+import os
 import sqlite3
+import stat
 import time
+from pathlib import Path
+
+import pytest
 
 from operation_love.ranker import Store
+from operation_love.ranker import store as store_module
 from operation_love.ranker.store import SQLiteStore
+from operation_love.private_files import UnsafePrivatePathError
 
 
 def test_sqlite_store_conforms_to_store_protocol(tmp_path):
@@ -13,6 +21,115 @@ def test_sqlite_store_conforms_to_store_protocol(tmp_path):
         assert isinstance(s, Store)
     finally:
         s.close()
+
+
+@pytest.mark.parametrize("value", [True, math.nan, math.inf, -math.inf, 1e300, 10 ** 10_000,
+                                   "2026-01-01T00:00:00"],
+                         ids=["bool", "nan", "inf", "negative-inf", "out-of-range-float",
+                              "huge-int", "naive-iso"])
+def test_sqlite_action_writes_reject_invalid_timestamp_values_without_overflow(tmp_path, value):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        with pytest.raises(ValueError, match="created_at"):
+            store.record_decision("r", "hinge", "like", 1.0, created_at=value)
+        with pytest.raises(ValueError, match="decision_created_at"):
+            store.record_opener(
+                "r", "hinge", "model", "opener", "reference",
+                decision_created_at=value,
+            )
+        assert store.con.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
+        assert store.con.execute("SELECT COUNT(*) FROM openers").fetchone()[0] == 0
+    finally:
+        store.close()
+
+
+def test_sqlite_action_timestamps_accept_timezone_aware_iso_text(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_decision("r", "hinge", "like", 1.0,
+                              created_at="2026-01-01T00:00:00Z")
+        assert store.con.execute("SELECT created_at FROM decisions").fetchone()[0] == 1767225600.0
+    finally:
+        store.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_sqlite_store_tightens_only_its_leaf_data_dir_database_and_sidecars(tmp_path):
+    broad_parent = tmp_path / "shared"
+    data_dir = broad_parent / "operation-love"
+    broad_parent.mkdir(mode=0o755)
+    data_dir.mkdir(mode=0o755)
+    broad_parent.chmod(0o755)
+    data_dir.chmod(0o755)
+    db = data_dir / "store.db"
+
+    store = SQLiteStore(db)
+    try:
+        assert stat.S_IMODE(broad_parent.stat().st_mode) == 0o755
+        assert stat.S_IMODE(data_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(db.stat().st_mode) == 0o600
+
+        sidecars = [Path(str(db) + suffix) for suffix in ("-wal", "-shm", "-journal")]
+        for sidecar in sidecars:
+            sidecar.write_bytes(b"")
+            sidecar.chmod(0o644)
+        store.flush()
+        assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in sidecars)
+    finally:
+        store.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="symlink and POSIX permission semantics")
+@pytest.mark.parametrize("suffix", ["", "-wal", "-shm", "-journal"])
+def test_sqlite_store_rejects_symlink_database_artifacts_without_chmodding_target(
+        tmp_path, suffix):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    db = data_dir / "store.db"
+    unrelated = tmp_path / f"unrelated{suffix or '-db'}"
+    unrelated.write_bytes(b"do not touch")
+    unrelated.chmod(0o644)
+    Path(str(db) + suffix).symlink_to(unrelated)
+
+    with pytest.raises(UnsafePrivatePathError):
+        SQLiteStore(db)
+
+    assert unrelated.read_bytes() == b"do not touch"
+    assert stat.S_IMODE(unrelated.stat().st_mode) == 0o644
+
+
+def test_sqlite_memory_database_does_not_create_or_chmod_a_filesystem_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    before = stat.S_IMODE(tmp_path.stat().st_mode)
+
+    store = SQLiteStore(":memory:")
+    try:
+        assert store.con.execute("SELECT COUNT(*) FROM labels").fetchone() == (0,)
+    finally:
+        store.close()
+
+    assert not (tmp_path / ":memory:").exists()
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == before
+
+
+def test_sqlite_initialization_failure_closes_connection_without_masking_cause(monkeypatch):
+    class BrokenConnection:
+        closed = False
+
+        def executescript(self, _schema):
+            raise sqlite3.DatabaseError("schema exploded")
+
+        def close(self):
+            self.closed = True
+            raise OSError("cleanup also failed")
+
+    connection = BrokenConnection()
+    monkeypatch.setattr(store_module.sqlite3, "connect", lambda *_args, **_kwargs: connection)
+
+    with pytest.raises(sqlite3.DatabaseError, match="schema exploded"):
+        SQLiteStore(":memory:")
+
+    assert connection.closed is True
 
 
 def test_sqlite_count_today_counts_only_auto_decisions(tmp_path):

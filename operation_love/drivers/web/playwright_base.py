@@ -26,6 +26,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from ... import platforms
+from ...private_files import ensure_private_dir
 from ..base import DatingAppDriver, DriverClosed, open_debug_log, snapshot_failure_frame
 from ...human import human_delay
 
@@ -283,7 +284,9 @@ class PlaywrightDriver(DatingAppDriver):
 
         sync_playwright, engine = self._import_playwright()
 
-        self.user_data_dir.mkdir(parents=True, exist_ok=True)
+        # A persistent context carries authenticated account cookies/session storage. Tighten
+        # only this configured leaf before Playwright can populate it; never chmod its parent.
+        ensure_private_dir(self.user_data_dir)
         self._pw = sync_playwright().start()
         try:
             # Anti-automation hygiene: hide the AutomationControlled blink feature
@@ -330,7 +333,7 @@ class PlaywrightDriver(DatingAppDriver):
     def _import_playwright():
         """Prefer a stealth-patched Playwright (patchright) that avoids the Runtime.enable
         CDP leak; fall back to vanilla playwright. Both expose the same sync_api surface.
-        (rebrowser-playwright was considered too, but isn't in the `bumble` extra --
+        (rebrowser-playwright was considered too, but isn't in the reference-only `web` extra --
         pyproject only installs patchright/playwright -- so it's not offered here as a
         silent, untested fallback tier.)"""
         try:
@@ -338,7 +341,7 @@ class PlaywrightDriver(DatingAppDriver):
             return sync_playwright, "patchright"
         except Exception:  # noqa: BLE001
             pass
-        from playwright.sync_api import sync_playwright  # type: ignore  # lazy: [bumble] extra
+        from playwright.sync_api import sync_playwright  # type: ignore  # lazy: [web] extra
         return sync_playwright, "playwright (unpatched — pip install patchright for stealth)"
 
     def _launch_context(self, launch_kwargs: dict):

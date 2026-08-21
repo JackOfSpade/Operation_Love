@@ -1,10 +1,9 @@
 """Common interface every app driver implements.
 
-The worker (worker.py) is app-agnostic: it only knows these methods. Concrete drivers
-differ in transport: Bumble via Playwright (DOM selectors); Hinge via host-side
-ADB only (screencap perception + humanized `input motionevent` gestures at
-screen-fraction coordinates — no uiautomator2 / on-device helper, see
-ops/HINGE-PIXEL-RUNBOOK.md §5).
+The worker (worker.py) is app-agnostic: it only knows these methods. Current concrete
+drivers use host-side ADB (screencap perception + humanized `input motionevent` gestures
+at screen-fraction coordinates — no uiautomator2 / on-device helper, see
+ops/HINGE-PIXEL-RUNBOOK.md §5). A generic Playwright base remains reference-only.
 """
 from __future__ import annotations
 
@@ -213,7 +212,7 @@ class DatingAppDriver(ABC):
 
     @abstractmethod
     def open_session(self) -> None:
-        """Attach to the app (launch browser / connect to emulator) and reach the swipe deck."""
+        """Attach to the app or physical device and reach the swipe deck."""
 
     @abstractmethod
     def next_profile(self, *, should_stop=None) -> Profile | None:
@@ -353,7 +352,7 @@ class DatingAppDriver(ABC):
     def render_status(self, status: dict) -> None:
         """Optionally paint a live status overlay in the app's own UI.
 
-        Web drivers (Bumble) inject a HUD into the page so you see progress
+        Web drivers may inject a HUD into the page so you see progress
         without watching the terminal. No-op by default — e.g. the Hinge
         Android driver has no injectable page (its status shows in the hub).
         Must never raise: a failed overlay must not break the swipe loop.

@@ -24,6 +24,7 @@ from pathlib import Path
 from operation_love import config as cfg_mod
 from operation_love.drivers import hinge
 from operation_love.drivers.hinge import HingeDriver
+from operation_love.private_files import atomic_write_private_bytes, ensure_private_dir
 
 _BUTTON_TEMPLATES = {"like": "hinge_heart.png", "pass": "hinge_pass_x.png"}
 _SHEET_TEMPLATES = {
@@ -56,8 +57,11 @@ def _annotate(frame: bytes, point: tuple[int, int], out_path: Path) -> None:
             return
         cv2.drawMarker(img, (int(point[0]), int(point[1])), (0, 0, 255),
                        markerType=cv2.MARKER_CROSS, markerSize=40, thickness=3)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(out_path), img)
+        encoded, png = cv2.imencode(".png", img)
+        if not encoded:
+            return
+        ensure_private_dir(out_path.parent)
+        atomic_write_private_bytes(out_path, png.tobytes(), parent=out_path.parent)
     except Exception as exc:  # noqa: BLE001 — annotation is a bonus, never fatal
         print(f"  (could not save annotated screenshot: {exc})")
 

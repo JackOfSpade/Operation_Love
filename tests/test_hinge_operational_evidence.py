@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
+import stat
 
 import pytest
 
@@ -88,6 +90,10 @@ def test_records_all_explicit_roles_with_hashes_and_pure_check_evidence(monkeypa
         raw = (tmp_path / frame["file"]).read_bytes()
         assert frame["sha256"] == hashlib.sha256(raw).hexdigest()
     assert json.loads((tmp_path / "manifest.json").read_text()) == manifest
+    if os.name == "posix":
+        assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
+        assert all(stat.S_IMODE(path.stat().st_mode) == 0o600
+                   for path in tmp_path.iterdir() if path.is_file())
 
 
 def test_refuses_and_marks_manifest_incomplete_when_the_new_top_still_has_a_composer(

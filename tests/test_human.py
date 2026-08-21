@@ -1,5 +1,8 @@
 """Human-like timing (log-normal delays) — no network, pure math."""
+import math
 import random
+
+import pytest
 
 from operation_love.human import human_cooldown, human_delay
 
@@ -30,3 +33,21 @@ def test_zero_anchor_is_zero():
 def test_sigma_zero_returns_anchor_exactly():
     assert human_delay(4.0, sigma=0.0) == 4.0
     assert human_cooldown(4.0, sigma=0.0) == 4.0
+
+
+@pytest.mark.parametrize("function", [human_delay, human_cooldown])
+@pytest.mark.parametrize("seconds", [
+    True, -1, math.nan, math.inf, pytest.param(10 ** 10_000, id="huge_int"), "1",
+])
+def test_delay_functions_reject_invalid_anchors(function, seconds):
+    with pytest.raises(ValueError, match="seconds"):
+        function(seconds)
+
+
+@pytest.mark.parametrize("function", [human_delay, human_cooldown])
+@pytest.mark.parametrize("sigma", [
+    True, -0.1, math.nan, math.inf, pytest.param(10 ** 10_000, id="huge_int"), "0.2",
+])
+def test_delay_functions_reject_invalid_sigma(function, sigma):
+    with pytest.raises(ValueError, match="sigma"):
+        function(1.0, sigma=sigma)

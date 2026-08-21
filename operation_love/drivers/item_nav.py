@@ -346,9 +346,11 @@ _CROSSCHECK_TOLERANCE_PX = 2 * _EXTENT_TOLERANCE_PX
 # (738px), so the anchor could not pick a neighbour until 369px — 23x this bound. The assertion
 # below states that rather than leaving it to be re-derived.
 _ENTRY_ANCHOR_RESIDUAL_PX = _CROSSCHECK_TOLERANCE_PX
-assert _ENTRY_ANCHOR_RESIDUAL_PX * 2 < _FALLBACK_SPACING_PX // 2, (
-    "the ascending anchor bound must stay far under half the smallest measured heart pitch, or "
-    "the nearest-index-heart match could choose a neighbour")
+if _ENTRY_ANCHOR_RESIDUAL_PX * 2 >= _FALLBACK_SPACING_PX // 2:
+    # Import-time safety invariant: unlike `assert`, this must remain active under `python -O`.
+    raise RuntimeError(
+        "the ascending anchor bound must stay far under half the smallest measured heart pitch, "
+        "or the nearest-index-heart match could choose a neighbour")
 
 # How far two independently confirmed scroll tops may sit apart in page rows. An EXCLUSIVE bound:
 # a gap of exactly this much (plus the comparison's own tolerance) is already outside what two
@@ -540,7 +542,8 @@ def _min_heart_pitch(hearts: dict[int, tuple[int, int]]) -> int | None:
     """
     ordinals = sorted(hearts)
     gaps = [hearts[b][1] - hearts[a][1]
-            for a, b in zip(ordinals, ordinals[1:]) if hearts[b][1] > hearts[a][1]]
+            for a, b in zip(ordinals, ordinals[1:], strict=False)
+            if hearts[b][1] > hearts[a][1]]
     return min(gaps) if gaps else None
 
 

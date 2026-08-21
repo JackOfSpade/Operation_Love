@@ -24,6 +24,19 @@ chase the ratio.
 """
 from __future__ import annotations
 
+import math
+from numbers import Real
+
+
+def _finite_real_as_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    try:
+        converted = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return converted if math.isfinite(converted) else None
+
 
 class RateLimiter:
     # A like scoring at least this many probability points above the ranker's own
@@ -40,12 +53,32 @@ class RateLimiter:
     def __init__(self, max_per_run: int | None = None, max_per_day: int | None = None,
                  max_likes_per_run: int | None = None,
                  target_like_ratio: float | None = None):
+        for name, value in (
+                ("max_per_run", max_per_run),
+                ("max_per_day", max_per_day),
+                ("max_likes_per_run", max_likes_per_run)):
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError(f"{name} must be a positive integer or None")
+        ratio = (
+            _finite_real_as_float(target_like_ratio)
+            if target_like_ratio is not None else None
+        )
+        if target_like_ratio is not None and (ratio is None or not 0.0 < ratio < 1.0):
+            raise ValueError("target_like_ratio must be a finite number in (0, 1) or None")
         self.max_per_run = max_per_run
         self.max_per_day = max_per_day
         self.max_likes_per_run = max_likes_per_run
-        self.target_like_ratio = target_like_ratio
+        self.target_like_ratio = ratio
+
+    @staticmethod
+    def _count(name: str, value: int) -> int:
+        if type(value) is not int or value < 0:
+            raise ValueError(f"{name} must be a nonnegative integer")
+        return value
 
     def allow(self, acted_this_run: int, acted_today: int) -> bool:
+        self._count("acted_this_run", acted_this_run)
+        self._count("acted_today", acted_today)
         if self.max_per_run is not None and acted_this_run >= self.max_per_run:
             return False
         if self.max_per_day is not None and acted_today >= self.max_per_day:
@@ -56,6 +89,7 @@ class RateLimiter:
         """False once this run has hit its like budget. The worker then stops the
         run rather than mislabeling a wanted-like as a pass (which would corrupt
         the taste model)."""
+        self._count("liked_this_run", liked_this_run)
         if self.max_likes_per_run is not None and liked_this_run >= self.max_likes_per_run:
             return False
         return True
@@ -79,13 +113,21 @@ class RateLimiter:
         0.15 margin — and always survives the ceiling. See the module docstring for
         why this can only ever look at the score in hand, never at other cards'.
         """
+        self._count("liked", liked)
+        self._count("acted", acted)
+        if liked > acted:
+            raise ValueError("liked cannot exceed acted")
         if self.target_like_ratio is None or acted == 0:
             return True
         if liked / acted < self.target_like_ratio:
             return True
         if score is None or like_threshold is None:
             return False
-        return (score - like_threshold) >= self._STRONG_LIKE_MARGIN
+        score_value = _finite_real_as_float(score)
+        threshold_value = _finite_real_as_float(like_threshold)
+        if score_value is None or threshold_value is None:
+            raise ValueError("score and like_threshold must be finite real numbers")
+        return (score_value - threshold_value) >= self._STRONG_LIKE_MARGIN
 
     def describe(self) -> str:
         parts = []

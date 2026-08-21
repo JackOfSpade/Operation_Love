@@ -1,6 +1,8 @@
 # secrets / env
 .env
-.env.local
+.env.*
+!.env.example
+.secrets
 
 # python
 __pycache__/
@@ -9,7 +11,16 @@ __pycache__/
 # no trailing slash: .venv may be a symlink, which the dir-only `.venv/` misses
 .venv
 .pytest_cache/
+.ruff_cache/
 .mypy_cache/
+.coverage
+coverage.xml
+/htmlcov/
+/.coverage.*
+
+# local package builds
+/build/
+/dist/
 
 # data / models / runtime artifacts
 data/

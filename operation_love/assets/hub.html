@@ -1,6 +1,7 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>Operation Love — hub</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="operation-love-csrf" content="__OPERATION_LOVE_CSRF_TOKEN__">
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -80,8 +81,9 @@
     <div class="meta" id="platnote" style="margin-top:8px"></div>
     <div class="controls" style="margin-top:12px">
       <span class="muted">mode</span>
-      <select id="mode"><option value="observe">observe (you decide)</option>
+      <select id="mode" aria-describedby="modehint"><option value="observe">observe (you decide)</option>
         <option value="auto">auto (bot decides)</option></select>
+      <span class="meta" id="modehint" role="status" aria-live="polite"></span>
     </div>
     <div class="controls" style="margin-top:10px">
       <label class="muted" for="stopafter">stop after</label>
@@ -122,8 +124,9 @@
 </div>
 <script>
 const $ = s => document.querySelector(s);
+const hubCsrfToken = document.querySelector('meta[name="operation-love-csrf"]').content;
 async function getJSON(u){ const r = await fetch(u); return r.json(); }
-async function postJSON(u,b){ const r = await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}); return r.json(); }
+async function postJSON(u,b){ const r = await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...(b||{}),_csrf_token:hubCsrfToken})}); return r.json(); }
 
 // Empty until /api/config answers -- the platform registry is server-side, so the page
 // must not carry a hardcoded app list that could drift out of sync with it.
@@ -139,7 +142,7 @@ function initialHubMode(){ return 'observe'; }
 let _wasRunning = false;
 const hubClientId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '-' + Math.random());
 function hubLifecycle(path){
-  const body = JSON.stringify({id: hubClientId});
+  const body = JSON.stringify({id: hubClientId, _csrf_token: hubCsrfToken});
   if(path === '/api/hub/closed' && navigator.sendBeacon){
     const sent = navigator.sendBeacon(path, new Blob([body], {type:'application/json'}));
     if(sent) return;
@@ -314,10 +317,10 @@ function renderSwipe(snap){
       warning,
       needsTargetingSetup
         ? (st === 'waiting_for_send'
-          ? 'type your own opener, then tap Send Like. Manual pass/like labels still work; complete the Hinge targeted-opener calibration in ops/RUNBOOK.md to enable suggestions.'
+          ? 'type your own opener, then tap Send Like / Send Priority Like. Manual pass/like labels still work; complete the Hinge targeted-opener calibration in ops/RUNBOOK.md to enable suggestions.'
           : `🟢 your call: ${controls}. Manual pass/like labels still work; complete the Hinge targeted-opener calibration in ops/RUNBOOK.md to enable suggestions.`)
         : (st === 'waiting_for_send'
-          ? 'type your own opener, then tap Send Like'
+          ? 'type your own opener, then tap Send Like / Send Priority Like'
           : `🟢 your call: ${controls}`));
     if(opener) {
       // TWO ROWS OF CHROME, AND NEITHER MAY TOUCH THE OPENER ITSELF (owner rule: the string
@@ -365,7 +368,7 @@ function renderSwipe(snap){
                                  : `tap X to pass, or tap the heart on media item ${mediaOrdinal} to like`)
         : controls;
       const chrome = st === 'waiting_for_send'
-        ? `${aboutSub}then tap Send Like in Hinge`
+        ? `${aboutSub}then tap Send Like / Send Priority Like in Hinge`
         : `${aboutSub}🟢 your call: ${likeThisItem}`;
       return openerBox(opener, heading, chrome);
     }
@@ -374,7 +377,7 @@ function renderSwipe(snap){
     // -- doc 5.9's race, which is why this state is reachable at all), or there simply is not one.
     if(st==='waiting_for_send') return a.opener_pending
       ? box('go', '💬 still writing a suggestion…', 'type your own opener if you would rather not wait')
-      : box('go', '💬 No suggestion available', 'type your own opener, then tap Send Like');
+      : box('go', '💬 No suggestion available', 'type your own opener, then tap Send Like / Send Priority Like');
     if(st==='waiting') {
       // The suggestion is generated while this cue is up (doc 5.9: READY is published
       // immediately and the suggestion fills in behind it), so this says so instead of leaving
@@ -671,6 +674,11 @@ function initialSelection(c){
 function escHtml(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, ch => (
   {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch])); }
 
+function pendingPlatformNoteHtml(p){
+  const reason = p && typeof p.reason === 'string' ? p.reason.trim() : '';
+  return `<span class="dot" style="background:#f0b429"></span>${escHtml(reason || 'This platform is not available yet.')}`;
+}
+
 function renderPlatforms(){
   const ks = cfg.kinds || [];
   const only = ks.length === 1 && (ks[0].platforms || []).length === 1;
@@ -703,13 +711,17 @@ function renderPlatforms(){
   }
 
   const pending = cfg.pending_platforms || [];
-  $('#platnote').innerHTML = pending.map(p =>
-    `<span class="dot" style="background:#f0b429"></span>${escHtml(p.label)} Auto is under safety testing and will appear here when it is ready.`
-  ).join('<br>');
+  $('#platnote').innerHTML = pending.map(pendingPlatformNoteHtml).join('<br>');
   syncModeAvailability();
   syncModeUI();
 }
 function chosenApps(){ return sel.app ? [sel.app] : []; }
+
+function modeUnavailableReason(platform, mode){
+  const reasons = (platform && platform.mode_reasons) || {};
+  const reason = typeof reasons[mode] === 'string' ? reasons[mode].trim() : '';
+  return reason || 'This mode is not available for the selected app.';
+}
 
 function syncModeAvailability(){
   // Availability is per app and mode. Keep unavailable choices out of reach instead of
@@ -718,14 +730,31 @@ function syncModeAvailability(){
   const platform = ((entry && entry.platforms) || []).find(p => p.app === sel.app);
   const modes = (platform && platform.modes) || {};
   const select = $('#mode');
+  const requestedMode = select.value;
   for (const option of select.options) {
     const unavailable = modes[option.value] === false;
     option.disabled = unavailable;
     option.hidden = unavailable;
+    option.title = unavailable ? modeUnavailableReason(platform, option.value) : '';
   }
   if (select.options[select.selectedIndex] && select.options[select.selectedIndex].disabled) {
     const allowed = Array.from(select.options).find(option => !option.disabled);
     if (allowed) select.value = allowed.value;
+  }
+  // If a platform switch forced the selected mode back to an allowed one, retain the reason
+  // for the mode the operator had selected. Otherwise show the first unavailable mode's reason
+  // so a hidden/disabled native <option> is not the only place that explains the safety gate.
+  const unavailable = modes[requestedMode] === false
+    ? Array.from(select.options).find(option => option.value === requestedMode)
+    : Array.from(select.options).find(option => option.disabled);
+  const hint = $('#modehint');
+  if (unavailable) {
+    const message = `${unavailable.value === 'auto' ? 'Auto' : 'Observe'} unavailable: ${modeUnavailableReason(platform, unavailable.value)}`;
+    hint.innerHTML = escHtml(message);
+    select.title = message;
+  } else {
+    hint.textContent = '';
+    select.title = '';
   }
 }
 function syncModeUI(){                         // the cap only applies in auto mode

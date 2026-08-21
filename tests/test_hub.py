@@ -4,10 +4,15 @@ Spins the stdlib server in a thread and hits /, /api/config, /api/status,
 /api/stop, and a 404. We never POST /api/start (that would launch a real run /
 browser); start/stop wiring is covered by HubState's logic.
 """
+import errno
+import http.client
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -42,7 +47,8 @@ def _extract_js_function(js: str, name: str) -> str:
 
 def _run_node(script: str):
     assert NODE_BIN, "node not available"
-    r = subprocess.run([NODE_BIN, "-e", script], capture_output=True, text=True, timeout=10)
+    r = subprocess.run(
+        [NODE_BIN, "-e", script], capture_output=True, text=True, timeout=10, check=False)
     assert r.returncode == 0, f"node script failed:\nSTDOUT: {r.stdout}\nSTDERR: {r.stderr}"
     return json.loads(r.stdout)
 
@@ -71,11 +77,230 @@ def _get(base, path, *, timeout=5):
         return r.status, r.read().decode()
 
 
+def _csrf_token(base):
+    _, page = _get(base, "/")
+    match = re.search(r'<meta name="operation-love-csrf" content="([^"]+)">', page)
+    assert match, "served hub page did not contain a CSRF token"
+    return match.group(1)
+
+
 def _post(base, path, body=b"{}"):
-    req = urllib.request.Request(base + path, data=body, method="POST",
+    payload = json.loads(body)
+    payload["_csrf_token"] = _csrf_token(base)
+    req = urllib.request.Request(base + path, data=json.dumps(payload).encode(), method="POST",
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=5) as r:
         return r.status, json.loads(r.read())
+
+
+@pytest.fixture
+def secured_stop_hub():
+    class StopSpy:
+        def __init__(self):
+            self.stop_calls = 0
+
+        def stop(self):
+            self.stop_calls += 1
+            return True, "stopping"
+
+    state = StopSpy()
+    _Handler.state = state
+    httpd = _bind("127.0.0.1", 8799)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_address[1]}", httpd, state
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        _join_hub_watch_threads()
+
+
+def _raw_post(base, path, body, headers):
+    request = urllib.request.Request(
+        base + path, data=body, method="POST", headers=headers)
+    return urllib.request.urlopen(request, timeout=5)
+
+
+def test_hub_tokens_are_unique_per_server_and_only_rendered_into_served_page():
+    first = _bind("127.0.0.1", 8799)
+    second = _bind("127.0.0.1", 8799)
+    thread = threading.Thread(target=first.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert first.csrf_token != second.csrf_token
+        assert len(first.csrf_token) >= 32
+        base = f"http://127.0.0.1:{first.server_address[1]}"
+        _, page = _get(base, "/")
+        assert "__OPERATION_LOVE_CSRF_TOKEN__" not in page
+        assert f'content="{first.csrf_token}"' in page
+        assert second.csrf_token not in page
+    finally:
+        first.shutdown()
+        first.server_close()
+        second.server_close()
+
+
+def test_bind_rejects_non_loopback_host():
+    with pytest.raises(ValueError, match="localhost or 127\\.0\\.0\\.1"):
+        _bind("0.0.0.0", 8799)
+
+
+@pytest.mark.parametrize("host", [" localhost ", "127.0.0.1 ", "LOCALHOST"])
+def test_bind_rejects_noncanonical_loopback_host_spelling(host):
+    with pytest.raises(ValueError, match="localhost or 127\\.0\\.0\\.1"):
+        _bind(host, 8799)
+
+
+@pytest.mark.parametrize("port", [True, False, 0, -1, 65536, "8799", 1.5])
+def test_bind_rejects_invalid_ports_without_calling_socket_layer(monkeypatch, port):
+    from operation_love.hub import server as hub_server
+
+    calls = []
+    monkeypatch.setattr(
+        hub_server, "_HubHTTPServer", lambda *args, **kwargs: calls.append((args, kwargs)))
+    with pytest.raises(ValueError, match="1 to 65535"):
+        hub_server._bind("127.0.0.1", port)
+    assert calls == []
+
+
+def test_bind_retries_only_address_in_use_and_never_scans_past_65535(monkeypatch):
+    from operation_love.hub import server as hub_server
+
+    calls = []
+
+    def occupied(address, handler):
+        del handler
+        calls.append(address)
+        raise OSError(errno.EADDRINUSE, "already in use")
+
+    monkeypatch.setattr(hub_server, "_HubHTTPServer", occupied)
+    with pytest.raises(SystemExit, match=r"65535\.\.65535"):
+        hub_server._bind("127.0.0.1", 65535)
+    assert calls == [("127.0.0.1", 65535)]
+
+
+def test_bind_reraises_non_contention_socket_errors_immediately(monkeypatch):
+    from operation_love.hub import server as hub_server
+
+    calls = []
+
+    def denied(address, handler):
+        del handler
+        calls.append(address)
+        raise OSError(errno.EACCES, "permission denied")
+
+    monkeypatch.setattr(hub_server, "_HubHTTPServer", denied)
+    with pytest.raises(OSError) as exc_info:
+        hub_server._bind("127.0.0.1", 8799)
+    assert exc_info.value.errno == errno.EACCES
+    assert calls == [("127.0.0.1", 8799)]
+
+
+@pytest.mark.parametrize("origin", [
+    "https://attacker.example",
+    "null",
+])
+def test_api_stop_rejects_hostile_origin_without_stopping(secured_stop_hub, origin):
+    base, _httpd, state = secured_stop_hub
+    body = json.dumps({"_csrf_token": _csrf_token(base)}).encode()
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        _raw_post(base, "/api/stop", body, {
+            "Content-Type": "application/json",
+            "Origin": origin,
+        })
+    assert exc_info.value.code == 403
+    assert state.stop_calls == 0
+
+
+def test_api_stop_rejects_a_different_loopback_origin(secured_stop_hub):
+    base, httpd, state = secured_stop_hub
+    origin = f"http://localhost:{httpd.server_address[1]}"
+    body = json.dumps({"_csrf_token": _csrf_token(base)}).encode()
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        _raw_post(base, "/api/stop", body, {
+            "Content-Type": "application/json",
+            "Origin": origin,
+        })
+    assert exc_info.value.code == 403
+    assert state.stop_calls == 0
+
+
+@pytest.mark.parametrize(("content_type", "body_kind"), [
+    ("text/plain", "json"),
+    ("application/x-www-form-urlencoded", "empty"),
+])
+def test_api_stop_rejects_non_json_and_empty_form_posts(
+        secured_stop_hub, content_type, body_kind):
+    base, _httpd, state = secured_stop_hub
+    body = (
+        json.dumps({"_csrf_token": _csrf_token(base)}).encode()
+        if body_kind == "json" else b""
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        _raw_post(base, "/api/stop", body, {
+            "Content-Type": content_type,
+            "Origin": base,
+        })
+    assert exc_info.value.code == 415
+    assert state.stop_calls == 0
+
+
+def test_api_stop_rejects_duplicate_content_length_before_parsing(secured_stop_hub):
+    base, httpd, state = secured_stop_hub
+    body = json.dumps({"_csrf_token": _csrf_token(base)}).encode()
+    connection = http.client.HTTPConnection(
+        "127.0.0.1", httpd.server_address[1], timeout=5)
+    try:
+        connection.putrequest("POST", "/api/stop")
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader("Content-Length", str(len(body)))
+        connection.putheader("Content-Length", str(len(body)))
+        connection.putheader("Origin", base)
+        connection.endheaders(body)
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+    finally:
+        connection.close()
+
+    assert response.status == 400
+    assert "Content-Length" in payload["msg"]
+    assert state.stop_calls == 0
+
+
+@pytest.mark.parametrize("token", [None, "not-the-server-token"])
+def test_api_stop_rejects_missing_or_wrong_csrf_token(secured_stop_hub, token):
+    base, _httpd, state = secured_stop_hub
+    payload = {} if token is None else {"_csrf_token": token}
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        _raw_post(base, "/api/stop", json.dumps(payload).encode(), {
+            "Content-Type": "application/json",
+            "Origin": base,
+        })
+    assert exc_info.value.code == 403
+    assert state.stop_calls == 0
+
+
+@pytest.mark.parametrize("host", ["attacker.example", "127.0.0.1:1"])
+def test_hub_rejects_invalid_host_before_serving_token(secured_stop_hub, host):
+    base, _httpd, state = secured_stop_hub
+    request = urllib.request.Request(base + "/", headers={"Host": host})
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(request, timeout=5)
+    assert exc_info.value.code == 403
+    assert state.stop_calls == 0
+
+
+def test_api_stop_accepts_valid_same_origin_json_and_csrf_token(secured_stop_hub):
+    base, _httpd, state = secured_stop_hub
+    body = json.dumps({"_csrf_token": _csrf_token(base)}).encode()
+    with _raw_post(base, "/api/stop", body, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Origin": base,
+    }) as response:
+        assert response.status == 200
+        assert json.loads(response.read())["ok"] is True
+    assert state.stop_calls == 1
 
 
 def test_hub_endpoints():
@@ -93,7 +318,12 @@ def test_hub_endpoints():
 
         code, raw = _get(base, "/api/config")
         cfg = json.loads(raw)
-        assert "mode" in cfg or "error" in cfg          # config.yaml loads from repo root
+        assert "mode" in cfg                             # config.yaml loads from repo root
+        hinge = next(p for kind in cfg["kinds"] for p in kind["platforms"]
+                     if p["app"] == "hinge")
+        assert hinge["modes"] == {"observe": True, "auto": False}
+        assert hinge["mode_reasons"]["observe"] is None
+        assert hinge["mode_reasons"]["auto"].startswith("Hinge Auto is blocked")
 
         code, raw = _get(base, "/api/status")
         snap = json.loads(raw)
@@ -118,6 +348,31 @@ def test_hub_endpoints():
     finally:
         httpd.shutdown()
         httpd.server_close()   # release the listening socket too; shutdown() alone leaves it open
+        _join_hub_watch_threads()
+
+
+def test_every_hub_response_has_anti_framing_and_content_hardening_headers():
+    _Handler.state = HubState("config.yaml")
+    httpd = _bind("127.0.0.1", 8799)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        for path in ("/", "/api/status", "/favicon.ico", "/not-found"):
+            try:
+                response = urllib.request.urlopen(base + path, timeout=5)
+            except urllib.error.HTTPError as exc:
+                response = exc
+            try:
+                assert response.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
+                assert response.headers["X-Frame-Options"] == "DENY"
+                assert response.headers["X-Content-Type-Options"] == "nosniff"
+                assert response.headers["Referrer-Policy"] == "no-referrer"
+            finally:
+                response.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
         _join_hub_watch_threads()
 
 
@@ -425,7 +680,7 @@ def test_serve_shutdown_warns_and_exits_when_run_does_not_finish_in_time(monkeyp
 def test_hubstate_browser_client_lifecycle(monkeypatch):
     import operation_love.hub as hub
     now = 1000.0
-    monkeypatch.setattr(hub.time, "time", lambda: now)
+    monkeypatch.setattr(hub.time, "monotonic", lambda: now)
 
     st = HubState("config.yaml")
     st.browser_client_opened("a")
@@ -459,7 +714,7 @@ def test_hubstate_browser_heartbeat_prevents_stale_expiry(monkeypatch):
     import operation_love.hub as hub
     from operation_love.hub import state as hub_state
     now = 1000.0
-    monkeypatch.setattr(hub.time, "time", lambda: now)
+    monkeypatch.setattr(hub.time, "monotonic", lambda: now)
     monkeypatch.setattr(hub_state, "_BROWSER_CLIENT_STALE_S", 10.0)
 
     st = HubState("config.yaml")
@@ -473,6 +728,22 @@ def test_hubstate_browser_heartbeat_prevents_stale_expiry(monkeypatch):
     now += 11.0
     assert st.expire_stale_browser_clients() is True
     assert st.has_browser_clients() is False
+
+
+def test_hubstate_browser_liveness_ignores_wall_clock_jumps(monkeypatch):
+    from operation_love.hub import state as hub_state
+
+    monotonic_now = 1000.0
+    wall_now = 1000.0
+    monkeypatch.setattr(hub_state.time, "monotonic", lambda: monotonic_now)
+    monkeypatch.setattr(hub_state.time, "time", lambda: wall_now)
+
+    st = HubState("config.yaml")
+    assert st.browser_client_opened("a") is True
+    wall_now += 10_000_000
+
+    assert st.expire_stale_browser_clients() is False
+    assert st.has_browser_clients() is True
 
 
 def test_resolve_run_cap_override_semantics():
@@ -492,6 +763,9 @@ def test_hubstate_forwards_max_per_run(monkeypatch):
         seen.update(kw)
         done.set()
 
+    # This test isolates argument forwarding from the shipped config's deliberate Hinge
+    # Auto release gate, which has its own start-rejection coverage below.
+    monkeypatch.setattr(hub.supervisor, "load_effective_config", lambda *args, **kwargs: None)
     monkeypatch.setattr(hub.supervisor, "run", fake_run)
     st = HubState("config.yaml")
     # hinge, not bumble: bumble is an Android target that starts out uncalibrated
@@ -520,6 +794,8 @@ def test_hubstate_timed_stop_stops_each_run_mode_and_reports_countdown(monkeypat
         assert kw["stop_event"].wait(timeout=4)
         finished.set()
 
+    # Exercise Timer/Event behavior in both modes without coupling it to release evidence.
+    monkeypatch.setattr(hub.supervisor, "load_effective_config", lambda *args, **kwargs: None)
     monkeypatch.setattr(hub.supervisor, "run", fake_run)
     st = HubState("config.yaml")
     ok, _ = st.start(mode=mode, apps=["hinge"], stop_after_seconds=1)
@@ -578,7 +854,7 @@ def test_hubstate_stale_timed_stop_cannot_stop_a_newer_generation():
     st._thread.join(timeout=2)
 
 
-@pytest.mark.parametrize("value", [True, False, -1, 1.5, "30", "1.0", []])
+@pytest.mark.parametrize("value", [True, False, -1, 0.0, -0.0, 1.5, "30", "1.0", []])
 def test_hub_timed_stop_validation_rejects_non_integer_or_negative_values(value):
     from operation_love.hub.state import validate_stop_after_seconds
 
@@ -595,6 +871,23 @@ def test_hub_timed_stop_validation_accepts_unlimited_or_positive_seconds(value, 
     assert validate_stop_after_seconds(value) == (True, expected, None)
 
 
+@pytest.mark.parametrize("value", [True, False, -1, 1.5, "8", {}, [], 1_000_001])
+def test_hub_max_per_run_validation_rejects_malformed_or_excessive_values(value):
+    from operation_love.hub.state import validate_max_per_run
+
+    ok, normalized, error = validate_max_per_run(value)
+    assert ok is False
+    assert normalized is None
+    assert error
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, 8, 1_000_000])
+def test_hub_max_per_run_validation_preserves_null_unlimited_and_positive_caps(value):
+    from operation_love.hub.state import validate_max_per_run
+
+    assert validate_max_per_run(value) == (True, value, None)
+
+
 def test_api_start_rejects_invalid_timed_stop_before_launching_run(monkeypatch):
     import operation_love.hub as hub
 
@@ -605,16 +898,89 @@ def test_api_start_rejects_invalid_timed_stop_before_launching_run(monkeypatch):
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
         req = urllib.request.Request(
-            f"http://127.0.0.1:{httpd.server_address[1]}/api/start",
+            f"{base}/api/start",
             data=json.dumps({"mode": "observe", "apps": ["hinge"],
-                             "stop_after_seconds": "not-a-number"}).encode(),
+                             "stop_after_seconds": "not-a-number",
+                             "_csrf_token": _csrf_token(base)}).encode(),
             method="POST", headers={"Content-Type": "application/json"})
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(req, timeout=5)
         assert exc_info.value.code == 400
         assert json.loads(exc_info.value.read())["ok"] is False
         assert launched == []
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        _join_hub_watch_threads()
+
+
+def test_api_start_rejects_unknown_control_field_before_launching_run(monkeypatch):
+    import operation_love.hub as hub
+
+    launched = []
+    monkeypatch.setattr(hub.supervisor, "run", lambda *a, **k: launched.append((a, k)))
+    _Handler.state = HubState("config.yaml")
+    httpd = _bind("127.0.0.1", 8799)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        request = urllib.request.Request(
+            f"{base}/api/start",
+            data=json.dumps({
+                "mode": "observe", "apps": ["hinge"], "max_per_ru": 8,
+                "_csrf_token": _csrf_token(base),
+            }).encode(),
+            method="POST", headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(request, timeout=5)
+        assert exc_info.value.code == 400
+        assert "max_per_ru" in json.loads(exc_info.value.read())["msg"]
+        assert launched == []
+        assert _Handler.state._thread is None
+        assert _Handler.state._timed_stop_timer is None
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        _join_hub_watch_threads()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("max_per_run", True),
+    ("max_per_run", "8"),
+    ("max_per_run", -1),
+    ("max_per_run", {}),
+    ("apps", "hinge"),
+    ("apps", ["hinge", "hinge"]),
+    ("apps", [1]),
+])
+def test_api_start_rejects_malformed_controls_before_launching_run(
+        monkeypatch, field, value):
+    import operation_love.hub as hub
+
+    launched = []
+    monkeypatch.setattr(hub.supervisor, "run", lambda *a, **k: launched.append((a, k)))
+    _Handler.state = HubState("config.yaml")
+    httpd = _bind("127.0.0.1", 8799)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        payload = {"mode": "observe", "apps": ["hinge"], "max_per_run": None,
+                   "_csrf_token": _csrf_token(base)}
+        payload[field] = value
+        request = urllib.request.Request(
+            f"{base}/api/start", data=json.dumps(payload).encode(), method="POST",
+            headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(request, timeout=5)
+        assert exc_info.value.code == 400
+        assert json.loads(exc_info.value.read())["ok"] is False
+        assert launched == []
+        assert _Handler.state._thread is None
+        assert _Handler.state._timed_stop_timer is None
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -692,20 +1058,58 @@ def test_hub_page_reports_browser_tab_lifecycle():
     assert "!event.persisted" in _PAGE
 
 
+def test_hub_page_adds_csrf_token_to_fetch_and_close_beacon_json():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    post_fn = _extract_js_function(_PAGE, "postJSON")
+    lifecycle_fn = _extract_js_function(_PAGE, "hubLifecycle")
+    script = (
+        "const hubCsrfToken = 'server-secret';\n"
+        "const hubClientId = 'client-1';\n"
+        "let calls = [];\n"
+        "class Blob { constructor(parts, options){ this.body=parts.join(''); "
+        "this.type=options.type; } }\n"
+        "const navigator = {sendBeacon(path, blob){ calls.push({kind:'beacon', path, "
+        "body:JSON.parse(blob.body), type:blob.type}); return true; }};\n"
+        "async function fetch(path, options){ calls.push({kind:'fetch', path, "
+        "body:JSON.parse(options.body), type:options.headers['Content-Type']}); "
+        "return {json:async()=>({ok:true})}; }\n"
+        + post_fn + "\n" + lifecycle_fn + "\n"
+        "postJSON('/api/stop', {}).then(() => {\n"
+        "  hubLifecycle('/api/hub/closed');\n"
+        "  console.log(JSON.stringify(calls));\n"
+        "});\n"
+    )
+    assert _run_node(script) == [
+        {
+            "kind": "fetch",
+            "path": "/api/stop",
+            "body": {"_csrf_token": "server-secret"},
+            "type": "application/json",
+        },
+        {
+            "kind": "beacon",
+            "path": "/api/hub/closed",
+            "body": {"id": "client-1", "_csrf_token": "server-secret"},
+            "type": "application/json",
+        },
+    ]
+
+
 def test_committed_mac_launcher_matches_template():
-    expected = _MAC_UPDATE_RUN.replace("__EXTRAS__", "ml,bq,bumble,hinge")
+    expected = _MAC_UPDATE_RUN.replace("__EXTRAS__", "ml,bq,hinge")
     assert Path("Operation Love.command").read_text() == expected
 
 
-def test_launcher_default_extras_cover_every_deployable_optional_dependency():
+def test_launcher_default_extras_cover_runtime_dependencies_but_not_reference_web_tools():
     # Regression for the bug fixed in commit 640406b1: make_launchers()'s default `extras`
     # silently dropped `hinge` (opencv never installed -> Hinge's vision degraded to
     # fixed-coordinate taps with no warning). The committed launcher was hand-patched to
     # include it, but the GENERATOR's default argument was never fixed, so regenerating the
     # launcher would silently reintroduce the exact same gap. Guard the default itself
     # (not a generated file, which is platform-dependent) against every extra pyproject.toml
-    # declares that the SHIPPED APP needs -- `dev` (pytest) is excluded on purpose: it's for
-    # running this repo's test suite, not for using the app the launcher installs.
+    # declares that the SHIPPED APP needs. `dev` is for this repo's tests, while `web` is a
+    # reference-only Playwright base with no live target; neither belongs in the launcher.
     import inspect
     import tomllib
 
@@ -713,18 +1117,76 @@ def test_launcher_default_extras_cover_every_deployable_optional_dependency():
 
     pyproject = tomllib.loads(Path("pyproject.toml").read_text())
     declared = set(pyproject["project"]["optional-dependencies"])
-    deployable = declared - {"dev"}
-    assert deployable, "sanity: pyproject.toml declares no deployable optional-dependencies"
+    runtime = declared - {"dev", "web"}
+    assert runtime, "sanity: pyproject.toml declares no runtime optional dependencies"
 
     default_extras = inspect.signature(make_launchers).parameters["extras"].default
     have = set(default_extras.split(","))
 
-    missing = deployable - have
-    assert not missing, (
-        f"make_launchers()'s default extras={default_extras!r} is missing {sorted(missing)} "
-        "from pyproject.toml [project.optional-dependencies] -- a regenerated launcher "
-        "would silently skip installing them."
-    )
+    assert have == runtime
+    assert have.isdisjoint({"dev", "web"})
+
+
+def _launcher_project(tmp_path: Path) -> Path:
+    (tmp_path / "config.yaml").write_text("mode: observe\n")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "launcher-test"\nversion = "1"\n'
+        '[project.optional-dependencies]\nhinge = []\n')
+    return tmp_path / "config.yaml"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX launcher modes")
+@pytest.mark.parametrize(("platform", "name", "mode"), [
+    ("darwin", "Operation Love.command", 0o755),
+    ("linux", "operation-love.sh", 0o755),
+    ("win32", "Operation Love.bat", 0o644),
+])
+def test_launcher_is_atomically_written_with_exact_mode(
+        tmp_path, monkeypatch, platform, name, mode):
+    from operation_love.hub.launchers import make_launchers
+
+    config = _launcher_project(tmp_path)
+    destination = tmp_path / name
+    destination.write_text("old partial launcher")
+    destination.chmod(0o666)
+    monkeypatch.setattr(sys, "platform", platform)
+
+    make_launchers(str(config), extras="hinge")
+
+    assert "old partial launcher" not in destination.read_text()
+    assert ".[hinge]" in destination.read_text()
+    assert stat.S_IMODE(destination.stat().st_mode) == mode
+    assert not list(tmp_path.glob(f".{name}.*"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires symlink support")
+def test_launcher_refuses_symlink_without_mutating_its_target(tmp_path, monkeypatch):
+    from operation_love.hub.launchers import make_launchers
+
+    config = _launcher_project(tmp_path)
+    target = tmp_path / "unrelated.txt"
+    target.write_text("do not overwrite")
+    destination = tmp_path / "Operation Love.command"
+    destination.symlink_to(target)
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    with pytest.raises(OSError, match="not a regular file"):
+        make_launchers(str(config), extras="hinge")
+
+    assert destination.is_symlink()
+    assert target.read_text() == "do not overwrite"
+
+
+def test_launcher_rejects_undeclared_or_shell_syntax_extras(tmp_path, monkeypatch):
+    from operation_love.hub.launchers import make_launchers
+
+    config = _launcher_project(tmp_path)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    with pytest.raises(ValueError, match="comma-separated"):
+        make_launchers(str(config), extras="hinge,$(touch owned)")
+    with pytest.raises(ValueError, match="unknown optional-dependency"):
+        make_launchers(str(config), extras="hinge,bq")
+    assert not (tmp_path / "Operation Love.command").exists()
 
 
 def test_hub_card_shows_label_gated_refresh_progress():
@@ -1194,9 +1656,8 @@ def test_hub_dead_min_labels_key_removed():
 
 
 def test_hubstate_start_rejects_empty_apps_list():
-    # chosenApps() sends [] when every app checkbox is unchecked. Silently falling back to
-    # config.enabled_apps (supervisor's behavior for a falsy override) would start the apps
-    # the user just deselected — refuse instead, with a clear reason.
+    # chosenApps() sends [] when every app checkbox is unchecked. The shared supervisor gate
+    # rejects it too; the Hub should retain its clearer selection-specific reason.
     st = HubState("config.yaml")
     ok, msg = st.start(apps=[])
     assert ok is False
@@ -1204,31 +1665,158 @@ def test_hubstate_start_rejects_empty_apps_list():
     assert st.is_running() is False
 
 
-def test_hubstate_start_allows_bumble_auto_but_rejects_observe(monkeypatch):
+@pytest.mark.parametrize(("kwargs", "needle"), [
+    ({"max_per_run": True}, "max_per_run"),
+    ({"max_per_run": "8"}, "max_per_run"),
+    ({"max_per_run": -1}, "max_per_run"),
+    ({"apps": "hinge"}, "apps must"),
+    ({"apps": ["hinge", "hinge"]}, "duplicate"),
+    ({"apps": [1]}, "app ids"),
+])
+def test_hubstate_rejects_malformed_controls_before_background_allocation(
+        monkeypatch, kwargs, needle):
     import operation_love.hub as hub
-    from operation_love import platforms
 
-    monkeypatch.setattr(hub.supervisor, "run", lambda config_path, **kw: None)
+    run_calls = []
+    monkeypatch.setattr(hub.supervisor, "run", lambda *a, **k: run_calls.append((a, k)))
     st = HubState("config.yaml")
-    ok, msg = st.start(mode="auto", apps=["bumble"])
-    assert ok is True and msg == "started"
+    ok, msg = st.start(stop_after_seconds=60, **kwargs)
 
-    st = HubState("config.yaml")
-    ok, _ = st.start(mode="observe", apps=["bumble"])
     assert ok is False
+    assert needle in msg
+    assert run_calls == []
+    assert st._thread is None
+    assert st._stop is None
+    assert st._timed_stop_timer is None
 
 
-def test_hub_config_exposes_bumble_as_an_auto_only_platform():
-    from operation_love import platforms
+def test_hubstate_timer_start_failure_returns_clean_refusal_without_worker(
+        monkeypatch):
+    from operation_love.hub import state as hub_state
 
+    run_calls = []
+
+    class BrokenTimer:
+        instances = []
+
+        def __init__(self, *_args, **_kwargs):
+            self.daemon = False
+            self.cancelled = False
+            self.instances.append(self)
+
+        def start(self):
+            raise RuntimeError("timer thread quota exhausted")
+
+        def cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr(hub_state.threading, "Timer", BrokenTimer)
+    monkeypatch.setattr(
+        hub_state.supervisor, "run", lambda *args, **kwargs: run_calls.append((args, kwargs)))
+    st = HubState("config.yaml")
+    previous_thread = threading.Thread()
+    previous_stop = threading.Event()
+    previous_status = object()
+    previous_store = object()
+    previous_service = object()
+    st._thread = previous_thread
+    st._stop = previous_stop
+    st._status = previous_status
+    st._error = "previous completed-run error"
+    st._live_store = previous_store
+    st._opener_service = previous_service
+    st._completed_openers = [{"opener": "previous evidence"}]
+
+    ok, msg = st.start(stop_after_seconds=60)
+
+    assert ok is False
+    assert "could not start timed-stop timer" in msg
+    assert run_calls == []
+    assert st._thread is previous_thread
+    assert st._stop is previous_stop
+    assert st._status is previous_status
+    assert st._error == "previous completed-run error"
+    assert st._live_store is previous_store
+    assert st._opener_service is previous_service
+    assert st._timed_stop_timer is None
+    assert st._timed_stop_deadline is None
+    assert BrokenTimer.instances[0].cancelled is True
+    assert st._completed_openers == [{"opener": "previous evidence"}]
+
+
+def test_hubstate_worker_start_failure_cancels_started_timer_and_resets_state(
+        monkeypatch):
+    from operation_love.hub import state as hub_state
+
+    run_calls = []
+
+    class RecordingTimer:
+        instances = []
+
+        def __init__(self, *_args, **_kwargs):
+            self.daemon = False
+            self.started = False
+            self.cancelled = False
+            self.instances.append(self)
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            self.cancelled = True
+
+    class BrokenRunThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("run thread quota exhausted")
+
+    monkeypatch.setattr(hub_state.threading, "Timer", RecordingTimer)
+    monkeypatch.setattr(hub_state.threading, "Thread", BrokenRunThread)
+    monkeypatch.setattr(
+        hub_state.supervisor, "run", lambda *args, **kwargs: run_calls.append((args, kwargs)))
+    st = HubState("config.yaml")
+
+    ok, msg = st.start(stop_after_seconds=60)
+
+    assert ok is False
+    assert "could not start run thread" in msg
+    assert run_calls == []
+    assert st._thread is None
+    assert st._stop is None
+    assert st._status is None
+    assert st._timed_stop_timer is None
+    assert st._timed_stop_deadline is None
+    timer = RecordingTimer.instances[0]
+    assert timer.started is True
+    assert timer.cancelled is True
+
+
+@pytest.mark.parametrize("mode", ["observe", "auto"])
+def test_hubstate_start_rejects_uncalibrated_bumble_in_both_modes(mode):
+    st = HubState("config.yaml")
+    ok, msg = st.start(mode=mode, apps=["bumble"])
+    assert ok is False
+    assert "not calibrated" in msg
+    assert st.is_running() is False
+
+
+def test_hub_config_combines_registry_and_config_level_mode_readiness():
     defaults = HubState("config.yaml").config_defaults()
     app_platforms = [platform for kind in defaults["kinds"]
                      if kind["kind"] == "android" for platform in kind["platforms"]]
     modes = {platform["app"]: platform["modes"] for platform in app_platforms}
+    reasons = {platform["app"]: platform["mode_reasons"] for platform in app_platforms}
+    pending = {platform["app"]: platform for platform in defaults["pending_platforms"]}
 
-    assert modes["hinge"] == {"observe": True, "auto": True}
-    assert modes["bumble"] == {"observe": False, "auto": True}
-    assert defaults["pending_platforms"] == []
+    # Hinge implements both modes, but the shipped config intentionally has no current
+    # production-Observe release artifact, so the operational picker must not offer Auto.
+    assert modes == {"hinge": {"observe": True, "auto": False}}
+    assert reasons["hinge"]["observe"] is None
+    assert reasons["hinge"]["auto"].startswith("Hinge Auto is blocked")
+    assert set(pending) == {"bumble"}
+    assert "not calibrated" in pending["bumble"]["reason"]
 
 
 def test_hubstate_start_rejects_two_android_platforms_together(monkeypatch):
@@ -1239,6 +1827,46 @@ def test_hubstate_start_rejects_two_android_platforms_together(monkeypatch):
     ok, msg = st.start(apps=["hinge", "bumble"])
     assert ok is False
     assert st.is_running() is False
+
+
+def test_hubstate_rejects_config_blocked_hinge_auto_before_background_work(monkeypatch):
+    """Hub and direct supervisor starts return the same release-gate message, and the Hub
+    rejects before allocating any run thread or timed-stop timer."""
+    import operation_love.hub as hub
+
+    with pytest.raises(ValueError) as direct:
+        hub.supervisor.run("config.yaml", mode="auto", enabled_apps=["hinge"])
+
+    run_calls = []
+    monkeypatch.setattr(
+        hub.supervisor, "run", lambda *args, **kwargs: run_calls.append((args, kwargs)))
+    st = HubState("config.yaml")
+    ok, msg = st.start(
+        mode="auto", apps=["hinge"], max_per_run=8, stop_after_seconds=60)
+
+    assert ok is False
+    assert msg == str(direct.value)
+    assert run_calls == []
+    assert st._thread is None
+    assert st._stop is None
+    assert st._timed_stop_timer is None
+    assert st._timed_stop_deadline is None
+
+
+def test_hubstate_apps_none_validates_the_effective_file_config(tmp_path):
+    """No app override means config.yaml still receives the synchronous full validation."""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_text = re.sub(
+        r"(?m)^mode: observe\b", "mode: auto", Path("config.yaml").read_text(), count=1)
+    cfg_path.write_text(cfg_text)
+
+    st = HubState(str(cfg_path))
+    ok, msg = st.start(apps=None, stop_after_seconds=60)
+
+    assert ok is False
+    assert msg.startswith("Hinge Auto is blocked")
+    assert st._thread is None
+    assert st._timed_stop_timer is None
 
 
 def test_hubstate_start_apps_none_is_not_rejected(monkeypatch):
@@ -1271,6 +1899,8 @@ def test_hubstate_retains_final_status_after_run_thread_exits(monkeypatch):
         status.set_global(running=False, phase="stopped")
         kwargs["on_status"](status)
 
+    # This is final-status retention, not release-readiness coverage.
+    monkeypatch.setattr(hub.supervisor, "load_effective_config", lambda *args, **kwargs: None)
     monkeypatch.setattr(hub.supervisor, "run", fake_run)
     st = HubState("config.yaml")
     ok, _ = st.start(mode="auto", apps=["hinge"])
@@ -1492,7 +2122,7 @@ def test_observe_banner_uses_explicit_pass_or_like_language_and_replaces_it_with
         }}},
     }
     suggestion = _run_node(_observe_status_script(with_sheet))
-    assert "then tap Send Like in Hinge" in suggestion["html"]
+    assert "then tap Send Like / Send Priority Like in Hinge" in suggestion["html"]
     assert "I like &lt;your prompt&gt; &amp; &quot;this&quot;" in suggestion["html"]
     assert "tap X to pass" not in suggestion["html"]
     assert "<your prompt>" not in suggestion["html"]
@@ -1522,7 +2152,7 @@ def test_observe_banner_uses_explicit_pass_or_like_language_and_replaces_it_with
     }
     fallback = _run_node(_observe_status_script(no_suggestion))
     assert "No suggestion available" in fallback["html"]
-    assert "type your own opener, then tap Send Like" in fallback["html"]
+    assert "type your own opener, then tap Send Like / Send Priority Like" in fallback["html"]
     assert "waiting_for_send" not in fallback["html"]
 
     # The card uses innerHTML, so app names are escaped on non-opener branches too.
@@ -1581,8 +2211,8 @@ def test_observe_banner_opener_row_is_the_auto_mode_canary():
     assert m, f"expected label -> opener block -> chrome block structure, got:\n{html}"
     opener_row, chrome_row = m.group(1), m.group(2)
     assert opener_row == escaped_opener
-    assert "then tap Send Like in Hinge" in chrome_row
-    assert "then tap Send Like in Hinge" not in opener_row
+    assert "then tap Send Like / Send Priority Like in Hinge" in chrome_row
+    assert "then tap Send Like / Send Priority Like in Hinge" not in opener_row
 
 
 def test_observe_banner_opener_row_escapes_html_metacharacters_without_altering_content():
@@ -1645,7 +2275,7 @@ def test_observe_banner_keeps_the_pass_option_visible_while_a_suggestion_is_up()
     ('waiting_for_send'), so it never competed with the 🟢 GO cue that says it is the operator's
     turn and that PASSING is one of the two things they may do. It is published before the tap
     now, and the opener branch runs ahead of the 'waiting' branch, so the whole decision window
-    read as "like item 3 ... then tap Send Like in Hinge": no circle (against the owner's
+    read as "like item 3 ... then tap Send Like / Send Priority Like in Hinge": no circle (against the owner's
     GO/WAIT convention), no X, and an instruction about a sheet that is not open yet -- in the
     one mode whose entire output is the owner's own like/pass labels.
 
@@ -1665,7 +2295,7 @@ def test_observe_banner_keeps_the_pass_option_visible_while_a_suggestion_is_up()
     assert "if you choose to like, use media item 3 — the ridgeline photo" in html
     assert "🟢" in html                                 # ...and it is still their turn
     assert "tap X to pass, or tap the heart on media item 3 to like" in html
-    assert "then tap Send Like in Hinge" not in html   # no sheet is open yet
+    assert "then tap Send Like / Send Priority Like in Hinge" not in html   # no sheet is open yet
     m = re.search(r'then type exactly this</div>\s*<div[^>]*>(.*?)</div>\s*<div[^>]*>(.*?)</div>',
                   html, re.S)
     assert m, f"expected heading -> opener block -> chrome block structure, got:\n{html}"
@@ -1678,7 +2308,7 @@ def test_observe_banner_keeps_the_pass_option_visible_while_a_suggestion_is_up()
     sending = {"running": True,
                "status": {"apps": {"hinge": dict(app, state="waiting_for_send")}}}
     html2 = _run_node(_observe_status_script(sending))["html"]
-    assert "then tap Send Like in Hinge" in html2
+    assert "then tap Send Like / Send Priority Like in Hinge" in html2
     assert "tap X to pass" not in html2
 
     # Non-Hinge apps keep the generic control wording they already had in the plain GO cue.
@@ -1733,7 +2363,7 @@ def test_observe_banner_replaces_the_opener_with_a_warning_on_a_mismatch():
     # banner, so it is the only thing on screen: without a next action a card whose suggestion
     # failed states a problem and stops, and a session where they all fail (dead quota, a driver
     # that cannot enumerate) would never show the operator a cue at all.
-    assert "type your own opener, then tap Send Like" in out["html"]
+    assert "type your own opener, then tap Send Like / Send Priority Like" in out["html"]
 
     # Before the tap the cue is the DECISION, not the send -- same wording the suggestion box
     # uses in that window, and the 🟢 that says it is their turn.
@@ -1787,7 +2417,7 @@ def test_observe_banner_names_missing_hinge_targeting_calibration_as_setup():
     sending = {"running": True, "status": {"apps": {"hinge": dict(
         snap["status"]["apps"]["hinge"], state="waiting_for_send")}}}
     sending_html = _run_node(_observe_status_script(sending))["html"]
-    assert "type your own opener, then tap Send Like" in sending_html
+    assert "type your own opener, then tap Send Like / Send Priority Like" in sending_html
     assert "click pass X or heart" not in sending_html
 
 
@@ -2442,7 +3072,7 @@ _PICKER_CFG = {
             "kind": "web",
             "label": "Web-based",
             "platforms": [
-                {"app": "bumble_web", "label": "Bumble (web)", "available": False,
+                {"app": "future_web", "label": "Future web target", "available": False,
                  "reason": "Additional work needed to get this to run."},
             ],
         },
@@ -2493,7 +3123,7 @@ def test_picker_defaults_to_an_available_target_within_a_kind():
         "]));\n",
         "kindEntry", "defaultAppForKind",
     )
-    assert _run_node(script) == ["hinge", "hinge", "bumble_web", None]
+    assert _run_node(script) == ["hinge", "hinge", "future_web", None]
 
 
 def test_picker_initial_selection_honours_server_then_falls_back_to_runnable():
@@ -2533,3 +3163,64 @@ def test_picker_selection_is_single_not_multi():
         "console.log(JSON.stringify([one, chosenApps()]));\n"
     )
     assert _run_node(script) == [["hinge"], []]
+
+
+def test_pending_platform_note_uses_and_escapes_server_reason_with_safe_fallback():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    cases = [
+        {"label": "Bumble", "reason": "Both Observe and Auto are not calibrated."},
+        {"label": "Hostile", "reason": '<img src=x onerror="alert(1)">'},
+        {"label": "No reason"},
+    ]
+    script = _picker_script(
+        "console.log(JSON.stringify(" + json.dumps(cases)
+        + ".map(pendingPlatformNoteHtml)));\n",
+        "escHtml", "pendingPlatformNoteHtml",
+    )
+    notes = _run_node(script)
+
+    assert "Both Observe and Auto are not calibrated." in notes[0]
+    assert "<img" not in notes[1]
+    assert "&lt;img" in notes[1] and "&quot;alert(1)&quot;" in notes[1]
+    assert "This platform is not available yet." in notes[2]
+
+
+def test_mode_picker_exposes_escaped_config_reason_through_accessible_hint():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    mode_tag = re.search(r'<select\b[^>]*\bid="mode"[^>]*>', _PAGE)
+    hint_tag = re.search(r'<span\b[^>]*\bid="modehint"[^>]*>', _PAGE)
+    assert mode_tag and 'aria-describedby="modehint"' in mode_tag.group(0)
+    assert hint_tag and 'role="status"' in hint_tag.group(0)
+    assert 'aria-live="polite"' in hint_tag.group(0)
+
+    hostile_reason = '<img src=x onerror="alert(1)"> release gate blocked'
+    platform = {
+        "app": "hinge",
+        "modes": {"observe": True, "auto": False},
+        "mode_reasons": {"observe": None, "auto": hostile_reason},
+    }
+    script = _picker_script(
+        "const cfg={kinds:[{kind:'android',platforms:[" + json.dumps(platform) + "]}]};\n"
+        "let sel={kind:'android',app:'hinge'};\n"
+        "const options=[{value:'observe'},{value:'auto'}];\n"
+        "let selected='auto';\n"
+        "const select={options,selectedIndex:1,title:''};\n"
+        "Object.defineProperty(select,'value',{get(){return selected;},set(v){selected=v;this.selectedIndex=options.findIndex(o=>o.value===v);}});\n"
+        "const hint={innerHTML:'',textContent:''};\n"
+        "function $(selector){return selector==='#mode'?select:hint;}\n"
+        "syncModeAvailability();\n"
+        "console.log(JSON.stringify({value:select.value,disabled:options[1].disabled,"
+        "hidden:options[1].hidden,optionTitle:options[1].title,selectTitle:select.title,"
+        "hint:hint.innerHTML}));\n",
+        "kindEntry", "escHtml", "modeUnavailableReason", "syncModeAvailability",
+    )
+    result = _run_node(script)
+
+    assert result["value"] == "observe"
+    assert result["disabled"] is True and result["hidden"] is True
+    assert result["optionTitle"] == hostile_reason
+    assert result["selectTitle"].startswith("Auto unavailable:")
+    assert "<img" not in result["hint"]
+    assert "&lt;img" in result["hint"] and "&quot;alert(1)&quot;" in result["hint"]

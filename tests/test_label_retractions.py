@@ -10,11 +10,16 @@ from operation_love.ranker.store import SQLiteStore
 from tools import label_retraction
 
 
-def _rows():
+def _rows(*, current_order=True, linked=True):
+    label_time = "2026-08-14T08:04:59+00:00" if current_order else "2026-08-14T08:04:58+00:00"
+    decision_time = "2026-08-14T08:04:58+00:00" if current_order else "2026-08-14T08:04:59+00:00"
+    decision = {"created_at": decision_time, "decision": "dislike", "score": 0.0}
+    if linked:
+        decision["profile_id"] = "Malaika"
     return {"run_id": "run", "app": "hinge", "source": "external_ai_review",
             "profiles": [{"profile_id": "Malaika"}], "retractions": [],
-            "labels": [{"profile_id": "Malaika", "created_at": "2026-08-14T08:04:58+00:00", "liked": False}],
-            "decisions": [{"created_at": "2026-08-14T08:04:59+00:00", "decision": "dislike", "score": 0.0}]}
+            "labels": [{"profile_id": "Malaika", "created_at": label_time, "liked": False}],
+            "decisions": [decision]}
 
 
 class _Store:
@@ -39,18 +44,110 @@ def _plan(rows=None):
                      evidence_ref="data/hinge_debug/a01fbcd1e9a0/actions.jsonl#225")
 
 
-def test_plan_is_self_hashed_and_binds_the_exact_legacy_decision():
+def test_plan_binds_current_worker_decision_before_label_by_profile_lineage():
     document = _plan()
     assert document["label_ordinal"] == 0
-    assert document["decision_created_at"] == "2026-08-14T08:04:59+00:00"
+    assert document["decision_created_at"] == "2026-08-14T08:04:58+00:00"
     assert retraction_row(document)["correction_id"] == document["correction_id"]
+
+
+def test_linked_plan_is_not_shifted_by_an_unlabelled_decision():
+    rows = _rows()
+    rows["decisions"].append({
+        "profile_id": "archive-failed-profile",
+        "created_at": "2026-08-14T08:05:01+00:00",
+        "decision": "like",
+        "score": 1.0,
+    })
+    document = _plan(rows)
+    assert document["decision_created_at"] == "2026-08-14T08:04:58+00:00"
+
+
+def test_plan_supports_legacy_label_before_unlinked_decision_ordering():
+    document = _plan(_rows(current_order=False, linked=False))
+    assert document["label_created_at"] == "2026-08-14T08:04:58+00:00"
+    assert document["decision_created_at"] == "2026-08-14T08:04:59+00:00"
+
+
+def test_plan_supports_unlinked_current_order_only_when_timeline_is_causal():
+    rows = _rows(linked=False)
+    rows["profiles"].append({"profile_id": "Bea"})
+    rows["labels"] = [
+        {"profile_id": "Malaika", "created_at": 11.0, "liked": False},
+        {"profile_id": "Bea", "created_at": 21.0, "liked": True},
+    ]
+    rows["decisions"] = [
+        {"created_at": 10.0, "decision": "dislike", "score": 0.0},
+        {"created_at": 20.0, "decision": "like", "score": 1.0},
+    ]
+    document = _plan(rows)
+    assert document["decision_created_at"] == 10.0
 
 
 def test_plan_refuses_ambiguous_legacy_sequence():
     rows = _rows()
-    rows["decisions"].append({"created_at": "2026-08-14T08:04:59+00:00", "decision": "dislike", "score": 0})
+    rows["decisions"].append({"profile_id": "other",
+                              "created_at": "2026-08-14T08:04:58+00:00",
+                              "decision": "dislike", "score": 0})
     with pytest.raises(RetractionRefused, match="strict unique"):
         _plan(rows)
+
+
+def test_plan_refuses_duplicate_or_missing_linked_target_decision():
+    duplicate = _rows()
+    duplicate["decisions"].append({
+        "profile_id": "Malaika", "created_at": "2026-08-14T08:04:58.5+00:00",
+        "decision": "dislike", "score": 0.0,
+    })
+    with pytest.raises(RetractionRefused, match="multiple linked decisions"):
+        _plan(duplicate)
+
+    missing = _rows()
+    missing["decisions"][0]["profile_id"] = "someone-else"
+    with pytest.raises(RetractionRefused, match="no linked decision"):
+        _plan(missing)
+
+
+def test_plan_refuses_missing_or_overlapping_legacy_rows():
+    missing = _rows(linked=False)
+    missing["decisions"] = []
+    with pytest.raises(RetractionRefused, match="cardinality differs"):
+        _plan(missing)
+
+    overlapping = _rows(linked=False)
+    overlapping["profiles"].append({"profile_id": "Bea"})
+    overlapping["labels"] = [
+        {"profile_id": "Malaika", "created_at": 30.0, "liked": False},
+        {"profile_id": "Bea", "created_at": 40.0, "liked": True},
+    ]
+    overlapping["decisions"] = [
+        {"created_at": 10.0, "decision": "dislike", "score": 0.0},
+        {"created_at": 20.0, "decision": "like", "score": 1.0},
+    ]
+    with pytest.raises(RetractionRefused, match="adjacent causal sequence"):
+        _plan(overlapping)
+
+
+@pytest.mark.parametrize(("field", "value", "message"), [
+    ("profiles", [None], "profile rows are malformed"),
+    ("retractions", ["not-a-row"], "retraction rows are malformed"),
+    ("labels", [None], "label rows are malformed"),
+    ("decisions", [None], "decision rows are malformed"),
+    ("labels", None, "label rows are malformed"),
+])
+def test_plan_refuses_malformed_snapshot_row_shapes(field, value, message):
+    rows = _rows()
+    rows[field] = value
+
+    with pytest.raises(RetractionRefused, match=message):
+        _plan(rows)
+
+
+def test_plan_refuses_non_mapping_snapshot_with_documented_error():
+    with pytest.raises(RetractionRefused, match="store snapshot is malformed"):
+        make_plan(
+            rows=None, run_id="run", app="hinge", source="external_ai_review",
+            profile_id="Malaika", reason="false pass", evidence_ref="debug#225")
 
 
 def test_apply_requires_exact_confirmation_and_unchanged_rows_and_is_idempotent():
@@ -71,12 +168,12 @@ def test_apply_requires_exact_confirmation_and_unchanged_rows_and_is_idempotent(
 def test_sqlite_end_to_end_apply_retracts_training_label_and_its_paired_decision(tmp_path):
     store = SQLiteStore(tmp_path / "store.db")
     try:
-        store.con.execute("INSERT INTO labels VALUES (NULL,?,?,?,?,?,?,?,?)",
-                          ("run", "hinge", 10.0, 0, "external_ai_review", "[0.1]", 0, "Malaika"))
         store.con.execute(
             "INSERT INTO decisions (run_id,app,created_at,decision,score,source,profile_id) "
             "VALUES (?,?,?,?,?,?,?)",
-            ("run", "hinge", 11.0, "dislike", 0.0, "external_ai_review", "Malaika"))
+            ("run", "hinge", 10.0, "dislike", 0.0, "external_ai_review", "Malaika"))
+        store.con.execute("INSERT INTO labels VALUES (NULL,?,?,?,?,?,?,?,?)",
+                          ("run", "hinge", 11.0, 0, "external_ai_review", "[0.1]", 0, "Malaika"))
         store.con.commit()
         document = label_retraction.plan(store=store, run_id="run", app="hinge", source="external_ai_review",
                                           profile_id="Malaika", reason="false pass", evidence_ref="debug#225")
@@ -94,14 +191,14 @@ def test_sqlite_retraction_uses_exact_real_timestamp_not_lossy_microsecond_iso(t
     try:
         # Deliberately not microsecond-aligned.  The historical ISO conversion rounded this
         # and left the label training-visible after a successful-looking append.
-        label_time = 1_786_710_199.5451021
-        decision_time = label_time + 0.1234567
-        store.con.execute("INSERT INTO labels VALUES (NULL,?,?,?,?,?,?,?,?)",
-                          ("run", "hinge", label_time, 0, "external_ai_review", "[0.1]", 0, "Malaika"))
+        decision_time = 1_786_710_199.5451021
+        label_time = decision_time + 0.1234567
         store.con.execute(
             "INSERT INTO decisions (run_id,app,created_at,decision,score,source,profile_id) "
             "VALUES (?,?,?,?,?,?,?)",
             ("run", "hinge", decision_time, "dislike", 0.0, "external_ai_review", "Malaika"))
+        store.con.execute("INSERT INTO labels VALUES (NULL,?,?,?,?,?,?,?,?)",
+                          ("run", "hinge", label_time, 0, "external_ai_review", "[0.1]", 0, "Malaika"))
         store.con.commit()
         document = label_retraction.plan(store=store, run_id="run", app="hinge", source="external_ai_review",
                                           profile_id="Malaika", reason="false pass", evidence_ref="debug#225")
@@ -133,7 +230,7 @@ def test_sqlite_store_refuses_competing_tombstone_for_same_bound_pair(tmp_path):
         store.con.execute(
             "INSERT INTO decisions (run_id,app,created_at,decision,score,source,profile_id) "
             "VALUES (?,?,?,?,?,?,?)",
-            ("run", "hinge", 11.0, "dislike", 0.0, "external_ai_review", "Malaika"))
+            ("run", "hinge", 11.0, "dislike", 0.0, "external_ai_review", ""))
         store.con.commit()
         document = label_retraction.plan(store=store, run_id="run", app="hinge", source="external_ai_review",
                                           profile_id="Malaika", reason="false pass", evidence_ref="debug#225")

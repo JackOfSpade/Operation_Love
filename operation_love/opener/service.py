@@ -76,8 +76,9 @@ streak does.
 """
 from __future__ import annotations
 
-import threading
 import inspect
+import math
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -283,6 +284,7 @@ _RECENT_OPENERS = 12
 # it is the other outcome entirely, and a bug report needs to show both without one crowding
 # the other out of a shared, fixed-size buffer.
 _RECENT_REJECTIONS = 12
+_MAX_ATTEMPTS = 15
 
 # How many LEADING words the entropy guard compares between openers -- see
 # OpenerService._leading_ngram_collision / _apply_entropy_guard below and
@@ -292,6 +294,14 @@ _RECENT_REJECTIONS = 12
 # which is not a fingerprint. Compared against self.recent_openers, whose own cap
 # (_RECENT_OPENERS) therefore also decides how far back the guard can see.
 _ENTROPY_NGRAM_WORDS = 4
+
+
+def _safe_repr(value: object) -> str:
+    """Represent rejected direct-call values without integer-string-limit failures."""
+    try:
+        return repr(value)
+    except (ValueError, OverflowError):
+        return f"<{type(value).__name__}>"
 
 
 def _record_staged_opener(store, record: "_StagedOpenerRecord", pick: OpenerPick, *,
@@ -439,28 +449,40 @@ class OpenerService:
         # rejected explicitly even though it IS an int subclass in Python (True == 1) --
         # accepting it would silently treat OpenerService(..., max_attempts=True) as
         # max_attempts=1, a confusing coincidence rather than a real configuration.
-        if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
+        if (type(max_attempts) is not int
+                or not 1 <= max_attempts <= _MAX_ATTEMPTS):
             raise ValueError(
-                f"OpenerService max_attempts must be an int >= 1, got {max_attempts!r}")
+                f"OpenerService max_attempts must be an int in [1, {_MAX_ATTEMPTS}], "
+                f"got {_safe_repr(max_attempts)}")
         # Direct callers historically supplied only max_attempts. Keep that API usable for
         # small budgets while production passes the independently validated config value.
         if advisory_max_attempts is None:
             advisory_max_attempts = min(3, max_attempts)
-        if (isinstance(advisory_max_attempts, bool) or
-                not isinstance(advisory_max_attempts, int) or advisory_max_attempts < 1):
+        if type(advisory_max_attempts) is not int or advisory_max_attempts < 1:
             raise ValueError(
                 "OpenerService advisory_max_attempts must be an int >= 1, got "
-                f"{advisory_max_attempts!r}")
+                f"{_safe_repr(advisory_max_attempts)}")
         if advisory_max_attempts > max_attempts:
             raise ValueError(
                 "OpenerService advisory_max_attempts must be <= max_attempts, got "
-                f"{advisory_max_attempts!r} > {max_attempts!r}")
-        if (isinstance(advisory_deadline_s, bool) or
-                not isinstance(advisory_deadline_s, (int, float)) or
-                not 0 < advisory_deadline_s <= 300):
+                f"{_safe_repr(advisory_max_attempts)} > {_safe_repr(max_attempts)}")
+        try:
+            advisory_deadline = (
+                float(advisory_deadline_s)
+                if not isinstance(advisory_deadline_s, bool)
+                and isinstance(advisory_deadline_s, (int, float))
+                else None
+            )
+        except (TypeError, ValueError, OverflowError):
+            advisory_deadline = None
+        if (advisory_deadline is None or not math.isfinite(advisory_deadline)
+                or not 0 < advisory_deadline <= 300):
             raise ValueError(
                 "OpenerService advisory_deadline_s must be a number > 0 and <= 300, got "
-                f"{advisory_deadline_s!r}")
+                f"{_safe_repr(advisory_deadline_s)}")
+        if not isinstance(style, str):
+            raise ValueError(
+                f"OpenerService style must be a string, got {_safe_repr(style)}")
         self.client = client
         self.tracker = tracker
         self.store = store
@@ -473,7 +495,7 @@ class OpenerService:
         # into "something is actually wrong".
         self.max_attempts = max_attempts
         self.advisory_max_attempts = advisory_max_attempts
-        self.advisory_deadline_s = float(advisory_deadline_s)
+        self.advisory_deadline_s = advisory_deadline
         self.disabled = client is None
         self.stop_requested = False     # set by AUTO exhaustion; advisory exhaustion disables
                                          # suggestions without stopping human observation.

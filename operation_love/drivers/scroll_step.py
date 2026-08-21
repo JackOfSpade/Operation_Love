@@ -314,6 +314,7 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
 """
 from __future__ import annotations
 
+from itertools import pairwise
 import random
 from dataclasses import dataclass
 
@@ -576,7 +577,7 @@ def measure_local_spacing(segmentation: FrameSegmentation) -> LocalSpacing:
     # 1. Two like glyphs on one frame. Independent of every block edge, which is why it comes
     #    first: it survives frames where the band slices both cards.
     hearts = sorted(y for block in blocks for (_x, y) in block.hearts)
-    for lower, upper in zip(hearts, hearts[1:]):
+    for lower, upper in pairwise(hearts):
         gap = upper - lower
         if gap > 0:
             evidence.append((SPACING_HEART_PITCH, gap))

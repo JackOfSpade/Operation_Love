@@ -30,10 +30,11 @@ def test_config_yaml_loads_without_error(cfg):
     # In particular, Hinge's intentionally absent targeting calibration remains a valid
     # observe configuration: it prevents targeted suggestions at runtime, but must not turn
     # the whole shipped application configuration into an unloadable file.
+    assert "targeting_calibration" not in cfg.apps["hinge"]
     validate(cfg)
 
 
-def test_shipped_config_defaults_to_hinge_observe_with_bumble_auto_configured(cfg):
+def test_shipped_config_defaults_to_hinge_observe_with_bumble_card_drag_coordinates_staged(cfg):
     assert cfg.enabled_apps == ["hinge"] and cfg.mode == "observe"
     coords = cfg.apps["bumble"].get("coords", {})
     assert set(coords) == {"swipe_start", "swipe_like_end", "swipe_pass_end"}
@@ -69,6 +70,8 @@ def test_shipped_opener_style_keeps_faithful_corey_framework_and_two_sentence_ca
     assert "two sentences is the absolute maximum" in style
     assert "a visible detail may be named" in style
     assert "never use an em dash or any hyphen" in style
+    assert "terminal plain text smiley, :) is allowed only" in style
+    assert "never add it by default" in style
     assert "low investment so she chases" not in style
     assert "tease her like a bratty little sister" not in style
     assert "no interview questions" not in style
@@ -234,6 +237,10 @@ def test_shipped_opener_style_ships_the_redesign_guardrails(cfg):
     assert "guess the world, not her identity" in style
     assert "never a street, a neighbourhood, a hotel, a specific venue" in style
     assert "the way a well travelled friend would" in style
+    assert "when a place comes from recognizing the image rather than from her profile text" in style
+    assert "clearly identify it as a visual inference before building on it" in style
+    assert "do not state an inferred location as shared experience" in style
+    assert "do not turn it into a generic compliment" in style
     assert "never guess her employer, her school, or her age" in style
     assert "never invent the sender" in style
     assert "you may not claim he has been somewhere" in style

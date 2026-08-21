@@ -9,7 +9,7 @@ background thread in THIS process; the page polls /api/status.
     python -m operation_love hub --make-launchers # write a double-click launcher
 
 The browser is only the face: start/stop POST to this local server, which does
-the real work (launch the Bumble browser, connect to the Hinge phone over ADB).
+the real work (connect to the selected Android app over host-side ADB).
 UI choice has no bearing on what the backend can do.
 
 Split into state.py (HubState — the run + browser-liveness bookkeeping),

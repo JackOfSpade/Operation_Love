@@ -42,7 +42,12 @@ _OPTIONAL = {
 
 # Pre-rename aliases, kept so any caller still reading the old per-app keys degrades
 # gracefully instead of KeyError-ing. Populated onto `available` in detect() below.
-_LEGACY_ALIASES = {"bumble_driver": "web_driver", "hinge_driver": "android_driver"}
+_LEGACY_ALIASES = {"bumble_driver": "android_driver", "hinge_driver": "android_driver"}
+
+# Keep reference/compatibility probes available to diagnostics without turning their absence
+# into a startup warning. No registered target currently uses the generic web transport, and
+# alias keys would otherwise repeat the same missing ADB dependency two extra times.
+_BANNER_HIDDEN_COMPONENTS = frozenset({"web_driver", *_LEGACY_ALIASES})
 
 _ACCEL = {"mps": "Apple GPU (MPS)", "cuda": "NVIDIA GPU (CUDA)", "cpu": "CPU"}
 
@@ -119,7 +124,8 @@ class Capabilities:
     def banner(self) -> str:
         accel = _ACCEL.get(self.device, self.device)
         line = f"Operation Love — {self.os_name} {self.machine} · Python {self.python} · {accel}"
-        missing = [k for k, v in self.available.items() if not v]
+        missing = [k for k, v in self.available.items()
+                   if not v and k not in _BANNER_HIDDEN_COMPONENTS]
         if missing:
             line += f"\n  Not installed (features will be skipped): {', '.join(missing)}"
         return line

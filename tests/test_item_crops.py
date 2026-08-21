@@ -252,7 +252,7 @@ def test_each_item_crop_is_exactly_the_card_that_was_planted():
     payload = _payload()
     planted = [r for r in _ROWS if r[0] == "card"]
 
-    for crop, (_, y0, y1) in zip(payload.items, planted):
+    for crop, (_, y0, y1) in zip(payload.items, planted, strict=True):
         assert (crop.page_y0, crop.page_y1) == (y0, y1)
         assert (crop.x0, crop.x1) == (_CARD_X0, _CARD_X1)
         assert (crop.width, crop.height) == (_CARD_X1 - _CARD_X0, y1 - y0)
@@ -741,6 +741,43 @@ def test_an_item_nothing_re_observed_is_undetermined_and_never_reported_stable()
         assert crop.number in payload.undetermined_items
         assert crop.number not in payload.unseparable_items
     assert payload.max_signature_drift is None, "no evidence is not zero drift"
+
+
+@pytest.mark.parametrize("drift", [None, True, -0.01, float("nan"), float("inf")])
+def test_still_photo_gate_rejects_missing_or_invalid_reobservation_evidence(drift):
+    reason = item_crops.unnumber_without_still_photo_evidence(drift, (1,))
+
+    assert reason is not None
+    assert "auto-hidden video cannot be ruled out" in reason
+
+
+def test_still_photo_gate_uses_drift_only_to_reject_and_never_as_positive_proof():
+    ceiling = item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
+
+    stable_reason = item_crops.unnumber_without_still_photo_evidence(ceiling, (2,))
+    assert stable_reason is not None
+    assert "positive still-photo discriminator unavailable" in stable_reason
+    assert item_crops.unnumber_without_still_photo_evidence(0.0, ()) is not None
+    reason = item_crops.unnumber_without_still_photo_evidence(ceiling + 1e-6, (2,))
+    assert reason is not None and "animated or video media is not targetable" in reason
+
+
+def test_payload_disables_targeting_when_no_positive_still_photo_proof_exists():
+    """Neither stable nor moving photographic pixels can prove still media."""
+    frames, index, _ = _animated_capture(delta=60)
+
+    payload = item_crops.build_item_payload(
+        frames, index,
+        unnumber=lambda _image: None,
+        unnumber_without_evidence=item_crops.unnumber_without_still_photo_evidence)
+
+    assert not payload.usable
+    assert payload.translation == ()
+    demoted = next(crop for crop in payload.context if crop.heart_ordinal == 2)
+    assert demoted.number is None
+    assert "animated or video media is not targetable" in demoted.reason
+    assert any("positive still-photo discriminator unavailable" in crop.reason
+               for crop in payload.context if crop.heart_ordinal != 2)
 
 
 # =====================================================================================

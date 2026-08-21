@@ -145,6 +145,7 @@ frames and each is genuinely unanswerable from ONE frame. Do not "fix" them here
 from __future__ import annotations
 
 import hashlib
+from itertools import pairwise
 from dataclasses import dataclass, replace
 
 
@@ -738,7 +739,7 @@ def _leading_low_contrast_media_edge(
     ramp = [int(span[y]) for y in range(top, top + _SCROLL_TOP_MEDIA_RAMP_ROWS + 1)]
     if any(not is_card[y] for y in range(top, top + _SCROLL_TOP_MEDIA_RAMP_ROWS + 1)):
         return False
-    if any(after < before - dip_px for before, after in zip(ramp, ramp[1:])):
+    if any(after < before - dip_px for before, after in pairwise(ramp)):
         return False
     return ramp[-1] - ramp[0] >= _SCROLL_TOP_MEDIA_MIN_RAMP_GAIN_PX
 
@@ -1142,10 +1143,10 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
         blocks.append(Block(y0=y0, y1=y1, x0=card_x0, x1=card_x1, top=top, bottom=bottom,
                             kind=kind, hearts=block_hearts, reason=reason))
 
-    for block in blocks:
-        if block.kind == BLOCK_AMBIGUOUS:
-            failures.append(
-                f"block y={block.y0}..{block.y1} is ambiguous: {block.reason}")
+    failures.extend(
+        f"block y={block.y0}..{block.y1} is ambiguous: {block.reason}"
+        for block in blocks if block.kind == BLOCK_AMBIGUOUS
+    )
 
     unassigned = tuple(h for h in hearts if h not in assigned)
     if unassigned:

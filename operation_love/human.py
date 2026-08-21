@@ -12,8 +12,35 @@ from __future__ import annotations
 
 import math
 import random
+from numbers import Real
 
 _SIGMA = 0.22
+
+
+def _finite_nonnegative(name: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite nonnegative number")
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a finite nonnegative number") from exc
+    if not math.isfinite(resolved) or resolved < 0:
+        raise ValueError(f"{name} must be a finite nonnegative number")
+    return resolved
+
+
+def _parameters(seconds: float, sigma: float) -> tuple[float, float]:
+    return _finite_nonnegative("seconds", seconds), _finite_nonnegative("sigma", sigma)
+
+
+def _scaled_delay(seconds: float, exponent: float) -> float:
+    try:
+        result = seconds * math.exp(exponent)
+    except OverflowError as exc:
+        raise ValueError("generated delay is not finite") from exc
+    if not math.isfinite(result):
+        raise ValueError("generated delay is not finite")
+    return result
 
 
 def human_delay(seconds: float, sigma: float = _SIGMA) -> float:
@@ -21,9 +48,11 @@ def human_delay(seconds: float, sigma: float = _SIGMA) -> float:
 
     For normal pauses / between-swipe delays.
     """
-    return seconds * math.exp(random.gauss(0.0, sigma))
+    seconds, sigma = _parameters(seconds, sigma)
+    return _scaled_delay(seconds, random.gauss(0.0, sigma))
 
 
 def human_cooldown(seconds: float, sigma: float = _SIGMA) -> float:
     """Like human_delay, but never below `seconds` — for minimum waits / backoffs."""
-    return seconds * math.exp(abs(random.gauss(0.0, sigma)))
+    seconds, sigma = _parameters(seconds, sigma)
+    return _scaled_delay(seconds, abs(random.gauss(0.0, sigma)))

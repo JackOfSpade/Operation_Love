@@ -5,6 +5,13 @@ never touches request-handling or process-lifecycle code.
 """
 from __future__ import annotations
 
+import os
+import re
+import stat
+import tempfile
+import tomllib
+from pathlib import Path
+
 # Portable launcher body — written INTO the project folder and committed, so it
 # travels with the repo and works on any machine. It resolves the project from
 # the script's OWN location (no absolute paths) and uses a project-local .venv.
@@ -37,7 +44,6 @@ fi
 if [ "$need_install" -eq 1 ]; then
   echo "> Installing / refreshing dependencies (first run can take a few minutes)..."
   "$PY" -m pip install -e ".[__EXTRAS__]" || { echo "x pip install failed."; notify "Setup failed at pip install." "Basso"; exit 1; }
-  "$PY" -m playwright install chromium >/dev/null 2>&1
   "$PY" -m operation_love.runtime || { echo "x runtime check failed."; notify "Setup: runtime check failed." "Basso"; exit 1; }
   touch "$STAMP"
   notify "Operation Love is ready - launching." "Glass"
@@ -46,10 +52,13 @@ else
 fi
 
 echo "OK - launching the control hub (Ctrl-C to quit)..."
-TTY_NAME="$(tty)"
+TTY_NAME="$(tty 2>/dev/null || true)"
 "$PY" -m operation_love hub
 status=$?
-if [ "$status" -eq 0 ] && [ -n "$TTY_NAME" ]; then
+# `tty` reports a non-terminal invocation with a human-readable string on
+# some macOS versions. Only a real device path is safe to put in the
+# AppleScript matcher below; otherwise leave Terminal alone.
+if [ "$status" -eq 0 ] && [[ "$TTY_NAME" == /dev/* ]]; then
   /usr/bin/nohup /usr/bin/osascript \
     -e 'delay 0.2' \
     -e 'tell application "Terminal"' \
@@ -72,7 +81,6 @@ _LINUX_UPDATE_RUN = ('#!/bin/sh\ncd "$(dirname "$0")" || exit 1\n'
                      'elif [ ! -e "$STAMP" ] || [ pyproject.toml -nt "$STAMP" ]; then NEED=1; fi\n'
                      'if [ "$NEED" -eq 1 ]; then\n'
                      '  "$PY" -m pip install -e ".[__EXTRAS__]" || exit 1\n'
-                     '  "$PY" -m playwright install chromium >/dev/null 2>&1\n'
                      '  "$PY" -m operation_love.runtime || exit 1\n'
                      '  touch "$STAMP"\nfi\n'
                      'exec "$PY" -m operation_love hub\n')
@@ -87,14 +95,13 @@ _WIN_UPDATE_RUN = ('@echo off\r\ncd /d "%~dp0"\r\n'
                    ')\r\n'
                    'if "%NEED%"=="1" (\r\n'
                    '  "%PY%" -m pip install -e ".[__EXTRAS__]" || exit /b 1\r\n'
-                   '  "%PY%" -m playwright install chromium\r\n'
                    '  "%PY%" -m operation_love.runtime || exit /b 1\r\n'
                    '  echo ok> "%STAMP%"\r\n'
                    ')\r\n'
                    '"%PY%" -m operation_love hub\r\n')
 
 
-def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,bumble,hinge") -> None:
+def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,hinge") -> None:
     """Write ONE portable double-click launcher INTO the project folder.
 
     It resolves the project from the script's own location (no absolute paths)
@@ -103,18 +110,54 @@ def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,bumble
     (re)installed only when they actually change (pyproject.toml newer than the
     last install, or no .venv yet). It then opens the hub.
     """
-    import stat
     import sys
-    from pathlib import Path
 
     proj = Path(config_path).resolve().parent
     plat = sys.platform
+    extra_ids = extras.split(",")
+    if (not extra_ids or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", item)
+                             for item in extra_ids)
+            or len(set(extra_ids)) != len(extra_ids)):
+        raise ValueError("extras must be unique comma-separated optional-dependency ids")
+    declared = set(tomllib.loads((proj / "pyproject.toml").read_text(encoding="utf-8"))
+                   ["project"]["optional-dependencies"])
+    unknown = set(extra_ids) - declared
+    if unknown:
+        raise ValueError(f"unknown optional-dependency extras: {', '.join(sorted(unknown))}")
+
+    def _atomic_write(path: Path, body: str, mode: int) -> None:
+        try:
+            existing = path.lstat()
+        except FileNotFoundError:
+            existing = None
+        if existing is not None and (stat.S_ISLNK(existing.st_mode)
+                                     or not stat.S_ISREG(existing.st_mode)):
+            raise OSError(f"launcher target is not a regular file: {path}")
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        temporary = Path(temporary_name)
+        try:
+            try:
+                os.fchmod(fd, mode)
+            except (AttributeError, NotImplementedError):
+                pass
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+                fd = -1
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            try:
+                os.chmod(path, mode, follow_symlinks=False)
+            except (NotImplementedError, TypeError):
+                os.chmod(path, mode)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            temporary.unlink(missing_ok=True)
 
     def _write(name: str, body: str, executable: bool) -> None:
         p = proj / name
-        p.write_text(body.replace("__EXTRAS__", extras))
-        if executable:
-            p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        _atomic_write(p, body.replace("__EXTRAS__", extras), 0o755 if executable else 0o644)
         print(f"Hub: wrote: {p.name}")
 
     if plat == "darwin":

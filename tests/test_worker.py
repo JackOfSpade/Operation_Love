@@ -1,4 +1,5 @@
 """Worker + OpenerService tests with fakes — no Playwright/emulator/SDK/network."""
+import math
 import threading
 import time
 
@@ -357,27 +358,21 @@ def test_pace_uses_flat_anchor_for_a_driver_without_calibrated_pacing(monkeypatc
     assert waited == [w.pacing.swipe_delay_s * 2]
 
 
-def test_pace_rejects_negative_swipe_delay_for_both_calibrated_and_flat_branches(monkeypatch):
-    """config.validate() already rejects a negative pacing.swipe_delay_s on every path
-    that goes through it, but Worker is a public class any caller can construct
-    directly with a pacing object that skipped validation. Event.wait() on a negative
-    timeout returns immediately, so an unguarded negative anchor would silently
-    produce machine-speed swiping -- fail loudly instead, the same way the calibrated
-    branch already does today via post_action_delay_s's own `scale < 0` check. Pin
-    BOTH branches (flat/non-calibrated and calibrated) since the guard is meant to
-    cover _pace as a whole, before either branch-specific code path runs."""
-    class _NegativePacing:
-        swipe_delay_s = -1.0
+@pytest.mark.parametrize("value", [-1.0, 0.5, math.nan, math.inf, 1e300, True, "3.5"])
+def test_pace_rejects_invalid_direct_pacing_for_both_driver_branches(value):
+    """Direct Worker construction must enforce the same finite 0-or-[1,3600] contract."""
+    class _InvalidPacing:
+        swipe_delay_s = value
 
     flat_worker = _worker(FakeDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
-    flat_worker.pacing = _NegativePacing()
-    with pytest.raises(ValueError, match="non-negative"):
+    flat_worker.pacing = _InvalidPacing()
+    with pytest.raises(ValueError, match="swipe_delay_s"):
         flat_worker._pace("like")
 
     calibrated_worker = _worker(_CalibratedDriver(0), FakeDecider("like"),
                                 FakeOpenerClient(), FakeStore())
-    calibrated_worker.pacing = _NegativePacing()
-    with pytest.raises(ValueError, match="non-negative"):
+    calibrated_worker.pacing = _InvalidPacing()
+    with pytest.raises(ValueError, match="swipe_delay_s"):
         calibrated_worker._pace("like")
 
 
@@ -1188,6 +1183,118 @@ def test_worker_handles_concrete_hinge_blocked_error_without_count_store_or_fail
     assert driver.likes == [] and driver.closed
 
 
+def test_auto_mode_handles_concrete_hinge_blocked_error_from_dislike_boundary():
+    """A foreground race on Pass is the same blocked state as one on Send Like.
+
+    The dislike call historically sat outside the Like branch's DeckBlockedError handler, so
+    the identical Hinge error became a red unexpected failure depending only on the decision.
+    """
+    from operation_love.drivers.hinge import HingeDeckBlockedError
+    from operation_love.status import RunStatus
+
+    class ForegroundLostOnDislike(FakeDriver):
+        def __init__(self):
+            super().__init__(1)
+            self.failure_snapshots = []
+
+        def blocked_reason(self):
+            return None
+
+        def dislike(self):
+            raise HingeDeckBlockedError(_PAYWALL_REASON)
+
+        def snapshot_failure(self, exc):
+            self.failure_snapshots.append(exc)
+
+    driver = ForegroundLostOnDislike()
+    store = FakeStore()
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="auto")
+    Worker("hinge", driver, FakeDecider("dislike"), None, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "blocked" and app["stop_kind"] == "deck_blocked"
+    assert app["stop_reason"] == _PAYWALL_REASON
+    assert app["swipes_run"] == 0
+    assert store.decisions == [] and driver.failure_snapshots == []
+    assert driver.dislikes == 0 and driver.closed
+
+
+def test_auto_mode_surfaces_block_latched_during_capture_that_returns_no_profile():
+    """A package switch between the loop probe and capture must not look like a clean stop."""
+    from operation_love.status import RunStatus
+
+    class ForegroundLostDuringCapture(FakeDriver):
+        def __init__(self):
+            super().__init__(1)
+            self.blocked_calls = 0
+
+        def blocked_reason(self):
+            self.blocked_calls += 1
+            return None if self.blocked_calls == 1 else _PAYWALL_REASON
+
+        def out_of_profiles(self):
+            return False
+
+        def next_profile(self):
+            return None
+
+    driver = ForegroundLostDuringCapture()
+    store = FakeStore()
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="auto")
+    Worker("hinge", driver, FakeDecider("dislike"), None, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("hinge")["app"]
+    assert driver.blocked_calls == 2
+    assert app["state"] == "blocked" and app["stop_kind"] == "deck_blocked"
+    assert app["stop_reason"] == _PAYWALL_REASON
+    assert store.decisions == [] and driver.likes == [] and driver.dislikes == 0
+    assert driver.closed
+
+
+def test_observe_mode_handles_concrete_hinge_blocked_error_at_reviewed_input_boundary():
+    """The reviewed Observe bridge shares the guarded input path and blocked semantics."""
+    from operation_love.drivers.hinge import HingeDeckBlockedError
+    from operation_love.status import RunStatus
+
+    class ForegroundLostDuringObserve(FakeDriver):
+        def __init__(self):
+            super().__init__(1)
+            self.failure_snapshots = []
+
+        def blocked_reason(self):
+            return None
+
+        def out_of_profiles(self):
+            return False
+
+        def current_profile(self):
+            return self.cards[0]
+
+        def wait_for_decision(self, timeout=None, should_stop=None):
+            raise HingeDeckBlockedError(_PAYWALL_REASON)
+
+        def render_busy(self, message=None):
+            pass
+
+        def snapshot_failure(self, exc):
+            self.failure_snapshots.append(exc)
+
+    driver = ForegroundLostDuringObserve()
+    store = FakeStore()
+    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="observe")
+    Worker("hinge", driver, FakeDecider(), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="observe", status=status).run()
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "blocked" and app["stop_kind"] == "deck_blocked"
+    assert app["stop_reason"] == _PAYWALL_REASON
+    assert store.decisions == [] and store.labels == []
+    assert driver.failure_snapshots == [] and driver.closed
+
+
 class _BlockedAndEmptyDriver(FakeDriver):
     """Reports BOTH a blocked deck AND an empty one -- the realistic case, since Hinge's
     paywall covers the deck entirely, so out_of_profiles' own perception can't find any
@@ -1544,6 +1651,56 @@ def test_observe_mode_restarts_only_when_a_driver_explicitly_opts_out_of_halting
     assert driver.attempts == 3     # restarted twice, then succeeded — did NOT halt on first error
     assert not stop.is_set()        # finished cleanly, not a halt
     assert driver.closed
+
+
+def test_observe_restart_renews_reviewed_action_bridge_registration(monkeypatch):
+    """Every failed session unregisters in _finish_session; the replacement must rebind."""
+    import operation_love.worker as wmod
+
+    monkeypatch.setattr(wmod, "human_cooldown", lambda _seconds: 0)
+
+    class Bridge:
+        def __init__(self):
+            self.registered = None
+            self.register_calls = 0
+
+        def register(self, worker):
+            self.registered = worker
+            self.register_calls += 1
+
+        def unregister(self, worker):
+            if self.registered is worker:
+                self.registered = None
+
+    class RestartingObserve(FakeDriver):
+        halt_on_error = False
+
+        def __init__(self):
+            super().__init__(0)
+            self.attempts = 0
+
+        def open_session(self):
+            self.attempts += 1
+            self.opened = True
+
+        def out_of_profiles(self):
+            if self.attempts <= 2:
+                raise RuntimeError("transient after session opened")
+            assert bridge.registered is worker
+            return True
+
+    bridge = Bridge()
+    driver = RestartingObserve()
+    stop = threading.Event()
+    worker = Worker(
+        "bumble", driver, FakeDecider("like"), None, FakeStore(), "run1", _Pacing(),
+        stop, mode="observe", max_restarts=5, observe_action_bridge=bridge)
+
+    worker.run()
+
+    assert driver.attempts == 3
+    assert bridge.register_calls == 3
+    assert bridge.registered is None
 
 
 def test_observe_status_says_wait_during_capture_and_embed():

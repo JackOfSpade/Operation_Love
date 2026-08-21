@@ -5,6 +5,9 @@ uniform/gauss to isolate the deterministic path (curvature) from the noise.
 """
 import math
 import random
+from itertools import pairwise
+
+import pytest
 
 from operation_love import human_motion as hm
 from operation_love.human_motion import (
@@ -34,6 +37,18 @@ def test_fitts_duration_monotonic_in_distance():
     assert short > 0
 
 
+@pytest.mark.parametrize(("args", "message"), [
+    ((-1, 180), "distance_px"),
+    ((100, 0), "width_px"),
+    ((math.nan, 180), "distance_px"),
+    ((100, True), "width_px"),
+    ((10 ** 10_000, 180), "distance_px"),
+])
+def test_fitts_duration_rejects_invalid_geometry(args, message):
+    with pytest.raises(ValueError, match=message):
+        fitts_duration_s(*args)
+
+
 def test_velocity_profile_peaks_before_midstroke():
     w = hm._velocity_weights(60)
     peak = max(range(len(w)), key=lambda i: w[i])
@@ -60,7 +75,7 @@ def test_swipe_pressure_size_time_envelopes():
     assert hm._PRESSURE_FLOOR <= drag[0].pressure <= 0.28
     assert max(p.pressure for p in drag) > 0.5                   # peaks mid-stroke
     ts = [p.t for p in s]
-    assert all(b > a for a, b in zip(ts, ts[1:]))               # time strictly increasing
+    assert all(b > a for a, b in pairwise(ts))                  # time strictly increasing
 
 
 def test_no_tip_down_sample_has_zero_pressure():
@@ -106,12 +121,46 @@ def test_swipe_zero_length_does_not_crash():
     assert s[-1].tip is False
 
 
+@pytest.mark.parametrize("kwargs", [
+    {"hz": 0}, {"hz": math.nan}, {"curve": -0.1}, {"jitter_px": -1},
+    {"duration_scale": True},
+])
+def test_swipe_rejects_invalid_motion_parameters(kwargs):
+    with pytest.raises(ValueError):
+        plan_swipe(0, 0, 100, 100, **kwargs)
+
+
+def test_gesture_plans_refuse_pathological_sample_allocations():
+    with pytest.raises(ValueError, match="resource limit"):
+        plan_swipe(0, 0, 100, 100, duration_scale=1_000_000)
+    with pytest.raises(ValueError, match="resource limit"):
+        plan_tap(10, 10, hz=1_000_000_000)
+    with pytest.raises(ValueError, match="finite real"):
+        plan_tap(10 ** 10_000, 10)
+
+
 def test_tap_lands_near_target_with_release():
     s = plan_tap(540, 1200, rng=random.Random(5))
     assert all(abs(p.x - 540) < 16 and abs(p.y - 1200) < 16 for p in s)  # bounded contact patch
     assert s[-1].tip is False and s[-1].pressure == 0.0
     assert (s[-1].x, s[-1].y) == (s[-2].x, s[-2].y)              # release stays at contact
     assert max(p.pressure for p in s) > 0.3                     # a real pressure pulse
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"hz": 0}, {"hz": math.inf}, {"jitter_px": -1},
+])
+def test_tap_rejects_invalid_motion_parameters(kwargs):
+    with pytest.raises(ValueError):
+        plan_tap(540, 1200, **kwargs)
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"jitter_px": -1}, {"jitter_px": math.nan}, {"sigma_mult": -1},
+])
+def test_tap_jitter_margin_rejects_invalid_parameters(kwargs):
+    with pytest.raises(ValueError):
+        hm.tap_jitter_margin_px(**kwargs)
 
 
 def test_same_nominal_swipes_vary_kinematics_but_keep_safe_endpoints():
@@ -125,7 +174,7 @@ def test_same_nominal_swipes_vary_kinematics_but_keep_safe_endpoints():
     counts = {len(p) for p in plans}
     def velocity_shape(plan):
         speeds = [math.hypot(b.x - a.x, b.y - a.y) / (b.t - a.t)
-                  for a, b in zip(plan[:-2], plan[1:-1])]
+                  for a, b in pairwise(plan[:-1])]
         peak = max(range(len(speeds)), key=speeds.__getitem__)
         half = [i for i, speed in enumerate(speeds) if speed >= max(speeds) * 0.5]
         return round(peak / len(speeds), 2), round((half[-1] - half[0]) / len(speeds), 2)
@@ -178,6 +227,6 @@ def test_ou_tremor_is_bounded_and_correlated():
     offs = hm._ou_series(n, 1.0 / hm.REPORT_HZ, hm._JITTER_PX, [1.0] * n, r)
     xs = [dx for dx, _ in offs]
     assert max(abs(v) for v in xs) < 15                        # bounded (stationary std ~2.2px)
-    num = sum(a * b for a, b in zip(xs, xs[1:]))
+    num = sum(a * b for a, b in pairwise(xs))
     den = sum(v * v for v in xs) or 1.0
     assert num / den > 0.5                                     # strong lag-1 autocorrelation (not white)

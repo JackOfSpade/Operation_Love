@@ -7,6 +7,7 @@ behaviour is verified on-device separately.
 """
 import json
 import random
+import shlex
 
 import pytest
 
@@ -207,6 +208,15 @@ def test_close_removes_the_gesture_file():
     assert any(c == f"rm -f {drv.file_path}" for c in fa.shell_calls)
 
 
+def test_close_quotes_the_gesture_file_as_one_literal_shell_target():
+    fa = FakeAdb()
+    file_path = "/data/local/tmp/gesture file; echo injected.json"
+    UhidTouch(fa, file_path=file_path).close()
+
+    assert fa.shell_calls == [f"rm -f {shlex.quote(file_path)}"]
+    assert shlex.split(fa.shell_calls[0]) == ["rm", "-f", file_path]
+
+
 def test_device_loss_propagates_from_write_file():
     class Lost(FakeAdb):
         def write_file(self, path, data):
@@ -216,9 +226,9 @@ def test_device_loss_propagates_from_write_file():
         UhidTouch(Lost(), rng=random.Random(3)).swipe(540, 1700, 540, 700)
 
 
-def test_hid_failure_retries_once_then_raises_driver_closed(monkeypatch):
-    # A non-zero `hid` exit (e.g. a prior virtual device still tearing down) is retried
-    # once, then surfaced as DriverClosed (clean stop) rather than a raw AdbError crash.
+def test_hid_failure_is_never_replayed_after_delivery_may_have_started():
+    # A non-zero `hid` exit is ambiguous: it may have emitted every report before failing.
+    # Replaying the file could duplicate an irreversible tap, so stop after one invocation.
     class Flaky(FakeAdb):
         def shell(self, cmd):
             self.shell_calls.append(cmd)
@@ -227,8 +237,48 @@ def test_hid_failure_retries_once_then_raises_driver_closed(monkeypatch):
             return "yes" if "system/bin/hid" in cmd else ""
 
     fa = Flaky()
-    monkeypatch.setattr(uhid.time, "sleep", lambda *a, **k: None)               # no real backoff wait
-    with pytest.raises(DriverClosed):
+    with pytest.raises(DriverClosed, match="delivery became uncertain.*refusing to replay"):
         UhidTouch(fa, rng=random.Random(4)).swipe(540, 1700, 540, 700)
-    assert sum(1 for c in fa.shell_calls if c.startswith("hid ")) == 2          # tried twice
+    assert sum(1 for c in fa.shell_calls if c.startswith("hid ")) == 1
     assert any(c.startswith("rm -f") for c in fa.shell_calls)                   # still cleaned up
+
+
+def test_cleanup_failure_cannot_mask_ambiguous_hid_delivery_failure():
+    class HidAndCleanupFail(FakeAdb):
+        def shell(self, cmd):
+            self.shell_calls.append(cmd)
+            if cmd.startswith("hid "):
+                raise AdbError(["adb", "shell", cmd], "primary hid failure")
+            if cmd.startswith("rm -f"):
+                raise AdbError(["adb", "shell", cmd], "secondary cleanup failure")
+            return "yes" if "system/bin/hid" in cmd else ""
+
+    fa = HidAndCleanupFail()
+    with pytest.raises(DriverClosed, match="delivery became uncertain") as caught:
+        UhidTouch(fa, rng=random.Random(6)).swipe(540, 1700, 540, 700)
+
+    assert "primary hid failure" in str(caught.value.__cause__)
+    assert "secondary cleanup failure" not in str(caught.value)
+    assert sum(1 for c in fa.shell_calls if c.startswith("hid ")) == 1
+    assert sum(1 for c in fa.shell_calls if c.startswith("rm -f")) == 1
+
+
+def test_gesture_file_write_may_retry_before_any_hid_delivery(monkeypatch):
+    class WriteFlaky(FakeAdb):
+        def __init__(self):
+            super().__init__()
+            self.write_calls = 0
+
+        def write_file(self, path, data):
+            self.write_calls += 1
+            if self.write_calls == 1:
+                raise AdbError(["adb", "shell", "cat"], "write failed")
+            super().write_file(path, data)
+
+    fa = WriteFlaky()
+    monkeypatch.setattr(uhid.time, "sleep", lambda *a, **k: None)
+
+    UhidTouch(fa, rng=random.Random(5)).swipe(540, 1700, 540, 700)
+
+    assert fa.write_calls == 2
+    assert sum(1 for c in fa.shell_calls if c.startswith("hid ")) == 1

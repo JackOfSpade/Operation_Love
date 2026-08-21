@@ -5,23 +5,35 @@ Playwright/emulator/BigQuery/ML is needed. Pins the two-way finally branch: a cl
 flush reports 'stopped'; a flush that RAISES must flip phase->'save_failed' + every app
 state->'error' AND re-raise, so a run that lost buffered labels never reports success.
 """
+import errno
+import math
 import os
 import subprocess
+import stat
+import sys
 import threading
 import time
 
 import pytest
 
 import operation_love.supervisor as sup
-from operation_love import platforms
 from operation_love.config import OpenerCfg
 from operation_love.drivers.base import DatingAppDriver
+from operation_love.private_files import UnsafePrivatePathError
+
+
+@pytest.fixture(autouse=True)
+def _isolated_android_lock_root(monkeypatch, tmp_path):
+    """No supervisor test may touch the real user's process-wide lock directory."""
+    monkeypatch.setattr(sup, "_ANDROID_LOCK_ROOT", tmp_path / "operation-love-locks")
 
 # enabled_apps: [hinge] -- hinge is the one platform the registry ships available/calibrated
 # by default (platforms.py); "bumble" is now an Android target that starts out UNCALIBRATED,
 # so it would be rejected by supervisor.run()'s new check_runnable() guard before a worker
 # is ever built. __DATA_DIR__ is substituted with an isolated tmp_path by _run_with()/the
-# tests below so the new per-run device-lock file never lands in the real repo's data/ dir.
+# tests below so stores and debug output never land in the real repo's data/ dir.  The Android
+# lock intentionally no longer uses this path; the autouse fixture above isolates its stable
+# per-user root separately.
 _CONFIG = """
 enabled_apps: [hinge]
 mode: observe
@@ -57,10 +69,21 @@ def _patch_no_adb(monkeypatch):
     monkeypatch.setattr(sup, "_android_adb_preflight", lambda app, cfg: None)
 
 
+def _patch_hinge_auto_ready(monkeypatch):
+    """Bypass the shipped targeting-policy gate in tests of downstream AUTO mechanics."""
+    original = sup.platforms.unavailable_reason
+
+    def reason(app, mode=None):
+        if app == "hinge" and mode == "auto":
+            return None
+        return original(app, mode)
+
+    monkeypatch.setattr(sup.platforms, "unavailable_reason", reason)
+
+
 def _write_cfg(tmp_path, text=_CONFIG):
     """Write `text` as config.yaml under tmp_path, with __DATA_DIR__ resolved to an
-    isolated tmp_path subfolder -- keeps the new per-run Android device-lock file (under
-    paths.data_dir) out of the real repo's data/ directory."""
+    isolated tmp_path subfolder so store/debug output stays out of the real repo."""
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(text.replace("__DATA_DIR__", str(tmp_path / "data")))
     return cfg_path
@@ -117,6 +140,77 @@ def test_clean_shutdown_reports_stopped(monkeypatch, tmp_path):
     snap = _run_with(monkeypatch, tmp_path, _FakeStore())
     assert snap["phase"] == "stopped"
     assert all(a["state"] == "out_of_profiles" for a in snap["apps"].values())
+
+
+def test_worker_start_failure_preserves_cause_and_still_saves_and_closes(
+        monkeypatch, tmp_path, capsys):
+    """An unstarted Thread must never enter the shutdown join list.
+
+    ``Thread.join()`` raises for a thread whose ``start()`` failed.  Before this guard that
+    secondary RuntimeError replaced the actual launch failure and escaped before persistence
+    cleanup.  Driver cleanup is best-effort too: even its own failure must not replace the
+    thread-start error.
+    """
+    class _TrackingStore(_FakeStore):
+        def __init__(self):
+            super().__init__()
+            self.flushed = False
+
+        def flush(self):
+            self.flushed = True
+
+    class _CloseFailsDriver(_FakeDriver):
+        def __init__(self):
+            self.close_attempted = False
+
+        def close(self):
+            self.close_attempted = True
+            raise OSError("driver cleanup also failed")
+
+    class _StartFailsWorker:
+        def __init__(self, *args, **kwargs):
+            self.app = args[0]
+
+        def start(self):
+            raise RuntimeError("thread creation refused")
+
+        def join(self, timeout=None):
+            raise AssertionError("an unstarted worker must never be joined")
+
+        def is_alive(self):
+            raise AssertionError("an unstarted worker must never enter liveness checks")
+
+    class _Bridge:
+        def __init__(self):
+            self.unregistered = None
+
+        def unregister(self, worker):
+            self.unregistered = worker
+
+    store = _TrackingStore()
+    driver = _CloseFailsDriver()
+    bridge = _Bridge()
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: store)
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: driver)
+    monkeypatch.setattr(sup, "Worker", _StartFailsWorker)
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+
+    def _bind(worker):
+        worker.observe_action_bridge = bridge
+
+    with pytest.raises(RuntimeError, match="thread creation refused"):
+        sup.run(str(cfg_path), stop_event=threading.Event(), on_worker=_bind)
+
+    assert bridge.unregistered is not None
+    assert driver.close_attempted is True
+    assert store.flushed is True
+    assert store.closed is True
+    assert "driver cleanup also failed" in capsys.readouterr().out
 
 
 def test_null_per_app_limits_does_not_crash_worker_construction(monkeypatch, tmp_path):
@@ -232,6 +326,7 @@ def test_worker_error_state_survives_shutdown_not_overwritten_to_stopped(monkeyp
     # release gate has its own artifact/config coverage; bypass only that prerequisite here so
     # the synthetic driver can reach the shutdown-state behavior this fixture exists to test.
     monkeypatch.setattr(sup.cfg_mod, "_validate_hinge_auto_release_evidence", lambda cfg: None)
+    _patch_hinge_auto_ready(monkeypatch)
     _patch_no_adb(monkeypatch)
 
     captured = {}
@@ -269,6 +364,7 @@ def test_normal_terminal_reason_survives_successful_save(monkeypatch, tmp_path, 
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
     # This is a terminal-state preservation test, not a release-evidence integration test.
     monkeypatch.setattr(sup.cfg_mod, "_validate_hinge_auto_release_evidence", lambda cfg: None)
+    _patch_hinge_auto_ready(monkeypatch)
     _patch_no_adb(monkeypatch)
     captured = {}
     sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
@@ -558,6 +654,69 @@ class _FastQuality:
         pass
 
 
+def test_startup_load_labels_failure_closes_store_before_propagating(monkeypatch, tmp_path):
+    class BrokenLoadStore(_FakeStore):
+        def load_labels(self):
+            raise RuntimeError("persisted labels unreadable")
+
+    store = BrokenLoadStore()
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "make_store", lambda _cfg: store)
+    monkeypatch.setattr(
+        sup, "make_driver", lambda *_args: pytest.fail("driver must not be constructed"))
+    _patch_no_adb(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="persisted labels unreadable"):
+        sup.run(str(cfg_path), stop_event=threading.Event())
+
+    assert store.closed is True
+
+
+@pytest.mark.parametrize("value", [-1, math.nan, math.inf, True, "1.0", 10 ** 1_000])
+def test_invalid_persisted_daily_spend_closes_store_and_fails_startup(
+        monkeypatch, tmp_path, value):
+    class LedgerStore(_FakeStore):
+        def spend_today(self):
+            return value
+
+    store = LedgerStore()
+    cfg_text = _CONFIG.replace(
+        "run_budget_usd: 5.0", "run_budget_usd: 5.0\n  day_budget_usd: 10.0")
+    cfg_path = _write_cfg(tmp_path, cfg_text)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "make_store", lambda _cfg: store)
+    monkeypatch.setattr(
+        sup, "make_driver", lambda *_args: pytest.fail("driver must not be constructed"))
+    _patch_no_adb(monkeypatch)
+
+    with pytest.raises(ValueError, match="spend_today"):
+        sup.run(str(cfg_path), stop_event=threading.Event())
+
+    assert store.closed is True
+
+
+def test_startup_warmup_failure_closes_store_without_masking_cause(monkeypatch, tmp_path):
+    class BrokenEmbedder:
+        def warmup(self):
+            raise RuntimeError("embedder warmup failed")
+
+    store = _FakeStore()
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "make_store", lambda _cfg: store)
+    monkeypatch.setattr(sup, "Embedder", BrokenEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(
+        sup, "make_driver", lambda *_args: pytest.fail("driver must not be constructed"))
+    _patch_no_adb(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="embedder warmup failed"):
+        sup.run(str(cfg_path), stop_event=threading.Event())
+
+    assert store.closed is True
+
+
 def test_wedged_worker_is_not_reported_as_unqualified_success(monkeypatch, tmp_path, capsys):
     """WS-008: a worker still alive after its join timeout is WEDGED -- it may write to the
     store DURING or AFTER flush/close, so a clean flush is not an unqualified success. The
@@ -610,13 +769,16 @@ def test_wedged_worker_is_not_reported_as_unqualified_success(monkeypatch, tmp_p
 
 # --- registry guard: run() rejects an unrunnable platform selection up front ---------------
 
-def test_run_rejects_bumble_observe_before_touching_anything(monkeypatch, tmp_path):
+@pytest.mark.parametrize("mode", ["observe", "auto"])
+def test_run_rejects_uncalibrated_bumble_before_touching_anything(
+        monkeypatch, tmp_path, mode):
     """The check_runnable() guard at the top of run() must fire BEFORE any driver is built,
     using cfg_mod.validate()'s message verbatim (this exercises the guard itself, not just
     validate() -- see test_config.py for validate()'s own coverage of the same rule)."""
     from operation_love import platforms
 
     cfg_text = _CONFIG.replace("enabled_apps: [hinge]", "enabled_apps: [bumble]").replace(
+        "mode: observe", f"mode: {mode}").replace(
         "apps:\n  hinge: {}", "apps:\n  bumble: {}")
     cfg_path = _write_cfg(tmp_path, cfg_text)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
@@ -629,7 +791,7 @@ def test_run_rejects_bumble_observe_before_touching_anything(monkeypatch, tmp_pa
     with pytest.raises(ValueError) as exc_info:
         sup.run(str(cfg_path), stop_event=threading.Event())
 
-    assert str(exc_info.value) == platforms.unavailable_reason("bumble", "observe")
+    assert str(exc_info.value) == platforms.unavailable_reason("bumble", mode)
     assert built == []                            # no store, no driver -- rejected up front
 
 
@@ -642,6 +804,62 @@ def test_run_rejects_two_android_platforms_together(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError):
         sup.run(str(cfg_path), stop_event=threading.Event())
+
+
+def test_effective_config_checks_the_per_app_mode_after_global_override(
+        monkeypatch, tmp_path):
+    """An apps.<app>.mode override wins over the global run-mode override at the shared
+    Hub/direct-supervisor gate, just as it does when constructing the Worker."""
+    from operation_love import platforms
+
+    platforms.all_platforms()  # materialize spec-derived modes before narrowing the fixture
+    monkeypatch.setitem(platforms._AVAILABLE_MODES, "hinge", frozenset({"observe"}))
+    cfg_text = _CONFIG.replace("hinge: {}", "hinge:\n    mode: auto")
+    cfg_path = _write_cfg(tmp_path, cfg_text)
+
+    with pytest.raises(ValueError, match="Hinge Auto is blocked"):
+        sup.load_effective_config(str(cfg_path), mode="observe", enabled_apps=["hinge"])
+
+
+def test_effective_config_rejects_explicit_falsy_overrides(tmp_path):
+    cfg_path = _write_cfg(tmp_path)
+
+    with pytest.raises(ValueError, match="Select a platform to run"):
+        sup.load_effective_config(str(cfg_path), enabled_apps=[])
+    with pytest.raises(ValueError, match="Unsupported mode ''"):
+        sup.load_effective_config(str(cfg_path), mode="")
+
+
+@pytest.mark.parametrize("value", [[{}], ["hinge", {}], "hinge", 42, {"hinge"}])
+def test_effective_config_shape_checks_app_override_before_registry_lookup(tmp_path, value):
+    cfg_path = _write_cfg(tmp_path)
+    with pytest.raises(ValueError, match="enabled_apps"):
+        sup.load_effective_config(str(cfg_path), enabled_apps=value)
+
+
+@pytest.mark.parametrize("value", [True, -1, 1.5, "8", sup.MAX_PER_RUN_OVERRIDE + 1])
+def test_run_rejects_invalid_max_per_run_before_loading_config(monkeypatch, value):
+    loaded = []
+    monkeypatch.setattr(
+        sup, "load_effective_config", lambda *args, **kwargs: loaded.append(True))
+
+    with pytest.raises(ValueError, match="max_per_run"):
+        sup.run(max_per_run=value)
+
+    assert loaded == []
+
+
+@pytest.mark.parametrize("value", [True, -1, 1.5, "8", sup.MAX_PER_RUN_OVERRIDE + 1])
+def test_resolve_run_cap_repeats_direct_caller_validation(value):
+    with pytest.raises(ValueError, match="max_per_run"):
+        sup._resolve_run_cap(12, value)
+
+
+@pytest.mark.parametrize(
+    ("override", "expected"), [(None, 12), (0, None), (7, 7)])
+def test_resolve_run_cap_preserves_config_unlimited_and_positive_semantics(
+        override, expected):
+    assert sup._resolve_run_cap(12, override) == expected
 
 
 def _gemini_cfg_text(extra_opener_yaml="", thinking_yaml="    gemini-test: {}\n"):
@@ -945,7 +1163,7 @@ def test_on_opener_service_callback_receives_the_live_opener_service(monkeypatch
     assert captured["svc"] is _SpyOpenerService.instances[0]
 
 
-# --- device lock: advisory, cross-process flock so two Android runs can't overlap ----------
+# --- device lock: OS-backed cross-process exclusion so two Android runs can't overlap -------
 
 def test_android_device_lock_blocks_concurrent_acquire_and_releases_cleanly(tmp_path):
     if sup.fcntl is None:
@@ -976,8 +1194,43 @@ def test_android_device_lock_release_is_idempotent_and_safe_before_acquire(tmp_p
     lock.release()             # and idempotent
 
 
-def test_android_lock_path_is_one_file_however_the_serial_is_spelled(tmp_path):
-    """The same phone must map to the same lock file no matter how each app block names it.
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_android_device_lock_tightens_leaf_directory_and_existing_lock_file(tmp_path):
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir(mode=0o755)
+    path = lock_dir / "android.lock"
+    path.write_text("stale")
+    lock_dir.chmod(0o755)
+    path.chmod(0o644)
+
+    lock = sup._AndroidDeviceLock(path)
+    lock.acquire()
+    try:
+        assert stat.S_IMODE(lock_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    finally:
+        lock.release()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="symlink and POSIX permission semantics")
+def test_android_device_lock_rejects_symlink_without_mutating_target(tmp_path):
+    lock_dir = tmp_path / "locks"
+    lock_dir.mkdir()
+    unrelated = tmp_path / "unrelated.txt"
+    unrelated.write_text("valuable content")
+    unrelated.chmod(0o644)
+    path = lock_dir / "android.lock"
+    path.symlink_to(unrelated)
+
+    with pytest.raises(UnsafePrivatePathError):
+        sup._AndroidDeviceLock(path).acquire()
+
+    assert unrelated.read_text() == "valuable content"
+    assert stat.S_IMODE(unrelated.stat().st_mode) == 0o644
+
+
+def test_android_lock_path_is_one_file_across_serials_and_data_dirs(tmp_path):
+    """The same phone must map to one stable per-user file for every config.
 
     Keying the path on the configured serial STRING was a hole, not precision: with
     apps.hinge.serial set explicitly and apps.bumble.serial left blank (blank = adb's
@@ -987,20 +1240,113 @@ def test_android_lock_path_is_one_file_however_the_serial_is_spelled(tmp_path):
     blank serial cannot be compared against an explicit one without asking adb.
     """
     class _Explicit:
-        data_dir = tmp_path
+        data_dir = tmp_path / "first-data-root"
         apps = {"hinge": {"serial": "33111JEHN04475"}, "bumble": {"serial": ""}}
+
+    class _OtherDataRoot:
+        data_dir = tmp_path / "second-data-root"
+        apps = {"hinge": {"serial": "33111JEHN04475"}}
 
     hinge_lock = sup._android_lock_path(_Explicit(), "hinge")
     bumble_lock = sup._android_lock_path(_Explicit(), "bumble")
+    other_config_lock = sup._android_lock_path(_OtherDataRoot(), "hinge")
     assert hinge_lock == bumble_lock, "same phone, different lock files -> no exclusion"
+    assert hinge_lock == other_config_lock, "different data_dir values bypassed the device lock"
 
     class _Weird:                       # a hostile serial must not escape data_dir either
-        data_dir = tmp_path
+        data_dir = tmp_path / "third-data-root"
         apps = {"hinge": {"serial": "abc 123/weird:name"}}
     p = sup._android_lock_path(_Weird(), "hinge")
     assert p == hinge_lock              # still the one shared lock, unaffected by the string
-    assert p.parent == tmp_path
+    assert p.parent == sup._ANDROID_LOCK_ROOT
     assert "/" not in p.name and ":" not in p.name and " " not in p.name
+
+
+def test_android_lock_contends_across_processes_and_distinct_data_dirs(tmp_path):
+    class _First:
+        data_dir = tmp_path / "one"
+
+    class _Second:
+        data_dir = tmp_path / "two"
+
+    first_path = sup._android_lock_path(_First(), "hinge")
+    second_path = sup._android_lock_path(_Second(), "hinge")
+    assert first_path == second_path
+
+    first = sup._AndroidDeviceLock(first_path)
+    first.acquire()
+    try:
+        script = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from operation_love.supervisor import _AndroidDeviceLock\n"
+            "lock = _AndroidDeviceLock(Path(sys.argv[1]))\n"
+            "try:\n"
+            "    lock.acquire()\n"
+            "except RuntimeError as exc:\n"
+            "    print(exc)\n"
+            "    raise SystemExit(17)\n"
+            "else:\n"
+            "    lock.release()\n"
+            "    raise SystemExit(2)\n"
+        )
+        child = subprocess.run(
+            [sys.executable, "-c", script, str(second_path)],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        assert child.returncode == 17
+        assert "already in use" in child.stdout
+        assert f"pid {os.getpid()}" in child.stdout
+    finally:
+        first.release()
+
+
+def test_windows_lock_backend_locks_and_unlocks_the_same_byte(monkeypatch, tmp_path):
+    class _FakeMsvcrt:
+        LK_NBLCK = 10
+        LK_UNLCK = 11
+
+        def __init__(self):
+            self.calls = []
+
+        def locking(self, fd, mode, count):
+            self.calls.append((mode, count, os.lseek(fd, 0, os.SEEK_CUR)))
+
+    backend = _FakeMsvcrt()
+    monkeypatch.setattr(sup, "fcntl", None)
+    monkeypatch.setattr(sup, "msvcrt", backend)
+    path = tmp_path / "windows.lock"
+    lock = sup._AndroidDeviceLock(path)
+    lock.acquire()
+    assert path.read_text() == str(os.getpid())
+    lock.release()
+    assert backend.calls == [
+        (backend.LK_NBLCK, 1, 0),
+        (backend.LK_UNLCK, 1, 0),
+    ]
+
+
+def test_windows_lock_contention_reports_holder_and_missing_backend_fails_closed(
+        monkeypatch, tmp_path):
+    class _BusyMsvcrt:
+        LK_NBLCK = 10
+        LK_UNLCK = 11
+
+        @staticmethod
+        def locking(_fd, mode, _count):
+            if mode == _BusyMsvcrt.LK_NBLCK:
+                raise OSError(errno.EACCES, "locked")
+
+    path = tmp_path / "windows-busy.lock"
+    path.write_text("4321")
+    monkeypatch.setattr(sup, "fcntl", None)
+    monkeypatch.setattr(sup, "msvcrt", _BusyMsvcrt())
+    with pytest.raises(RuntimeError, match="pid 4321"):
+        sup._AndroidDeviceLock(path).acquire()
+
+    monkeypatch.setattr(sup, "msvcrt", None)
+    with pytest.raises(RuntimeError, match="neither fcntl nor msvcrt"):
+        sup._AndroidDeviceLock(tmp_path / "unsupported.lock").acquire()
 
 
 def test_device_lock_prevents_overlapping_runs_even_within_one_process(monkeypatch, tmp_path):
@@ -1055,6 +1401,147 @@ def test_device_lock_prevents_overlapping_runs_even_within_one_process(monkeypat
     t.join(timeout=5)
     assert not t.is_alive()
     assert "error" not in first_error               # the first run completed cleanly
+
+
+def test_wedged_android_worker_retains_device_lock_until_it_really_exits(
+        monkeypatch, tmp_path, capsys):
+    if sup.fcntl is None:
+        pytest.skip("flock is POSIX-only")
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _WedgedAndroidDriver(DatingAppDriver):
+        def open_session(self):
+            entered.set()
+            release.wait(timeout=5)
+
+        def next_profile(self):
+            return None
+
+        def out_of_profiles(self):
+            return True
+
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
+            pass
+
+        def dislike(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(sup, "_worker_join_timeout_s", lambda cfg: 0.01)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _WedgedAndroidDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+    stop = threading.Event()
+
+    def stop_after_worker_enters():
+        assert entered.wait(timeout=5)
+        stop.set()
+
+    threading.Thread(target=stop_after_worker_enters, daemon=True).start()
+    sup.run(str(_write_cfg(tmp_path)), stop_event=stop)
+
+    path = sup._ANDROID_LOCK_ROOT / "android-device.lock"
+    contender = sup._AndroidDeviceLock(path)
+    with pytest.raises(RuntimeError, match="already in use"):
+        contender.acquire()
+    assert "retaining Android device lock" in capsys.readouterr().out
+
+    release.set()
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            contender.acquire()
+            break
+        except RuntimeError as exc:
+            if time.monotonic() >= deadline:
+                raise AssertionError("reaper did not release lock after worker exit") from exc
+            time.sleep(0.01)
+    contender.release()
+    with sup._RETAINED_DEVICE_LOCKS_GUARD:
+        assert not sup._RETAINED_DEVICE_LOCKS
+
+
+def test_reaper_start_failure_keeps_lock_but_does_not_skip_store_shutdown(
+        monkeypatch, tmp_path, capsys):
+    if sup.fcntl is None:
+        pytest.skip("flock is POSIX-only")
+
+    release = threading.Event()
+    stop = threading.Event()
+    captured = {}
+
+    class _WedgedAndroidDriver(DatingAppDriver):
+        def open_session(self):
+            stop.set()
+            release.wait(timeout=5)
+
+        def next_profile(self):
+            return None
+
+        def out_of_profiles(self):
+            return True
+
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
+            pass
+
+        def dislike(self):
+            pass
+
+        def close(self):
+            pass
+
+    class _RecordingStore(_FakeStore):
+        flushed = False
+
+        def flush(self):
+            self.flushed = True
+            return super().flush()
+
+    class _UnstartableThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("thread quota exhausted")
+
+    store = _RecordingStore()
+    monkeypatch.setattr(sup, "_worker_join_timeout_s", lambda cfg: 0.01)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: store)
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _WedgedAndroidDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda event: None)
+    _patch_no_adb(monkeypatch)
+
+    def capture_worker(worker):
+        captured["worker"] = worker
+        monkeypatch.setattr(sup.threading, "Thread", _UnstartableThread)
+
+    sup.run(str(_write_cfg(tmp_path)), stop_event=stop, on_worker=capture_worker)
+
+    assert store.flushed is True
+    assert store.closed is True
+    assert "retaining the device lock for this process's lifetime" in capsys.readouterr().out
+    contender = sup._AndroidDeviceLock(sup._ANDROID_LOCK_ROOT / "android-device.lock")
+    with pytest.raises(RuntimeError, match="already in use"):
+        contender.acquire()
+
+    release.set()
+    captured["worker"].join(timeout=5)
+    with sup._RETAINED_DEVICE_LOCKS_GUARD:
+        retained = list(sup._RETAINED_DEVICE_LOCKS)
+        sup._RETAINED_DEVICE_LOCKS.clear()
+    for lock in retained:
+        lock.release()
 
 
 # --- E: _worker_join_timeout_s must derive from opener.request_timeout_s, not a stale flat

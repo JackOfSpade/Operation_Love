@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import math
 import random
+import re
 import shlex
 import subprocess
 from collections.abc import Sequence
@@ -52,6 +53,22 @@ _DEVICE_LOST_PHRASES = (
 )
 
 _TEXT_SHELL_SPECIALS = frozenset("\\'\"`$&|;<>(){}[]*?!#~")
+_ANDROID_PACKAGE_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
+
+
+def validate_android_package_id(value: object, *, context: str = "Android package") -> str:
+    """Return one conservative dotted Android/Java package id or raise before shell use."""
+    if not isinstance(value, str) or _ANDROID_PACKAGE_RE.fullmatch(value) is None:
+        raise ValueError(
+            f"{context} must be a dotted Android identifier containing only letters, digits, "
+            f"and underscores (got {value!r})")
+    return value
+
+
+def quote_android_package_id(value: object, *, context: str = "Android package") -> str:
+    """Validate and shell-quote a package token for :meth:`Adb.shell` command strings."""
+    return shlex.quote(validate_android_package_id(value, context=context))
 
 
 class AdbError(RuntimeError):
@@ -256,6 +273,18 @@ class Adb:
         """Run a shell command on the device and return its decoded output."""
         return _decode(self._run_device(["shell", cmd]))
 
+    def foreground_package(self) -> str | None:
+        """Best-effort package currently holding Android's focused window.
+
+        This is deliberately only a package-level state probe, not an accessibility-tree read.
+        It lets a driver distinguish its own UI from Android System UI (for example the
+        notification shade) before a capture mistakes system chrome for app content. Android
+        has changed the exact ``dumpsys window`` line across releases, so an unreadable or
+        unfamiliar response is represented by ``None`` rather than guessed at.
+        """
+        output = _decode(self._run_device(["shell", "dumpsys window windows"]))
+        return parse_foreground_package(output)
+
     def write_file(self, path: str, data: bytes) -> None:
         """Write bytes to a device file via `cat` redirect. Works for regular files in
         shell-writable dirs (e.g. /data/local/tmp) — unlike `mkfifo`, which SELinux denies
@@ -290,6 +319,7 @@ class Adb:
                 input=input_bytes,
                 capture_output=True,
                 timeout=self.default_timeout,
+                check=False,
             )
         except subprocess.TimeoutExpired as exc:
             stderr = _decode(exc.stderr)
@@ -337,6 +367,54 @@ def parse_devices_output(stdout: str) -> list[str]:
         if len(parts) >= 2 and parts[1] == "device":
             devices.append(parts[0])
     return devices
+
+
+_FOREGROUND_COMPONENT_RE = re.compile(
+    r"(?<![\w.])([A-Za-z][\w.]*)/(?:[A-Za-z_$][\w.$]*|\.[A-Za-z_$][\w.$]*)"
+)
+
+
+def _package_from_focus_lines(stdout: str, label: str) -> tuple[bool, str | None]:
+    """Return ``(label_present, unambiguous_package)`` for one dumpsys focus field.
+
+    Android can report more than one display.  Repeated lines that all name the same package
+    are harmless, but conflicting or partially unreadable focus lines are not evidence that
+    any one package owns the screen and therefore fail closed to ``None``.
+    """
+    marker = re.compile(rf"\b{re.escape(label)}\s*=")
+    packages: list[str] = []
+    present = False
+    for line in stdout.splitlines():
+        marker_match = marker.search(line)
+        if marker_match is None:
+            continue
+        present = True
+        component = _FOREGROUND_COMPONENT_RE.search(line, marker_match.end())
+        if component is None:
+            return True, None
+        packages.append(component.group(1))
+    if not present:
+        return False, None
+    unique = set(packages)
+    return True, packages[0] if len(unique) == 1 else None
+
+
+def parse_foreground_package(stdout: str) -> str | None:
+    """Extract the focused window's package from Android's ``dumpsys window`` output.
+
+    Both the current-focus and focused-app forms include a ``package/class`` component. The
+    focused *window* is authoritative: while System UI covers an app, ``mCurrentFocus`` can name
+    System UI while ``mFocusedApp`` still names the underlying activity. Prefer it regardless of
+    textual order, and use the activity only as a compatibility fallback when the
+    ``mCurrentFocus`` field is absent entirely. A present-but-null, malformed, or conflicting
+    current-focus field must not fall through to a stale underlying activity. Unlabelled
+    package-looking strings can never claim the foreground.
+    """
+    current_present, package = _package_from_focus_lines(stdout, "mCurrentFocus")
+    if current_present:
+        return package
+    _focused_present, package = _package_from_focus_lines(stdout, "mFocusedApp")
+    return package
 
 
 def _escape_input_text(s: str) -> str:

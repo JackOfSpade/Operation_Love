@@ -9,7 +9,10 @@ from operation_love.drivers.adb import (
     AdbError,
     _clean_text_for_input,
     parse_devices_output,
+    parse_foreground_package,
     plan_path,
+    quote_android_package_id,
+    validate_android_package_id,
 )
 from operation_love.drivers.base import DriverClosed
 
@@ -27,8 +30,8 @@ class FakeRun:
         self.results = list(results)
         self.calls = []
 
-    def __call__(self, argv, *, capture_output=True, timeout=None, input=None):
-        self.calls.append((list(argv), capture_output, timeout, input))
+    def __call__(self, argv, *, capture_output=True, timeout=None, input=None, check=None):
+        self.calls.append((list(argv), capture_output, timeout, input, check))
         if not self.results:
             raise AssertionError("unexpected subprocess.run call")
         result = self.results.pop(0)
@@ -57,6 +60,55 @@ def test_text_builds_expected_argv(monkeypatch):
     ]
     assert all(c[1] is True for c in run.calls)     # capture_output
     assert all(c[2] == 3.5 for c in run.calls)      # timeout threaded through
+    assert all(c[4] is False for c in run.calls)    # return code is inspected by Adb._run
+
+
+@pytest.mark.parametrize(("dump", "expected"), [
+    ("mCurrentFocus=Window{123 u0 com.android.systemui/.shade.NotificationShadeWindowView}\n",
+     "com.android.systemui"),
+    ("mFocusedApp=ActivityRecord{abc u0 co.hinge.app/.MainActivity t42}\n", "co.hinge.app"),
+    ("Window #0 unrelated.example/.Elsewhere\n", None),
+])
+def test_parse_foreground_package_accepts_only_labeled_focus_lines(dump, expected):
+    assert parse_foreground_package(dump) == expected
+
+
+@pytest.mark.parametrize("current", [
+    "mCurrentFocus=null",
+    "mCurrentFocus=Window{123 u0 NotificationShade}",
+])
+def test_present_but_unreadable_current_focus_never_falls_back_to_stale_activity(current):
+    dump = f"{current}\nmFocusedApp=ActivityRecord{{abc u0 co.hinge.app/.MainActivity t42}}\n"
+
+    assert parse_foreground_package(dump) is None
+
+
+def test_foreground_parser_accepts_fully_qualified_component_class():
+    dump = "mCurrentFocus=Window{123 u0 co.hinge.app/co.hinge.app.ui.MainActivity}\n"
+
+    assert parse_foreground_package(dump) == "co.hinge.app"
+
+
+@pytest.mark.parametrize(
+    "value", [None, 7, "hinge", ".co.hinge", "co..hinge", "co.hinge-app", "co.hinge; id"])
+def test_android_package_validation_rejects_non_identifiers_before_shell_use(value):
+    with pytest.raises(ValueError, match="dotted Android identifier"):
+        validate_android_package_id(value)
+
+
+def test_android_package_shell_token_is_validated_and_quoted():
+    assert validate_android_package_id("co.hinge_app.v10") == "co.hinge_app.v10"
+    assert quote_android_package_id("co.hinge_app.v10") == "co.hinge_app.v10"
+
+
+def test_conflicting_current_focus_lines_are_ambiguous_even_if_one_is_hinge():
+    dump = "\n".join([
+        "mCurrentFocus=Window{123 u0 co.hinge.app/.MainActivity}",
+        "mCurrentFocus=Window{456 u0 com.android.systemui/.StatusBar}",
+        "mFocusedApp=ActivityRecord{abc u0 co.hinge.app/.MainActivity t42}",
+    ])
+
+    assert parse_foreground_package(dump) is None
 
 
 # --- _clean_text_for_input: fold non-ASCII typography, never delete it (bug 3) ----------

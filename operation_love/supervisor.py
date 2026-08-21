@@ -7,16 +7,23 @@ on exit. This replaces the single-app loop.
 """
 from __future__ import annotations
 
+import errno
+import math
 import os
 import signal
 import threading
 import uuid
+from numbers import Real
 from pathlib import Path
 
 try:
-    import fcntl                 # POSIX only; _AndroidDeviceLock degrades to a no-op without it
+    import fcntl                 # POSIX advisory file locking
 except ImportError:               # pragma: no cover — exercised only on Windows
     fcntl = None
+try:
+    import msvcrt                # Windows byte-range file locking
+except ImportError:               # pragma: no cover — exercised on POSIX
+    msvcrt = None
 
 from . import config as cfg_mod
 from . import platforms
@@ -25,6 +32,7 @@ from .drivers import make_driver
 from .opener.opener import GeminiOpener
 from .limits import RateLimiter
 from .opener.service import OpenerService
+from .private_files import ensure_private_dir, open_private_rw
 from .ranker import make_store
 from .ranker.decider import RankerDecider
 from .ranker.model import PreferenceModel
@@ -35,6 +43,7 @@ from .vision.quality import QualityFilter
 from .worker import Worker
 
 _STATUS_POLL_INTERVAL_S = 0.5
+_ANDROID_LOCK_ROOT = Path.home() / ".operation-love" / "locks"
 
 # The join timeout below run()'s shutdown `finally` gives each worker to notice stop_event and
 # return on its own, before it's reported (and treated) as WEDGED -- see that block's own
@@ -85,7 +94,7 @@ def _android_app(enabled_apps: list[str]) -> str | None:
 
 
 def _android_lock_path(cfg, app: str) -> Path:
-    """ONE lock file for "the Android phone", deliberately not keyed by serial.
+    """ONE per-user lock file for "the Android phone", independent of config.
 
     Keying it on the configured serial string looked more precise and was actually a hole:
     the same physical device is named two different ways depending on the app block. With
@@ -102,11 +111,54 @@ def _android_lock_path(cfg, app: str) -> Path:
     conservative in an unsupported setup" and "silently lets two processes fight over the
     one real phone", the conservative failure is the right one.
 
-    `app` and `cfg` stay in the signature so a future multi-device setup can reintroduce
+    The path must also be independent of ``paths.data_dir``.  That directory is an operator
+    setting, so two otherwise valid config files can name different data roots; putting the
+    lock below either root gives them different locks and silently defeats cross-process
+    exclusion.  A fixed directory below the current user's home is stable across launchers,
+    repositories, and configs while remaining writable without elevated privileges.
+
+    ``app`` and ``cfg`` stay in the signature so a future multi-device setup can reintroduce
     per-device keying deliberately — with the serial actually RESOLVED through adb, not
-    compared as a raw config string.
+    compared as a raw config string.  They intentionally do not influence today's path.
     """
-    return Path(cfg.data_dir) / ".android-device.lock"
+    del cfg, app
+    return _ANDROID_LOCK_ROOT / "android-device.lock"
+
+
+def _lock_contention(exc: OSError) -> bool:
+    return (isinstance(exc, BlockingIOError)
+            or exc.errno in {errno.EACCES, errno.EAGAIN}
+            or getattr(exc, "winerror", None) in {33, 36})
+
+
+def _acquire_platform_file_lock(fh) -> str:
+    """Acquire one non-blocking OS lock and return the backend used."""
+    fh.seek(0)
+    if fcntl is not None:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return "fcntl"
+    if msvcrt is not None:
+        # msvcrt.locking locks from the current file position.  acquire() guarantees the
+        # file contains at least one byte, and both lock and unlock always seek to byte 0.
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        return "msvcrt"
+    raise RuntimeError(
+        "Android device locking is unavailable: this platform has neither fcntl nor msvcrt")
+
+
+def _release_platform_file_lock(fh, backend: str) -> None:
+    fh.seek(0)
+    if backend == "fcntl":
+        if fcntl is None:  # defensive: backend availability cannot change during a real run
+            raise RuntimeError("fcntl disappeared while releasing Android device lock")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        return
+    if backend == "msvcrt":
+        if msvcrt is None:  # defensive: see fcntl branch above
+            raise RuntimeError("msvcrt disappeared while releasing Android device lock")
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    raise RuntimeError(f"unknown Android device lock backend: {backend}")
 
 
 class _AndroidDeviceLock:
@@ -117,51 +169,134 @@ class _AndroidDeviceLock:
     platforms being requested in the SAME run; this covers the case check_runnable can't see:
     two separate processes (e.g. the hub plus a manually launched CLI run).
 
-    Uses flock(2) on a lockfile keyed by adb serial under paths.data_dir. flock ties the
-    lock to this process's open file descriptor, so a crash or `kill -9` releases it
-    automatically when the fd closes — no separate cleanup path needed, and no stale lock
-    left behind for the next run to trip over.
+    Uses flock(2) on POSIX and msvcrt byte-range locking on Windows.  Both tie ownership to
+    this process's open file handle, so a crash releases the OS lock automatically.  The
+    small PID file deliberately remains in place: deleting a lock path during release creates
+    a race where another process can lock the old inode while a third locks a newly-created
+    one.  A stale PID is harmless because only the live OS lock decides ownership.
     """
 
     def __init__(self, path: Path):
         self.path = path
         self._fh = None
+        self._backend: str | None = None
 
     def acquire(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if fcntl is None:
-            return   # non-POSIX (Windows): no flock -- best-effort; check_runnable is the
-                      # remaining guard against overlap within a single process/hub.
-        fh = open(self.path, "a+")
+        if self._fh is not None:
+            return
+        ensure_private_dir(self.path.parent)
+        fd = open_private_rw(self.path, parent=self.path.parent)
+        fh = os.fdopen(fd, "r+b")
+        # Windows cannot lock a zero-length range.  Establish one byte before competing for
+        # byte 0; simultaneous creators may both write this placeholder, which is harmless.
+        fh.seek(0, os.SEEK_END)
+        if fh.tell() == 0:
+            fh.write(b"0")
+            fh.flush()
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+            backend = _acquire_platform_file_lock(fh)
+        except OSError as exc:
             fh.seek(0)
-            holder = fh.read().strip() or "an unknown process"
+            holder = fh.read(128).decode("ascii", errors="replace").strip() or "an unknown process"
             fh.close()
+            if not _lock_contention(exc):
+                raise RuntimeError(
+                    f"Could not acquire Android device lock at {self.path}: {exc}") from exc
             raise RuntimeError(
                 f"Android device is already in use by another Operation Love run (lock held "
                 f"by pid {holder}, {self.path}). Android shows one app in the foreground at "
                 "a time, so two Android runs can never share the phone -- stop that run "
                 "first.") from None
-        fh.seek(0)
-        fh.truncate()
-        fh.write(str(os.getpid()))
-        fh.flush()
+        except BaseException:
+            fh.close()
+            raise
+        try:
+            fh.seek(0)
+            fh.write(str(os.getpid()).encode("ascii"))
+            fh.truncate()
+            fh.flush()
+        except BaseException:
+            try:
+                _release_platform_file_lock(fh, backend)
+            finally:
+                fh.close()
+            raise
         self._fh = fh
+        self._backend = backend
 
     def release(self) -> None:
         if self._fh is None:
             return
         try:
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
-        except OSError:
+            _release_platform_file_lock(self._fh, self._backend or "")
+        except (OSError, RuntimeError):
             pass
         try:
             self._fh.close()
         except OSError:
             pass
         self._fh = None
+        self._backend = None
+
+
+_RETAINED_DEVICE_LOCKS: set[_AndroidDeviceLock] = set()
+_RETAINED_DEVICE_LOCKS_GUARD = threading.Lock()
+
+
+def _retain_device_lock_until_worker_exits(
+        device_lock: _AndroidDeviceLock, worker: Worker) -> threading.Thread | None:
+    """Transfer a wedged Android worker's lock to a daemon reaper.
+
+    Releasing merely because the bounded shutdown wait expired reopens the exact overlapping
+    input race the lock prevents: the old worker is still live and may still touch the phone.
+    The process-wide set also keeps the lock alive if thread creation itself fails.
+    """
+    with _RETAINED_DEVICE_LOCKS_GUARD:
+        _RETAINED_DEVICE_LOCKS.add(device_lock)
+
+    def reap() -> None:
+        try:
+            worker.join()
+        finally:
+            device_lock.release()
+            with _RETAINED_DEVICE_LOCKS_GUARD:
+                _RETAINED_DEVICE_LOCKS.discard(device_lock)
+
+    reaper = threading.Thread(
+        target=reap,
+        name=f"android-lock-reaper-{worker.app}",
+        daemon=True,
+    )
+    try:
+        reaper.start()
+    except Exception as exc:  # noqa: BLE001 -- shutdown/store cleanup must still run
+        # The global strong reference deliberately keeps the lock held for the remainder of
+        # this process. Releasing here would let a second run overlap the still-live worker.
+        print(
+            "Supervisor: CRITICAL — could not start the Android-lock reaper "
+            f"({type(exc).__name__}: {exc}); retaining the device lock for this process's "
+            "lifetime. Restart Operation Love only after the wedged worker/device action ends.")
+        return None
+    return reaper
+
+
+MAX_PER_RUN_OVERRIDE = 1_000_000
+
+
+def normalize_max_per_run(value: object) -> int | None:
+    """Validate a direct or Hub per-run cap without truthy/coercion surprises.
+
+    ``None`` delegates to config, zero explicitly clears a configured cap for this run,
+    and a positive integer supplies the cap. Keep this invariant in the supervisor so
+    non-HTTP callers cannot bypass the Hub's input validation.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("max_per_run must be null, 0, or a positive integer")
+    if value > MAX_PER_RUN_OVERRIDE:
+        raise ValueError(f"max_per_run must not exceed {MAX_PER_RUN_OVERRIDE}")
+    return value
 
 
 def _resolve_run_cap(config_cap: int | None, override: int | None) -> int | None:
@@ -173,6 +308,7 @@ def _resolve_run_cap(config_cap: int | None, override: int | None) -> int | None
     No cap is set by default in config.yaml. A positive hub/CLI override can add a
     temporary per-run cap; zero can explicitly clear a configured per-run cap.
     """
+    override = normalize_max_per_run(override)
     if override is None:
         return config_cap
     return override or None
@@ -192,12 +328,71 @@ def _abort_startup(run_id: str, status: RunStatus, cfg, store=None) -> None:
     if store is not None:
         try:
             store.flush()
-            store.close()
         except Exception as exc:  # noqa: BLE001 — best-effort; nothing was buffered yet
+            print(f"Run {run_id}: warning flushing store during startup abort: {exc}")
+        try:
+            store.close()
+        except Exception as exc:  # noqa: BLE001 — closing must run even when flush failed
             print(f"Run {run_id}: warning closing store during startup abort: {exc}")
     for app in cfg.enabled_apps:
         status.set_app(app, state="stopped")
     status.set_global(running=False, phase="stopped")
+
+
+def _validated_daily_spend(value: object) -> float:
+    """Validate the persisted day-budget seed before it can loosen a money cap."""
+    try:
+        finite = math.isfinite(value)
+    except (TypeError, OverflowError):
+        finite = False
+    if isinstance(value, bool) or not isinstance(value, Real) or not finite or value < 0:
+        raise ValueError(
+            "Store spend_today() must return a finite nonnegative number; the daily budget "
+            "cannot be enforced from malformed persisted spend")
+    return float(value)
+
+
+def _close_store_after_startup_failure(store, run_id: str) -> None:
+    """Release a store opened during startup without ever replacing the original failure."""
+    try:
+        store.close()
+    except BaseException as close_exc:  # noqa: BLE001 — original startup error owns propagation
+        print(f"Run {run_id}: warning closing store after startup failure: "
+              f"{type(close_exc).__name__}: {close_exc}")
+
+
+def load_effective_config(config_path: str = "config.yaml", *, mode: str | None = None,
+                          enabled_apps=None) -> cfg_mod.Config:
+    """Load the exact config a run would use and enforce every start-time gate.
+
+    Hub starts need the same answer synchronously, before they create a worker thread or
+    timed-stop timer, while direct CLI callers need the identical check inside ``run``.
+    ``None`` alone means "use config.yaml". Any explicit override is applied, including an
+    empty app list or empty mode string, so invalid API/CLI input fails closed instead of
+    silently falling back to a potentially live configured run. The Hub separately gives an
+    explicit empty app selection a friendlier message before calling this helper.
+    """
+    cfg = cfg_mod.load(config_path)
+    if mode is not None:                      # explicit hub/CLI override of config.yaml
+        cfg.mode = mode
+    if enabled_apps is not None:
+        cfg.enabled_apps = enabled_apps
+
+    # Shape-check explicit overrides before registry lookups. In particular, a direct
+    # ``enabled_apps=[{}]`` must produce the config contract's clean ValueError instead of
+    # reaching set/dict membership in the availability gate as an unhashable TypeError.
+    cfg_mod._validate_config_shape(cfg)
+
+    requested_modes = {
+        app: (((cfg.apps or {}).get(app, {}) or {}).get("mode", cfg.mode))
+        for app in cfg.enabled_apps
+    }
+    unrunnable = platforms.check_runnable(cfg.enabled_apps, modes=requested_modes)
+    if unrunnable:
+        raise ValueError(unrunnable)
+
+    cfg_mod.validate(cfg)
+    return cfg
 
 
 def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None = None,
@@ -219,28 +414,13 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     from ._warnings import configure_warnings
     configure_warnings()
 
-    cfg = cfg_mod.load(config_path)
-    if mode:                                  # hub/CLI override of config.yaml
-        cfg.mode = mode
-    if enabled_apps:
-        cfg.enabled_apps = list(enabled_apps)
+    # Validate the public override before loading providers, stores, models, or device state.
+    # _resolve_run_cap repeats the check as a defense-in-depth backstop for direct callers.
+    max_per_run = normalize_max_per_run(max_per_run)
 
-    # Hard guard, ahead of everything else (including validate()'s heavier checks, which
-    # would also catch this but with less specific ordering): reject an unrunnable platform
-    # selection before any driver is constructed, any browser launches, or any tap reaches
-    # the phone. This is what stops two Android apps from ever being started together and
-    # stops an uncalibrated/unavailable platform from ever getting this far. HubState.start()
-    # applies the same check before it even spins up the run thread — this is the backstop
-    # for callers that invoke supervisor.run() directly (CLI, tests) without going through it.
-    requested_modes = {
-        app: (((cfg.apps or {}).get(app, {}) or {}).get("mode", cfg.mode))
-        for app in cfg.enabled_apps
-    }
-    unrunnable = platforms.check_runnable(cfg.enabled_apps, modes=requested_modes)
-    if unrunnable:
-        raise ValueError(unrunnable)   # same exception type cfg_mod.validate() raises for this
-
-    cfg_mod.validate(cfg)
+    # Shared with HubState.start(): the Hub rejects a bad effective config before it creates
+    # background state, and this remains the backstop for direct CLI/test callers.
+    cfg = load_effective_config(config_path, mode=mode, enabled_apps=enabled_apps)
     # Gemini uses the stdlib REST transport, so there is no SDK capability gate. Check
     # credentials here, before status/store/model setup, to avoid an expensive startup
     # followed by an inevitable provider failure.
@@ -333,84 +513,94 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
 
     status.set_global(phase="loading saved data")     # BigQuery ensure-tables + label load
     store = make_store(cfg)
-    if on_store:
-        on_store(store)            # publish the live store so the hub eval reads live in-memory labels
-    labels = store.load_labels()
-    status.set_global(labels=len(labels))
-    print(f"Store: backend={cfg.storage.backend} labels={len(labels)}  "
-          f"apps={cfg.enabled_apps}")
 
-    if _stop_requested(stop_event):
-        _abort_startup(run_id, status, cfg, store)
+    def _prepare_runtime():
+        if on_store:
+            # Publish the live store so the hub eval reads live in-memory labels.
+            on_store(store)
+        labels = store.load_labels()
+        status.set_global(labels=len(labels))
+        print(f"Store: backend={cfg.storage.backend} labels={len(labels)}  "
+              f"apps={cfg.enabled_apps}")
+
+        if _stop_requested(stop_event):
+            _abort_startup(run_id, status, cfg, store)
+            return None
+
+        effective_budget = cfg.budget.run_budget_usd
+        if cfg.budget.day_budget_usd is not None:
+            # Daily spend is a safety input, not optional analytics. A missing method, failed
+            # query, or malformed persisted scalar aborts while the startup ownership guard
+            # below still owns (and closes) the store.
+            today_spend = _validated_daily_spend(store.spend_today())
+            remaining_today = max(0.0, cfg.budget.day_budget_usd - today_spend)
+            print(f"Daily budget: ${cfg.budget.day_budget_usd:.2f}  "
+                  f"spent today: ${today_spend:.4f}  remaining: ${remaining_today:.4f}")
+            if effective_budget is None:
+                effective_budget = remaining_today
+            else:
+                effective_budget = min(effective_budget, remaining_today)
+        # The hub must show the EFFECTIVE cap, not the raw config value.
+        status.set_global(budget_cap=effective_budget)
+        tracker = CostTracker(cfg.budget.pricing, effective_budget)
+        # opener_client was constructed/preflighted before the store. It is either a working
+        # Gemini client or None (opener.enabled=false); no legacy provider branch remains.
+        opener_service = OpenerService(
+            opener_client, tracker, store, cfg.opener.style,
+            max_attempts=cfg.opener.max_attempts,
+            advisory_max_attempts=cfg.opener.advisory_max_attempts,
+            advisory_deadline_s=cfg.opener.advisory_deadline_s)
+        if on_opener_service:
+            # Publish the same live service workers receive, for run-scoped bug telemetry.
+            on_opener_service(opener_service)
+
+        if _stop_requested(stop_event):
+            _abort_startup(run_id, status, cfg, store)
+            return None
+
+        status.set_global(phase="training ranker")
+        model = PreferenceModel(
+            min_labels=cfg.ranker.min_labels_to_engage,
+            threshold=cfg.ranker.like_threshold,
+            min_per_class=cfg.ranker.min_per_class)
+        ready = model.train(labels)
+        print(f"Ranker: labels={len(labels)} ready={ready} "
+              f"(min={cfg.ranker.min_labels_to_engage}, "
+              f"threshold={cfg.ranker.like_threshold})")
+        quality = QualityFilter(
+            cfg.quality_filter.enabled, cfg.quality_filter.min_score,
+            cfg.quality_filter.metric)
+        if not cfg.quality_filter.enabled:
+            print("Quality filter: DISABLED — all photos are scored as passing quality threshold")
+        embedder = Embedder()
+        decider = RankerDecider(quality, embedder, model)
+
+        if _stop_requested(stop_event):
+            _abort_startup(run_id, status, cfg, store)
+            return None
+
+        status.set_global(ranker_ready=ready, phase="loading ML models")
+        print("Warming up embedder and quality filter "
+              "(avoids first-profile delay and init races)…")
+        embedder.warmup()
+        quality.warmup()
+
+        if _stop_requested(stop_event):
+            _abort_startup(run_id, status, cfg, store)
+            return None
+
+        active_stop_event = stop_event if stop_event is not None else threading.Event()
+        _install_signal_handlers(active_stop_event)
+        return tracker, opener_service, decider, active_stop_event
+
+    try:
+        prepared = _prepare_runtime()
+    except BaseException:
+        _close_store_after_startup_failure(store, run_id)
+        raise
+    if prepared is None:  # stop was requested and _abort_startup already closed the store
         return
-
-    effective_budget = cfg.budget.run_budget_usd
-    if cfg.budget.day_budget_usd is not None:
-        today_spend = getattr(store, "spend_today", lambda: 0.0)()
-        remaining_today = max(0.0, cfg.budget.day_budget_usd - today_spend)
-        print(f"Daily budget: ${cfg.budget.day_budget_usd:.2f}  "
-              f"spent today: ${today_spend:.4f}  remaining: ${remaining_today:.4f}")
-        if effective_budget is None:
-            effective_budget = remaining_today
-        else:
-            effective_budget = min(effective_budget, remaining_today)
-    status.set_global(budget_cap=effective_budget)   # hub must show the EFFECTIVE cap, not the raw config value
-    tracker = CostTracker(cfg.budget.pricing, effective_budget)
-    # opener_client for provider=="gemini" was already constructed (and preflighted) in the
-    # early startup section above, before make_store() -- not rebuilt here. The legacy
-    # Anthropic opener path has been removed entirely, and config.validate() rejects any
-    # opener.provider other than "gemini", so by this point opener_client is either a
-    # working GeminiOpener or None (opener.enabled=false) -- there is no other branch to
-    # decide here.
-    opener_service = OpenerService(opener_client, tracker, store, cfg.opener.style,
-                                   max_attempts=cfg.opener.max_attempts,
-                                   advisory_max_attempts=cfg.opener.advisory_max_attempts,
-                                   advisory_deadline_s=cfg.opener.advisory_deadline_s)
-    if on_opener_service:
-        # The hub's bug report needs the openers actually GENERATED this run -- their text,
-        # the detail each one claims to reference, and the item space each request used. A
-        # report that says only
-        # `openers: 1` (RunStatus's raw call count, set below via status.set_global) cannot
-        # show any of that -- only OpenerService's own ring buffer
-        # (OpenerService.recent_openers_snapshot) can. Published the same way `store` is
-        # above: handed to the caller right after construction, not routed through
-        # RunStatus/AppStatus (which would mean growing those with per-opener history they
-        # have no other use for).
-        on_opener_service(opener_service)
-
-    if _stop_requested(stop_event):
-        _abort_startup(run_id, status, cfg, store)
-        return
-
-    status.set_global(phase="training ranker")
-    model = PreferenceModel(min_labels=cfg.ranker.min_labels_to_engage,
-                            threshold=cfg.ranker.like_threshold,
-                            min_per_class=cfg.ranker.min_per_class)
-    ready = model.train(labels)
-    print(f"Ranker: labels={len(labels)} ready={ready} "
-          f"(min={cfg.ranker.min_labels_to_engage}, threshold={cfg.ranker.like_threshold})")
-    quality = QualityFilter(cfg.quality_filter.enabled, cfg.quality_filter.min_score,
-                            cfg.quality_filter.metric)
-    if not cfg.quality_filter.enabled:
-        print("Quality filter: DISABLED — all photos are scored as passing quality threshold")
-    embedder = Embedder()
-    decider = RankerDecider(quality, embedder, model)
-
-    if _stop_requested(stop_event):
-        _abort_startup(run_id, status, cfg, store)
-        return
-
-    status.set_global(ranker_ready=ready, phase="loading ML models")
-    print("Warming up embedder and quality filter (avoids first-profile delay and init races)…")
-    embedder.warmup()
-    quality.warmup()
-
-    if _stop_requested(stop_event):
-        _abort_startup(run_id, status, cfg, store)
-        return
-
-    stop_event = stop_event if stop_event is not None else threading.Event()
-    _install_signal_handlers(stop_event)
+    tracker, opener_service, decider, stop_event = prepared
 
     # Device lock: an advisory, cross-process flock so two Android runs can never overlap on
     # the one physical Pixel, even from two separate processes (check_runnable above only
@@ -451,8 +641,31 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             if on_worker:
                 on_worker(w)  # hub-only binding; must happen before this Worker thread starts
             print(f"{app.title()} worker mode={mode} limits={limiter.describe()}")
+            try:
+                w.start()
+            except BaseException:
+                # A Thread cannot be joined until start() succeeds.  Keeping a failed-start
+                # Worker in ``workers`` made the shutdown finally call join() on it, masking
+                # the real thread-start failure and skipping the store flush/close below.
+                # The driver has already been constructed, so release any transport/session
+                # resources best-effort while the original start exception still owns
+                # propagation.
+                bridge = getattr(w, "observe_action_bridge", None)
+                if bridge is not None:
+                    try:
+                        bridge.unregister(w)
+                    except BaseException as bridge_exc:  # noqa: BLE001 — preserve start error
+                        print(
+                            f"Run {run_id}: warning unregistering {app} worker after start "
+                            f"failed: {type(bridge_exc).__name__}: {bridge_exc}")
+                try:
+                    driver.close()
+                except BaseException as close_exc:  # noqa: BLE001 — never mask start failure
+                    print(
+                        f"Run {run_id}: warning closing {app} driver after worker start "
+                        f"failed: {type(close_exc).__name__}: {close_exc}")
+                raise
             workers.append(w)
-            w.start()
 
         status.set_global(phase="live")
         # Break on stop_event too — not only when every worker has died. Otherwise a
@@ -505,11 +718,16 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                       "(it may still be running in the background).")
         wedged = [w for w in workers if w.is_alive()]
         if device_lock is not None:
-            # Released once workers are joined (or accepted as wedged, same tradeoff as
-            # above) — placed here, ahead of the store flush/close and any `raise save_err`
-            # below, so it unconditionally runs exactly once whenever this finally block is
-            # reached, however run() exits.
-            device_lock.release()
+            wedged_android = next(
+                (worker for worker in wedged if worker.app == android_app), None)
+            if wedged_android is None:
+                device_lock.release()
+            else:
+                reaper = _retain_device_lock_until_worker_exits(device_lock, wedged_android)
+                if reaper is not None:
+                    print(
+                        f"Supervisor: retaining Android device lock until wedged worker "
+                        f"'{wedged_android.app}' actually exits; a daemon reaper will release it.")
         # Capture every terminal reason atomically BEFORE the transient "saving" stamp.
         # Error is not the only durable result: out_of_profiles and rate_limited are exactly
         # the explanations a person returning to the hub later needs to see.
@@ -621,7 +839,8 @@ def _android_adb_preflight(app: str, cfg) -> None:
     serial = (app_cfg.get("serial") or "").strip()
     adb = (app_cfg.get("adb_path") or "adb").strip() or "adb"
     try:
-        result = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(
+            [adb, "devices"], capture_output=True, text=True, timeout=5, check=False)
     except FileNotFoundError:
         raise SystemExit(
             f"{label} is enabled but `{adb}` was not found. Install Android platform-tools "

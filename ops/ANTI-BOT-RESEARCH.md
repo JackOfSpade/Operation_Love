@@ -654,7 +654,109 @@ Not wired to production: this module and the rest of Part B's stack are still of
 tests, and `config.yaml`'s `read_scroll_frac: 0.55` remains the swipe-deck read cadence, which
 indexes nothing.
 
+### Addendum 2026-08-21 — Hinge 10.0.1 invalidated three pinned perceptions at once; recalibrated, and real sends became an accepted calibration mode
+
+Hinge auto-updated on the Pixel 7a from 9.134.0 to 10.0.1. The `targeting_calibration` gate did
+exactly what §4's device-binding decisions intended: it refused the stale bound and disabled
+targeted openers rather than aiming 9.134-measured geometry at a new build. That refusal was the
+reported "bug". No code defect was involved; the recalibration below is the fix.
+
+**Three separate perceptions had drifted, and each failed in a different way.**
+
+1. **The composer confirm glyph.** This HingeX account now renders **"Send Priority Like"** where
+   9.134 rendered "Send Like". `assets/hinge_send_like.png` therefore matched nothing and
+   `locate_inline_composer` refused every composer — after a real heart had already opened one,
+   which is the worst place to refuse: the tool's own abort cleanup then reported `not_cleared`.
+   Recropped from a live frame (the filename is kept for lineage; the pixels are the new label).
+   Verified positively on the live composer and negatively on a plain deck frame, and the CTA's
+   x-geometry is unchanged, so only the glyph moved. The small purple pill beside it is the
+   **Rose** control, a separate paid affordance that automation must never target (§4's standing
+   never-spend rule); only the wide CTA is in scope.
+
+2. **The scroll-top filter-chips fingerprint.** A genuine at-top frame measured **6.672** from the
+   nearest registered variant — inside the deliberate 3..9 dead zone the corpus comment describes
+   as empty across 148 frames. Registered the 10.0.1 chips row as its own discrete variant rather
+   than widening the dead zone or loosening `confirm_max`, per that file's stated rule. Verified
+   0 false positives across 18 real composer/scrolled frames (margins 13.5–16.0 against
+   `refute_min` 9.0).
+
+3. **Chips-strip settle timing — the one a fingerprint cannot fix.** After adding that variant a
+   capture still aborted, at a *different* distance (**3.875**), while the resting screen read
+   **0.000**. The strip settles a few pixels late on 10.0.1, so a screencap taken mid-settle lands
+   in the dead zone. Adding a variant per observed offset would be whack-a-mole and would end up
+   registering slightly-scrolled states as "top" — precisely the unsafe move the corpus comment
+   warns against. Shipped instead: `_MAX_UNSETTLED_TOP_REPROBES`, a bounded **re-read of the same
+   screen with no gesture**. No bound moved and `cannot_tell` still never means "at top"; the tool
+   simply stops treating one transient frame as a final answer.
+
+**Real Send Priority Like is now an accepted, explicitly-gated calibration mode.** The owner
+directed that calibration advance profiles by **liking** rather than passing (this account carries
+HingeX with unlimited likes, so the quota argument for Pass does not apply here). That collides
+with a load-bearing property: automated calibration evidence was trustworthy partly *because* the
+capturing actor could not affect the account, and `hinge_calibration_review`/`measure` enforced an
+exact Pass-without-send trace at ~8 sites. Rather than weaken those Pass checks, a **parallel,
+equally exact** terminal action was added: `--send-like` plus its own separate confirmation phrase
+`I_ACCEPT_REAL_PRIORITY_LIKE_SEND_RISK` (deliberately not reusable from the hybrid-review phrase,
+so opting into real sends can never be a side effect of opting into review). The acceptance is
+recorded in the manifest and read from there, so a send trace can never authenticate itself; a
+ledger mixing both terminal actions is refused; and both the manifest and the review artifact
+carry `send_like_accepted`/`terminal_advance_action` so this evidence can never read as Pass-only.
+The abort-cleanup path still always Passes and never sends, regardless of the flag.
+
+**Accepted risk, stated plainly.** Calibration runs now deliver real, permanent likes to real
+people who were served by the deck rather than chosen by the model, and those likes cannot be
+retracted. That is the owner's explicit, twice-stated instruction and is recorded here as accepted
+rather than argued away. The measurement itself is unaffected either way: the frames the bounds are
+computed from are captured *before* the terminal action.
+
+**Frozen 10.0.1 bounds** (four-profile calibration split + separately collected two-profile
+held-out split, hybrid AI-reviewed): `identity_match_max_dist` **2.0385** (hard limit 2.565),
+`inline_item_max_dist` **14.9099** (hard limit 14.91), held-out validation **0** foreign-profile /
+foreign-item accepts and **0** false refusals.
+
+**The 9.134 AUTO release gate was removed, not retargeted.** `ai_reviewed_observe_release_evidence`
+bound the old calibration's hash and production run. Pointing it at the new calibration would be
+forging a release: that artifact was earned by a production OBSERVE run on a build that is no
+longer installed. It is deleted with a comment saying so. OBSERVE runs today on the new
+calibration; AUTO fails closed until a production OBSERVE validation is performed on 10.0.1.
+
+**Fixed 2026-08-21 — a real video was one approval away from being hearted.** During the held-out capture the tool
+planned an `automated_photo_heart` on a card whose Hinge mute control matched at **1.0000** — a
+video, which `hinge_photos_only_v1` must never number. Only the reviewer's `RESTART_PROFILE`
+stopped it. Two things made this reachable: the checkpoint's `photo_only_item_verified` predicate
+is a **hardcoded literal describing intent, not a measured result**, and the real screening in
+`_video_selection_exclusions` only inspects the card's upper-left ROI on frames that observed the
+card top — while Hinge's mute control **auto-hides**, so an enumeration frame can screen "clean" on
+a genuine video. There is no honest positive result available from the existing signals: `0.24`
+is a measured true-photo drift ceiling with no video false-accept bound, a paused video can have
+zero drift, and a missing auto-hidden icon proves nothing. The safety fix therefore disables all
+numbered `hinge_photos_only_v1` targeting: photographic crops remain readable context and Observe
+continues without targeted suggestions, while AUTO/calibration actions fail closed. The tool also
+retains defense-in-depth for a future positive discriminator: calibration re-segments and screens
+the exact target frame before a checkpoint, then after approval requires a byte-identical fresh
+frame and repeats the card/heart, identity, and mute checks before the guarded tap. A future action
+plan records `positive_still_photo_evidence_verified` and
+`target_frame_mute_control_screened_absent`, never the old intent label. Regression tests cover a
+clean/auto-hidden mute screen with stable, absent, or moving evidence, a mute visible on the target
+frame, a changed reviewed frame/point/identity, and the unchanged one-tap plumbing case.
+
 ## 5. Re-check triggers
+- **Hinge app-build drift invalidating pinned perceptions (added 2026-08-21)** — the 10.0.1 update
+  broke the composer glyph, the scroll-top chips fingerprint, and chips settle timing
+  simultaneously (see §4's 2026-08-21 addendum). After ANY Hinge update, expect the targeting
+  gate to refuse and re-run the calibration campaign; do not hand-edit the bound. Treat a
+  `cannot_tell` scroll-top abort and a composer refusal *after* a heart as the signature of this
+  class of drift, not as a code defect.
+- **Video screened as a photo by the mute-control check (safety fixed fail-closed 2026-08-21;
+  positive-photo capability OPEN)** — measured
+  2026-08-21: a video card was planned as photo item 3 while its mute control matched at 1.0000 at
+  action time. `_video_selection_exclusions` screens only the card-top upper-left ROI on frames
+  that saw the card top, and the control auto-hides, so a clean screen is NOT proof of a still
+  photograph. Numbering is now disabled rather than treating low drift as acceptance; calibration
+  cannot reach a reviewer-controlled heart. Re-enable only after an affirmative discriminator has
+  a held-out video false-accept bound, then retain the clean exact target-frame screen both before
+  review and on a byte-identical fresh frame immediately before the tap. Re-check whenever item
+  numbering, signature sampling, the mute template, or the positive discriminator changes.
 - **Realized auto-mode like rate drifting high** (added 2026-08-09) — with `target_like_ratio`
   unset, nothing holds the right-swipe ratio down. Measure it from the decision store; if it
   approaches the ">70% bot-like" band in §1, treat that as a model-calibration problem first,

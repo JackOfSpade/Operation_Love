@@ -9,13 +9,13 @@ the device (`python -m operation_love.runtime`).
 
 ## 1. One-time install
 
+Use Python 3.11 or newer.
+
 ```bash
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -e ".[ml,bq,bumble,hinge,dev]"
-python -m playwright install chromium                   # only for the dead Bumble-web reference driver/tests; not needed to run Hinge
+pip install -e ".[ml,bq,hinge]"
 cp .env.example .env                                    # add GEMINI_API_KEY
 chmod 600 .env                                           # recommended on macOS/Linux
-pytest -q                                               # sanity: all green
 ```
 
 Get a key from [Google AI Studio](https://aistudio.google.com/apikey). It MUST
@@ -68,16 +68,15 @@ runbook: **[ops/HINGE-PIXEL-RUNBOOK.md](HINGE-PIXEL-RUNBOOK.md)**. Once
 
 Both are config-overridable — **no code edits needed**, just fill `config.yaml`.
 
-**Bumble (web) — no longer applicable.** Bumble discontinued its web app in
-August 2026 (see `operation_love/platforms.py`), so there is no live target
-left to run `tools/bumble_inspect.py` against; `apps.bumble_web` stays in
-`config.yaml` and the tool stays in the repo only as reference for a possible
-future web-based platform. Bumble itself is now a second Android target on
-the same physical Pixel as Hinge below, but it isn't calibrated yet
-(placeholder coordinates in `operation_love/drivers/android/bumble.py`,
-`calibrated=False`) and there is no live-calibration runbook step for it yet
-— do not flip that flag until it has actually been verified against the
-device.
+**Bumble (web) — removed.** Bumble discontinued its web app in August 2026, so
+there is no live web target, `apps.bumble_web` config, or Bumble inspector tool.
+The generic `operation_love.drivers.web` Playwright base remains reference-only
+behind the optional `web` extra; ordinary setup and launchers intentionally install
+neither it nor Chromium. Bumble itself is now a second Android target on the same
+physical Pixel as Hinge below. Both modes are fail-closed because
+`BUMBLE_SPEC.calibrated` and `BUMBLE_SPEC.observe_ready` are false, and the required
+`upsell_dismiss` template is absent. Do not flip either readiness value until the
+device checklist below has actually been completed.
 
 **Bumble calibration checklist — BLOCKING, before `calibrated` is ever flipped
 to `True`:**
@@ -164,7 +163,8 @@ python -m tools.hinge_inspect            # screencaps your phone; reports vision
   the hub may show optional help before you choose. It is not a recommendation or
   decision: click the pass **X** to reject a profile, or, if you choose to like,
   click the suggested item's **heart** to open the inline comment / "Send Like"
-  composer. Type the suggested opener manually and tap **Send Like** yourself. A like
+  composer. Type the suggested opener manually and tap **Send Like / Send Priority Like**
+  yourself. A like
   is persisted only after that final send advances the profile; a pass is
   persisted only after the card advances. The composer stays embedded under the selected item;
   hearting another item moves it, and advancing the profile clears it. Dry-run
@@ -198,9 +198,15 @@ apps:
 Those are the **exact** `apps.<app>.targeting_calibration` keys: no missing or additional keys.
 `schema_version` must be the integer `3`; legacy sheet calibrations are rejected.
 `hinge_version_name`, `frame_size_px`, `composer_layout_id`, and `item_selection_policy_id` bind the evidence to the exact
-live app/layout/display and selection contract. `hinge_photos_only_v1` numbers only crops
-affirmatively classified as photos after their source sightings clear the card-local mute-control
-screen; videos are excluded, while WRITTEN and UNKNOWN crops remain readable unnumbered context
+live app/layout/display and selection contract. `hinge_photos_only_v1` is currently **disabled
+fail-closed for numbered targeting**: the crop classifier recognises photographic pixels, not
+still media; a paused video can have zero drift; and Hinge's mute control auto-hides. The measured
+`0.24` static-photo drift ceiling and mute matcher are valid rejection signals, but neither proves
+the complement, and the corpus has no held-out video false-accept bound. Consequently every
+photographic-looking crop remains readable unnumbered context and no targeted suggestion is
+offered. Observe can continue reading profiles; AUTO and calibration targeting remain blocked
+until a positive still-photo discriminator is implemented and measured. Confirmed videos remain
+fully excluded, while WRITTEN and UNKNOWN crops remain readable unnumbered context
 because neither aspect ratio nor a presumed item count is item-type evidence. Both distance fields must be finite positive numbers. `device` must exactly equal the nonempty
 `apps.hinge.serial` ADB serial; it is a machine-checked binding, not free-form device evidence.
 `calibrated_at` must be nonempty evidence text, not a placeholder. `identity_match_max_dist` must be strictly less than
@@ -268,6 +274,18 @@ point and is recorded as `not_cleared`. This is escape handling, never a retry o
 bad heart valid. Modify code/config if needed and launch a fresh split directory from a confirmed
 top; never substitute blind coordinates.
 
+**Current blocking state:** with the fail-closed policy above, capture cannot produce an
+`automated_photo_heart` checkpoint; a reviewer cannot override the missing positive proof. The
+commands below are retained as the procedure to use only after that proof is implemented,
+measured on held-out videos, and the selection policy/calibration is renewed. At that point, the
+checkpoint action plan must record `positive_still_photo_evidence_verified` and
+`target_frame_mute_control_screened_absent`; the former hardcoded `photo_only_item_verified`
+intent label is gone. The tool already takes another screenshot immediately before an approved
+tap, requires byte equality with the approved frame, and repeats the card/heart, identity, and
+mute-control checks at the identical point. The reviewer remains an independent safety layer:
+if the frame visibly shows a mute/speaker-with-x control, or you cannot establish that it is a
+still photo, issue `RESTART_PROFILE` rather than `APPROVE`.
+
 ```bash
 python -m tools.hinge_calibrate capture --split calibration --profiles 4 --hybrid-review \
   --confirmation I_ACCEPT_EXTERNAL_REVIEWED_AUTOMATION_RISK \
@@ -297,6 +315,48 @@ checkpoint and frame hash, and `human_ground_truth: false`. A reviewer approval 
 frame/action plan, not independent human ground truth. Hybrid evidence stays distinct from both
 supervised/manual capture and fully unattended diagnostic capture, and all three remain blocked
 from AUTO until the production OBSERVE release artifact validates the exact measured calibration.
+
+#### Opt-in real sends: `--send-like`
+
+Both automated campaigns default to a Pass-without-send after every calibrated heart — this tool
+never sends a Priority Like unless separately opted into, on every other run. `--send-like` (plus
+its own `--send-like-confirmation I_ACCEPT_REAL_PRIORITY_LIKE_SEND_RISK`, a phrase distinct from
+`--confirmation`) is an owner-directed exception to that default, requested specifically because
+this account runs unlimited HingeX likes: every profile's terminal action becomes a REAL,
+PERMANENT Send Priority Like instead of Pass, using the exact same
+tap/upsell-dismiss/landed-verification transport as an ordinary AUTO/OBSERVE like (never the paid
+Rose/upsell control). It requires **`--hybrid-review`** — a real Priority Like is permanent and
+cannot be retracted, so every one of them must clear a reviewer checkpoint first, and `--unattended`
+has no reviewer in the loop. Passing it alone, with `--unattended`, or with the wrong (or missing)
+`--send-like-confirmation`, exits non-zero before any config or device action. That restriction also
+keeps capture and measurement consistent: `measure --accept-automated-circular-evidence` (the
+`--unattended` validator) authenticates only the Pass-without-send terminal action, so an unattended
+send capture could never be measured even if it were allowed to run.
+
+```bash
+python -m tools.hinge_calibrate capture --split calibration --profiles 4 --hybrid-review \
+  --confirmation I_ACCEPT_EXTERNAL_REVIEWED_AUTOMATION_RISK \
+  --send-like --send-like-confirmation I_ACCEPT_REAL_PRIORITY_LIKE_SEND_RISK \
+  --reviewer-model <reviewer-model> --reviewer-process <reviewer-run-or-version> \
+  --out ops/calibration/targeting_<campaign>-calibration
+```
+
+The **abort-cleanup path never sends real Priority Likes, regardless of this flag**: a stranded
+composer left open after a post-tap verification refusal is always cleared through the
+calibration-only Pass route described above, never Send Like. `--send-like` only ever replaces the
+ordinary end-of-profile Pass; it cannot substitute for, or appear inside, the recovery sequence
+that clears an unsent composer.
+
+Under `--hybrid-review`, the reviewer sees the real planned action before it happens: the
+pre-action checkpoint's `action_plan.action` literally reads `automated_send_priority_like`, never
+a disguised Pass. The manifest's `automation_acceptance` records `send_like_accepted` and
+`terminal_advance_action` explicitly either way (`false` / `automated_pass` by default, `true` /
+`automated_send_priority_like` only when accepted) — `hinge_calibration_review` and `measure` read
+this acceptance from the manifest rather than inferring it from the trace shape, so a send trace
+can never authenticate itself, and both refuse a session whose confirmation and acceptance
+disagree, or whose ledger mixes Pass and Send terminal actions within one profile. Evidence
+therefore never silently reads as Pass-only when real likes were actually sent, and a session can
+never claim both outcomes for the same profile.
 
 For automated and hybrid capture, the versioned strategy
 `alternate_photo_1_3_by_profile_ordinal_v1` deliberately takes **one** photo heart before each
@@ -505,8 +565,9 @@ Worker/hub/store or make a real profile request. After installing the measured c
   ledger, complete photo-only numbering, and cancellation-before-replay behaviour before
   authorizing a gesture. This is offline evidence only; it does not prove a live gesture was
   transported.
-- **Item 1 inline composer identity:** heart item 1 without an intervening scroll. Hinge 9.134
-  auto-focuses the composer immediately, so collect an initial and a settled auto-focused
+- **Item 1 inline composer identity:** heart item 1 without an intervening scroll. Hinge's
+  inline composer (introduced in 9.134 and retained by the current 10.0.1 calibration)
+  auto-focuses immediately, so collect an initial and a settled auto-focused
   reading rather than inventing an unfocused-to-focused transition. Confirm the selected card
   through the full calibration capture's item proof; the small operational recorder can prove
   composer topology and corroborated profile-header identity, not a card ordinal by itself.
@@ -577,13 +638,21 @@ python -m operation_love            # make decisions manually on real profiles
 python -m operation_love stats      # watch labels climb; "ranker ready" flips at ~min_labels
 ```
 Make decisions on ~50–100 profiles (research sweet spot). For Hinge likes,
-click the heart, manually type the opener shown in the hub, and tap **Send Like**;
+click the heart, manually type the opener shown in the hub, and tap
+**Send Like / Send Priority Like**;
 only that final send/advance persists the like. The ranker retrains live and goes
 from `defer` → ready mid-session.
 
 ---
 
 ## 4. Go autonomous — auto mode (it swipes for you)
+
+**BLOCKED until the current calibration has production OBSERVE release evidence.**
+The shipped config intentionally has neither release mapping after its latest app-build
+recalibration, so changing only `mode` will (correctly) fail `config.validate()`. Complete
+step 2 of the staged operational-evidence procedure above and paste exactly one emitted
+mapping beside `targeting_calibration`: manual `observe_release_evidence` **or** explicitly
+accepted `ai_reviewed_observe_release_evidence`, never both. Do not bypass this gate.
 
 ```yaml
 mode: auto
@@ -599,7 +668,8 @@ python -m operation_love
   manually. If you genuinely want a temporary ceiling (e.g. a supervised first auto
   run), add it back under `limits: { max_per_run: 60, max_per_day: 100 }` or per-app
   under `apps.<app>.limits`.
-- Bumble: swipes only (Bumble is the opener exception — no per-swipe message).
+- Bumble (once calibrated): card drags only, with no per-swipe opener. It cannot be
+  selected in either mode today.
 - Hinge: likes with a Gemini-written, profile-specific opener. `opener.models`
   is a quality-descending cascade, tried strongest-first. A model that hits its
   per-DAY quota is skipped for the rest of that run (per-day quotas reset at

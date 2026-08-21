@@ -15,7 +15,7 @@ target on that same physical phone (its web app was discontinued in August
 ## Architecture
 
 ```
-drivers/      element-based control: Hinge (host-side ADB + vision) — the only
+drivers/      app control: Hinge (host-side ADB + vision) — the only
               runnable platform; Bumble uses the same approach on the same
               phone but isn't calibrated yet
 perception/   capture all photos + profile text -> Profile
@@ -85,13 +85,17 @@ offline development); model ids then go unvalidated until the first real call.
 
 ## Setup
 
+Python 3.11 or newer is required.
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[ml,bq,bumble,hinge,dev]"
+pip install -e ".[ml,bq,hinge]"
 cp .env.example .env   # add GEMINI_API_KEY
 chmod 600 .env         # recommended on macOS/Linux
-pytest                 # cost-control tests run without a GPU or the SDK
 ```
+
+Repository contributors can add the lint/test tools with
+`pip install -e ".[dev]"`; production setup and generated launchers omit them.
 
 Get a key from [Google AI Studio](https://aistudio.google.com/apikey). It MUST
 be created in the SAME Google Cloud project whose free-tier quota you intend to
@@ -140,20 +144,27 @@ extra installed.
   profiles, while the bot captures the card, watches for your final like/pass,
   stores it as a label, and **retrains the ranker live** (transitions itself
   from `defer` → ready mid-session). No autonomous actions. On Hinge, click the
-  pass **X** or a **heart**. Targeted opener suggestions require a measured
-  `apps.hinge.targeting_calibration`: until that setup is complete, the hub
-  withholds suggestion text but manual pass/like labels still work normally.
-  Follow the [Hinge targeted-opener calibration](ops/RUNBOOK.md#hinge-targeted-opener-calibration--blocking-before-targeted-text-or-targeted-auto-likes)
-  before expecting a suggested text; never add guessed bounds. Once calibrated,
-  the hub may show optional help for a like: this is **not a recommendation or
-  decision**. You can tap **X** to pass; if you choose to like, use the suggested
-  numbered photo and text. Written prompts are readable context but are never
-  selectable targets. Then tap **Send Like** yourself. A Hinge like is persisted only after that final send
+  pass **X** or a **heart**. Targeted opener suggestions are currently blocked:
+  the available pixel signals do not positively distinguish a still photo from a
+  paused/static video. The archived numeric calibration cannot license the
+  `hinge_photos_only_v1` policy, and config validation rejects reinstalling it.
+  Observe therefore withholds numbered suggestion text, while manual pass/like
+  labels still work normally. Do not add guessed bounds or restore a historical
+  calibration. If a future positive discriminator is implemented and measured,
+  the hub may again show optional help for a like; that help is **not a
+  recommendation or decision**. You can tap **X** to pass or choose a like yourself.
+  Written prompts are readable context but are never selectable targets. Then tap
+  **Send Like / Send Priority Like** yourself. A Hinge like is persisted only after that final send
   advances the profile. The composer remains inline beneath the selected item;
   hearting another item moves it, and advancing the profile clears it. This is
   how you seed your taste — from real usage, not stock images.
 - **auto** — the bot swipes for you with the learned model. Decisions are recorded
-  for stats and optional limits, but are not fed back as training labels.
+  for stats and optional limits, but are not fed back as training labels. Hinge Auto
+  is structurally fail-closed while positive still-photo proof is unavailable. A release
+  artifact alone cannot bypass that policy. Enabling it in the future requires the positive
+  discriminator, a new build/device-bound calibration, and then a verified manual
+  `observe_release_evidence` artifact or separately accepted AI-reviewed artifact; the
+  shipped config intentionally contains none of those release-licensing mappings.
 
 **Hinge is code-complete** (host-side ADB + vision-located taps — no on-device
 helper, no emulator; see ops/HINGE-PIXEL-RUNBOOK.md) and is the only currently
@@ -165,12 +176,14 @@ available under `limits:` if you ever want a temporary ceiling), a **stats**
 readout (`python -m operation_love stats`), and human-like pacing. Bumble is
 ported to the same Android + vision approach on the same physical phone, but
 still needs live calibration before it can run (see "Concurrency &
-deployment" above); its old Playwright/web driver is kept only as reference
-now that Bumble's web app is dead.
+deployment" above). The generic Playwright driver base remains available through the
+optional `web` extra as reference for a future browser-based platform; launchers do not
+install it or Chromium now that no runnable target uses it.
 
 Everything machine-independent is done and unit-tested (run `pytest` for the
 current suite/test count). The only remaining work needs your machine + a
 real account, and it's all batched in
-**[ops/RUNBOOK.md](ops/RUNBOOK.md)**: install, log in, confirm the config-driven
-DOM selectors / resource-ids and the observe-mode like/pass hooks, seed your
-taste in observe mode, then flip to auto.
+**[ops/RUNBOOK.md](ops/RUNBOOK.md)**: install, connect the physical phone,
+verify Observe-mode behavior, and seed your taste. Hinge Auto and numbered targeted
+suggestions remain blocked until a positive still-photo discriminator is implemented and
+measured; only after that prerequisite can a fresh calibration and release gate be earned.

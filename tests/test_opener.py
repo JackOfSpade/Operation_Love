@@ -471,6 +471,8 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "never use an em dash or any hyphen" in lowered
     assert "plain ascii letters and punctuation" in lowered   # WYSIWYG / no-emoji rule
     assert "no emoji" in lowered
+    assert "terminal plain text smiley, :) is allowed only" in lowered
+    assert "never add it by default" in lowered
     assert "low investment so she chases" not in lowered
     assert "tease her like a bratty little sister" not in lowered
 
@@ -581,6 +583,10 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "never call your own question dumb" in lowered
     assert "guess the world, not her identity" in lowered
     assert "name a country, a region, or a park" in lowered
+    assert "when a place comes from recognizing the image rather than from her profile text" in lowered
+    assert "clearly identify it as a visual inference before building on it" in lowered
+    assert "do not state an inferred location as shared experience" in lowered
+    assert "do not turn it into a generic compliment" in lowered
     assert "never guess her employer, her school, or her age" in lowered
     assert "never invent the sender" in lowered
     assert "you may not claim he has been somewhere" in lowered
@@ -923,6 +929,16 @@ def test_generate_accepts_opener_with_percent_sign_unchanged():
     result = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
     assert "50%" in result.opener
     assert "percent" not in result.opener
+
+
+def test_generate_accepts_a_terminal_plain_text_smiley_unchanged():
+    """A sparing, terminal :) is ASCII and reaches the phone exactly as the model wrote it."""
+    payload = _gemini_response({
+        "opener": "That pirate flag makes this look like the most serious dune expedition :) ",
+        "referenced": "x", "item_index": 1,
+    })
+    result = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    assert result.opener == "That pirate flag makes this look like the most serious dune expedition :)"
 
 
 def test_generate_raises_parse_error_for_percent_lowercase_s_collision():

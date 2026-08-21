@@ -393,7 +393,7 @@ def test_all_shipped_fingerprint_variants_match_grid_and_are_in_range():
 def test_either_shipped_variant_confirms_scroll_top_under_default_matching(monkeypatch):
     for fp in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS:
         arr = np.array(fp, dtype="uint8").reshape(_GRID[1], _GRID[0])
-        monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+        monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size, arr=arr: arr)
         verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
         assert verdict.confirmed is True
         assert verdict.distance == 0.0
@@ -442,3 +442,145 @@ def test_observed_selected_signals_top_is_not_rejected_into_the_dead_zone(monkey
 
     assert verdict.confirmed is True
     assert verdict.distance == 0.0
+
+
+@pytest.mark.parametrize("fp", [
+    scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL,
+    scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL_B,
+])
+def test_hingex_signals_dark_pill_variants_are_default_scroll_top_candidates(monkeypatch, fp):
+    """Dark/charcoal Signals pill rendering (Variants 7 & 8) must be registered candidates.
+
+    Regression for the 2026-08-19 Lana capture (run ce1de851af2e) where the dark-pill
+    rendering measured 17.344--17.750 from all existing variants and was misclassified as
+    ``confirmed_not_top``, stalling observe mode for 5m33s while the card was genuinely at
+    its scroll top.  This test stores only the 16x4 greyscale filter-strip fingerprint,
+    never any profile pixels.
+    """
+    assert fp in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS
+    arr = np.array(fp, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+
+    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+
+    assert verdict.confirmed is True
+    assert verdict.distance == 0.0
+
+
+def test_dark_pill_frames_measure_within_confirm_bound_of_each_other():
+    """The two dark-pill calibration frames are 2.594 apart — within the 3.0 confirm bound.
+
+    Regression: these two frames from the same run must be treated as the same layout and
+    never straddle the dead zone.  This records only the inter-frame distance measurement
+    (no profile pixels — both fingerprints are filter-strip chrome only).
+    """
+    d = scroll_top.fingerprint_distance(
+        scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL,
+        scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL_B,
+    )
+    assert d < scroll_top._CONFIRM_MAX_DIST, (
+        f"Dark-pill frames are {d:.3f} apart, which exceeds the {scroll_top._CONFIRM_MAX_DIST} "
+        "confirm bound — one would fall in the dead zone and stall observe mode again"
+    )
+
+
+def test_observed_current_age_height_top_is_not_refused_in_dead_zone(monkeypatch):
+    """Current white Age/Height chips are a known top, not an ambiguous scroll state.
+
+    Regression for the settled Val capture in the 2026-08-19 ``c679dfb4e458`` observe run.
+    Its top-of-card filter strip was 7.203 from the old nearest candidate, which is deliberately
+    inside the dead zone; the registered fingerprint is chrome-only calibration evidence.
+    """
+    observed = scroll_top._SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_CURRENT
+    arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+
+    assert observed in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS
+    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+
+    assert verdict.confirmed is True
+    assert verdict.distance == 0.0
+
+
+def test_observed_signals_purple_banner_top_is_not_refused_in_dead_zone(monkeypatch):
+    """A current selected-Signals filter strip is known top chrome, not an unknown scroll.
+
+    Regression for the visibly top-of-card 2026-08-20 Jenny capture. It was 8.953 from the
+    previous closest candidate, just inside the 3..9 dead zone. The fixture is only the 16x4
+    profile-independent filter-strip fingerprint; no dating-profile pixels are stored here.
+    """
+    observed = (
+        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        243, 186, 181, 184, 241, 243, 232, 232, 239, 249, 233, 233, 233, 233, 249, 237,
+        159,  70,  72,  64, 149, 242, 236, 242, 236, 232, 234, 233, 236, 240, 232, 235,
+        138,  99, 130, 102, 130, 246, 190, 214, 234, 235, 220, 182, 206, 231, 232, 235,
+    )
+    assert observed == scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_PURPLE_BANNER
+    assert scroll_top.fingerprint_distance(
+        observed, scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL) == 8.953125
+    arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+
+    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+
+    assert verdict.confirmed is True
+    assert verdict.distance == 0.0
+
+
+def test_observed_hinge_10_0_1_signals_unselected_top_is_not_refused_in_dead_zone(monkeypatch):
+    """The Hinge Android app auto-updating 9.134.0 -> 10.0.1 redrew the unselected-Signals chip
+    row and pushed it into the dead zone, not past the refute bound.
+
+    Regression for 2026-08-21: three independent Pixel 7a captures taken after the update
+    (phone_check3.png, phone_after_abort2.png, phone_idle_check.png) all visibly showed a
+    genuine scroll top and all three decoded to this exact fingerprint, 0.000 apart from each
+    other -- a stable re-render, not capture jitter. Against Variant 4 (`SIGNALS_UNSELECTED`),
+    the nearest fingerprint on file at the time, it measured 6.671875: squarely inside the 3..9
+    dead zone, which aborted a live calibration capture twice before this variant was
+    registered. The fixture is only the 16x4 profile-independent filter-strip fingerprint; no
+    dating-profile pixels are stored here.
+    """
+    observed = (
+        254, 254, 253, 253, 254, 255, 251, 250, 251, 255, 253, 250, 250, 250, 254, 255,
+        253, 250, 252, 253, 251, 245, 233, 236, 233, 242, 235, 236, 236, 234, 238, 240,
+        247, 241, 214, 216, 244, 241, 228, 222, 236, 233, 237, 215, 215, 232, 236, 236,
+        247, 247, 214, 220, 245, 241, 231, 218, 242, 234, 240, 223, 216, 240, 237, 236,
+    )
+    assert observed == scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_0_1
+    assert scroll_top.fingerprint_distance(
+        observed, scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED) == 6.671875
+    assert scroll_top._CONFIRM_MAX_DIST < 6.671875 < scroll_top._REFUTE_MIN_DIST
+    arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+
+    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+
+    assert verdict.confirmed is True
+    assert verdict.distance == 0.0
+
+
+def test_hinge_10_0_1_variant_does_not_pull_a_scrolled_frame_into_the_dead_zone(monkeypatch):
+    """The new variant must not narrow the gap for frames that are genuinely scrolled.
+
+    Regression built from the real negative check: on the physical Pixel 7a, composer-open
+    (keyboard visible) frames from the same 2026-08-21 session measured 15.1--16.7 from every
+    registered fingerprint including this new one -- comfortably above `refute_min`. This test
+    pins the mechanism with a synthetic stand-in at exactly the refute bound: a band already
+    correctly refuted against the nearest OLD variant must not move into the dead zone just
+    because the NEW variant was added, since `confirm_scroll_top` takes the MINIMUM distance
+    across all candidates.
+    """
+    new_variant = scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_0_1
+    # -16 rather than +16: the new variant's cells run up to 255, so a positive offset this size
+    # would clip against the uint8 ceiling and silently understate the distance. Subtracting
+    # keeps every cell in range (min cell 214 -> 198) while still landing comfortably past
+    # `refute_min`, matching the 15.1--16.7 margins measured on the real composer-open frames.
+    scrolled = _offset(new_variant, -16)
+    arr = np.array(scrolled, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+
+    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+
+    assert verdict.refuted is True
+    assert verdict.confirmed is False
+    assert verdict.distance == pytest.approx(16.0, abs=1e-9)

@@ -11,12 +11,10 @@ for every `operation_love.*` import — including ones nested inside functions/t
 blocks, which is exactly where the dead import hid — and confirm the target module
 and symbol both resolve.
 
-No network, no subprocess, no adb, no Playwright, no BigQuery: all three tools lazily
-import their optional-dependency drivers (see operation_love/drivers/bumble.py,
-operation_love/drivers/hinge.py, operation_love/ranker/bigquery_store.py), so plain
-imports here are safe even on a machine with none of the optional extras installed.
-The CLI-surface tests only ever request --help, which argparse answers with a clean
-SystemExit before any real body (device/browser/BigQuery work) runs.
+No network, no subprocess, no adb, no BigQuery: the tools lazily import their
+optional-dependency drivers, so plain imports here are safe even on a machine with none
+of the optional extras installed. The CLI-surface tests only ever request --help, which
+argparse answers with a clean SystemExit before any real device or BigQuery work runs.
 """
 from __future__ import annotations
 
@@ -47,22 +45,19 @@ def _operation_love_imports(py_file: Path):
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             if node.module and node.module.split(".")[0] == "operation_love":
-                for alias in node.names:
-                    if alias.name != "*":
-                        from_pairs.append((node.module, alias.name))
+                from_pairs.extend(
+                    (node.module, alias.name) for alias in node.names if alias.name != "*"
+                )
         elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name.split(".")[0] == "operation_love":
-                    plain_modules.append(alias.name)
+            plain_modules.extend(
+                alias.name for alias in node.names
+                if alias.name.split(".")[0] == "operation_love"
+            )
     return from_pairs, plain_modules
 
 
 def test_hinge_inspect_imports_cleanly():
     importlib.import_module("tools.hinge_inspect")
-
-
-def _removed_bumble_inspect_imports_cleanly():
-    importlib.import_module("tools.bumble_inspect")
 
 
 def test_eval_aggregation_imports_cleanly():
@@ -118,56 +113,6 @@ def test_hinge_inspect_help_exits_cleanly_without_touching_device(monkeypatch):
         assert exc.code == 0
     else:
         raise AssertionError("--help should have raised SystemExit")
-
-
-def _removed_bumble_inspect_help_exits_cleanly_without_touching_browser(monkeypatch):
-    mod = importlib.import_module("tools.bumble_inspect")
-    monkeypatch.setattr(sys, "argv", ["bumble_inspect.py", "--help"])
-    try:
-        mod.main()
-    except SystemExit as exc:
-        assert exc.code == 0
-    else:
-        raise AssertionError("--help should have raised SystemExit")
-
-
-def _removed_bumble_inspect_exits_cleanly_on_platform_unavailable(monkeypatch):
-    """tools/bumble_inspect.py targets the removed Playwright web driver (bumble_web --
-    permanently unavailable since Bumble discontinued its web app in Aug 2026, see
-    operation_love/platforms.py). BumbleDriver (a compatibility shim for BumbleWebDriver)
-    correctly raises PlatformUnavailable from open_session() -- the registry's
-    availability gate is NOT bypassed -- but pre-fix main() had no handler for it, so the
-    user got a raw traceback instead of the clean explanation the registry already
-    computed. main() must catch it, print that reason, and exit non-zero -- and must never
-    prompt input() for a browser session that was never opened."""
-    mod = importlib.import_module("tools.bumble_inspect")
-    from operation_love.drivers.web import PlatformUnavailable
-
-    monkeypatch.setattr(sys, "argv", ["bumble_inspect.py", "--config", "config.yaml"])
-    monkeypatch.setattr(mod.cfg_mod, "load", lambda path: object())
-
-    class _RefusingDriver:
-        def __init__(self, cfg):
-            pass
-
-        def open_session(self):
-            raise PlatformUnavailable(
-                "Additional work needed to get this to run. Bumble discontinued its web "
-                "app in August 2026."
-            )
-
-    monkeypatch.setattr(mod, "BumbleDriver", _RefusingDriver)
-
-    def _no_input(*a, **k):
-        raise AssertionError("input() must not be called -- no browser was ever opened")
-    monkeypatch.setattr("builtins.input", _no_input)
-
-    try:
-        mod.main()
-    except SystemExit as exc:
-        assert exc.code != 0
-    else:
-        raise AssertionError("main() should have exited non-zero on PlatformUnavailable")
 
 
 def test_eval_aggregation_help_exits_cleanly_without_touching_bigquery(monkeypatch):

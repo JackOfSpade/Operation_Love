@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -62,6 +64,7 @@ def _production_inputs(tmp_path: Path, run_id="run-1"):
 
 def test_verifier_emits_exact_release_mapping_that_config_accepts(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(config_mod, "hinge_targeting_unavailable_reason", lambda: None)
     calibration = _calibration()
     cfg = _cfg(calibration)
     debug, db = _production_inputs(tmp_path)
@@ -71,7 +74,11 @@ def test_verifier_emits_exact_release_mapping_that_config_accepts(monkeypatch, t
                                      out_dir=tmp_path / "ops" / "release")
 
     assert artifact["completed"] is True
-    assert (tmp_path / paste["verification_file"]).is_file()
+    artifact_path = tmp_path / paste["verification_file"]
+    assert artifact_path.is_file()
+    if os.name == "posix":
+        assert stat.S_IMODE(artifact_path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(artifact_path.stat().st_mode) == 0o600
     cfg.mode = "auto"
     cfg.apps["hinge"]["mode"] = "auto"
     cfg.apps["hinge"]["observe_release_evidence"] = paste
@@ -80,6 +87,7 @@ def test_verifier_emits_exact_release_mapping_that_config_accepts(monkeypatch, t
 
 def test_auto_release_gate_refuses_missing_or_tampered_artifact(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(config_mod, "hinge_targeting_unavailable_reason", lambda: None)
     cfg = _cfg(_calibration(), mode="auto")
     with pytest.raises(ValueError, match="AUTO is blocked"):
         config_mod._validate_hinge_auto_release_evidence(cfg)

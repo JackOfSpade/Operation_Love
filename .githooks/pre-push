@@ -1,5 +1,6 @@
 #!/bin/sh
 # Local `act` gate for protected pushes, with short-lived commit-result reuse.
+# It runs every job eligible for the push event, matching the required CI gate.
 #
 # Environment:
 #   SKIP_ACT=1                 bypass once
@@ -83,7 +84,7 @@ secret_digest=none
 if [ -f "$ROOT/.secrets" ]; then
 	secret_digest=$(digest <"$ROOT/.secrets") || secret_digest=unavailable
 fi
-CONTEXT=$(printf '%s\n' "hook=1" "act=$(act --version 2>/dev/null)" \
+CONTEXT=$(printf '%s\n' "hook=2" "jobs=all-push" "act=$(act --version 2>/dev/null)" \
 	"arch=$ARCH" "args=${ACT_ARGS:-}" "secrets=$secret_digest" |
 	digest) || CONTEXT=""
 
@@ -146,16 +147,16 @@ while read -r branch sha before; do
 	ref=$(printf '%s' "refs/heads/$branch" | sed 's/\\/\\\\/g; s/"/\\"/g')
 	event="$TMP/event.json"
 	printf '{"ref":"%s","after":"%s","before":"%s"}\n' "$ref" "$sha" "$before" >"$event"
-	say "pre-push: validating $branch at $sha"
+	say "pre-push: validating all push-triggered jobs for $branch at $sha"
 	cd "$ACTIVE" || { status=1; break; }
 	set -f
 	if [ -f "$ROOT/.secrets" ]; then
 		# shellcheck disable=SC2086
-		act push -j test --eventpath "$event" --secret-file "$ROOT/.secrets" $ARCH \
+		act push --eventpath "$event" --secret-file "$ROOT/.secrets" $ARCH \
 			--concurrent-jobs "$JOBS" ${ACT_ARGS:-} </dev/null
 	else
 		# shellcheck disable=SC2086
-		act push -j test --eventpath "$event" $ARCH --concurrent-jobs "$JOBS" ${ACT_ARGS:-} </dev/null
+		act push --eventpath "$event" $ARCH --concurrent-jobs "$JOBS" ${ACT_ARGS:-} </dev/null
 	fi
 	status=$?
 	set +f
@@ -172,4 +173,4 @@ if [ "$status" -ne 0 ]; then
 	say "pre-push: BLOCKED - act exited $status"
 	exit "$status"
 fi
-say "pre-push: act passed (including cached exact-commit results) - pushing"
+say "pre-push: all required push jobs passed (including cached exact-commit results) - pushing"

@@ -122,7 +122,7 @@ def _confirm_matches(gray, template, cv2, np, *, threshold: float) -> list[tuple
         raise ComposerDetectionError(
             f"no Send Like confirmation glyph matched at the required threshold {threshold:.2f}")
     candidates: list[tuple[float, tuple[int, int]]] = []
-    for y, x in zip(ys.tolist(), xs.tolist()):
+    for y, x in zip(ys.tolist(), xs.tolist(), strict=True):
         point = (x + tw // 2, y + th // 2)
         # The template's literal phrase can occur in selected-item text.  This
         # coarse envelope is deliberately broad enough for either keyboard
@@ -200,7 +200,11 @@ def _long_dark_run(row, np, *, minimum: int) -> tuple[int, int] | None:
     changes = np.diff(np.concatenate(([False], row.astype(bool), [False])).astype(np.int8))
     starts = np.flatnonzero(changes == 1)
     ends = np.flatnonzero(changes == -1)
-    runs = [(int(start), int(end)) for start, end in zip(starts, ends) if end - start >= minimum]
+    runs = [
+        (int(start), int(end))
+        for start, end in zip(starts, ends, strict=True)
+        if end - start >= minimum
+    ]
     return max(runs, key=lambda run: run[1] - run[0]) if runs else None
 
 
@@ -228,7 +232,7 @@ def _comment_for_cta(mask, cv2, np, *, send: Rect) -> Rect:
         else:
             groups[-1].append(row)
     candidate_pairs: list[tuple[list[tuple[int, int, int]], list[tuple[int, int, int]]]] = []
-    for top, bottom in zip(groups, groups[1:]):
+    for top, bottom in zip(groups, groups[1:], strict=False):
         observed_height = bottom[0][0] - top[0][0]
         cta_gap = send.y0 - bottom[-1][0] - 1
         if (round(height * 0.050) <= observed_height <= round(height * 0.100) and
@@ -308,7 +312,13 @@ def locate_inline_composer(frame: bytes, confirm_template, threshold: float = 0.
             confirm_point=confirm_point,
         )))
     if not validated:
-        assert first_failure is not None  # each candidate must either validate or explain its refusal
+        if first_failure is None:
+            # `_confirm_matches` currently either raises or returns at least one candidate, and
+            # every candidate above either validates or records a typed refusal. Keep that
+            # invariant fail-closed even under `python -O`, where an `assert` would disappear,
+            # and preserve this function's public exception contract if either helper changes.
+            raise ComposerDetectionError(
+                "inline composer produced no actionable confirmation candidate")
         raise first_failure
     if len(validated) > 1:
         best_score = max(score for score, _surface in validated)

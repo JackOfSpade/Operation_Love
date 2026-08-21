@@ -39,6 +39,7 @@ read's own last frame. Two consequences for this file, both deliberate:
 import dataclasses
 import math
 import random
+from itertools import pairwise
 
 import cv2
 import numpy as np
@@ -506,7 +507,7 @@ def test_every_gesture_goes_through_the_humanized_path_with_the_planned_distance
     target = _navigate(driver, 1)
 
     assert driver.gestures and len(driver.gestures) == len(target.steps)
-    for (frac, x_frac), step in zip(driver.gestures, target.steps):
+    for (frac, x_frac), step in zip(driver.gestures, target.steps, strict=True):
         assert (frac, x_frac) == (step.frac, step.x_frac)
         assert frac != _POLICY_FRAC                       # the policy's frac was DISCARDED
         assert hinge._READ_SCROLL_FRAC_MIN <= frac <= hinge._READ_SCROLL_FRAC_MAX
@@ -571,7 +572,7 @@ def test_the_step_is_sized_against_this_profiles_own_measured_spacing():
     one card at a time, because the enumeration pass has already met every card."""
     index = _reference_index()
     smallest = item_nav._min_heart_pitch(item_nav.index_hearts(index))
-    assert smallest == min(b - a for a, b in zip(_HEART_PAGE_Y, _HEART_PAGE_Y[1:]))
+    assert smallest == min(b - a for a, b in pairwise(_HEART_PAGE_Y))
 
     target = _navigate(FakeDriver(), 1)
     for step in target.steps:

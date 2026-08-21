@@ -1,6 +1,8 @@
 """Runtime/device detection tests — run on any OS, no torch/GPU required."""
 import os
 
+import pytest
+
 from operation_love.device import best_device
 from operation_love.runtime import Capabilities
 
@@ -21,6 +23,17 @@ def test_prefer_arg_wins():
     assert best_device(prefer="cpu") == "cpu"
 
 
+def test_invalid_explicit_device_override_fails_loudly():
+    with pytest.raises(ValueError, match="invalid prefer device"):
+        best_device(prefer="cdu")
+
+
+def test_invalid_environment_device_override_fails_loudly(monkeypatch):
+    monkeypatch.setenv("OPLOVE_DEVICE", "cdu")
+    with pytest.raises(ValueError, match="OPLOVE_DEVICE"):
+        best_device()
+
+
 def test_capabilities_detect():
     caps = Capabilities.detect()
     assert caps.os_name
@@ -38,6 +51,25 @@ def test_missing_helper():
 
 def test_banner_is_str():
     assert isinstance(Capabilities.detect().banner(), str)
+
+
+def test_banner_omits_reference_web_driver_and_legacy_alias_noise():
+    caps = Capabilities(
+        os_name="TestOS", machine="test", python="3.11",
+        available={
+            "web_driver": False,
+            "android_driver": False,
+            "bumble_driver": False,
+            "hinge_driver": False,
+        },
+        _device="cpu",
+    )
+
+    banner = caps.banner()
+    assert "android_driver" in banner
+    assert "web_driver" not in banner
+    assert "bumble_driver" not in banner
+    assert "hinge_driver" not in banner
 
 
 def test_capabilities_detect_honours_android_adb_path(tmp_path, monkeypatch):
@@ -112,9 +144,10 @@ def test_capabilities_device_still_resolves_correctly_when_accessed():
 
 def test_capabilities_available_exposes_transport_shaped_keys():
     # web_driver/android_driver are the current names (platforms.py's kind vocabulary);
-    # bumble_driver/hinge_driver are kept only as aliases for old callers.
+    # bumble_driver/hinge_driver are kept only as aliases for old callers. Both apps now use
+    # the shared Android transport; the stale Bumble->web mapping would misreport readiness.
     caps = Capabilities.detect()
     for key in ("web_driver", "android_driver"):
         assert isinstance(caps.available[key], bool)
-    assert caps.available["bumble_driver"] == caps.available["web_driver"]
+    assert caps.available["bumble_driver"] == caps.available["android_driver"]
     assert caps.available["hinge_driver"] == caps.available["android_driver"]

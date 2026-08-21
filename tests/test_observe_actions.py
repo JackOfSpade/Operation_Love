@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import pytest
 
 from operation_love.drivers.base import ItemTargetingError
-from operation_love.observe_actions import ObserveActionBridge, _MAX_COMPLETED_RESULTS
+from operation_love.observe_actions import (
+    ObserveActionBridge,
+    _MAX_COMPLETED_RESULTS,
+    _MAX_PROTOCOL_STRING_LENGTH,
+)
 from operation_love.worker import Worker, _OBSERVE_PRE_TAP_TARGETING_REFUSED
 
 
@@ -51,6 +55,30 @@ def test_no_suggestion_coordinates_or_arbitrary_text_are_rejected():
     bridge.update_suggestion(worker, card["profile_token"], SimpleNamespace(index=3, text="hello"))
     ok, result, code = bridge.submit(_request(card, x=10))
     assert not ok and code == 400 and "coordinates" in result["reason"]
+
+
+@pytest.mark.parametrize("field", [
+    "run_id", "app", "profile_token", "suggestion_token", "idempotency_token",
+])
+def test_reviewed_action_protocol_strings_are_memory_bounded(field):
+    bridge, _worker, card = _bound_card()
+    ok, result, code = bridge.submit(
+        _request(card, **{field: "x" * (_MAX_PROTOCOL_STRING_LENGTH + 1)}))
+    assert not ok and code == 400
+    assert "at most" in result["reason"]
+
+
+def test_stale_worker_unregister_cannot_remove_replacement_binding():
+    bridge = ObserveActionBridge()
+    first = _Worker()
+    replacement = _Worker()
+    bridge.register(first)
+    bridge.register(replacement)
+
+    bridge.unregister(first)
+
+    assert bridge._workers[(replacement.run_id, replacement.app)] is replacement
+    assert bridge.begin_card(replacement)["run_id"] == replacement.run_id
 
 
 def test_idempotency_and_one_pending_command_make_race_safe():

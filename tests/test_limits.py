@@ -1,5 +1,8 @@
 """RateLimiter unit tests + worker auto-loop cap integration (offline)."""
+import math
 import threading
+
+import pytest
 
 from operation_love.costing import CostTracker, ModelPricing
 from operation_love.drivers.base import DatingAppDriver
@@ -29,6 +32,34 @@ def test_no_limits_allows_everything():
 def test_describe():
     assert RateLimiter(60, 100).describe() == "60/run, 100/day"
     assert RateLimiter().describe() == "unlimited"
+
+
+@pytest.mark.parametrize("field", ["max_per_run", "max_per_day", "max_likes_per_run"])
+@pytest.mark.parametrize("value", [True, 0, -1, 1.5, "5"])
+def test_direct_constructor_requires_exact_positive_integer_caps(field, value):
+    with pytest.raises(ValueError, match=field):
+        RateLimiter(**{field: value})
+
+
+@pytest.mark.parametrize("value", [
+    True, 0, 1, -0.1, math.nan, math.inf,
+    pytest.param(10 ** 10_000, id="huge_int"), "0.5",
+])
+def test_direct_constructor_requires_a_finite_open_interval_ratio(value):
+    with pytest.raises(ValueError, match="target_like_ratio"):
+        RateLimiter(target_like_ratio=value)
+
+
+def test_runtime_counts_and_score_context_are_validated():
+    limiter = RateLimiter(target_like_ratio=0.5)
+    with pytest.raises(ValueError, match="nonnegative"):
+        limiter.allow(-1, 0)
+    with pytest.raises(ValueError, match="cannot exceed"):
+        limiter.allow_like_ratio(2, 1)
+    with pytest.raises(ValueError, match="finite"):
+        limiter.allow_like_ratio(1, 1, score=math.nan, like_threshold=0.5)
+    with pytest.raises(ValueError, match="finite"):
+        limiter.allow_like_ratio(1, 1, score=10 ** 10_000, like_threshold=0.5)
 
 
 # --- allow_like_ratio: score-aware ceiling (was score-blind; see worker.py's

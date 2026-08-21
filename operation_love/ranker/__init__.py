@@ -63,6 +63,7 @@ class Store(Protocol):
                                 raw_opener: str | None) -> None: ...
     def record_spend(self, run_id: str, model: str, usage: Usage, cost: float | None) -> None: ...
     def count_today(self, app: str) -> int: ...
+    def spend_today(self) -> float: ...
     def observe_release_persistence_summary(self, run_id: str, app: str) -> dict[str, int]:
         """Return only aggregate, run-scoped manual pass/like and successful-opener counts.
 
@@ -83,8 +84,11 @@ class Store(Protocol):
 
 
 def make_store(cfg, ensure: bool = True) -> Store:
-    """Build the configured store. ensure=False skips BigQuery table/bucket setup —
-    use it for read-only paths (e.g. evaluation) so we don't run DDL just to read."""
+    """Build the configured store. ``ensure=False`` skips BigQuery table/bucket setup.
+
+    Evaluation uses that for pure reads, while correction tools may still append non-photo
+    tombstones. Profile-photo upload always refuses on an unverified ``ensure=False`` instance.
+    """
     s = cfg.storage
     if s.backend == "bigquery":
         from .bigquery_store import DEFAULT_FLUSH_EVERY, BigQueryStore
@@ -94,7 +98,7 @@ def make_store(cfg, ensure: bool = True) -> Store:
             dataset=bq.get("dataset", "operation_love"),
             location=bq.get("location", "US"),
             photo_bucket=bq.get("photo_bucket", ""),
-            flush_every=int(bq.get("flush_every", DEFAULT_FLUSH_EVERY)),
+            flush_every=bq.get("flush_every", DEFAULT_FLUSH_EVERY),
             ensure=ensure,
         )
     from .store import SQLiteStore

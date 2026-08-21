@@ -175,8 +175,10 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from itertools import pairwise
 
 from .frameshift import (
     _AGREEMENT_TOLERANCE_PX, SHIFT_MEASURED, SHIFT_NO_CONSENSUS, SHIFT_NO_EVIDENCE,
@@ -522,11 +524,20 @@ class ItemIndex:
     # only one of them would make a successful recovery impossible to audit.
     recovered_from_pairs: tuple[tuple[int, int], ...] = ()
     recovery_failed_shifts: tuple[ShiftEstimate, ...] = ()
-    # A single segmentation contradiction can be treated exactly like one damaged intermediate
-    # frame, but only after the surrounding real frames bridge and the reduced index rebuilds.
+    # A segmentation contradiction can be treated like a damaged intermediate frame, but only
+    # after the surrounding real frames bridge and the reduced index rebuilds.  This records
+    # every omitted frame in that localized recovery window.  Usually each one had its own
+    # segmentation failure; a single immediately adjacent frame may also be omitted when the
+    # first rebuild proves the corrupted frame left an unresolved cross-frame contradiction.
     # Keep it separate from ``recovered_from_pair``: there need not have been a failed shift,
     # and inventing one would make the successful recovery's audit trail lie.
     recovered_from_segmentation_frames: tuple[int, ...] = ()
+    # A complete page fold can prove that a seemingly-valid partial sighting crossed a card
+    # boundary.  Such a frame is recoverable only when every fold failure names this exact
+    # overrun, the affected frames form one short interior run, and a fresh bridge plus complete
+    # reduced rebuild both succeed.  Keep that distinct from a segmenter's own failure: the
+    # latter is a frame-local fact; this one is cross-frame evidence.
+    recovered_from_fold_contradiction_frames: tuple[int, ...] = ()
     recovery_reason: str | None = None
     # Original frameshift evidence replaced by a layout-assisted acceptance.  This is never a
     # hidden quorum relaxation: the effective shift's reason and this immutable provenance both
@@ -740,7 +751,7 @@ def _observed_gutters(segmentation: FrameSegmentation) -> tuple[tuple[int, int],
     low = min(_GUTTER_PX) - _GUTTER_TOLERANCE_PX
     high = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
     gutters: list[tuple[int, int]] = []
-    for upper, lower in zip(segmentation.blocks, segmentation.blocks[1:]):
+    for upper, lower in pairwise(segmentation.blocks):
         if not upper.bottom.observed or not lower.top.observed:
             continue
         bottom, top = upper.bottom.y, lower.top.y
@@ -952,14 +963,15 @@ def _structural_tail_shift(pair_index: int, before: FrameSegmentation, after: Fr
 def _exact_multi_strip_shift(pair_index: int, before: FrameSegmentation,
                              after: FrameSegmentation, shift: ShiftEstimate,
                              ) -> tuple[ShiftEstimate, str | None]:
-    """Propose one exact 3+-strip/full-layout boundary for the five-pair video grammar.
+    """Propose one exact 3+-strip/full-layout boundary, for the five-pair or two-pair grammars.
 
     This is deliberately separate from `_matched_delta_clusters`.  The ordinary helper exposes
     under-quorum two-strip alternatives; it must not start treating every local mode in a noisy
     strip bank as a measurement.  Here a candidate must be an exact repeated strip value, not a
     rounded centroid, and independently segmented top, bottom, and heart landmarks must all land
     on that same pixel.  `_repair_shifts_from_layout` still grants the proposal authority only as
-    one of the two measured-bracketed endpoints of one exact five-pair refusal island.
+    a measured-bracketed endpoint of one exact five-pair refusal island, or as one of a bare
+    two-pair window where both pairs clear this same bar with no interior pair between them.
     """
     if shift.status != SHIFT_NO_CONSENSUS:
         return shift, None
@@ -983,11 +995,11 @@ def _exact_multi_strip_shift(pair_index: int, before: FrameSegmentation,
         agreeing=supporters, dissenting=max(0, shift.eligible - supporters),
         confidence=(supporters / shift.eligible if shift.eligible else 0.0),
         reason=(
-            f"five-pair boundary proposal from {shift.status}: {supporters} independent NCC "
+            f"exact-multi boundary proposal from {shift.status}: {supporters} independent NCC "
             f"strips land exactly at +{candidate}px and exact top, bottom and heart geometry "
             "selects that one repeated strip value"))
     note = (
-        f"frame {pair_index}'s pair with frame {pair_index + 1}: five-pair full-landmark "
+        f"frame {pair_index}'s pair with frame {pair_index + 1}: exact-multi full-landmark "
         f"cluster boundary +{candidate}px from {supporters} exact NCC strips plus exact top, "
         "bottom and heart geometry")
     return repaired, note
@@ -1457,6 +1469,13 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
     raw measured pairs must sit immediately outside it.  Its one heartless transition must carry
     an exact shared gutter.  This does not raise the generic three-pair limit.
 
+    A bare two-pair window of exact 3+-strip/full-landmark candidates, bracketed the same way by
+    raw measured pairs, needs none of that interior sequence: with no interior pair left to
+    bridge, both boundary candidates already carry more independent per-pair evidence than the
+    five-pair island asks of even its own endpoints.  This is the tail of a scrolling video card:
+    each pair it touches gets its own exact top/bottom/heart landmark corroboration, so there is
+    nothing left for a weaker interior grammar to add.
+
     Ordinary two-strip proposals separated by one or two raw measured pairs are one animation
     window rather than unrelated runs only when the app supplied an affirmative animation marker,
     the whole span is at most five pairs, every gap and both immediate outer anchors have raw
@@ -1593,35 +1612,61 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
     indices = tuple(range(start, end))
     if not any(shifts[i].status == SHIFT_NO_CONSENSUS for i in indices):
         return tuple(shifts), (), ()
+    two_pair_exact_multi_window = False
     if exact_multi_indices:
-        # This is not permission for an arbitrary long repair run.  Both strong candidates must
-        # be the exact boundaries of one five-pair all-refusal island, and ordinary measured
-        # shifts must bracket that island on both sides.  The middle evidence grammar is the
-        # saved live-video transition: two strips with one exact shared gutter while the old
-        # heart leaves, then two strips with full layout, then one exact strip with full layout.
-        if (edge_only_indices or structural_tail_indices
-                or tuple(exact_multi_indices) != (start, end - 1)
-                or end - start != 5 or start == 0 or end >= len(shifts)
-                or shifts[start - 1].status != SHIFT_MEASURED
-                or shifts[end].status != SHIFT_MEASURED
-                or any(shifts[i].status != SHIFT_NO_CONSENSUS for i in indices)
-                or repaired[start].agreeing < 3 or repaired[end - 1].agreeing < 3
-                or tuple(repaired[i].agreeing for i in indices[1:-1]) != (2, 2, 1)):
-            return tuple(shifts), (), ()
-        for position, i in enumerate(indices):
-            delta = repaired[i].delta_px
-            exact_kinds = {
-                kind for kind, landmark_delta in _structural_landmarks(
-                    segmentations[i], segmentations[i + 1])
-                if delta is not None and landmark_delta == delta
-            }
-            if position == 1:
-                if (exact_kinds != {"top", "bottom"} or delta is None
-                        or len(_shared_gutter_witnesses(
-                            segmentations[i], segmentations[i + 1], delta)) != 1):
-                    return tuple(shifts), (), ()
-            elif exact_kinds != {"top", "bottom", "heart"}:
+        # Two admissible shapes share this evidence kind.
+        #
+        # The minimal one is a bare two-pair window with no interior pair at all: both pairs in
+        # it already independently cleared `_exact_multi_strip_shift`'s own bar (3+ exact-
+        # matching NCC strips plus exact top, bottom and heart geometry, all on the same
+        # candidate).  That is strictly more per-pair evidence than the five-pair island below
+        # asks of even its own two endpoints, so admitting it needs nothing beyond an ordinary
+        # measured bracket on both sides -- there is no weaker interior pair whose corroboration
+        # could be in question, unlike the five-pair shape this grammar was first built for.
+        #
+        # The five-pair island is the saved live-video transition: two exact-multi endpoints
+        # bracket a specific interior grammar -- two strips with one exact shared gutter while
+        # the old heart leaves, then two strips with full layout, then one exact strip with full
+        # layout -- and ordinary measured shifts must bracket the whole island on both sides.
+        common_guard = (
+            edge_only_indices or structural_tail_indices
+            or tuple(exact_multi_indices) != (start, end - 1)
+            or start == 0 or end >= len(shifts)
+            or shifts[start - 1].status != SHIFT_MEASURED
+            or shifts[end].status != SHIFT_MEASURED
+            or repaired[start].agreeing < 3 or repaired[end - 1].agreeing < 3)
+        if end - start == 2:
+            if common_guard:
                 return tuple(shifts), (), ()
+            for i in indices:
+                delta = repaired[i].delta_px
+                exact_kinds = {
+                    kind for kind, landmark_delta in _structural_landmarks(
+                        segmentations[i], segmentations[i + 1])
+                    if delta is not None and landmark_delta == delta
+                }
+                if exact_kinds != {"top", "bottom", "heart"}:
+                    return tuple(shifts), (), ()
+            two_pair_exact_multi_window = True
+        else:
+            if (common_guard or end - start != 5
+                    or any(shifts[i].status != SHIFT_NO_CONSENSUS for i in indices)
+                    or tuple(repaired[i].agreeing for i in indices[1:-1]) != (2, 2, 1)):
+                return tuple(shifts), (), ()
+            for position, i in enumerate(indices):
+                delta = repaired[i].delta_px
+                exact_kinds = {
+                    kind for kind, landmark_delta in _structural_landmarks(
+                        segmentations[i], segmentations[i + 1])
+                    if delta is not None and landmark_delta == delta
+                }
+                if position == 1:
+                    if (exact_kinds != {"top", "bottom"} or delta is None
+                            or len(_shared_gutter_witnesses(
+                                segmentations[i], segmentations[i + 1], delta)) != 1):
+                        return tuple(shifts), (), ()
+                elif exact_kinds != {"top", "bottom", "heart"}:
+                    return tuple(shifts), (), ()
     if edge_only_indices:
         # Do not generalise two edges into a third independent landmark.  The saved failure is
         # safe only as this one fully bracketed transition: the middle pair corrects a measured
@@ -1664,9 +1709,11 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
             }
             if exact_kinds != {"top", "bottom", "heart"}:
                 return tuple(shifts), (), ()
-    if not any(repaired[i].agreeing == 2 for i in indices):
+    if not two_pair_exact_multi_window and not any(repaired[i].agreeing == 2 for i in indices):
         # Two adjacent lone-strip coincidences are not independent evidence for one another.
         # The one-strip exception is a companion to an ordinary two-strip layout repair only.
+        # A two-pair exact-multi window has no lone-strip repair to begin with -- both pairs
+        # already cleared the stronger 3+-exact-strip bar above -- so this guard does not apply.
         return tuple(shifts), (), ()
     return (tuple(repaired),
             tuple(note for note in window_notes[start:end] if note is not None),
@@ -1718,17 +1765,19 @@ def _observations(segmentations: Sequence[FrameSegmentation],
     """Every frame's blocks, lifted into the shared page space. Frames with no offset contribute
     nothing — they are the frames past a broken chain, whose page position is unknown."""
     out: list[BlockObservation] = []
-    for i, (seg, offset) in enumerate(zip(segmentations, offsets)):
+    for i, (seg, offset) in enumerate(zip(segmentations, offsets, strict=True)):
         if offset is None:
             continue
-        for block in seg.blocks:
-            out.append(BlockObservation(
+        out.extend(
+            BlockObservation(
                 frame_index=i,
                 page_y0=block.y0 + offset, page_y1=block.y1 + offset,
                 frame_y0=block.y0, frame_y1=block.y1,
                 kind=block.kind, complete=block.complete,
                 top_observed=block.top.observed, bottom_observed=block.bottom.observed,
-                hearts=tuple((x, y + offset) for x, y in block.hearts)))
+                hearts=tuple((x, y + offset) for x, y in block.hearts))
+            for block in seg.blocks
+        )
     return out
 
 
@@ -2128,7 +2177,7 @@ def _split_on_bounded_cards(group: Sequence[BlockObservation], *, tolerance: int
                              if y0 - tolerance <= y <= y1 + tolerance), None)
             if card_idx is None:
                 return [group], []
-            y0, y1, complete_sightings = proven[card_idx]
+            _y0, _y1, complete_sightings = proven[card_idx]
             surviving = list(complete_sightings) + [
                 fragments[j] for j, c in assigned.items() if c == card_idx]
             if not any(abs(hy - y) <= tolerance for s in surviving for _hx, hy in s.hearts):
@@ -2224,7 +2273,7 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
     # real blocks are always separated by at least the bottom of the gutter window, so anything
     # closer is that split. `extent_tolerance_px` is subtracted so chain slack alone cannot fire
     # it.
-    for above, below in zip(blocks, blocks[1:]):
+    for above, below in pairwise(blocks):
         gap = below.page_y0 - above.page_y1
         if gap + extent_tolerance_px < min_item_gap_px:
             failures.append(
@@ -2259,6 +2308,30 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
 
     result = (tuple(blocks), tuple(failures))
     return (*result, tuple(notes)) if include_notes else result
+
+
+_FRAGMENT_OVERRUN_FAILURE = re.compile(
+    r"^frame (\d+) sees page rows .* — a fragment cannot reach past the card that contains it, so ")
+
+
+def _fragment_overrun_frame_indices(failures: Sequence[str]) -> tuple[int, ...]:
+    """Return the exact frames a fold proved crossed a bounded card, or ``()``.
+
+    This deliberately accepts no nearby failure wording.  An omission recovery is only justified
+    when *every* preliminary fold failure is the explicit partial-sighting-overruns-its-bounded-
+    card invariant from `_resolve_group`; a bad shift, two competing complete extents, uncertain
+    heart, or any unrelated assembly fault remains a refusal.  The numbers are output by this
+    module, not inferred from screenshot order or a heuristic score.
+    """
+    if not failures:
+        return ()
+    indices: list[int] = []
+    for failure in failures:
+        match = _FRAGMENT_OVERRUN_FAILURE.match(failure)
+        if match is None:
+            return ()
+        indices.append(int(match.group(1)))
+    return tuple(sorted(set(indices)))
 
 
 def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, float],
@@ -2514,11 +2587,44 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         omission_candidates = {
             omitted for omitted in omission_candidates if 0 < omitted < len(frames) - 1
         }
+    # A missed low-contrast gutter is not always a frame-local segmentation failure.  It can
+    # yield a plausible partial block until another frame bounds the true card, at which point
+    # `_resolve_group` proves the partial crosses that boundary.  The reported capture had this
+    # exact shape.  Let that *specific proof* nominate its own frames for the same direct-bridge
+    # recovery; do not search through ostensibly good frames looking for a better answer.
+    fold_contradiction_frames: tuple[int, ...] = ()
+    if (_allow_frame_omission_recovery and not failed_pairs
+            and not failed_segmentation_frames):
+        probe_offsets, probe_chain_failures = _frame_offsets(shifts)
+        if not probe_chain_failures:
+            probe_observations = _observations(segmentations, probe_offsets)
+            probe_near_gutters = tuple(
+                (frame_index, run.y0 + offset, run.y1 + offset)
+                for frame_index, (segmentation, offset) in enumerate(
+                    zip(segmentations, probe_offsets, strict=True))
+                if offset is not None
+                for run in segmentation.runs
+                if (run.kind == RUN_TOO_LONG
+                    and min(_HEART_SEPARATED_NEAR_GUTTER_PX) <= run.height
+                    <= max(_HEART_SEPARATED_NEAR_GUTTER_PX)))
+            probe_observations, _probe_notes = _split_repeated_near_gutter_merges(
+                probe_observations, probe_near_gutters, tolerance=extent_tolerance_px)
+            _probe_blocks, probe_failures, _probe_assembly_notes = _assemble(
+                probe_observations, at_scroll_top=at_scroll_top,
+                card_x=segmentations[0].card_x,
+                extent_tolerance_px=extent_tolerance_px,
+                min_item_gap_px=min_item_gap_px, band_y0=segmentations[0].band[0],
+                include_notes=True)
+            fold_contradiction_frames = _fragment_overrun_frame_indices(probe_failures)
     # One short, contiguous contradictory run is also eligible for the same conservative
     # recovery.  A white-on-white Hinge card boundary can remain invisible for four adjacent
     # scroll positions; all failed frames must disappear from a fully rebuilt page coordinate system,
-    # joined by one fresh measured bridge. Anything longer, non-contiguous, at an endpoint, or
-    # accompanied by an unrelated shift failure remains a hard refusal.
+    # joined by one fresh measured bridge.  A known bad frame can also leave its immediately
+    # adjacent segmentation apparently valid while its wrong edge only becomes visible during
+    # the page fold.  In that case try one extra neighbour on either side -- never a free-form
+    # scan -- and accept it only if it is the sole clean complete rebuild.  Anything longer,
+    # non-contiguous, at an endpoint, accompanied by an unrelated shift failure, or ambiguous
+    # between two clean repaired windows remains a hard refusal.
     segmentation_frames = tuple(sorted(failed_segmentation_frames))
     segmentation_recovery = (
         1 <= len(segmentation_frames) <= MAX_SEGMENTATION_FALLBACK_FRAMES
@@ -2534,8 +2640,31 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             pair_index in omitted_set or pair_index + 1 in omitted_set
             for pair_index in failed_pairs)
 
+    fold_recovery = (
+        1 <= len(fold_contradiction_frames) <= MAX_SEGMENTATION_FALLBACK_FRAMES
+        and fold_contradiction_frames[0] > 0
+        and fold_contradiction_frames[-1] < len(frames) - 1
+        and fold_contradiction_frames == tuple(range(
+            fold_contradiction_frames[0], fold_contradiction_frames[-1] + 1)))
+
     if failed_segmentation_frames:
         candidate_runs = [segmentation_frames] if segmentation_recovery else []
+        if segmentation_recovery:
+            # The failed frame itself is non-negotiable.  The two expansions merely test whether
+            # an adjacent *apparently clean* read carried the same missed-gutter geometry.  Do
+            # not expand both sides in one attempt: two extra frames would hide which local
+            # observation was wrong and turn this bounded recovery into evidence selection.
+            left = segmentation_frames[0] - 1
+            right = segmentation_frames[-1] + 1
+            if left > 0 and len(segmentation_frames) < MAX_SEGMENTATION_FALLBACK_FRAMES:
+                candidate_runs.append((left,) + segmentation_frames)
+            if (right < len(frames) - 1
+                    and len(segmentation_frames) < MAX_SEGMENTATION_FALLBACK_FRAMES):
+                candidate_runs.append(segmentation_frames + (right,))
+    elif fold_recovery:
+        # Unlike the segmenter-failure path, the page fold names every bad partial explicitly;
+        # there is no reason to discard a neighbouring observation that did not overrun a card.
+        candidate_runs = [fold_contradiction_frames]
     else:
         candidate_runs = [(candidate,) for candidate in sorted(omission_candidates)]
 
@@ -2554,7 +2683,7 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             # inferred page offset.  Widen the estimator only enough to see that bridge; every
             # other reduced-chain pair is checked back against the normal one-step ceiling below.
             recovery_trust_window_px = trust_window_px
-            if failed_segmentation_frames:
+            if failed_segmentation_frames or fold_contradiction_frames:
                 default_window = (segmentations[0].band[1] - segmentations[0].band[0]) // 2
                 recovery_trust_window_px = max(
                     default_window if trust_window_px is None else trust_window_px,
@@ -2588,10 +2717,28 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
                 candidates.append((
                     (bridge_shift.agreeing, bridge_shift.confidence,
                      -bridge_shift.dissenting, -omitted_frames[0]), omitted_frames, recovered))
-        if candidates:
+        # Pair-shift recovery has a measured-fitness tie-breaker because both possible omitted
+        # frames are directly implicated by the failed pair.  A clean rebuild that drops exactly
+        # the explicitly contradictory segmentation frames takes priority over every expansion:
+        # it preserves more observations and needs no inference about a neighbour.  If that
+        # direct recovery fails, exactly one expanded segmentation window may succeed.  Two
+        # clean expansions would leave us unable to tell which nominally valid neighbour
+        # contained the missed gutter, so refuse that ambiguity rather than choose on
+        # strip-count noise.
+        candidate_pool = candidates
+        if failed_segmentation_frames:
+            direct_candidates = [
+                candidate for candidate in candidates
+                if len(candidate[1]) == len(segmentation_frames)]
+            expanded_candidates = [
+                candidate for candidate in candidates
+                if len(candidate[1]) > len(segmentation_frames)]
+            candidate_pool = (direct_candidates if direct_candidates else
+                              expanded_candidates if len(expanded_candidates) == 1 else [])
+        if candidate_pool:
             # Most independent agreement wins; stable secondary keys make an audit replay choose
             # the same reduction when both bridges are sound.
-            _score, omitted_frames, recovered = max(candidates, key=lambda candidate: candidate[0])
+            _score, omitted_frames, recovered = max(candidate_pool, key=lambda candidate: candidate[0])
             bridge = (omitted_frames[0] - 1, omitted_frames[-1] + 1)
             return replace(
                 recovered,
@@ -2602,14 +2749,26 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
                 recovered_from_pairs=failed_pair_records,
                 recovery_failed_shifts=tuple(shifts[i] for i in failed_pairs),
                 recovered_from_segmentation_frames=(
-                    tuple(sorted(failed_segmentation_frames)) if failed_segmentation_frames else ()),
+                    omitted_frames if failed_segmentation_frames else ()),
+                recovered_from_fold_contradiction_frames=(
+                    omitted_frames if fold_contradiction_frames else ()),
                 recovery_reason=(
                     f"frame{'s' if len(omitted_frames) > 1 else ''} "
                     + ", ".join(str(frame) for frame in omitted_frames) + " "
-                    + ("were omitted after their segmentations contradicted themselves"
+                    + ("were omitted after a segmentation contradiction and one adjacent "
+                       "frame's geometry could not be reconciled with the complete page"
+                       if (failed_segmentation_frames
+                           and len(omitted_frames) > len(segmentation_frames)) else
+                       "were omitted after their segmentations contradicted themselves"
                        if len(omitted_frames) > 1 and failed_segmentation_frames else
                        "was omitted after its segmentation contradicted itself"
                        if failed_segmentation_frames else
+                       "were omitted after the complete page fold proved each partial sighting "
+                       "crossed a bounded card"
+                       if len(omitted_frames) > 1 and fold_contradiction_frames else
+                       "was omitted after the complete page fold proved its partial sighting "
+                       "crossed a bounded card"
+                       if fold_contradiction_frames else
                        f"frames {failed_pairs[0]} and {failed_pairs[0] + 1} had no trustworthy "
                        "shift" if len(failed_pairs) == 1 else
                        f"pairs {', '.join(f'{a}/{b}' for a, b in failed_pair_records)} had no "
@@ -2647,7 +2806,8 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         # page fold use the stronger cross-frame proof when it is present (see helper).
         near_gutters = tuple(
             (frame_index, run.y0 + offset, run.y1 + offset)
-            for frame_index, (segmentation, offset) in enumerate(zip(segmentations, offsets))
+            for frame_index, (segmentation, offset) in enumerate(
+                zip(segmentations, offsets, strict=True))
             if offset is not None
             for run in segmentation.runs
             if (run.kind == RUN_TOO_LONG
@@ -2662,7 +2822,10 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         notes = repair_notes + near_gutter_notes + assembly_notes
         failures.extend(assembly_failures)
 
-    placed = [(seg, off) for seg, off in zip(segmentations, offsets) if off is not None]
+    placed = [
+        (seg, off) for seg, off in zip(segmentations, offsets, strict=True)
+        if off is not None
+    ]
     page_span = (min(seg.band[0] + off for seg, off in placed),
                  max(seg.band[1] + off for seg, off in placed))
 

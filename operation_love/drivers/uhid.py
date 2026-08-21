@@ -121,7 +121,7 @@ class UhidTouch:
 
     def close(self) -> None:
         try:
-            self.adb.shell(f"rm -f {self.file_path}")
+            self.adb.shell(f"rm -f {shlex.quote(self.file_path)}")
         except Exception:  # noqa: BLE001 — best-effort cleanup must not mask the real outcome
             pass
 
@@ -155,18 +155,27 @@ class UhidTouch:
         # truncate the file while another gesture's hid is still reading it.
         with self._lock:
             try:
+                # Rewriting the file is safe to retry: no input delivery can begin until the
+                # separate `hid` command below starts.  Once `hid` has started, however, a
+                # non-zero exit is ambiguous -- the kernel may already have received part or all
+                # of the report stream.  Replaying that script could turn one irreversible tap
+                # into two, so execution failure always stops without a second `hid` invocation.
                 for attempt in (1, 2):
                     try:
                         self.adb.write_file(self.file_path, script)
-                        self.adb.shell(f"hid {quoted}")   # blocks for the gesture's duration
-                        return
                     except AdbError as exc:
-                        # `hid` exited non-zero (e.g. a prior virtual device still tearing
-                        # down). Retry once after a settle; if it persists, stop cleanly so
-                        # the worker flushes labels rather than crash-restarting.
                         if attempt == 2:
-                            raise DriverClosed(f"UHID gesture failed (hid): {exc}") from exc
+                            raise DriverClosed(
+                                f"UHID gesture file write failed before delivery: {exc}") from exc
                         time.sleep(0.3)
+                        continue
+                    break
+                try:
+                    self.adb.shell(f"hid {quoted}")   # blocks for the gesture's duration
+                except AdbError as exc:
+                    raise DriverClosed(
+                        "UHID gesture delivery became uncertain after `hid` started; refusing "
+                        f"to replay the gesture: {exc}") from exc
             finally:
                 try:
                     self.adb.shell(f"rm -f {quoted}")

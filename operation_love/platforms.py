@@ -5,7 +5,11 @@ phone. An uncalibrated target fails closed rather than acting at guessed coordin
 """
 from __future__ import annotations
 
+import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
+
+from .targeting_policy import hinge_targeting_unavailable_reason
 
 # How we drive a platform. The hub shows one button per kind, in this order.
 KIND_ANDROID = "android"
@@ -55,9 +59,9 @@ _PLATFORMS: tuple[Platform, ...] = (
         # never be started by accident.
         available=False,
         reason=(
-            "Bumble on Android is not calibrated yet. Its tap coordinates and glyph "
-            "templates are placeholders, so running it would fire real touches at "
-            "guessed points. Calibrate against the Pixel first."
+            "Bumble on Android is not calibrated yet. Its card-drag coordinates are not "
+            "release-licensed and the required paid-upsell detection template is absent, "
+            "so both Observe and Auto fail closed. Calibrate against the Pixel first."
         ),
     ),
 )
@@ -73,7 +77,8 @@ _BY_APP = {p.app: p for p in _PLATFORMS}
 
 # Mode-specific readiness is separate from the coarse Platform.available bit.  The latter
 # answers whether the hub may offer a platform at all; this table answers whether the exact
-# requested run mode is licensed. Bumble supports its direct card-drag Auto path only.
+# requested run mode is licensed. Production registration derives both bits from each
+# Android spec; implementation code or unit coverage alone never makes a mode runnable.
 _AVAILABLE_MODES: dict[str, frozenset[str]] = {
     "hinge": frozenset({"observe", "auto"}),
     "bumble": frozenset(),
@@ -123,10 +128,19 @@ def unavailable_reason(app: str, mode: str | None = None) -> str | None:
     if mode is not None:
         if mode not in {"observe", "auto"}:
             return f"Unsupported mode {mode!r}; choose 'observe' or 'auto'."
-        if mode in _AVAILABLE_MODES.get(app, frozenset()):
+        if app == "hinge" and mode == "auto":
+            blocker = hinge_targeting_unavailable_reason()
+            if blocker is not None:
+                return f"Hinge Auto is blocked: {blocker}."
+        available_modes = _AVAILABLE_MODES.get(app, frozenset())
+        if mode in available_modes:
             return None
         if p.available:
-            return f"{p.label} supports Auto only; Observe is not available."
+            supported = " and ".join(m.title() for m in ("observe", "auto")
+                                     if m in available_modes)
+            if supported:
+                return f"{p.label} supports {supported} only; {mode.title()} is not available."
+            return f"{p.label} does not support {mode.title()}."
     return None if p.available else (p.reason or f"{p.label} is not available.")
 
 
@@ -190,10 +204,17 @@ def check_runnable(apps: list[str], modes: dict[str, str] | str | None = None) -
 
 
 _calibration_loaded = False
+_calibration_loading_thread: int | None = None
+_calibration_lock = threading.RLock()
+
+
+def _load_android_calibration() -> None:
+    """Import the driver package whose module body registers the current specs."""
+    from .drivers import android  # noqa: F401 -- imported for its registration side effect
 
 
 def _ensure_calibration() -> None:
-    """Pull each Android spec's `calibrated` flag into the registry, once, on first query.
+    """Pull each Android spec's per-mode readiness into the registry on first query.
 
     The specs are the source of truth for whether a platform's coordinates have been
     verified on a real device, but they live in the driver package -- which this module
@@ -211,19 +232,38 @@ def _ensure_calibration() -> None:
     The whole test suite masked it too -- test_android_spec.py imports the driver package at
     collection time, reconciling the registry as a side effect before any test body runs.
     """
-    global _calibration_loaded
+    global _calibration_loaded, _calibration_loading_thread
     if _calibration_loaded:
         return
-    _calibration_loaded = True      # set BEFORE the import: it re-enters this module
-    from .drivers import android    # noqa: F401 -- imported for its registration side effect
+    current = threading.get_ident()
+    with _calibration_lock:
+        if _calibration_loaded:
+            return
+        # The lazy driver import can traverse modules that consult the registry. An RLock
+        # prevents deadlock; this owner check prevents the re-entrant call from starting a
+        # second import and falsely marking a partially initialized registry complete.
+        if _calibration_loading_thread == current:
+            return
+        _calibration_loading_thread = current
+        try:
+            _load_android_calibration()
+        except BaseException:
+            # Import failures must remain retryable. The old eager flag permanently latched
+            # success before registration had actually completed.
+            _calibration_loaded = False
+            raise
+        else:
+            _calibration_loaded = True
+        finally:
+            _calibration_loading_thread = None
 
 
-def _apply_calibration(calibrated: dict[str, bool | dict[str, bool]]) -> None:
-    """Re-derive Android availability from the driver specs' `calibrated` flags.
+def _apply_calibration(calibrated: Mapping[str, bool | Mapping[str, bool]]) -> None:
+    """Re-derive Android availability from the driver specs' per-mode readiness.
 
-    Keeping the flag on the spec (next to the coordinates it describes) rather than
-    duplicated here means a spec cannot claim to be calibrated in one file and be
-    placeholders in another. Invoked via _ensure_calibration() above.
+    Keeping those values on the spec (next to the coordinates they describe) rather than
+    duplicating them here means registry literals cannot bypass an uncalibrated binding.
+    Invoked via _ensure_calibration() above.
 
     Rebuilds each entry from `_ORIGINAL`, never from the current (possibly already-mutated)
     one. Reading the live entry's `reason` meant a calibrate -> de-calibrate round trip in
@@ -231,30 +271,51 @@ def _apply_calibration(calibrated: dict[str, bool | dict[str, bool]]) -> None:
     calibrating cleared it to None, and de-calibrating then copied that None forward, so the
     hub degraded to a generic "Bumble is not available."
     """
-    global _PLATFORMS, _BY_APP, _AVAILABLE_MODES
+    global _PLATFORMS, _BY_APP
+    if not isinstance(calibrated, Mapping):
+        raise ValueError("Calibration must be a mapping of app id to readiness")
     unknown = set(calibrated) - set(_ORIGINAL)
     if unknown:
         raise ValueError(
-            f"Calibration reported for unregistered app(s): {', '.join(sorted(unknown))}. "
+            f"Calibration reported for unregistered app(s): "
+            f"{', '.join(sorted(map(repr, unknown)))}. "
             f"Add them to the registry in this module first."
         )
+    mode_updates: dict[str, frozenset[str]] = {}
+    # Derive and validate every record before mutating either live registry table. A malformed
+    # later app must not leave an earlier app's modes half-applied.
+    for app, state in calibrated.items():
+        if isinstance(state, Mapping):
+            unexpected_modes = set(state) - {"observe", "auto"}
+            if unexpected_modes:
+                raise ValueError(
+                    f"Calibration for {app!r} named unsupported mode(s): "
+                    f"{', '.join(sorted(map(repr, unexpected_modes)))}")
+            malformed = {
+                mode: value for mode, value in state.items()
+                if type(value) is not bool
+            }
+            if malformed:
+                raise ValueError(
+                    f"Calibration readiness for {app!r} must use exact booleans; "
+                    f"got {malformed!r}")
+            modes = frozenset(
+                mode for mode in ("observe", "auto") if state.get(mode) is True)
+        elif type(state) is bool:
+            # Backwards-compatible test/tool API: the historic single flag licensed both
+            # modes. Production Android registration now supplies the explicit mapping.
+            modes = frozenset({"observe", "auto"}) if state else frozenset()
+        else:
+            raise ValueError(
+                f"Calibration for {app!r} must be an exact boolean or a mapping of "
+                f"observe/auto to exact booleans (got {state!r})")
+        mode_updates[app] = modes
+
     updated = []
     for p in _PLATFORMS:
         pristine = _ORIGINAL[p.app]
-        if p.kind == KIND_ANDROID and p.app in calibrated:
-            state = calibrated[p.app]
-            if isinstance(state, dict):
-                unexpected_modes = set(state) - {"observe", "auto"}
-                if unexpected_modes:
-                    raise ValueError(
-                        f"Calibration for {p.app!r} named unsupported mode(s): "
-                        f"{', '.join(sorted(unexpected_modes))}")
-                modes = frozenset(mode for mode in ("observe", "auto") if state.get(mode) is True)
-            else:
-                # Backwards-compatible test/tool API: the historic single flag licensed both
-                # modes. Production Android registration now supplies the explicit mapping.
-                modes = frozenset({"observe", "auto"}) if state else frozenset()
-            _AVAILABLE_MODES[p.app] = modes
+        if p.kind == KIND_ANDROID and p.app in mode_updates:
+            modes = mode_updates[p.app]
             is_cal = bool(modes)
             updated.append(Platform(
                 app=pristine.app,
@@ -265,6 +326,7 @@ def _apply_calibration(calibrated: dict[str, bool | dict[str, bool]]) -> None:
             ))
         else:
             updated.append(p)
+    _AVAILABLE_MODES.update(mode_updates)
     _PLATFORMS = tuple(updated)
     _BY_APP = {p.app: p for p in _PLATFORMS}
     # KNOWN_APPS is intentionally NOT reassigned -- see its definition above.

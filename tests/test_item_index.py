@@ -30,6 +30,7 @@ import hashlib
 import math
 import subprocess
 import sys
+from itertools import pairwise
 
 import cv2
 import numpy as np
@@ -282,6 +283,96 @@ def test_one_contradictory_segmentation_frame_is_rebuilt_over_a_measured_bridge(
     assert "segmentation contradicted itself" in index.recovery_reason
 
 
+def test_segmentation_recovery_can_include_one_adjacent_hidden_missed_gutter(monkeypatch):
+    """The real missed gutter may be flagged in one frame and only contradict the fold in its
+    neighbour.  Recover only when omitting that exact two-frame window yields the sole clean,
+    freshly bridged page; an apparently clean segmentation is not otherwise disposable.
+    """
+    frames = [_frame(scroll) for scroll in _FULL_SCROLL]
+    bad_frame, hidden_neighbour = 4, 5
+    real_segment = item_index.segment_frame
+
+    def one_flagged_and_one_hidden_contradiction(frame, **kwargs):
+        result = real_segment(frame, **kwargs)
+        if frame == frames[bad_frame]:
+            return dataclasses.replace(result, failures=("synthetic two hearts in one block",))
+        if frame == frames[hidden_neighbour]:
+            # A wrong top edge is plausible after the same low-contrast gutter.  It is not a
+            # per-frame contradiction; only the page fold can prove it disagrees with frame 3.
+            return dataclasses.replace(
+                result, blocks=tuple(dataclasses.replace(block, y0=block.y0 + 20)
+                                     for block in result.blocks))
+        return result
+
+    monkeypatch.setattr(item_index, "segment_frame", one_flagged_and_one_hidden_contradiction)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.source_frame_indices == (0, 1, 2, 3, 6, 7)
+    assert index.recovered_from_segmentation_frames == (bad_frame, hidden_neighbour)
+    assert index.recovery_bridge == (3, 6)
+    assert index.shifts[3].status == frameshift.SHIFT_MEASURED
+    assert "adjacent frame's geometry could not be reconciled" in index.recovery_reason
+
+
+def test_fold_proven_partial_overruns_rebuild_over_their_exact_measured_bridge(monkeypatch):
+    """A gutter can look locally plausible until another frame bounds its card.
+
+    This is the Elise failure class: no segmenter error and no failed shift, but two partial
+    sightings are proved by the page fold to extend past a bounded card.  Only their exact,
+    contiguous interior run may be dropped; the reduced capture must still measure its bridge
+    and rebuild cleanly.
+    """
+    frames = [_frame(scroll) for scroll in _FULL_SCROLL]
+    bad_frames = (4, 5)
+    real_assemble = item_index._assemble
+    calls = 0
+
+    def fold_reports_exact_overruns(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        blocks, failures, notes = real_assemble(*args, **kwargs)
+        if calls == 1:
+            failures = (
+                "frame 4 sees page rows 2800..3200 (its own frame rows 1000..1400) where "
+                "the block was bounded at 2850..3100 by frame 6 (frame rows 700..950) — a "
+                "fragment cannot reach past the card that contains it, so either a gutter was "
+                "missed or these two sightings are not the same block",
+                "frame 5 sees page rows 2800..3240 (its own frame rows 900..1340) where the "
+                "block was bounded at 2850..3100 by frame 6 (frame rows 700..950) — a fragment "
+                "cannot reach past the card that contains it, so either a gutter was missed or "
+                "these two sightings are not the same block",
+            )
+        return blocks, failures, notes
+
+    monkeypatch.setattr(item_index, "_assemble", fold_reports_exact_overruns)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.source_frame_indices == (0, 1, 2, 3, 6, 7)
+    assert index.recovered_from_fold_contradiction_frames == bad_frames
+    assert index.recovered_from_segmentation_frames == ()
+    assert index.recovery_bridge == (3, 6)
+    assert index.shifts[3].status == frameshift.SHIFT_MEASURED
+    assert "partial sighting crossed a bounded card" in index.recovery_reason
+
+
+def test_fold_omission_recovery_rejects_any_unrelated_failure():
+    overrun = (
+        "frame 29 sees page rows 8658..8816 (its own frame rows 1942..2100) where the block "
+        "was bounded at 8710..9632 by frame 34 (frame rows 989..1911) — a fragment cannot "
+        "reach past the card that contains it, so either a gutter was missed or these two "
+        "sightings are not the same block")
+
+    assert item_index._fragment_overrun_frame_indices((overrun,)) == (29,)
+    assert item_index._fragment_overrun_frame_indices(
+        (overrun, "block at page rows 8000..9000 is ambiguous")) == ()
+
+
 def test_segmentation_recovery_rebuilds_two_adjacent_contradictory_frames(monkeypatch):
     """A short white-on-white boundary run needs one direct bridge across both bad captures."""
     frames = [_frame(scroll) for scroll in _FULL_SCROLL]
@@ -386,10 +477,13 @@ def test_frame_omission_recovery_refuses_when_no_direct_bridge_is_measured(monke
 def test_one_transient_frame_can_recover_both_adjacent_refused_pairs(monkeypatch):
     """A damaged intermediate frame naturally poisons both of its pairwise comparisons.
 
-    Recovery still requires independent evidence: the shared frame is omitted, its two real
-    neighbours are correlated directly, and the entire reduced index must validate.  This is
-    the shape of the reported animated-card capture; the old exactly-one-refusal gate never
-    attempted the valid bridge.
+    Only `estimate_shift`'s own status/delta are forced to refuse here; the underlying strip
+    bank is real, untouched geometry, so each pair independently clears the two-pair exact-multi
+    grammar and is repaired in place.  That is strictly better than omitting the shared frame:
+    every frame's blocks are kept instead of one being discarded.  The old exactly-one-refusal
+    gate never attempted any bridge at all for this shape; frame omission remains the fallback
+    for when a pair's own evidence -- not just its raw quorum -- is genuinely insufficient (see
+    `test_transient_frame_recovery_allows_measured_bridge_alignment_slack`).
     """
     frames = [_frame(scroll) for scroll in _FULL_SCROLL]
     real_shift = item_index.estimate_shift
@@ -409,13 +503,16 @@ def test_one_transient_frame_can_recover_both_adjacent_refused_pairs(monkeypatch
         like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
 
     assert index.usable, index.failures
-    assert index.source_frame_indices == (0, 1, 2, 3, 5, 6, 7)
-    assert index.recovery_bridge == (3, 5)
-    assert index.recovered_from_pairs == ((3, 4), (4, 5))
-    assert len(index.recovery_failed_shifts) == 2
+    assert index.source_frame_indices == tuple(range(len(frames)))
+    assert index.recovery_bridge is None
+    assert index.recovered_from_pairs == ()
     assert index.shifts[3].status == frameshift.SHIFT_MEASURED
-    assert index.shifts[3].delta_px == _STEP * 2
-    assert "pairs 3/4, 4/5" in index.recovery_reason
+    assert index.shifts[3].delta_px == _STEP
+    assert index.shifts[4].status == frameshift.SHIFT_MEASURED
+    assert index.shifts[4].delta_px == _STEP
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [3, 4]
+    assert sum("exact-multi full-landmark cluster boundary" in note
+               for note in index.notes) == 2
 
 
 def test_transient_frame_recovery_allows_measured_bridge_alignment_slack(monkeypatch):
@@ -426,6 +523,13 @@ def test_transient_frame_recovery_allows_measured_bridge_alignment_slack(monkeyp
     shared bounded card 9px past the extent seen on the other side.  That is still far inside a
     real Hinge gutter and must be absorbed as chain slack; rejecting the complete rebuild loses
     every item even though the recovery used no refused consensus or assumed offset.
+
+    Both refused pairs here carry an emptied strip bank (no votes at all), unlike the sibling
+    `test_one_transient_frame_can_recover_both_adjacent_refused_pairs`: this is specifically
+    exercising frame OMISSION's own slack tolerance, so each pair's own evidence must be too
+    weak for the two-pair exact-multi grammar to repair it directly -- otherwise that stronger,
+    frame-preserving path would recover it before omission is ever attempted, and the drifted
+    bridge measured here would never be reached at all.
     """
     frames = [_frame(scroll) for scroll in _FULL_SCROLL]
     real_shift = item_index.estimate_shift
@@ -435,9 +539,7 @@ def test_transient_frame_recovery_allows_measured_bridge_alignment_slack(monkeyp
     def transient_middle_with_drifted_bridge(frame_a, frame_b, **kwargs):
         result = real_shift(frame_a, frame_b, **kwargs)
         if (frame_a, frame_b) in refused:
-            return dataclasses.replace(
-                result, delta_px=None, status=frameshift.SHIFT_NO_CONSENSUS,
-                consensus_px=None, reason="synthetic transient-frame refusal")
+            return _shift_with_votes(result, [], status=frameshift.SHIFT_NO_CONSENSUS)
         if (frame_a, frame_b) == bridge:
             return dataclasses.replace(
                 result, delta_px=result.delta_px + 9, consensus_px=result.consensus_px + 9,
@@ -463,7 +565,12 @@ def test_transient_frame_recovery_allows_measured_bridge_alignment_slack(monkeyp
 
 
 def test_two_adjacent_refusals_still_fail_when_the_direct_bridge_refuses(monkeypatch):
-    """Two adjacent failures identify a candidate frame; they do not authorize dropping it."""
+    """Two adjacent failures identify a candidate frame; they do not authorize dropping it.
+
+    All three pairs -- both refusals and the direct bridge -- carry an emptied strip bank, so
+    neither the two-pair exact-multi grammar nor frame omission has any real evidence to work
+    from; this stays a hard refusal on every recovery path.
+    """
     frames = [_frame(scroll) for scroll in _FULL_SCROLL]
     real_shift = item_index.estimate_shift
     refused = {(frames[3], frames[4]), (frames[4], frames[5]), (frames[3], frames[5])}
@@ -471,9 +578,7 @@ def test_two_adjacent_refusals_still_fail_when_the_direct_bridge_refuses(monkeyp
     def transient_and_bridge(frame_a, frame_b, **kwargs):
         result = real_shift(frame_a, frame_b, **kwargs)
         if (frame_a, frame_b) in refused:
-            return dataclasses.replace(
-                result, delta_px=None, status=frameshift.SHIFT_NO_CONSENSUS,
-                consensus_px=None, reason="synthetic direct-bridge refusal")
+            return _shift_with_votes(result, [], status=frameshift.SHIFT_NO_CONSENSUS)
         return result
 
     monkeypatch.setattr(item_index, "estimate_shift", transient_and_bridge)
@@ -782,8 +887,72 @@ def test_five_pair_video_refusal_island_accepts_exact_multi_strip_boundaries(
     assert [shift.agreeing for shift in index.shifts[1:6]] == [4, 2, 2, 1, 3]
     assert all(raw.status == frameshift.SHIFT_NO_CONSENSUS
                for _pair, raw in index.layout_repaired_shifts)
-    assert sum("five-pair full-landmark cluster boundary" in note
+    assert sum("exact-multi full-landmark cluster boundary" in note
                for note in index.notes) == 2
+
+
+def test_two_pair_video_tail_accepts_exact_multi_strip_boundaries(monkeypatch):
+    """The Hailey capture: a scrolling video card's own motion pollutes two adjacent pairs'
+    raw votes, each still leaving 3+ NCC strips landing exactly on the true step with full
+    top/bottom/heart corroboration.  Unlike the five-pair island, there is no interior pair to
+    bridge here -- every pair in this window already independently clears
+    `_exact_multi_strip_shift`'s own bar -- so it needs only an ordinary measured bracket on
+    both sides, not the five-pair island's interior 2-strip/2-strip/1-strip shape.
+    """
+    frames = [_frame(scroll) for scroll in _FULL_SCROLL]
+    real_shift = item_index.estimate_shift
+
+    def video_tail_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(i for i in range(7) if frame_a == frames[i] and frame_b == frames[i + 1])
+        votes = {
+            2: [_STEP, _STEP, _STEP, _STEP - 40, _STEP - 75, _STEP - 110],
+            3: [_STEP, _STEP, _STEP, _STEP - 55, _STEP - 95, _STEP - 130],
+        }.get(pair)
+        return (result if votes is None else
+                _shift_with_votes(result, votes, status=frameshift.SHIFT_NO_CONSENSUS))
+
+    monkeypatch.setattr(item_index, "estimate_shift", video_tail_pair)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.offsets == _FULL_SCROLL
+    assert [shift.delta_px for shift in index.shifts] == [_STEP] * 7
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [2, 3]
+    assert [shift.agreeing for shift in index.shifts[2:4]] == [3, 3]
+    assert all(raw.status == frameshift.SHIFT_NO_CONSENSUS
+               for _pair, raw in index.layout_repaired_shifts)
+    assert sum("exact-multi full-landmark cluster boundary" in note
+               for note in index.notes) == 2
+
+
+def test_two_pair_exact_multi_window_needs_measured_brackets():
+    """The same two-pair evidence shape at the unanchored capture edge still cannot be admitted.
+
+    Every other repair grammar in this module requires an ordinary raw-measured pair immediately
+    outside the window it rebuilds; the two-pair exact-multi grammar is no exception even though
+    neither of its own two pairs is individually weak.  Here the corrupted pair-shape consumes
+    the entire shifts list, so there is no room for either bracket.
+    """
+    frames = [_frame(_STEP * i) for i in range(3)]
+    segmentations = tuple(item_index.segment_frame(
+        frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames)
+    bases = tuple(item_index.estimate_shift(
+        frames[i], frames[i + 1], content_band=_CONTENT_BAND) for i in range(2))
+    shifts = (
+        _shift_with_votes(
+            bases[0], [_STEP, _STEP, _STEP, _STEP - 40, _STEP - 75, _STEP - 110],
+            status=frameshift.SHIFT_NO_CONSENSUS),
+        _shift_with_votes(
+            bases[1], [_STEP, _STEP, _STEP, _STEP - 55, _STEP - 95, _STEP - 130],
+            status=frameshift.SHIFT_NO_CONSENSUS),
+    )
+    repaired, notes, provenance = item_index._repair_shifts_from_layout(segmentations, shifts)
+    assert repaired == shifts
+    assert notes == () and provenance == ()
 
 
 def test_exact_multi_strip_boundary_is_never_a_standalone_layout_repair(monkeypatch):
@@ -2075,7 +2244,8 @@ def test_the_heart_of_each_selectable_block_is_where_it_was_stamped():
     """The heart's page position is what a counting navigation eventually taps, so it is folded
     across frames like the extent is, and must come back at the world row it was painted at."""
     index = _full()
-    for block, (_, _, y1) in zip(index.selectable, [r for r in _ROWS if r[0] == "card"]):
+    for block, (_, _, y1) in zip(
+            index.selectable, [r for r in _ROWS if r[0] == "card"], strict=True):
         assert block.heart is not None
         x, page_y = block.heart
         assert x == pytest.approx(_HEART_CX, abs=2)
@@ -2117,7 +2287,7 @@ def test_the_same_profile_at_a_different_cadence_gives_the_same_items():
     # "the k-th heart" a well-defined thing to count down to.
     rows = [(b.page_y0, b.page_y1) for b in coarse.blocks]
     assert rows == sorted(rows)
-    assert all(a[1] < b[0] for a, b in zip(rows, rows[1:]))
+    assert all(a[1] < b[0] for a, b in pairwise(rows))
 
 
 def test_page_coordinates_come_from_the_measured_shift_and_not_from_an_assumed_step():

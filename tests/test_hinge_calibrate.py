@@ -13,7 +13,9 @@ import io
 import hashlib
 import inspect
 import json
+import os
 import re
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -297,6 +299,36 @@ def test_hybrid_rewind_has_a_hard_visual_gesture_budget(monkeypatch):
     assert len(driver.reverse_steps) == len(calls) == 2
 
 
+def test_hybrid_rewind_settled_verdict_reprobes_a_transient_cannot_tell_without_a_gesture(monkeypatch):
+    """Hinge 10.0.1 can settle its filter-chips strip a few px late (see
+    `_MAX_UNSETTLED_TOP_REPROBES`): a screencap taken mid-settle can land in the deliberate
+    3..9 `cannot_tell` dead zone even though the same resting screen reads an exact confirmed top
+    a moment later. The rewind must re-read the screen -- no gesture -- rather than either
+    aborting on the transient reading or treating it as a positive refutation that licenses a
+    scroll."""
+    driver = _HybridRewindDriver([b"settling"])
+    verdicts = iter([_top_verdict("cannot_tell", "mid-settle"), _top_verdict("confirmed_top", "settled")])
+    calls = []
+
+    def fake_confirm(frame, **_kw):
+        calls.append(frame)
+        return next(verdicts)
+
+    monkeypatch.setattr(cal, "confirm_scroll_top", fake_confirm)
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal, "_plan_card_scroll",
+                        lambda *_a, **_kw: pytest.fail("a settling reprobe must not plan/issue a gesture"))
+
+    top = cal._rewind_automated_profile_to_confirmed_top(
+        driver, ordinal=1, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=0.8)
+
+    assert top == b"settling"
+    assert calls == [b"settling", b"settling"]
+    assert driver.reverse_steps == []
+
+
 def test_every_automated_profile_enters_through_the_visual_rewind(monkeypatch, tmp_path):
     class Driver:
         identity_band = _IDENTITY_BAND
@@ -322,6 +354,246 @@ def test_every_automated_profile_enters_through_the_visual_rewind(monkeypatch, t
     assert calls[0]["identity_band"] == _IDENTITY_BAND
     assert calls[0]["content_band"] == _CONTENT_BAND
     assert calls[0]["like_threshold"] == cal.hinge_mod._LIKE_MATCH_THRESHOLD
+
+
+def _unattended_single_item_fixtures(monkeypatch):
+    """Wire every seam a one-photo, ordinal=1 automated profile touches through to its terminal
+    advance, without a real card scan/navigation stack.
+
+    `_automated_pass_from_verified_composer`/`_automated_send_from_verified_composer` are spied
+    rather than exercised for real here: their own exact trace shapes are covered directly by
+    `test_calibration_only_pass_allows_composer_offscreen_after_edge_back_then_uses_guarded_transport`
+    and `test_automated_send_from_verified_composer_uses_the_production_send_transport`. This
+    fixture is only about which ONE of them `_capture_one_profile_unattended`'s terminal dispatch
+    calls, and what it tells a hybrid reviewer beforehand.
+    """
+    identity = ProfileIdentity((1,), _IDENTITY_BAND, (64, 16), 0, 20.0, "known", agreeing_frames=2)
+    index = SimpleNamespace(usable=True, translation=(1,), complete=False)
+    payload = SimpleNamespace(item=lambda _n: SimpleNamespace(heart_ordinal=1))
+    target = SimpleNamespace(frame=b"target-pre", point=(500, 800))
+
+    class _Adb:
+        def __init__(self):
+            self.frames = iter([b"composer-1", b"pass-frame", b"advance-identity"])
+
+        def screencap(self):
+            return next(self.frames)
+
+    class _Driver:
+        identity_band = _IDENTITY_BAND
+        content_band = _CONTENT_BAND
+        dwell_s = 0.0
+
+        def __init__(self):
+            self.adb = _Adb()
+            self.taps = []
+            self.scrolls = []
+
+        def _template(self, _name):
+            return object()
+
+        def _tap(self, *point):
+            self.taps.append(point)
+
+        def _scroll_down_one(self, frac, x_frac):
+            self.scrolls.append((frac, x_frac))
+
+    driver = _Driver()
+    pass_calls: list = []
+    send_calls: list = []
+
+    def fake_pass(*_a, **_kw):
+        pass_calls.append(1)
+        return b"advance-frame", {"action": "automated_pass", "send_like_tapped": False,
+                                  "composer_clear_visible": True}
+
+    def fake_send(*_a, **_kw):
+        send_calls.append(1)
+        return b"advance-frame", {
+            "action": "automated_send_priority_like",
+            "transport": ["HingeDriver._tap(confirm_point)", "HingeDriver._handle_rose_upsell",
+                          "HingeDriver._verify_like_landed"],
+            "send_like_tapped": True, "confirm_point": [1, 2],
+            "predicates": {"inline_composer_and_selected_photo_verified_before_action": True,
+                          "send_like_tapped": True, "like_landed_verified": True},
+        }
+
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_a: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal, "_rewind_automated_profile_to_confirmed_top", lambda *_a, **_kw: b"top")
+    monkeypatch.setattr(cal, "capture_profile_identity", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(cal, "build_item_index", lambda *_a, **_kw: index)
+    monkeypatch.setattr(cal, "build_item_payload", lambda *_a, **_kw: payload)
+    monkeypatch.setattr(cal, "_target_scoped_prefix_reason", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cal, "verification_blocker", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cal, "navigate_to_item", lambda *_a, **_kw: target)
+    monkeypatch.setattr(cal, "_verified_target_frame_block", lambda *_a, **_kw: object())
+    monkeypatch.setattr(
+        cal, "_fresh_reviewed_target_point",
+        lambda _driver, target, **_kw: target.point)
+    monkeypatch.setattr(cal, "locate_inline_composer",
+                        lambda *_a, **_kw: SimpleNamespace(
+                            layout_id=cal._COMPOSER_LAYOUT_ID, confirm_point=(1, 2)))
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_a, **_kw: SimpleNamespace(matched=True, reason="matched"))
+    monkeypatch.setattr(cal, "_automated_pass_from_verified_composer", fake_pass)
+    monkeypatch.setattr(cal, "_automated_send_from_verified_composer", fake_send)
+    monkeypatch.setattr(cal, "_plan_card_scroll",
+                        lambda *_a, **_kw: (SimpleNamespace(frac=0.1, x_frac=0.5), None))
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_a, **_kw: SimpleNamespace(confirmed=False, refuted=True, reason="sticky"))
+    monkeypatch.setattr(cal, "band_fingerprint", lambda *_a, **_kw: (999,))
+    monkeypatch.setattr(cal, "fingerprint_distance",
+                        lambda *_a, **_kw: cal._IDENTITY_FALSE_MATCH_DISTANCE + 1)
+    return driver, pass_calls, send_calls
+
+
+def test_default_unattended_capture_still_terminates_with_pass(monkeypatch, tmp_path):
+    """Regression guard on the never-send default: with `send_like` left False (no CLI flag),
+    the terminal advance must go through the Pass helper, never the Send helper."""
+    driver, pass_calls, send_calls = _unattended_single_item_fixtures(monkeypatch)
+
+    meta, _counter = cal._capture_one_profile_unattended(
+        driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+        review_gate=None, send_like=False)
+
+    assert pass_calls == [1]
+    assert send_calls == []
+    terminal = next(a for a in meta["automated_actions"]
+                    if a["action"] in {"automated_pass", "automated_send_priority_like"})
+    assert terminal["action"] == "automated_pass"
+    assert terminal["send_like_tapped"] is False
+
+
+@pytest.mark.parametrize(
+    ("send_like", "expected_action", "expected_source"),
+    [
+        (False, "automated_pass", "calibration-only verified-composer Pass transport"),
+        (True, "automated_send_priority_like", "calibration-only verified-composer Send transport"),
+    ],
+    ids=["default-pass", "accepted-send"],
+)
+def test_hybrid_pre_action_checkpoint_action_matches_the_accepted_terminal_transport(
+        monkeypatch, tmp_path, send_like, expected_action, expected_source):
+    """The checkpoint a hybrid reviewer approves before the terminal action must plainly say
+    which transport is about to run -- never disguise an accepted real Send as an ordinary Pass,
+    or vice versa -- and `_capture_one_profile_unattended` must actually call that one helper."""
+    driver, pass_calls, send_calls = _unattended_single_item_fixtures(monkeypatch)
+    checkpoints = []
+
+    class _Gate:
+        def checkpoint(self, _frame, *, claimed_state, action_plan):
+            checkpoints.append((claimed_state, action_plan))
+            return {"decision": "approved", "action_plan": action_plan}
+
+    meta, _counter = cal._capture_one_profile_unattended(
+        driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+        review_gate=_Gate(), send_like=send_like)
+
+    terminal = next(a for a in meta["automated_actions"]
+                    if a["action"] in {"automated_pass", "automated_send_priority_like"})
+    assert terminal["action"] == expected_action
+    assert (pass_calls, send_calls) == (([1], []) if not send_like else ([], [1]))
+
+    heart_plan = next(plan for state, plan in checkpoints if state == "target_heart_visible")
+    assert heart_plan["predicates"]["positive_still_photo_evidence_verified"] is True
+    assert heart_plan["predicates"]["target_frame_mute_control_screened_absent"] is True
+    assert "photo_only_item_verified" not in heart_plan["predicates"]
+
+    pre_action_plan = next(plan for state, plan in checkpoints if state == "composer_open_before_pass")
+    assert pre_action_plan["action"] == expected_action
+    assert pre_action_plan["point_source"] == expected_source
+    # The checkpoint describes the plan, not an already-completed action: nothing has been
+    # tapped yet at the moment the reviewer sees it, regardless of which transport is planned.
+    assert pre_action_plan["predicates"]["send_like_tapped"] is False
+
+
+@pytest.mark.parametrize(
+    ("fresh_frame", "reviewed_point", "detected_point", "identity_matched"),
+    [
+        (b"changed", [500, 800], (500, 800), True),
+        (b"target-pre", [501, 800], (500, 800), True),
+        (b"target-pre", [500, 800], (501, 800), True),
+        (b"target-pre", [500, 800], (500, 800), False),
+    ],
+    ids=["frame-changed", "plan-point-changed", "detected-point-changed", "identity-changed"],
+)
+def test_fresh_reviewed_target_refuses_changed_frame_point_or_identity_without_tapping(
+        monkeypatch, fresh_frame, reviewed_point, detected_point, identity_matched):
+    prior_identity = SimpleNamespace(identity=SimpleNamespace(), match_max=1.0)
+    target = SimpleNamespace(
+        frame=b"target-pre", point=(500, 800), block_frame_rows=(700, 900),
+        identity=prior_identity)
+    block = SimpleNamespace(y0=700, y1=900, hearts=(detected_point,))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: fresh_frame), identity_band=_IDENTITY_BAND,
+        taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: None
+    monkeypatch.setattr(
+        cal, "segment_frame",
+        lambda *_a, **_kw: SimpleNamespace(ok=True, failures=(), blocks=(block,)))
+    monkeypatch.setattr(
+        cal, "compare_profile_identity",
+        lambda *_a, **_kw: SimpleNamespace(matched=identity_matched, reason="identity changed"))
+
+    with pytest.raises(cal._CaptureAbort):
+        point = cal._fresh_reviewed_target_point(
+            driver, target, reviewed_point=reviewed_point, content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+        driver._tap(*point)
+
+    assert driver.taps == []
+
+
+def test_fresh_reviewed_target_unchanged_revalidates_then_taps_once(monkeypatch):
+    target = SimpleNamespace(
+        frame=b"target-pre", point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: b"target-pre"), identity_band=_IDENTITY_BAND,
+        taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: None
+    monkeypatch.setattr(
+        cal, "segment_frame",
+        lambda *_a, **_kw: SimpleNamespace(
+            ok=True, failures=(),
+            blocks=(SimpleNamespace(y0=700, y1=900, hearts=((500, 800),)),)))
+    monkeypatch.setattr(
+        cal, "compare_profile_identity",
+        lambda *_a, **_kw: SimpleNamespace(matched=True, reason="matched"))
+
+    point = cal._fresh_reviewed_target_point(
+        driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=0.8)
+    driver._tap(*point)
+
+    assert driver.taps == [(500, 800)]
+
+
+def test_fresh_reviewed_target_refuses_auto_hidden_video_control_without_tapping(monkeypatch):
+    target = SimpleNamespace(
+        frame=b"target-pre", point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: b"target-pre"), identity_band=_IDENTITY_BAND,
+        taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: "selected media is a video"
+    monkeypatch.setattr(
+        cal, "segment_frame",
+        lambda *_a, **_kw: SimpleNamespace(
+            ok=True, failures=(),
+            blocks=(SimpleNamespace(y0=700, y1=900, hearts=((500, 800),)),)))
+
+    with pytest.raises(cal._CaptureAbort, match="selected media is a video"):
+        point = cal._fresh_reviewed_target_point(
+            driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+        driver._tap(*point)
+
+    assert driver.taps == []
 
 
 @pytest.mark.parametrize("item_number", [1, 3], ids=["odd-profile-photo-1", "even-profile-photo-3"])
@@ -417,6 +689,105 @@ def test_calibration_only_pass_allows_composer_offscreen_after_edge_back_then_us
     assert trace["post_frame_sha256"] == hashlib.sha256(b"new-top").hexdigest()
 
 
+def test_automated_send_from_verified_composer_uses_fresh_review_binding_and_production_transport(
+        monkeypatch):
+    """The owner-opted-in real-send path must use the exact same production send transport as an
+    ordinary AUTO/OBSERVE like -- never a raw tap, and never the paid Rose/upsell control."""
+    surface = ComposerSurface(cal._COMPOSER_LAYOUT_ID, Rect(80, 1150, 1000, 1290),
+                              Rect(390, 1300, 985, 1420), (690, 1360))
+
+    class _Adb:
+        def __init__(self):
+            self.frames = iter((b"composer", b"advance-frame"))
+
+        def screencap(self):
+            return next(self.frames)
+
+    class _Driver:
+        def __init__(self):
+            self.halt_on_error = True
+            self.adb = _Adb()
+            self.calls = []
+
+        def _tap(self, *point):
+            self.calls.append(("tap", point))
+
+        def _handle_rose_upsell(self):
+            self.calls.append(("rose_upsell",))
+
+        def _verify_like_landed(self, before):
+            self.calls.append(("verify_landed", before))
+
+    driver = _Driver()
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_cooldown", lambda _s: 0.0)
+    monkeypatch.setattr(cal, "locate_inline_composer", lambda *_a, **_kw: surface)
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_a, **_kw: SimpleNamespace(matched=True, reason="matched"))
+
+    advance_frame, trace = cal._automated_send_from_verified_composer(
+        driver, frame=b"composer", confirm_template=object(), payload=SimpleNamespace(),
+        item_number=3, reviewed_confirm_point=surface.confirm_point)
+
+    assert advance_frame == b"advance-frame"
+    assert [name for name, *_rest in driver.calls] == ["tap", "rose_upsell", "verify_landed"]
+    assert driver.calls[0][1] == surface.confirm_point
+    assert driver.calls[2][1] == b"composer"
+    assert trace["action"] == "automated_send_priority_like"
+    assert trace["transport"] == ["HingeDriver._tap(confirm_point)", "HingeDriver._handle_rose_upsell",
+                                  "HingeDriver._verify_like_landed"]
+    assert trace["send_like_tapped"] is True
+    assert trace["confirm_point"] == list(surface.confirm_point)
+    assert trace["pre_frame_sha256"] == hashlib.sha256(b"composer").hexdigest()
+    assert trace["post_frame_sha256"] == hashlib.sha256(b"advance-frame").hexdigest()
+    assert trace["predicates"] == {
+        "inline_composer_and_selected_photo_verified_before_action": True,
+        "send_like_tapped": True,
+        "like_landed_verified": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("halt_on_error", "fresh_frame", "fresh_point"),
+    [
+        (False, b"composer", (690, 1360)),
+        (True, b"changed-composer", (690, 1360)),
+        (True, b"composer", (691, 1360)),
+    ],
+    ids=["landed-proof-disabled", "frame-changed", "point-changed"],
+)
+def test_automated_send_refuses_stale_or_unverifiable_review_with_zero_taps(
+        monkeypatch, halt_on_error, fresh_frame, fresh_point):
+    reviewed_surface = ComposerSurface(
+        cal._COMPOSER_LAYOUT_ID, Rect(80, 1150, 1000, 1290),
+        Rect(390, 1300, 985, 1420), (690, 1360))
+    fresh_surface = ComposerSurface(
+        cal._COMPOSER_LAYOUT_ID, Rect(80, 1150, 1000, 1290),
+        Rect(390, 1300, 985, 1420), fresh_point)
+
+    class _Driver:
+        def __init__(self):
+            self.halt_on_error = halt_on_error
+            self.adb = SimpleNamespace(screencap=lambda: fresh_frame)
+            self.taps = []
+
+        def _tap(self, *point):
+            self.taps.append(point)
+
+    driver = _Driver()
+    surfaces = iter((reviewed_surface, fresh_surface))
+    monkeypatch.setattr(cal, "locate_inline_composer", lambda *_a, **_kw: next(surfaces))
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_a, **_kw: SimpleNamespace(matched=True, reason="matched"))
+
+    with pytest.raises(cal._CaptureAbort):
+        cal._automated_send_from_verified_composer(
+            driver, frame=b"composer", confirm_template=object(), payload=SimpleNamespace(),
+            item_number=3, reviewed_confirm_point=reviewed_surface.confirm_point)
+
+    assert driver.taps == []
+
+
 def test_abort_cleanup_discards_structural_composer_when_item_verification_refuses(monkeypatch):
     """A false-negative item comparison must not strand an unsent composer or tap Send Like."""
     surface = ComposerSurface(cal._COMPOSER_LAYOUT_ID, Rect(80, 1150, 1000, 1290),
@@ -471,6 +842,9 @@ def test_abort_cleanup_discards_structural_composer_when_item_verification_refus
     assert recovery["calibration_evidence"] is False
     assert recovery["selected_item_verified_before_cleanup"] is False
     assert recovery["send_like_tapped"] is False
+    # CRITICAL: the cleanup route is always Pass, by construction -- never Send Like, even for a
+    # profile that would otherwise have ended with an accepted real send.
+    assert recovery["cleanup_trace"]["action"] == "automated_pass"
     assert recovery["cleanup_trace"]["predicates"]["send_like_tapped"] is False
     assert recovery["cleanup_trace"]["predicates"]["inline_composer_and_selected_photo_verified_before_action"] is False
     # The composer is already unfocused and exposes a stable floating Pass.  Cleanup must not
@@ -478,6 +852,32 @@ def test_abort_cleanup_discards_structural_composer_when_item_verification_refus
     assert driver.calls == [("locate", "pass"), ("locate", "pass"), ("tap", (133, 2041))]
     assert recovery["cleanup_trace"]["predicates"]["edge_back_transport_performed"] is False
     assert recovery["cleanup_trace"]["predicates"]["unfocused_composer_pass_visible_before_edge_back"] is True
+
+
+def test_abort_cleanup_never_threads_or_calls_the_send_transport():
+    """CRITICAL invariant: abort cleanup is Pass-only by construction, never by a runtime flag.
+
+    `_recover_automated_abort_from_open_composer` has no `send_like` parameter at all, and the
+    capture loop's own `recover_unsent_composer` closure never threads one through either -- so a
+    stranded composer is always cleared with the calibration-only Pass route, even during a
+    `--send-like` session. This is a structural guarantee, not merely a tested behavior: assert it
+    directly so a future refactor cannot quietly grow a send path here.
+    """
+    sig = inspect.signature(cal._recover_automated_abort_from_open_composer)
+    assert "send_like" not in sig.parameters
+
+    recovery_source = inspect.getsource(cal._recover_automated_abort_from_open_composer)
+    for forbidden in ("_automated_send_from_verified_composer", "_handle_rose_upsell",
+                      "_verify_like_landed"):
+        assert forbidden not in recovery_source
+    # `send_like_tapped` (a recorded, always-False fact) legitimately contains this substring;
+    # only the bare `send_like` identifier (a flag/parameter name) must never appear.
+    assert not re.search(r"\bsend_like\b", recovery_source)
+
+    capture_source = inspect.getsource(cal._capture_one_profile_unattended)
+    closure_start = capture_source.index("def recover_unsent_composer")
+    closure_end = capture_source.index("\n    def ", closure_start + 1)
+    assert not re.search(r"\bsend_like\b", capture_source[closure_start:closure_end])
 
 
 def test_abort_cleanup_refuses_without_an_current_structural_composer(monkeypatch):
@@ -1121,8 +1521,8 @@ def test_measure_source_policy_has_no_device_io_raw_injection_or_fixed_sleep():
     assert not raw_input_calls
     assert not bare_sleeps
     # The command writes only its private evidence ledger, never a config mapping.
-    assert measure_source.count(".write_text(") == 1
-    assert "ledger_path.write_text" in measure_source
+    assert measure_source.count("atomic_write_private_text(") == 1
+    assert ".write_text(" not in measure_source
 
 
 def _write_complete_manifest(directory, *, interrupted=False, requested_profiles=1,
@@ -1464,6 +1864,14 @@ def test_capture_output_outside_private_calibration_root_is_refused(tmp_path, ca
         cal._capture_out_dir(str(tmp_path))
     assert exc.value.code != 0
     assert "must stay under" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_capture_output_directory_is_owner_only(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    out = cal._capture_out_dir("ops/calibration/private-session")
+
+    assert stat.S_IMODE(out.stat().st_mode) == 0o700
 
 
 def test_retry_discards_staged_frames_before_committing_the_completed_attempt(monkeypatch, tmp_path):

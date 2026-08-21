@@ -223,8 +223,12 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+
+from operation_love.targeting_policy import (
+    HINGE_PHOTO_SELECTION_POLICY_ID, hinge_targeting_unavailable_reason)
 
 from .item_index import (
     ITEM_CONTEXT, ITEM_LEADING_CHROME, ITEM_PARTIAL, ITEM_SELECTABLE, IndexedBlock, ItemIndex)
@@ -287,15 +291,22 @@ CROP_CHROME = "chrome"            # Hinge's scroll-top header, already outside b
 CROP_UNCROPPABLE = "uncroppable"  # no frame ever bounded it end to end, so there is no crop that
                                   # is not a fragment: reported with its page position, not sent
 
-# Hinge policy: only a confidently PHOTO crop may enter the numbered/model-selectable list, and
-# Hinge's upper-left mute control must not identify that card as a video. Video screening is performed
-# by the driver across the block's source-frame sightings before this crop layer runs; the block
-# remains in ItemIndex (and keeps its real heart ordinal) but is excluded from the payload. WRITTEN
-# and UNKNOWN remain readable context, so ambiguity still cannot manufacture a photo ordinal.
+# Hinge policy: the content classifier recognises photographic pixels, not still media. Neither
+# low drift nor absence of Hinge's auto-hiding mute control can distinguish a still photo from a
+# paused/static/low-motion video. Until a positive discriminator is calibrated, every prospective
+# photo is therefore demoted to readable context. A mute match is an earlier hard exclusion, while
+# this final hook blocks the otherwise indistinguishable cases. Either way the block remains in
+# ItemIndex and keeps its real heart ordinal, so ambiguity cannot manufacture a photo ordinal or
+# shift navigation space.
 # The identifier is recorded by targeting calibration so a geometry bound cannot silently outlive
 # the classifier/policy that decided which physical hearts its item numbers can name.
-PHOTO_ONLY_POLICY_ID = "hinge_photos_only_v1"
+PHOTO_ONLY_POLICY_ID = HINGE_PHOTO_SELECTION_POLICY_ID
 EXCLUSION_NON_PHOTO = "photo_only"
+# Largest re-observation drift measured for a genuinely static photo across both calibration
+# profiles (32x32 greyscale signature, 0..255 mean absolute difference). It is useful rejection
+# evidence above the ceiling, but deliberately grants no acceptance below it: the corpus contains
+# no video false-accept distribution, and a paused video can have zero drift.
+_STILL_PHOTO_MAX_SIGNATURE_DRIFT = 0.24
 
 # The reason string doc 2.4's block is dropped under, named so the eventual detector, the debug
 # log and any operator override all spell it the same way. There is deliberately NO detector for
@@ -370,7 +381,9 @@ class CropSignature:
                 f"cannot compare a {self.grid[0]}x{self.grid[1]} signature with a "
                 f"{other.grid[0]}x{other.grid[1]} one — resampling one to the other would return "
                 "a number that is not a distance")
-        return sum(abs(a - b) for a, b in zip(self.cells, other.cells)) / len(self.cells)
+        return sum(
+            abs(a - b) for a, b in zip(self.cells, other.cells, strict=True)
+        ) / len(self.cells)
 
 
 @dataclass(frozen=True)
@@ -695,6 +708,32 @@ def unnumber_unless_confident_photo(image: bytes) -> str | None:
             "readable context")
 
 
+def unnumber_without_still_photo_evidence(
+        signature_drift: float | None, drift_frames: tuple[int, ...]) -> str | None:
+    """Refuse numbering until Hinge has affirmative still-photo evidence.
+
+    The content classifier cannot distinguish one photographic video frame from a still photo,
+    Hinge's mute overlay auto-hides, and a paused/static video can have arbitrarily low drift.
+    Drift and mute screening can reject candidates but cannot prove the complement. Consequently
+    even a stable candidate is demoted until a positive still-photo discriminator and held-out
+    video false-accept bound exist. Unknown stability is likewise a refusal, never zero drift.
+    """
+    if (signature_drift is None or isinstance(signature_drift, bool)
+            or not isinstance(signature_drift, (int, float))
+            or not math.isfinite(signature_drift) or signature_drift < 0
+            or not drift_frames):
+        return (f"{EXCLUSION_NON_PHOTO}: no independent re-observation established that this "
+                "photographic-looking card is stable; an auto-hidden video cannot be ruled out")
+    if signature_drift > _STILL_PHOTO_MAX_SIGNATURE_DRIFT:
+        return (f"{EXCLUSION_NON_PHOTO}: re-observation drift {signature_drift:.6g} exceeds the "
+                f"measured static-photo ceiling {_STILL_PHOTO_MAX_SIGNATURE_DRIFT:.6g}; animated "
+                "or video media is not targetable")
+    policy_blocker = hinge_targeting_unavailable_reason()
+    if policy_blocker is not None:
+        return f"{EXCLUSION_NON_PHOTO}: {policy_blocker}; numbered targeting is disabled"
+    return None
+
+
 def _band_height(index: ItemIndex) -> int:
     """The analysed band's height in rows — the tallest thing any single frame can contain.
 
@@ -809,7 +848,7 @@ def _check_frames_are_the_indexed_frames(frames: Sequence[bytes], index: ItemInd
     frame is checked up front rather than lazily at decode time, because a wrong frame that no
     item happens to be cropped from still makes the payload a claim about the wrong capture.
     """
-    for i, (frame, seg) in enumerate(zip(frames, index.frames)):
+    for i, (frame, seg) in enumerate(zip(frames, index.frames, strict=True)):
         digest = hashlib.sha256(frame).hexdigest()
         if digest != seg.frame_digest:
             raise ItemCropError(
@@ -909,6 +948,8 @@ def _decoder(frames: Sequence[bytes], cv2, np):
 def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
                        exclude: Callable[[IndexedBlock], str | None] | None = None,
                        unnumber: Callable[[bytes], str | None] | None = None,
+                       unnumber_without_evidence: Callable[
+                           [float | None, tuple[int, ...]], str | None] | None = None,
                        image_format: str = _CROP_IMAGE_FORMAT,
                        signature_grid: tuple[int, int] = _SIGNATURE_GRID) -> ItemPayload:
     """Turn an item index and the frames it was built from into the model's numbered image list.
@@ -928,6 +969,10 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
     demotes the crop to readable, unnumbered context and retains the original heart ordinal.
     Hinge supplies `unnumber_unless_confident_photo`; generic callers keep the historical
     all-selectable policy.
+
+    `unnumber_without_evidence` is the independent re-observation twin. It receives the measured
+    signature drift and the other source frames that produced it. Hinge uses it to require
+    affirmative still-photo stability after content classification; generic callers opt out.
 
     Raises `ItemCropError` when there is nothing to crop or no way to crop it: an UNUSABLE index
     (doc 5.3's hard stop, inherited rather than re-derived), a frame list that does not match the
@@ -1036,6 +1081,11 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
 
         if block.kind == ITEM_SELECTABLE and unnumber is not None:
             reason = unnumber(image)
+            if reason is not None:
+                crops.append(ItemCrop(kind=CROP_CONTEXT, number=None, reason=reason, **common))
+                continue
+        if block.kind == ITEM_SELECTABLE and unnumber_without_evidence is not None:
+            reason = unnumber_without_evidence(drift, drift_frames)
             if reason is not None:
                 crops.append(ItemCrop(kind=CROP_CONTEXT, number=None, reason=reason, **common))
                 continue

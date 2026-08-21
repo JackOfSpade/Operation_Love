@@ -1,4 +1,5 @@
 """Unit tests for the pure autonomous-session interaction policy."""
+import math
 import random
 
 import pytest
@@ -71,6 +72,40 @@ def test_post_action_delay_rejects_zero_scale_too():
         policy.post_action_delay_s("like", p, 0.5, scale=0)
 
 
+@pytest.mark.parametrize("scale", [
+    True, math.nan, math.inf, pytest.param(10 ** 10_000, id="huge_int"), "1",
+])
+def test_post_action_delay_rejects_nonfinite_or_nonnumeric_scales(scale):
+    policy = AutoSessionPolicy(rng=random.Random(1), local_hour=lambda: 12)
+    with pytest.raises(ValueError, match="scale"):
+        policy.post_action_delay_s("like", _profile(), 0.5, scale=scale)
+
+
+@pytest.mark.parametrize("score", [
+    True, math.nan, math.inf, pytest.param(10 ** 10_000, id="huge_int"), "0.5",
+])
+def test_policy_rejects_invalid_model_scores(score):
+    policy = AutoSessionPolicy(rng=random.Random(1), local_hour=lambda: 12)
+    with pytest.raises(ValueError, match="score"):
+        policy.apply_decision(Decision("like", score, [1.0], "ranker"), _profile())
+
+
+def test_policy_rejects_nonfinite_local_hour():
+    policy = AutoSessionPolicy(rng=random.Random(1), local_hour=lambda: math.nan)
+    with pytest.raises(ValueError, match="local_hour"):
+        policy.post_action_delay_s("like", _profile(), 0.5)
+
+
+def test_read_and_capture_counts_reject_lossy_numeric_coercion():
+    policy = AutoSessionPolicy(rng=random.Random(1), local_hour=lambda: 12)
+    with pytest.raises(ValueError, match="depth"):
+        policy.read_step(1.5)
+    with pytest.raises(ValueError, match="captured_frames"):
+        policy.read_step(1, captured_frames=True)
+    with pytest.raises(ValueError, match="baseline"):
+        policy.capture_limit("8")
+
+
 @pytest.mark.parametrize("bad_value", [
     "not-a-number",     # non-numeric string
     None,                # explicit None (present but unset -- distinct from key absent)
@@ -98,6 +133,14 @@ def test_post_action_delay_tolerates_malformed_read_scrolls_metadata(bad_value):
     p = Profile(photos=[b"x"] * 2, bio="", meta={"capture_frames": 2, "read_scrolls": bad_value})
     policy = AutoSessionPolicy(rng=random.Random(6), local_hour=lambda: 12)
     delay = policy.post_action_delay_s("dislike", p, 0.4)   # must not raise
+    assert 0.35 <= delay <= 45.0
+
+
+@pytest.mark.parametrize("meta", [[("capture_frames", 99)], "not-a-mapping", object()])
+def test_profile_complexity_tolerates_a_malformed_meta_container(meta):
+    profile = Profile(photos=[b"x"] * 2, meta=meta)
+    policy = AutoSessionPolicy(rng=random.Random(6), local_hour=lambda: 12)
+    delay = policy.post_action_delay_s("like", profile, 0.6)
     assert 0.35 <= delay <= 45.0
 
 

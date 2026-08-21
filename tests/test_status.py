@@ -4,7 +4,10 @@ Pure offline: the status object is plain Python; the Bumble overlay is exercised
 with a fake page that records the evaluate() call (the real HUD render is visual,
 seen live in the browser). The Hinge driver inherits the base no-op.
 """
+import math
 import threading
+
+import pytest
 
 from operation_love.status import RunStatus
 from operation_love.drivers.hinge import HingeDriver
@@ -40,6 +43,54 @@ def test_record_swipe_and_inc_labels():
     assert snap["labels"] == 2
 
 
+@pytest.mark.parametrize(("field", "value"), [
+    ("min_labels", True),
+    ("min_labels", 1.9),
+    ("min_labels", -1),
+    ("labels", True),
+    ("labels", 1.9),
+    ("labels", -1),
+    ("ranker_ready", 1),
+])
+def test_constructor_rejects_lossy_or_invalid_counter_state(field, value):
+    kwargs = {"min_labels": 40, "mode": "observe", field: value}
+    with pytest.raises(ValueError, match=field):
+        RunStatus("run123", ["hinge"], **kwargs)
+
+
+@pytest.mark.parametrize(("args", "kwargs", "message"), [
+    (("", ["hinge"]), {"min_labels": 1, "mode": "observe"}, "run_id"),
+    ((" run ", ["hinge"]), {"min_labels": 1, "mode": "observe"}, "run_id"),
+    (("run", ["hinge"]), {"min_labels": 1, "mode": "mixed"}, "mode"),
+    (("run", "hinge"), {"min_labels": 1, "mode": "observe"}, "apps"),
+    (("run", (app for app in ["hinge"])),
+     {"min_labels": 1, "mode": "observe"}, "apps"),
+    (("run", ["hinge", "hinge"]), {"min_labels": 1, "mode": "observe"}, "duplicate"),
+    (("run", [" hinge "]), {"min_labels": 1, "mode": "observe"}, "app names"),
+])
+def test_constructor_rejects_malformed_run_identity_and_apps(args, kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        RunStatus(*args, **kwargs)
+
+
+@pytest.mark.parametrize("budget_cap", [
+    True, -1, math.nan, math.inf, pytest.param(10 ** 10_000, id="huge_int"), "5",
+])
+def test_constructor_rejects_invalid_budget_cap(budget_cap):
+    with pytest.raises(ValueError, match="budget_cap"):
+        RunStatus(
+            "run123", ["hinge"], min_labels=1, mode="observe", budget_cap=budget_cap,
+        )
+
+
+@pytest.mark.parametrize("increment", [True, -1, 1.5, "1"])
+def test_inc_labels_rejects_invalid_increments_without_corrupting_state(increment):
+    status = _mk(labels=3)
+    with pytest.raises(ValueError, match="increment"):
+        status.inc_labels(increment)
+    assert status.snapshot()["labels"] == 3
+
+
 def test_labels_needed_floors_at_zero():
     assert _mk(labels=50).snapshot()["labels_needed"] == 0
 
@@ -51,6 +102,19 @@ def test_set_global():
     assert snap["ranker_ready"] is True
     assert snap["budget_spent"] == 1.2345
     assert snap["running"] is False
+
+
+def test_status_updates_reject_unknown_fields_atomically():
+    status = _mk()
+    with pytest.raises(ValueError, match="unknown AppStatus"):
+        status.set_app("hinge", state="acting", statte="typo")
+    assert status.snapshot()["apps"]["hinge"]["state"] == "starting"
+    assert not hasattr(status._apps["hinge"], "statte")
+
+    with pytest.raises(ValueError, match="unknown RunStatus"):
+        status.set_global(phase="live", phaze="typo")
+    assert status.snapshot()["phase"] == "starting"
+    assert not hasattr(status, "phaze")
 
 
 def test_stopping_defaults_false_and_is_settable_and_serialized():
@@ -104,6 +168,20 @@ def test_suggesting_state_clears_a_stale_opener_suggestion():
     s.set_app("hinge", state="suggesting")
     app = s.snapshot()["apps"]["hinge"]
     assert app["state"] == "suggesting" and app["opener_suggestion"] is None
+
+
+def test_blocked_terminal_state_clears_stale_opener_guidance():
+    status = _mk()
+    status.set_app(
+        "hinge", state="waiting_for_send", opener_suggestion="stale suggestion",
+        opener_item=3, opener_pending=True,
+    )
+    status.set_app("hinge", state="blocked", stop_kind="deck_blocked")
+    app = status.snapshot()["apps"]["hinge"]
+    assert app["state"] == "blocked"
+    assert app["opener_suggestion"] is None
+    assert app["opener_item"] is None
+    assert app["opener_pending"] is False
 
 
 def test_a_state_transition_clears_every_opener_field_together():

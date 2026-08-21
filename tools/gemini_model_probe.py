@@ -76,6 +76,7 @@ from operation_love.opener.opener import (
     _stdlib_gemini_transport,
 )
 from operation_love.perception.capture import Profile
+from operation_love.private_files import load_private_dotenv
 
 # ---------------------------------------------------------------------------------------
 # Verdict vocabulary -- exactly these seven, nothing else. USABLE is the only one that means
@@ -499,17 +500,9 @@ def _redact(text: str, secret: str | None) -> str:
 
 def _load_dotenv() -> None:
     """Load this project's own .env, exactly like operation_love.__main__.main() and
-    tools/hinge_calibrate.py's main() -- never walk parent directories, and fail loudly if the
-    required dependency is missing rather than silently leaving GEMINI_API_KEY unset."""
-    try:
-        from dotenv import load_dotenv
-    except ImportError as exc:
-        raise RuntimeError(
-            "python-dotenv is not installed, so .env cannot be loaded (GEMINI_API_KEY may be "
-            "invisible to this process even if the file exists). Install project dependencies "
-            "(`pip install -e .`) or set GEMINI_API_KEY in the real environment instead."
-        ) from exc
-    load_dotenv(Path.cwd() / ".env")
+    tools/hinge_calibrate.py's main() -- never walking parent directories, rejecting unsafe
+    link leaves, and tightening a real file to owner-only mode before python-dotenv reads it."""
+    load_private_dotenv(Path.cwd() / ".env")
 
 
 def _interactive_confirm(prompt: str) -> bool:

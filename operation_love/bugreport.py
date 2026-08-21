@@ -37,6 +37,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
+from itertools import pairwise
 from pathlib import Path
 
 from .typography import format_duration
@@ -137,7 +138,7 @@ def recent_logs(limit: int = 120) -> list[str]:
 def _git(*args: str) -> str | None:
     try:
         r = subprocess.run(["git", *args], cwd=_REPO, capture_output=True,
-                           text=True, timeout=4)
+                           text=True, timeout=4, check=False)
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:  # noqa: BLE001
         return None
@@ -753,7 +754,7 @@ def _collapse_action_tail(lines: list[str], limit: int) -> list[str]:
     tail_runs, tail_keys = runs[-limit:], keys[-limit:]
     last_i = len(tail_runs) - 1
     out: list[str] = []
-    for i, (run, key) in enumerate(zip(tail_runs, tail_keys)):
+    for i, (run, key) in enumerate(zip(tail_runs, tail_keys, strict=True)):
         peel_first = i == 0
         peel_last = i == last_i
         if len(run) == 1 or key is None or not (peel_first or peel_last):
@@ -1460,11 +1461,13 @@ def _stall_summary_md(lines: list[str]) -> str:
 # whole section exists to make: an absent field must never render as absent TEXT.
 _GESTURE_UNCORROBORATED_REASON = "gesture-uncorroborated"
 
-# The complete reason vocabulary `observe_resync` emits today (there are exactly three call
-# sites in hinge.py; grep "observe_resync" there to re-confirm before trusting this list is
-# still exhaustive). A reason not in this dict is not swallowed -- see
-# _abandoned_card_summary_md -- it renders with its raw string and no explanation, so a reason
-# added later reaches the report before anyone remembers to update this dict.
+# The complete reason vocabulary `observe_resync` emits today (there are exactly four call
+# sites in hinge.py -- one of them, the plain gesture-uncorroborated pass, sets no `reason` key
+# at all and is handled by the `_GESTURE_UNCORROBORATED_REASON` branch below instead; grep
+# "observe_resync" in hinge.py to re-confirm this list is still exhaustive before trusting it).
+# A reason not in this dict is not swallowed -- see _abandoned_card_summary_md -- it renders
+# with its raw string and no explanation, so a reason added later reaches the report before
+# anyone remembers to update this dict.
 _RESYNC_REASON_EXPLANATIONS = {
     "like_candidate_without_observed_sheet": (
         "a bottom-only screen change was investigated as a possible like, but no Send Like "
@@ -1477,6 +1480,13 @@ _RESYNC_REASON_EXPLANATIONS = {
     "like_send_identity_unavailable": (
         "same as like_send_identity_unproven, except this profile never revealed its sticky "
         "header during capture, so there was no identity anchor to prove anything with"),
+    "pass_identity_name_unconfirmed": (
+        "the pixel identity check read a new, different profile on two independent frames, but "
+        "there was nothing to corroborate that a human caused it: observe_touch_watch is off "
+        "for Hinge (Android withholds the touch input stream on this device, so gesture "
+        "corroboration is unavailable by design -- see HINGE_SPEC's observe_touch_watch "
+        "comment), and OCR could not positively read the same new name on both settled frames "
+        "either; rather than guess pass, the driver recaptured the card with nothing recorded"),
     _GESTURE_UNCORROBORATED_REASON: (
         "the card genuinely changed, but the human's own touch stream did not corroborate a "
         "decision causing it -- the pass path, not a like path"),
@@ -1677,6 +1687,63 @@ def _latest_observe_context_md(lines: list[str], run: Path) -> str:
     return "\n".join(out)
 
 
+def _foreground_input_attribution_md(lines: list[str]) -> str:
+    """Correlate a foreground interruption with the driver's last completed input.
+
+    Screenshots prove *what* covered Hinge but not *who moved it*.  Current Android drivers
+    therefore append ``device_input`` only after each synchronous gesture succeeds.  This
+    summary makes the useful negative evidence explicit: if the shade appeared much later with
+    no intervening input row, Operation Love did not pull it down.  Older runs are labelled as
+    lacking the audit trail rather than being retroactively exonerated.
+    """
+    records = _action_records(lines)
+    event_indexes = [
+        index for index, rec in enumerate(records)
+        if rec.get("action") in {"observe_foreground_paused", "foreground_blocked"}
+    ]
+    if not event_indexes:
+        return ""
+    index = event_indexes[-1]
+    event = records[index]
+    prior_inputs = [rec for rec in records[:index] if rec.get("action") == "device_input"]
+    resumed_index = next((later_index for later_index in range(index + 1, len(records))
+                          if records[later_index].get("action") ==
+                          "observe_foreground_resumed"), None)
+    interruption_tail = records[index + 1:resumed_index]
+    later_inputs = [rec for rec in interruption_tail if rec.get("action") == "device_input"]
+    package = _sanitize_inline(str(event.get("package") or "package not recorded"))
+    out = [f"- foreground interruption at `{_record_time(event)}`: `{package}`."]
+    if prior_inputs:
+        last = prior_inputs[-1]
+        kind = _sanitize_inline(str(last.get("kind") or "input"))
+        source = _sanitize_inline(str(last.get("source") or "source not recorded"))
+        event_ts = _parse_action_ts(event.get("ts"))
+        input_ts = _parse_action_ts(last.get("ts"))
+        gap = None if event_ts is None or input_ts is None else (event_ts - input_ts).total_seconds()
+        gap_text = (f"{format_duration(max(0.0, gap))} earlier"
+                    if gap is not None else "at an unknown time before it")
+        geometry = ""
+        if last.get("start") is not None or last.get("end") is not None:
+            geometry = (f", start=`{_sanitize_inline(str(last.get('start')))}`"
+                        f", end=`{_sanitize_inline(str(last.get('end')))}`")
+        out.append(
+            f"- last completed Operation Love device input: `{kind}` from `{source}` at "
+            f"`{_record_time(last)}` ({gap_text}){geometry}.")
+        if later_inputs:
+            out.append(f"- ⚠️ {len(later_inputs)} Operation Love device input(s) were logged "
+                       "after the foreground interruption; inspect the action tail below.")
+        else:
+            out.append("- no Operation Love device input was logged after the interruption.")
+    else:
+        out.append("- this run contains no outbound `device_input` audit row before the "
+                   "interruption; input attribution is unavailable (legacy/incomplete trace).")
+    resumed = records[resumed_index] if resumed_index is not None else None
+    if resumed is not None:
+        out.append(f"- Hinge regained foreground at `{_record_time(resumed)}`; Observe "
+                   "recaptured without recording a decision.")
+    return "\n".join(out)
+
+
 # ── evidence anomalies ─────────────────────────────────────────────────────
 # Filed after the 2026-08-14 run, where this report printed every record faithfully and still
 # could not surface either of the two bugs sitting in it. Both were found only by hashing the
@@ -1705,7 +1772,7 @@ def _composer_flap_md(lines: list[str]) -> str:
     stretches = _observe_waiting_stretches(lines)
     flaps: list[str] = []
     for stretch in stretches:
-        for earlier, later in zip(stretch, stretch[1:]):
+        for earlier, later in pairwise(stretch):
             if earlier.get("reason") != "like_sending" or later.get("reason") != "like_sheet":
                 continue
             flaps.append(f"`like_sending` at `{earlier.get('ts', '?')}` -> "
@@ -1868,6 +1935,10 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
             if abandoned:
                 out.append("  - cards abandoned without a decision (resync):")
                 out.extend(f"    {line}" for line in abandoned.splitlines())
+            foreground = _foreground_input_attribution_md(raw_lines)
+            if foreground:
+                out.append("  - Android foreground/input attribution:")
+                out.extend(f"    {line}" for line in foreground.splitlines())
             # Beside the stall summary, and for the same reason: these are the anomalies a
             # developer cannot see by reading the tail, because both look like ordinary
             # records until you hash the screenshots. Quiet on a healthy run.

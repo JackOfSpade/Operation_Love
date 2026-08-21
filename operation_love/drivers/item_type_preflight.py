@@ -265,7 +265,7 @@ def _has_large_uniform_panel(gray) -> bool:
     count, _labels, stats, _centres = cv2.connectedComponentsWithStats(joined, connectivity=8)
     height, width = gray.shape[:2]
     crop_area = height * width
-    for x, y, panel_w, panel_h, area in stats[1:count]:
+    for _x, _y, panel_w, panel_h, area in stats[1:count]:
         box_area = int(panel_w) * int(panel_h)
         if (area >= 0.12 * crop_area
                 and panel_w >= 0.45 * width

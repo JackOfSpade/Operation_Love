@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import copy
 import json
 
 import pytest
 
 from operation_love.ranker.retractions import RetractionRefused
+from operation_love.ranker.opener_retractions import make_plan, verify_plan
+from operation_love.ranker.retractions import canonical_sha
 from operation_love.ranker.store import SQLiteStore
 from tools import advisory_opener_cleanup
 
@@ -24,6 +27,81 @@ def _actions(tmp_path, *, decision=False):
         rows.append({"ts": "later", "action": "observe_decision", "decision": "like"})
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
     return path
+
+
+def _snapshot() -> dict:
+    return {
+        "run_id": "run", "app": "hinge", "retractions": [],
+        "preference_counts": {
+            "profiles": 0, "profile_photos": 0, "labels": 0, "decisions": 0,
+        },
+        "effective_counts": {
+            "like_labels": 0, "like_decisions": 0,
+            "pass_labels": 0, "pass_decisions": 0,
+        },
+        "openers": [{
+            "created_at": "2026-08-10T21:40:52.136804+00:00",
+            "model": "gemini-x", "opener_fingerprint": "a" * 64,
+        }],
+    }
+
+
+def _direct_plan(rows=None) -> dict:
+    return make_plan(
+        rows=_snapshot() if rows is None else rows,
+        run_id="run", app="hinge", reason="unacted advisory draft",
+        evidence_ref="data/run/actions.jsonl;actions_sha256=" + "b" * 64,
+        evidence_metadata={"debug_actions_sha256": "b" * 64},
+    )
+
+
+@pytest.mark.parametrize("value", [False, 0.0, "0", -1])
+def test_plan_refuses_coerced_or_negative_evidence_counts(value):
+    rows = _snapshot()
+    rows["effective_counts"]["like_labels"] = value
+    with pytest.raises(RetractionRefused, match="nonnegative integers"):
+        _direct_plan(rows)
+
+
+def test_plan_refuses_missing_count_keys_and_non_mapping_snapshot():
+    rows = _snapshot()
+    del rows["preference_counts"]["labels"]
+    with pytest.raises(RetractionRefused, match="exactly"):
+        _direct_plan(rows)
+    with pytest.raises(RetractionRefused, match="store snapshot is malformed"):
+        make_plan(
+            rows=None, run_id="run", app="hinge", reason="bad snapshot",
+            evidence_ref="debug#1", evidence_metadata={},
+        )
+
+
+def test_verify_plan_rejects_rehashed_malformed_content_and_extra_fields():
+    plan = _direct_plan()
+    malformed = copy.deepcopy(plan)
+    malformed["effective_counts"]["like_labels"] = False
+    malformed["plan_sha256"] = canonical_sha({
+        key: value for key, value in malformed.items() if key != "plan_sha256"})
+    with pytest.raises(RetractionRefused, match="nonnegative integers"):
+        verify_plan(malformed)
+
+    extra = copy.deepcopy(plan)
+    extra["approved"] = True
+    extra["plan_sha256"] = canonical_sha({
+        key: value for key, value in extra.items() if key != "plan_sha256"})
+    with pytest.raises(RetractionRefused, match="invalid advisory"):
+        verify_plan(extra)
+
+
+def test_plan_refuses_non_hex_fingerprints_and_unparseable_timestamps():
+    bad_digest = _snapshot()
+    bad_digest["openers"][0]["opener_fingerprint"] = "g" * 64
+    with pytest.raises(RetractionRefused, match="fingerprint"):
+        _direct_plan(bad_digest)
+
+    bad_timestamp = _snapshot()
+    bad_timestamp["openers"][0]["created_at"] = "not-a-timestamp"
+    with pytest.raises(RetractionRefused, match="created_at"):
+        _direct_plan(bad_timestamp)
 
 
 def test_dry_run_and_apply_tombstone_only_eager_openers_and_preserve_spend(tmp_path, monkeypatch):

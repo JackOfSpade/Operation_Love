@@ -68,7 +68,8 @@ def _legacy_hybrid_session(tmp_path: Path) -> cal._SessionData:
     review_dir.mkdir(parents=True)
     frame_path = review_dir / "00001.png"
     frame_path.write_bytes(composer)
-    plan = {"action": "automated_pass", "photo_model_item": None,
+    plan = {"action": "automated_pass", "photo_model_item": None, "point": None,
+            "point_source": "calibration-only verified-composer Pass transport",
             "predicates": {
                 "inline_composer_and_selected_photo_verified_before_action": True,
                 "send_like_tapped": False,
@@ -89,7 +90,8 @@ def _legacy_hybrid_session(tmp_path: Path) -> cal._SessionData:
         "checkpoint_file": str(checkpoint_path), "checkpoint_sha256": cal._sha256(checkpoint_path.read_bytes()),
         "frame_file": str(frame_path), "frame_sha256": cal._sha256(composer),
         "decision": "approved", "source": "external_ai_review", "reviewer": reviewer,
-        "human_ground_truth": False, "action_plan": plan,
+        "human_ground_truth": False, "claimed_state": "composer_open_before_pass",
+        "action_plan": plan,
     }
     heart_before = {"checkpoint_evidence_sha256": "heart-before", "frame_sha256": cal._sha256(pre),
                     "decision": "approved", "source": "external_ai_review", "reviewer": reviewer,
@@ -332,3 +334,282 @@ def test_unattended_capture_requires_exact_confirmation(capsys):
         cal._cmd_capture(args)
 
     assert "requires the exact --confirmation" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("unattended", "hybrid_review", "confirmation"),
+    [(False, False, ""), (True, False, cal._UNATTENDED_CONFIRMATION)],
+    ids=["no-automated-transport", "unattended-has-no-reviewer"],
+)
+def test_send_like_requires_hybrid_review(capsys, unattended, hybrid_review, confirmation):
+    """A real Send Priority Like is permanent, so it may only run where a reviewer approves each
+    one. Neither a bare `--send-like` nor `--unattended --send-like` may reach the device.
+
+    The unattended case matters twice over: `_verified_automated_circular_evidence` authenticates
+    only the Pass-without-send terminal action, so an unattended send capture could never be
+    measured either -- refusing at the CLI keeps capture and measurement consistent.
+    """
+    args = Namespace(profiles=1, unattended=unattended, hybrid_review=hybrid_review,
+                     confirmation=confirmation, record_operational_checks=False,
+                     send_like=True, send_like_confirmation=cal._SEND_LIKE_CONFIRMATION)
+
+    with pytest.raises(SystemExit):
+        cal._cmd_capture(args)
+
+    assert "requires --hybrid-review" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "send_like_confirmation", ["", "wrong phrase", cal._HYBRID_REVIEW_CONFIRMATION],
+    ids=["missing", "wrong-phrase", "reuses-the-other-confirmation"],
+)
+def test_send_like_requires_its_own_exact_confirmation(capsys, send_like_confirmation):
+    """`--send-like-confirmation` is a separate phrase from `--confirmation`; neither an empty
+    value nor reusing the hybrid-review confirmation may substitute for it, so opting into real
+    sends can never be a side effect of opting into reviewed automation."""
+    args = Namespace(profiles=1, unattended=False, hybrid_review=True,
+                     confirmation=cal._HYBRID_REVIEW_CONFIRMATION,
+                     record_operational_checks=False, reviewer_model="m", reviewer_process="p",
+                     send_like=True, send_like_confirmation=send_like_confirmation)
+
+    with pytest.raises(SystemExit):
+        cal._cmd_capture(args)
+
+    assert "requires the exact --send-like-confirmation" in capsys.readouterr().err
+
+
+def _wire_inert_capture_driver(monkeypatch, tmp_path, config_path):
+    """Enough of `_cmd_capture`'s outer shell (config, driver, serial, out-dir) to reach the
+    profile loop, with `_rewind_automated_profile_to_confirmed_top` mocked to abort immediately
+    on the first profile -- so these tests exercise only the manifest's `automation_acceptance`
+    recording, never a real card scan/navigation/device sequence (already covered elsewhere)."""
+    band = (0.10, 0.048, 0.80, 0.094)
+
+    class _Adb:
+        def shell(self, cmd):
+            if "ro.product.model" in cmd:
+                return "Pixel 7a"
+            if "wm density" in cmd:
+                return "420"
+            return "versionName=1.0\n"
+
+        def screen_size(self):
+            return 1080, 2400
+
+    class _Driver:
+        def __init__(self, _cfg):
+            self.identity_band = band
+            self.content_band = (0.125, 0.875)
+            self.serial = "PIXEL-TEST"
+            self.package = "co.hinge.app"
+            self.adb = _Adb()
+
+        def _template(self, _name):
+            return object()
+
+        def open_session(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cal.cfg_mod, "load", lambda _path: SimpleNamespace(apps={}))
+    monkeypatch.setattr(cal, "HingeDriver", _Driver)
+    monkeypatch.setattr(cal, "_preflight_serial", lambda _cfg: ("PIXEL-TEST", "adb"))
+    monkeypatch.setattr(cal, "_capture_out_dir", lambda *_a, **_kw: tmp_path)
+    monkeypatch.setattr(
+        cal, "_rewind_automated_profile_to_confirmed_top",
+        lambda *_a, **_kw: (_ for _ in ()).throw(cal._CaptureAbort("stop-here")))
+
+
+def test_send_like_manifest_records_acceptance_and_terminal_action(monkeypatch, tmp_path):
+    """The manifest's `automation_acceptance` must say plainly whether real sends were accepted
+    for this session, independent of how far the actual device capture got -- so evidence never
+    silently reads as Pass-only when the owner opted into real sends.
+
+    Sends require `--hybrid-review`, so this exercises that path rather than plain `--unattended`.
+    """
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("apps:\n  hinge:\n    serial: PIXEL-TEST\n")
+    _wire_inert_capture_driver(monkeypatch, tmp_path, config_path)
+    monkeypatch.setattr(cal, "_config_provenance", lambda *_a, **_kw: {
+        "schema_version": 1, "path": str(config_path), "sha256": "0" * 64,
+        "effective_hinge_sha256": "1" * 64})
+
+    args = Namespace(
+        profiles=1, split="calibration", config=str(config_path), out=str(tmp_path),
+        unattended=False, hybrid_review=True, confirmation=cal._HYBRID_REVIEW_CONFIRMATION,
+        record_operational_checks=False, reviewer_model="claude", reviewer_id="claude",
+        reviewer_version="v", reviewer_process="stdin", send_like=True,
+        send_like_confirmation=cal._SEND_LIKE_CONFIRMATION)
+
+    with pytest.raises(SystemExit):
+        cal._cmd_capture(args)
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    acceptance = manifest["automation_acceptance"]
+    assert acceptance["send_like_accepted"] is True
+    assert acceptance["send_like_confirmation"] == cal._SEND_LIKE_CONFIRMATION
+    assert acceptance["terminal_advance_action"] == "automated_send_priority_like"
+    assert manifest["interrupted"] is True
+
+
+def test_default_unattended_manifest_records_no_accepted_send(monkeypatch, tmp_path):
+    """Regression guard: leaving `--send-like` off must record an explicit `false`, never an
+    absent/None acceptance that a later reader could mistake for 'unspecified'."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("apps:\n  hinge:\n    serial: PIXEL-TEST\n")
+    _wire_inert_capture_driver(monkeypatch, tmp_path, config_path)
+
+    args = Namespace(
+        profiles=1, split="calibration", config=str(config_path), out=str(tmp_path),
+        unattended=True, hybrid_review=False, confirmation=cal._UNATTENDED_CONFIRMATION,
+        record_operational_checks=False, send_like=False, send_like_confirmation="")
+
+    with pytest.raises(SystemExit):
+        cal._cmd_capture(args)
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    acceptance = manifest["automation_acceptance"]
+    assert acceptance["send_like_accepted"] is False
+    assert acceptance["send_like_confirmation"] is None
+    assert acceptance["terminal_advance_action"] == "automated_pass"
+
+
+def _hybrid_session_with_terminal(tmp_path: Path, *, send_like_accepted: bool) -> cal._SessionData:
+    """A minimal, exact-shape hybrid session ending either with the default Pass or an accepted
+    real Send -- the current (non-legacy) trace shape, unlike `_legacy_hybrid_session` above."""
+    session = _legacy_hybrid_session(tmp_path)
+    manifest = session.manifest
+    acceptance = manifest["automation_acceptance"]
+    terminal_action = ("automated_send_priority_like" if send_like_accepted
+                       else "automated_pass")
+    acceptance.update({
+        "send_like_accepted": send_like_accepted,
+        "send_like_confirmation": (cal._SEND_LIKE_CONFIRMATION
+                                   if send_like_accepted else None),
+        "terminal_advance_action": terminal_action,
+    })
+    actions = manifest["profiles"][0]["automated_actions"]
+    pass_index = next(i for i, action in enumerate(actions)
+                      if action["action"] == "automated_pass")
+    pass_before = actions[pass_index]["review_checkpoints"]["before"]
+    if send_like_accepted:
+        plan = {
+            "action": terminal_action, "photo_model_item": None, "point": [1, 2],
+            "point_source": "calibration-only verified-composer Send transport",
+            "predicates": {
+                "inline_composer_and_selected_photo_verified_before_action": True,
+                "send_like_tapped": False,
+                "forbidden_zone_guarded_transport": "HingeDriver._tap",
+            },
+        }
+        checkpoint_path = Path(pass_before["checkpoint_file"])
+        checkpoint = json.loads(checkpoint_path.read_text())
+        checkpoint["action_plan"] = plan
+        body = dict(checkpoint)
+        body.pop("evidence_sha256", None)
+        checkpoint["evidence_sha256"] = cal._canonical_json_digest(body)
+        checkpoint_path.write_text(json.dumps(checkpoint))
+        pass_before.update({
+            "action_plan": plan,
+            "checkpoint_evidence_sha256": checkpoint["evidence_sha256"],
+            "checkpoint_sha256": cal._sha256(checkpoint_path.read_bytes()),
+        })
+        actions[pass_index] = {
+            "action": "automated_send_priority_like",
+            "transport": ["HingeDriver._tap(confirm_point)", "HingeDriver._handle_rose_upsell",
+                          "HingeDriver._verify_like_landed"],
+            "pre_frame_sha256": cal._sha256(b"composer"),
+            "post_frame_sha256": cal._sha256(b"advance"),
+            "send_like_tapped": True, "confirm_point": [1, 2],
+            "predicates": {"inline_composer_and_selected_photo_verified_before_action": True,
+                          "send_like_tapped": True, "like_landed_verified": True},
+            "review_checkpoints": {"before": pass_before},
+        }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    return session
+
+
+def test_hybrid_measure_validates_an_accepted_real_send_priority_like(tmp_path):
+    session = _hybrid_session_with_terminal(tmp_path, send_like_accepted=True)
+
+    evidence = cal._verified_hybrid_reviewed_evidence([session])
+
+    assert evidence["kind"] == cal._HYBRID_CAPTURE_MODE
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["checkpoint_json", "checkpoint_png", "config", "action_plan", "frame", "landed_false"],
+)
+def test_hybrid_measure_refuses_unbound_or_false_send_evidence(tmp_path, tamper):
+    session = _hybrid_session_with_terminal(tmp_path, send_like_accepted=True)
+    action = session.manifest["profiles"][0]["automated_actions"][-1]
+    before = action["review_checkpoints"]["before"]
+    if tamper == "checkpoint_json":
+        checkpoint_path = Path(before["checkpoint_file"])
+        checkpoint = json.loads(checkpoint_path.read_text())
+        checkpoint["sequence"] = 99
+        checkpoint_path.write_text(json.dumps(checkpoint))
+    elif tamper == "checkpoint_png":
+        Path(before["frame_file"]).write_bytes(b"tampered checkpoint frame")
+    elif tamper == "config":
+        session.manifest["config_provenance"]["sha256"] = "0" * 64
+    elif tamper == "action_plan":
+        before["action_plan"]["point"] = [9, 9]
+    elif tamper == "frame":
+        action["pre_frame_sha256"] = "0" * 64
+    else:
+        action["predicates"]["like_landed_verified"] = False
+
+    with pytest.raises(cal._MeasureRefused):
+        cal._verified_hybrid_reviewed_evidence([session])
+
+
+@pytest.mark.parametrize("json_boolean_alias", [0, 1])
+def test_hybrid_measure_rejects_integer_send_acceptance_aliases(tmp_path, json_boolean_alias):
+    session = _hybrid_session_with_terminal(tmp_path, send_like_accepted=True)
+    session.manifest["automation_acceptance"]["send_like_accepted"] = json_boolean_alias
+
+    with pytest.raises(cal._MeasureRefused, match="non-boolean"):
+        cal._verified_hybrid_reviewed_evidence([session])
+
+
+def test_hybrid_measure_still_validates_the_default_pass(tmp_path):
+    session = _hybrid_session_with_terminal(tmp_path, send_like_accepted=False)
+
+    evidence = cal._verified_hybrid_reviewed_evidence([session])
+
+    assert evidence["kind"] == cal._HYBRID_CAPTURE_MODE
+
+
+def test_hybrid_measure_refuses_a_send_trace_without_accepted_send_like(tmp_path):
+    """A manifest carrying a Send trace but no acceptance must not authenticate itself as one --
+    it is read as an ordinary session that is simply missing its required Pass."""
+    session = _hybrid_session_with_terminal(tmp_path, send_like_accepted=True)
+    session.manifest["automation_acceptance"]["send_like_accepted"] = False
+    session.manifest["automation_acceptance"]["send_like_confirmation"] = None
+    session.manifest["automation_acceptance"]["terminal_advance_action"] = "automated_pass"
+
+    with pytest.raises(cal._MeasureRefused, match="lacks exact approved hybrid Pass checkpoint"):
+        cal._verified_hybrid_reviewed_evidence([session])
+
+
+def test_hybrid_measure_refuses_a_send_confirmation_without_accepted_send_like(tmp_path):
+    session = _hybrid_session_with_terminal(tmp_path, send_like_accepted=False)
+    session.manifest["automation_acceptance"]["send_like_confirmation"] = cal._SEND_LIKE_CONFIRMATION
+
+    with pytest.raises(cal._MeasureRefused, match="without accepting real sends"):
+        cal._verified_hybrid_reviewed_evidence([session])
+
+
+def test_hybrid_measure_refuses_a_mixed_pass_and_send_ledger(tmp_path):
+    session = _hybrid_session_with_terminal(tmp_path, send_like_accepted=True)
+    session.manifest["profiles"][0]["automated_actions"].append({
+        "action": "automated_pass", "send_like_tapped": False, "composer_clear_visible": True,
+        "post_frame_sha256": cal._sha256(b"advance"),
+    })
+
+    with pytest.raises(cal._MeasureRefused, match="mixes Pass and Send"):
+        cal._verified_hybrid_reviewed_evidence([session])

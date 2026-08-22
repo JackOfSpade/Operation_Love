@@ -180,6 +180,46 @@ calibration corpus, and identity is genuinely not visible there. Entering at a t
 bottom-up navigation that precondition is also what the entry ANCHOR needs, so the two
 requirements are the same requirement and neither can be satisfied without the other.
 
+THE FIFTH THING, ADDED 2026-08-22: A SCROLL TOP AT ENTRY IS RECOVERABLE, NOT TERMINAL (BLOCKER 12)
+----------------------------------------------------------------------------------------------------
+The paragraph above is still true as a REQUIREMENT — identity must be visible before a single
+heart is counted — but it is no longer true that entering at a scroll top ends the attempt on the
+spot. SHORT profiles (one photo plus a video, nothing below the fold) end their enumeration read
+exactly where it began: there is nothing to scroll past, so the read never leaves the top, and the
+entry frame this function captures is the app's own profile-independent filter chips every time.
+Refusing unconditionally there made every such profile unreachable regardless of what the model
+chose, which is a real cost, not a theoretical one — it consumed the calibration corpus's entire
+bounded skip budget on a live device.
+
+The fix does not weaken the requirement; it adds exactly ONE way to satisfy it. When the entry
+frame's identity is UNKNOWN specifically because the identity band affirmatively confirms the
+scroll-top filter-chips row (the same `confirm_scroll_top` check `compare_profile_identity` itself
+already ran, re-asked directly here rather than inferred by parsing `identity.reason`), one
+bounded, guarded forward read-scroll is issued — through `driver._scroll_down_one`, the same
+humanized primitive and ledger every other read-scroll in this driver goes through, never a raw
+transport call. That single gesture is what reveals Hinge's sticky per-profile header, because the
+header appears "the moment the card is scrolled at all" (`item_identity`'s own measurement) —
+regardless of how deep the enumeration read actually went, so the step is sized to the SMALLEST
+legal read-scroll (`scroll_step._frac_window()[0]`) rather than to production's own read cadence:
+there is no card spacing here to plan an aliasing-safe distance against (nothing below the fold
+has been segmented yet), and a full-size step risks landing beyond `estimate_shift`'s own trust
+window — measured, a 0.55 `read_scroll_frac` step moves ~1299px on the calibrated 2400px screen,
+past the 900px window that estimate is trusted within, where the smallest legal step (219px) sits
+safely inside it. The behaviour policy still supplies the dwell and the LANE, on the ascending
+walk's own precedent of keeping those and discarding the policy's own frac. The displacement this
+step produces is MEASURED with the same `estimate_shift` every other leg in this module uses,
+never assumed, and folded into `entry_offset` on top of the ordinary entry anchor (which is still
+taken against the frame captured BEFORE this step, so "did anything ELSE move the card" stays
+exactly the check it always was). Identity is then re-checked on the frame the step produced.
+
+Three things are unchanged by this. No counting starts until identity is CONFIRMED on a
+post-step frame — a mismatch or a still-unreadable header after the one step raises the ORIGINAL
+refusal, wording intact, with a note that the step was already tried appended rather than a new
+diagnosis invented. Exactly ONE such step is ever taken; there is no retry loop hiding here. And a
+screen that was already scrolled on entry — the ordinary case — takes no extra frame or gesture at
+all, because the recovery branch is only entered when `confirm_scroll_top` affirmatively confirms
+the chips row, not merely whenever identity fails to match.
+
 WHAT IS NOT DONE HERE, AND WHICH LAYER OWNS IT
 ------------------------------------------------
   * The TAP. `ItemTarget.point` is a screen coordinate in `ItemTarget.frame`, and this module
@@ -210,11 +250,15 @@ exactly it (tests/test_item_nav.py does):
     driver.identity_band         likewise, or an operator override is silently ignored
     driver._template("like")     the calibrated glyph, one home, never a default here
     driver._screencap()          the blank-frame-guarded capture, never adb.screencap()
-    driver._scroll_up_one(frac, x_frac)      the ONLY gesture, both arguments always
+    driver._scroll_up_one(frac, x_frac)      the counting walk's gesture, both arguments always
+    driver._scroll_down_one(frac, x_frac)    ONE bounded call, ONLY to leave a scroll-top entry
+                                             (2026-08-22, see THE FIFTH THING below); both
+                                             arguments always, never a second call
     driver._sample_read_step(depth, hint)    the behaviour policy's dwell and LANE
 
-`_scroll_to_top`, `scroll_captures` and `_capture_scrolls` are NO LONGER USED — that is the
-rewind, and its removal is the point of this revision.
+`_scroll_to_top` and `_capture_scrolls` are NO LONGER USED — that is the rewind, and its removal
+is the point of this revision. `scroll_captures` sizes a different pass entirely (see
+`_frame_budget`) and is likewise not read here.
 
 The last line deserves its own. The policy returns `(dwell, frac, x_frac)` and this module
 uses the dwell and the lane and DISCARDS the frac, because the frac is the one quantity the
@@ -288,6 +332,7 @@ from .item_index import (
 from .scroll_step import (
     _FALLBACK_SPACING_PX, ScrollStep, _frac_window, plan_scroll_step, step_overshoot,
     step_px_for_frac)
+from .scroll_top import ScrollTopError, confirm_scroll_top
 from .segment import Block, FrameSegmentation, segment_frame
 
 
@@ -397,6 +442,9 @@ NAV_IDENTITY_MISMATCH = "identity_mismatch"            # this index describes a 
 NAV_IDENTITY_UNCONFIRMED = "identity_unconfirmed"      # whose card this is cannot be established
 NAV_ANCHOR_UNMEASURED = "entry_anchor_unmeasured"      # the screen could not be put in the index's
                                                        # page space: bottom-up's zero point
+NAV_ENTRY_STEP_UNMEASURED = "entry_step_unmeasured"    # the ONE scroll-top recovery step's own
+                                                       # displacement could not be measured
+                                                       # (2026-08-22, blocker 12)
 NAV_ITEM_BELOW_ENTRY = "item_below_entry"              # the target is BELOW where the read ended,
                                                        # and walking up only moves it further away
 NAV_FRAME_CONTRADICTS = "frame_contradicts_itself"     # segment.py failed on a frame
@@ -455,11 +503,14 @@ class ItemTarget:
     later goes wrong should be able to show that the person on screen was checked before a finger
     moved rather than assumed.
 
-    `anchor` is the single `estimate_shift` that put this pass into the index's page space, and
-    `entry_offset` is the page offset it produced for the entry frame. They are the whole of
-    bottom-up's zero point, so a stop record that wants to ask "was the origin right" has the
-    measurement rather than a claim. `page_offset` is the offset of the LANDING frame; the two
-    differ by exactly the sum of `shifts`, which are all negative.
+    `anchor` is the `estimate_shift` against `entry_reference` from the frame captured BEFORE this
+    function moved anything, and `entry_offset` is the page offset it produced for the entry
+    frame. They are the whole of bottom-up's zero point, so a stop record that wants to ask "was
+    the origin right" has the measurement rather than a claim. When the entry screen needed one
+    scroll-top recovery step first (2026-08-22, blocker 12), `entry_offset` also folds in that
+    step's OWN separately measured displacement on top of `anchor`, which stays the plain
+    entry_reference-vs-first-frame measurement either way. `page_offset` is the offset of the
+    LANDING frame; the two differ by exactly the sum of `shifts`, which are all negative.
     """
     point: tuple[int, int]
     model_index: int
@@ -796,11 +847,29 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
     itself confirm a top any more and does not need to — the assertion belongs to the enumeration
     pass that built the index, which is the pass whose origin the ordinals are counted from.
 
-    "Of the profile currently on screen" is CHECKED here rather than assumed, before any gesture:
-    the index carries a fingerprint of the sticky per-profile header it was built from, and a
-    screen that does not match it — or that cannot be read for identity at all, which is what a
-    scroll top looks like — is `NAV_IDENTITY_MISMATCH` / `NAV_IDENTITY_UNCONFIRMED`. Enter this
-    from where the enumeration read left the card, scrolled; see the module docstring.
+    "Of the profile currently on screen" is CHECKED here before any COUNTING happens: the index
+    carries a fingerprint of the sticky per-profile header it was built from, and a screen that
+    does not match it is `NAV_IDENTITY_MISMATCH` / `NAV_IDENTITY_UNCONFIRMED`. Enter this from
+    where the enumeration read left the card, scrolled, so the sticky header is already showing;
+    see the module docstring.
+
+    A screen that instead arrives at a card's SCROLL TOP is no longer an automatic refusal
+    (2026-08-22, blocker 12): that entry requirement — identity must be visible before a single
+    heart is counted — has not changed, but a scroll top is now a RECOVERABLE entry state rather
+    than a terminal one, because the strip there is Hinge's own profile-independent filter chips
+    and ONE bounded, guarded read-scroll is exactly what reveals the sticky header underneath.
+    That step is taken through the driver's own humanized read-scroll primitive and ledger, sized
+    to the SMALLEST legal read-scroll rather than production's own read cadence (the header
+    appears the moment the card is scrolled at all, and the smallest step is the one guaranteed to
+    stay inside the shift estimator's own trust window), MEASURED with that same estimator every
+    other leg in this module uses, and folded into the entry offset before anything is refused;
+    identity is then re-checked on the frame it produced. Only if identity still cannot be confirmed afterwards does the original "cannot
+    tell" refusal stand, with a note that the step was already tried. Exactly ONE such step is
+    ever taken, and a screen that was already scrolled on entry — the ordinary case — costs no
+    extra frame or gesture at all. This is what makes a SHORT profile (a photo plus a video, with
+    nothing below the fold for the read to have scrolled past) reachable: its read ends at the
+    top by construction, and before this fix the entry gate refused it outright regardless of
+    which item the model chose.
 
     `model_index` is 1-based into THIS index's selectable blocks. It is NOT a number from an
     `ItemPayload` whose exclusions renumbered the model's list — when anything selectable was
@@ -934,16 +1003,87 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             "profile it was built from, and that cannot be established here "
             "(ops/OPENER-REDESIGN.md 5.7, carried-forward requirement 1)",
             frame=entry_frame) from exc
+
+    # Bottom-up's zero point is measured against the frame captured ABOVE, before anything below
+    # gets a chance to move the phone — so `entry_step_delta`/`identity_recovered_frame` default
+    # to "no recovery happened" and only change inside the branch that actually earns them.
+    entry_step_delta = 0
+    identity_recovered_frame: bytes | None = None
     if not identity.matched:
-        raise ItemNavigationError(
-            NAV_IDENTITY_MISMATCH if identity.mismatched else NAV_IDENTITY_UNCONFIRMED,
-            f"refusing to navigate an item index against a profile it may not describe: "
-            f"{identity.reason}. Doc 5.6's owner rule is that we never substitute a different "
-            "item, and counting hearts on somebody else's card would do exactly that with full "
-            "confidence — every geometric check this module makes passed identically on the one "
-            "measured cross-profile pair, because Hinge's cards are stereotyped. Re-read the "
-            "profile rather than navigating this index",
-            frame=entry_frame)
+        # BLOCKER 12 (2026-08-22): a screen at a card's SCROLL TOP is a RECOVERABLE entry state,
+        # not a terminal one — see THE FIFTH THING in the module docstring for why. Every OTHER
+        # cause of "not matched" (a foreign header, a moved band, an index with no fingerprint) is
+        # left alone: scrolling cannot help any of those, and re-asking the same scroll-top check
+        # `compare_profile_identity` already ran internally is what tells the two apart without
+        # parsing prose out of `identity.reason`.
+        recovery_note = ""
+        if identity.unknown:
+            try:
+                still_at_top = confirm_scroll_top(entry_frame, identity_band=driver.identity_band)
+            except ScrollTopError:
+                still_at_top = None
+            if still_at_top is not None and still_at_top.confirmed:
+                # ONE bounded, guarded forward read-scroll — the same humanized primitive and
+                # ledger every other read-scroll on this driver goes through, never a raw
+                # transport call and never a second attempt. Bounded to the SMALLEST legal
+                # read-scroll rather than production's own read cadence, on the ascending walk's
+                # own precedent of discarding the policy's frac: there is no card spacing to plan
+                # an aliasing-safe distance against yet (nothing below the fold has been
+                # segmented), Hinge's sticky header appears "the moment the card is scrolled at
+                # all" regardless of how far, and the smallest legal step is the one guaranteed to
+                # stay inside `estimate_shift`'s own trust window rather than risk landing beyond
+                # it -- a full read-scroll can (measured: a 0.55 read_scroll_frac step moves
+                # ~1299px on the calibrated 2400px screen, past the 900px window this estimate is
+                # trusted within). `_sample_read_step` still owns the dwell and the LANE.
+                cancelled(frame=entry_frame, frame_index=0)
+                dwell, _discarded_policy_frac, x_frac = driver._sample_read_step(0, None)
+                frac = _frac_window()[0]
+                driver._scroll_down_one(frac, x_frac)
+                if dwell and dwell > 0:
+                    time.sleep(dwell)
+                cancelled(frame=entry_frame, frame_index=0)
+                recovered_frame = driver._screencap()
+                # MEASURED like every other leg in this module: the displacement this one gesture
+                # produced, never assumed. `entry_frame` (before the step) and `recovered_frame`
+                # (after it) are exactly the shift estimator's ordinary pair.
+                entry_step = estimate_shift(entry_frame, recovered_frame,
+                                            content_band=content_band,
+                                            trust_window_px=trust_window_px)
+                if entry_step.delta_px is None:
+                    raise ItemNavigationError(
+                        NAV_ENTRY_STEP_UNMEASURED,
+                        "refusing to navigate: one bounded read-scroll was taken to leave the "
+                        "card's scroll top and reveal the sticky per-profile header, but the "
+                        f"shift it produced could not be measured ({entry_step.status} — "
+                        f"{entry_step.reason}). Guessing the displacement here is exactly how "
+                        "doc 5.10's phantom item was fabricated, so this stops rather than "
+                        "assumes a distance (2026-08-22)",
+                        frame=recovered_frame, frame_index=0)
+                try:
+                    retried_identity = compare_profile_identity(
+                        recovered_frame, index.identity, identity_band=driver.identity_band,
+                        match_max_dist=identity_match_max_dist)
+                except IdentityError:
+                    retried_identity = None
+                if retried_identity is not None and retried_identity.matched:
+                    identity = retried_identity
+                    entry_step_delta = entry_step.delta_px
+                    identity_recovered_frame = recovered_frame
+                else:
+                    recovery_note = (
+                        " A bounded entry read-scroll was already taken to try to reveal the "
+                        "sticky header (2026-08-22), and identity still could not be confirmed "
+                        "on the frame it produced, so this refusal stands")
+        if not identity.matched:
+            raise ItemNavigationError(
+                NAV_IDENTITY_MISMATCH if identity.mismatched else NAV_IDENTITY_UNCONFIRMED,
+                f"refusing to navigate an item index against a profile it may not describe: "
+                f"{identity.reason}. Doc 5.6's owner rule is that we never substitute a different "
+                "item, and counting hearts on somebody else's card would do exactly that with full "
+                "confidence — every geometric check this module makes passed identically on the one "
+                "measured cross-profile pair, because Hinge's cards are stereotyped. Re-read the "
+                "profile rather than navigating this index" + recovery_note,
+                frame=entry_frame)
 
     # --- the entry anchor: put this screen into the INDEX's page space ---------------
     # BOTTOM-UP'S ZERO POINT, and the whole of what replaced the rewind. `entry_reference` is the
@@ -976,7 +1116,12 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             "read's own last frame; without it there is no page row to count from and no "
             "substitute is invented (ops/OPENER-REDESIGN.md 5.5)",
             frame=entry_frame, frame_index=0, anchor=anchor)
-    entry_offset = reference_offset + anchor.delta_px
+    # `entry_step_delta` is 0 unless the scroll-top recovery branch above actually ran and
+    # identity was confirmed on the frame it produced (blocker 12, 2026-08-22) — in which case it
+    # is that step's OWN separately measured displacement, folded on top of the ordinary anchor
+    # rather than through it, so the anchor above keeps meaning exactly what it always meant: the
+    # shift between `entry_reference` and the frame captured BEFORE this function moved anything.
+    entry_offset = reference_offset + anchor.delta_px + entry_step_delta
 
     # The one piece of loop state `scroll_step` documents, seeded from the enumeration pass
     # rather than left at None: the index already measured every card on this page, so the very
@@ -985,7 +1130,12 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
     # never larger.
     seen_spacing = _min_heart_pitch(hearts)
 
-    frames: list[bytes] = [entry_frame]
+    # The counting walk starts from wherever the phone PHYSICALLY is right now: `entry_frame` in
+    # the ordinary case, or the frame the recovery step produced when that step is what got
+    # identity confirmed. `offsets[0]` (below) is `entry_offset`, which already folds in the same
+    # step's measured displacement, so the two stay in the same page space either way.
+    frames: list[bytes] = [identity_recovered_frame
+                           if identity_recovered_frame is not None else entry_frame]
     segmentations: list[FrameSegmentation] = []
     offsets: list[int] = [entry_offset]
     steps: list[ScrollStep] = []

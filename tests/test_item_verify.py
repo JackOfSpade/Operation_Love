@@ -236,6 +236,39 @@ def _fragment_legacy_wide_runs(frame: bytes) -> bytes:
     return buf.tobytes()
 
 
+# The Hinge 10.0.1 composer refused live on 2026-08-22, as numbers. Frame sha256 29175f91...,
+# 1080x2400, `ops/calibration/targeting_20260822T_cal-a/refused_composer_p1_item1.png`, which is
+# gitignored and stays that way: only its geometry is written down here.
+_V1001_PREVIEW_ROWS = 856                 # the selected photo really spans rows 236..1092
+_V1001_FRAGMENT_ROWS = 620                # ...but the strict 870px floor stopped at row 856
+_V1001_NARROWEST_SPAN = 849               # the block's narrowest row, 21px under the 870 floor
+_V1001_COMMENT = Rect(95, 1124, 985, 1302)    # comment_rect, as `locate_inline_composer` read it
+_V1001_SEND = Rect(390, 1334, 985, 1443)      # send_rect, likewise
+_V1001_PHOTO_TO_FIELD_GAP = 32            # 1124 - 1092, the real card -> field gap
+
+
+def _spend_the_wide_run_headroom(frame: bytes, *, first_row: int, step: int = 145) -> bytes:
+    """Return 21px of the preview's right edge to page background on a few interior rows.
+
+    `_PREVIEW_MIN_WIDTH_PX` is 870 against a preview measured at 890, i.e. 20px of headroom, and
+    real photo content spends it: on the 10.0.1 frame above, the bright car window in the
+    selected photo reaches the right edge, so 29 of the 856 block rows carried only 849..868px of
+    non-background span and the strict floor cut one contiguous image into the runs 236..856,
+    857..862, 875..883, 893..902, 903..1088.  Unlike `_fragment_legacy_wide_runs` (Tega, whose
+    fragments left NO 300-row run at all, so the locator refused outright) the first fragment
+    here is 620 rows tall, so the locator succeeds and silently reports a fragment as the whole
+    preview.  That is the strictly worse failure and the one this reproduces: same edge, same
+    handful of pixels, none of the profile.
+    """
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    assert _SHEET_PREVIEW_X0 + _SHEET_PREVIEW_W - 964 == 21
+    for y in range(first_row, _SHEET_PREVIEW_Y0 + _V1001_PREVIEW_ROWS, step):
+        image[y:y + 1, 964:_SHEET_PREVIEW_X0 + _SHEET_PREVIEW_W] = _SHEET_BG
+    ok, buf = cv2.imencode(".png", image)
+    assert ok
+    return buf.tobytes()
+
+
 def test_inline_item_verification_requires_selected_card_above_the_detected_controls():
     frame = _sheet_for(1)
     assert item_verify.verify_sheet_item(
@@ -368,6 +401,97 @@ def test_tega_style_bright_photo_uses_compact_locator_only_when_composer_binds_i
     prompt_only = dataclasses.replace(_lookalike_payload(), crops=(prompt,))
     assert not item_verify.verify_sheet_item(
         frame, prompt_only, 1, composer_surface=surface).matched
+
+
+def test_hinge_10_0_1_bright_photo_edge_does_not_truncate_the_selected_preview_above_the_composer():
+    """The 2026-08-22 live refusal was a measurement fault, not a composer fault.
+
+    Blocker 13: an ordinary, correct Hinge 10.0.1 composer -- selected photo, comment field
+    directly under it, rose pill and Send Priority Like under that -- was refused post-tap with
+    "the selected-card preview is not immediately above ... inline comment field and Send Like
+    CTA".  Measured offline on the refusing frame (sha256 29175f91..., 1080x2400):
+
+        composer      comment_rect (95,1124)-(985,1302), send_rect (390,1334)-(985,1443)
+        photo         rows 236..1092, columns 95..985 -- 856 rows, 87.9% of the 974px stored
+                      crop, so not remotely the 30% reframe limit either
+        gap           1124 - 1092 = 32px
+        located       rows 236..856 (620 rows), because 29 of the block's rows measure
+                      849..868px of non-background span against the strict 870px floor
+        the check     gap 1124 - 856 = 268px against max(40, round(620 * 0.25)) = 155px
+
+    Both of the check's numbers were right about the fragment and neither was about the photo.
+    The bottom edge is the thing that was wrong, and it was wrong for the CONTENT comparison too:
+    `_compare_item` derives its source window from `preview.height`, so a 620px preview asks the
+    stored crop for 620/856 of the rows the sheet is actually showing.
+    """
+    payload = _payload()
+    selected = payload.item(4)
+    frame = _spend_the_wide_run_headroom(
+        _paint_inline_reframe(selected.image),
+        first_row=_SHEET_PREVIEW_Y0 + _V1001_FRAGMENT_ROWS)
+    surface = ComposerSurface("hinge_inline_v1", _V1001_COMMENT, _V1001_SEND, (695, 1390))
+    assert _V1001_COMMENT.y0 - (_SHEET_PREVIEW_Y0 + _V1001_PREVIEW_ROWS) == _V1001_PHOTO_TO_FIELD_GAP
+    # Both the real 849px row and this fixture's 869px one clear the composer-bound floor while
+    # failing the absolute one, which is the whole regime this defect lives in.
+    assert (round(_V1001_COMMENT.width * item_verify._INLINE_COMPACT_MIN_WIDTH_FRACTION)
+            <= _V1001_NARROWEST_SPAN < item_verify._PREVIEW_MIN_WIDTH_PX)
+
+    # The public locator is unchanged and still reports the fragment: this fix does not widen it.
+    assert item_verify.locate_sheet_preview(frame).height == _V1001_FRAGMENT_ROWS
+
+    verdict = item_verify.verify_sheet_item(
+        frame, payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+    assert verdict.matched, verdict.reason
+    assert verdict.nearest_index == 4
+    assert verdict.preview.y0 == _SHEET_PREVIEW_Y0
+    assert verdict.preview.height == _V1001_PREVIEW_ROWS
+    assert "bottom edge carried" in verdict.preview.reason
+
+    # The corrected bottom edge is a better measurement, not a wider door.
+    foreign = dataclasses.replace(payload, crops=(dataclasses.replace(payload.item(3), number=1),))
+    assert not item_verify.verify_sheet_item(
+        frame, foreign, 1, composer_surface=surface).matched
+    prompt = dataclasses.replace(_lookalike_payload().item(2), number=1)
+    prompt_only = dataclasses.replace(_lookalike_payload(), crops=(prompt,))
+    assert not item_verify.verify_sheet_item(
+        frame, prompt_only, 1, composer_surface=surface).matched
+
+
+def test_inline_preview_bottom_edge_cannot_walk_to_a_composer_the_photo_does_not_reach():
+    """The safety property the topology check exists for, re-proved against the corrected edge.
+
+    Carrying the preview's bottom edge down would be worthless if it could reach any composer
+    that happened to be on the frame: the check is what stops a heart being verified against a
+    sheet that is not the inline composer for the selected card.  Three structures that are
+    genuinely wrong must still be refused -- a composer nowhere near the photo, a photo that
+    stops with page background between it and the field (a partially rendered view), and a
+    surface with no CTA at all.
+    """
+    payload = _payload()
+    selected = payload.item(4)
+    frame = _spend_the_wide_run_headroom(
+        _paint_inline_reframe(selected.image),
+        first_row=_SHEET_PREVIEW_Y0 + _V1001_FRAGMENT_ROWS)
+
+    # 1. The photo ends at row 1092; this composer starts 708px lower, and no walk over image
+    #    rows can cross the page background between them.
+    distant = ComposerSurface(
+        "hinge_inline_v1", Rect(95, 1800, 985, 1978), Rect(390, 2000, 985, 2109), (695, 2050))
+    with pytest.raises(item_verify.SheetVerificationError, match="not immediately above"):
+        item_verify.verify_sheet_item(frame, payload, 4, composer_surface=distant)
+
+    # 2. The composer is where 10.0.1 really puts it, but only 500 rows of photo were rendered,
+    #    so rows 736..1124 are page background. The edge stops at 736 and the gap is 388px.
+    partial = _paint_inline_reframe(selected.image, preview_height=500)
+    assert item_verify.locate_sheet_preview(partial).y1 == _SHEET_PREVIEW_Y0 + 500
+    surface = ComposerSurface("hinge_inline_v1", _V1001_COMMENT, _V1001_SEND, (695, 1390))
+    with pytest.raises(item_verify.SheetVerificationError, match="not immediately above"):
+        item_verify.verify_sheet_item(partial, payload, 4, composer_surface=surface)
+
+    # 3. No CTA: an unsendable half-detected surface is not a composer, before geometry is read.
+    with pytest.raises(item_verify.SheetVerificationError, match="no comment/send rectangles"):
+        item_verify.verify_sheet_item(
+            frame, payload, 4, composer_surface=dataclasses.replace(surface, send_rect=None))
 
 
 # =====================================================================================

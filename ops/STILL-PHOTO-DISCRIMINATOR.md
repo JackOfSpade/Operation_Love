@@ -603,6 +603,97 @@ test monkeypatched all three hops (`build_item_index`, `build_item_payload`,
 `_target_scoped_prefix_reason`) and the licence auto-reset fixture kept the
 policy rung, never the dwell rung, as the answering rung in unit tests.
 
+**Blocker four: the open owner decision above, closed (2026-08-22).** Item 3 of
+the adversarial-verification list — the 0.24 parked ceiling applied to read-scroll
+drift — was implemented as its first named option: a read-scroll ceiling measured
+from real data.
+
+*The category error, stated once.* `_signature_drift` compares a crop against the
+frames of the SAME enumeration pass, which were taken at different scroll
+positions. The card is therefore re-rasterised at a different sub-pixel offset and
+against a different edge of the analysed band, so what the estimator reports is
+dominated by RESAMPLING DIFFERENCE. `_STILL_PHOTO_MAX_SIGNATURE_DRIFT = 0.24` is
+a ceiling on MOTION: it belongs to the parked geometry, where the rect is identical
+in both samples and rect error is zero by construction, which is the population
+`_verified_still_photo_proof` measures with `_parked_signature_drift` and
+`_cross_position_signature_drift`. Two different physical quantities, one constant,
+and the wrong one was being applied to production numbering. (Note for the record:
+the file's own provenance for 0.24 was internally inconsistent — the module
+docstring's table attributes it to `_signature_drift` over two profiles, while
+`_verified_still_photo_proof`'s docstring states plainly that "the ceiling was
+measured on PARKED cards". The measurement below settles it either way: 0.24 cannot
+be a read-scroll ceiling, because real read-scroll drift on classifier-photo cards
+runs three orders of magnitude past it.)
+
+*Measured.* Offline replay of every archived capture under `ops/calibration/` that
+records a content band, an identity band and per-frame profile ordinals — 13
+captures, 28 profiles, 82 classifier-photo items — driven through the real
+`build_item_index` + `build_item_payload`. No device, archived PNGs only.
+
+| quantity | value |
+|---|---|
+| items with a MEASURABLE read-scroll drift | 46 of 82 (the other 36 are `(None, ())`) |
+| min / p25 / median | 0.001 / 0.005 / 0.285 |
+| p90 / p95 / max | 2.15 / 3.52 / **27.22** |
+| above the 0.24 parked ceiling | 25 of 46 measurable = 30.5% of all 82 items |
+
+By depth, and the split is stark. Item 1: 28 items, only 4 measurable, max 0.0049,
+NONE above 0.24 — the first card of a top-down read is usually unmeasurable by
+construction and trivially small when it is not. Items 2 and deeper: 54 items, 42
+measurable, median 0.541, max 27.22, 25 above 0.24. So the refusals fell almost
+entirely on the cards past the first, which is precisely the choice set the owner
+rule "the model picks WHICH item to like" depends on. (These figures reproduce the
+26-profile / 80-item / 0.28–27.2 / ~31% replay recorded above, from a slightly
+wider corpus sweep.)
+
+*What shipped.* `_READ_SCROLL_MAX_SIGNATURE_DRIFT = 30.0` in
+`operation_love/drivers/item_crops.py`, alongside an untouched
+`_STILL_PHOTO_MAX_SIGNATURE_DRIFT = 0.24`. 30.0 covers the observed maximum of
+27.22 with a ~1.10x margin. Routing is by an explicit `drift_regime` field on
+`StillPhotoEvidence` (`DRIFT_REGIME_PARKED` / `DRIFT_REGIME_READ_SCROLL`), set by
+the producer, never inferred: no frame count distinguishes the two regimes, since a
+parked burst and a read scroll can both report three frames. `build_item_payload`
+declares `read_scroll`; every other producer, including the calibrate tool's parked
+proof, declares nothing and therefore takes the STRICTER parked ceiling, as does any
+regime string the module has not been taught. Nothing else in the ladder moved: the
+corrupt-measurement rung, the `(None, ())` pass-through, the policy-blocker ordering
+and every parked rung are unchanged.
+
+*Honest provenance, because this number is easy to overread.* The 82-item corpus is
+UNLABELED — those items are classifier-PHOTO, not human-verified photographs — so a
+video that the classifier, the animation markers and the mute screen all missed is
+inside the sample and may be one of the tall values 30.0 was drawn above. This
+constant therefore bounds RESAMPLING NOISE and nothing else. It is a GROSS-CHANGE
+REJECTOR ONLY and grants no acceptance below it. The motion proof is unchanged and
+remains entirely the later rungs: the parked byte-exact dwell, its centring inside
+the autoplay trigger zone, complete mute screening on every frame, and the re-attach
+probe's second burst. Section 4's labeled measurement is still the ONLY non-vacuous
+evidence about video false accepts, and nothing here adds to it or changes the
+residual 5b's accepted assumption already carries.
+
+*Effect, measured the same way before and after.* Same replay, same 28 profiles,
+driven through the real production call shape (classifier `unnumber` plus
+`unnumber_without_evidence` plus a dwell mapping) under a real installed licence,
+with every non-drift rung held passing so the delta is attributable to the drift rung
+alone:
+
+| | before (0.24 on read scroll) | after (30.0 on read scroll) |
+|---|---|---|
+| numberable items | **57 / 82** | **82 / 82** |
+| profiles with >= 1 numberable item | 28 / 28 | 28 / 28 |
+| numberable items per profile (min / median / max) | 1 / 2 / 4 | 1 / 3 / 6 |
+| profiles whose count changed | — | 13 of 28 |
+
+Read that table carefully in both directions. The item count moves materially (+25,
+every card the ceiling was mislabelling) and 13 of 28 profiles get a wider choice
+set, which is the point. The PROFILE count does not move at all, and saying so is
+part of the result: item 1's drift is unmeasurable in 24 of 28 profiles and falls
+through the rung regardless, so a profile was never left with nothing by this bug
+alone. The synthetic complete dwell also makes these counts an UPPER BOUND — in the
+live read only cards complete in the final parked frame get real dwell evidence, so
+the other half of item 3's complaint ("at most one item, always the last photo")
+belongs to the dwell's coverage and is NOT addressed here. That remains open.
+
 ## 6. Plan B (documented, not chosen)
 
 If held-out video accepts never reach zero, the honest fallback is to change the

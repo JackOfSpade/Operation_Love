@@ -564,6 +564,80 @@ def _locate_inline_compact_preview(frame: bytes, composer_surface, *, cv2, np) -
                 f"{minimum_width}px bound to comment x={comment.x0}..{comment.x1}"))
 
 
+def _extend_inline_preview_to_block_bottom(
+        frame: bytes, preview: SheetPreview, composer_surface, *, cv2, np,
+        background_tolerance: float = _ROW_BACKGROUND_TOLERANCE,
+        margin_probe: tuple[int, int] = _MARGIN_PROBE) -> SheetPreview:
+    """Carry a located preview's BOTTOM edge down to where the selected photo actually ends.
+
+    `locate_sheet_preview` ends its run at the first row whose non-background span falls under
+    the absolute `_PREVIEW_MIN_WIDTH_PX` floor, and that floor is [corpus, 6 real sheets] 870,
+    chosen with only 20px of headroom under the narrowest preview measured (890). REAL PHOTO
+    CONTENT SPENDS THAT HEADROOM. On the refused Hinge 10.0.1 composer frame (frame_sha256
+    29175f91..., 1080x2400, `ops/calibration/targeting_20260822T_cal-a/`) the selected photo's
+    bright car window reaches the right edge, so 29 of the block's 856 rows measure only
+    849..868px of non-background span -- never background, just a few pixels shy of 870 -- and
+    the strict floor splits ONE contiguous image into the runs 236..856, 857..862, 875..883,
+    893..902, 903..1088. The locator returns the first run at least `_PREVIEW_MIN_HEIGHT_PX`
+    tall, which is 236..856: a 620px FRAGMENT of an 856px photo, reported with every appearance
+    of success.
+
+    Two things then go wrong, and only the first is visible. The topology check below measures
+    the gap from that fragment's bottom to the comment field and gets 268px against a 155px
+    allowance, so a completely ordinary composer is refused. Had it passed, the CONTENT
+    comparison would have been worse: `_compare_item` derives the source window from
+    `preview.height`, so a 620px preview asks for 620/856 of the rows the sheet is really
+    showing and compares the wrong window.
+
+    Under an independently detected composer the bottom edge does not have to be inferred from a
+    width floor at all -- the layout defines it as the end of the contiguous image block sitting
+    above the comment field. So walk down from the located bottom while the rows are still image
+    rows: at least `_INLINE_COMPACT_MIN_WIDTH_FRACTION` of the composer's OWN comment width (the
+    same composer-bound evidence rule `_locate_inline_compact_preview` already uses) and still
+    left-aligned with the located preview. Stop at the first background row, or at the comment
+    field itself.
+
+    THE TOP EDGE NEVER MOVES, NO BACKGROUND ROW IS EVER CROSSED, AND THE WALK CANNOT REACH PAST
+    THE COMMENT FIELD, so this cannot wander onto a different element to manufacture adjacency:
+    it can only finish the block the strict locator had already started inside. A preview that
+    genuinely stops short of the composer -- a partially rendered view, a different sheet -- has
+    background between it and the field, the walk halts there, and the topology check still
+    refuses. Columns are left as located: they are the median of the strict band, which is the
+    higher-confidence evidence, and the added rows had to agree with them to be walked at all.
+
+    A no-op after `_locate_inline_compact_preview`, which already scans at this same width floor
+    and therefore already ends at a background row.
+    """
+    comment = getattr(composer_surface, "comment_rect", None)
+    if comment is None:
+        return preview
+    gray = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+    if gray is None:
+        # `locate_sheet_preview` decoded this same frame moments ago; an undecodable frame is
+        # its refusal to report, not this helper's.
+        return preview
+    limit = min(gray.shape[0], comment.y0)
+    if preview.y1 >= limit:
+        return preview
+    spans = _row_spans(gray, np, tolerance=background_tolerance, probe=margin_probe)
+    minimum_width = round(comment.width * _INLINE_COMPACT_MIN_WIDTH_FRACTION)
+    slack = max(8, round(comment.width * 0.03))
+    y1 = preview.y1
+    while y1 < limit:
+        span = spans[y1]
+        if (span is None or span[1] - span[0] < minimum_width
+                or abs(span[0] - preview.x0) > slack):
+            break
+        y1 += 1
+    if y1 == preview.y1:
+        return preview
+    return SheetPreview(
+        y0=preview.y0, y1=y1, x0=preview.x0, x1=preview.x1,
+        reason=(f"{preview.reason}; bottom edge carried from row {preview.y1} to {y1}, the end "
+                f"of the contiguous >={minimum_width}px image block above the composer's comment "
+                f"field at row {comment.y0}"))
+
+
 def _decode_crop(crop_bytes: bytes, number: int, cv2, np):
     """The stored crop as one greyscale array, decoded exactly the way `signature_of` decodes.
 
@@ -840,6 +914,15 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
             raise
         preview = _locate_inline_compact_preview(frame, composer_surface, cv2=cv2, np=np)
     if composer_surface is not None:
+        # The located run is where the preview STARTS; under a proven composer its bottom edge is
+        # the end of the image block, not the first row a legacy width floor stumbles on. See
+        # `_extend_inline_preview_to_block_bottom` -- a real 10.0.1 composer was refused below
+        # because a bright photo edge cut an 856px preview down to a 620px fragment.
+        preview = _extend_inline_preview_to_block_bottom(
+            frame, preview, composer_surface, cv2=cv2, np=np,
+            background_tolerance=locate_kwargs.get(
+                "background_tolerance", _ROW_BACKGROUND_TOLERANCE),
+            margin_probe=locate_kwargs.get("margin_probe", _MARGIN_PROBE))
         # Hinge 9.134 moved this UI inline.  The legacy preview geometry remains useful for
         # content comparison, but no longer proves by itself that a composer exists: an ordinary
         # card can share the same inset.  Bind the selected-card crop to an independently

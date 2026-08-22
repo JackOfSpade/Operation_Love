@@ -309,6 +309,66 @@ EXCLUSION_NON_PHOTO = "photo_only"
 # no video false-accept distribution, and a paused video can have zero drift.
 _STILL_PHOTO_MAX_SIGNATURE_DRIFT = 0.24
 
+# --- The two re-observation REGIMES, and why one ceiling could never serve both -------------
+# A drift number is meaningless without the geometry it was measured under, and this module
+# produces drift under two geometries that measure DIFFERENT PHYSICAL QUANTITIES:
+#
+#   * PARKED -- one unmoved rect on an unmoved screen, looked at again (the calibrate tool's
+#     `_parked_signature_drift` over its anchor frame plus dwell burst, and its
+#     `_cross_position_signature_drift` over one measured page residual). Rect error is zero by
+#     construction, so anything the estimator reports is MOTION IN THE MEDIA. That is the
+#     population `_STILL_PHOTO_MAX_SIGNATURE_DRIFT` above was measured on and the only one it
+#     can speak for.
+#   * READ SCROLL -- `_signature_drift`, which resamples a crop's page rows in the OTHER
+#     enumeration frames. Those frames were taken at DIFFERENT scroll positions, so the card was
+#     re-rasterised at a different sub-pixel offset and against a different edge of the analysed
+#     band. What the estimator reports there is dominated by RESAMPLING DIFFERENCE, not motion.
+#
+# Judging the second against the first is a category error, and it was shipping: the drift rung
+# refused ~31% of real photographic cards with "animated or video media is not targetable"
+# (measurement below), which is the wrong diagnosis for a photograph and the direct cause of
+# production numbering collapsing to "the last photo or nothing". Each regime is now judged
+# against the ceiling that was measured on it; an evidence object that does not SAY which regime
+# it is in takes the parked (stricter) one.
+DRIFT_REGIME_PARKED = "parked"
+DRIFT_REGIME_READ_SCROLL = "read_scroll"
+
+# Read-scroll ceiling. [corpus: offline replay 2026-08-22 of every archived capture under
+# ops/calibration/ that records a content band, an identity band and per-frame profile ordinals
+# -- 13 captures, 28 profiles, 82 classifier-photo items, driven through the real
+# `build_item_index` + `build_item_payload`. 46 of the 82 carried a measurable read-scroll drift
+# (the other 36 are `(None, ())`, overwhelmingly item 1, whose page rows no other frame's band
+# contains). Measured: min 0.001, p25 0.005, median 0.285, p90 2.15, p95 3.52, MAX 27.22. 25 of
+# the 46 sat above the 0.24 parked ceiling.] 30.0 covers the observed maximum with a ~1.10x
+# margin (2.78 grey levels of headroom).
+#
+# WHAT THIS NUMBER IS, STATED PLAINLY, BECAUSE IT IS EASY TO OVERREAD. The corpus is UNLABELED:
+# those 82 items are classifier-PHOTO, not human-verified photographs, so a video the classifier
+# and the mute screen both missed is inside the sample and could be one of the tall values this
+# ceiling was drawn above. So this bounds the RESAMPLING NOISE of re-observing a card across a
+# read scroll, and nothing else. It is a GROSS-CHANGE REJECTOR ONLY -- a card whose pixels turned
+# into different pixels between frames -- and it grants no acceptance whatsoever below it. The
+# motion proof is unchanged and still entirely the ladder's later rungs: the parked byte-exact
+# dwell, its centring inside the autoplay trigger zone, complete mute screening on every frame,
+# and the re-attach probe's second burst. Section 4's labeled measurement remains the only
+# non-vacuous evidence about video false accepts, and this constant adds none.
+_READ_SCROLL_MAX_SIGNATURE_DRIFT = 30.0
+
+
+def _max_signature_drift_for(drift_regime: str | None) -> tuple[float, str]:
+    """The ceiling a drift measured under `drift_regime` may be judged against, and its name.
+
+    UNKNOWN TAKES THE STRICTER BOUND, and so does any regime string this module has not been
+    taught. A producer that did not say where its drift came from has not earned the wider
+    resampling allowance, and a misspelled regime must fail closed rather than silently select
+    the looser number -- which is the whole failure mode this split exists to prevent, run in
+    reverse.
+    """
+    if drift_regime == DRIFT_REGIME_READ_SCROLL:
+        return _READ_SCROLL_MAX_SIGNATURE_DRIFT, DRIFT_REGIME_READ_SCROLL
+    return _STILL_PHOTO_MAX_SIGNATURE_DRIFT, DRIFT_REGIME_PARKED
+
+
 # --- Hinge's autoplay trigger zone (owner-provided domain fact, 2026-08-21) -----------------
 # Hinge autoplays a video card ONLY while that card sits at or near the CENTRE of the screen.
 # That single fact inverts what a motionless dwell is worth: an off-centre video does not play,
@@ -815,6 +875,12 @@ class StillPhotoEvidence:
 
       * `signature_drift` / `drift_frames` -- C1's re-observation leg, in 32x32 greyscale mean
         absolute difference and the OTHER enumeration frames that produced it.
+      * `drift_regime` -- WHICH GEOMETRY produced that number, `DRIFT_REGIME_PARKED` or
+        `DRIFT_REGIME_READ_SCROLL`, because the two measure different physical quantities and
+        have separately-measured ceilings (see `_max_signature_drift_for`). It is an explicit
+        field rather than something the gate infers from the frame list, because no frame count
+        distinguishes them: a parked burst and a read scroll can both report three frames. None
+        means the producer did not say, and the gate then applies the STRICTER parked ceiling.
       * `dwell_frame_sha256s` -- C2's frames, in capture order, so a log or a review can bind the
         verdict to the exact bytes it was computed from.
       * `dwell_exact` -- True only when EVERY consecutive dwell frame pair was byte-identical
@@ -828,6 +894,9 @@ class StillPhotoEvidence:
 
     signature_drift: float | None
     drift_frames: tuple[int, ...]
+    # Defaulted to None so a producer that has not been taught the split keeps the ceiling it
+    # already had -- the strict parked one -- instead of inheriting a looser bound by silence.
+    drift_regime: str | None = None
     dwell_frame_sha256s: tuple[str, ...] = ()
     dwell_exact: bool | None = None
     dwell_span_s: float | None = None
@@ -851,7 +920,8 @@ class StillPhotoEvidence:
 
 def still_photo_evidence_from_drift(
         signature_drift: float | None, drift_frames: tuple[int, ...],
-        dwell: StillPhotoDwell | None = None) -> StillPhotoEvidence:
+        dwell: StillPhotoDwell | None = None,
+        drift_regime: str | None = None) -> StillPhotoEvidence:
     """Build the gate's evidence object from a drift measurement and an optional dwell.
 
     Source compatibility for every caller that has enumeration frames but cannot dwell (offline
@@ -859,10 +929,16 @@ def still_photo_evidence_from_drift(
     two numbers they have and get an object whose dwell fields are None -- which is a REFUSAL the
     moment a verified bound is installed, not an exemption. That is the intended behaviour: a
     rebuild that never held the screen still has not made C2's observation.
+
+    `drift_regime` says which geometry produced the drift, and omitting it is SAFE rather than
+    convenient: the gate then judges the number against the stricter parked ceiling. It is a
+    parameter rather than an inference because the two regimes are indistinguishable from the
+    numbers here -- only the caller knows whether its frames were of one parked screen or of a
+    page moving underneath the card.
     """
     dwell = dwell or StillPhotoDwell()
     return StillPhotoEvidence(
-        signature_drift=signature_drift, drift_frames=drift_frames,
+        signature_drift=signature_drift, drift_frames=drift_frames, drift_regime=drift_regime,
         dwell_frame_sha256s=dwell.dwell_frame_sha256s, dwell_exact=dwell.dwell_exact,
         dwell_span_s=dwell.dwell_span_s, mute_screens_complete=dwell.mute_screens_complete,
         centered=dwell.centered, center_offset_frac=dwell.center_offset_frac,
@@ -1136,6 +1212,14 @@ def unnumber_without_still_photo_evidence(evidence: StillPhotoEvidence) -> str |
     Drift is a REJECTOR ONLY, so its absence is not a refusal: a capture that never re-observed
     a crop's rect measured nothing, and the dwell rungs below make the positive observation
     anyway. See the comment on that rung for why refusing on silence was structurally unsatisfiable.
+
+    Because it is a rejector only, WHICH CEILING it is judged against changes what gets refused
+    and never what gets proved. `evidence.drift_regime` selects that ceiling: a parked drift is
+    motion and answers to 0.24, a read-scroll drift is dominated by resampling and answers to the
+    separately-measured read-scroll number, and a regime nobody declared answers to the stricter
+    parked one. Widening the read-scroll rung buys back the ~31% of real photographic cards it
+    was mislabelling as video; it moves no part of the positive proof, which is still the parked
+    byte-exact dwell, its centring, complete mute screening and the re-attach probe below.
     """
     if not isinstance(evidence, StillPhotoEvidence):
         # Fail closed on a caller that has not been ported: a bare drift number is not evidence,
@@ -1182,10 +1266,17 @@ def unnumber_without_still_photo_evidence(evidence: StillPhotoEvidence) -> str |
                 or not math.isfinite(signature_drift) or signature_drift < 0):
             return (f"{EXCLUSION_NON_PHOTO}: no independent re-observation established that this "
                     "photographic-looking card is stable; an auto-hidden video cannot be ruled out")
-        if signature_drift > _STILL_PHOTO_MAX_SIGNATURE_DRIFT:
+        # THE CEILING IS PER REGIME, because the two regimes measure different things (see
+        # `_max_signature_drift_for` and the constants it reads). A parked drift is motion in
+        # the media and is judged at 0.24; a read-scroll drift is dominated by the resampling
+        # difference of re-rasterising the card at another scroll offset and is judged at the
+        # separately-measured read-scroll ceiling. An evidence object that does not name its
+        # regime takes the parked number, so nothing gets the wider allowance by omission.
+        ceiling, regime = _max_signature_drift_for(evidence.drift_regime)
+        if signature_drift > ceiling:
             return (f"{EXCLUSION_NON_PHOTO}: re-observation drift {signature_drift:.6g} exceeds "
-                    f"the measured static-photo ceiling {_STILL_PHOTO_MAX_SIGNATURE_DRIFT:.6g}; "
-                    "animated or video media is not targetable")
+                    f"the measured static-photo ceiling {ceiling:.6g} for {regime} "
+                    "re-observation; animated or video media is not targetable")
     policy_blocker = hinge_targeting_unavailable_reason()
     if policy_blocker is not None:
         return f"{EXCLUSION_NON_PHOTO}: {policy_blocker}; numbered targeting is disabled"
@@ -1615,9 +1706,15 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
             # The dwell is looked up by heart ordinal because that is the one identity a block
             # keeps across policy: the model item number does not exist yet at this point, and
             # page rows shift with every scroll.
+            # `DRIFT_REGIME_READ_SCROLL` is a statement of PROVENANCE, not a relaxation request:
+            # `_signature_drift` above resampled this crop's page rows in the OTHER enumeration
+            # frames, which were taken at other scroll positions, so the number it produced is a
+            # resampling difference and has to be judged against the ceiling measured on that.
+            # Saying so here is what keeps the parked ceiling parked for everyone else.
             reason = unnumber_without_evidence(still_photo_evidence_from_drift(
                 drift, drift_frames,
-                (still_photo_dwell or {}).get(block.heart_ordinal)))
+                (still_photo_dwell or {}).get(block.heart_ordinal),
+                drift_regime=DRIFT_REGIME_READ_SCROLL))
             if reason is not None:
                 crops.append(ItemCrop(kind=CROP_CONTEXT, number=None, reason=reason, **common))
                 continue

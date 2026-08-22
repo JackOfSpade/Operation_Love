@@ -747,9 +747,14 @@ def test_an_item_nothing_re_observed_is_undetermined_and_never_reported_stable()
     assert payload.max_signature_drift is None, "no evidence is not zero drift"
 
 
-def _evidence(drift, frames=(2,), *, dwell=None):
-    """The gate's argument, built the way every production caller builds it."""
-    return item_crops.still_photo_evidence_from_drift(drift, frames, dwell)
+def _evidence(drift, frames=(2,), *, dwell=None, regime=None):
+    """The gate's argument, built the way every production caller builds it.
+
+    `regime` defaults to None on purpose, matching every caller that does not declare where its
+    drift came from: those objects must keep taking the STRICTER parked ceiling, so the default
+    here is also the assertion that the parked bound was not loosened for anybody.
+    """
+    return item_crops.still_photo_evidence_from_drift(drift, frames, dwell, drift_regime=regime)
 
 
 def _full_dwell(*, exact=True, span_s=6.0, screened=True, digests=2, centered=True,
@@ -1064,9 +1069,15 @@ def test_an_unmeasurable_drift_falls_through_to_the_rungs_that_carry_the_proof(
     emit for that case.  A drift without its frames, or frames without their drift, is an
     inconsistent object rather than a silent one and is refused by
     `test_a_corrupt_drift_is_refused_rather_than_treated_as_unmeasurable`.
+
+    Unchanged by the per-regime ceilings, and asserted across all three: silence is judged
+    before any ceiling is chosen, so a measurement nobody made cannot exceed a number nobody
+    compared it against, whichever regime the producer declares.
     """
-    assert item_crops.unnumber_without_still_photo_evidence(
-        item_crops.still_photo_evidence_from_drift(None, (), _full_dwell())) is None
+    for regime in (None, item_crops.DRIFT_REGIME_PARKED, item_crops.DRIFT_REGIME_READ_SCROLL):
+        assert item_crops.unnumber_without_still_photo_evidence(
+            item_crops.still_photo_evidence_from_drift(
+                None, (), _full_dwell(), drift_regime=regime)) is None, regime
 
 
 def test_a_measured_drift_over_the_ceiling_still_refuses_however_perfect_the_dwell(
@@ -1082,13 +1093,107 @@ def test_a_measured_drift_over_the_ceiling_still_refuses_however_perfect_the_dwe
     assert "animated or video media is not targetable" in reason
 
 
+def test_a_read_scroll_drift_over_the_parked_ceiling_is_numbered_now_that_it_is_judged_as_one(
+        installed_still_photo_bound):
+    """THE CATEGORY ERROR THIS SPLIT FIXES.  `_signature_drift` compares a crop against frames
+    taken at OTHER scroll positions, where the card was re-rasterised at a different sub-pixel
+    offset, so what it measures is resampling difference rather than motion.  Judging it at the
+    parked ceiling -- which was measured where rect error is zero and anything reported IS
+    motion -- refused real photographs with the words "animated or video media", and an offline
+    replay of ops/calibration/ put 25 of 46 measurable real read-scroll drifts above 0.24
+    (median 0.285, max 27.2).
+
+    So a read-scroll drift in the band BETWEEN the two ceilings, with otherwise complete parked
+    dwell evidence, is now accepted where it was previously refused.  The band is not empty and
+    is not narrow: it is where the median real photograph lives.
+    """
+    parked = item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
+    read_scroll = item_crops._READ_SCROLL_MAX_SIGNATURE_DRIFT
+    assert read_scroll > parked, "the split is pointless unless the read-scroll band exists"
+
+    for drift in (parked + 1e-6, 0.285, 2.15, 27.22, read_scroll):
+        assert item_crops.unnumber_without_still_photo_evidence(
+            _evidence(drift, dwell=_full_dwell(),
+                      regime=item_crops.DRIFT_REGIME_READ_SCROLL)) is None, drift
+        # The pin: the SAME number, declared parked, is still a moving card.
+        assert item_crops.unnumber_without_still_photo_evidence(
+            _evidence(drift, dwell=_full_dwell(),
+                      regime=item_crops.DRIFT_REGIME_PARKED)) is not None, drift
+
+
+def test_a_read_scroll_drift_above_the_read_scroll_ceiling_is_still_refused_as_animated(
+        installed_still_photo_bound):
+    """Widening the band is not removing the rung.  A card whose pixels turned into DIFFERENT
+    pixels between enumeration frames is still rejected, with the same operator-facing sentence,
+    and the reason names the read-scroll ceiling it actually failed rather than a number nobody
+    compared it against."""
+    ceiling = item_crops._READ_SCROLL_MAX_SIGNATURE_DRIFT
+
+    reason = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(ceiling + 1e-6, dwell=_full_dwell(),
+                  regime=item_crops.DRIFT_REGIME_READ_SCROLL))
+
+    assert reason is not None
+    assert f"exceeds the measured static-photo ceiling {ceiling:.6g}" in reason
+    assert item_crops.DRIFT_REGIME_READ_SCROLL in reason
+    assert "animated or video media is not targetable" in reason
+
+
+def test_the_parked_ceiling_is_not_loosened_by_the_read_scroll_ceiling_existing(
+        installed_still_photo_bound):
+    """THE PIN.  `_verified_still_photo_proof` -- the sole licence for touching a heart --
+    measures drift over its own PARKED re-observations, where rect error is zero by construction
+    and any distance at all is motion in the media.  That population still answers to 0.24, so
+    adding a second constant for a second regime must be provably invisible to it: the same
+    drift that a read-scroll object now passes on still refuses when it is parked."""
+    parked = item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
+    assert parked == 0.24, "the parked ceiling is measured evidence, not a tunable"
+
+    assert item_crops.unnumber_without_still_photo_evidence(
+        _evidence(parked, dwell=_full_dwell(),
+                  regime=item_crops.DRIFT_REGIME_PARKED)) is None
+
+    reason = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(parked + 1e-6, dwell=_full_dwell(),
+                  regime=item_crops.DRIFT_REGIME_PARKED))
+    assert reason is not None
+    assert f"exceeds the measured static-photo ceiling {parked:.6g}" in reason
+    assert item_crops.DRIFT_REGIME_PARKED in reason
+    assert "animated or video media is not targetable" in reason
+
+
+@pytest.mark.parametrize("regime", [None, "", "read scroll", "READ_SCROLL", "parked_burst", 7],
+                         ids=["undeclared", "empty", "spaced", "cased", "invented", "not-a-string"])
+def test_an_undeclared_or_unrecognised_drift_regime_takes_the_stricter_parked_ceiling(
+        installed_still_photo_bound, regime):
+    """Unknown provenance must never win the looser bound.  A producer that did not say where
+    its drift came from -- and a producer that said something this module has not been taught,
+    including a near-miss spelling of the real name -- has not earned the resampling allowance,
+    so both fall to 0.24.  Written as the failing direction on purpose: the safe default is only
+    a safe default if getting it wrong REFUSES."""
+    between = (item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
+               + item_crops._READ_SCROLL_MAX_SIGNATURE_DRIFT) / 2
+
+    reason = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(between, dwell=_full_dwell(), regime=regime))
+
+    assert reason is not None
+    assert (f"exceeds the measured static-photo ceiling "
+            f"{item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT:.6g}") in reason
+    assert "animated or video media is not targetable" in reason
+
+
+@pytest.mark.parametrize(
+    "regime",
+    [None, "parked", "read_scroll"],
+    ids=["undeclared", "parked", "read-scroll"])
 @pytest.mark.parametrize(
     "drift, drift_frames",
     [(float("nan"), (1,)), (float("inf"), (1,)), (-0.01, (1,)), (True, (1,)),
      (0.0, ()), (None, (2,))],
     ids=["nan", "inf", "negative", "bool", "drift-without-frames", "frames-without-drift"])
 def test_a_corrupt_drift_is_refused_rather_than_treated_as_unmeasurable(
-        installed_still_photo_bound, drift, drift_frames):
+        installed_still_photo_bound, drift, drift_frames, regime):
     """The line the pass-through must not cross.  A measurement that came back broken is not the
     same claim as a measurement nobody made, and only the second one may fall through -- reading
     a NaN as "nothing to compare against" is how a fail-closed gate quietly becomes fail-open.
@@ -1100,9 +1205,13 @@ def test_a_corrupt_drift_is_refused_rather_than_treated_as_unmeasurable(
     tool's `_parked_signature_drift` both return `(None, ())` or `(float, non-empty)`), which is
     exactly why the gate has to say so itself: since the pass-through shipped, nothing else in
     the ladder reads `drift_frames` at all.
+
+    Swept across every regime because the corrupt rung sits ABOVE the ceiling choice and must
+    stay there: a NaN is not a number any ceiling can be compared against, so declaring a
+    read-scroll provenance must not turn a broken measurement into a passing one.
     """
     reason = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(drift, drift_frames, dwell=_full_dwell()))
+        _evidence(drift, drift_frames, dwell=_full_dwell(), regime=regime))
 
     assert reason is not None
     assert "auto-hidden video cannot be ruled out" in reason
@@ -1387,7 +1496,15 @@ def test_a_bound_plus_a_complete_dwell_is_what_finally_numbers_a_photo(
 def test_the_payload_hook_receives_one_evidence_object_carrying_both_halves(
         installed_still_photo_bound):
     """The hook contract itself: drift comes from the frames the builder holds, the dwell from
-    the mapping the caller supplies, and they arrive together so no caller can grade one alone."""
+    the mapping the caller supplies, and they arrive together so no caller can grade one alone.
+
+    And the builder must DECLARE its drift's provenance.  Its number came from `_signature_drift`
+    resampling the crop's page rows in frames taken at other scroll positions, so it is a
+    read-scroll measurement and is only judged correctly if it says so -- an object that stayed
+    silent would take the parked ceiling and reproduce the refusals this split removed.  The
+    wiring is asserted here rather than inferred, because nothing downstream can recover the
+    regime from the numbers.
+    """
     index, frames = _full()
     dwell = item_crops.still_photo_dwell_evidence(
         index, frames, [frames[-1], frames[-1]], dwell_span_s=6.0,
@@ -1402,6 +1519,7 @@ def test_the_payload_hook_receives_one_evidence_object_carrying_both_halves(
     assert seen and all(isinstance(e, item_crops.StillPhotoEvidence) for e in seen)
     assert any(e.dwell_exact is True and e.dwell_span_s == 6.0 for e in seen)
     assert all(e.drift_frames == () or e.signature_drift is not None for e in seen)
+    assert all(e.drift_regime == item_crops.DRIFT_REGIME_READ_SCROLL for e in seen)
 
 
 # =====================================================================================

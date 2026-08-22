@@ -27,9 +27,12 @@ BOTTOM-UP (2026-08-12). Navigation no longer rewinds to the scroll top and walks
 walks UP from where the profile read left the card, anchored on one measured shift against the
 read's own last frame. Two consequences for this file, both deliberate:
 
-  * the fake driver's `_scroll_to_top` and `_scroll_down_one` now RAISE. They are kept rather
-    than deleted precisely so that reintroducing the rewind fails every test in this file
-    immediately and by name, instead of quietly working and costing ~100 gestures a profile;
+  * the fake driver's `_scroll_to_top` RAISES unconditionally, and `_scroll_down_one` raises
+    unless a test explicitly opts in (`allow_entry_scroll=True`) AND has not already used its one
+    call. Both are kept as tripwires rather than deleted precisely so that reintroducing the
+    rewind fails every test in this file immediately and by name, instead of quietly working and
+    costing ~100 gestures a profile; the opt-in exists only for blocker 12's scroll-top entry
+    recovery (2026-08-22), which spends exactly ONE forward gesture and is tested below;
   * `_no_heart_was_missed` and `_count_disagrees` each carry BOTH sign conventions behind an
     `ascending` flag, and both branches are driven directly here. An inverted comparison in the
     descending half would be invisible end to end (production only walks up), and an inverted
@@ -233,10 +236,16 @@ class FakeDriver:
     flipped, because an upward gesture moves content DOWN. Nothing here approximates the device:
     what is faked is the phone, not the vision.
 
-    `_scroll_to_top` and `_scroll_down_one` RAISE. They are the rewind, and they are kept as
-    live tripwires rather than deleted: a regression that reintroduces either would otherwise
-    still pass every assertion in this file while costing ~100 gestures a profile, which is
-    exactly the failure that is hard to notice and expensive to keep.
+    `_scroll_to_top` RAISES unconditionally: it is the rewind, kept as a live tripwire rather than
+    deleted, so a regression that reintroduces it fails every test in this file immediately and
+    by name instead of quietly working and costing ~100 gestures a profile.
+
+    `_scroll_down_one` raises too, UNLESS a test opts in with `allow_entry_scroll=True` — and even
+    then only ONCE. That opt-in exists solely for blocker 12's scroll-top entry recovery
+    (2026-08-22, `navigate_to_item`'s own module docstring, "THE FIFTH THING"): the one bounded
+    forward read-scroll it may take to leave a card's scroll top. A second call raises exactly as
+    the unconditional form always did, so a regression that turns that single rescue step into a
+    rewind-by-another-name still fails loudly.
 
     Deliberately has NO tap method. `navigate_to_item`'s contract ends at the coordinate, so a
     test that accidentally tapped would fail with AttributeError rather than pass quietly.
@@ -246,7 +255,8 @@ class FakeDriver:
                  fixed_step_px=None, hide_hearts_between=None,
                  extra_heart_after=None, extra_heart_card=1,
                  identity_rect=_IDENTITY_BAND, scroll_captures=8,
-                 start_scroll=_ENTRY_SCROLL, header=_HEADER_VALUE, world_kw=None):
+                 start_scroll=_ENTRY_SCROLL, header=_HEADER_VALUE, world_kw=None,
+                 allow_entry_scroll=False, entry_scroll_unmeasurable=False):
         self.content_band = tuple(content_band)
         self.identity_band = None if identity_band is None else tuple(identity_band)
         self.scroll_captures = scroll_captures
@@ -261,6 +271,12 @@ class FakeDriver:
         self._identity_rect = identity_rect
         self._header = header
         self._world_kw = dict(world_kw or {})     # a DIFFERENT page: see `_foreign_driver`
+        self._allow_entry_scroll = allow_entry_scroll
+        self._entry_scroll_unmeasurable = entry_scroll_unmeasurable
+        self.entry_scrolls: list[tuple[float, float]] = []    # blocker 12's ONE rescue gesture,
+                                                               # kept apart from `gestures` (the
+                                                               # ascending walk's own) on purpose
+        self._scramble_next_capture = False
 
     # --- the surface item_nav uses -------------------------------------------------
     def _template(self, role):
@@ -269,6 +285,17 @@ class FakeDriver:
 
     def _screencap(self):
         self.captures += 1
+        if self._scramble_next_capture:
+            # Blocker 12's "unmeasurable entry step" case: the frame right after the recovery
+            # scroll shares nothing with the one before it, exactly as
+            # `test_a_screen_that_cannot_be_joined_to_the_index_is_a_hard_stop` uses an unrelated
+            # frame to force `estimate_shift` to refuse rather than guess.
+            self._scramble_next_capture = False
+            unrelated = np.random.default_rng(1000 + self.captures).integers(
+                0, 255, size=(_H, _W), dtype=np.uint8)
+            ok, buf = cv2.imencode(".png", unrelated)
+            assert ok
+            return buf.tobytes()
         kw = {}
         lo_hi = self._hide_hearts_between
         if lo_hi is not None and lo_hi[0] <= self.scroll <= lo_hi[1]:
@@ -285,9 +312,19 @@ class FakeDriver:
             "read had already been, and replaced a measured anchor with a replayed one")
 
     def _scroll_down_one(self, frac=None, x_frac=None):
-        raise RewindAttempted(
-            "navigation scrolled FORWARD. Walking up is the whole design; a forward gesture here "
-            "means the third pass came back")
+        if not self._allow_entry_scroll or self.entry_scrolls:
+            raise RewindAttempted(
+                "navigation scrolled FORWARD. Walking up is the whole design; a forward gesture "
+                "here means either the third pass came back, or blocker 12's one bounded "
+                "scroll-top entry recovery (2026-08-22) ran more than once")
+        assert frac is not None and x_frac is not None
+        self.entry_scrolls.append((frac, x_frac))
+        if self._entry_scroll_unmeasurable:
+            self._scramble_next_capture = True
+            return
+        moved = (self._fixed_step_px if self._fixed_step_px is not None
+                 else scroll_step.step_px_for_frac(frac, _H))
+        self.scroll = max(0, min(_WORLD_H - _H, self.scroll + moved))
 
     def _scroll_up_one(self, frac, x_frac):
         # Positional-or-keyword with NO defaults, exactly as the driver's own method is: the
@@ -1207,27 +1244,113 @@ def test_every_model_index_refuses_against_a_foreign_profile_in_both_directions(
             assert target.identity.matched
 
 
-def test_entering_at_a_scroll_top_is_cannot_tell_and_therefore_a_refusal():
-    """The precondition the gate imposes, asserted so it cannot be forgotten by whoever wires the
-    tap. At a scroll top the identity band is Hinge's own filter-chips row — byte-identical
-    across two different people in the calibration corpus — so identity is not visible there at
-    ALL, for anyone. "Cannot tell" is never "same profile", so it refuses.
+def _short_profile_index(*, header=_HEADER_VALUE):
+    """A synthetic stand-in for blocker 12's SHORT profile: a valid, identity-known index whose
+    own last read frame is treated as page offset 0 rather than `_ENTRY_SCROLL`.
 
-    Navigation must therefore be entered from where the enumeration read leaves the card. Under
-    bottom-up that is no longer a precondition a caller has to arrange — there is no rewind left
-    to put the card somewhere else, and the entry frame is simply where the read ended — which is
-    why this test now reads as a property of the gate rather than as a warning to whoever wires
-    the tap."""
-    driver = FakeDriver(start_scroll=0)
+    Reuses `_reference_index()`'s real geometry and identity outright and overrides only
+    `offsets` — every heart's PAGE row is an ABSOLUTE quantity fixed at build time
+    (`test_the_reference_index_is_the_page_that_was_painted` pins it), so replacing the one field
+    `navigate_to_item` actually reads off `index.offsets` (`offsets[-1]`, the entry reference
+    offset) is enough to make "the read ended at the top" true of this index without hand-building
+    a second world. `dataclasses.replace` on a frozen dataclass is the same tool
+    `test_the_crosscheck_bound_sums_this_pass_and_the_indexs_own_extent_slack` already uses to vary
+    one field of a built index."""
+    return dataclasses.replace(_reference_index(header=header), offsets=(0,))
+
+
+def test_entering_at_a_scroll_top_recovers_with_one_bounded_scroll_and_reaches_the_target():
+    """BLOCKER 12 (2026-08-22). A SHORT profile — one photo plus a video, nothing below the fold
+    — ends its read exactly where it began, at the card's scroll top: the identity band is
+    Hinge's own filter-chips row there, byte-identical across two different people in the
+    calibration corpus, so identity was previously not visible at ALL and every such profile was
+    unreachable no matter which item the model chose.
+
+    One bounded, guarded forward read-scroll is what reveals the header — sized to the SMALLEST
+    legal read-scroll rather than production's own read cadence, because a full-size step risks
+    landing beyond `estimate_shift`'s own trust window (measured: a 0.55 `read_scroll_frac` step
+    moves ~1299px on this calibrated 2400px screen, past the 900px window) while the floor (219px)
+    sits safely inside it. `navigate_to_item` takes that one step — through the driver's own
+    humanized `_scroll_down_one`, exactly once — before refusing, folds its OWN measured
+    displacement into the entry offset, and only then resumes the ordinary ascending count."""
+    index = _short_profile_index()
+    driver = FakeDriver(start_scroll=0, allow_entry_scroll=True)
+    assert scroll_top.confirm_scroll_top(driver._screencap(),
+                                         identity_band=_IDENTITY_BAND).confirmed
+
+    target = _navigate(driver, 1, index=index, reference=_frame(0))
+
+    floor_px = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
+    assert len(driver.entry_scrolls) == 1              # exactly one rescue gesture, never a retry
+    # The SMALLEST legal read-scroll, on the ascending walk's own precedent of discarding the
+    # policy's frac and keeping only its LANE — the policy's frac here is production's read
+    # cadence, which is far too large a single jump to stay inside the trust window above.
+    assert driver.entry_scrolls[0] == (hinge._READ_SCROLL_FRAC_MIN, 0.5)
+    # reference_offset (0, from the replaced index) + the first-leg anchor (0, entry_reference and
+    # the pre-scroll frame are both `_frame(0)`) + this ONE step's own measured displacement.
+    assert target.anchor.delta_px == 0
+    assert target.entry_offset == floor_px
+    assert target.identity.matched
+    assert target.heart_ordinal == 1
+    assert target.point[1] + target.page_offset == _HEART_PAGE_Y[0]
+
+
+def test_entering_at_a_scroll_top_still_refuses_a_different_profile_after_the_step():
+    """The negative half of the old "entering at a scroll top is an immediate refusal" test, kept
+    rather than lost when that test was split (one-line justification: blocker 12, 2026-08-22,
+    made a scroll-top entry a RECOVERABLE state rather than a terminal one — see the positive test
+    above). The step must still fail a genuinely DIFFERENT profile, because doc 5.6's owner rule
+    is that we never substitute one item's card for another's.
+
+    The header the one rescue scroll reveals here belongs to `_OTHER_HEADER_VALUE`, not the
+    index's own `_HEADER_VALUE`, so identity still cannot be confirmed afterwards — and the
+    refusal carries the ORIGINAL "cannot tell, at scroll top" wording (never rewritten into a
+    fresh "mismatch" diagnosis) plus a note that the step was already tried."""
+    index = _short_profile_index()
+    driver = FakeDriver(start_scroll=0, allow_entry_scroll=True, header=_OTHER_HEADER_VALUE)
     assert scroll_top.confirm_scroll_top(driver._screencap(),
                                          identity_band=_IDENTITY_BAND).confirmed
 
     with pytest.raises(item_nav.ItemNavigationError) as exc:
-        _navigate(driver, 1)
+        _navigate(driver, 1, index=index, reference=_frame(0))
 
     assert exc.value.code == item_nav.NAV_IDENTITY_UNCONFIRMED
     assert "scroll top" in str(exc.value) and "cannot tell" in str(exc.value)
+    assert "already" in str(exc.value)                 # the appended recovery note
+    assert len(driver.entry_scrolls) == 1               # exactly one attempt, never a second
+    assert driver.gestures == []                        # the ascending walk was never entered
+
+
+def test_a_scroll_top_entry_step_that_cannot_be_measured_is_a_named_refusal():
+    """The recovery step is MEASURED like every other leg in this module (doc 5.10's rule,
+    restated for blocker 12's one added gesture): if the shift it produced cannot be put in one
+    coordinate space, guessing the displacement is exactly how doc 5.10's phantom item was
+    fabricated in the first place, so this names the failure rather than assuming the scroll
+    landed where it was aimed."""
+    index = _short_profile_index()
+    driver = FakeDriver(start_scroll=0, allow_entry_scroll=True, entry_scroll_unmeasurable=True)
+
+    with pytest.raises(item_nav.ItemNavigationError) as exc:
+        _navigate(driver, 1, index=index, reference=_frame(0))
+
+    assert exc.value.code == item_nav.NAV_ENTRY_STEP_UNMEASURED
+    assert "could not be measured" in str(exc.value)
+    assert len(driver.entry_scrolls) == 1
     assert driver.gestures == []
+
+
+def test_entering_already_scrolled_takes_no_extra_entry_step():
+    """The recovery gate is silent unless the entry frame really is a scroll top: the ordinary
+    case (the read already left the card scrolled) must cost nothing new, or the rescue step
+    becomes a fixed extra gesture on every navigation rather than the rare recovery it is meant
+    to be. `FakeDriver()`'s default `start_scroll` is `_ENTRY_SCROLL`, not 0, so this is every
+    other test in this file as much as it is its own."""
+    driver = FakeDriver()
+    target = _navigate(driver, 4)
+
+    assert driver.entry_scrolls == []
+    assert driver.captures == 1                        # the entry capture alone, no rescue one
+    assert target.heart_ordinal == 4
 
 
 def test_an_index_that_cannot_say_whose_profile_it_is_cannot_be_navigated_with():

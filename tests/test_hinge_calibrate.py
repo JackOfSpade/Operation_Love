@@ -453,7 +453,8 @@ def _unattended_single_item_fixtures(monkeypatch, *, extra_screencaps: int = 0):
     monkeypatch.setattr(
         cal, "_verified_still_photo_proof",
         lambda *_a, **_kw: cal._StillPhotoProof(
-            frame_sha256=cal._sha256(target.frame),
+            action_frame_sha256=cal._sha256(target.frame),
+            pre_probe_frame_sha256=cal._sha256(target.frame),
             dwell_frame_sha256s=(cal._sha256(target.frame), cal._sha256(b"dwell")),
             dwell_span_s=6.0, still_photo_verified=True,
             reattach_frame_sha256s=(cal._sha256(target.frame), cal._sha256(b"reattach")),
@@ -723,13 +724,17 @@ def test_real_target_frame_screen_seeing_a_mute_control_never_reaches_the_checkp
         (lambda m: m.setattr(
             cal, "_verified_still_photo_proof",
             lambda *_a, **_kw: cal._StillPhotoProof(
-                frame_sha256=cal._sha256(b"some-other-frame"), dwell_frame_sha256s=("a", "b"),
+                action_frame_sha256=cal._sha256(b"some-other-frame"),
+                pre_probe_frame_sha256=cal._sha256(b"some-other-frame"),
+                dwell_frame_sha256s=("a", "b"),
                 dwell_span_s=6.0, still_photo_verified=True)),
          "no still-photo .C1-C3. verdict is bound"),
         (lambda m: m.setattr(
             cal, "_verified_still_photo_proof",
             lambda *_a, **_kw: cal._StillPhotoProof(
-                frame_sha256=cal._sha256(b"target-pre"), dwell_frame_sha256s=("a", "b"),
+                action_frame_sha256=cal._sha256(b"target-pre"),
+                pre_probe_frame_sha256=cal._sha256(b"target-pre"),
+                dwell_frame_sha256s=("a", "b"),
                 dwell_span_s=6.0, still_photo_verified=False)),
          "still-photo acceptance did not pass"),
         (lambda m: m.setattr(cal, "_verified_target_frame_proof",
@@ -953,7 +958,7 @@ def _patched_action_frame(value: int = 9, patch: int = 255) -> bytes:
 
 def _still_photo_driver(*, burst=None, span_s=6.0, mute_score=0.0,
                         content_band=(0.125, 0.875), probe=...,
-                        probe_burst=None, probe_span_s=6.0):
+                        probe_burst=None, probe_span_s=6.0, measured_page_shift=0):
     """A driver stub exposing only what the still-photo proof consumes: a dwell burst, the mute
     matcher, the content band the autoplay-centring precondition is measured against, and the
     re-attach probe.
@@ -961,6 +966,10 @@ def _still_photo_driver(*, burst=None, span_s=6.0, mute_score=0.0,
     The FIRST burst issues no input; the probe does, and it hands back the settled frame it
     finished on. `probe=None` is the probe that could not complete, which must refuse the card
     rather than fall through to the first burst's verdict.
+
+    `measured_page_shift` stands in for `HingeDriver._measured_page_shift`, consulted only when
+    the probe's anchor is byte-different from the frame the first burst was chained to (an
+    unmeasurable return leg is `None`, matching the real driver's own "cannot tell" contract).
     """
     if burst is None:
         # Byte-IDENTICAL to the anchor, because that is what a still photograph's dwell actually
@@ -979,7 +988,8 @@ def _still_photo_driver(*, burst=None, span_s=6.0, mute_score=0.0,
         content_band=content_band,
         _still_photo_dwell_burst=lambda: (list(burst), span_s),
         _still_photo_reattach_probe=lambda _frame, _rect: probe,
-        _match_video_mute=lambda _frame, _rect: (True, mute_score))
+        _match_video_mute=lambda _frame, _rect: (True, mute_score),
+        _measured_page_shift=lambda _before, _after: measured_page_shift)
 
 
 def test_without_a_verified_bound_the_still_photo_proof_can_never_pass(monkeypatch):
@@ -1019,7 +1029,12 @@ def test_the_still_photo_proof_binds_the_action_frame_and_every_dwell_frame_by_d
         block=SimpleNamespace(**_CENTRED_BLOCK))
 
     assert proof.still_photo_verified is True
-    assert proof.frame_sha256 == cal._sha256(frame)
+    # The byte-identical fast path: the probe restored the screen exactly, so the action frame
+    # and the pre-probe frame are the same bytes and the residual is zero.
+    assert proof.action_frame_sha256 == cal._sha256(frame)
+    assert proof.pre_probe_frame_sha256 == cal._sha256(frame)
+    assert proof.page_residual_px == 0
+    assert proof.action_frame == frame
     assert proof.dwell_frame_sha256s[0] == cal._sha256(frame)
     assert len(proof.dwell_frame_sha256s) == 3
     # The re-attach burst is bound the SAME way: the action frame leads it, because the probe
@@ -1105,7 +1120,8 @@ def test_the_checkpoint_refuses_a_proof_whose_bursts_do_not_bind_the_action_fram
     approved, or the claim is about some other screen -- which is how a real video came one
     keystroke from a like."""
     frame = _action_frame()
-    fields = {"frame_sha256": cal._sha256(frame),
+    fields = {"action_frame_sha256": cal._sha256(frame),
+              "pre_probe_frame_sha256": cal._sha256(frame),
               "dwell_frame_sha256s": (cal._sha256(frame), "b" * 64),
               "dwell_span_s": 6.0, "still_photo_verified": True,
               "reattach_frame_sha256s": (cal._sha256(frame), "c" * 64),
@@ -1134,19 +1150,86 @@ def test_the_still_photo_proof_refuses_a_card_the_re_attach_probe_could_not_clea
             block=SimpleNamespace(**_CENTRED_BLOCK))
 
 
-def test_the_still_photo_proof_refuses_a_probe_that_did_not_restore_the_screen(
+def test_the_still_photo_proof_binds_the_post_return_frame_when_the_probes_residual_is_measured(
         monkeypatch, installed_still_photo_bound):
-    """`_fresh_reviewed_target_point` demands byte identity with the reviewed frame immediately
-    before the tap, so a probe that left the page displaced would buy a checkpoint that could
-    never be spent.  Refusing here means the reviewed frame, the navigator's point and both
-    bursts always describe one screen."""
+    """BYTE IDENTITY WAS NEVER THE PROBE'S CONTRACT (found live 2026-08-22, attempt 7): its
+    return leg only ever promised a MEASURED net displacement, and refusing whenever it did not
+    land back byte-for-byte made deeper targets structurally lucky.  A measured residual is now
+    a second position to re-prove the card at -- rows translated by exactly that residual, per
+    `frameshift.estimate_shift`'s own sign convention -- and the published proof binds the frame
+    the page actually settled on (the one the heart is about to be offered and tapped on), not
+    the one the first burst was taken on."""
     monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: True)
-    moved = SimpleNamespace(anchor=_action_frame(77), frames=(_action_frame(), _action_frame()),
+    frame = _action_frame()
+    # `_patched_action_frame`'s own docstring: its 32x32 signature distance from `_action_frame()`
+    # stays two orders of magnitude under the drift ceiling -- exactly what a still photo
+    # re-rasterised at a new position should measure: small, not zero, nowhere near 0.24.
+    settled = _patched_action_frame()
+    probe = SimpleNamespace(anchor=settled, frames=(settled, settled), span_s=6.0,
+                            page_shift_px=0)
+
+    proof = cal._verified_still_photo_proof(
+        _still_photo_driver(probe=probe, measured_page_shift=40), frame=frame,
+        block=SimpleNamespace(**_CENTRED_BLOCK))
+
+    assert proof.still_photo_verified is True
+    assert proof.page_residual_px == 40
+    assert proof.action_frame_sha256 == cal._sha256(settled)
+    assert proof.pre_probe_frame_sha256 == cal._sha256(frame)
+    assert proof.action_frame == settled
+    assert proof.reattach_frame_sha256s[0] == cal._sha256(settled)
+    assert cal._verified_still_photo_evidence(proof, settled) is True
+    # The pre-probe frame no longer binds a checkpoint: the action frame is the one that ran.
+    with pytest.raises(cal._CaptureAbort, match="no still-photo .C1-C3. verdict is bound"):
+        cal._verified_still_photo_evidence(proof, frame)
+
+
+def test_the_still_photo_proof_refuses_an_unmeasurable_probe_return_leg_residual(
+        monkeypatch, installed_still_photo_bound):
+    """A residual that CANNOT be measured is still a refusal: there is nothing to translate the
+    card's rect by, so the second burst cannot be bound to the reviewed card at all -- the same
+    "I cannot tell" contract `_measured_page_shift` documents for its every other caller."""
+    monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: True)
+    moved = SimpleNamespace(anchor=_action_frame(77), frames=(_action_frame(77), _action_frame(77)),
                             span_s=6.0, page_shift_px=12)
 
-    with pytest.raises(cal._CaptureAbort, match="did not restore the screen byte-for-byte"):
+    with pytest.raises(cal._CaptureAbort, match="could not be measured"):
         cal._verified_still_photo_proof(
-            _still_photo_driver(probe=moved), frame=_action_frame(),
+            _still_photo_driver(probe=moved, measured_page_shift=None), frame=_action_frame(),
+            block=SimpleNamespace(**_CENTRED_BLOCK))
+
+
+def test_the_still_photo_proof_refuses_a_residual_that_pushes_the_card_off_screen(
+        monkeypatch, installed_still_photo_bound):
+    """A residual large enough to carry the card's translated rows past the edge of the frame
+    leaves no rect there to re-prove the second burst against, however small the true
+    displacement of the pixels underneath it actually was."""
+    monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: True)
+    settled = _action_frame(50)
+    probe = SimpleNamespace(anchor=settled, frames=(settled, settled), span_s=6.0,
+                            page_shift_px=0)
+
+    with pytest.raises(cal._CaptureAbort, match="800px residual"):
+        cal._verified_still_photo_proof(
+            _still_photo_driver(probe=probe, measured_page_shift=800), frame=_action_frame(),
+            block=SimpleNamespace(**_CENTRED_BLOCK))
+
+
+def test_the_cross_position_drift_is_a_real_measurement_that_can_still_refuse(
+        monkeypatch, installed_still_photo_bound):
+    """The two-position re-observation the residual path substitutes for byte-identity is a
+    MEASUREMENT, not an assumption: build a second position whose own burst is internally
+    byte-exact (so nothing above the reattach rung catches it) but whose card crop CONTENT is
+    far from the first position's, and the ladder's 0.24 ceiling refuses it exactly as it
+    refuses in-place motion."""
+    monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: True)
+    settled = _action_frame(230)  # far from frame's constant value 9: a real measurement, not 0
+    probe = SimpleNamespace(anchor=settled, frames=(settled, settled), span_s=6.0,
+                            page_shift_px=0)
+
+    with pytest.raises(cal._CaptureAbort, match="re-observation drift"):
+        cal._verified_still_photo_proof(
+            _still_photo_driver(probe=probe, measured_page_shift=40), frame=_action_frame(),
             block=SimpleNamespace(**_CENTRED_BLOCK))
 
 

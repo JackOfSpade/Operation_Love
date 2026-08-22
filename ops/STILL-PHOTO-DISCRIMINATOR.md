@@ -374,6 +374,35 @@ Content refusals (mute, motion, probe) keep their immediate-skip behaviour. The
 budget-exhausted skip detail lists every offset tried so a hopeless geometry reads
 differently from a converging correction.
 
+**Blocker six, attempt 7: byte identity was never the driver's contract.** With
+centring fixed, the proof reached its last rung and refused because
+`probe.anchor != frame` — it demanded the re-attach probe put the page back
+BYTE-FOR-BYTE. The probe never promised that: its return leg drives the MEASURED
+net displacement back under half a read-scroll quantum (~109px), so byte identity
+is luck. Depth-1 got it sometimes (the top stop clamps); depth-3 (even ordinals)
+would essentially never. Fix: measure the residual instead of demanding zero. The
+card rect is translated by the measured shift (`estimate_shift`'s stated
+convention: content at row y of the earlier frame is at `y - delta_px` in the
+later one), the second burst's byte-exactness runs at the translated rect where
+it was actually captured, and — the part that makes this STRONGER than what it
+replaces — the final C1 drift becomes a genuine TWO-POSITION re-observation of
+the same card: a still photo re-rasterized ~100px away measures a small distance,
+a video that advanced measures large and the 0.24 ceiling refuses it. Everything
+downstream rebinds to the post-probe frame: the checkpoint, the mute screen
+predicate, the still-photo predicate, the re-proved heart point, and the tap.
+Refusing on byte identity had been trading a real measurement for an accident.
+
+**Operational finding, attempt 6 (not a code defect).** The scroll-top gate
+refused at 5.547 from the nearest filter-chips fingerprint — inside the
+deliberate (3.0, 9.0) dead zone — and correctly declined to stroke an ambiguous
+screen. Cell-level analysis showed the mismatch concentrated in the bottom two
+rows of the band (columns under the chips' lower edge), i.e. the page had drifted
+a few pixels off top while the app sat idle between runs, not a new chrome
+variant. The fix is operational, not calibration: cold-start Hinge
+(`am force-stop`) before a campaign rather than adding a fingerprint, because
+registering a drifted-top fingerprint would widen the very dead zone that caught
+it. Do NOT add a variant for this reading.
+
 **The lesson, stated once for both failures of the day:** a gate is only as real
 as the evidence PATH that feeds it. Wiring the strict ladder into a loop that
 can never possess dwell evidence did not make the loop safer — it made the loop

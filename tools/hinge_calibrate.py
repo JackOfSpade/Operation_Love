@@ -773,13 +773,22 @@ def _located_target_heart_visible(proof: object, frame: bytes) -> bool:
 
 
 def _verified_target_frame_proof(driver: HingeDriver, target, *, frame: bytes,
-                                 content_band, like_template,
-                                 like_threshold: float) -> _TargetFrameProof:
+                                 content_band, like_template, like_threshold: float,
+                                 expected_rows=None, expected_point=None) -> _TargetFrameProof:
     """Re-prove the exact target card/heart and absence of visible video UI on one frame.
 
     Returns the evidence, not merely the card block, so a caller that wants to claim the screen
     ran has to hold what the screen returned (see `_TargetFrameProof`).
+
+    `expected_rows`/`expected_point` default to what the navigator parked, and are passed
+    explicitly by the one caller that re-proves the SAME card on a DIFFERENT frame: the pre-heart
+    loop, after the still-photo probe's return leg left a measured page residual.  They are the
+    navigator's own rows and point carried across that measurement -- never a re-identified card
+    (owner rule 2026-08-11), and never a relaxation: the segmentation still has to find exactly
+    one card at exactly those rows with exactly one heart at exactly that point.
     """
+    rows = tuple(target.block_frame_rows if expected_rows is None else expected_rows)
+    point = tuple(target.point if expected_point is None else expected_point)
     try:
         segmentation = segment_frame(
             frame, content_band=content_band, like_template=like_template,
@@ -788,10 +797,10 @@ def _verified_target_frame_proof(driver: HingeDriver, target, *, frame: bytes,
             raise SegmentationError("; ".join(segmentation.failures))
         matching_blocks = [
             block for block in segmentation.blocks
-            if (block.y0, block.y1) == target.block_frame_rows
+            if (block.y0, block.y1) == rows
         ]
         heart_visible = (len(matching_blocks) == 1
-                         and list(matching_blocks[0].hearts) == [target.point])
+                         and list(matching_blocks[0].hearts) == [point])
         if not heart_visible:
             raise SegmentationError(
                 "frame does not contain exactly one reviewed heart in the reviewed card")
@@ -822,8 +831,20 @@ class _StillPhotoProof:
     about to approve, plus a no-input dwell burst taken in the pre-heart window.  Nothing about
     this can be satisfied by editing code -- with no verified bound installed the payload numbers
     nothing, so the capture path never reaches a heart to make a claim about.
+
+    TWO FRAMES, NAMED APART.  The re-attach probe moves the screen on purpose, and its return leg
+    only ever promised a MEASURED net displacement driven back under half a read-scroll quantum
+    -- never byte identity.  So the screen the SECOND burst was taken on is not always the screen
+    the first burst was taken on.  `pre_probe_frame_sha256` names the frame the first burst is
+    chained to; `action_frame_sha256` names the frame that is actually on the device when the
+    heart is offered and tapped, and that is the one a checkpoint predicate must bind.
+    `page_residual_px` is the measured displacement between the two (0 when the probe did come
+    back byte-for-byte), and `action_frame` carries those exact bytes so the caller can re-prove
+    and bind the screen that is really up.  The digests remain the binding authority; the bytes
+    are there to be re-proved, never to be taken as evidence on their own.
     """
-    frame_sha256: str
+    action_frame_sha256: str
+    pre_probe_frame_sha256: str
     dwell_frame_sha256s: tuple[str, ...]
     dwell_span_s: float
     still_photo_verified: bool
@@ -832,11 +853,22 @@ class _StillPhotoProof:
     # published: a card that was never re-attached has not retired the stalled-video residual.
     reattach_frame_sha256s: tuple[str, ...] = ()
     reattach_dwell_span_s: float | None = None
+    # The probe's own measured net displacement over its round trip, and the bytes it came back
+    # to. Defaulted to "the probe put the page back exactly", which is the only state the
+    # pre-2026-08-22 producer could publish at all.
+    page_residual_px: int = 0
+    action_frame: bytes = b""
 
 
 def _verified_still_photo_evidence(proof: object, frame: bytes) -> bool:
-    """Report the still-photo verdict for `frame`, refusing when nothing proved these bytes."""
-    if not isinstance(proof, _StillPhotoProof) or proof.frame_sha256 != _sha256(frame):
+    """Report the still-photo verdict for `frame`, refusing when nothing proved these bytes.
+
+    `frame` is the ACTION frame -- the screen the heart is offered on and tapped on -- which is
+    the probe's POST-RETURN frame whenever its return leg left a measured residual.  The first
+    burst still has to chain to the pre-probe frame and the second to the action frame, because
+    those are the screens each of them was actually measured on.
+    """
+    if not isinstance(proof, _StillPhotoProof) or proof.action_frame_sha256 != _sha256(frame):
         raise _CaptureAbort(
             "checkpoint refused: no still-photo (C1-C3) verdict is bound to the exact frame "
             "whose heart would be approved")
@@ -849,21 +881,31 @@ def _verified_still_photo_evidence(proof: object, frame: bytes) -> bool:
             "checkpoint refused: the still-photo acceptance did not pass on the exact action "
             "frame")
     if (len(proof.dwell_frame_sha256s) < 2
-            or proof.dwell_frame_sha256s[0] != proof.frame_sha256):
+            or proof.dwell_frame_sha256s[0] != proof.pre_probe_frame_sha256):
         raise _CaptureAbort(
             "checkpoint refused: the un-interacted dwell is not chained to the exact frame "
             "whose heart would be approved")
     if (len(proof.reattach_frame_sha256s) < 2
-            or proof.reattach_frame_sha256s[0] != proof.frame_sha256):
-        # BOTH bursts must name the SAME action frame. The probe scrolls the card out of Hinge's
-        # autoplay band and back, and the producer only accepts a return that came back
-        # byte-identical, so a second burst chained to anything else was measured on a screen
-        # this checkpoint is not about -- the "bound to the wrong frame" case that would let a
+            or proof.reattach_frame_sha256s[0] != proof.action_frame_sha256):
+        # The second burst must name the screen it was actually taken on, and that screen is the
+        # one this checkpoint is about. The probe scrolls the card out of Hinge's autoplay band
+        # and back; where the return leg leaves a residual the producer MEASURES it, carries the
+        # card rect across it and the caller re-proves the card there, so the action frame is the
+        # post-return one. A second burst chained to anything else was measured on a screen this
+        # checkpoint is not about -- the "bound to the wrong frame" case that would let a
         # re-attach observation of one screen vouch for another.
         raise _CaptureAbort(
             "checkpoint refused: no re-attach dwell burst is chained to the exact frame whose "
             "heart would be approved, so a video that was stalled or unloaded during the first "
             "dwell was never given a second chance to reveal itself")
+    if proof.page_residual_px and proof.action_frame_sha256 == proof.pre_probe_frame_sha256:
+        # A proof claiming the probe displaced the page while naming ONE frame for both bursts is
+        # internally inconsistent -- corrupt, not silent -- so it cannot say which screen the
+        # re-attach observation describes. Refuse rather than pick one of the two readings.
+        raise _CaptureAbort(
+            "checkpoint refused: the still-photo proof reports a displaced page yet names one "
+            "frame for both dwell bursts, so which screen the re-attach burst describes is "
+            "unknown")
     return proof.still_photo_verified
 
 
@@ -902,7 +944,8 @@ def _dwell_centering(rect, frame: bytes, content_band):
     return abs(offset) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC, float(offset)
 
 
-def _parked_card_center_offset(target, proof, *, frame: bytes, content_band) -> float | None:
+def _parked_card_center_offset(target, proof, *, frame: bytes, content_band,
+                               rows=None) -> float | None:
     """Signed autoplay-zone offset of the card navigation just parked, or None if unmeasurable.
 
     Cheap on purpose.  It re-uses evidence already in hand: the frame rows are the ones
@@ -915,7 +958,10 @@ def _parked_card_center_offset(target, proof, *, frame: bytes, content_band) -> 
     unmeasured card rather than accepting it -- the same fail-closed answer, reached by the path
     that also holds the rest of the ladder.
     """
-    rows = getattr(target, "block_frame_rows", None)
+    # `rows` defaults to what the navigator parked and is passed explicitly when the card has
+    # been carried across the still-photo probe's measured page residual: the position that
+    # matters is where the card sits on the frame the heart will actually be tapped on.
+    rows = getattr(target, "block_frame_rows", None) if rows is None else tuple(rows)
     block = getattr(proof, "block", None)
     height = _frame_height_px(frame)
     if rows is None or block is None or not height or content_band is None:
@@ -960,6 +1006,34 @@ def _parked_signature_drift(frames, rect: tuple[int, int, int, int],
     return worst, tuple(sampled)
 
 
+def _cross_position_signature_drift(frame_a: bytes, rect_a: tuple[int, int, int, int],
+                                    frame_b: bytes, rect_b: tuple[int, int, int, int],
+                                    ) -> tuple[float | None, tuple[int, ...]]:
+    """C1's re-observation drift across a MEASURED page residual, rather than at one position.
+
+    `_parked_signature_drift` looks at ONE unmoved rect across several frames of the same parked
+    screen. Here the still-photo probe's return leg left a measured residual, so the reviewed
+    card genuinely sits at different rows on the pre-probe frame and the probe's post-return
+    frame -- `rect_a`/`rect_b` are those two positions, already translated by the caller using
+    the same measured residual. This is otherwise the identical measurement, over the module's
+    own `signature_of` and `CropSignature.distance` -- no second implementation free to disagree
+    with `_parked_signature_drift` or with `_signature_drift` about what "drift" means -- reduced
+    to the one pairwise distance there is ever a reason to compute here.
+
+    A still photo re-rasterised at its new position measures a small distance; a video that
+    advanced while the probe ran measures a large one, and the ladder's 0.24 ceiling
+    (`_STILL_PHOTO_MAX_SIGNATURE_DRIFT`) refuses it exactly as it refuses in-place motion --
+    strictly STRONGER than the byte-identity demand this replaces, and it stays a MEASUREMENT,
+    never an assumption. `(1,)` mirrors `_parked_signature_drift`'s own shape for a single
+    comparison: one frame compared against a reference is "position 1".
+    """
+    ax0, ay0, ax1, ay1 = rect_a
+    bx0, by0, bx1, by1 = rect_b
+    reference = signature_of(frame_a, y0=ay0, y1=ay1, x0=ax0, x1=ax1)
+    other = signature_of(frame_b, y0=by0, y1=by1, x0=bx0, x1=bx1)
+    return reference.distance(other), (1,)
+
+
 def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block) -> _StillPhotoProof:
     """Re-run the acceptance on the action frame plus TWO no-input dwell bursts.
 
@@ -974,12 +1048,16 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block) -> 
     unloaded or already ended is otherwise indistinguishable from a photograph no matter how long
     the first burst watches.
 
-    A PROBE THAT DID NOT PUT THE SCREEN BACK EXACTLY REFUSES THE CARD. `_fresh_reviewed_target_point`
-    re-reads the framebuffer immediately before the tap and requires byte identity with the frame
-    the reviewer approved, so a probe that left the page even slightly displaced would buy a
-    review checkpoint that could never be spent. Demanding byte identity here means the reviewed
-    frame, the navigator's point and both bursts all describe one screen -- and the second
-    burst's rect is then the SAME rect, measured rather than translated.
+    BYTE IDENTITY WAS NEVER THE DRIVER'S CONTRACT. `_still_photo_reattach_probe`'s return leg
+    only ever promised a MEASURED net displacement driven back under about half a read-scroll
+    quantum -- never that the page would land back on the exact byte. Refusing whenever it did
+    not made depth-3 (and deeper) targets structurally lucky: whether a heart could ever be
+    offered turned on a residual nobody was even trying to make zero. The probe still measures
+    its own return leg, exactly as before; what changed is that a measured non-zero residual is
+    now a SECOND position to re-prove the card at, not an automatic refusal. `_fresh_reviewed_target_point`
+    is unaffected: it re-binds to whichever frame is actually current -- the pre-probe frame when
+    the residual is zero, the probe's post-return frame otherwise -- immediately before the tap.
+    (Found live 2026-08-22, attempt 7.)
 
     THE C1 RE-OBSERVATION FOR THE HEART DECISION IS THIS PARKED EVIDENCE, measured here by
     `_parked_signature_drift` over the frames this proof holds.  It used to be threaded in from
@@ -993,6 +1071,11 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block) -> 
     cards, which is exactly the population this function has and the enumeration loop does not.
     The payload crop's read-scroll drift remains useful capture-context diagnostics; it is not
     evidence about the frame whose heart is about to be approved.
+
+    WHEN THE PROBE'S RETURN LEG LEAVES A MEASURED RESIDUAL, the C1 re-observation for the FINAL
+    (post-probe) rung is two MEASURED positions of the SAME card rather than one parked position
+    looked at repeatedly: the crop at the pre-probe frame's rect against the crop at the probe's
+    post-return frame's translated rect. See `_cross_position_signature_drift`.
 
     Refuses rather than returning a negative proof, so a card the acceptance rejects is skipped
     exactly like a card the mute screen rejects, and the reviewer is never offered its heart.
@@ -1038,25 +1121,53 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block) -> 
             "target still-photo proof refused on the exact action frame: the re-attach probe "
             "could not take this card out of Hinge's autoplay band and bring it back, so a "
             "video that was not playing during the dwell was never asked to start")
-    if probe.anchor != frame:
-        raise _CaptureAbort(
-            "target still-photo proof refused on the exact action frame: the re-attach probe "
-            "did not restore the screen byte-for-byte, so the second burst and the frame whose "
-            "heart would be approved are not the same screen")
-    reattach_frames = [frame, *probe.frames]
+    # `frameshift.estimate_shift`'s docstring, verbatim: "frame_a is the EARLIER frame ...
+    # Positive delta_px means the content moved UP the screen ... content at row y of A is at
+    # row y - delta_px of B."  F0 is `frame` (earlier); F1 is `probe.anchor` (later, the frame
+    # the probe's return leg actually settled on).  So a card at `rect`'s rows on F0 sits at
+    # (y0 - residual, y1 - residual) on F1.
+    if probe.anchor == frame:
+        # The byte-identical fast path.  Every proof this ladder has ever passed took exactly
+        # this route, and it must keep doing so byte-for-byte: no extra measurement, no extra
+        # screencap, no behaviour change at all.
+        residual = 0
+        rect2 = rect
+        action_frame = frame
+    else:
+        residual = driver._measured_page_shift(frame, probe.anchor)
+        if residual is None:
+            raise _CaptureAbort(
+                "target still-photo proof refused on the exact action frame: the probe's "
+                "return leg displacement could not be measured, so the second burst cannot be "
+                "bound to the reviewed card")
+        rect2 = (rect[0], rect[1] - residual, rect[2], rect[3] - residual)
+        action_frame = probe.anchor
+        height2 = _frame_height_px(action_frame)
+        if rect2[1] < 0 or height2 is None or rect2[3] > height2:
+            raise _CaptureAbort(
+                "target still-photo proof refused on the exact action frame: the probe's "
+                f"return leg left a {residual}px residual that puts the reviewed card partly "
+                "off screen, so it cannot be re-proved there")
+    reattach_frames = [action_frame, *probe.frames]
     reattach_digests = tuple(_sha256(data) for data in reattach_frames)
     try:
         reattach_legs = still_photo_reattach_legs(
-            reattach_frames, rect, span_s=probe.span_s,
+            reattach_frames, rect2, span_s=probe.span_s,
             mute_screen=lambda data, _rect: screened_clean(data),
-            frame_height=_frame_height_px(frame), content_band=content_band)
-        # The FINAL C1 measurement re-observes every parked frame this proof now holds -- the
-        # anchor, the first burst, and the post-probe burst the probe brought back to that same
-        # anchor byte-for-byte.  The probe's own byte-exactness rung is still the discriminator
-        # for media that restarts on re-attach; this just refuses to publish a verdict whose
-        # drift leg looked at fewer frames than the verdict covers.
-        final_drift, final_drift_frames = _parked_signature_drift(
-            [*frames, *probe.frames], rect)
+            frame_height=_frame_height_px(action_frame), content_band=content_band)
+        # THE FINAL C1 MEASUREMENT.  At residual == 0 every frame this proof holds describes the
+        # SAME unmoved rect -- the anchor, the first burst, and the post-probe burst the probe
+        # brought back to that same anchor byte-for-byte -- so the existing worst-of-N
+        # re-observation over all of them is still exactly right and stays untouched.  Where the
+        # probe's return leg left a residual, the card genuinely sits at two different rows on
+        # two different frames, and the only honest re-observation is a measurement ACROSS that
+        # move: see `_cross_position_signature_drift`.
+        if residual:
+            final_drift, final_drift_frames = _cross_position_signature_drift(
+                frame, rect, action_frame, rect2)
+        else:
+            final_drift, final_drift_frames = _parked_signature_drift(
+                [*frames, *probe.frames], rect)
     except ItemCropError as exc:
         raise _CaptureAbort(
             f"target still-photo proof refused on the exact action frame: {exc}") from exc
@@ -1065,10 +1176,11 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block) -> 
     if refusal is not None:
         raise _CaptureAbort(
             "target still-photo proof refused on the exact action frame: " + refusal)
-    return _StillPhotoProof(frame_sha256=_sha256(frame), dwell_frame_sha256s=digests,
-                            dwell_span_s=span_s, still_photo_verified=True,
-                            reattach_frame_sha256s=reattach_digests,
-                            reattach_dwell_span_s=probe.span_s)
+    return _StillPhotoProof(
+        action_frame_sha256=_sha256(action_frame), pre_probe_frame_sha256=_sha256(frame),
+        dwell_frame_sha256s=digests, dwell_span_s=span_s, still_photo_verified=True,
+        reattach_frame_sha256s=reattach_digests, reattach_dwell_span_s=probe.span_s,
+        page_residual_px=int(residual), action_frame=action_frame)
 
 
 @dataclass(frozen=True)
@@ -1111,7 +1223,8 @@ def _screened_verification_blocker_absent(proof: object, payload, item_number: i
 
 def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point: object,
                                  content_band, like_template,
-                                 like_threshold: float) -> tuple[int, int]:
+                                 like_threshold: float, expected_point=None,
+                                 expected_frame=None, expected_rows=None) -> tuple[int, int]:
     """Re-bind a reviewed heart target to the screen at the instant before its tap.
 
     A hybrid review can take long enough for animated media or auto-hiding controls to change
@@ -1119,8 +1232,16 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
     a later screen.  Require byte identity, then independently re-run the card/heart and profile
     identity gates on those fresh bytes.  No input is issued here; every refusal leaves the
     driver's final foreground-package guard as the only operation immediately before a valid tap.
+
+    `expected_point`/`expected_frame`/`expected_rows` default to the navigator's own point, frame
+    and rows -- exactly today's behaviour -- and are passed explicitly by the one caller that
+    re-binds this SAME card to a DIFFERENT frame: the pre-heart loop, after the still-photo
+    probe's return leg left a measured page residual and re-proved the card at the shifted rows.
+    They are the navigator's own point and rows carried across that measurement (owner rule
+    2026-08-11: never a re-identified card), never a relaxation of the byte-identity or
+    structural/identity checks below.
     """
-    point = target.point
+    point = target.point if expected_point is None else tuple(expected_point)
     if (not isinstance(reviewed_point, list) or len(reviewed_point) != 2
             or any(isinstance(value, bool) or not isinstance(value, int)
                    for value in reviewed_point)
@@ -1129,15 +1250,17 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
             "hybrid heart refused: the approved action point no longer exactly binds the "
             "navigator's reviewed target")
 
+    frame_to_match = target.frame if expected_frame is None else expected_frame
     fresh = driver.adb.screencap()
-    if fresh != target.frame:
+    if fresh != frame_to_match:
         raise _CaptureAbort(
             "hybrid heart refused: the framebuffer changed after review; refusing to spend "
             "coordinates from a stale checkpoint")
     try:
         proof = _verified_target_frame_proof(
             driver, target, frame=fresh, content_band=content_band,
-            like_template=like_template, like_threshold=like_threshold)
+            like_template=like_template, like_threshold=like_threshold,
+            expected_rows=expected_rows, expected_point=expected_point)
         prior_identity = target.identity
         fresh_identity = compare_profile_identity(
             fresh, prior_identity.identity, identity_band=driver.identity_band,
@@ -2469,6 +2592,55 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
         review_before = None
         adjustment_count = 0
         center_offsets_tried: list[float] = []
+
+        def _apply_bounded_centering_correction(
+                center_offset: float, *, target_pre: bytes, item_number: int,
+                adjustment_count: int, center_offsets_tried: list[float]) -> int:
+            """One bounded corrective read-scroll, charged against the shared adjustment
+            budget, or the bounded pre-action skip once that budget is exhausted.  Returns the
+            incremented adjustment count; the caller stores it back.
+
+            Shared by both centring checks in the loop below -- the one taken right after
+            navigation parks the card, and the one re-run after a still-photo probe's return
+            leg leaves a measured page residual -- so a card corrected from either position is
+            corrected exactly the same way, against exactly the same budget.  `target_pre`,
+            `item_number`, `adjustment_count` and `center_offsets_tried` are explicit parameters
+            rather than closed over: all four are reassigned somewhere in the loops this is
+            called from, and closing over a name a loop reassigns is exactly the late-binding
+            trap ruff's B023 exists to catch.
+            """
+            center_offsets_tried.append(center_offset)
+            # SHARED with the reviewer's budget on purpose: one heart gets one bounded
+            # allowance of visual adjustments, however they were requested.
+            adjustment_count += 1
+            if adjustment_count > _HYBRID_MAX_ADJUSTMENTS_PER_ACTION:
+                # Name every offset that was tried.  "Refused for centring" alone cannot tell a
+                # hopeless geometry from a correction that was converging and ran out of
+                # budget, and those need opposite responses from the operator.
+                tried = " then ".join(f"{value:.3f}" for value in center_offsets_tried)
+                retry = _PreActionProfileRetry(
+                    "target_verification_blocked",
+                    f"item {item_number}: navigation could not park this card inside "
+                    f"Hinge's autoplay trigger zone (card centre offset {tried} over "
+                    f"{len(center_offsets_tried) - 1} corrective scroll(s), limit "
+                    f"{STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:.3f})")
+                raise skip_before_heart(retry, identity)
+            try:
+                step, _ = _plan_card_scroll(
+                    target_pre, content_band=content_band, like_template=like_template,
+                    like_threshold=like_threshold, profile_min_spacing_px=None)
+            except (SegmentationError, ScrollStepError) as exc:
+                raise _CaptureAbort("centring correction could not be planned as a bounded "
+                                    f"scroll: {exc}") from exc
+            if center_offset < 0:
+                # The card sits HIGH of the content centre, so the CONTENT has to come DOWN.
+                driver._scroll_up_one(step.frac, step.x_frac)
+            else:
+                driver._scroll_down_one(step.frac, step.x_frac)
+            # Never reuse a target point across a visual adjustment; re-navigate instead.
+            driver.adb.screencap()
+            return adjustment_count
+
         while True:
             try:
                 heart_ordinal = payload.item(item_number).heart_ordinal
@@ -2483,6 +2655,11 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                     f"item {item_number}: {type(exc).__name__}: {exc}")
                 raise skip_before_heart(retry, identity) from exc
             target_pre = target.frame
+            # Default to the navigator's own point/rows.  Both are overwritten below only when
+            # the still-photo probe's return leg leaves a measured page residual; passing them
+            # through unconditionally from here on keeps the residual == 0 path a no-op.
+            tap_target_point = target.point
+            moved_rows = target.block_frame_rows
             try:
                 target_proof = _verified_target_frame_proof(
                     driver, target, frame=target_pre, content_band=content_band,
@@ -2518,44 +2695,17 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                 target, target_proof, frame=target_pre, content_band=content_band)
             if (center_offset is not None
                     and abs(center_offset) > STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC):
-                center_offsets_tried.append(center_offset)
-                # SHARED with the reviewer's budget on purpose: one heart gets one bounded
-                # allowance of visual adjustments, however they were requested.
-                adjustment_count += 1
-                if adjustment_count > _HYBRID_MAX_ADJUSTMENTS_PER_ACTION:
-                    # Name every offset that was tried.  "Refused for centring" alone cannot
-                    # tell a hopeless geometry from a correction that was converging and ran out
-                    # of budget, and those need opposite responses from the operator.
-                    tried = " then ".join(f"{value:.3f}" for value in center_offsets_tried)
-                    retry = _PreActionProfileRetry(
-                        "target_verification_blocked",
-                        f"item {item_number}: navigation could not park this card inside "
-                        f"Hinge's autoplay trigger zone (card centre offset {tried} over "
-                        f"{len(center_offsets_tried) - 1} corrective scroll(s), limit "
-                        f"{STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:.3f})")
-                    raise skip_before_heart(retry, identity)
-                try:
-                    step, _ = _plan_card_scroll(
-                        target_pre, content_band=content_band, like_template=like_template,
-                        like_threshold=like_threshold, profile_min_spacing_px=None)
-                except (SegmentationError, ScrollStepError) as exc:
-                    raise _CaptureAbort("centring correction could not be planned as a bounded "
-                                        f"scroll: {exc}") from exc
-                if center_offset < 0:
-                    # The card sits HIGH of the content centre, so the CONTENT has to come DOWN.
-                    driver._scroll_up_one(step.frac, step.x_frac)
-                else:
-                    driver._scroll_down_one(step.frac, step.x_frac)
-                # Never reuse a target point across a visual adjustment; re-navigate instead.
-                driver.adb.screencap()
+                adjustment_count = _apply_bounded_centering_correction(
+                    center_offset, target_pre=target_pre, item_number=item_number,
+                    adjustment_count=adjustment_count, center_offsets_tried=center_offsets_tried)
                 continue
             try:
                 # The dwell runs HERE, inside the pre-heart window and after the card is parked
                 # by navigation, because that is the only moment the card sits still with the
                 # heart in view.  Its first burst is screencaps only; its re-attach probe DOES
-                # move the screen on purpose, and refuses the card unless the page comes back
-                # byte-for-byte, so the frame this checkpoint is about to bind is either
-                # untouched or never offered.
+                # move the screen on purpose.  A probe whose return leg leaves a measured
+                # residual no longer refuses the card outright (2026-08-22, attempt 7): it hands
+                # back the frame the page actually settled on, re-proved below.
                 still_photo_proof = _verified_still_photo_proof(
                     driver, frame=target_pre, block=target_proof.block)
             except _CaptureAbort as exc:
@@ -2563,13 +2713,47 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                     "target_verification_blocked",
                     f"item {item_number}: {exc}")
                 raise skip_before_heart(retry, identity) from exc
+            if still_photo_proof.page_residual_px:
+                # THE PROBE MOVED THE PAGE AND MEASURED HOW FAR.  `target_pre` becomes the frame
+                # really on the device -- the one the heart is about to be offered and tapped on
+                # -- and the navigator's own rows/point are carried across that SAME measured
+                # residual (owner rule 2026-08-11: never a re-identified card) rather than
+                # re-derived from scratch.  Re-running the target-frame proof and the centring
+                # check on this new position is not optional: the residual is real device
+                # motion, and a card that motion pushed out of the autoplay zone is exactly the
+                # case the centring rung above exists to catch.
+                residual = still_photo_proof.page_residual_px
+                target_pre = still_photo_proof.action_frame
+                moved_rows = (target.block_frame_rows[0] - residual,
+                             target.block_frame_rows[1] - residual)
+                tap_target_point = (target.point[0], target.point[1] - residual)
+                try:
+                    target_proof = _verified_target_frame_proof(
+                        driver, target, frame=target_pre, content_band=content_band,
+                        like_template=like_template, like_threshold=like_threshold,
+                        expected_rows=moved_rows, expected_point=tap_target_point)
+                except _CaptureAbort as exc:
+                    retry = _PreActionProfileRetry(
+                        "target_verification_blocked",
+                        f"item {item_number}: {exc}")
+                    raise skip_before_heart(retry, identity) from exc
+                center_offset = _parked_card_center_offset(
+                    target, target_proof, frame=target_pre, content_band=content_band,
+                    rows=moved_rows)
+                if (center_offset is not None
+                        and abs(center_offset) > STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC):
+                    adjustment_count = _apply_bounded_centering_correction(
+                        center_offset, target_pre=target_pre, item_number=item_number,
+                        adjustment_count=adjustment_count,
+                        center_offsets_tried=center_offsets_tried)
+                    continue
             if review_gate is None:
                 break
             review_before = review_gate.checkpoint(
                 target_pre, claimed_state="target_heart_visible",
                 action_plan={
                     "action": "automated_photo_heart", "photo_model_item": item_number,
-                    "point": list(target.point), "point_source": "navigate_to_item",
+                    "point": list(tap_target_point), "point_source": "navigate_to_item",
                     # Every predicate below is the RETURN VALUE of the check that establishes it,
                     # read back through a function that refuses unless the proof binds this exact
                     # frame (or, for the blocker, this exact payload item).  None of them can be
@@ -2629,14 +2813,15 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
         # External review authorizes one exact frame and point, not a coordinate that remains
         # valid indefinitely. Re-capture and re-run the structural/identity gates immediately
         # before the driver's foreground-guarded transport choke point.
-        tap_point = target.point
+        tap_point = tap_target_point
         if review_gate is not None:
             plan = review_before.get("action_plan") if isinstance(review_before, dict) else None
             tap_point = _fresh_reviewed_target_point(
                 driver, target,
                 reviewed_point=plan.get("point") if isinstance(plan, dict) else None,
                 content_band=content_band, like_template=like_template,
-                like_threshold=like_threshold)
+                like_threshold=like_threshold, expected_point=tap_target_point,
+                expected_frame=target_pre, expected_rows=moved_rows)
         # _tap is the driver's forbidden-zone/foreground-checked humanized transport chokepoint.
         driver._tap(*tap_point)
         time.sleep(human_delay(driver.dwell_s))
@@ -2665,7 +2850,7 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                         composer_open, claimed_state="composer_and_item_verified",
                         action_plan={
                             "action": "review_heart_result", "photo_model_item": item_number,
-                            "point": list(target.point), "point_source": "completed HingeDriver._tap",
+                            "point": list(tap_point), "point_source": "completed HingeDriver._tap",
                             "predicates": {"inline_composer_verified": True,
                                            "post_tap_item_relative_verified": True,
                                            "send_like_tapped": False},

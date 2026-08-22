@@ -803,6 +803,119 @@ def test_a_blocked_item_is_skipped_by_the_screen_itself_not_by_a_restated_litera
     assert driver.taps == []
 
 
+_REFUSED_COMPOSER_ABORT_MESSAGE = (
+    "automated profile 1 item 1: post-tap composer/item verification refused: drift; "
+    "abort cleanup outcome=cleared")
+
+
+def test_post_tap_refusal_persists_the_refusing_composer_frame_as_a_forensic_diagnostic(
+        monkeypatch, tmp_path):
+    """LIVE 2026-08-22: Hinge 10.0.1 refused post-tap composer/item verification (hiding 34.08%
+    of a 1109px stored crop against the 27.86% `_INLINE_REFRAME_MAX_HIDDEN_FRACTION` limit
+    measured on 9.134), and the refusing composer frame was discarded together with the abort --
+    nothing wrote it to disk, so the new composer geometry could never be re-measured from the
+    session afterward.  This pins that the frame and a sibling refusal record now survive the
+    abort as a clearly-forensic, never-evidence diagnostic, without changing the refusal itself
+    (identical message, identical cleanup outcome)."""
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_a, **_kw: SimpleNamespace(matched=False, reason="drift"))
+
+    with pytest.raises(cal._CaptureAbort) as excinfo:
+        cal._capture_one_profile_unattended(
+            driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+            review_gate=None, send_like=False)
+
+    assert str(excinfo.value) == _REFUSED_COMPOSER_ABORT_MESSAGE
+
+    png_path = tmp_path / "refused_composer_p1_item1.png"
+    json_path = tmp_path / "refused_composer_p1_item1.json"
+    assert png_path.read_bytes() == b"composer-1"
+    body = json.loads(json_path.read_text())
+    assert body["ordinal"] == 1
+    assert body["item_number"] == 1
+    assert body["refusal"] == "drift"
+    assert body["frame_sha256"] == cal._sha256(b"composer-1")
+    # The fixture's `_Adb` has no `.shell()`/`.screen_size()` and its stub `payload` has no
+    # `.height` -- both optional fields must be OMITTED on that failure, never raised through.
+    assert "hinge_version_name" not in body
+    assert "frame_size_px" not in body
+    assert "stored_crop_height_px" not in body
+
+
+def test_post_tap_refusal_diagnostic_frame_is_excluded_from_manifest_evidence(
+        monkeypatch, tmp_path):
+    """The diagnostic PNG this abort writes must never be mistaken for calibration evidence.
+    Drive the refusal through the real `_cmd_capture` (not a direct unit call) so the manifest is
+    actually assembled the production way -- `frames` only ever grows through
+    `_save_frame`/`_commit_profile_frames` and `profiles` only ever grows after a profile
+    completes -- and confirm the forensic file's name appears in neither, nor anywhere else in
+    the written manifest.json, even though it sits on disk right beside it."""
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_a, **_kw: SimpleNamespace(matched=False, reason="drift"))
+    # Extend the fixture's driver with just enough real shape for `_cmd_capture`'s own outer
+    # shell and the module's read-only `_device_evidence` probe -- both exercised for real here.
+    driver.serial = "PIXEL-TEST"
+    driver.package = "co.hinge.app"
+    driver.open_session = lambda: None
+    driver.close = lambda: None
+    driver.adb.shell = lambda cmd: (
+        "Pixel 7a" if "ro.product.model" in cmd else
+        "420" if "wm density" in cmd else "versionName=10.0.1\n")
+    driver.adb.screen_size = lambda: (1080, 2400)
+
+    monkeypatch.setattr(cal.cfg_mod, "load", lambda _path: SimpleNamespace(apps={}))
+    monkeypatch.setattr(cal.cfg_mod, "validate", lambda _cfg: None)
+    monkeypatch.setattr(cal, "HingeDriver", lambda _cfg: driver)
+    monkeypatch.setattr(cal, "_preflight_serial", lambda _cfg: ("PIXEL-TEST", "adb"))
+    monkeypatch.setattr(cal, "_capture_out_dir", lambda *_a, **_kw: tmp_path)
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("apps:\n  hinge:\n    serial: PIXEL-TEST\n")
+    args = argparse.Namespace(
+        profiles=1, split="calibration", config=str(config_path), out=str(tmp_path),
+        unattended=True, hybrid_review=False, confirmation=cal._UNATTENDED_CONFIRMATION,
+        record_operational_checks=False, send_like=False, send_like_confirmation="")
+
+    with pytest.raises(SystemExit):
+        cal._cmd_capture(args)
+
+    diagnostic_png = tmp_path / "refused_composer_p1_item1.png"
+    assert diagnostic_png.exists()
+    manifest_text = (tmp_path / "manifest.json").read_text()
+    manifest = json.loads(manifest_text)
+    assert manifest["interrupted"] is True
+    assert manifest["frames"] == []
+    assert manifest["profiles"] == []
+    assert diagnostic_png.name not in [entry["file"] for entry in manifest["frames"]]
+    assert diagnostic_png.name not in json.dumps(manifest["profiles"])
+    assert diagnostic_png.name not in manifest_text
+
+
+def test_post_tap_refusal_diagnostic_write_failure_never_masks_the_real_abort(
+        monkeypatch, tmp_path):
+    """The diagnostic write is forensic best-effort only.  If the private-write helper itself
+    raises (disk full, permission error, ...), the operator must still see the exact same
+    refusal that actually stopped the run -- byte-identical to the case where the write
+    succeeds -- never a diagnostic-tooling exception standing in its place, and never a silently
+    swallowed abort either."""
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_a, **_kw: SimpleNamespace(matched=False, reason="drift"))
+    monkeypatch.setattr(
+        cal, "atomic_write_private_bytes",
+        lambda *_a, **_kw: (_ for _ in ()).throw(OSError("disk full")))
+
+    with pytest.raises(cal._CaptureAbort) as excinfo:
+        cal._capture_one_profile_unattended(
+            driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+            review_gate=None, send_like=False)
+
+    assert str(excinfo.value) == _REFUSED_COMPOSER_ABORT_MESSAGE
+    assert list(tmp_path.iterdir()) == []
+
+
 # The pre-heart loop's centring arithmetic, in the same geometry the fixtures use: a 2000px
 # frame with content band (0.125, 0.875) puts the content centre at row 1000 and makes the band
 # 1500px tall, so a card's signed offset is (centre_row - 1000) / 1500 against a 0.150 limit.

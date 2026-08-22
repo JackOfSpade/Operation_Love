@@ -487,6 +487,41 @@ that means "the screen has not changed underneath me" must say which REGION it m
 any rebind that means "the frame I am bound to has changed" must test the bytes it is
 bound to — not a proxy for why they might have changed.
 
+**Blocker ten (OPEN, needs measurement — attempt 11).** With every pre-tap gate fixed,
+the campaign captured profile 1 end to end (item 1: heart, composer verified on that exact
+photo, Pass without sending) and then refused profile 2's DEEP target:
+
+    automated profile 2 item 3: post-tap composer/item verification refused: the sheet is
+    not showing model item 3: inline composer preview would hide 378px of this 1109px crop,
+    above the 30% reframe limit. The nearest stored item is 1; abort cleanup outcome=cleared
+
+The constant's own provenance names the problem. `_INLINE_REFRAME_MAX_HIDDEN_FRACTION = 0.30`
+(operation_love/drivers/item_verify.py) was measured on **Hinge 9.134**: "the 2026-08-15 Alex
+composer frame showed 800 of 1109 source rows (27.86% hidden); 30% admits that measured
+renderer with a small margin". Tonight, on 10.0.1, the SAME 1109px source height showed only
+731 rows — 34.08% hidden. That is a renderer change in the inline composer between 9.134 and
+10.0.1, invalidating a pinned perception constant exactly as the 10.0.1 update already did to
+the like-glyph template, the scroll-top fingerprint and the settle timing.
+
+Two things are NOT yet established and must not be assumed:
+  * whether "the nearest stored item is 1" means the composer really showed item 1 (a wrong
+    tap) or is merely the consequence of item 3 being structurally excluded from alignment.
+    The pre-tap proof verified the heart at item 3's own rows, and item 1 on that profile is a
+    different photo, so a reframing artefact is the likely reading — but likely is not
+    measured, and this one decides whether a safety constant may be widened at all;
+  * what the true 10.0.1 hidden fraction is across real cards. One card at 34.08% is a data
+    point, not a bound, and the original constant was set from a measured renderer plus a small
+    margin. Widening a verification limit from a single observation would be precisely the
+    "weaken the bound instead of measuring it" move this document exists to refuse.
+
+Item-1 targets are proven working end to end (twice tonight, two different profiles). The
+alternation to item 3 exists to prove the navigator counts correctly at depth, so dropping it
+would weaken the calibration's evidence rather than fix anything — that trade is the owner's
+call, not an engineering default. Next step is a measurement pass: persist the composer frame
+on this refusal (it is currently discarded, so the geometry cannot be read off disk), collect
+real 10.0.1 previews across several tall cards, and re-derive the constant the way section 4
+derives every other one.
+
 **The lesson, stated once for both failures of the day:** a gate is only as real
 as the evidence PATH that feeds it. Wiring the strict ladder into a loop that
 can never possess dwell evidence did not make the loop safer — it made the loop

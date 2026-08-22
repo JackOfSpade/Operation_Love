@@ -2991,6 +2991,45 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
             recovery = recover_unsent_composer(
                 frame=composer_open, item_number=item_number,
                 failure_stage="post_tap_composer_or_item_verification_refused")
+            # The refusal text names a MEASURED geometry -- how many rows of the stored crop
+            # the inline composer preview hid -- and that geometry is the only way to
+            # re-derive `_INLINE_REFRAME_MAX_HIDDEN_FRACTION` after an app update changes the
+            # composer's layout.  `composer_open` used to be discarded the instant this branch
+            # raised, which is exactly what made the 2026-08-22 refusal (Hinge 10.0.1 hiding
+            # 34.08% of a 1109px crop against the 27.86% limit measured on 9.134) unmeasurable
+            # after the session ended.  Persist it as a forensic diagnostic ONLY -- it must
+            # never be mistaken for calibration evidence -- best-effort, so a write failure
+            # here can never mask the real refusal raised below.
+            try:
+                diagnostic_stem = f"refused_composer_p{ordinal}_item{item_number}"
+                diagnostic_frame_path = out_dir / f"{diagnostic_stem}.png"
+                ensure_private_dir(out_dir)
+                atomic_write_private_bytes(diagnostic_frame_path, composer_open, parent=out_dir)
+                diagnostic_record = {
+                    "ordinal": ordinal,
+                    "item_number": item_number,
+                    "refusal": str(exc),
+                    "frame_sha256": _sha256(composer_open),
+                }
+                try:
+                    device_evidence = _device_evidence(driver)
+                    diagnostic_record["hinge_version_name"] = device_evidence["hinge_version_name"]
+                    diagnostic_record["frame_size_px"] = [
+                        device_evidence["display_w"], device_evidence["display_h"]]
+                except Exception:  # noqa: BLE001 -- diagnostic-only; omit rather than fail
+                    pass
+                try:
+                    diagnostic_record["stored_crop_height_px"] = payload.item(item_number).height
+                except Exception:  # noqa: BLE001 -- diagnostic-only; omit rather than fail
+                    pass
+                diagnostic_json_path = out_dir / f"{diagnostic_stem}.json"
+                atomic_write_private_bytes(
+                    diagnostic_json_path,
+                    (json.dumps(diagnostic_record, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+                    parent=out_dir)
+                print(f"Wrote forensic (non-evidence) refusal diagnostic: {diagnostic_frame_path}")
+            except Exception:  # noqa: BLE001 -- diagnostic-only; never mask the real refusal
+                pass
             raise _CaptureAbort(f"automated profile {ordinal} item {item_number}: post-tap "
                                 f"composer/item verification refused: {exc}; abort cleanup "
                                 f"outcome={recovery['outcome']}") from exc

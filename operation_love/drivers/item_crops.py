@@ -364,7 +364,7 @@ EXCLUSION_ENDORSEMENT = "endorsement"
 
 # Rung (g)'s refusal when no probe has run YET. Exported as a constant, not just returned as
 # prose, because a producer that takes the two bursts IN SEQUENCE has to tell "every cheaper
-# rung passed, go and spend the probe's two real gestures" from "this card already failed
+# rung passed, go and spend the probe's real gestures" from "this card already failed
 # something" -- and it must do that by identity rather than by reading the sentence.
 EXCLUSION_REATTACH_PROBE_MISSING = (
     f"{EXCLUSION_NON_PHOTO}: no re-attach probe scrolled this card out of Hinge's autoplay band "

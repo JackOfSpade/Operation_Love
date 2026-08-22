@@ -677,6 +677,8 @@ class ProbeWorldAdb(WorldAdb):
         if y2 <= y1:
             return
         self.reverse_swipes += 1
+        if self._frozen:      # "a screen that never moves, whatever we ask of it" -- either way
+            return
         self.scroll = max(0, self.scroll - scroll_step.step_px_for_frac((y2 - y1) / _H, _H))
 
 
@@ -702,6 +704,34 @@ class RestartingVideoWorldAdb(ProbeWorldAdb):
         ok, buf = cv2.imencode(".png", image)
         assert ok
         return buf.tobytes()
+
+
+class ScrollTopWorldAdb(ProbeWorldAdb):
+    """A page parked at Hinge's TOP STOP: a backward stroke rubber-bands, a forward one moves.
+
+    Where a profile's FIRST photo sits -- calibration's depth-1 target, and production's item 1
+    -- and the live failure of 2026-08-22. The reverse stroke IS delivered; Hinge simply has
+    nothing above the top to bring into view, so the page comes back byte-identical and the
+    shift estimator MEASURES +0px rather than refusing. Once a forward stroke has taken the page
+    off that stop, backward travel works again exactly as it does on the device, which is why
+    the stop is modelled as a FLOOR and not as a swallowed direction.
+
+    The floor sits at the starting scroll rather than at world row 0 because only a CENTRED card
+    is ever probed and this world's first card is not centred at row 0. Nothing the driver reads
+    can tell the two apart: it sees a backward stroke that was delivered and moved the page by
+    nothing.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._top_stop = self.scroll
+
+    def swipe(self, _x1, y1, _x2, y2, **_kwargs):
+        if y2 <= y1:
+            return
+        self.reverse_swipes += 1
+        self.scroll = max(self._top_stop,
+                          self.scroll - scroll_step.step_px_for_frac((y2 - y1) / _H, _H))
 
 
 def _centred_capture():
@@ -874,6 +904,72 @@ def test_a_probe_that_cannot_measure_where_the_page_went_refuses(
     evidence = drv._still_photo_dwell(frames, index)
 
     assert evidence[_CENTRED_ORDINAL].reattach_probe_ran is None
+
+
+def test_a_card_parked_at_the_scroll_top_exits_forward_when_backward_rubber_bands(
+        tmp_path, installed_still_photo_bound):
+    """The live failure of 2026-08-22, pinned. The exit stroke is BACKWARD, which is right for
+    the deep-parked cards production mostly probes and structurally impossible at the scroll
+    top: a profile's first photo has nothing above it, so the stroke rubber-bands, the shift
+    comes back a MEASURED +0px, and the card is still inside the autoplay trigger zone. Refusing
+    there made every depth-1 target -- which is calibration's whole target set, and production's
+    item 1 -- permanently unprovable, so a measured clamp buys ONE retry the other way and the
+    card leaves through the top instead. The page still comes back to where the read left it."""
+    index, frames = _centred_capture()
+    adb = ScrollTopWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="reattach-scroll-top")
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    entry = evidence[_CENTRED_ORDINAL]
+    assert entry.reattach_probe_ran is True
+    assert entry.reattach_dwell_exact is True
+    assert entry.reattach_mute_screens_complete is True
+    assert entry.reattach_centered is True
+    assert len(entry.reattach_dwell_frame_sha256s) >= 2
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    inputs = [r for r in records if r["action"] == "device_input"]
+    # Backward first, forward second, and the return leg after that: the clamped case costs
+    # exactly one stroke more than the unclamped one, and every stroke is still a guarded
+    # humanized read-scroll.
+    assert [(r["kind"], r["source"]) for r in inputs] == [
+        ("swipe", "_scroll"),              # the backward exit, swallowed by the top stop
+        ("scroll", "_scroll_down_one"),    # the retry the MEASURED clamp bought: out via the top
+        ("swipe", "_scroll"),              # the return, back down to where the read was
+    ]
+    for record in inputs:
+        assert record["transport"] == type(drv.touch).__name__
+    forward = next(r for r in inputs if r["kind"] == "scroll")
+    assert hinge._READ_SCROLL_FRAC_MIN <= forward["distance_frac"] <= hinge._READ_SCROLL_FRAC_MAX
+    summary = next(r for r in records if r["action"] == "still_photo_dwell")
+    assert summary["reattach_probe_ran"] is True
+    assert summary["reattach_page_shift_px"] == 0
+    assert adb.scroll == _CENTRED_SCROLLS[-1]
+
+
+def test_a_probe_clamped_in_both_directions_refuses_as_it_always_did(
+        monkeypatch, installed_still_photo_bound):
+    """The retry widens the way OUT, never the standard of proof. A page that will not move
+    either way detached nothing, so nothing can re-attach: the probe spends its two measured
+    strokes, takes no second burst at all, and refuses exactly as it did before the retry
+    existed. Nothing about the refusal is monkeypatched into place: the estimator really
+    measures +0px across two byte-identical frames, which is the evidence a rubber-banding
+    device produces, and the one patch here only COUNTS bursts."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1], frozen=True)
+    drv = _drv(adb)
+    rect = item_crops.dwell_card_rects(index, len(frames) - 1)[_CENTRED_ORDINAL]
+    bursts = []
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_burst",
+                        lambda self: bursts.append(1) or ([], 0.0))
+
+    assert drv._still_photo_reattach_probe(frames[-1], rect) is None
+
+    assert (adb.reverse_swipes, adb.scrolls) == (1, 1), "one stroke each way, and not one more"
+    assert bursts == [], "a card that never left the zone is charged no second burst"
+    assert adb.scroll == _CENTRED_SCROLLS[-1] and adb.taps == []
 
 
 def test_video_screen_reads_only_card_local_upper_left_sightings(monkeypatch):

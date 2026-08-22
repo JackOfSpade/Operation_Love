@@ -3879,6 +3879,18 @@ class AndroidDriver(DatingAppDriver):
         forbidden-zone-guarded, column-jittered, ledger-keeping read-scrolls the enumeration read
         uses; nothing here reaches for the transport, and no distance or lane is a constant.
 
+        WHICH WAY OUT: BACKWARD FIRST, FORWARD ON A MEASURED CLAMP. The exit goes backward
+        (content down, the card slides toward the bottom of the screen), which is the common
+        production case of a card parked partway down a profile. A card parked at the SCROLL TOP
+        -- a profile's FIRST photo, which is exactly where calibration's depth-1 target and
+        production's item 1 sit -- has nothing above it to reveal, so that stroke rubber-bands:
+        the measurement comes back ~0 and the card is still in the trigger zone. Found live
+        2026-08-22, when every depth-1 calibration target refused this rung and no deep-parked
+        one did. A MEASURED clamp therefore buys exactly ONE retry the other way (content up, the
+        card leaves through the top), derived and measured the same way, against the same anchor.
+        Nothing about the standard of proof moves: a re-entry only counts if the card measurably
+        LEFT the zone first, so both directions clamped is still a refusal.
+
         IT LEAVES THE PAGE WHERE IT FOUND IT. The return leg drives the MEASURED displacement
         back to zero rather than aiming at the card, so the position the first burst was taken at
         -- the position `_index_captured_items` then hands to bottom-up navigation as its entry
@@ -3897,30 +3909,65 @@ class AndroidDriver(DatingAppDriver):
             return None
         offset = card_center_offset_frac(rect, frame_height=height,
                                          content_band=self.content_band)
-        # Derived from where the card actually sits, never from where it ought to sit, and
-        # capped so the displacement stays inside the estimator's own trust window.
-        target = STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC * random.uniform(
-            *_REATTACH_EXIT_BAND_MULTIPLE_SPAN)
-        exit_px = min((target - offset) * band_px, _REATTACH_MAX_EXIT_BAND_FRAC * band_px)
-        exit_frac = min(_READ_SCROLL_FRAC_MAX,
-                        max(_READ_SCROLL_FRAC_MIN, frac_for_step_px(int(round(exit_px)), height)))
-        _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
-        self._scroll_up_one(exit_frac, x_frac)   # content down, so the card slides off centre
-        # Let Hinge finish the scroll animation: a frame caught mid-animation has no static
-        # strips for the shift estimator, and a refused measurement would refuse the probe.
-        time.sleep(human_delay(_READ_SCROLL_SETTLE_S))
-        frame = self._screencap(on_blank="none")
-        if frame is None:
+
+        def exit_leg(backward: bool) -> tuple[bytes, int] | None:
+            """One exit stroke and the NET page displacement it left, or None if unmeasurable.
+
+            Every draw this leg needs is made inside it, so the backward-first path issues the
+            same gestures in the same order, off the same random draws, as it did before the
+            forward retry existed -- a clamp is what buys a second set of draws, nothing else.
+            """
+            # Derived from where the card actually sits, never from where it ought to sit, and
+            # capped so the displacement stays inside the estimator's own trust window. The
+            # forward leg is the same derivation mirrored about the band centre, which is why it
+            # negates the card's offset rather than inventing a second distance rule.
+            target = STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC * random.uniform(
+                *_REATTACH_EXIT_BAND_MULTIPLE_SPAN)
+            exit_px = min((target - (offset if backward else -offset)) * band_px,
+                          _REATTACH_MAX_EXIT_BAND_FRAC * band_px)
+            exit_frac = min(_READ_SCROLL_FRAC_MAX,
+                            max(_READ_SCROLL_FRAC_MIN,
+                                frac_for_step_px(int(round(exit_px)), height)))
+            _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
+            # Backward is content DOWN, so the card slides off centre toward the bottom of the
+            # screen; forward is content UP, so it leaves through the top instead.
+            if backward:
+                self._scroll_up_one(exit_frac, x_frac)
+            else:
+                self._scroll_down_one(exit_frac, x_frac)
+            # Let Hinge finish the scroll animation: a frame caught mid-animation has no static
+            # strips for the shift estimator, and a refused measurement would refuse the probe.
+            time.sleep(human_delay(_READ_SCROLL_SETTLE_S))
+            seen = self._screencap(on_blank="none")
+            if seen is None:
+                return None
+            # Measured against the ORIGINAL anchor, in both directions, so what comes back is
+            # the NET displacement from the page position the first burst was taken at -- the
+            # position the return leg drives back to, whichever way the card finally left.
+            moved = self._measured_page_shift(anchor, seen)
+            return None if moved is None else (seen, moved)
+
+        def inside_zone(moved: int) -> bool:
+            return abs(offset - moved / band_px) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
+
+        exited = exit_leg(backward=True)
+        if exited is None:
             return None
-        total = self._measured_page_shift(anchor, frame)
-        if total is None:
-            return None
-        if abs(offset - total / band_px) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:
+        frame, total = exited
+        if inside_zone(total):
             # The stroke was delivered and the card is still in the trigger zone: a clamp at the
-            # end of the profile, or a fling Hinge swallowed. Nothing detached, so nothing can
-            # re-attach, and calling the re-entry a re-attach anyway would manufacture exactly
-            # the unearned observation this rung exists to prevent.
-            return None
+            # scroll top (nothing above a profile's first photo to scroll into view), a clamp at
+            # the end of the profile, or a fling Hinge swallowed. Try the other way out ONCE,
+            # measured the same way, before giving up on it.
+            exited = exit_leg(backward=False)
+            if exited is None:
+                return None
+            frame, total = exited
+            if inside_zone(total):
+                # Both directions delivered and the card never left. Nothing detached, so
+                # nothing can re-attach, and calling the re-entry a re-attach anyway would
+                # manufacture exactly the unearned observation this rung exists to prevent.
+                return None
         quantum = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
         for _attempt in range(random.randint(*_REATTACH_RETURN_STEPS_SPAN)):
             remaining = -total

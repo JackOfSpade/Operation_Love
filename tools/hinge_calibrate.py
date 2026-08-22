@@ -992,7 +992,8 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block) -> 
     first = StillPhotoDwell(dwell_frame_sha256s=digests, dwell_exact=exact, dwell_span_s=span_s,
                             mute_screens_complete=screened, centered=centered,
                             center_offset_frac=offset)
-    # Ask the ladder BEFORE spending the probe's two real gestures.  Every rung above the probe
+    # Ask the ladder BEFORE spending the probe's real gestures (two strokes, three when the
+    # first exit direction measures clamped).  Every rung above the probe
     # answers from frames we already hold, so a card that fails one of them is refused for THAT
     # reason -- the policy blocker on an unlicensed build, the mute screen, the centring -- and
     # never for a probe it was never eligible for.  The comparison is by identity against the

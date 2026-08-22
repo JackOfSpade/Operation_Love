@@ -341,6 +341,23 @@ frames with no drift) refuses as a corrupt measurement — no in-tree producer
 emits that shape, but the first future producer that forgets the frames behind
 its number must be caught, not silently passed.
 
+**Blocker three, found by the diagnosis the first fix installed (2026-08-22, campaign
+attempt 4).** With numbering and the licence both fixed, the pre-heart proof got one rung
+further and refused at the re-attach probe: its exit stroke was hardcoded BACKWARD
+(`_scroll_up_one`, content down), which rubber-bands at scroll top — exactly where a
+profile's first photo parks, i.e. calibration's depth-1 target and production's item 1.
+The measured clamp branch existed but had no second direction to try, so depth-1 targets
+could never pass the proof, and production numbering was biased to deep-parked (last)
+photos for the same reason. Fix: backward-first (the common deep-parked case), one
+forward retry on a MEASURED clamp, refuse only when both directions leave the card
+inside the trigger zone; every leg stays measured against the original anchor and the
+unclamped path is draw-for-draw identical to before (proved at four seeds). One watch
+item deliberately left in place: the proof still demands a byte-exact restore after the
+return leg while the driver only promises a residual under half a scroll quantum — at
+the top stop the clamp forces exactness, but a deep-parked target whose return
+under-delivers will skip at that rung; if attempt 5+ shows such skips, the return leg
+needs micro-step refinement, not a relaxed comparison.
+
 **The lesson, stated once for both failures of the day:** a gate is only as real
 as the evidence PATH that feeds it. Wiring the strict ladder into a loop that
 can never possess dwell evidence did not make the loop safer — it made the loop

@@ -522,6 +522,43 @@ on this refusal (it is currently discarded, so the geometry cannot be read off d
 real 10.0.1 previews across several tall cards, and re-derive the constant the way section 4
 derives every other one.
 
+**Blocker ten, resolved by evidence into something narrower — and a live confirmation.**
+Across two campaign runs the DEEP target (item 3, even ordinals) refused three times, each
+for a DIFFERENT legitimate reason, while item 1 succeeded four times across three profiles:
+
+  1. reframe overflow — the composer preview would hide 34.08% of a 1109px crop (limit 30%);
+  2. unstable stored crop — item 3's own crop drifted 27.974 grey levels between two
+     observations at the same scroll position, while the sheet re-rendered only **1.95** away
+     from that crop;
+  3. photo-only payload unavailable — the profile did not contain three numberable photos.
+
+Reason 2 is the one that settles the open question from the first refusal. A sheet render
+1.95 grey levels from the stored crop is a near-exact match, so the composer WAS showing the
+requested item; the earlier "nearest stored item is 1" was alignment fallout from item 3 being
+structurally excluded, not evidence of a wrong tap. No heart was ever spent on a wrong item,
+and every refusal was fail-closed.
+
+Reason 3 came with the night's first live proof that the ladder excludes a real video: the
+profile's second card was a video (a `0:01` duration timer rendered in its corner), it was
+correctly left unnumbered, and that absence is precisely why a third numbered PHOTO did not
+exist. The exclusion did not depend on the mute glyph.
+
+So blocker ten is NOT a 10.0.1 renderer regression that needs a widened constant. It is the
+narrow-numbering consequence the adversarial replay predicted, observed live: real decks mix
+photos, prompt cards and videos, so a profile with three numberable photos is uncommon, and
+the alternating 1/3 calibration strategy therefore burns its bounded skip budget on every even
+ordinal. The reframe limit still deserves a proper 10.0.1 measurement before anyone touches it
+(the diagnostic that persists the refusing frame is now in place for exactly that), but it is
+no longer what blocks a campaign.
+
+What this makes an OWNER decision rather than an engineering default: completing a calibration
+today means either (a) re-measuring the 0.24 read-scroll drift ceiling so more items number —
+which also widens production numbering beyond "the last photo or nothing" — or (b) running the
+calibration on item 1 only, which completes but proves less about the navigator's ability to
+count to depth, or (c) accepting narrow numbering and a campaign that cannot complete as
+configured. These are the same three options section 5c already recorded; the live evidence
+now says (b) is what makes tonight's campaign finish, and (a) is what makes the product good.
+
 **The lesson, stated once for both failures of the day:** a gate is only as real
 as the evidence PATH that feeds it. Wiring the strict ladder into a loop that
 can never possess dwell evidence did not make the loop safer — it made the loop

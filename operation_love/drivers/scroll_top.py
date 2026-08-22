@@ -335,6 +335,24 @@ _SCROLL_TOP_BAND_FINGERPRINTS: tuple[tuple[int, ...], ...] = (
 # Maintained for backwards compatibility:
 _SCROLL_TOP_BAND_FINGERPRINT = _SCROLL_TOP_BAND_FINGERPRINT_COMPATIBLE
 
+# Bounded VERTICAL alignment search: how many pixels of crop drift `confirm_scroll_top` will
+# absorb by re-cropping the identity band before falling back to the fixed dy=0 crop.
+#
+# Measured live 2026-08-22: a hybrid-rewind capture whose identity band genuinely WAS the
+# filter-chips row still measured 5.625--6.547 against every registered fingerprint at the
+# crop's nominal (dy=0) position -- squarely in the (3.0, 9.0) dead zone -- because the page had
+# settled a few pixels lower than any calibration frame. Re-cropping that SAME live frame 8px
+# higher (dy=-8) measured 1.0, comfortably inside confirm_max. The gate was asking "is the page
+# at this precise pixel offset" when doc 5.5 only needs "is this strip the filter-chips row",
+# and single-digit pixels of rendering jitter is far short of a real scroll.
+#
+# 12 is sized off two anchors, not chosen freeform: it comfortably covers the 8px jitter actually
+# measured, while staying well under the ~111px identity-band height (16x4 grid over a 756x111
+# crop -- see _FINGERPRINT_GRID's comment) so the sweep can never slide a DIFFERENT UI element
+# into the band, and vastly under the ~219px minimum scroll gesture ("Scroll step vs spacing
+# aliasing", measured 2026-08-11) so it can never be mistaken for a real scroll completing.
+_ALIGNMENT_SEARCH_PX = 12
+
 # At or below this mean-abs distance (0..255) from the fingerprint, the band IS the filter-chips
 # row and the frame is CONFIRMED at scroll top.
 #
@@ -406,6 +424,12 @@ class ScrollTopVerdict:
 
     `reason` is always populated, including on a CONFIRMED verdict, so a debug record or a hub
     stop line can quote why without re-deriving anything.
+
+    `alignment_offset_px` is the vertical pixel offset (see `_ALIGNMENT_SEARCH_PX`) that produced
+    `distance` -- 0 when the fixed dy=0 crop was already the best match, which is the overwhelming
+    common case. Appended as the LAST field with a default so the existing positional
+    constructions in `tests/test_hinge_calibrate.py` and `tests/test_hinge_operational_evidence.py`
+    (7 positional args, matching the 7 fields above) keep working unchanged.
     """
     state: str
     distance: float | None
@@ -414,6 +438,7 @@ class ScrollTopVerdict:
     grid: tuple[int, int]
     confirm_max: float
     refute_min: float
+    alignment_offset_px: int = 0
 
     @property
     def confirmed(self) -> bool:
@@ -489,6 +514,50 @@ def band_fingerprint(frame: bytes, *, identity_band: tuple[float, float, float, 
     return tuple(int(v) for v in band.reshape(-1))
 
 
+def _band_fingerprint_at_offset(frame: bytes, *, identity_band: tuple[float, float, float, float],
+                                grid: tuple[int, int], dy_px: int) -> tuple[int, ...] | None:
+    """`band_fingerprint`'s decode, with the identity band's crop shifted `dy_px` pixels DOWN
+    (negative moves it up) in the source frame before `_hinge._band` crops and resizes it. This
+    is `confirm_scroll_top`'s alignment search calling the SAME shipped decode at a different
+    crop, not a second crop-and-resize implementation — see `band_fingerprint`'s own docstring
+    for why that distinction matters at a 3.0-grey-level confirm bound.
+
+    `identity_band` is normalised fractions of the frame, so an exact-PIXEL shift needs the
+    frame's actual height; nothing here decodes further than that to get it, and the crop and
+    resize both still happen inside `_hinge._band`.
+
+    Returns None — never raises — for two distinct "skip this one offset" situations: the shift
+    would push the band off the top or bottom edge of the frame, or the frame's size could not be
+    read for a nonzero shift. Both are safe to skip because `confirm_scroll_top` always evaluates
+    dy=0 first, through `band_fingerprint`'s unchanged raising contract — a frame that cannot be
+    decoded AT ALL fails loudly there before any offset is tried, so a broken PIL/numpy install
+    can never be silently absorbed by "skip this offset" here.
+    """
+    from . import hinge as _hinge
+
+    x0, y0, x1, y1 = identity_band
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+        frame_h = Image.open(BytesIO(frame)).size[1]
+    except Exception:  # noqa: BLE001 — dy=0 already proved this frame decodes; a sizing
+        # failure at a nonzero offset is "skip this offset", not a fresh "could not look".
+        return None
+    if frame_h <= 0:
+        return None
+
+    dy_frac = dy_px / frame_h
+    y0, y1 = y0 + dy_frac, y1 + dy_frac
+    if y0 < 0.0 or y1 > 1.0:
+        return None  # would slide the crop off the top or bottom edge of the frame
+
+    band = _hinge._band(frame, (x0, y0, x1, y1), grid)
+    if band is None:
+        return None
+    return tuple(int(v) for v in band.reshape(-1))
+
+
 def confirm_scroll_top(frame: bytes, *,
                        identity_band: tuple[float, float, float, float] | None,
                        fingerprint: Sequence[int] | Sequence[Sequence[int]] = _SCROLL_TOP_BAND_FINGERPRINTS,
@@ -509,6 +578,13 @@ def confirm_scroll_top(frame: bytes, *,
     exposed on `segment_frame`'s precedent so a validation pass — or a test with a synthetic
     band — can vary one without editing the module. When multiple candidate fingerprints are
     configured, the nearest matching filter-chips variant determines the distance.
+
+    Before comparing, the identity band is also re-cropped at every integer vertical offset in
+    `[-_ALIGNMENT_SEARCH_PX, +_ALIGNMENT_SEARCH_PX]` and the BEST (minimum) distance across every
+    offset and every candidate fingerprint wins — see `_ALIGNMENT_SEARCH_PX`'s comment for the
+    live jitter this absorbs. `confirm_max` and `refute_min` are unchanged by this: only the crop
+    alignment is searched, never the bounds. The winning offset is recorded on
+    `ScrollTopVerdict.alignment_offset_px` and, when nonzero, named in `reason`.
 
     PRECONDITION, and it is not a formality: this must be a screen already established to be a
     Hinge profile. `SCROLL_TOP_REFUTED` says "this strip is not the filter-chips row", which only
@@ -541,34 +617,55 @@ def confirm_scroll_top(frame: bytes, *,
     if identity_band is None:
         return ScrollTopVerdict(
             state=SCROLL_TOP_UNKNOWN, distance=None, band=None, grid=grid,
-            confirm_max=confirm_max, refute_min=refute_min,
+            confirm_max=confirm_max, refute_min=refute_min, alignment_offset_px=0,
             reason=("no identity_band declared for this app, so the filter-chips signal doc 5.5 "
                     "requires cannot be read at all — this is 'cannot tell', never 'at top'"))
 
+    # dy=0 first and unconditionally, through band_fingerprint's own raising contract: a frame
+    # that cannot be decoded at all must fail loudly here, before the alignment search below gets
+    # a chance to treat every other offset's failure as merely "skip it" (see
+    # _band_fingerprint_at_offset's docstring).
     seen = band_fingerprint(frame, identity_band=identity_band, grid=grid)
     dist = min(fingerprint_distance(seen, fp) for fp in candidates)
+    offset = 0
+
+    for dy in range(-_ALIGNMENT_SEARCH_PX, _ALIGNMENT_SEARCH_PX + 1):
+        if dy == 0:
+            continue
+        shifted = _band_fingerprint_at_offset(frame, identity_band=identity_band, grid=grid,
+                                              dy_px=dy)
+        if shifted is None:
+            continue
+        shifted_dist = min(fingerprint_distance(shifted, fp) for fp in candidates)
+        if shifted_dist < dist:
+            dist, offset = shifted_dist, dy
+
+    offset_note = (f", after searching a {offset:+d}px vertical alignment offset within "
+                   f"+/-{_ALIGNMENT_SEARCH_PX}px of layout jitter" if offset else "")
 
     if dist <= confirm_max:
         return ScrollTopVerdict(
             state=SCROLL_TOP_CONFIRMED, distance=dist, band=tuple(identity_band), grid=grid,
-            confirm_max=confirm_max, refute_min=refute_min,
+            confirm_max=confirm_max, refute_min=refute_min, alignment_offset_px=offset,
             reason=(f"the identity band matches Hinge's profile-independent filter-chips row at "
-                    f"{dist:.3f} <= {confirm_max} — at any scroll offset past the top the app's "
-                    "sticky per-profile header covers this strip with the person's name instead"))
+                    f"{dist:.3f} <= {confirm_max}{offset_note} — at any scroll offset past the "
+                    "top the app's sticky per-profile header covers this strip with the person's "
+                    "name instead"))
     if dist >= refute_min:
         return ScrollTopVerdict(
             state=SCROLL_TOP_REFUTED, distance=dist, band=tuple(identity_band), grid=grid,
-            confirm_max=confirm_max, refute_min=refute_min,
+            confirm_max=confirm_max, refute_min=refute_min, alignment_offset_px=offset,
             reason=(f"the identity band is {dist:.3f} from the filter-chips row, at or past the "
-                    f"{refute_min} bound — on a screen already established as a Hinge profile "
-                    "that means the sticky per-profile header is showing and we are scrolled"))
+                    f"{refute_min} bound{offset_note} — on a screen already established as a "
+                    "Hinge profile that means the sticky per-profile header is showing and we "
+                    "are scrolled"))
     return ScrollTopVerdict(
         state=SCROLL_TOP_UNKNOWN, distance=dist, band=tuple(identity_band), grid=grid,
-        confirm_max=confirm_max, refute_min=refute_min,
+        confirm_max=confirm_max, refute_min=refute_min, alignment_offset_px=offset,
         reason=(f"the identity band is {dist:.3f} from the filter-chips row, inside the "
-                f"({confirm_max}, {refute_min}) dead zone — too far to be that row and too near "
-                "to be positively something else. No frame in the calibration corpus has ever "
-                "landed here; this is 'cannot tell', never 'at top'"))
+                f"({confirm_max}, {refute_min}) dead zone{offset_note} — too far to be that row "
+                "and too near to be positively something else. No frame in the calibration "
+                "corpus has ever landed here; this is 'cannot tell', never 'at top'"))
 
 
 def require_scroll_top(frame: bytes, *,

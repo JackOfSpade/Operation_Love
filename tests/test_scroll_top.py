@@ -304,18 +304,27 @@ def test_the_same_chrome_redrawn_a_few_pixels_lower_still_confirms():
 
 
 def test_the_control_a_shift_large_enough_to_matter_does_not_confirm():
-    """A 6-row shift of a 2-levels-per-row gradient: 12.0. The tolerance above is a bound on the
-    CHANGE, not an amnesty on shifting — otherwise the test above would be passing because the
-    gate ignores position. (Both gradients are chosen to span 15..225, so nothing clips and the
-    shift really does move every cell by the full amount.)"""
+    """An 8-row shift of a 2-levels-per-row gradient: 16.0 at the fixed dy=0 crop. The tolerance
+    above is a bound on the CHANGE, not an amnesty on shifting — otherwise the test above would
+    be passing because the gate ignores position. (Both gradients are chosen to span 15..225, so
+    nothing clips and the shift really does move every cell by the full amount.)
+
+    8 rows rather than the previous 6: this fixture paints the gradient ONLY inside the exact
+    identity-band rect with flat background on both sides, so `_ALIGNMENT_SEARCH_PX`'s sweep can
+    trade a few of the shifted gradient's most-displaced rows for background and claw back part
+    of a 6-row shift's distance (12.0 -> 7.75, landing in the dead zone) — an edge effect of this
+    fixture's sharp-edged patch, not of a real device frame where content extends continuously
+    past the crop. 8 rows keeps the post-search distance safely past `refute_min` (16.0 -> 11.0),
+    so this control still demonstrates what it always did: a shift this size is never tolerated.
+    """
     reference = _fingerprint_of(_frame(_gradient(15, 2.0)))
-    shifted = _frame(_gradient(15, 2.0, shift_rows=6))
+    shifted = _frame(_gradient(15, 2.0, shift_rows=8))
 
     verdict = scroll_top.confirm_scroll_top(
         shifted, identity_band=_IB, fingerprint=reference, grid=_GRID)
 
     assert verdict.refuted is True
-    assert verdict.distance == pytest.approx(12.0, abs=0.5)
+    assert verdict.distance == pytest.approx(11.0, abs=0.5)
 
 
 @pytest.mark.parametrize("value", [255, 250, 0])
@@ -584,3 +593,158 @@ def test_hinge_10_0_1_variant_does_not_pull_a_scrolled_frame_into_the_dead_zone(
     assert verdict.refuted is True
     assert verdict.confirmed is False
     assert verdict.distance == pytest.approx(16.0, abs=1e-9)
+
+
+# =====================================================================================
+# The bounded vertical alignment search (_ALIGNMENT_SEARCH_PX).
+#
+# Live failure, 2026-08-22: every profile advance that night landed in the (3.0, 9.0) dead zone
+# -- measurements 5.547, 5.625, 5.656, 6.547 -- aborting "hybrid rewind reached an unconfirmed
+# scroll-top state" on frames that were visibly at the top. Re-cropping the identity band with a
+# small vertical offset (dy=-8px) turned a 5.625 dead-zone measurement into 1.0, comfortably
+# inside confirm_max: the filter-chips row was really there, just a few pixels lower than the
+# fingerprint's calibration crop -- far below the ~219px minimum scroll gesture and well under
+# the ~111px band height, so no gesture could have corrected it and the rewind could only refuse.
+# =====================================================================================
+
+def _frame_with_band_at(fill, *, dy: int, background=40) -> bytes:
+    """Like `_frame`, but the identity band's content is painted `dy` PIXELS away from the
+    nominal `identity_band` crop -- simulating chrome that rendered a few pixels off the position
+    the fingerprint was calibrated against, exactly the live 2026-08-22 failure. `confirm_scroll_
+    top`'s own (unshifted) crop is untouched by this helper's `dy`; only where the content
+    actually sits in the frame moves, so a caller comparing against the content's OWN dy=0
+    fingerprint reproduces the live "cannot tell at the nominal crop, confirms once re-aligned"
+    shape from first principles.
+    """
+    arr = np.full((_H, _W), background, dtype="uint8")
+    r0, r1, c0, c1 = _band_rows_cols()
+    arr[r0 + dy:r1 + dy, c0:c1] = fill
+    buf = BytesIO()
+    Image.fromarray(arr, mode="L").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_a_band_settled_a_few_pixels_off_calibration_confirms_after_the_alignment_search():
+    """The live regression. The filter-chips row rendered 8px away from the fingerprint's
+    calibration crop -- `_frame_with_band_at(..., dy=-8)` mirrors the 2026-08-22 measurements
+    (5.625 at the fixed dy=0 crop, 1.0 once re-cropped 8px higher) closely enough that the
+    synthetic distances land in the same shape: 5.75 at dy=0 (dead zone, would have aborted the
+    rewind exactly like that night), 0.0 at dy=-8 (comfortably inside confirm_max)."""
+    reference = _fingerprint_of(_frame_with_band_at(_BASE, dy=0))
+    live_frame = _frame_with_band_at(_BASE, dy=-8)
+
+    at_nominal_crop = scroll_top.fingerprint_distance(_fingerprint_of(live_frame), reference)
+    assert at_nominal_crop == pytest.approx(5.75, abs=1e-9)
+    assert scroll_top._CONFIRM_MAX_DIST < at_nominal_crop < scroll_top._REFUTE_MIN_DIST
+
+    verdict = scroll_top.confirm_scroll_top(
+        live_frame, identity_band=_IB, fingerprint=reference, grid=_GRID)
+
+    assert verdict.state == scroll_top.SCROLL_TOP_CONFIRMED
+    assert verdict.confirmed is True
+    assert verdict.distance == pytest.approx(0.0, abs=1e-9)
+    assert verdict.alignment_offset_px == -8
+    assert "-8px" in verdict.reason
+
+
+def test_the_alignment_search_never_pulls_a_genuinely_scrolled_band_into_confirmation():
+    """Safety pin: the whole gate exists so navigation never counts hearts on somebody else's
+    card, so a REFUTED band must stay refuted across the ENTIRE sweep, not just at dy=0.
+
+    Constructed so no offset helps: the frame's band is flat at `_BASE` over its full painted
+    extent (not just the declared identity_band rect plus a shifted patch), so re-cropping it at
+    any offset only trades in MORE of the surrounding `background` -- which sits even further
+    from a reference offset positive from `_BASE`, never closer. This reproduces the real
+    negative check (a scrolled/composer-open frame measured 10.031-16.7 at dy=0) with a
+    synthetic band whose distance is provably monotonic in the offset instead of merely observed
+    to be so on one capture.
+    """
+    frame = _frame(_flat(_BASE))
+    reference = _offset(_fingerprint_of(frame), 12)      # 12.0 at dy=0, same as the plain test
+
+    for dy in range(-scroll_top._ALIGNMENT_SEARCH_PX, scroll_top._ALIGNMENT_SEARCH_PX + 1):
+        seen = (_fingerprint_of(frame) if dy == 0 else
+                scroll_top._band_fingerprint_at_offset(frame, identity_band=_IB, grid=_GRID,
+                                                       dy_px=dy))
+        assert scroll_top.fingerprint_distance(seen, reference) >= 12.0, (
+            f"offset {dy:+d}px found a closer match than dy=0 -- the sweep would be pulling a "
+            "scrolled frame toward confirmation")
+
+    verdict = scroll_top.confirm_scroll_top(
+        frame, identity_band=_IB, fingerprint=reference, grid=_GRID)
+
+    assert verdict.state == scroll_top.SCROLL_TOP_REFUTED
+    assert verdict.refuted is True
+    assert verdict.confirmed is False
+    assert verdict.distance == 12.0
+    assert verdict.alignment_offset_px == 0
+
+
+def test_the_dead_zone_survives_the_alignment_search():
+    """The dead zone is a deliberate THIRD outcome (see the module docstring), not a threshold
+    the alignment search is allowed to search its way out of. A band that is ambiguous at every
+    offset -- 5.0 to 13.0 across the full +/-12px sweep, never dropping to confirm_max -- must
+    still come back `cannot_tell`, exactly as it would with no alignment search at all."""
+    frame = _frame(_flat(_BASE))
+    reference = _offset(_fingerprint_of(frame), 5)       # 5.0 at dy=0: inside (3.0, 9.0)
+
+    for dy in range(-scroll_top._ALIGNMENT_SEARCH_PX, scroll_top._ALIGNMENT_SEARCH_PX + 1):
+        seen = (_fingerprint_of(frame) if dy == 0 else
+                scroll_top._band_fingerprint_at_offset(frame, identity_band=_IB, grid=_GRID,
+                                                       dy_px=dy))
+        assert scroll_top.fingerprint_distance(seen, reference) > scroll_top._CONFIRM_MAX_DIST, (
+            f"offset {dy:+d}px dropped to or below confirm_max -- the dead zone must never be "
+            "searchable into a false confirmation")
+
+    verdict = scroll_top.confirm_scroll_top(
+        frame, identity_band=_IB, fingerprint=reference, grid=_GRID)
+
+    assert verdict.state == scroll_top.SCROLL_TOP_UNKNOWN
+    assert verdict.unknown is True
+    assert verdict.distance == 5.0
+    assert verdict.alignment_offset_px == 0
+    assert "dead zone" in verdict.reason
+
+
+def test_alignment_offset_defaults_to_zero_and_is_silent_in_the_reason_when_unsearched():
+    """An exact dy=0 match is the overwhelming common case, so the new field and the new reason
+    clause must both stay invisible when nothing was searched -- reusing the plain confirming
+    test's fixture rather than duplicating its assertions."""
+    frame = _frame(_flat(_BASE))
+    verdict = scroll_top.confirm_scroll_top(
+        frame, identity_band=_IB, fingerprint=_fingerprint_of(frame), grid=_GRID)
+
+    assert verdict.alignment_offset_px == 0
+    assert "px" not in verdict.reason
+
+
+def test_band_fingerprint_at_offset_skips_a_shift_that_would_fall_off_the_frame():
+    """`confirm_scroll_top`'s sweep only ever asks for `_ALIGNMENT_SEARCH_PX` (12px), which never
+    approaches the frame edge for `_IB` -- so this exercises `_band_fingerprint_at_offset`
+    directly, at shifts large enough to prove the clamp exists rather than trusting it never
+    fires in practice."""
+    frame = _frame(_flat(_BASE))
+
+    # _IB's y1 (0.094) is much nearer 0 than 1, so pushing the shifted y1 past 1.0 needs a much
+    # larger dy_px than pushing y0 below 0 -- (1.0 - 0.094) * 2400 = 2174.4px versus 0.048 * 2400
+    # = 115.2px. Both are picked comfortably past their respective thresholds.
+    off_top = scroll_top._band_fingerprint_at_offset(
+        frame, identity_band=_IB, grid=_GRID, dy_px=-1000)
+    off_bottom = scroll_top._band_fingerprint_at_offset(
+        frame, identity_band=_IB, grid=_GRID, dy_px=2200)
+    in_bounds = scroll_top._band_fingerprint_at_offset(
+        frame, identity_band=_IB, grid=_GRID, dy_px=4)
+
+    assert off_top is None
+    assert off_bottom is None
+    assert in_bounds is not None
+
+
+def test_band_fingerprint_at_offset_dy_zero_agrees_with_band_fingerprint():
+    """`band_fingerprint` remains the dy=0 public entry point; `_band_fingerprint_at_offset` is
+    only ever exercised at nonzero shifts by `confirm_scroll_top`, but it must not silently
+    disagree with the public function if a caller ever passes dy_px=0 directly."""
+    frame = _frame(_flat(_BASE))
+
+    assert (scroll_top._band_fingerprint_at_offset(frame, identity_band=_IB, grid=_GRID, dy_px=0)
+            == scroll_top.band_fingerprint(frame, identity_band=_IB, grid=_GRID))

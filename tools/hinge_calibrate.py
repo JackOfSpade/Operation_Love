@@ -926,6 +926,42 @@ def _frame_height_px(frame: bytes) -> int | None:
     return None if image is None else int(image.shape[0])
 
 
+def _frame_width_px(frame: bytes) -> int | None:
+    """The decoded pixel width of one frame, or None when it cannot be decoded.
+
+    Mirrors `_frame_height_px` exactly (see its docstring): None is a refusal upstream, never a
+    default width like a hardcoded 1080 -- the device in hand is not the only one this ever runs
+    against.
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_COLOR)
+    except Exception:  # noqa: BLE001 -- an undecodable frame is a missing observation
+        return None
+    return None if image is None else int(image.shape[1])
+
+
+def _content_band_rect_px(frame: bytes, content_band) -> tuple[int, int, int, int] | None:
+    """The full-width pixel rect of `frame`'s scrolling content band, or None if undecodable.
+
+    Android's status bar and Hinge's bottom nav are fixed chrome: they do not translate when the
+    content scrolls, which is exactly why `estimate_shift` and `hinge.py`'s
+    `_vertical_shift_match` both restrict their own comparisons to `content_band`'s rows rather
+    than the whole frame (see either docstring for the measured numbers). The same fact makes
+    `content_band` the correct scope for a byte-identity comparison too: it is blind to rows
+    that change for reasons with no bearing on the card underneath, such as the status-bar clock
+    ticking a minute forward, while still covering every row the tap target could possibly sit
+    on or that could cover it.
+    """
+    height = _frame_height_px(frame)
+    width = _frame_width_px(frame)
+    if not height or not width:
+        return None
+    return (0, int(content_band[0] * height), width, int(content_band[1] * height))
+
+
 def _dwell_centering(rect, frame: bytes, content_band):
     """`(centered, offset)` for one card rect, or `(None, None)` when it cannot be measured.
 
@@ -1229,9 +1265,27 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
 
     A hybrid review can take long enough for animated media or auto-hiding controls to change
     the framebuffer.  Coordinates approved for the earlier PNG are therefore not authority for
-    a later screen.  Require byte identity, then independently re-run the card/heart and profile
-    identity gates on those fresh bytes.  No input is issued here; every refusal leaves the
-    driver's final foreground-package guard as the only operation immediately before a valid tap.
+    a later screen.  Require byte identity over the CONTENT BAND, then independently re-run the
+    card/heart and profile identity gates on those fresh bytes.  No input is issued here; every
+    refusal leaves the driver's final foreground-package guard as the only operation immediately
+    before a valid tap.
+
+    FULL-FRAME identity was never the right scope, and was found live to be unsatisfiable
+    (2026-08-22, campaign attempt 8): Android's status bar redraws its clock every 60 seconds
+    with no bearing whatsoever on the tap target, so any reviewer careful enough to actually
+    read the PNG before approving it -- exactly the behaviour this checkpoint exists to reward
+    -- was near-guaranteed to cross a minute boundary and have a genuinely valid heart refused.
+    A diffed real refusal showed only rows 43-76 (the clock) differing; the content band, card
+    and heart included, was byte-identical. The content band is the scrolling region and, by
+    construction, excludes exactly this fixed chrome -- `estimate_shift`'s docstring and
+    `hinge.py`'s `_vertical_shift_match` document the same status-bar/bottom-nav exclusion for
+    the same reason. The reviewed heart point always sits inside this band, so scoping the
+    comparison to it is strictly narrower, never weaker: it still catches a scroll, an
+    autoplaying video, an auto-hiding mute control (it lives inside the card) or a modal over the
+    card, because every one of those changes band pixels. Everything below the comparison is
+    UNCHANGED -- `_verified_target_frame_proof` and `compare_profile_identity` independently
+    re-prove the card, the heart and the profile identity on the fresh frame -- which is what
+    makes narrowing the byte comparison safe rather than a relaxation.
 
     `expected_point`/`expected_frame`/`expected_rows` default to the navigator's own point, frame
     and rows -- exactly today's behaviour -- and are passed explicitly by the one caller that
@@ -1252,10 +1306,21 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
 
     frame_to_match = target.frame if expected_frame is None else expected_frame
     fresh = driver.adb.screencap()
-    if fresh != frame_to_match:
+    band_rect = _content_band_rect_px(frame_to_match, content_band)
+    if band_rect is None:
         raise _CaptureAbort(
-            "hybrid heart refused: the framebuffer changed after review; refusing to spend "
-            "coordinates from a stale checkpoint")
+            "hybrid heart refused: the reviewed frame could not be read to scope the "
+            "content-band comparison")
+    try:
+        band_unchanged = dwell_exact_over_rect([frame_to_match, fresh], band_rect)
+    except ItemCropError as exc:
+        raise _CaptureAbort(
+            f"hybrid heart refused: the reviewed card's content band could not be compared: "
+            f"{exc}") from exc
+    if not band_unchanged:
+        raise _CaptureAbort(
+            "hybrid heart refused: the reviewed card's content band changed after review; "
+            "refusing to spend coordinates from a stale checkpoint")
     try:
         proof = _verified_target_frame_proof(
             driver, target, frame=fresh, content_band=content_band,

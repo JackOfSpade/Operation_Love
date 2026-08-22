@@ -1315,6 +1315,33 @@ def _png(value: int, size=(1000, 600)) -> bytes:
     return buf.tobytes()
 
 
+def _frame_with_patch(value: int, patch: int, *, rows: tuple[int, int], cols: tuple[int, int],
+                      size=_ACTION_FRAME_SIZE) -> bytes:
+    """An otherwise-uniform frame with `patch` written into `rows`x`cols`.
+
+    Generalizes `_patched_action_frame` so a test can place the differing pixels precisely
+    inside or outside the content band -- e.g. a status-bar clock tick above the band, or a
+    handful of pixels inside the reviewed card's own rect.
+    """
+    image = np.full((size[1], size[0]), value, np.uint8)
+    image[rows[0]:rows[1], cols[0]:cols[1]] = patch
+    ok, buf = cv2.imencode(".png", image)
+    assert ok
+    return buf.tobytes()
+
+
+def test_content_band_rect_is_derived_from_the_configured_band_not_hardcoded():
+    """Guards against a hardcoded 300/2100: those exact numbers are what (0.125, 0.875) happens
+    to produce on the Pixel 7a's own 1080x2400 frame, which is exactly why a regression that
+    hardcoded them would pass every other test in this file. A DIFFERENT band fraction on the
+    SAME realistic frame size must move the rect proportionally, and the rect must span the
+    frame's full decoded width, not a hardcoded 1080."""
+    frame = _png(9, size=(1080, 2400))
+
+    assert cal._content_band_rect_px(frame, (0.125, 0.875)) == (0, 300, 1080, 2100)
+    assert cal._content_band_rect_px(frame, (0.1, 0.9)) == (0, 240, 1080, 2160)
+
+
 def test_target_frame_proof_carries_the_screen_verdict_bound_to_the_screened_frame(monkeypatch):
     """The proof object itself is the contract the checkpoint reads: it must report the screen's
     own verdict for the exact bytes it was given, and vouch for no other frame."""
@@ -1346,13 +1373,24 @@ def test_target_frame_proof_carries_the_screen_verdict_bound_to_the_screened_fra
         cal._located_target_heart_visible(True, b"target-pre")
 
 
+# Real, decodable PNGs standing in for the reviewed frame and a fresh capture of it. The band
+# comparison now decodes both sides (it has to, to know the frame's own height/width), so a fake
+# placeholder like the old `b"target-pre"` no longer stands in for a screen -- these are still
+# 1080-wide like `_ACTION_FRAME_SIZE` so the (700, 900) card rect used throughout these tests
+# sits inside the content band exactly as it did before.
+_FRESH_TARGET_FRAME = _action_frame()
+# Changed INSIDE the content band (rows 250..1750 for this 2000-tall frame) and inside the
+# reviewed card's own rect (700..900): the class of change the byte-identity gate exists to catch.
+_FRESH_TARGET_FRAME_BAND_CHANGED = _frame_with_patch(9, 200, rows=(750, 758), cols=(100, 108))
+
+
 @pytest.mark.parametrize(
     ("fresh_frame", "reviewed_point", "detected_point", "identity_matched"),
     [
-        (b"changed", [500, 800], (500, 800), True),
-        (b"target-pre", [501, 800], (500, 800), True),
-        (b"target-pre", [500, 800], (501, 800), True),
-        (b"target-pre", [500, 800], (500, 800), False),
+        (_FRESH_TARGET_FRAME_BAND_CHANGED, [500, 800], (500, 800), True),
+        (_FRESH_TARGET_FRAME, [501, 800], (500, 800), True),
+        (_FRESH_TARGET_FRAME, [500, 800], (501, 800), True),
+        (_FRESH_TARGET_FRAME, [500, 800], (500, 800), False),
     ],
     ids=["frame-changed", "plan-point-changed", "detected-point-changed", "identity-changed"],
 )
@@ -1360,7 +1398,7 @@ def test_fresh_reviewed_target_refuses_changed_frame_point_or_identity_without_t
         monkeypatch, fresh_frame, reviewed_point, detected_point, identity_matched):
     prior_identity = SimpleNamespace(identity=SimpleNamespace(), match_max=1.0)
     target = SimpleNamespace(
-        frame=b"target-pre", point=(500, 800), block_frame_rows=(700, 900),
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
         identity=prior_identity)
     block = SimpleNamespace(y0=700, y1=900, hearts=(detected_point,))
     driver = SimpleNamespace(
@@ -1384,12 +1422,71 @@ def test_fresh_reviewed_target_refuses_changed_frame_point_or_identity_without_t
     assert driver.taps == []
 
 
-def test_fresh_reviewed_target_unchanged_revalidates_then_taps_once(monkeypatch):
+def test_a_status_bar_clock_tick_does_not_invalidate_a_reviewed_heart(monkeypatch):
+    """Found live 2026-08-22 (campaign attempt 8, then attempt 8's post-mortem): Android
+    repaints the status-bar clock every 60 seconds with no bearing whatsoever on the tap target,
+    so the old full-frame byte check refused a heart a reviewer had correctly just approved --
+    the diffed refusal showed only rows 43-76 (the clock) differing, with the card and heart
+    byte-identical. Scoping the comparison to the content band must accept exactly this class of
+    change (here stood in for by a patch at rows 40..80, well above the band's row-250 start on
+    this frame) while still spending the reviewed coordinates on the one true tap.
+    """
+    fresh = _frame_with_patch(9, 200, rows=(40, 80), cols=(0, _ACTION_FRAME_SIZE[0]))
     target = SimpleNamespace(
-        frame=b"target-pre", point=(500, 800), block_frame_rows=(700, 900),
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
         identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
     driver = SimpleNamespace(
-        adb=SimpleNamespace(screencap=lambda: b"target-pre"), identity_band=_IDENTITY_BAND,
+        adb=SimpleNamespace(screencap=lambda: fresh), identity_band=_IDENTITY_BAND, taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: None
+    monkeypatch.setattr(
+        cal, "segment_frame",
+        lambda *_a, **_kw: SimpleNamespace(
+            ok=True, failures=(),
+            blocks=(SimpleNamespace(y0=700, y1=900, hearts=((500, 800),)),)))
+    monkeypatch.setattr(
+        cal, "compare_profile_identity",
+        lambda *_a, **_kw: SimpleNamespace(matched=True, reason="matched"))
+
+    point = cal._fresh_reviewed_target_point(
+        driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=0.8)
+    driver._tap(*point)
+
+    assert driver.taps == [(500, 800)]
+
+
+def test_a_small_change_inside_the_reviewed_card_still_refuses_a_stale_checkpoint(monkeypatch):
+    """The band comparison must stay byte-EXACT, not merely 'close enough': a handful of pixels
+    flipped inside the reviewed card's own rect (a stalled video waking up, a control fading in)
+    is exactly the class of change the old full-frame check existed to catch, and narrowing the
+    scope to the content band must not let any of it through. Also pins the new refusal message,
+    which must name the content band rather than the old 'framebuffer changed' wording.
+    """
+    target = SimpleNamespace(
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: _FRESH_TARGET_FRAME_BAND_CHANGED),
+        identity_band=_IDENTITY_BAND, taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: None
+
+    with pytest.raises(cal._CaptureAbort, match="the reviewed card's content band changed"):
+        point = cal._fresh_reviewed_target_point(
+            driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+        driver._tap(*point)
+
+    assert driver.taps == []
+
+
+def test_fresh_reviewed_target_unchanged_revalidates_then_taps_once(monkeypatch):
+    target = SimpleNamespace(
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: _FRESH_TARGET_FRAME), identity_band=_IDENTITY_BAND,
         taps=[])
     driver._tap = lambda *point: driver.taps.append(point)
     driver._target_frame_video_screen_reason = lambda *_a: None
@@ -1412,10 +1509,10 @@ def test_fresh_reviewed_target_unchanged_revalidates_then_taps_once(monkeypatch)
 
 def test_fresh_reviewed_target_refuses_auto_hidden_video_control_without_tapping(monkeypatch):
     target = SimpleNamespace(
-        frame=b"target-pre", point=(500, 800), block_frame_rows=(700, 900),
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
         identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
     driver = SimpleNamespace(
-        adb=SimpleNamespace(screencap=lambda: b"target-pre"), identity_band=_IDENTITY_BAND,
+        adb=SimpleNamespace(screencap=lambda: _FRESH_TARGET_FRAME), identity_band=_IDENTITY_BAND,
         taps=[])
     driver._tap = lambda *point: driver.taps.append(point)
     driver._target_frame_video_screen_reason = lambda *_a: "selected media is a video"
@@ -1428,6 +1525,51 @@ def test_fresh_reviewed_target_refuses_auto_hidden_video_control_without_tapping
     with pytest.raises(cal._CaptureAbort, match="selected media is a video"):
         point = cal._fresh_reviewed_target_point(
             driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+        driver._tap(*point)
+
+    assert driver.taps == []
+
+
+def test_fresh_reviewed_target_refuses_when_the_reviewed_frame_cannot_be_decoded(monkeypatch):
+    """The reviewed frame's own bytes are what the band rect is measured against; if they cannot
+    even be decoded, the comparison cannot be scoped at all, and that must fail closed with a
+    message naming the real cause rather than a generic or silently-passed refusal."""
+    target = SimpleNamespace(
+        frame=b"not a real png", point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: _FRESH_TARGET_FRAME), identity_band=_IDENTITY_BAND,
+        taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: None
+
+    with pytest.raises(cal._CaptureAbort, match="could not be read to scope"):
+        point = cal._fresh_reviewed_target_point(
+            driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+        driver._tap(*point)
+
+    assert driver.taps == []
+
+
+def test_fresh_reviewed_target_wraps_an_unreadable_band_rect_as_a_refusal(monkeypatch):
+    """An inverted `content_band` produces a structurally invalid rect, which is a CALLER bug
+    per `dwell_exact_over_rect`'s own contract (it raises `ItemCropError` rather than returning
+    False for that case). That must still surface here as an ordinary refusal naming the content
+    band, never as an uncaught exception escaping the checkpoint."""
+    target = SimpleNamespace(
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: _FRESH_TARGET_FRAME), identity_band=_IDENTITY_BAND,
+        taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: None
+
+    with pytest.raises(cal._CaptureAbort, match="content band could not be compared"):
+        point = cal._fresh_reviewed_target_point(
+            driver, target, reviewed_point=[500, 800], content_band=(0.9, 0.1),
             like_template=object(), like_threshold=0.8)
         driver._tap(*point)
 

@@ -403,6 +403,31 @@ variant. The fix is operational, not calibration: cold-start Hinge
 registering a drifted-top fingerprint would widen the very dead zone that caught
 it. Do NOT add a variant for this reading.
 
+**Blocker seven, attempt 8: the review gate could not survive a clock tick.** The
+campaign finally produced a real `automated_photo_heart` checkpoint — photo item 1,
+all five predicates true, target independently confirmed as the photo card (not the
+prompt card), centring offset -0.131 inside the zone, mute screen clean. The reviewer
+APPROVED it. `_fresh_reviewed_target_point` then refused: it re-screencaps immediately
+before the tap and demanded FULL-FRAME byte identity with the reviewed frame. Diffing
+the reviewed PNG against the live framebuffer showed the only differing rows were
+43-76 — Android's status-bar clock, which had ticked from 12:34 during the review. The
+entire content band, card and heart included, was byte-identical.
+
+That gate was therefore unsatisfiable by construction for any reviewer slower than 60
+seconds, which is precisely what a careful reviewer inspecting a frame is. (The
+2026-08-14 campaigns presumably won the race with a fast automated responder; nothing
+in the design guaranteed it.) Fix: compare byte identity over the CONTENT BAND — the
+scrolling region that by definition excludes the status bar and bottom nav, and that
+always contains the reviewed heart — using the same `dwell_exact_over_rect` primitive
+the dwell legs use. Everything after the comparison is unchanged: the reviewed-point
+binding, the structural card/heart re-proof, and the profile-identity gate all still
+re-run on the FRESH bytes, which is what makes narrowing the byte comparison a
+correction of scope rather than a relaxation of the guarantee.
+
+The general shape, worth naming: a guard whose scope is wider than its purpose does not
+fail safe, it fails USELESS. Full-frame identity looked maximally strict and in practice
+guaranteed that no careful review could ever be spent.
+
 **The lesson, stated once for both failures of the day:** a gate is only as real
 as the evidence PATH that feeds it. Wiring the strict ladder into a loop that
 can never possess dwell evidence did not make the loop safer — it made the loop

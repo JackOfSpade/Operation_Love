@@ -27,7 +27,8 @@ from operation_love import targeting_policy as tp
 from tools import hinge_calibrate as cal
 from operation_love.drivers.item_identity import ProfileIdentity
 from operation_love.drivers.like_composer import ComposerDetectionError, ComposerSurface, Rect
-from operation_love.drivers.scroll_top import ScrollTopVerdict
+from operation_love.drivers.scroll_top import (
+    SCROLL_TOP_CONFIRMED, SCROLL_TOP_UNKNOWN, ScrollTopVerdict)
 
 
 _IDENTITY_BAND = (0.10, 0.048, 0.80, 0.094)
@@ -1574,6 +1575,268 @@ def test_fresh_reviewed_target_wraps_an_unreadable_band_rect_as_a_refusal(monkey
         driver._tap(*point)
 
     assert driver.taps == []
+
+
+def test_the_identity_gate_compares_the_reviewed_frame_not_the_navigators_frame(monkeypatch):
+    """Found live 2026-08-22 (campaign attempt 9): the pre-heart loop rebinds this SAME card to a
+    POST-PROBE `expected_frame` after the still-photo probe's return leg leaves a measured page
+    residual. `target.identity` is bound to the profile's original index-build frame, which can
+    legitimately sit at a DIFFERENT scroll position than `expected_frame` -- Hinge's identity band
+    shows the profile-independent filter-chips row at the very top and the sticky per-profile
+    header once scrolled at all, and those are different content by design. A live run diffed a
+    fresh frame byte-identical to its reviewed checkpoint and still had a valid heart refused at
+    19.156 grey levels, because the old code compared against that stale, differently-scrolled
+    reference instead of against the reviewed frame itself.
+
+    This exercises the REAL `confirm_scroll_top`/`band_fingerprint`/`compare_profile_identity`
+    pipeline (no mocking of the identity comparison itself): `target.identity` is deliberately
+    bound to a fingerprint that would refuse the fresh frame if it were consulted, so the test
+    would fail under the old (buggy) code path and only passes because the gate now fingerprints
+    `expected_frame` directly and compares the fresh frame against THAT.
+    """
+    navigators_frame = _action_frame()  # target.frame's own identity band: untouched, value 9
+    rebound_frame = _frame_with_patch(9, 130, rows=(96, 188), cols=(108, 864))  # sticky header
+    stale_reference = ProfileIdentity(
+        fingerprint=cal.band_fingerprint(
+            navigators_frame, identity_band=_IDENTITY_BAND, grid=cal._IDENTITY_GRID),
+        band=_IDENTITY_BAND, grid=cal._IDENTITY_GRID, frame_index=0, scroll_top_distance=200.0,
+        reason="stale reference bound to the navigator's own frame, not the reviewed one",
+        agreeing_frames=3)
+    target = SimpleNamespace(
+        frame=navigators_frame, point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=stale_reference, match_max=1.0))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: rebound_frame), identity_band=_IDENTITY_BAND,
+        taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: None
+    monkeypatch.setattr(
+        cal, "segment_frame",
+        lambda *_a, **_kw: SimpleNamespace(
+            ok=True, failures=(),
+            blocks=(SimpleNamespace(y0=700, y1=900, hearts=((500, 800),)),)))
+
+    point = cal._fresh_reviewed_target_point(
+        driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=0.8,
+        expected_frame=rebound_frame, expected_rows=(700, 900), expected_point=(500, 800))
+    driver._tap(*point)
+
+    assert driver.taps == [(500, 800)]
+
+
+@pytest.mark.parametrize(
+    "rebind", [False, True], ids=["default-navigator-frame", "rebound-expected-frame"])
+def test_a_genuinely_different_profile_in_the_fresh_frame_still_refuses(monkeypatch, rebind):
+    """Pin the thing that must not weaken while the identity reference moves to the reviewed
+    frame: a fresh frame that actually shows a DIFFERENT profile's sticky header still refuses,
+    whether the reference is `target.frame` (the default path, `expected_frame` unset) or a
+    rebound `expected_frame` (the post-probe path). Exercises the real comparison pipeline, not a
+    mock, so a regression that made the gate ignore the identity band entirely -- e.g. always
+    reading it off `fresh` alone -- would be caught here. The uniform patch fills the WHOLE
+    identity band with one far-from-chrome value, so `confirm_scroll_top` on the reviewed frame
+    reads REFUTED (not `confirmed`/`cannot_tell`) and this exercises the fingerprint-and-compare
+    branch specifically; the spy on `compare_profile_identity` confirms that branch actually ran
+    rather than the refusal coming from some other path that happens to share the message.
+    """
+    reviewed_frame = _frame_with_patch(9, 130, rows=(96, 188), cols=(108, 864))
+    foreign_profile_fresh = _frame_with_patch(9, 230, rows=(96, 188), cols=(108, 864))
+    target = SimpleNamespace(
+        frame=reviewed_frame, point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: foreign_profile_fresh),
+        identity_band=_IDENTITY_BAND, taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: None
+    monkeypatch.setattr(
+        cal, "segment_frame",
+        lambda *_a, **_kw: SimpleNamespace(
+            ok=True, failures=(),
+            blocks=(SimpleNamespace(y0=700, y1=900, hearts=((500, 800),)),)))
+    real_compare_profile_identity = cal.compare_profile_identity
+    identity_calls = []
+
+    def _spy_compare_profile_identity(*args, **kwargs):
+        identity_calls.append((args, kwargs))
+        return real_compare_profile_identity(*args, **kwargs)
+
+    monkeypatch.setattr(cal, "compare_profile_identity", _spy_compare_profile_identity)
+    kwargs = ({"expected_frame": reviewed_frame, "expected_rows": (700, 900),
+              "expected_point": (500, 800)} if rebind else {})
+
+    with pytest.raises(cal._CaptureAbort, match="fresh structural/identity revalidation failed"):
+        point = cal._fresh_reviewed_target_point(
+            driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8, **kwargs)
+        driver._tap(*point)
+
+    assert driver.taps == []
+    assert identity_calls, (
+        "compare_profile_identity must actually run when the reviewed frame's band refutes top")
+
+
+def _raise_scroll_top_error(*_args, **_kwargs):
+    raise cal.ScrollTopError("identity band could not be decoded")
+
+
+def _stub_scroll_top_verdict(state: str, *, distance: float | None = 5.0) -> ScrollTopVerdict:
+    """A canned verdict for driving `_fresh_reviewed_target_point`'s branch by STATE, rather than
+    by constructing a frame that happens to land there. The CONTEXT that motivated this fix
+    explicitly prefers this for determinism over threading real fingerprints through a frame."""
+    return ScrollTopVerdict(
+        state=state, distance=distance, band=_IDENTITY_BAND, grid=(16, 4),
+        confirm_max=3.0, refute_min=9.0, reason=f"stubbed verdict for state {state!r}")
+
+
+def test_the_identity_gate_refuses_when_the_reviewed_frame_cannot_be_looked_at_at_all(
+        monkeypatch):
+    """`confirm_scroll_top` itself can raise `ScrollTopError` when it cannot decode the reviewed
+    frame's identity band at all -- 'could not look', distinct from a verdict reached BY looking
+    (confirmed/refuted/cannot_tell). That must always hard-abort, in every regime, because there
+    is no verdict yet to make a skip-vs-fingerprint decision from.
+    """
+    target = SimpleNamespace(
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: _FRESH_TARGET_FRAME), identity_band=_IDENTITY_BAND,
+        taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: None
+    monkeypatch.setattr(cal, "confirm_scroll_top", _raise_scroll_top_error)
+
+    with pytest.raises(
+            cal._CaptureAbort,
+            match="the reviewed frame's profile identity could not be re-read"):
+        point = cal._fresh_reviewed_target_point(
+            driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+        driver._tap(*point)
+
+    assert driver.taps == []
+
+
+def test_the_identity_gate_refuses_when_the_refuted_frames_band_cannot_be_fingerprinted(
+        monkeypatch):
+    """Adapted from the pre-fix version of this test, which also covered a `cannot_tell` verdict
+    aborting here -- that case no longer aborts (see
+    `test_fresh_reviewed_target_skips_identity_fingerprint_when_band_is_not_refuted`), because
+    `cannot_tell` carries no usable per-profile signal and the content-band proof above already
+    established same-profile. What remains correct is this: `confirm_scroll_top` on
+    `_FRESH_TARGET_FRAME` (a uniform frame, nowhere near any filter-chips fingerprint) reads
+    REFUTED, which is the one regime where this gate must take a fingerprint -- and if THAT step
+    cannot even decode the frame, that is still 'could not look', not 'looked and it is chrome',
+    and must still hard-abort with the same message rather than silently skipping.
+    """
+    target = SimpleNamespace(
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: _FRESH_TARGET_FRAME), identity_band=_IDENTITY_BAND,
+        taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: None
+    monkeypatch.setattr(cal, "band_fingerprint", _raise_scroll_top_error)
+
+    with pytest.raises(
+            cal._CaptureAbort,
+            match="the reviewed frame's profile identity could not be re-read"):
+        point = cal._fresh_reviewed_target_point(
+            driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+        driver._tap(*point)
+
+    assert driver.taps == []
+
+
+@pytest.mark.parametrize(
+    ("state", "distance"),
+    [(SCROLL_TOP_CONFIRMED, 1.5), (SCROLL_TOP_UNKNOWN, 8.078)],
+    ids=["reviewed-frame-confirmed-top", "reviewed-frame-cannot-tell"],
+)
+def test_fresh_reviewed_target_skips_identity_fingerprint_when_band_is_not_refuted(
+        monkeypatch, state, distance):
+    """THE CORRECT DESIGN this fix ships: when the reviewed frame's own scroll-top verdict does
+    NOT refute top, the identity band is either Hinge's profile-independent filter-chips row
+    (`confirmed`) or genuinely indeterminate (`cannot_tell`) -- carrying no usable per-profile
+    signal either way -- so the gate must SKIP the sticky-band fingerprint/comparison rather than
+    abort, and still reach a valid tap. `compare_profile_identity` must not be called at all: the
+    content-band byte comparison that already ran above is the (stronger) proof of same-profile,
+    because Hinge renders the profile's name header inside that same band.
+
+    Live evidence this exact regime fixes (2026-08-22, campaign attempt 9): the reviewed frame
+    returned `cannot_tell` at 8.078 grey levels, inside the deliberate 3.0-9.0 dead zone, because
+    the card parks just below top on this campaign; the fresh frame was byte-identical to it
+    across both the identity band and the content band, and the old code aborted anyway.
+    """
+    monkeypatch.setattr(
+        cal, "confirm_scroll_top",
+        lambda *_a, **_kw: _stub_scroll_top_verdict(state, distance=distance))
+    identity_calls = []
+    monkeypatch.setattr(
+        cal, "compare_profile_identity",
+        lambda *a, **kw: identity_calls.append((a, kw))
+        or SimpleNamespace(matched=True, reason="must not be reached"))
+    monkeypatch.setattr(
+        cal, "segment_frame",
+        lambda *_a, **_kw: SimpleNamespace(
+            ok=True, failures=(),
+            blocks=(SimpleNamespace(y0=700, y1=900, hearts=((500, 800),)),)))
+    target = SimpleNamespace(
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: _FRESH_TARGET_FRAME), identity_band=_IDENTITY_BAND,
+        taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: None
+
+    point = cal._fresh_reviewed_target_point(
+        driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=0.8)
+    driver._tap(*point)
+
+    assert driver.taps == [(500, 800)]
+    assert identity_calls == []
+
+
+@pytest.mark.parametrize(
+    "state", [SCROLL_TOP_CONFIRMED, SCROLL_TOP_UNKNOWN],
+    ids=["reviewed-frame-confirmed-top", "reviewed-frame-cannot-tell"],
+)
+def test_fresh_reviewed_target_still_refuses_content_band_change_when_identity_check_is_skipped(
+        monkeypatch, state):
+    """Proves the skip above did not open a hole. Even when the reviewed frame's scroll-top
+    verdict is not refuted (so the sticky-band fingerprint is skipped per the test above), a
+    fresh frame that differs INSIDE the content band -- the class of change the byte-identity
+    gate exists to catch -- must still refuse, at the same content-band comparison that runs
+    unconditionally, before the skip decision is even reached.
+    """
+    monkeypatch.setattr(
+        cal, "confirm_scroll_top", lambda *_a, **_kw: _stub_scroll_top_verdict(state))
+    identity_calls = []
+    monkeypatch.setattr(
+        cal, "compare_profile_identity",
+        lambda *a, **kw: identity_calls.append((a, kw))
+        or SimpleNamespace(matched=True, reason="must not be reached"))
+    target = SimpleNamespace(
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: _FRESH_TARGET_FRAME_BAND_CHANGED),
+        identity_band=_IDENTITY_BAND, taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: None
+
+    with pytest.raises(cal._CaptureAbort, match="the reviewed card's content band changed"):
+        point = cal._fresh_reviewed_target_point(
+            driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+        driver._tap(*point)
+
+    assert driver.taps == []
+    assert identity_calls == []
 
 
 @pytest.mark.parametrize("item_number", [1, 3], ids=["odd-profile-photo-1", "even-profile-photo-3"])

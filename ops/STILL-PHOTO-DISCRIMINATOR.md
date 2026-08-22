@@ -428,6 +428,38 @@ The general shape, worth naming: a guard whose scope is wider than its purpose d
 fail safe, it fails USELESS. Full-frame identity looked maximally strict and in practice
 guaranteed that no careful review could ever be spent.
 
+**Blocker eight, attempt 9: the identity gate kept the navigator's frame.** With the
+byte comparison scoped correctly, the same pre-tap guard refused again — this time
+`IdentityError: the identity band is 19.156 grey levels from the sticky header this
+index was built from`. Measurement said otherwise: the live framebuffer was
+byte-identical to the reviewed checkpoint frame across BOTH the identity band and the
+content band (mean |diff| 0.000); only the clock rows differed. The 19.156 was measured
+against a stale reference. `ItemTarget.identity` is bound to the NAVIGATION frame; the
+re-attach probe then moves the page, and when its return leg leaves a residual the
+checkpoint is rebound to the post-probe frame (blocker six) — but the identity reference
+was not rebound with it. Hinge's identity band legitimately shows different content at
+different scroll positions (profile-independent filter chips at top, the sticky
+per-profile header once scrolled), so comparing across those two positions measures a
+large distance on one unchanged profile.
+
+Fix: the gate's reference is the REVIEWED frame — the one the checkpoint bound and the
+tap will land on — because its question is "is the profile on screen now the profile
+that was reviewed", and both frames sit at the same scroll position. "Same profile
+across the probe" is separately established by the probe's measured displacement plus
+the structural re-proof of exactly one card at the translated rows with exactly one
+heart at the translated point. A genuinely different profile at tap time still refuses,
+and that is pinned.
+
+**Three blockers of one shape (six, seven, eight), all in the last ten feet.** Each was
+a check bound to the wrong frame or the wrong scope: the proof demanded byte identity
+the driver never promised; the freshness gate compared chrome that cannot affect a tap;
+the identity gate compared across scroll positions where its own signal is designed to
+differ. None was a perception failure — the perception chain had been correct since
+blocker five. When a pipeline rebinds its subject mid-flight (here: the probe moving the
+page), EVERY downstream check that holds a reference to the subject has to be rebound
+with it, and the ones that are missed fail as confident, well-worded refusals rather
+than as errors.
+
 **The lesson, stated once for both failures of the day:** a gate is only as real
 as the evidence PATH that feeds it. Wiring the strict ladder into a loop that
 can never possess dwell evidence did not make the loop safer — it made the loop

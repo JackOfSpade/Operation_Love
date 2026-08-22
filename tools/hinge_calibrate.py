@@ -1294,6 +1294,38 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
     They are the navigator's own point and rows carried across that measurement (owner rule
     2026-08-11: never a re-identified card), never a relaxation of the byte-identity or
     structural/identity checks below.
+
+    THE IDENTITY REFERENCE IS THE REVIEWED FRAME, NOT THE NAVIGATOR'S FRAME. `target.identity` is
+    bound at the navigator's entry gate, against the profile's index-build capture -- a frame that
+    can legitimately sit at a different scroll position than `frame_to_match` once the pre-heart
+    loop has rebound this card to a POST-PROBE `expected_frame` after a measured page residual.
+    Hinge's identity band shows different content at different scroll positions by design (the
+    profile-independent filter-chips row at the very top, the sticky per-profile header once
+    scrolled at all), so comparing a fresh frame against `target.identity`'s fingerprint instead
+    of against `frame_to_match`'s own measures scroll offset, not identity. Found live this way
+    (2026-08-22, campaign attempt 9): a fresh frame diffed byte-identical to the reviewed
+    checkpoint on both the identity band and the content band was refused at 19.156 grey levels
+    because the reference was the stale, differently-scrolled index-build frame. Fingerprinting
+    `frame_to_match` directly puts both sides of the comparison at the SAME scroll position, so
+    the distance measures identity the way it is supposed to. "Same profile across the probe" is
+    established separately and does not depend on this: the probe's own MEASURED displacement,
+    plus `_verified_target_frame_proof`'s structural re-proof of exactly one card at the
+    translated rows with exactly one heart at the translated point.
+
+    THE STICKY-BAND FINGERPRINT IS COMPLEMENTARY, NOT PRIMARY, AND ONLY RUNS WHEN IT CAN MEAN
+    SOMETHING. It is taken and compared only when `confirm_scroll_top(frame_to_match, ...)`
+    positively REFUTES top -- the one state where the band is showing this profile's real sticky
+    header rather than Hinge's own chrome. When it does not refute (`confirmed` top, where the
+    band is the profile-INDEPENDENT filter-chips row, or `cannot_tell`), this gate SKIPS the
+    sticky-band comparison instead of aborting: the content-band byte comparison above has
+    already run and already passed by the time this code is reached, Hinge renders the profile's
+    name header inside that same content band, and a byte-exact match over it is a strictly
+    STRONGER same-profile proof than any chrome-band distance could be. Found live this way
+    (2026-08-22, attempt 9): the reviewed frame read `cannot_tell` at 8.078 grey levels -- inside
+    the deliberate 3.0-9.0 dead zone, because the card parks just below top on this campaign --
+    while the fresh frame was byte-identical to it across both the identity band and the content
+    band; aborting there converted one refusal into another on exactly the frames this campaign
+    produces.
     """
     point = target.point if expected_point is None else tuple(expected_point)
     if (not isinstance(reviewed_point, list) or len(reviewed_point) != 2
@@ -1321,17 +1353,63 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
         raise _CaptureAbort(
             "hybrid heart refused: the reviewed card's content band changed after review; "
             "refusing to spend coordinates from a stale checkpoint")
+
+    # The identity gate's reference is fingerprinted directly off `frame_to_match` -- the frame
+    # the checkpoint was reviewed against, the SAME frame the content-band comparison above just
+    # used -- rather than off `target.identity`, which is bound to the profile's original
+    # index-build capture and can legitimately sit at a different scroll position (see the
+    # docstring). `confirm_scroll_top` decides whether this fingerprint is even worth taking:
+    # `refuted` means the band is showing the per-profile sticky header (real identity signal,
+    # worth comparing); `confirmed` means the band is Hinge's profile-INDEPENDENT filter-chips
+    # row, and fingerprinting it would silently turn this gate into one that matches every
+    # profile; `cannot_tell` means there is nothing usable to fingerprint at all. The non-refuted
+    # cases are handled by SKIPPING the fingerprint below, not by aborting -- see the docstring's
+    # "STICKY-BAND FINGERPRINT IS COMPLEMENTARY" paragraph for why that is safe rather than a
+    # relaxation: the content-band byte comparison above already proved same-profile, and it
+    # already covers Hinge's name header.
+    try:
+        reviewed_top = confirm_scroll_top(frame_to_match, identity_band=driver.identity_band)
+    except ScrollTopError as exc:
+        raise _CaptureAbort(
+            "hybrid heart refused: the reviewed frame's profile identity could not be re-read, "
+            f"so the tap cannot be proved to land on the reviewed profile: {exc}") from exc
+
+    reviewed_identity = None
+    if reviewed_top.refuted:
+        try:
+            reviewed_fingerprint = band_fingerprint(
+                frame_to_match, identity_band=driver.identity_band, grid=_IDENTITY_GRID)
+        except ScrollTopError as exc:
+            raise _CaptureAbort(
+                "hybrid heart refused: the reviewed frame's profile identity could not be "
+                f"re-read, so the tap cannot be proved to land on the reviewed profile: {exc}"
+            ) from exc
+        reviewed_identity = ProfileIdentity(
+            fingerprint=reviewed_fingerprint, band=tuple(driver.identity_band),
+            grid=_IDENTITY_GRID, frame_index=None, scroll_top_distance=reviewed_top.distance,
+            agreeing_frames=1,
+            reason=(
+                "fingerprinted directly from the reviewed checkpoint frame -- the frame the tap "
+                "was actually approved against -- rather than from the profile's original "
+                "index-build capture, so it is comparable to a fresh frame at the SAME scroll "
+                "position; confirmed to refute scroll top at "
+                f"{reviewed_top.distance:.3f} grey levels from the profile-independent "
+                "filter-chips row"))
+    # ELSE (`confirmed` top or `cannot_tell`): no fingerprint is taken and none is compared below.
+    # This is a recorded skip, not a silent one -- it is reachable only after the content-band
+    # byte comparison above has already passed, which is the proof that licenses it.
+
     try:
         proof = _verified_target_frame_proof(
             driver, target, frame=fresh, content_band=content_band,
             like_template=like_template, like_threshold=like_threshold,
             expected_rows=expected_rows, expected_point=expected_point)
-        prior_identity = target.identity
-        fresh_identity = compare_profile_identity(
-            fresh, prior_identity.identity, identity_band=driver.identity_band,
-            match_max_dist=prior_identity.match_max)
-        if not fresh_identity.matched:
-            raise IdentityError(fresh_identity.reason)
+        if reviewed_identity is not None:
+            fresh_identity = compare_profile_identity(
+                fresh, reviewed_identity, identity_band=driver.identity_band,
+                match_max_dist=target.identity.match_max)
+            if not fresh_identity.matched:
+                raise IdentityError(fresh_identity.reason)
     except (IdentityError, SegmentationError) as exc:
         raise _CaptureAbort(
             "hybrid heart refused: fresh structural/identity revalidation failed: "

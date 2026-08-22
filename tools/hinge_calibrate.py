@@ -2856,20 +2856,30 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                     "target_verification_blocked",
                     f"item {item_number}: {exc}")
                 raise skip_before_heart(retry, identity) from exc
-            if still_photo_proof.page_residual_px:
-                # THE PROBE MOVED THE PAGE AND MEASURED HOW FAR.  `target_pre` becomes the frame
-                # really on the device -- the one the heart is about to be offered and tapped on
-                # -- and the navigator's own rows/point are carried across that SAME measured
-                # residual (owner rule 2026-08-11: never a re-identified card) rather than
-                # re-derived from scratch.  Re-running the target-frame proof and the centring
-                # check on this new position is not optional: the residual is real device
-                # motion, and a card that motion pushed out of the autoplay zone is exactly the
-                # case the centring rung above exists to catch.
+            if still_photo_proof.action_frame != target_pre:
+                # THE GATE IS THE BYTES CHANGING, NOT THE RESIDUAL.  `action_frame` can differ
+                # from `target_pre` with a MEASURED residual of exactly 0: Android's status-bar
+                # clock ticks a minute forward inside the probe's own dwell window often enough
+                # that the probe's anchor routinely comes back byte-different from `target_pre`
+                # in the chrome rows alone, with nothing in the content band having moved at all
+                # (live 2026-08-22, campaign attempt 10). `_measured_page_shift` correctly
+                # reports 0px for that case -- but every predicate below is read back against
+                # the exact bytes a proof names by digest, and `action_frame_sha256` names
+                # `action_frame`, never the stale `target_pre`.  So the frame every checkpoint
+                # predicate binds to has to be rebound here whenever the bytes changed, at
+                # residual 0 exactly as at any other residual, or `_verified_still_photo_evidence`
+                # and `_screened_mute_control_absent` refuse a card that never actually failed
+                # anything.  The residual itself is unchanged in meaning: it is how far the
+                # navigator's own rows/point must be TRANSLATED, and it is only ever spent on that
+                # translation when it is non-zero -- a zero residual means nothing moved, only the
+                # chrome did, so rows/point are carried across UNCHANGED (owner rule 2026-08-11:
+                # never a re-identified card).
                 residual = still_photo_proof.page_residual_px
                 target_pre = still_photo_proof.action_frame
-                moved_rows = (target.block_frame_rows[0] - residual,
-                             target.block_frame_rows[1] - residual)
-                tap_target_point = (target.point[0], target.point[1] - residual)
+                if residual:
+                    moved_rows = (target.block_frame_rows[0] - residual,
+                                 target.block_frame_rows[1] - residual)
+                    tap_target_point = (target.point[0], target.point[1] - residual)
                 try:
                     target_proof = _verified_target_frame_proof(
                         driver, target, frame=target_pre, content_band=content_band,

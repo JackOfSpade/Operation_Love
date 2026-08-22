@@ -459,7 +459,11 @@ def _unattended_single_item_fixtures(monkeypatch, *, extra_screencaps: int = 0):
             dwell_frame_sha256s=(cal._sha256(target.frame), cal._sha256(b"dwell")),
             dwell_span_s=6.0, still_photo_verified=True,
             reattach_frame_sha256s=(cal._sha256(target.frame), cal._sha256(b"reattach")),
-            reattach_dwell_span_s=6.0))
+            reattach_dwell_span_s=6.0,
+            # The byte-identical fast path: `action_frame` must actually BE `target.frame`, not
+            # merely name it by digest, now that the pre-heart loop gates its rebind on the bytes
+            # (`action_frame != target_pre`) rather than on the residual alone.
+            page_residual_px=0, action_frame=target.frame))
     monkeypatch.setattr(
         cal, "_fresh_reviewed_target_point",
         lambda _driver, target, **_kw: target.point)
@@ -736,7 +740,12 @@ def test_real_target_frame_screen_seeing_a_mute_control_never_reaches_the_checkp
                 action_frame_sha256=cal._sha256(b"target-pre"),
                 pre_probe_frame_sha256=cal._sha256(b"target-pre"),
                 dwell_frame_sha256s=("a", "b"),
-                dwell_span_s=6.0, still_photo_verified=False)),
+                dwell_span_s=6.0, still_photo_verified=False,
+                # Must actually BE `target-pre`'s bytes, not merely name them by digest, so the
+                # loop's bytes-gated rebind stays a no-op and this case still isolates the
+                # negative verdict rather than tripping the (correct, but different) binding
+                # refusal first.
+                page_residual_px=0, action_frame=b"target-pre")),
          "still-photo acceptance did not pass"),
         (lambda m: m.setattr(cal, "_verified_target_frame_proof",
                              lambda *_a, **_kw: _mute_proof(heart_visible=False)),
@@ -928,6 +937,128 @@ def test_a_card_parked_inside_the_autoplay_zone_is_never_scrolled_before_its_pro
     assert [direction for direction, _frac, _x in driver.scrolls] == ["down"]
     assert (pass_calls, send_calls) == ([1], [])
     assert [state for state, _plan in gate.checkpoints if state == "target_heart_visible"]
+
+
+def _rebindable_target_frame_proof(calls: list[dict]):
+    """A `_verified_target_frame_proof` stand-in that behaves like the real one for binding
+    purposes -- its block sits at exactly `expected_rows`/`expected_point`, defaulting to the
+    navigator's own rows/point exactly as the real function's own docstring specifies -- and
+    records every call, so a test can assert both HOW MANY times the pre-heart loop re-proved the
+    card and WHAT rows/point (and frame) each proof ran against.
+    """
+    def proof(_driver, target, *, frame, expected_rows=None, expected_point=None, **_kw):
+        rows = tuple(target.block_frame_rows if expected_rows is None else expected_rows)
+        point = tuple(target.point if expected_point is None else expected_point)
+        calls.append({"frame": frame, "expected_rows": expected_rows,
+                      "expected_point": expected_point})
+        return cal._TargetFrameProof(
+            block=SimpleNamespace(x0=53, y0=rows[0], x1=1027, y1=rows[1], hearts=(point,)),
+            frame_sha256=cal._sha256(frame), mute_control_absent=True, heart_visible=True)
+    return proof
+
+
+def test_a_clock_tick_during_the_probe_rebinds_the_frame_without_translating_the_card(
+        monkeypatch, tmp_path):
+    """THE LIVE FAILURE (2026-08-22, campaign attempt 10), pinned.
+
+    The still-photo probe's return leg can come back byte-DIFFERENT from `target_pre` while the
+    measured residual is exactly 0: Android's status-bar clock ticks a minute forward inside the
+    probe's own dwell window, which changes bytes outside the content band without moving
+    anything the residual estimator looks at. The OLD gate (`if page_residual_px:`) read that as
+    "nothing to do" and left `target_pre` on the stale bytes, so the still-photo proof's own
+    `action_frame_sha256` -- correctly bound to the NEW bytes -- could never match
+    `_sha256(target_pre)` and the checkpoint refused a card that never actually failed anything.
+    The gate must fire on the bytes changing, not on the residual, and a residual of 0 must leave
+    the parked rows/point untouched: nothing moved, only the chrome did.
+    """
+    driver, pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    clock_ticked_frame = b"target-pre-with-a-different-clock"
+    proof = cal._StillPhotoProof(
+        action_frame_sha256=cal._sha256(clock_ticked_frame),
+        pre_probe_frame_sha256=cal._sha256(b"target-pre"),
+        dwell_frame_sha256s=(cal._sha256(b"target-pre"), cal._sha256(b"dwell")),
+        dwell_span_s=6.0, still_photo_verified=True,
+        reattach_frame_sha256s=(cal._sha256(clock_ticked_frame), cal._sha256(b"reattach")),
+        reattach_dwell_span_s=6.0,
+        page_residual_px=0, action_frame=clock_ticked_frame)
+    monkeypatch.setattr(cal, "_verified_still_photo_proof", lambda *_a, **_kw: proof)
+    calls: list[dict] = []
+    monkeypatch.setattr(cal, "_verified_target_frame_proof", _rebindable_target_frame_proof(calls))
+    gate = _RecordingGate()
+
+    cal._capture_one_profile_unattended(
+        driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+        review_gate=gate, send_like=False)
+
+    # Re-proved on the new bytes, not the stale ones the navigator originally parked on.
+    assert [call["frame"] for call in calls] == [b"target-pre", clock_ticked_frame]
+    # (700, 900) and (500, 800) are `_unattended_single_item_fixtures`'s fixed navigator rows and
+    # point: unchanged, because a zero residual means there was nothing to translate.
+    assert calls[1]["expected_rows"] == (700, 900)
+    assert calls[1]["expected_point"] == (500, 800)
+    assert cal._verified_still_photo_evidence(proof, clock_ticked_frame) is True
+    heart_plan = next(plan for state, plan in gate.checkpoints if state == "target_heart_visible")
+    assert heart_plan["predicates"]["positive_still_photo_evidence_verified"] is True
+    assert heart_plan["predicates"]["target_frame_mute_control_screened_absent"] is True
+    assert pass_calls == [1]
+
+
+def test_a_measured_residual_still_translates_the_parked_rows_and_point(monkeypatch, tmp_path):
+    """Guards the residual-translate behaviour 9fd32ab9 introduced, across the gate rewrite
+    above: when the probe's return leg leaves a genuine non-zero residual, the rebind still
+    happens (as it always did) AND the navigator's rows/point are still translated by exactly
+    that residual. The bytes-based gate changes WHEN the branch fires, never what it does once it
+    has fired.
+    """
+    driver, pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    settled_frame = b"target-pre-settled-elsewhere"
+    residual = 40
+    proof = cal._StillPhotoProof(
+        action_frame_sha256=cal._sha256(settled_frame),
+        pre_probe_frame_sha256=cal._sha256(b"target-pre"),
+        dwell_frame_sha256s=(cal._sha256(b"target-pre"), cal._sha256(b"dwell")),
+        dwell_span_s=6.0, still_photo_verified=True,
+        reattach_frame_sha256s=(cal._sha256(settled_frame), cal._sha256(b"reattach")),
+        reattach_dwell_span_s=6.0,
+        page_residual_px=residual, action_frame=settled_frame)
+    monkeypatch.setattr(cal, "_verified_still_photo_proof", lambda *_a, **_kw: proof)
+    calls: list[dict] = []
+    monkeypatch.setattr(cal, "_verified_target_frame_proof", _rebindable_target_frame_proof(calls))
+    gate = _RecordingGate()
+
+    cal._capture_one_profile_unattended(
+        driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+        review_gate=gate, send_like=False)
+
+    assert [call["frame"] for call in calls] == [b"target-pre", settled_frame]
+    # (700, 900) and (500, 800) are the navigator's own rows/point; both must come back
+    # translated by exactly the measured residual.
+    assert calls[1]["expected_rows"] == (700 - residual, 900 - residual)
+    assert calls[1]["expected_point"] == (500, 800 - residual)
+    assert cal._verified_still_photo_evidence(proof, settled_frame) is True
+    assert pass_calls == [1]
+
+
+def test_a_byte_identical_return_leg_takes_the_fast_path_with_no_extra_reproof(
+        monkeypatch, tmp_path):
+    """The common case, pinned against a regression that would make every profile pay for a
+    re-proof it does not need: when the probe's return leg lands back on the EXACT bytes the
+    still-photo proof was handed, `_verified_target_frame_proof` must run exactly once for the
+    item -- the original navigation-bound proof -- with no second call rebinding a frame that
+    never changed.
+    """
+    driver, pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    calls: list[dict] = []
+    monkeypatch.setattr(cal, "_verified_target_frame_proof", _rebindable_target_frame_proof(calls))
+    gate = _RecordingGate()
+
+    cal._capture_one_profile_unattended(
+        driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+        review_gate=gate, send_like=False)
+
+    assert len(calls) == 1
+    assert calls[0]["frame"] == b"target-pre"
+    assert pass_calls == [1]
 
 
 # A 1080x2000 action frame puts the content band's centre at row 1000, so the block used

@@ -460,6 +460,33 @@ page), EVERY downstream check that holds a reference to the subject has to be re
 with it, and the ones that are missed fail as confident, well-worded refusals rather
 than as errors.
 
+**Attempt 10: the first complete calibration profile, and blocker nine.** With the
+identity gate corrected, the campaign captured a profile end to end for the first time:
+photo item 1 hearted after a passing still-photo proof, the inline composer opened on
+that exact photo (verified visually and by `verify_sheet_item`), and the profile Passed
+without sending. The manifest banked 3 card-scroll frames, one composer item — a real
+`own_intended` measurement pair — and a clean composer-clearing advance to a different
+profile.
+
+Profile 2 then aborted with `checkpoint refused: no still-photo (C1-C3) verdict is bound
+to the exact frame whose heart would be approved`. Root cause: the caller rebound
+`target_pre` to the proof's action frame only `if still_photo_proof.page_residual_px`.
+The status-bar clock ticks during the probe, so `probe.anchor` routinely differs from the
+pre-probe frame in the CLOCK ROWS ONLY; the shift estimator correctly measures zero (no
+content moved), the residual is 0, and the rebind was skipped — while the proof had
+already bound its verdict to `probe.anchor`. Every predicate read back against
+`target_pre` then mismatched. Fix: gate the rebind on the BYTES changing, not on the
+residual being non-zero; the residual only says how far to TRANSLATE, and zero is a valid
+answer that still requires rebinding the frame the predicates are read back against.
+
+**One root cause, three costumes.** The Android status-bar clock changing bytes without
+changing content produced blocker seven (the freshness gate compared it), and blocker
+nine (a rebind gated on content motion missed a chrome-only change). The general form is
+worth more than the three fixes: **a frame identity is not a content identity.** Any check
+that means "the screen has not changed underneath me" must say which REGION it means, and
+any rebind that means "the frame I am bound to has changed" must test the bytes it is
+bound to — not a proxy for why they might have changed.
+
 **The lesson, stated once for both failures of the day:** a gate is only as real
 as the evidence PATH that feeds it. Wiring the strict ladder into a loop that
 can never possess dwell evidence did not make the loop safer — it made the loop

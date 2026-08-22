@@ -83,6 +83,7 @@ from operation_love.private_files import (
     atomic_write_private_text,
     ensure_private_dir,
 )
+from tools._devicelock import holding_the_device
 
 _TOOL_VERSION = "1"
 
@@ -865,8 +866,6 @@ def print_report(report: AnalysisReport, *,
 # =====================================================================================
 # main
 # =====================================================================================
-
-from tools._devicelock import holding_the_device
 
 
 def main(argv: list[str] | None = None) -> None:

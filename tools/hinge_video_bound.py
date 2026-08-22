@@ -82,6 +82,7 @@ import yaml
 from operation_love import targeting_policy as _policy
 from operation_love.private_files import (
     atomic_write_private_bytes, atomic_write_private_text, ensure_private_dir)
+from tools._devicelock import holding_the_device
 
 _TOOL_VERSION = "1"
 _MANIFEST_SCHEMA_VERSION = 1
@@ -1787,9 +1788,6 @@ def _band_and_device(args, *, need_device: bool):
         return app_cfg, band, None, None, (None if cfg_raw is None else _sha(cfg_raw))
     serial, adb_path = _resolve_serial(app_cfg, getattr(args, "serial", None))
     return app_cfg, band, serial, adb_path, (None if cfg_raw is None else _sha(cfg_raw))
-
-
-from tools._devicelock import holding_the_device
 
 
 def main(argv: list[str] | None = None) -> None:

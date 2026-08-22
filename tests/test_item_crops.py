@@ -947,8 +947,15 @@ def test_the_centering_geometry_is_defined_once_and_measured_from_the_content_ba
         high, frame_height=height, content_band=band) < 0
 
 
-@pytest.mark.parametrize("drift", [None, True, -0.01, float("nan"), float("inf")])
-def test_still_photo_gate_rejects_missing_or_invalid_reobservation_evidence(drift):
+@pytest.mark.parametrize("drift", [True, -0.01, float("nan"), float("inf")])
+def test_still_photo_gate_rejects_a_corrupt_reobservation_measurement(drift):
+    """A BROKEN measurement is not a MISSING one, and only the missing case falls through.
+
+    `None` is deliberately absent from this list: an absent drift is ignorance (a capture that
+    never re-observed the crop's rect), which the rungs below answer for.  A bool, a non-finite
+    value or a negative distance is a measurement that went wrong, and a wrong measurement can
+    never buy the pass-through the missing one gets.
+    """
     reason = item_crops.unnumber_without_still_photo_evidence(_evidence(drift, (1,)))
 
     assert reason is not None
@@ -965,15 +972,35 @@ def test_still_photo_gate_rejects_anything_that_is_not_an_evidence_object():
         assert "auto-hidden video cannot be ruled out" in reason
 
 
-def test_still_photo_gate_uses_drift_only_to_reject_and_never_as_positive_proof():
+def test_still_photo_gate_uses_drift_only_to_reject_and_never_as_positive_proof(
+        installed_still_photo_bound):
+    """Drift may only ever REJECT, and the assertions have to reach the drift rung to show it.
+
+    The licence is what makes this test about drift at all.  Without one, every call here is
+    answered by the policy blocker two rungs down and "it refused" would be true no matter what
+    the drift rung did -- the assertion would pass while testing nothing it names.  With a
+    licence installed the blocker is out of the way and each shape below is answered by the rung
+    it is aimed at.
+    """
     ceiling = item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
 
-    stable_reason = item_crops.unnumber_without_still_photo_evidence(_evidence(ceiling))
-    assert stable_reason is not None
-    assert "positive still-photo discriminator unavailable" in stable_reason
-    assert item_crops.unnumber_without_still_photo_evidence(_evidence(0.0, ())) is not None
-    reason = item_crops.unnumber_without_still_photo_evidence(_evidence(ceiling + 1e-6))
-    assert reason is not None and "animated or video media is not targetable" in reason
+    # A drift measured over ZERO frames is a broken measurement, not a missing one.
+    corrupt = item_crops.unnumber_without_still_photo_evidence(_evidence(0.0, ()))
+    assert corrupt is not None and "auto-hidden video cannot be ruled out" in corrupt
+    # The one thing drift is allowed to say on its own, said by name.
+    over = item_crops.unnumber_without_still_photo_evidence(_evidence(ceiling + 1e-6))
+    assert over is not None
+    assert (f"exceeds the measured static-photo ceiling {ceiling:.6g}") in over
+    assert "animated or video media is not targetable" in over
+    # And what it may never say: a drift UNDER the ceiling is not proof of anything.  It passes
+    # its own rung and hands the question straight to the dwell, which has nothing to show.
+    silent = item_crops.unnumber_without_still_photo_evidence(_evidence(ceiling))
+    assert silent is not None and "no un-interacted dwell proved" in silent
+    # Same with a perfect drift beside a dwell that failed: the refusal is the dwell's, and no
+    # amount of clean re-observation buys it off.
+    spoiled = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(0.0, dwell=_full_dwell(exact=False)))
+    assert spoiled is not None and "no un-interacted dwell proved" in spoiled
 
 
 @pytest.fixture
@@ -1016,10 +1043,80 @@ def test_the_still_photo_gate_stops_refusing_only_once_a_verified_bound_is_insta
     drifted = item_crops.unnumber_without_still_photo_evidence(
         _evidence(ceiling + 1e-6, dwell=_full_dwell()))
     assert drifted is not None and "animated or video media is not targetable" in drifted
+    # What readiness does NOT excuse is a FAILING dwell; a MISSING drift is a different thing and
+    # is covered by `test_an_unmeasurable_drift_falls_through_to_the_rungs_that_carry_the_proof`.
     assert item_crops.unnumber_without_still_photo_evidence(
-        _evidence(None, dwell=_full_dwell())) is not None
+        _evidence(ceiling, dwell=_full_dwell(exact=False))) is not None
+
+
+def test_an_unmeasurable_drift_falls_through_to_the_rungs_that_carry_the_proof(
+        installed_still_photo_bound):
+    """The depth-1 case, and the reason this rung stopped refusing on silence.
+
+    Drift is measured by resampling a crop's page rows in the OTHER frames of the capture, so
+    for the FIRST card of a top-down read there is nothing to measure against -- no other
+    frame's analysed band contains those rows -- and `_signature_drift` returns `(None, ())` by
+    construction.  Refusing on that made every depth-1 target permanently unnumberable while
+    proving nothing: a complete dwell plus a complete re-attach burst is a strictly stronger
+    independent re-observation than a drift number ever was.
+
+    `(None, ())` is the ONLY shape that falls through, and it is the exact pair the producers
+    emit for that case.  A drift without its frames, or frames without their drift, is an
+    inconsistent object rather than a silent one and is refused by
+    `test_a_corrupt_drift_is_refused_rather_than_treated_as_unmeasurable`.
+    """
     assert item_crops.unnumber_without_still_photo_evidence(
-        _evidence(0.0, (), dwell=_full_dwell())) is not None
+        item_crops.still_photo_evidence_from_drift(None, (), _full_dwell())) is None
+
+
+def test_a_measured_drift_over_the_ceiling_still_refuses_however_perfect_the_dwell(
+        installed_still_photo_bound):
+    """A card that was OBSERVED to move is disqualified, and no amount of later stillness undoes
+    it: byte-exactness measured after the fact cannot un-see the motion the read already saw."""
+    reason = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT + 1e-6, dwell=_full_dwell()))
+
+    assert reason is not None
+    assert (f"exceeds the measured static-photo ceiling "
+            f"{item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT:.6g}") in reason
+    assert "animated or video media is not targetable" in reason
+
+
+@pytest.mark.parametrize(
+    "drift, drift_frames",
+    [(float("nan"), (1,)), (float("inf"), (1,)), (-0.01, (1,)), (True, (1,)),
+     (0.0, ()), (None, (2,))],
+    ids=["nan", "inf", "negative", "bool", "drift-without-frames", "frames-without-drift"])
+def test_a_corrupt_drift_is_refused_rather_than_treated_as_unmeasurable(
+        installed_still_photo_bound, drift, drift_frames):
+    """The line the pass-through must not cross.  A measurement that came back broken is not the
+    same claim as a measurement nobody made, and only the second one may fall through -- reading
+    a NaN as "nothing to compare against" is how a fail-closed gate quietly becomes fail-open.
+
+    The last two cases are broken in SHAPE rather than in value.  A drift measured over an EMPTY
+    frame list is a distance computed against nothing, and a frame list with no drift behind it
+    is a re-observation that produced no measurement; neither is the `(None, ())` silence the
+    rung forgives.  No producer in tree emits either shape (`_signature_drift` and the calibrate
+    tool's `_parked_signature_drift` both return `(None, ())` or `(float, non-empty)`), which is
+    exactly why the gate has to say so itself: since the pass-through shipped, nothing else in
+    the ladder reads `drift_frames` at all.
+    """
+    reason = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(drift, drift_frames, dwell=_full_dwell()))
+
+    assert reason is not None
+    assert "auto-hidden video cannot be ruled out" in reason
+
+
+def test_without_a_licence_an_unmeasurable_drift_still_stops_at_the_policy_rung():
+    """Unlicensed behaviour is UNCHANGED by the pass-through: with no artifact installed the
+    blocker answers before any dwell rung is consulted, so a build with no discriminator cannot
+    number a card merely because its drift could not be measured."""
+    reason = item_crops.unnumber_without_still_photo_evidence(
+        item_crops.still_photo_evidence_from_drift(None, (), _full_dwell()))
+
+    assert reason is not None
+    assert "positive still-photo discriminator unavailable" in reason
 
 
 @pytest.mark.parametrize(

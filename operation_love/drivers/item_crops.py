@@ -1132,6 +1132,10 @@ def unnumber_without_still_photo_evidence(evidence: StillPhotoEvidence) -> str |
     installed, and the policy blocker still speaks for a build with no artifact. Rungs (d)-(g)
     are only reachable once a bound is installed, which is why they are the last word rather
     than the first, and (g) is last of all because it is the only rung that costs real gestures.
+
+    Drift is a REJECTOR ONLY, so its absence is not a refusal: a capture that never re-observed
+    a crop's rect measured nothing, and the dwell rungs below make the positive observation
+    anyway. See the comment on that rung for why refusing on silence was structurally unsatisfiable.
     """
     if not isinstance(evidence, StillPhotoEvidence):
         # Fail closed on a caller that has not been ported: a bare drift number is not evidence,
@@ -1140,16 +1144,48 @@ def unnumber_without_still_photo_evidence(evidence: StillPhotoEvidence) -> str |
         return (f"{EXCLUSION_NON_PHOTO}: no independent re-observation established that this "
                 "photographic-looking card is stable; an auto-hidden video cannot be ruled out")
     signature_drift = evidence.signature_drift
-    if (signature_drift is None or isinstance(signature_drift, bool)
-            or not isinstance(signature_drift, (int, float))
-            or not math.isfinite(signature_drift) or signature_drift < 0
-            or not evidence.drift_frames):
+    # AN UNMEASURABLE DRIFT FALLS THROUGH; A MEASURED MOVING CARD STILL REFUSES.  This rung used
+    # to refuse whenever `signature_drift`/`drift_frames` were absent, and that was asking a
+    # question a top-down read structurally CANNOT answer for the card it reaches first: drift is
+    # measured by resampling a crop's page rows in the OTHER frames of the capture, and for the
+    # first card no other frame's analysed band contains those rows, so `_signature_drift`
+    # returns `(None, ())` by construction.  Refusing on that silence made every depth-1 target
+    # (every odd ordinal) permanently unnumberable, which is not a safety property -- it is the
+    # rung mistaking ignorance for a negative result, the exact confusion `undetermined_items`
+    # exists to keep apart everywhere else in this module.  Nothing is given away by falling
+    # through: the rungs below are a STRICTLY STRONGER independent re-observation than drift ever
+    # was (a byte-exact centred dwell, screened for a mute control, then a second byte-exact
+    # burst after the card was pushed out of the autoplay band and back), and an UNLICENSED build
+    # still stops at the policy rung immediately below before any of them is consulted.  What is
+    # NOT relaxed: a drift that WAS measured and exceeds the ceiling is a moving card and still
+    # refuses, and a drift that is corrupt rather than absent -- a bool, a non-number, non-finite,
+    # or negative, or a number that disagrees with its own frame list -- is refused too, because
+    # a broken measurement is not a missing one.
+    #
+    # A MEASUREMENT AND THE FRAMES BEHIND IT STAND OR FALL TOGETHER.  "Unmeasurable" is the pair
+    # `(None, ())` and nothing else: a drift carrying an EMPTY `drift_frames` claims a distance
+    # computed over zero re-observations, and a frame list with no drift behind it claims
+    # re-observations that produced no distance.  Both are internally INCONSISTENT -- corrupt,
+    # not silent -- so they take the corrupt refusal rather than the pass-through above.  WHY
+    # THIS RUNG EXISTS WITH NOTHING IN TREE FOR IT TO CATCH: `_signature_drift` and the calibrate
+    # tool's `_parked_signature_drift` both return `(None, ())` or `(float, non-empty)`, so no
+    # producer emits the inconsistent shape today.  But the pass-through left
+    # `evidence.drift_frames` read by nothing at all, so the moment a new producer computes a
+    # drift and forgets the frames behind it, this is the rung that stops the claim instead of
+    # waving it through as ignorance.
+    if (signature_drift is not None) != bool(evidence.drift_frames):
         return (f"{EXCLUSION_NON_PHOTO}: no independent re-observation established that this "
                 "photographic-looking card is stable; an auto-hidden video cannot be ruled out")
-    if signature_drift > _STILL_PHOTO_MAX_SIGNATURE_DRIFT:
-        return (f"{EXCLUSION_NON_PHOTO}: re-observation drift {signature_drift:.6g} exceeds the "
-                f"measured static-photo ceiling {_STILL_PHOTO_MAX_SIGNATURE_DRIFT:.6g}; animated "
-                "or video media is not targetable")
+    if signature_drift is not None:
+        if (isinstance(signature_drift, bool)
+                or not isinstance(signature_drift, (int, float))
+                or not math.isfinite(signature_drift) or signature_drift < 0):
+            return (f"{EXCLUSION_NON_PHOTO}: no independent re-observation established that this "
+                    "photographic-looking card is stable; an auto-hidden video cannot be ruled out")
+        if signature_drift > _STILL_PHOTO_MAX_SIGNATURE_DRIFT:
+            return (f"{EXCLUSION_NON_PHOTO}: re-observation drift {signature_drift:.6g} exceeds "
+                    f"the measured static-photo ceiling {_STILL_PHOTO_MAX_SIGNATURE_DRIFT:.6g}; "
+                    "animated or video media is not targetable")
     policy_blocker = hinge_targeting_unavailable_reason()
     if policy_blocker is not None:
         return f"{EXCLUSION_NON_PHOTO}: {policy_blocker}; numbered targeting is disabled"

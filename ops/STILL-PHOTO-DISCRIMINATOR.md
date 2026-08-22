@@ -236,6 +236,122 @@ The measured protocol in section 4 and the campaign tooling remain implemented
 and are the only way to obtain a non-vacuous bound. Nothing stops a future
 session from collecting one and swapping the assumption for a measurement.
 
+## 5c. Addendum 2026-08-22: the acceptance ladder briefly made calibration structurally impossible
+
+Recorded the day it was found, in the same spirit as 5a/5b: what shipped, what it
+actually did, and what was decided.
+
+**What happened.** The hardening commit that wired the v2 acceptance into the
+codebase (`e5054f7f`, 2026-08-21) also threaded
+`unnumber_without_evidence=unnumber_without_still_photo_evidence,
+still_photo_dwell=None` into the calibration tool's two live enumeration loops.
+With a `None` dwell, `still_photo_evidence_from_drift` substitutes an all-`None`
+`StillPhotoDwell`, the C2 dwell rung refuses every selectable block, zero items
+ever number, and `_target_scoped_prefix_reason` returns "photo-only payload is
+unusable" on every one of the 60 bounded read scrolls — so every real profile
+became a bounded pre-action skip. The first live campaign after the still-photo
+licence was accepted skipped 2/2 real profiles this way (the skip reason was
+recovered from the manifest's `reason_sha256`; at the time the plaintext detail
+was hashed and discarded, itself fixed the same night). A replay of the
+2026-08-14 alt3 frames through the real functions confirmed the regression
+exactly: the pre-e5054f7f call shape numbers 6 items; the shipped shape numbers 0.
+The loop's own comment described the correct design ("this loop has no
+un-interacted dwell to offer; `_verified_still_photo_proof` takes the real one in
+the pre-heart window") — the code contradicted it one line down.
+
+**A second, structural blocker sat behind the first.** The ladder's
+re-observation rung demanded read-scroll signature drift, which for the FIRST
+card of a top-down read is unanswerable by construction: `_signature_drift`
+returns `(None, ())` when no other frame's analysed band fully contains the
+crop's page rows, and one read scroll moves the first card's rows out of the
+band. Measured across seven archived real captures, item-1 drift was `None` in
+four and near-zero in one. Separately, real still photos re-observed across read
+scrolls routinely exceed the 0.24 static-photo ceiling (0.277–2.1 observed) —
+that ceiling was measured on parked cards. Together these made depth-1 targets
+(odd calibration ordinals, and production's first photo) permanently
+unnumberable under the shipped wiring.
+
+**What was decided (three parts, all fail-closed):**
+
+1. Calibration capture-time numbering is CLASSIFIER-ONLY, as it was through the
+   proven 2026-08-14 campaigns and as the loop comment always claimed. Numbering
+   there selects which item to navigate to; no heart is spent on its strength.
+   The measure/replay/entry-anchor rebuilds align to the same rule so they
+   reproduce capture's numbering instead of refusing it.
+2. The ladder's re-observation rung passes through when drift is UNMEASURABLE
+   (`None`/no frames) and still refuses when drift is measurable and above the
+   ceiling, or non-finite. The mandatory rungs below — policy licence, dwell
+   byte-exactness, centering, complete mute screens, re-attach probe — carry the
+   stability proof; they are a strictly stronger independent re-observation than
+   read-scroll drift, and an unlicensed build still refuses at the policy rung
+   immediately after. The accepted assumption's logic (5b) never depended on
+   read-scroll drift.
+3. `_verified_still_photo_proof` — the sole licence for touching a heart —
+   measures signature drift over its OWN parked re-observations (the approved
+   anchor frame, the no-input burst, and the post-re-attach burst, all required
+   byte-identical over the rect) instead of inheriting the capture read's drift.
+   Measured, never hardcoded to zero, so a future weakening of the
+   byte-exactness requirement cannot silently pass the drift rung. Read-scroll
+   drift remains recorded in manifests as capture-context diagnostics.
+
+**What adversarial verification of the fix then established (same day, replaying
+26 archived real profiles / 80 classifier-numbered items through the real
+functions).** Three facts belong in this record:
+
+1. Production was in the same vacuous-strict state, and the record above
+   understated the change. At the pre-fix HEAD the production numbering gate
+   accepted 0 of 26 real profiles — not one card in the replay corpus passed the
+   ladder. The re-observation relaxation is therefore not a narrow adjustment;
+   it is what makes production numbering non-vacuous at all. And every card
+   production can now number has NO drift measurement (drift is None for 42.5%
+   of real items and over the ceiling for another 31%), so the C1 drift leg of
+   section 3 is satisfied by zero accepted cards: the dwell/centred/mute/
+   re-attach ladder under the 5b assumption is the ENTIRE production gate in
+   fact, not in theory. That is what the owner accepted, said plainly.
+
+2. The residual is slightly wider than 5b's wording. Relative to 5b, the
+   accepted set adds one named class: a card the read never re-observed, that
+   WAS playing during the read scroll, showed no mute glyph or animation
+   marker, and had stopped by both parked bursts. Read-scroll drift was the
+   only rung that could have seen it; the mute-match and animation-marker
+   exclusions screen it independently, so the class is narrow — but it is not
+   empty, and it is now part of the accepted residual.
+
+3. OPEN OWNER DECISION (recorded, deliberately not changed tonight): the 0.24
+   ceiling — measured on parked cards — is still applied to read-scroll drift
+   in production numbering, where real still photos measure 0.28–27.2 on the
+   same estimator. Result: ~31% of real photographic cards are refused with the
+   diagnosis "animated or video media is not targetable" (wrong for a photo,
+   fail-closed), and because dwell evidence only exists for cards complete in
+   the final parked frame, production numbering yields at most ONE item —
+   always the last photo — on ~27% of profiles and nothing on the rest. The
+   owner rule "the model picks WHICH item to like" currently degenerates to
+   "the last photo or nothing." Fixing that needs one of: a read-scroll drift
+   ceiling measured from real data, per-card centred dwell during the read
+   (gesture cost), or an explicit acceptance of narrow numbering. Owner's
+   call; nothing here changes it silently.
+
+Two smaller notes for honesty: (i) the emitted calibration block still stamps
+`item_selection_policy_id: hinge_photos_only_v2` while capture-time numbering is
+classifier-only — the id gates config compatibility and the C1–C4 contract is
+exercised where it matters (the pre-heart proof), but the block attests a
+numbering policy the capture did not run; (ii) the ladder gained a
+consistency rung the same day: a measurable drift reported over zero frames (or
+frames with no drift) refuses as a corrupt measurement — no in-tree producer
+emits that shape, but the first future producer that forgets the frames behind
+its number must be caught, not silently passed.
+
+**The lesson, stated once for both failures of the day:** a gate is only as real
+as the evidence PATH that feeds it. Wiring the strict ladder into a loop that
+can never possess dwell evidence did not make the loop safer — it made the loop
+vacuous-strict (refuse everything), which reads identical to "working, deck
+unsuitable" from the operator's chair and cost a live campaign. Every gate needs
+at least one test that drives the REAL evidence constructor end-to-end under an
+installed licence; the suite was green throughout because every capture-path
+test monkeypatched all three hops (`build_item_index`, `build_item_payload`,
+`_target_scoped_prefix_reason`) and the licence auto-reset fixture kept the
+policy rung, never the dwell rung, as the answering rung in unit tests.
+
 ## 6. Plan B (documented, not chosen)
 
 If held-out video accepts never reach zero, the honest fallback is to change the

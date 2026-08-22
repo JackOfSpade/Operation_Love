@@ -372,8 +372,7 @@ def _unattended_single_item_fixtures(monkeypatch):
     """
     identity = ProfileIdentity((1,), _IDENTITY_BAND, (64, 16), 0, 20.0, "known", agreeing_frames=2)
     index = SimpleNamespace(usable=True, translation=(1,), complete=False)
-    payload = SimpleNamespace(item=lambda _n: SimpleNamespace(
-        heart_ordinal=1, signature_drift=0.0, drift_frames=(1, 2)))
+    payload = SimpleNamespace(item=lambda _n: SimpleNamespace(heart_ordinal=1))
     target = SimpleNamespace(frame=b"target-pre", point=(500, 800),
                              block_frame_rows=(700, 900))
 
@@ -469,6 +468,90 @@ def _unattended_single_item_fixtures(monkeypatch):
     monkeypatch.setattr(cal, "fingerprint_distance",
                         lambda *_a, **_kw: cal._IDENTITY_FALSE_MATCH_DISTANCE + 1)
     return driver, pass_calls, send_calls
+
+
+def test_capture_time_numbering_never_asks_the_payload_for_a_dwell_it_cannot_have(
+        monkeypatch, tmp_path):
+    """THE EXACT REGRESSION THAT SHIPPED (e5054f7f), pinned at the call shape.
+
+    The automated enumeration loop wired the strict still-photo gate into its payload build and
+    handed it `still_photo_dwell=None`.  The dwell rung can never pass on a None dwell, and a
+    read scroll separates every candidate in this loop from its next frame, so there is no
+    un-interacted dwell to hand it either: every selectable block was refused, every payload came
+    back unusable, and every profile skipped with "photo-only payload is unusable" (2026-08-22,
+    two of two real profiles).  Numbering HERE only selects which item to navigate to; the heart
+    is licensed later by `_verified_still_photo_proof` on real parked evidence, so passing those
+    two kwargs is never right at this call site regardless of what is passed to them.
+    """
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    stub = cal.build_item_payload
+    recorded: list[dict] = []
+
+    def recorder(*args, **kwargs):
+        recorded.append(kwargs)
+        return stub(*args, **kwargs)
+
+    monkeypatch.setattr(cal, "build_item_payload", recorder)
+
+    cal._capture_one_profile_unattended(
+        driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+        review_gate=None, send_like=False)
+
+    assert recorded, "the automated enumeration loop must have built a payload at all"
+    for kwargs in recorded:
+        assert "unnumber_without_evidence" not in kwargs
+        assert "still_photo_dwell" not in kwargs
+        assert kwargs["unnumber"] is cal.unnumber_unless_confident_photo
+
+
+def test_an_all_exception_enumeration_names_the_exception_in_its_skip_detail(
+        monkeypatch, tmp_path):
+    """A run where EVERY iteration raised used to report "index not yet built" -- the placeholder
+    describing the state before the loop started, not the failure the operator has to fix.  The
+    handler now reassigns the reason, so the skip record names the class that actually raised."""
+    class _Adb:
+        def screencap(self):
+            return b"card-frame"
+
+    class _Driver:
+        identity_band = _IDENTITY_BAND
+        content_band = _CONTENT_BAND
+        dwell_s = 0.0
+
+        def __init__(self):
+            self.adb = _Adb()
+            self.scrolls = []
+
+        def _template(self, _name):
+            return object()
+
+        def _scroll_down_one(self, frac, x_frac):
+            self.scrolls.append((frac, x_frac))
+
+    identity = ProfileIdentity((1,), _IDENTITY_BAND, (64, 16), 0, 20.0, "known", agreeing_frames=2)
+
+    def always_raises(*_a, **_kw):
+        raise cal.ItemIndexError("segmentation disagreed with itself on every frame set")
+
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_a: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal, "_rewind_automated_profile_to_confirmed_top", lambda *_a, **_kw: b"top")
+    monkeypatch.setattr(cal, "capture_profile_identity", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(cal, "build_item_index", always_raises)
+    monkeypatch.setattr(cal, "_plan_card_scroll",
+                        lambda *_a, **_kw: (SimpleNamespace(frac=0.1, x_frac=0.5), None))
+    monkeypatch.setattr(cal, "_skip_automated_profile_before_heart",
+                        lambda _driver, **kwargs: {"reason_code": kwargs["reason"].code,
+                                                   "reason_detail": kwargs["reason"].detail})
+
+    with pytest.raises(cal._ProfileSkipped) as excinfo:
+        cal._capture_one_profile_unattended(
+            _Driver(), tmp_path, ordinal=1, frame_counter=0, frames_meta=[],
+            used_profile_ids=set(), review_gate=None, send_like=False)
+
+    detail = excinfo.value.record["reason_detail"]
+    assert "ItemIndexError" in detail
+    assert "index not yet built" not in detail
 
 
 def test_default_unattended_capture_still_terminates_with_pass(monkeypatch, tmp_path):
@@ -710,6 +793,20 @@ def _action_frame(value: int = 9) -> bytes:
     return _png(value, size=_ACTION_FRAME_SIZE)
 
 
+def _patched_action_frame(value: int = 9, patch: int = 255) -> bytes:
+    """An action frame with a handful of pixels changed inside the card rect.
+
+    Byte-different from `_action_frame()` while its 32x32 signature distance stays two orders of
+    magnitude under `_STILL_PHOTO_MAX_SIGNATURE_DRIFT`: the frame a stalled video emits when it
+    finally restarts does not have to move much to stop being the same bytes.
+    """
+    image = np.full((_ACTION_FRAME_SIZE[1], _ACTION_FRAME_SIZE[0]), value, np.uint8)
+    image[800:808, 100:108] = patch
+    ok, buf = cv2.imencode(".png", image)
+    assert ok
+    return buf.tobytes()
+
+
 def _still_photo_driver(*, burst=None, span_s=6.0, mute_score=0.0,
                         content_band=(0.125, 0.875), probe=...,
                         probe_burst=None, probe_span_s=6.0):
@@ -722,7 +819,11 @@ def _still_photo_driver(*, burst=None, span_s=6.0, mute_score=0.0,
     rather than fall through to the first burst's verdict.
     """
     if burst is None:
-        burst = (_action_frame(11), _action_frame(11))
+        # Byte-IDENTICAL to the anchor, because that is what a still photograph's dwell actually
+        # produces and because the proof now measures its own C1 drift over exactly these frames.
+        # A burst of differently-valued frames only ever passed because `dwell_exact_over_rect`
+        # was monkeypatched over it.
+        burst = (_action_frame(), _action_frame())
     frame = _action_frame()
     if probe is ...:
         probe = SimpleNamespace(
@@ -747,8 +848,7 @@ def test_without_a_verified_bound_the_still_photo_proof_can_never_pass(monkeypat
     with pytest.raises(cal._CaptureAbort, match="positive still-photo discriminator unavailable"):
         cal._verified_still_photo_proof(
             _still_photo_driver(), frame=_action_frame(),
-            block=SimpleNamespace(**_CENTRED_BLOCK),
-            signature_drift=0.0, drift_frames=(1, 2))
+            block=SimpleNamespace(**_CENTRED_BLOCK))
 
 
 @pytest.fixture
@@ -772,8 +872,7 @@ def test_the_still_photo_proof_binds_the_action_frame_and_every_dwell_frame_by_d
     frame = _action_frame()
     proof = cal._verified_still_photo_proof(
         _still_photo_driver(), frame=frame,
-        block=SimpleNamespace(**_CENTRED_BLOCK),
-        signature_drift=0.0, drift_frames=(1, 2))
+        block=SimpleNamespace(**_CENTRED_BLOCK))
 
     assert proof.still_photo_verified is True
     assert proof.frame_sha256 == cal._sha256(frame)
@@ -787,6 +886,62 @@ def test_the_still_photo_proof_binds_the_action_frame_and_every_dwell_frame_by_d
     assert cal._verified_still_photo_evidence(proof, frame) is True
     with pytest.raises(cal._CaptureAbort, match="no still-photo .C1-C3. verdict is bound"):
         cal._verified_still_photo_evidence(proof, b"a-different-frame")
+
+
+def test_the_still_photo_proof_passes_a_depth_one_target_with_no_read_scroll_drift(
+        monkeypatch, installed_still_photo_bound):
+    """THE DEPTH-1 CASE, which the shipped proof could never pass.
+
+    The ladder's C1 rung used to be fed the CALLER's read-scroll drift, taken from the payload
+    crop.  For the first card of a top-down read that number does not exist -- no other
+    enumeration frame's analysed band contains the card's page rows, so `_signature_drift`
+    returns `(None, ())` by construction -- so every odd-ordinal target refused here forever.
+    The proof now measures C1 over the frames it actually holds, all of them of one parked
+    screen, and the caller's read-scroll drift is not an input at all.
+    """
+    assert "signature_drift" not in inspect.signature(
+        cal._verified_still_photo_proof).parameters
+    assert "drift_frames" not in inspect.signature(
+        cal._verified_still_photo_proof).parameters
+    monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: True)
+
+    proof = cal._verified_still_photo_proof(
+        _still_photo_driver(), frame=_action_frame(), block=SimpleNamespace(**_CENTRED_BLOCK))
+
+    assert proof.still_photo_verified is True
+
+
+def test_the_proof_measures_its_own_drift_rather_than_assuming_a_parked_card_is_still(
+        monkeypatch, installed_still_photo_bound):
+    """The byte-exactness requirement makes the measured drift ~0.0; measuring it anyway is what
+    keeps the drift rung load-bearing if that requirement is ever weakened.
+
+    `dwell_exact_over_rect` is forced True here, so byte-exactness cannot be what refuses: a
+    burst that visibly moved must be caught by a drift the proof computed for itself.  A
+    hardcoded 0.0 would sail straight past this.
+    """
+    monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: True)
+    moving = (_action_frame(30), _action_frame(30))
+
+    with pytest.raises(cal._CaptureAbort, match="re-observation drift"):
+        cal._verified_still_photo_proof(
+            _still_photo_driver(burst=moving), frame=_action_frame(),
+            block=SimpleNamespace(**_CENTRED_BLOCK))
+
+
+def test_the_parked_drift_is_computed_with_the_modules_own_signature_primitives():
+    """No second implementation of the measurement: the pre-heart proof and the payload builder
+    have to agree by construction, so this reads `signature_of` and `CropSignature.distance`
+    exactly as `_signature_drift` does, and reports ignorance the same way (`(None, ())`)."""
+    rect = (53, 700, 1027, 1300)
+    still = _action_frame()
+
+    assert cal._parked_signature_drift([still], rect) == (None, ())
+    assert cal._parked_signature_drift([], rect) == (None, ())
+    drift, frames = cal._parked_signature_drift([still, still, still], rect)
+    assert drift == 0.0 and frames == (1, 2)
+    moved_drift, moved_frames = cal._parked_signature_drift([still, _action_frame(30)], rect)
+    assert moved_drift == pytest.approx(21.0) and moved_frames == (1,)
 
 
 @pytest.mark.parametrize("proof_kwargs, expected", [
@@ -832,7 +987,7 @@ def test_the_still_photo_proof_refuses_a_card_the_re_attach_probe_could_not_clea
     with pytest.raises(cal._CaptureAbort, match=expected):
         cal._verified_still_photo_proof(
             _still_photo_driver(**kwargs), frame=_action_frame(),
-            block=SimpleNamespace(**_CENTRED_BLOCK), signature_drift=0.0, drift_frames=(1, 2))
+            block=SimpleNamespace(**_CENTRED_BLOCK))
 
 
 def test_the_still_photo_proof_refuses_a_probe_that_did_not_restore_the_screen(
@@ -848,7 +1003,7 @@ def test_the_still_photo_proof_refuses_a_probe_that_did_not_restore_the_screen(
     with pytest.raises(cal._CaptureAbort, match="did not restore the screen byte-for-byte"):
         cal._verified_still_photo_proof(
             _still_photo_driver(probe=moved), frame=_action_frame(),
-            block=SimpleNamespace(**_CENTRED_BLOCK), signature_drift=0.0, drift_frames=(1, 2))
+            block=SimpleNamespace(**_CENTRED_BLOCK))
 
 
 def test_the_second_burst_is_measured_for_real_and_motion_in_it_refuses_the_card(
@@ -856,12 +1011,16 @@ def test_the_second_burst_is_measured_for_real_and_motion_in_it_refuses_the_card
     """Byte-exactness of the SECOND burst is recomputed from its own bytes.  Media that starts
     when Hinge re-attaches it is a video, however still it was while the first burst watched."""
     monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: True)
-    playing = (_action_frame(30), _action_frame(31))
+    # A few pixels, deliberately: this motion is far below the drift ceiling (the 32x32
+    # signature averages it away almost entirely), so the ONLY rung that can see it is the
+    # second burst's byte-exactness.  A whole-frame change would be caught by the drift rung
+    # first and this test would stop proving anything about rung (g).
+    playing = (_patched_action_frame(), _patched_action_frame())
 
     with pytest.raises(cal._CaptureAbort, match="second dwell burst"):
         cal._verified_still_photo_proof(
             _still_photo_driver(probe_burst=playing), frame=_action_frame(),
-            block=SimpleNamespace(**_CENTRED_BLOCK), signature_drift=0.0, drift_frames=(1, 2))
+            block=SimpleNamespace(**_CENTRED_BLOCK))
 
 
 def test_a_card_that_fails_a_cheaper_rung_is_never_charged_a_probe(
@@ -877,8 +1036,7 @@ def test_a_card_that_fails_a_cheaper_rung_is_never_charged_a_probe(
 
     with pytest.raises(cal._CaptureAbort, match="no un-interacted dwell proved"):
         cal._verified_still_photo_proof(
-            driver, frame=_action_frame(), block=SimpleNamespace(**_CENTRED_BLOCK),
-            signature_drift=0.0, drift_frames=(1, 2))
+            driver, frame=_action_frame(), block=SimpleNamespace(**_CENTRED_BLOCK))
 
     assert probes == [], "a card refused by a cheaper rung must not move the screen"
 
@@ -902,8 +1060,7 @@ def test_the_still_photo_proof_refuses_the_card_rather_than_returning_a_negative
     with pytest.raises(cal._CaptureAbort, match=expected):
         cal._verified_still_photo_proof(
             _still_photo_driver(**kwargs), frame=_action_frame(),
-            block=SimpleNamespace(**_CENTRED_BLOCK),
-            signature_drift=0.0, drift_frames=(1, 2))
+            block=SimpleNamespace(**_CENTRED_BLOCK))
 
 
 @pytest.mark.parametrize("block, band, reason", [
@@ -922,187 +1079,13 @@ def test_the_still_photo_proof_refuses_a_card_outside_the_autoplay_trigger_zone(
     with pytest.raises(cal._CaptureAbort, match=reason):
         cal._verified_still_photo_proof(
             _still_photo_driver(content_band=band), frame=_action_frame(),
-            block=SimpleNamespace(**block), signature_drift=0.0, drift_frames=(1, 2))
+            block=SimpleNamespace(**block))
 
 
 def _png(value: int, size=(1000, 600)) -> bytes:
     ok, buf = cv2.imencode(".png", np.full((size[1], size[0]), value, np.uint8))
     assert ok
     return buf.tobytes()
-
-
-def _dwell_campaign(tmp_path, frames, *, rect=(0, 0, 900, 500), span_s=6.0, tamper=False,
-                    content_band=None, reattach=..., reattach_shift=0, reattach_span_s=6.0):
-    """A campaign dir carrying persisted dwell frames, in the shape the reader documents.
-
-    `reattach` defaults to a second burst identical to the first, because that is what a still
-    photograph produces on both sides of a re-attach probe; `reattach=None` is a campaign
-    captured before the probe existed, which must refuse.
-    """
-    root = tmp_path / cal._STILL_PHOTO_DWELL_DIR / "p0001"
-    root.mkdir(parents=True)
-    records = []
-    for position, data in enumerate(frames):
-        (root / f"frame_{position:03d}.png").write_bytes(data)
-        records.append({"file": f"p0001/frame_{position:03d}.png",
-                        "sha256": cal._sha256(b"tampered" if tamper else data)})
-    if reattach is ...:
-        reattach = list(frames)
-    reattach_records = []
-    for position, data in enumerate(reattach or ()):
-        (root / f"reattach_{position:03d}.png").write_bytes(data)
-        reattach_records.append({"file": f"p0001/reattach_{position:03d}.png",
-                                 "sha256": cal._sha256(b"tampered" if tamper else data)})
-    index = {
-        "schema_version": 1, "kind": cal._STILL_PHOTO_DWELL_INDEX_KIND,
-        "profiles": [{"profile_ordinal": 1, "cards": [
-            {"heart_ordinal": 2, "rect": list(rect), "dwell_span_s": span_s,
-             # A recorded verdict that is a LIE, to prove nothing reads it.
-             "dwell_exact": False, "mute_screens_complete": False,
-             "reattach_dwell_exact": False, "reattach_probe_ran": True,
-             "frames": records, "reattach_frames": reattach_records,
-             "reattach_span_s": reattach_span_s,
-             "reattach_page_shift_px": reattach_shift}]}]}
-    if content_band is not None:
-        index["content_band"] = list(content_band)
-    (tmp_path / cal._STILL_PHOTO_DWELL_DIR / "index.json").write_text(json.dumps(index))
-    return tmp_path
-
-
-def test_a_campaign_dir_with_no_dwell_frames_rebuilds_on_drift_only(tmp_path):
-    """Which fail-closes the moment a bound is installed, and is the correct answer: a replay
-    that never held a screen still has not made the observation."""
-    assert cal._persisted_still_photo_dwell(None, 1) is None
-    assert cal._persisted_still_photo_dwell(tmp_path, 1) is None
-
-
-def test_persisted_dwell_exactness_is_recomputed_from_the_bytes_not_read_back(tmp_path):
-    """`dwell_exact: false` sits in the artifact and is ignored; the verdict comes from the PNGs.
-    A recorded boolean is a claim, and this whole design refuses to accept claims."""
-    still = _png(120)
-    campaign = _dwell_campaign(tmp_path, [still, still, still])
-
-    evidence = cal._persisted_still_photo_dwell(campaign, 1)
-
-    assert set(evidence) == {2}
-    assert evidence[2].dwell_exact is True
-    assert evidence[2].mute_screens_complete is True
-    assert evidence[2].dwell_span_s == 6.0
-    assert len(evidence[2].dwell_frame_sha256s) == 3
-
-
-def test_persisted_dwell_frames_that_differ_are_not_exact(tmp_path):
-    campaign = _dwell_campaign(tmp_path, [_png(120), _png(121)])
-
-    evidence = cal._persisted_still_photo_dwell(campaign, 1)
-
-    assert evidence[2].dwell_exact is False
-
-
-def test_a_replay_with_no_recorded_content_band_cannot_claim_the_card_was_centred(
-        tmp_path, installed_still_photo_bound):
-    """Fail closed: a capture taken before the autoplay precondition never made the observation.
-
-    The bound has to be installed for the ladder to reach this rung at all; without one the
-    policy blocker speaks first, which is a different (and also correct) refusal.
-    """
-    still = _png(120)
-    evidence = cal._persisted_still_photo_dwell(_dwell_campaign(tmp_path, [still, still]), 1)
-    assert evidence[2].centered is None and evidence[2].center_offset_frac is None
-    reason = cal.unnumber_without_still_photo_evidence(
-        cal.still_photo_evidence_from_drift(0.01, (1, 2), evidence[2]))
-    assert reason is not None and "autoplay trigger zone" in reason
-
-
-def test_a_replay_recomputes_centring_from_the_recorded_geometry(tmp_path):
-    """`content_band` is geometry read from the index, like the rect; the verdict is recomputed."""
-    still = _png(120, size=(1000, 600))
-    # Rows 0..500 of a 600-row frame over the whole band: centre 250 vs band centre 300.
-    centred = cal._persisted_still_photo_dwell(
-        _dwell_campaign(tmp_path / "a", [still, still], content_band=(0.0, 1.0)), 1)
-    assert centred[2].centered is True
-    assert centred[2].center_offset_frac == pytest.approx((250 - 300) / 600)
-
-    off = cal._persisted_still_photo_dwell(
-        _dwell_campaign(tmp_path / "b", [still, still], rect=(0, 0, 900, 120),
-                        content_band=(0.0, 1.0)), 1)
-    assert off[2].centered is False
-    assert abs(off[2].center_offset_frac) > cal.STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
-
-
-def test_the_replay_recomputes_the_second_burst_from_its_own_persisted_bytes(tmp_path):
-    """Both bursts, from bytes.  The artifact's `reattach_dwell_exact: false` is a lie sitting
-    right next to the frames, and nothing reads it."""
-    still = _png(120, size=(1000, 600))
-    campaign = _dwell_campaign(tmp_path, [still, still], content_band=(0.0, 1.0))
-
-    evidence = cal._persisted_still_photo_dwell(campaign, 1)
-
-    assert evidence[2].reattach_probe_ran is True
-    assert evidence[2].reattach_dwell_exact is True
-    assert evidence[2].reattach_mute_screens_complete is True
-    assert evidence[2].reattach_dwell_span_s == 6.0
-    assert len(evidence[2].reattach_dwell_frame_sha256s) == 2
-    assert evidence[2].reattach_centered is True
-
-
-def test_a_replay_second_burst_that_moved_is_measured_as_motion(tmp_path):
-    campaign = _dwell_campaign(tmp_path, [_png(120), _png(120)],
-                               reattach=[_png(120), _png(121)])
-
-    evidence = cal._persisted_still_photo_dwell(campaign, 1)
-
-    assert evidence[2].dwell_exact is True and evidence[2].reattach_dwell_exact is False
-
-
-def test_a_campaign_captured_before_the_probe_existed_refuses_at_the_re_attach_rung(
-        tmp_path, installed_still_photo_bound):
-    """Fail closed, and the honest answer: a replay that never made a stalled video restart has
-    not excluded one."""
-    still = _png(120, size=(1000, 600))
-    campaign = _dwell_campaign(tmp_path, [still, still], content_band=(0.0, 1.0),
-                               reattach=None)
-
-    evidence = cal._persisted_still_photo_dwell(campaign, 1)
-
-    assert evidence[2].dwell_exact is True and evidence[2].centered is True
-    assert evidence[2].reattach_probe_ran is False
-    reason = cal.unnumber_without_still_photo_evidence(
-        cal.still_photo_evidence_from_drift(0.01, (1, 2), evidence[2]))
-    assert reason == cal.EXCLUSION_REATTACH_PROBE_MISSING
-
-
-def test_a_replay_translates_the_second_burst_rect_by_the_recorded_page_shift(tmp_path):
-    """`reattach_page_shift_px` is GEOMETRY, read like the rect, and it only ever moves the rows
-    the verdict is measured over.  Pushed far enough, the card left the screen and the replay
-    reports a MISSING observation rather than a failed one."""
-    still = _png(120, size=(1000, 600))
-    campaign = _dwell_campaign(tmp_path, [still, still], content_band=(0.0, 1.0),
-                               reattach_shift=-100_000)
-
-    evidence = cal._persisted_still_photo_dwell(campaign, 1)
-
-    assert evidence[2].reattach_probe_ran is False
-    assert evidence[2].reattach_dwell_exact is None
-
-
-def test_a_replay_with_a_malformed_page_shift_refuses_loudly(tmp_path):
-    still = _png(120)
-    campaign = _dwell_campaign(tmp_path, [still, still])
-    index_path = campaign / cal._STILL_PHOTO_DWELL_DIR / "index.json"
-    index = json.loads(index_path.read_text())
-    index["profiles"][0]["cards"][0]["reattach_page_shift_px"] = "0"
-    index_path.write_text(json.dumps(index))
-
-    with pytest.raises(cal._MeasureRefused, match="malformed re-attach page shift"):
-        cal._persisted_still_photo_dwell(campaign, 1)
-
-
-def test_persisted_dwell_frames_that_changed_after_capture_refuse_loudly(tmp_path):
-    campaign = _dwell_campaign(tmp_path, [_png(120), _png(120)], tamper=True)
-
-    with pytest.raises(cal._MeasureRefused, match="changed after capture"):
-        cal._persisted_still_photo_dwell(campaign, 1)
 
 
 def test_target_frame_proof_carries_the_screen_verdict_bound_to_the_screened_frame(monkeypatch):
@@ -1638,7 +1621,17 @@ def test_post_pass_settle_refuses_after_one_edge_back_when_ordinary_deck_is_stil
     assert driver.swipes == 1
 
 
-def test_preaction_skip_uses_public_dislike_and_records_distinct_retry(monkeypatch):
+# The exact diagnosis a live run produced twice in a row.  Its shape is the point: the code is
+# a class of failure, and everything that says WHICH failure lives in the detail.
+_LIVE_SKIP_CODE = "target_unavailable_or_incomplete_index"
+_LIVE_SKIP_DETAIL = ("did not obtain a safe target-scoped photo prefix for (1,) within 40 bounded "
+                     "read scrolls (item 1 has an unresolved predecessor)")
+
+
+def _preaction_skip_fixtures(monkeypatch):
+    """The minimum world one pre-action skip needs: a public `dislike` that advances the deck, a
+    confirmed top before and after, and a distinct sticky identity on the next profile.  Shared
+    by the transport test and the diagnosis tests so all three exercise one identical skip."""
     identity = ProfileIdentity((7,), _IDENTITY_BAND, (1, 1), 1, 20.0, "known",
                                agreeing_frames=2)
 
@@ -1673,6 +1666,11 @@ def test_preaction_skip_uses_public_dislike_and_records_distinct_retry(monkeypat
                             "confirmed_not_top" if frame == b"next-sticky" else "confirmed_top"))
     monkeypatch.setattr(cal, "band_fingerprint", lambda *_a, **_kw: (99,))
     monkeypatch.setattr(cal, "fingerprint_distance", lambda *_a, **_kw: 20.0)
+    return driver, identity
+
+
+def test_preaction_skip_uses_public_dislike_and_records_distinct_retry(monkeypatch):
+    driver, identity = _preaction_skip_fixtures(monkeypatch)
 
     record = cal._skip_automated_profile_before_heart(
         driver, ordinal=2,
@@ -1683,6 +1681,116 @@ def test_preaction_skip_uses_public_dislike_and_records_distinct_retry(monkeypat
     assert driver.taps == 0
     assert record["transport"] == "HingeDriver.dislike"
     assert record["predicates"]["new_profile_identity_distinct"] is True
+
+
+def test_preaction_skip_record_carries_the_plaintext_diagnosis_its_own_digest_binds(monkeypatch):
+    """A skip record used to keep the human-actionable diagnosis ONLY as `reason_sha256`, which
+    is unreadable by the operator who has to fix the cause -- a live run produced two skips in a
+    row that were indistinguishable because just the generic code was legible.  The digest covers
+    `code\ndetail`, so shipping the detail beside it makes the record self-verifying (recompute
+    and compare) rather than weaker; this test pins that exact reproduction."""
+    driver, identity = _preaction_skip_fixtures(monkeypatch)
+
+    record = cal._skip_automated_profile_before_heart(
+        driver, ordinal=2,
+        reason=cal._PreActionProfileRetry(_LIVE_SKIP_CODE, _LIVE_SKIP_DETAIL),
+        identity=identity, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=.8)
+
+    assert record["reason_code"] == _LIVE_SKIP_CODE
+    assert record["reason_detail"] == _LIVE_SKIP_DETAIL
+    assert record["reason_sha256"] == hashlib.sha256(
+        f"{record['reason_code']}\n{record['reason_detail']}".encode("utf-8")).hexdigest()
+
+
+def test_preaction_skip_checkpoint_tells_the_reviewer_why_the_pass_is_being_requested(monkeypatch):
+    """The reviewer approving this checkpoint is approving a real Pass on a real person.  A bare
+    `skip_reason_code` names a class of failure, never which one occurred, so the approval would
+    be made blind.  The detail is added before the checkpoint is hashed, so it is covered by the
+    same `evidence_sha256` as every other published predicate."""
+    driver, identity = _preaction_skip_fixtures(monkeypatch)
+    gate = _RecordingGate()
+
+    cal._skip_automated_profile_before_heart(
+        driver, ordinal=2,
+        reason=cal._PreActionProfileRetry(_LIVE_SKIP_CODE, _LIVE_SKIP_DETAIL),
+        identity=identity, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=.8, review_gate=gate)
+
+    (claimed_state, plan), = gate.checkpoints
+    assert claimed_state == "pre_action_profile_skip_ready"
+    assert plan["action"] == "skip_profile_without_heart"
+    assert plan["predicates"]["skip_reason_code"] == _LIVE_SKIP_CODE
+    assert plan["predicates"]["skip_reason_detail"] == _LIVE_SKIP_DETAIL
+
+
+def _wire_inert_skip_capture(monkeypatch, tmp_path):
+    """`_cmd_capture`'s outer shell only: config, driver, serial and out-dir, with no real card
+    scan.  The profile loop itself is driven by the caller's stubbed capture function."""
+    class _Adb:
+        def shell(self, cmd):
+            if "ro.product.model" in cmd:
+                return "Pixel 7a"
+            if "wm density" in cmd:
+                return "420"
+            return "versionName=1.0\n"
+
+        def screen_size(self):
+            return 1080, 2400
+
+    class _Driver:
+        def __init__(self, _cfg):
+            self.identity_band = _IDENTITY_BAND
+            self.content_band = _CONTENT_BAND
+            self.serial = "PIXEL-TEST"
+            self.package = "co.hinge.app"
+            self.adb = _Adb()
+
+        def _template(self, _name): return object()
+        def open_session(self): pass
+        def close(self): pass
+
+    monkeypatch.setattr(cal.cfg_mod, "load", lambda _path: SimpleNamespace(apps={}))
+    monkeypatch.setattr(cal, "HingeDriver", _Driver)
+    monkeypatch.setattr(cal, "_preflight_serial", lambda _cfg: ("PIXEL-TEST", "adb"))
+    monkeypatch.setattr(cal, "_capture_out_dir", lambda *_a, **_kw: tmp_path)
+
+
+def test_capture_console_names_the_skip_diagnosis_not_only_its_generic_code(
+        monkeypatch, tmp_path, capsys):
+    """The operator watching an automated run is the person who decides whether the deck, the
+    target depth, or the app build is at fault, and the console is the only place they see a
+    skip at all.  Printing the code alone is what left a live run blind through two consecutive
+    skips, so the detail must appear in the line, not merely in the manifest."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("apps:\n  hinge:\n    serial: PIXEL-TEST\n")
+    _wire_inert_skip_capture(monkeypatch, tmp_path)
+    attempts = []
+
+    def _skip_then_stop(*_args, **_kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise cal._ProfileSkipped({
+                "action": "skip_profile_without_heart", "ordinal": 1,
+                "reason_code": _LIVE_SKIP_CODE, "reason_detail": _LIVE_SKIP_DETAIL,
+                "reason_sha256": hashlib.sha256(
+                    f"{_LIVE_SKIP_CODE}\n{_LIVE_SKIP_DETAIL}".encode("utf-8")).hexdigest()})
+        raise cal._CaptureAbort("stop-here")
+
+    monkeypatch.setattr(cal, "_capture_one_profile_unattended", _skip_then_stop)
+    args = argparse.Namespace(
+        profiles=1, split="calibration", config=str(config_path), out=str(tmp_path),
+        unattended=True, hybrid_review=False, confirmation=cal._UNATTENDED_CONFIRMATION,
+        record_operational_checks=False, send_like=False, send_like_confirmation="")
+
+    with pytest.raises(SystemExit):
+        cal._cmd_capture(args)
+
+    out = capsys.readouterr().out
+    assert _LIVE_SKIP_DETAIL in out
+    assert f"({_LIVE_SKIP_CODE}: {_LIVE_SKIP_DETAIL})" in out
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["skipped_attempts"][0]["reason_detail"] == _LIVE_SKIP_DETAIL
 
 
 def test_preaction_skip_reviewer_nonapproval_never_calls_public_dislike(monkeypatch):

@@ -25,6 +25,7 @@ from operation_love import config as cfg_mod
 from operation_love.drivers import hinge
 from operation_love.drivers.hinge import HingeDriver
 from operation_love.private_files import atomic_write_private_bytes, ensure_private_dir
+from tools._devicelock import run_holding_the_device
 
 _BUTTON_TEMPLATES = {"like": "hinge_heart.png", "pass": "hinge_pass_x.png"}
 _SHEET_TEMPLATES = {
@@ -154,9 +155,6 @@ def _paste_block(driver: HingeDriver) -> None:
     print("apps:\n  hinge:\n    coords:")
     for name, frac in driver.coords.items():
         print(f"      {name}: [{frac[0]}, {frac[1]}]")
-
-
-from tools._devicelock import run_holding_the_device
 
 
 def main() -> None:

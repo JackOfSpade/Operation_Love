@@ -123,6 +123,7 @@ from operation_love.human import human_cooldown, human_delay
 from operation_love.private_files import (
     atomic_write_private_bytes, atomic_write_private_text, ensure_private_dir)
 from tools import hinge_video_bound as bound
+from tools._devicelock import run_holding_the_device
 
 _TOOL_VERSION = "2"
 _CAMPAIGN_MODE = "ai_labeled_automated_v2"
@@ -1460,9 +1461,6 @@ def preflight_perception(driver) -> None:
         raise AutoBoundRefused(
             "the calibrated 'like' glyph template could not be loaded, so segmentation cannot "
             "tell a card from a heartless context block and every frame would yield zero cards")
-
-
-from tools._devicelock import run_holding_the_device
 
 
 def build_driver(config_path: str):

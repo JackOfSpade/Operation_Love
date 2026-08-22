@@ -104,7 +104,7 @@ from operation_love.drivers.hinge import HingeDriver
 from operation_love.drivers.item_crops import (
     EXCLUSION_REATTACH_PROBE_MISSING, PHOTO_ONLY_POLICY_ID,
     STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC, ItemCropError, ItemPayload, StillPhotoDwell,
-    build_item_payload, card_center_offset_frac, dwell_exact_over_rect,
+    build_item_payload, card_center_offset_frac, dwell_exact_over_rect, signature_of,
     still_photo_evidence_from_drift, still_photo_reattach_legs,
     unnumber_unless_confident_photo, unnumber_without_still_photo_evidence)
 from operation_love.drivers.item_identity import (
@@ -902,8 +902,39 @@ def _dwell_centering(rect, frame: bytes, content_band):
     return abs(offset) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC, float(offset)
 
 
-def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block,
-                                signature_drift, drift_frames) -> _StillPhotoProof:
+def _parked_signature_drift(frames, rect: tuple[int, int, int, int],
+                            ) -> tuple[float | None, tuple[int, ...]]:
+    """C1's re-observation drift over frames taken at ONE parked card position.
+
+    The ladder's drift rung wants "how much did this crop's own pixels move when the same rows
+    were looked at again", and in the pre-heart window the re-observations are right here: the
+    anchor action frame and the burst frames taken after it, all of the same unmoved screen and
+    therefore all describing the SAME rect with zero rect error.  It uses item_crops'
+    `signature_of` and `CropSignature.distance` -- the module's own primitives, so this is the
+    same measurement the payload builder makes and not a second implementation of it -- and
+    aggregates the WORST pairwise distance against the anchor, exactly as `_signature_drift`
+    aggregates its own samples.
+
+    MEASURED, NEVER ASSUMED.  These frames are separately required to be byte-exact over the
+    rect, so in practice the answer is 0.0; computing it anyway is what makes the drift rung
+    still load-bearing if that byte-exactness requirement is ever weakened.  Fewer than two
+    frames returns `(None, ())` -- ignorance, in the same shape `_signature_drift` reports it.
+    """
+    frames = list(frames)
+    if len(frames) < 2:
+        return None, ()
+    x0, y0, x1, y1 = rect
+    reference = signature_of(frames[0], y0=y0, y1=y1, x0=x0, x1=x1)
+    worst: float | None = None
+    sampled: list[int] = []
+    for position, data in enumerate(frames[1:], start=1):
+        distance = reference.distance(signature_of(data, y0=y0, y1=y1, x0=x0, x1=x1))
+        worst = distance if worst is None else max(worst, distance)
+        sampled.append(position)
+    return worst, tuple(sampled)
+
+
+def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block) -> _StillPhotoProof:
     """Re-run the acceptance on the action frame plus TWO no-input dwell bursts.
 
     Both bursts are the driver's own `_still_photo_dwell_burst`, not a local copy: the window is
@@ -924,6 +955,19 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block,
     frame, the navigator's point and both bursts all describe one screen -- and the second
     burst's rect is then the SAME rect, measured rather than translated.
 
+    THE C1 RE-OBSERVATION FOR THE HEART DECISION IS THIS PARKED EVIDENCE, measured here by
+    `_parked_signature_drift` over the frames this proof holds.  It used to be threaded in from
+    the caller's payload crop, which measures something else entirely: the READ-SCROLL drift of
+    the enumeration pass, taken while the page was moving under the card.  That number could not
+    do this job in either direction.  For the first card of a top-down read it does not exist at
+    all -- no other enumeration frame's analysed band contains that card's page rows, so
+    `_signature_drift` structurally returns `(None, ())` and every depth-1 (odd-ordinal) target
+    refused here forever.  And where it does exist it is routinely far above the 0.24 ceiling on
+    real still photographs (0.277 to 2.1 measured), because the ceiling was measured on PARKED
+    cards, which is exactly the population this function has and the enumeration loop does not.
+    The payload crop's read-scroll drift remains useful capture-context diagnostics; it is not
+    evidence about the frame whose heart is about to be approved.
+
     Refuses rather than returning a negative proof, so a card the acceptance rejects is skipped
     exactly like a card the mute screen rejects, and the reviewer is never offered its heart.
     """
@@ -940,6 +984,7 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block,
     try:
         exact = dwell_exact_over_rect(frames, rect)
         screened = all(screened_clean(data) for data in frames)
+        drift, drift_frames = _parked_signature_drift(frames, rect)
     except ItemCropError as exc:
         raise _CaptureAbort(
             f"target still-photo proof refused on the exact action frame: {exc}") from exc
@@ -953,7 +998,7 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block,
     # never for a probe it was never eligible for.  The comparison is by identity against the
     # exported constant, so this can never start reading prose.
     prelim = unnumber_without_still_photo_evidence(still_photo_evidence_from_drift(
-        signature_drift, drift_frames, first))
+        drift, drift_frames, first))
     if prelim != EXCLUSION_REATTACH_PROBE_MISSING:
         raise _CaptureAbort(
             "target still-photo proof refused on the exact action frame: "
@@ -978,11 +1023,18 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block,
             reattach_frames, rect, span_s=probe.span_s,
             mute_screen=lambda data, _rect: screened_clean(data),
             frame_height=_frame_height_px(frame), content_band=content_band)
+        # The FINAL C1 measurement re-observes every parked frame this proof now holds -- the
+        # anchor, the first burst, and the post-probe burst the probe brought back to that same
+        # anchor byte-for-byte.  The probe's own byte-exactness rung is still the discriminator
+        # for media that restarts on re-attach; this just refuses to publish a verdict whose
+        # drift leg looked at fewer frames than the verdict covers.
+        final_drift, final_drift_frames = _parked_signature_drift(
+            [*frames, *probe.frames], rect)
     except ItemCropError as exc:
         raise _CaptureAbort(
             f"target still-photo proof refused on the exact action frame: {exc}") from exc
     refusal = unnumber_without_still_photo_evidence(still_photo_evidence_from_drift(
-        signature_drift, drift_frames, replace(first, **reattach_legs)))
+        final_drift, final_drift_frames, replace(first, **reattach_legs)))
     if refusal is not None:
         raise _CaptureAbort(
             "target still-photo proof refused on the exact action frame: " + refusal)
@@ -1191,6 +1243,11 @@ def _skip_automated_profile_before_heart(
                     "confirmed_profile_top": True,
                     "inline_composer_absent": True,
                     "skip_reason_code": reason.code,
+                    # The reviewer is approving a real Pass on a real person.  The code alone
+                    # ("target_verification_blocked") says a class of failure happened, never
+                    # which one, so show the same diagnosis the record keeps.  Added before the
+                    # checkpoint is hashed, so it is covered by `evidence_sha256` like the rest.
+                    "skip_reason_detail": reason.detail,
                     "forbidden_zone_guarded_transport": "HingeDriver.dislike",
                 },
             })
@@ -1248,11 +1305,17 @@ def _skip_automated_profile_before_heart(
             f"automated profile {ordinal}: public skip did not reach a distinct profile "
             f"identity ({distance:.3f} <= {_IDENTITY_FALSE_MATCH_DISTANCE:.3f})")
 
+    # `reason_sha256` binds code+detail, so carrying the plaintext detail beside it makes this
+    # record SELF-VERIFYING rather than weaker: any reader can recompute the digest.  Publishing
+    # it is the point -- a diagnosis that exists only as a hash is invisible to the operator, and
+    # a live run produced two consecutive skips that looked identical because only the generic
+    # code was readable, leaving nothing to act on.
     reason_digest = _sha256(f"{reason.code}\n{reason.detail}".encode("utf-8"))
     return {
         "action": "skip_profile_without_heart",
         "ordinal": ordinal,
         "reason_code": reason.code,
+        "reason_detail": reason.detail,
         "reason_sha256": reason_digest,
         "transport": "HingeDriver.dislike",
         "pre_frame_sha256": _sha256(top_frame),
@@ -1814,151 +1877,9 @@ class _OfflineNavigationReplay:
                 "refusing rather than issuing a live gesture")
 
 
-_STILL_PHOTO_DWELL_DIR = "still_photo_dwell"
-_STILL_PHOTO_DWELL_INDEX_FILE = "index.json"
-_STILL_PHOTO_DWELL_INDEX_KIND = "hinge_still_photo_dwell_frames"
-
-
-def _persisted_dwell_frames(entries, *, root: Path, index_path: Path) -> list[bytes]:
-    """Read one burst's persisted frames, refusing anything that moved or points outside `root`.
-
-    Shared by both bursts so the re-attach frames get exactly the path-safety and
-    changed-after-capture checks the first burst has always had; a second reader would be a
-    second place for those checks to be forgotten.
-    """
-    frames: list[bytes] = []
-    for entry in entries:
-        if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
-            raise _MeasureRefused(f"{index_path} has a malformed dwell frame record")
-        name = entry["file"]
-        path = root / name
-        if Path(name).is_absolute() or ".." in Path(name).parts or not path.is_file():
-            raise _MeasureRefused(f"{index_path} names a missing or unsafe dwell frame {name!r}")
-        data = path.read_bytes()
-        if _sha256(data) != entry.get("sha256"):
-            raise _MeasureRefused(f"dwell frame {path} changed after capture")
-        frames.append(data)
-    return frames
-
-
-def _persisted_still_photo_dwell(campaign_dir, profile_ordinal: int):
-    """Rebuild C2/C3 dwell evidence for one profile from the frames a campaign dir persisted.
-
-    A campaign that captured dwell bursts writes them under ``<dir>/still_photo_dwell/`` with an
-    ``index.json`` naming, per heart ordinal, the card rect, the burst's span, and every frame
-    file with its sha256.  A campaign that captured none simply has no such directory, and this
-    returns None -- which leaves the offline rebuild on DRIFT-ONLY evidence and therefore
-    refusing to number anything the moment a bound is installed.  That is the intended outcome,
-    not a gap: a replay that never held a screen still has not made C2's observation.
-
-    Every VERDICT is recomputed from the persisted bytes (byte-exactness over the recorded rect,
-    and the mute screen re-run on each frame); nothing is read back as a recorded boolean.  The
-    only recorded scalars consumed are the wall-clock spans, which are timings no replay of
-    static files can re-derive -- and they can only ever make the gate stricter, never looser,
-    because a missing or non-positive span refuses.
-
-    BOTH bursts are rebuilt this way. A card record may also carry `reattach_frames` (and the
-    page displacement the probe measured), which are the frames taken after the card was
-    scrolled out of Hinge's autoplay band and back; without them the card refuses at the
-    re-attach rung, because a replay that never made a stalled video restart has not excluded
-    one.
-    """
-    if campaign_dir is None:
-        return None
-    root = Path(campaign_dir) / _STILL_PHOTO_DWELL_DIR
-    index_path = root / _STILL_PHOTO_DWELL_INDEX_FILE
-    if not index_path.is_file():
-        return None
-    try:
-        index = json.loads(index_path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise _MeasureRefused(f"{index_path} is unreadable dwell evidence ({exc})") from exc
-    if not isinstance(index, dict) or index.get("kind") != _STILL_PHOTO_DWELL_INDEX_KIND:
-        raise _MeasureRefused(
-            f"{index_path} is not a {_STILL_PHOTO_DWELL_INDEX_KIND} artifact")
-    profiles = index.get("profiles")
-    if not isinstance(profiles, list):
-        raise _MeasureRefused(f"{index_path} carries no profiles list")
-    record = next((p for p in profiles if isinstance(p, dict)
-                   and p.get("profile_ordinal") == profile_ordinal), None)
-    if record is None:
-        return None
-    # Optional and validated rather than assumed: an index written before the autoplay-centring
-    # precondition existed simply has no band, and every card it describes then refuses.
-    record_band = index.get("content_band")
-    if not (isinstance(record_band, list) and len(record_band) == 2
-            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in record_band)
-            and 0.0 <= record_band[0] < record_band[1] <= 1.0):
-        record_band = None
-    evidence: dict[int, StillPhotoDwell] = {}
-    for card in record.get("cards") or ():
-        heart_ordinal = card.get("heart_ordinal") if isinstance(card, dict) else None
-        rect = card.get("rect") if isinstance(card, dict) else None
-        if (isinstance(heart_ordinal, bool) or not isinstance(heart_ordinal, int)
-                or not isinstance(rect, list) or len(rect) != 4
-                or any(isinstance(v, bool) or not isinstance(v, int) for v in rect)):
-            raise _MeasureRefused(f"{index_path} has a malformed dwell card record")
-        frames = _persisted_dwell_frames(card.get("frames") or (), root=root,
-                                         index_path=index_path)
-        digests = [_sha256(data) for data in frames]
-        span = card.get("dwell_span_s")
-        try:
-            exact = dwell_exact_over_rect(frames, tuple(rect)) if len(frames) >= 2 else False
-        except ItemCropError as exc:
-            # A rect the helper calls structurally invalid is a malformed artifact, not a failed
-            # observation; surface it as a measurement refusal the offline commands already catch.
-            raise _MeasureRefused(f"{index_path} has an unusable dwell rect: {exc}") from exc
-        # The re-attach probe's SECOND burst, recomputed from ITS persisted bytes by the same
-        # shared helper the live driver uses.  A campaign captured before the probe existed
-        # simply has no `reattach_frames`, so every card it describes lands on
-        # `reattach_probe_ran=False` and refuses -- the honest answer for a replay that never
-        # asked a stalled video to restart.  `reattach_page_shift_px` is GEOMETRY, read from the
-        # index like the rect and the band, and it only ever moves the measured rect; every
-        # verdict below it is recomputed.
-        shift = card.get("reattach_page_shift_px", 0)
-        if isinstance(shift, bool) or not isinstance(shift, int):
-            raise _MeasureRefused(f"{index_path} has a malformed re-attach page shift")
-        reattach_frames = _persisted_dwell_frames(
-            card.get("reattach_frames") or (), root=root, index_path=index_path)
-        reattach_rect = (rect[0], rect[1] - shift, rect[2], rect[3] - shift)
-        reattach_span = card.get("reattach_span_s")
-        try:
-            reattach_legs = still_photo_reattach_legs(
-                reattach_frames, reattach_rect,
-                span_s=(reattach_span if isinstance(reattach_span, (int, float))
-                        and not isinstance(reattach_span, bool) else None),
-                mute_screen=lambda data, roi: hinge_mod.video_mute_screen_reason(
-                    data, roi) is None,
-                frame_height=_frame_height_px(reattach_frames[0]) if reattach_frames else None,
-                content_band=record_band)
-        except ItemCropError as exc:
-            raise _MeasureRefused(
-                f"{index_path} has an unusable re-attach dwell rect: {exc}") from exc
-        # `content_band` is GEOMETRY, read from the index like the rect, and the centring
-        # verdict is recomputed from it -- never read back as a recorded boolean. A campaign
-        # captured before the autoplay precondition existed carries no band, so its cards land
-        # on `centered=None` and refuse, which is the honest answer: that capture never made
-        # the observation.
-        centered, offset = _dwell_centering(rect, frames[0], record_band) if frames else (None,
-                                                                                          None)
-        evidence[heart_ordinal] = StillPhotoDwell(
-            dwell_frame_sha256s=tuple(digests),
-            dwell_exact=exact,
-            centered=centered,
-            center_offset_frac=offset,
-            dwell_span_s=span if isinstance(span, (int, float)) and not isinstance(span, bool)
-            else None,
-            mute_screens_complete=bool(frames) and all(
-                hinge_mod.video_mute_screen_reason(data, tuple(rect)) is None
-                for data in frames),
-            **reattach_legs)
-    return evidence
-
-
 def _entry_anchor_profile_report(*, ordinal: int, profile_id: str, card_frames: list[bytes],
                                  frame_records: list[dict], identity_band, content_band,
-                                 like_template, like_threshold,
-                                 still_photo_dwell=None) -> dict:
+                                 like_template, like_threshold) -> dict:
     """Prove one captured profile is navigable bottom-up using only its recorded bytes.
 
     The replay-only identity ceiling is deliberately derived solely to call the production
@@ -1986,10 +1907,12 @@ def _entry_anchor_profile_report(*, ordinal: int, profile_id: str, card_frames: 
         index = build_item_index(
             card_frames, content_band=content_band, like_template=like_template,
             like_threshold=like_threshold, at_scroll_top=True, identity_band=identity_band)
+        # Classifier-only, matching the capture loops byte for byte.  This replay exists to
+        # prove that the numbering capture produced is REPRODUCIBLE from the committed frames;
+        # a stricter gate here would refuse items capture legitimately numbered and turn a
+        # reproduction check into a different check.
         payload = build_item_payload(
-            card_frames, index, unnumber=unnumber_unless_confident_photo,
-            unnumber_without_evidence=unnumber_without_still_photo_evidence,
-            still_photo_dwell=still_photo_dwell)
+            card_frames, index, unnumber=unnumber_unless_confident_photo)
     except (ItemIndexError, ItemCropError, SegmentationError, ShiftEstimationError) as exc:
         raise _MeasureRefused(
             f"profile {profile_id!r}: could not rebuild complete photo-only item numbering "
@@ -2126,8 +2049,7 @@ def _write_entry_anchor_ledger(out_dir: Path, *, frames_meta: list[dict], profil
         reports.append(_entry_anchor_profile_report(
             ordinal=ordinal, profile_id=meta["profile_id"], card_frames=card_frames,
             frame_records=records, identity_band=identity_band, content_band=content_band,
-            like_template=like_template, like_threshold=like_threshold,
-            still_photo_dwell=_persisted_still_photo_dwell(out_dir, ordinal)))
+            like_template=like_template, like_threshold=like_threshold))
     artifact = {
         "schema_version": _ENTRY_ANCHOR_LEDGER_SCHEMA_VERSION,
         "kind": "hinge_entry_anchor_offline_replay",
@@ -2226,16 +2148,17 @@ def _capture_one_profile(driver: HingeDriver, out_dir: Path, *, ordinal: int,
                 # merely enough of the prefix to reach the requested target. `complete` proves
                 # the capture began at top, reached the end, and left no partial block out.
                 if index.usable and index.complete:
-                    # Drift-only, deliberately: this is a LIVE enumeration loop, and every
-                    # candidate here is separated from its next frame by a read scroll, so no
-                    # un-interacted dwell exists to offer.  The dwell that licenses a heart runs
-                    # later, in the pre-heart window, once navigation has parked the card
-                    # (`_verified_still_photo_proof`).  Passing None keeps the payload
-                    # fail-closed rather than letting a scroll pass for a dwell.
+                    # CLASSIFIER-ONLY NUMBERING, DELIBERATELY, exactly as in the automated loop
+                    # below.  Numbering here selects WHICH item to navigate to; no heart is spent
+                    # on its strength.  `_verified_still_photo_proof` is the sole still-photo
+                    # licence for a heart and takes real PARKED evidence in the pre-heart window,
+                    # once navigation has stopped the card.  Wiring the strict gate in here
+                    # (e5054f7f) with `still_photo_dwell=None` made every profile skip (live
+                    # failure 2026-08-22): a read scroll separates every candidate from its next
+                    # frame, so this loop has no un-interacted dwell to offer and the dwell rung
+                    # can never pass on read-scroll frames.
                     payload = build_item_payload(
-                        card_frames, index, unnumber=unnumber_unless_confident_photo,
-                        unnumber_without_evidence=unnumber_without_still_photo_evidence,
-                        still_photo_dwell=None)
+                        card_frames, index, unnumber=unnumber_unless_confident_photo)
                     index_ok = payload.usable and len(payload.items) >= max(target_items)
                 else:
                     payload = None
@@ -2452,22 +2375,29 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
             # this exact photo plus identity and crop evidence strong enough for bottom-up
             # navigation and post-tap verification.  ``ItemIndex.complete`` remains mandatory
             # everywhere that constructs a production closed-set payload.
-            # Drift-only here for the same reason as the supervised enumeration loop above:
+            # CLASSIFIER-ONLY NUMBERING, DELIBERATELY.  Numbering here decides WHICH item this
+            # profile will navigate to; no heart is ever spent on its strength.
+            # `_verified_still_photo_proof` is the sole still-photo licence for a heart, and it
+            # takes REAL parked evidence in the pre-heart window, after navigation stops the
+            # card.  Wiring the strict gate in here instead (e5054f7f) handed it
+            # `still_photo_dwell=None`, whose dwell rung can never pass on read-scroll frames --
             # a read scroll separates every candidate from its next frame, so this loop has no
-            # un-interacted dwell to offer.  `_verified_still_photo_proof` takes the real one in
-            # the pre-heart window, after navigation parks the card.
+            # un-interacted dwell to offer -- so every candidate refused, every payload came back
+            # unusable and every profile skipped (live failure 2026-08-22).
             payload = (build_item_payload(card_frames, index,
-                                          unnumber=unnumber_unless_confident_photo,
-                                          unnumber_without_evidence=
-                                          unnumber_without_still_photo_evidence,
-                                          still_photo_dwell=None)
+                                          unnumber=unnumber_unless_confident_photo)
                        if index.usable else None)
             target_scope_reason = (_target_scoped_prefix_reason(index, payload, target_items)
                                    if payload is not None else "photo-only payload unavailable")
             if target_scope_reason is None:
                 break
-        except (ItemIndexError, ItemCropError, SegmentationError, ShiftEstimationError):
+        except (ItemIndexError, ItemCropError, SegmentationError, ShiftEstimationError) as exc:
             index = payload = None
+            # Say what actually happened.  Leaving the initial placeholder in place meant a run
+            # where EVERY iteration raised reported "index not yet built" as its skip detail --
+            # a sentence describing the state before the loop started, not the failure the
+            # operator has to fix.
+            target_scope_reason = f"enumeration raised {type(exc).__name__} on this frame set"
         try:
             step, min_spacing = _plan_card_scroll(
                 card_frames[-1], content_band=content_band, like_template=like_template,
@@ -2535,11 +2465,8 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                 # move the screen on purpose, and refuses the card unless the page comes back
                 # byte-for-byte, so the frame this checkpoint is about to bind is either
                 # untouched or never offered.
-                target_crop = payload.item(item_number)
                 still_photo_proof = _verified_still_photo_proof(
-                    driver, frame=target_pre, block=target_proof.block,
-                    signature_drift=target_crop.signature_drift,
-                    drift_frames=target_crop.drift_frames)
+                    driver, frame=target_pre, block=target_proof.block)
             except _CaptureAbort as exc:
                 retry = _PreActionProfileRetry(
                     "target_verification_blocked",
@@ -3362,10 +3289,14 @@ def _cmd_capture(args: argparse.Namespace) -> None:
                     record["attempt_number_for_ordinal"] = prior_for_ordinal + 1
                     record["session_skip_number"] = len(skipped_attempts) + 1
                     skipped_attempts.append(record)
+                    # Print the detail, not only the code: the operator watching this run is
+                    # the person who has to decide whether the deck, the target depth, or the
+                    # app itself is the problem, and the code is the same string for every
+                    # cause in its class.
                     print(
                         f"Skipped unsuitable profile before any heart for ordinal {ordinal} "
-                        f"({record['reason_code']}); retrying this ordinal on the distinct "
-                        "next profile.")
+                        f"({record['reason_code']}: {record['reason_detail']}); retrying this "
+                        "ordinal on the distinct next profile.")
                     ordinal -= 1
                     continue
                 profiles_meta.append(profile_meta)
@@ -3481,9 +3412,6 @@ class _ProfileData:
     profile_advance_clear: bytes
     profile_advance_identity: bytes
     target_scoped_prefix: bool = False
-    # The dir these bytes were loaded from, so an offline payload rebuild can look for the dwell
-    # frames a campaign may have persisted beside them (`_persisted_still_photo_dwell`).
-    campaign_dir: object = None
 
 
 @dataclass
@@ -3806,7 +3734,7 @@ def _load_session(sess_dir: Path, *, require_entry_anchor_ledger: bool = True) -
             ordinal=pid, profile_id=v["profile_id"], card_frames=v["card"],
             composer_pairs=pairs, profile_advance_clear=v["sequence"][-2][2],
             profile_advance_identity=v["sequence"][-1][2],
-            target_scoped_prefix=target_scoped_automated, campaign_dir=sess_dir))
+            target_scoped_prefix=target_scoped_automated))
     if {p.ordinal for p in profiles} != set(expected):
         raise RuntimeError(f"{sess_dir} has completed profile metadata without matching frames")
     for p in profiles:
@@ -4162,10 +4090,13 @@ def _build_profile_payloads(profiles: list, *, content_band, identity_band, like
                 f"partial_blocks={len(index.partial)}); every available foreign item must be "
                 "included in calibration negatives")
         try:
+            # Classifier-only, matching capture.  Measure rebuilds the numbering capture already
+            # committed to; if it applied a gate capture did not, it would refuse the very items
+            # capture numbered and the two would disagree about a profile they both read from
+            # the same bytes.  The still-photo licence for a HEART is not this call's job -- it
+            # was `_verified_still_photo_proof`'s, live, in the pre-heart window.
             payload = build_item_payload(
-                p.card_frames, index, unnumber=unnumber_unless_confident_photo,
-                unnumber_without_evidence=unnumber_without_still_photo_evidence,
-                still_photo_dwell=_persisted_still_photo_dwell(p.campaign_dir, p.ordinal))
+                p.card_frames, index, unnumber=unnumber_unless_confident_photo)
         except ItemCropError as exc:
             raise _MeasureRefused(
                 f"profile {p.profile_id!r}: could not build item crops: {exc}") from exc

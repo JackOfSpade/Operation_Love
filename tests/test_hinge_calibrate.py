@@ -2848,6 +2848,107 @@ def test_measure_requires_collective_photo_depth_coverage_for_multi_profile_spli
         cal._require_collective_target_depths(profiles, split="calibration")
 
 
+def test_require_collective_target_depths_accepts_photo_1_only_at_depth_1_across_two_profiles():
+    """`photo_1_only_v1` never targets item 3 by design (owner decision 2026-08-22): two profiles
+    that both only ever touch item 1 collectively cover everything that strategy claims to
+    exercise, so the check must accept rather than demand a depth the strategy never collects."""
+    profiles = [cal._ProfileData(i, f"p{i}", [], [(1, b"pre", b"composer")], b"clear", b"identity")
+                for i in (1, 2)]
+
+    cal._require_collective_target_depths(
+        profiles, split="calibration", strategy_id=cal._PHOTO_1_ONLY_TARGET_STRATEGY_ID)
+
+
+def test_require_collective_target_depths_refuses_same_profiles_under_alternating_strategy():
+    """The exact same depth-1-only profiles that pass under `photo_1_only_v1` must still be
+    REFUSED under the alternating strategy, naming both the missing depth and the strategy that
+    was asked for -- proving the check derives its requirement from the strategy rather than
+    having simply gone slack for every strategy."""
+    profiles = [cal._ProfileData(i, f"p{i}", [], [(1, b"pre", b"composer")], b"clear", b"identity")
+                for i in (1, 2)]
+
+    with pytest.raises(cal._MeasureRefused, match="lacks composer evidence") as exc:
+        cal._require_collective_target_depths(
+            profiles, split="calibration", strategy_id=cal._AUTOMATED_TARGET_STRATEGY_ID)
+    assert "[3]" in str(exc.value)
+    assert cal._AUTOMATED_TARGET_STRATEGY_ID in str(exc.value)
+
+
+def test_require_collective_target_depths_accepts_alternating_strategy_with_both_depths_covered():
+    """Unchanged regression: the default alternating strategy still accepts a split that
+    collectively covers both photo-1 and photo-3, exactly as before this strategy-aware check."""
+    profiles = [cal._ProfileData(1, "p1", [], [(1, b"pre", b"composer")], b"clear", b"identity"),
+                cal._ProfileData(2, "p2", [], [(3, b"pre", b"composer")], b"clear", b"identity")]
+
+    cal._require_collective_target_depths(
+        profiles, split="calibration", strategy_id=cal._AUTOMATED_TARGET_STRATEGY_ID)
+    # Also confirm the keyword-only default (no strategy_id passed at all) is unaffected.
+    cal._require_collective_target_depths(profiles, split="calibration")
+
+
+def test_verified_automated_circular_evidence_returns_the_resolved_target_strategy_id(tmp_path):
+    """`_cmd_measure` threads this value straight into `_require_collective_target_depths`
+    (never re-deriving it from a manifest independently), so the evidence verifier must expose
+    exactly the strategy id it already checked manifest/acceptance/profile consistency for."""
+    manifest = _minimal_unattended_manifest(
+        target_strategy_id=cal._PHOTO_1_ONLY_TARGET_STRATEGY_ID)
+    session = _session_from_manifest(tmp_path, "photo1only-resolved", manifest)
+
+    result = cal._verified_automated_circular_evidence([session])
+
+    assert result["target_strategy_id"] == cal._PHOTO_1_ONLY_TARGET_STRATEGY_ID
+
+
+def test_verified_automated_circular_evidence_refuses_sessions_with_disagreeing_strategies(
+        tmp_path):
+    """One measure invocation is one campaign: if two otherwise-valid sessions were captured
+    under two different strategies, there is no single answer to "the depths this evidence
+    targets" -- refuse rather than silently picking one session's strategy over the other's."""
+    alternating = _session_from_manifest(
+        tmp_path, "alt",
+        _minimal_unattended_manifest(target_strategy_id=cal._AUTOMATED_TARGET_STRATEGY_ID))
+    photo_1_only = _session_from_manifest(
+        tmp_path, "p1o",
+        _minimal_unattended_manifest(target_strategy_id=cal._PHOTO_1_ONLY_TARGET_STRATEGY_ID))
+
+    with pytest.raises(cal._MeasureRefused, match="disagreeing automated target strategies"):
+        cal._verified_automated_circular_evidence([alternating, photo_1_only])
+
+
+def test_measure_depth_gate_uses_resolved_automated_strategy_not_hardcoded_pair(
+        monkeypatch, tmp_path, capsys):
+    """End-to-end-ish: a consistent `photo_1_only_v1` automated campaign whose every profile only
+    ever touches item 1 must pass `_cmd_measure`'s collective-depth gate, using the strategy id
+    `_verified_automated_circular_evidence` resolves rather than the hardcoded alternating pair --
+    otherwise a legitimate photo_1_only_v1 campaign could never be measured once a split holds two
+    or more profiles."""
+    args, calibration, heldout = _successful_measure_seams(monkeypatch, tmp_path)
+    for session in (calibration, heldout):
+        session.profiles = [
+            cal._ProfileData(p.ordinal, p.profile_id, p.card_frames,
+                             [(1, pre, composer) for _item, pre, composer in p.composer_pairs],
+                             p.profile_advance_clear, p.profile_advance_identity)
+            for p in session.profiles
+        ]
+    monkeypatch.setattr(
+        cal, "_verified_automated_circular_evidence",
+        lambda _sessions: {"kind": "automated_circular_risk_accepted",
+                           "not_supervised_operational_evidence": True,
+                           "target_strategy_id": cal._PHOTO_1_ONLY_TARGET_STRATEGY_ID})
+    monkeypatch.setattr(cal, "_unattended_review_reference_reason", lambda *_a, **_kw: None)
+    review_path = tmp_path / "unattended_review.json"
+    review_path.write_text("{}")
+    args.accept_automated_circular_evidence = True
+    args.confirmation = cal._UNATTENDED_CONFIRMATION
+    args.unattended_review = str(review_path)
+
+    cal._cmd_measure(args)
+
+    output = capsys.readouterr().out
+    assert "REFUSED" not in output
+    assert "targeting_calibration" in output
+
+
 def test_operational_recorder_v2_requires_hashed_frames_and_exact_auto_focused_schema(monkeypatch,
                                                                                        tmp_path):
     device = _device()
@@ -3790,3 +3891,194 @@ def test_capture_validates_the_config_so_the_licence_its_proof_consults_is_insta
         "capture must call config.validate() (which installs the still-photo licence) "
         "before constructing the driver")
     assert cfg_mod_real is cal.cfg_mod  # the monkeypatched module is the real config module
+
+
+# =====================================================================================
+# photo-1-only: the second, explicitly-selected automated target strategy
+# =====================================================================================
+#
+# WHY (owner decision 2026-08-22): two live campaigns showed real decks rarely carry three
+# numberable photos (prompt cards/videos are common), so the alternating strategy burns its
+# bounded per-ordinal skip budget on every even ordinal and no campaign can finish. This second
+# strategy always targets photo model item 1, accepting it proves less about deep-item
+# navigation. It is opt-in only (`capture --target-items photo-1-only`); the alternating id
+# remains the byte-identical default in every respect covered above.
+
+@pytest.mark.parametrize(
+    ("ordinal", "expected"), [(1, (1,)), (2, (3,)), (3, (1,)), (4, (3,))])
+def test_alternating_strategy_items_unchanged_whether_or_not_strategy_id_is_passed(
+        ordinal, expected):
+    """The default strategy's behaviour must stay byte-identical: passing no `strategy_id` and
+    passing the alternating id explicitly must agree, for every ordinal parity."""
+    assert cal._automated_composer_items_for_ordinal(ordinal) == expected
+    assert cal._automated_composer_items_for_ordinal(
+        ordinal, strategy_id=cal._AUTOMATED_TARGET_STRATEGY_ID) == expected
+
+
+@pytest.mark.parametrize("ordinal", [1, 2, 3, 4])
+def test_photo_1_only_strategy_targets_item_1_for_every_ordinal(ordinal):
+    """The owner's second strategy narrows every ordinal -- odd or even -- to item 1 only. This
+    is the explicit point of the strategy: it never exercises deep-item navigation."""
+    assert cal._automated_composer_items_for_ordinal(
+        ordinal, strategy_id=cal._PHOTO_1_ONLY_TARGET_STRATEGY_ID) == (1,)
+
+
+def test_unknown_target_strategy_id_raises_value_error_naming_it():
+    """An unrecognized `strategy_id` must be refused loudly, never silently treated as one of the
+    two known strategies (which would misrepresent what was actually targeted)."""
+    with pytest.raises(ValueError, match="unknown automated target strategy id 'not_a_real_id'"):
+        cal._automated_composer_items_for_ordinal(1, strategy_id="not_a_real_id")
+
+
+def _fake_unattended_capture_recording_strategy(calls: list):
+    """A stand-in for `_capture_one_profile_unattended` that records the exact
+    `target_strategy_id` `_cmd_capture` threaded to it and returns a profile record carrying
+    that same id and the items the real helper would compute for it -- so the manifest this
+    produces is exactly what a real capture would record for that strategy."""
+    def _capture(_driver, _out_dir, *, ordinal, frame_counter, frames_meta, used_profile_ids,
+                review_gate, skipped_attempts, abort_recoveries, send_like, target_strategy_id):
+        calls.append(target_strategy_id)
+        used_profile_ids.add(f"profile-{ordinal}")
+        items = cal._automated_composer_items_for_ordinal(
+            ordinal, strategy_id=target_strategy_id)
+        return ({"ordinal": ordinal, "profile_id": f"profile-{ordinal}",
+                "target_strategy_id": target_strategy_id, "composer_items": list(items)},
+               frame_counter)
+    return _capture
+
+
+def test_capture_with_photo_1_only_records_the_selected_strategy_in_every_recording_site(
+        monkeypatch, tmp_path):
+    """`--target-items photo-1-only` must be threaded to the manifest's
+    `automated_target_strategy_id`, the `automation_acceptance.target_strategy_id`, AND each
+    profile record's own `target_strategy_id` -- the manifest must record the strategy that
+    actually ran, never the default."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("apps:\n  hinge:\n    serial: PIXEL-TEST\n")
+    _wire_inert_skip_capture(monkeypatch, tmp_path)
+    calls: list = []
+    monkeypatch.setattr(
+        cal, "_capture_one_profile_unattended", _fake_unattended_capture_recording_strategy(calls))
+    args = argparse.Namespace(
+        profiles=1, split="calibration", config=str(config_path), out=str(tmp_path),
+        unattended=True, hybrid_review=False, confirmation=cal._UNATTENDED_CONFIRMATION,
+        record_operational_checks=False, send_like=False, send_like_confirmation="",
+        target_items="photo-1-only")
+
+    cal._cmd_capture(args)
+
+    assert calls == [cal._PHOTO_1_ONLY_TARGET_STRATEGY_ID]
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["automated_target_strategy_id"] == cal._PHOTO_1_ONLY_TARGET_STRATEGY_ID
+    acceptance = manifest["automation_acceptance"]
+    assert acceptance["target_strategy_id"] == cal._PHOTO_1_ONLY_TARGET_STRATEGY_ID
+    assert acceptance["targets_photo_model_items"] == [1]
+    assert manifest["profiles"][0]["target_strategy_id"] == cal._PHOTO_1_ONLY_TARGET_STRATEGY_ID
+    assert manifest["profiles"][0]["composer_items"] == [1]
+
+
+def test_capture_default_target_items_still_records_and_alternates(monkeypatch, tmp_path):
+    """Regression guard for the default path: an `argparse.Namespace` built WITHOUT
+    `target_items` at all (matching every pre-existing Namespace in this suite) must still
+    record the alternating strategy id and must still alternate item 1/item 3 by ordinal --
+    the new flag must not change default behaviour even by omission."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("apps:\n  hinge:\n    serial: PIXEL-TEST\n")
+    _wire_inert_skip_capture(monkeypatch, tmp_path)
+    calls: list = []
+    monkeypatch.setattr(
+        cal, "_capture_one_profile_unattended", _fake_unattended_capture_recording_strategy(calls))
+    args = argparse.Namespace(
+        profiles=2, split="calibration", config=str(config_path), out=str(tmp_path),
+        unattended=True, hybrid_review=False, confirmation=cal._UNATTENDED_CONFIRMATION,
+        record_operational_checks=False, send_like=False, send_like_confirmation="")
+    assert not hasattr(args, "target_items")
+
+    cal._cmd_capture(args)
+
+    assert calls == [cal._AUTOMATED_TARGET_STRATEGY_ID] * 2
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["automated_target_strategy_id"] == cal._AUTOMATED_TARGET_STRATEGY_ID
+    acceptance = manifest["automation_acceptance"]
+    assert acceptance["target_strategy_id"] == cal._AUTOMATED_TARGET_STRATEGY_ID
+    assert acceptance["targets_photo_model_items"] == [1, 3]
+    assert [p["composer_items"] for p in manifest["profiles"]] == [[1], [3]]
+    assert [p["target_strategy_id"] for p in manifest["profiles"]] == (
+        [cal._AUTOMATED_TARGET_STRATEGY_ID] * 2)
+
+
+def _minimal_unattended_manifest(*, target_strategy_id):
+    """The smallest manifest shape `_verified_automated_circular_evidence` accepts, using
+    ordinal 1 (photo item 1 under either known strategy) so the same builder serves both."""
+    return {
+        "capture_mode": "automated_circular_risk_accepted",
+        "human_ground_truth": False,
+        "automated_target_strategy_id": target_strategy_id,
+        "automation_acceptance": {
+            "confirmation": cal._UNATTENDED_CONFIRMATION,
+            "target_strategy_id": target_strategy_id,
+            "not_independent_ground_truth": True,
+            "not_supervised_operational_evidence": True,
+        },
+        "profiles": [{
+            "ordinal": 1,
+            "target_strategy_id": target_strategy_id,
+            "composer_items": [1],
+            "automated_actions": [
+                {"action": "automated_photo_heart", "photo_model_item": 1,
+                 "post_tap_composer_verified": True, "post_tap_item_relative_verified": True},
+                {"action": "automated_pass", "send_like_tapped": False,
+                 "composer_clear_visible": True},
+            ],
+        }],
+    }
+
+
+def _session_from_manifest(tmp_path, name, manifest):
+    directory = tmp_path / name
+    directory.mkdir()
+    (directory / "manifest.json").write_text(json.dumps(manifest))
+    return cal._SessionData(directory, "calibration", "serial", (), (), [], manifest)
+
+
+def test_measure_accepts_a_manifest_consistently_using_photo_1_only(tmp_path):
+    """A capture that consistently used the second, explicitly-selected strategy end to end (the
+    manifest, its acceptance, and its one profile record all agreeing) must be ACCEPTED exactly
+    like an alternating-strategy manifest -- narrowing the evidence is an owner-authorized
+    choice, not a defect that measurement should refuse."""
+    manifest = _minimal_unattended_manifest(
+        target_strategy_id=cal._PHOTO_1_ONLY_TARGET_STRATEGY_ID)
+    session = _session_from_manifest(tmp_path, "photo1only", manifest)
+
+    result = cal._verified_automated_circular_evidence([session])
+
+    assert result["kind"] == "automated_circular_risk_accepted"
+    assert result["records"][0]["session"] == str(session.dir)
+
+
+def test_measure_refuses_a_manifest_whose_profile_mixes_target_strategy_ids(tmp_path):
+    """A manifest that consistently claims photo-1-only at its manifest/acceptance level but
+    whose one profile record still claims the alternating id must be REFUSED -- membership in
+    the accepted set alone is not enough; every reference within one session must agree with
+    every other."""
+    manifest = _minimal_unattended_manifest(
+        target_strategy_id=cal._PHOTO_1_ONLY_TARGET_STRATEGY_ID)
+    manifest["profiles"][0]["target_strategy_id"] = cal._AUTOMATED_TARGET_STRATEGY_ID
+    session = _session_from_manifest(tmp_path, "mixed", manifest)
+
+    with pytest.raises(cal._MeasureRefused, match="lacks the exact automated"):
+        cal._verified_automated_circular_evidence([session])
+
+
+def test_measure_refuses_when_manifest_and_acceptance_strategy_ids_disagree(tmp_path):
+    """The manifest-level `automated_target_strategy_id` and the
+    `automation_acceptance.target_strategy_id` must agree with EACH OTHER, not merely each
+    independently belong to the accepted set."""
+    manifest = _minimal_unattended_manifest(
+        target_strategy_id=cal._PHOTO_1_ONLY_TARGET_STRATEGY_ID)
+    manifest["automation_acceptance"]["target_strategy_id"] = cal._AUTOMATED_TARGET_STRATEGY_ID
+    session = _session_from_manifest(tmp_path, "top-level-mismatch", manifest)
+
+    with pytest.raises(
+            cal._MeasureRefused, match="not an exact unattended circular-risk capture manifest"):
+        cal._verified_automated_circular_evidence([session])

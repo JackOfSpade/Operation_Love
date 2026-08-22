@@ -240,6 +240,146 @@ def test_review_refuses_a_second_target_on_an_odd_ordinal(tmp_path):
         review.build_review([session], config)
 
 
+# =====================================================================================
+# photo-1-only: the second, explicitly-selected automated target strategy
+# =====================================================================================
+#
+# WHY (owner decision 2026-08-22, mirrored from tools/hinge_calibrate.py): real decks rarely
+# carry three numberable photos, so the alternating strategy's per-ordinal skip budget can never
+# be spent successfully on every even ordinal. The owner may now explicitly select a second
+# strategy that always targets photo model item 1 -- an accepted narrowing of the evidence. This
+# reviewer must authenticate either strategy, and must refuse a manifest whose own references to
+# the strategy disagree with each other.
+
+def _retargeted_capture(tmp_path: Path, name: str, *, strategy_id: str) -> Path:
+    """The default `_capture` fixture already targets ordinal 1 / item 1, which is valid under
+    EITHER known strategy -- so relabeling every strategy-id reference in its manifest to
+    `strategy_id` produces an otherwise-untouched, internally consistent capture for that
+    strategy without duplicating the whole fixture."""
+    session = _capture(tmp_path, name)
+    manifest_path = session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["automated_target_strategy_id"] = strategy_id
+    manifest["automation_acceptance"]["target_strategy_id"] = strategy_id
+    manifest["profiles"][0]["target_strategy_id"] = strategy_id
+    manifest_path.write_text(json.dumps(manifest))
+    return session
+
+
+def test_review_accepts_a_manifest_consistently_using_photo_1_only(tmp_path):
+    """A capture whose manifest, acceptance, and profile record all consistently name
+    `photo_1_only_v1` must be ACCEPTED exactly like the alternating default -- narrowing the
+    evidence is an owner-authorized choice, not a defect."""
+    session = _retargeted_capture(
+        tmp_path, "photo1only", strategy_id=review._PHOTO_1_ONLY_TARGET_STRATEGY_ID)
+    config = tmp_path / "config.yaml"
+
+    body = review.build_review([session], config)
+
+    assert body["captures"][0]["target_strategy_id"] == review._PHOTO_1_ONLY_TARGET_STRATEGY_ID
+
+
+def test_review_refuses_a_manifest_whose_profile_mixes_target_strategy_ids(tmp_path):
+    """A manifest that consistently claims photo-1-only at the manifest/acceptance level but
+    whose one profile record still claims the alternating id must be REFUSED -- membership in
+    the accepted set alone is not enough; every reference within one session must agree with
+    every other."""
+    session = _retargeted_capture(
+        tmp_path, "mixed", strategy_id=review._PHOTO_1_ONLY_TARGET_STRATEGY_ID)
+    manifest_path = session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["profiles"][0]["target_strategy_id"] = review._AUTOMATED_TARGET_STRATEGY_ID
+    manifest_path.write_text(json.dumps(manifest))
+    config = tmp_path / "config.yaml"
+
+    with pytest.raises(review.ReviewRefused, match="exact alternating target trace"):
+        review.build_review([session], config)
+
+
+def test_review_refuses_when_manifest_and_acceptance_strategy_ids_disagree(tmp_path):
+    """The manifest-level `automated_target_strategy_id` and the
+    `automation_acceptance.target_strategy_id` must agree with EACH OTHER, not merely each
+    independently belong to the accepted set."""
+    session = _retargeted_capture(
+        tmp_path, "top-level-mismatch", strategy_id=review._PHOTO_1_ONLY_TARGET_STRATEGY_ID)
+    manifest_path = session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["automation_acceptance"]["target_strategy_id"] = review._AUTOMATED_TARGET_STRATEGY_ID
+    manifest_path.write_text(json.dumps(manifest))
+    config = tmp_path / "config.yaml"
+
+    with pytest.raises(review.ReviewRefused, match="inconsistent automated target strategy"):
+        review.build_review([session], config)
+
+
+def _retargeted_second_profile_capture(tmp_path: Path, name: str, *, strategy_id: str) -> Path:
+    """A capture whose single profile is ordinal 2 targeting photo model item 3 under
+    `strategy_id` -- the alternating strategy's even-ordinal target.  Relabels `_retargeted_
+    capture`'s otherwise-untouched ordinal-1/item-1 fixture: frame bytes are item-number
+    independent, so only the metadata this reviewer cross-checks needs to move to (2, 3)."""
+    session = _retargeted_capture(tmp_path, name, strategy_id=strategy_id)
+    manifest_path = session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    for frame in manifest["frames"]:
+        frame["profile_ordinal"] = 2
+        if frame["item_number"] == 1:
+            frame["item_number"] = 3
+    profile = manifest["profiles"][0]
+    profile["ordinal"] = 2
+    profile["composer_items"] = [3]
+    for action in profile["automated_actions"]:
+        if action["action"] == "automated_photo_heart":
+            action["photo_model_item"] = 3
+    manifest_path.write_text(json.dumps(manifest))
+    return session
+
+
+def test_review_accepts_photo_1_only_split_covering_only_depth_1_across_two_profiles(tmp_path):
+    """`photo_1_only_v1` never targets item 3 by design (owner decision 2026-08-22): two
+    profiles that both only ever touch item 1 collectively cover everything that strategy claims
+    to exercise, so `build_review`'s split-level depth gate must accept rather than demand a
+    depth the strategy never collects."""
+    session_a = _retargeted_capture(
+        tmp_path, "p1o-a", strategy_id=review._PHOTO_1_ONLY_TARGET_STRATEGY_ID)
+    session_b = _retargeted_capture(
+        tmp_path, "p1o-b", strategy_id=review._PHOTO_1_ONLY_TARGET_STRATEGY_ID)
+    config = tmp_path / "config.yaml"
+
+    body = review.build_review([session_a, session_b], config)
+
+    assert len(body["captures"]) == 2
+
+
+def test_review_refuses_alternating_strategy_split_with_two_profiles_missing_item_3(tmp_path):
+    """The exact same shape of depth-1-only profiles that passes under `photo_1_only_v1` must
+    still be REFUSED under the (default) alternating strategy, naming both the missing depth and
+    the strategy that was asked for -- proving the gate did not simply go slack for every
+    strategy."""
+    session_a = _capture(tmp_path, "alt-missing-a")
+    session_b = _capture(tmp_path, "alt-missing-b")
+    config = tmp_path / "config.yaml"
+
+    with pytest.raises(review.ReviewRefused, match="lacks composer evidence") as exc:
+        review.build_review([session_a, session_b], config)
+    assert "[3]" in str(exc.value)
+    assert review._AUTOMATED_TARGET_STRATEGY_ID in str(exc.value)
+
+
+def test_review_accepts_alternating_strategy_split_with_both_depths_covered(tmp_path):
+    """Unchanged regression: the default alternating strategy still accepts a split whose two
+    profiles collectively cover both photo-1 and photo-3, exactly as before this strategy-aware
+    depth check existed."""
+    session_a = _retargeted_capture(
+        tmp_path, "alt-a", strategy_id=review._AUTOMATED_TARGET_STRATEGY_ID)
+    session_b = _retargeted_second_profile_capture(
+        tmp_path, "alt-b", strategy_id=review._AUTOMATED_TARGET_STRATEGY_ID)
+    config = tmp_path / "config.yaml"
+
+    body = review.build_review([session_a, session_b], config)
+
+    assert len(body["captures"]) == 2
+
+
 def test_review_allows_ordered_repeated_card_scroll_frames(tmp_path):
     session = _capture(tmp_path, "repeated-card-scroll", card_scroll_count=3)
     config = tmp_path / "config.yaml"

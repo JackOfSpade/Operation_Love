@@ -34,7 +34,13 @@ _HYBRID_CONFIRMATION = "I_ACCEPT_EXTERNAL_REVIEWED_AUTOMATION_RISK"
 # shared: an independent reviewer must not depend on the code whose output it is reviewing.
 _SEND_LIKE_CONFIRMATION = "I_ACCEPT_REAL_PRIORITY_LIKE_SEND_RISK"
 _AUTOMATED_TARGET_STRATEGY_ID = "alternate_photo_1_3_by_profile_ordinal_v1"
-_AUTOMATED_TARGET_DEPTHS = frozenset((1, 3))
+# Mirrors tools.hinge_calibrate._PHOTO_1_ONLY_TARGET_STRATEGY_ID, duplicated for the same reason
+# _AUTOMATED_TARGET_STRATEGY_ID above is: this module never imports the capture tool it reviews.
+# Owner-selected second strategy (2026-08-22): always targets photo model item 1, an explicit,
+# accepted narrowing that does not exercise deep-item navigation.
+_PHOTO_1_ONLY_TARGET_STRATEGY_ID = "photo_1_only_v1"
+_ACCEPTED_TARGET_STRATEGY_IDS = frozenset(
+    (_AUTOMATED_TARGET_STRATEGY_ID, _PHOTO_1_ONLY_TARGET_STRATEGY_ID))
 _TARGET_SCOPED_PREFIX_PROOF_ID = "photo_only_confirmed_prefix_v1"
 _MAX_PREACTION_PROFILE_SKIPS_PER_ORDINAL = 3
 _MAX_PREACTION_PROFILE_SKIPS_PER_SESSION = 12
@@ -75,11 +81,35 @@ def _require_exact_keys(value: object, keys: set[str], *, context: str) -> dict:
     return value
 
 
-def _expected_composer_items(ordinal: object) -> tuple[int, ...]:
-    """The capture strategy's one-photo target, derived from a 1-based ordinal."""
+def _expected_composer_items(
+        ordinal: object, *, strategy_id: str = _AUTOMATED_TARGET_STRATEGY_ID) -> tuple[int, ...]:
+    """The capture strategy's photo target(s) for a 1-based ordinal.
+
+    Mirrors tools.hinge_calibrate._automated_composer_items_for_ordinal (duplicated, not
+    imported -- see module docstring). `strategy_id` defaults to the alternating strategy so
+    every existing caller is unaffected.
+    """
     if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 1:
         raise ReviewRefused(f"invalid automated profile ordinal {ordinal!r}")
-    return (1 if ordinal % 2 else 3,)
+    if strategy_id == _AUTOMATED_TARGET_STRATEGY_ID:
+        return (1 if ordinal % 2 else 3,)
+    if strategy_id == _PHOTO_1_ONLY_TARGET_STRATEGY_ID:
+        return (1,)
+    raise ReviewRefused(f"unknown automated target strategy id {strategy_id!r}")
+
+
+def _automated_target_depths_for_strategy(strategy_id: str) -> frozenset[int]:
+    """All distinct photo model items `strategy_id` can ever target.
+
+    Mirrors tools.hinge_calibrate._automated_target_depths_for_strategy (duplicated, not
+    imported -- see module docstring).  Derived from `_expected_composer_items` itself (ordinals 1
+    and 2 span every branch of both known strategies) so this can never drift from that single
+    source of truth.  Raises the same ReviewRefused for an unknown id.
+    """
+    depths: set[int] = set()
+    for ordinal in (1, 2):
+        depths.update(_expected_composer_items(ordinal, strategy_id=strategy_id))
+    return frozenset(depths)
 
 
 def _approved_hybrid_decision(record: object, *, acceptance: dict, decisions: list,
@@ -188,9 +218,18 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
     if (acceptance.get("not_independent_ground_truth") is not True
             or acceptance.get("not_supervised_operational_evidence") is not True):
         raise ReviewRefused(f"{session}: circular-risk provenance is incomplete")
-    if (manifest.get("automated_target_strategy_id") != _AUTOMATED_TARGET_STRATEGY_ID
-            or acceptance.get("target_strategy_id") != _AUTOMATED_TARGET_STRATEGY_ID):
-        raise ReviewRefused(f"{session}: unsupported or missing automated target strategy")
+    manifest_strategy_id = manifest.get("automated_target_strategy_id")
+    acceptance_strategy_id = acceptance.get("target_strategy_id")
+    if (manifest_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
+            or acceptance_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
+            or manifest_strategy_id != acceptance_strategy_id):
+        # Membership alone is not enough: a manifest could legitimately use one accepted id while
+        # its acceptance block claims another. Every reference to the strategy within one session
+        # must agree with every other, never merely with the accepted set independently.
+        raise ReviewRefused(
+            f"{session}: unsupported, missing, or inconsistent automated target strategy "
+            f"(manifest={manifest_strategy_id!r}, acceptance={acceptance_strategy_id!r})")
+    strategy_id = manifest_strategy_id
     # A capture ends each profile either with the default Pass-without-send or -- only when the
     # owner explicitly accepted it at capture time -- with a REAL Send Priority Like. The
     # acceptance is read from the manifest rather than inferred from the traces, so a send trace
@@ -461,8 +500,8 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
             raise ReviewRefused(f"{session}: profile has no saved frame sequence")
         if profile.get("action_evidence_mode") != mode:
             raise ReviewRefused(f"{session}: profile is not marked automated circular evidence")
-        expected_items = _expected_composer_items(ordinal)
-        if (profile.get("target_strategy_id") != _AUTOMATED_TARGET_STRATEGY_ID
+        expected_items = _expected_composer_items(ordinal, strategy_id=strategy_id)
+        if (profile.get("target_strategy_id") != strategy_id
                 or (target_scoped and profile.get("capture_evidence_scope") != _TARGET_SCOPED_PREFIX_PROOF_ID)
                 or profile.get("composer_items") != list(expected_items)):
             raise ReviewRefused(f"{session}: profile does not carry its exact alternating target trace")
@@ -546,7 +585,7 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
         # while this evidence was gathered. False is the ordinary Pass-without-send capture.
         "send_like_accepted": send_like_accepted,
         "terminal_advance_action": terminal_action,
-        "target_strategy_id": _AUTOMATED_TARGET_STRATEGY_ID,
+        "target_strategy_id": strategy_id,
         "capture_evidence_scope": (_TARGET_SCOPED_PREFIX_PROOF_ID if target_scoped else "closed_set_profile_v1"),
         "split": manifest.get("split"),
         "composer_items": [item for profile in profiles for item in profile["composer_items"]],
@@ -572,11 +611,27 @@ def build_review(sessions: list[Path], config: Path) -> dict:
         split_records = [record for record in records if record["split"] == split]
         profile_count = sum(record["profile_count"] for record in split_records)
         covered = {item for record in split_records for item in record["composer_items"]}
-        if profile_count >= 2 and not _AUTOMATED_TARGET_DEPTHS.issubset(covered):
-            missing = sorted(_AUTOMATED_TARGET_DEPTHS - covered)
+        # `_read_capture` already resolved and verified each record's own `target_strategy_id`;
+        # reuse that value here rather than re-deriving it, and require every session in one
+        # split to agree on exactly one strategy so "the depths it targets" stays a single answer.
+        split_strategy_ids = {record["target_strategy_id"] for record in split_records}
+        if len(split_strategy_ids) > 1:
             raise ReviewRefused(
-                f"{split!r} split has {profile_count} profiles but lacks required photo target "
-                f"depth(s) {missing}")
+                f"{split!r} split mixes automated target strategies {sorted(split_strategy_ids)}; "
+                "one split must use exactly one target strategy across every session")
+        split_strategy_id, = split_strategy_ids
+        # The depth requirement exists so a calibration's evidence spans the depths its strategy
+        # claims to exercise; deriving it from the strategy (rather than a fixed {1, 3}) keeps
+        # that meaning under a narrower strategy instead of demanding evidence the strategy never
+        # collects. `photo_1_only_v1` was chosen 2026-08-22 after item-3 targets refused three
+        # times for three different legitimate reasons on real decks.
+        required_depths = _automated_target_depths_for_strategy(split_strategy_id)
+        if profile_count >= 2 and not required_depths.issubset(covered):
+            missing = sorted(required_depths - covered)
+            raise ReviewRefused(
+                f"{split!r} split has {profile_count} profiles but lacks composer evidence for "
+                f"required photo target depth(s) {missing} under target strategy "
+                f"{split_strategy_id!r}")
     body = {
         "schema_version": _REVIEW_SCHEMA_VERSION,
         "kind": "hinge_unattended_calibration_independent_review",

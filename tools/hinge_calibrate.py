@@ -150,9 +150,24 @@ _SEND_LIKE_CONFIRMATION = "I_ACCEPT_REAL_PRIORITY_LIKE_SEND_RISK"
 # Automated capture must never navigate again after Hinge has opened a persistent inline
 # composer.  Alternate the one calibrated photo depth by profile instead: odd profiles cover
 # photo model item 1 and even profiles cover photo model item 3.  The policy id is evidence,
-# not a suggestion; reviewers and measurement derive every expected action from it.
+# not a suggestion; reviewers and measurement derive every expected action from it. This is the
+# DEFAULT strategy; its behaviour must stay byte-identical when --target-items is not passed.
 _AUTOMATED_TARGET_STRATEGY_ID = "alternate_photo_1_3_by_profile_ordinal_v1"
-_AUTOMATED_TARGET_DEPTHS = frozenset((1, 3))
+# Owner decision 2026-08-22: two live campaigns showed real decks rarely carry three numberable
+# photos (prompt cards/videos are common), so the alternating strategy burns its bounded
+# per-ordinal skip budget on every even ordinal and no campaign can finish. This SECOND,
+# explicitly-selected strategy always targets photo model item 1, accepting that it proves less
+# about deep-item navigation. Opt in only via `capture --target-items photo-1-only`; the
+# alternating id above remains the default in every other respect.
+_PHOTO_1_ONLY_TARGET_STRATEGY_ID = "photo_1_only_v1"
+_ACCEPTED_TARGET_STRATEGY_IDS = frozenset(
+    (_AUTOMATED_TARGET_STRATEGY_ID, _PHOTO_1_ONLY_TARGET_STRATEGY_ID))
+# `capture --target-items` CLI spelling -> strategy id. Kept as the single place that maps the
+# operator-facing flag value to the internal id so the CLI and _cmd_capture cannot drift apart.
+_TARGET_ITEMS_FLAG_STRATEGY_IDS = {
+    "alternate-1-3": _AUTOMATED_TARGET_STRATEGY_ID,
+    "photo-1-only": _PHOTO_1_ONLY_TARGET_STRATEGY_ID,
+}
 # A deliberately strict, *temporary* navigation guard.  This is not a measured calibration
 # value, is never emitted, and exists only to keep the existing navigator fail-closed while
 # producing the evidence from which the real bound will subsequently be measured.
@@ -315,16 +330,40 @@ def _parse_item_numbers(raw: str) -> list[int]:
     return numbers
 
 
-def _automated_composer_items_for_ordinal(ordinal: int) -> tuple[int, ...]:
-    """Return the sole automated photo target for a 1-based profile ordinal.
+def _automated_composer_items_for_ordinal(
+        ordinal: int, *, strategy_id: str = _AUTOMATED_TARGET_STRATEGY_ID) -> tuple[int, ...]:
+    """Return the automated photo target(s) for a 1-based profile ordinal under `strategy_id`.
 
     Keeping this as the single source of truth prevents an automated/hybrid capture from
     reopening navigation after a persistent composer is visible.  Manual capture deliberately
     does not call this helper: its owner-chosen item list remains part of the supervised path.
+
+    `strategy_id` defaults to the alternating strategy, so every existing caller (and the
+    default capture path) is unaffected.  Passing `_PHOTO_1_ONLY_TARGET_STRATEGY_ID` narrows
+    every ordinal to item 1 only -- an explicit, owner-accepted narrowing of the evidence that
+    does not exercise deep-item navigation.  Any other id is refused rather than silently
+    treated as one of the two known strategies.
     """
     if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 1:
         raise ValueError(f"profile ordinal must be a positive integer, got {ordinal!r}")
-    return (1 if ordinal % 2 else 3,)
+    if strategy_id == _AUTOMATED_TARGET_STRATEGY_ID:
+        return (1 if ordinal % 2 else 3,)
+    if strategy_id == _PHOTO_1_ONLY_TARGET_STRATEGY_ID:
+        return (1,)
+    raise ValueError(f"unknown automated target strategy id {strategy_id!r}")
+
+
+def _automated_target_depths_for_strategy(strategy_id: str) -> frozenset[int]:
+    """All distinct photo model items `strategy_id` can ever target.
+
+    Derived from `_automated_composer_items_for_ordinal` itself (ordinals 1 and 2 span every
+    branch of both known strategies) rather than duplicated, so this can never drift from the
+    single source of truth above.  Raises the same `ValueError` for an unknown id.
+    """
+    depths: set[int] = set()
+    for ordinal in (1, 2):
+        depths.update(_automated_composer_items_for_ordinal(ordinal, strategy_id=strategy_id))
+    return frozenset(depths)
 
 
 def _target_scoped_prefix_reason(index, payload, target_items: tuple[int, ...]) -> str | None:
@@ -387,22 +426,37 @@ def _target_scoped_prefix_reason(index, payload, target_items: tuple[int, ...]) 
     return None
 
 
-def _require_collective_target_depths(profiles: list, *, split: str) -> None:
-    """Require both calibrated photo depths across any split large enough to cover them.
+def _require_collective_target_depths(
+        profiles: list, *, split: str, strategy_id: str = _AUTOMATED_TARGET_STRATEGY_ID) -> None:
+    """Require every photo depth `strategy_id` can target, across any split large enough to
+    cover them.
 
     One composer pair per profile is intentional.  At two or more profiles the split must
-    nevertheless exercise both target depths, otherwise the numeric result cannot support the
-    alternating strategy's full target surface.
+    nevertheless exercise every depth `strategy_id` claims to exercise, otherwise the numeric
+    result cannot support that strategy's full target surface.  The requirement is derived from
+    `strategy_id` (via `_automated_target_depths_for_strategy`) rather than a fixed {1, 3}: the
+    depth requirement exists so a calibration's evidence spans the depths its strategy claims to
+    exercise, and deriving it from the strategy keeps that meaning under a narrower strategy
+    instead of demanding evidence the strategy never collects.  `photo_1_only_v1` was chosen
+    2026-08-22 after item-3 targets refused three times for three different legitimate reasons on
+    real decks, and it never collects item 3 at all -- a split entirely captured under it must not
+    be refused for "missing" a depth it was never trying to reach.
+
+    `strategy_id` defaults to the alternating strategy, so every existing caller is unaffected.
     """
     if len(profiles) < 2:
         return
+    try:
+        required = _automated_target_depths_for_strategy(strategy_id)
+    except ValueError as exc:
+        raise _MeasureRefused(f"{split} split: {exc}") from exc
     captured = {item for profile in profiles for item, _pre, _composer in profile.composer_pairs}
-    missing = sorted(_AUTOMATED_TARGET_DEPTHS - captured)
+    missing = sorted(required - captured)
     if missing:
         raise _MeasureRefused(
             f"{split} split has {len(profiles)} profiles but lacks composer evidence for "
-            f"required photo target depth(s) {missing}; retain one pair per profile but "
-            "collectively cover the alternating photo-1/photo-3 strategy")
+            f"required photo target depth(s) {missing} under target strategy {strategy_id!r}; "
+            "retain one pair per profile but collectively cover every depth that strategy targets")
 
 
 def _round_down_below(value: float, *, above: float, below: float,
@@ -2593,20 +2647,25 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                                     review_gate: _HybridReviewGate | None = None,
                                     skipped_attempts: list[dict] | None = None,
                                     abort_recoveries: list[dict] | None = None,
-                                    send_like: bool = False) -> tuple[dict, int]:
+                                    send_like: bool = False,
+                                    target_strategy_id: str = _AUTOMATED_TARGET_STRATEGY_ID
+                                    ) -> tuple[dict, int]:
     """Capture one profile with explicitly-authorized device actions.
 
     This is deliberately separate from the supervised path above.  It uses the same bounded
     scroll planner, item index, bottom-up navigator, guarded driver tap transport, and composer
     detector; it does *not* recast those observations as operator actions or independent ground
     truth.  Any ambiguity leaves the composer/profile untouched and aborts the session.
+
+    `target_strategy_id` defaults to the alternating strategy, so every existing caller is
+    unaffected; `_cmd_capture` threads its own resolved choice through explicitly.
     """
     identity_band = driver.identity_band
     content_band = driver.content_band
     like_template = driver._template("like")
     confirm_template = driver._template("confirm")
     like_threshold = hinge_mod._LIKE_MATCH_THRESHOLD
-    target_items = _automated_composer_items_for_ordinal(ordinal)
+    target_items = _automated_composer_items_for_ordinal(ordinal, strategy_id=target_strategy_id)
 
     def recover_unsent_composer(*, frame: bytes, item_number: int, failure_stage: str) -> dict:
         """Record the cleanup result even though this profile never becomes evidence."""
@@ -3210,7 +3269,7 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
 
     profile_meta = {
         "ordinal": ordinal, "profile_id": profile_id, "card_scroll_frames": len(card_frames),
-        "target_strategy_id": _AUTOMATED_TARGET_STRATEGY_ID,
+        "target_strategy_id": target_strategy_id,
         "composer_items": list(target_items), "profile_advance_cleared_composer": True,
         "profile_advance_identity_mismatched": True, "identity_frame_index": identity.frame_index,
         "identity_agreeing_frames": identity.agreeing_frames,
@@ -3645,6 +3704,20 @@ def _cmd_capture(args: argparse.Namespace) -> None:
               "not enabled by a short flag alone.", file=sys.stderr)
         sys.exit(1)
 
+    target_items_flag = getattr(args, "target_items", "alternate-1-3")
+    try:
+        target_strategy_id = _TARGET_ITEMS_FLAG_STRATEGY_IDS[target_items_flag]
+    except KeyError:
+        print(f"ERROR: unknown --target-items {target_items_flag!r}; choose one of "
+              f"{sorted(_TARGET_ITEMS_FLAG_STRATEGY_IDS)}.", file=sys.stderr)
+        sys.exit(1)
+    photo_1_only = target_strategy_id == _PHOTO_1_ONLY_TARGET_STRATEGY_ID
+    target_items_description = (
+        "photo model item 1 on EVERY profile -- deep-item navigation is NOT exercised; this is "
+        "an explicit narrowing of the evidence (--target-items photo-1-only)"
+        if photo_1_only else
+        "photo model item 1 on odd profile ordinals and item 3 on even ordinals")
+
     if not automated:
         print("HUMANIZED, NARROW-SCOPE: this tool only ever screencaps (read-only) and performs "
               "small humanized SCROLL gestures through the driver's own transport -- never a raw "
@@ -3653,13 +3726,12 @@ def _cmd_capture(args: argparse.Namespace) -> None:
               "by hand, on the phone, when prompted.")
     if unattended:
         print("UNATTENDED / CIRCULAR-RISK ACCEPTED: this run will use HingeDriver's guarded "
-              "humanized tap/dislike transport to heart one photo per profile (odd ordinal: "
-              "item 1; even ordinal: item 3), verify the inline composer structurally, then "
-              "Pass without sending. The manifest records "
+              f"humanized tap/dislike transport to heart {target_items_description}, verify the "
+              "inline composer structurally, then Pass without sending. The manifest records "
               "human_ground_truth=false and cannot stand in for supervised operational evidence.")
     if hybrid_review:
-        print("HYBRID / AI-REVIEWED AUTOMATION: guarded HingeDriver transport will heart photo "
-              "model item 1 on odd profiles and item 3 on even profiles, then "
+        print("HYBRID / AI-REVIEWED AUTOMATION: guarded HingeDriver transport will heart "
+              f"{target_items_description}, then "
               f"{'send a REAL Priority Like' if send_like else 'Pass without sending'}, but only "
               "after a private PNG+JSON checkpoint is reviewed through stdin before every "
               "heart/Pass-or-Send and after every heart result. EOF, REFUSE, ABORT, or malformed "
@@ -3762,7 +3834,8 @@ def _cmd_capture(args: argparse.Namespace) -> None:
                             driver, out_dir, ordinal=ordinal, frame_counter=frame_counter,
                             frames_meta=frames_meta, used_profile_ids=used_profile_ids,
                             review_gate=review_gate, skipped_attempts=skipped_attempts,
-                            abort_recoveries=abort_recoveries, send_like=send_like)
+                            abort_recoveries=abort_recoveries, send_like=send_like,
+                            target_strategy_id=target_strategy_id)
                     else:
                         profile_meta, frame_counter = capture_fn(
                             driver, out_dir, ordinal=ordinal, frame_counter=frame_counter,
@@ -3825,7 +3898,7 @@ def _cmd_capture(args: argparse.Namespace) -> None:
         "split": args.split,
         "capture_mode": (_HYBRID_CAPTURE_MODE if hybrid_review
                          else "automated_circular_risk_accepted" if unattended else "supervised_manual"),
-        "automated_target_strategy_id": (_AUTOMATED_TARGET_STRATEGY_ID if automated else None),
+        "automated_target_strategy_id": (target_strategy_id if automated else None),
         "capture_evidence_scope": (_TARGET_SCOPED_PREFIX_PROOF_ID if automated else "closed_set_profile_v1"),
         "human_ground_truth": not automated,
         "unattended_provenance_schema_version": (
@@ -3835,8 +3908,8 @@ def _cmd_capture(args: argparse.Namespace) -> None:
             "confirmation": (_HYBRID_REVIEW_CONFIRMATION if hybrid_review
                              else _UNATTENDED_CONFIRMATION),
             "accepted_utc": start_utc.isoformat(),
-            "target_strategy_id": _AUTOMATED_TARGET_STRATEGY_ID,
-            "targets_photo_model_items": sorted(_AUTOMATED_TARGET_DEPTHS),
+            "target_strategy_id": target_strategy_id,
+            "targets_photo_model_items": sorted(_automated_target_depths_for_strategy(target_strategy_id)),
             "provisional_identity_match_max_dist": _UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST,
             "not_independent_ground_truth": True,
             "not_supervised_operational_evidence": True,
@@ -5097,6 +5170,11 @@ def _verified_automated_circular_evidence(sessions: list[_SessionData]) -> dict:
     distinguish a circular transport/vision trace from human ground truth.
     """
     records = []
+    # `_cmd_measure` threads this back into `_require_collective_target_depths` so that check
+    # asks for the depths THIS evidence's strategy actually claims, never a hardcoded pair
+    # re-derived independently from a manifest. One measure invocation is one campaign, so every
+    # session's already-verified strategy_id (below) must agree with every other.
+    session_strategy_ids: set[str] = set()
 
     def target_proof_reason(action: dict) -> str | None:
         proof = action.get("target_scoped_prefix_proof")
@@ -5114,16 +5192,22 @@ def _verified_automated_circular_evidence(sessions: list[_SessionData]) -> dict:
     for sess in sessions:
         manifest = sess.manifest
         acceptance = manifest.get("automation_acceptance")
+        manifest_strategy_id = manifest.get("automated_target_strategy_id")
+        acceptance_strategy_id = (
+            acceptance.get("target_strategy_id") if isinstance(acceptance, dict) else None)
         if (manifest.get("capture_mode") != "automated_circular_risk_accepted"
                 or manifest.get("human_ground_truth") is not False
                 or not isinstance(acceptance, dict)
                 or acceptance.get("confirmation") != _UNATTENDED_CONFIRMATION
-                or manifest.get("automated_target_strategy_id") != _AUTOMATED_TARGET_STRATEGY_ID
-                or acceptance.get("target_strategy_id") != _AUTOMATED_TARGET_STRATEGY_ID
+                or manifest_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
+                or acceptance_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
+                or manifest_strategy_id != acceptance_strategy_id
                 or acceptance.get("not_independent_ground_truth") is not True
                 or acceptance.get("not_supervised_operational_evidence") is not True):
             raise _MeasureRefused(
                 f"{sess.dir} is not an exact unattended circular-risk capture manifest")
+        strategy_id = manifest_strategy_id
+        session_strategy_ids.add(strategy_id)
         target_scoped = manifest.get("capture_evidence_scope") == _TARGET_SCOPED_PREFIX_PROOF_ID
         for profile in manifest.get("profiles", []):
             if not isinstance(profile, dict):
@@ -5132,10 +5216,14 @@ def _verified_automated_circular_evidence(sessions: list[_SessionData]) -> dict:
             hearts = [a for a in actions or [] if a.get("action") == "automated_photo_heart"]
             ordinal = profile.get("ordinal") if isinstance(profile, dict) else None
             try:
-                expected_items = _automated_composer_items_for_ordinal(ordinal)
+                expected_items = _automated_composer_items_for_ordinal(
+                    ordinal, strategy_id=strategy_id)
             except ValueError as exc:
                 raise _MeasureRefused(f"{sess.dir} has invalid automated profile ordinal") from exc
-            if (profile.get("target_strategy_id") != _AUTOMATED_TARGET_STRATEGY_ID
+            # Membership in the accepted set is not enough: every profile's own strategy id must
+            # agree with the manifest/acceptance id already pinned above, so a session can never
+            # mix strategies across its profiles.
+            if (profile.get("target_strategy_id") != strategy_id
                     or (target_scoped and profile.get("capture_evidence_scope") != _TARGET_SCOPED_PREFIX_PROOF_ID)
                     or profile.get("composer_items") != list(expected_items)
                     or [a.get("photo_model_item") for a in hearts] != list(expected_items)
@@ -5153,8 +5241,13 @@ def _verified_automated_circular_evidence(sessions: list[_SessionData]) -> dict:
                     "prefix proof for its only automated heart")
         records.append({"session": str(sess.dir), "manifest_sha256": _sha256(
             (sess.dir / "manifest.json").read_bytes()), "human_ground_truth": False})
+    if len(session_strategy_ids) > 1:
+        raise _MeasureRefused(
+            f"sessions use disagreeing automated target strategies {sorted(session_strategy_ids)}; "
+            "one measure invocation must use exactly one target strategy across every session")
     return {"kind": "automated_circular_risk_accepted", "records": records,
-            "not_supervised_operational_evidence": True}
+            "not_supervised_operational_evidence": True,
+            "target_strategy_id": next(iter(session_strategy_ids), _AUTOMATED_TARGET_STRATEGY_ID)}
 
 
 def _approved_hybrid_decision(record: object, *, acceptance: dict, review: dict,
@@ -5247,6 +5340,10 @@ def _verified_hybrid_reviewed_evidence(sessions: list[_SessionData]) -> dict:
     """Validate the distinct AI-reviewed transport provenance; never call it human evidence."""
     records = []
     required_reviewer = {"source", "id", "model", "version", "process"}
+    # See the matching comment in `_verified_automated_circular_evidence`: threaded back into
+    # `_require_collective_target_depths` so the depth requirement matches this evidence's own
+    # strategy rather than a hardcoded pair or an independent manifest re-derivation.
+    session_strategy_ids: set[str] = set()
 
     def target_proof_reason(action: dict) -> str | None:
         proof = action.get("target_scoped_prefix_proof")
@@ -5264,12 +5361,16 @@ def _verified_hybrid_reviewed_evidence(sessions: list[_SessionData]) -> dict:
     for sess in sessions:
         manifest = sess.manifest
         acceptance, review = manifest.get("automation_acceptance"), manifest.get("hybrid_review")
+        manifest_strategy_id = manifest.get("automated_target_strategy_id")
+        acceptance_strategy_id = (
+            acceptance.get("target_strategy_id") if isinstance(acceptance, dict) else None)
         if (manifest.get("capture_mode") != "hybrid_ai_reviewed_automation"
                 or manifest.get("human_ground_truth") is not False
                 or not isinstance(acceptance, dict)
                 or acceptance.get("confirmation") != _HYBRID_REVIEW_CONFIRMATION
-                or manifest.get("automated_target_strategy_id") != _AUTOMATED_TARGET_STRATEGY_ID
-                or acceptance.get("target_strategy_id") != _AUTOMATED_TARGET_STRATEGY_ID
+                or manifest_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
+                or acceptance_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
+                or manifest_strategy_id != acceptance_strategy_id
                 or acceptance.get("reviewer_protocol") != "stdin_checkpoint_sha256_v1"
                 or acceptance.get("reviewer_source") != "external_ai_review"
                 or not isinstance(acceptance.get("reviewer"), dict)
@@ -5282,6 +5383,8 @@ def _verified_hybrid_reviewed_evidence(sessions: list[_SessionData]) -> dict:
                 or review.get("human_ground_truth") is not False
                 or not isinstance(review.get("decisions"), list)):
             raise _MeasureRefused(f"{sess.dir} is not an exact hybrid AI-reviewed capture manifest")
+        strategy_id = manifest_strategy_id
+        session_strategy_ids.add(strategy_id)
         target_scoped = manifest.get("capture_evidence_scope") == _TARGET_SCOPED_PREFIX_PROOF_ID
         # See _SEND_LIKE_CONFIRMATION: a capture ends each profile with Pass-without-send unless
         # the owner explicitly accepted real sends at capture time. Read the acceptance from the
@@ -5389,12 +5492,16 @@ def _verified_hybrid_reviewed_evidence(sessions: list[_SessionData]) -> dict:
             hearts = [action for action in actions or []
                       if isinstance(action, dict) and action.get("action") == "automated_photo_heart"]
             try:
-                expected_items = _automated_composer_items_for_ordinal(profile.get("ordinal"))
+                expected_items = _automated_composer_items_for_ordinal(
+                    profile.get("ordinal"), strategy_id=strategy_id)
             except ValueError as exc:
                 raise _MeasureRefused(f"{sess.dir} has invalid hybrid profile ordinal") from exc
+            # Every profile's own strategy id must agree with the manifest/acceptance id already
+            # pinned above -- membership in the accepted set alone would let one session mix
+            # strategies across its profiles.
             if (not isinstance(profile, dict)
                     or profile.get("action_evidence_mode") != "hybrid_ai_reviewed_automation"
-                    or profile.get("target_strategy_id") != _AUTOMATED_TARGET_STRATEGY_ID
+                    or profile.get("target_strategy_id") != strategy_id
                     or (target_scoped and profile.get("capture_evidence_scope") != _TARGET_SCOPED_PREFIX_PROOF_ID)
                     or profile.get("composer_items") != list(expected_items)
                     or [action.get("photo_model_item") for action in hearts] != list(expected_items)
@@ -5439,8 +5546,13 @@ def _verified_hybrid_reviewed_evidence(sessions: list[_SessionData]) -> dict:
         records.append({"session": str(sess.dir), "manifest_sha256": _sha256(
             (sess.dir / "manifest.json").read_bytes()), "human_ground_truth": False,
             "reviewer": acceptance["reviewer"]})
+    if len(session_strategy_ids) > 1:
+        raise _MeasureRefused(
+            f"sessions use disagreeing automated target strategies {sorted(session_strategy_ids)}; "
+            "one measure invocation must use exactly one target strategy across every session")
     return {"kind": "hybrid_ai_reviewed_automation", "records": records,
-            "not_supervised_operational_evidence": True, "human_ground_truth": False}
+            "not_supervised_operational_evidence": True, "human_ground_truth": False,
+            "target_strategy_id": next(iter(session_strategy_ids), _AUTOMATED_TARGET_STRATEGY_ID)}
 
 
 def _unattended_review_reference_reason(reference: str, sessions: list[_SessionData], *,
@@ -5578,14 +5690,8 @@ def _cmd_measure(args: argparse.Namespace) -> None:
 
     calibration_profiles = _split_profiles(calibration_sessions)
     heldout_profiles = _split_profiles(heldout_sessions)
-    try:
-        # One composer pair per profile is sufficient, provided every split with at least two
-        # profiles collectively reaches both target depths of the alternating strategy.
-        _require_collective_target_depths(calibration_profiles, split=_SPLIT_CALIBRATION)
-        _require_collective_target_depths(heldout_profiles, split=_SPLIT_HELDOUT)
-    except _MeasureRefused as exc:
-        print(f"REFUSED: {exc}", file=sys.stderr)
-        sys.exit(1)
+    # `_require_collective_target_depths` runs further below, once the evidence mode has resolved
+    # this run's exact target strategy id -- see the comment at that call site.
     calib_ids = {p.profile_id for p in calibration_profiles}
     heldout_ids = {p.profile_id for p in heldout_profiles}
     overlap = calib_ids & heldout_ids
@@ -5660,6 +5766,19 @@ def _cmd_measure(args: argparse.Namespace) -> None:
             }
         else:
             operational_check_evidence = _verified_operational_checks(loaded)
+        # Use the strategy id `_verified_automated_circular_evidence`/`_verified_hybrid_reviewed_
+        # evidence` already resolved and cross-checked above -- never re-derive it from a
+        # manifest independently here, and never default it away when a capture's own strategy is
+        # known. Supervised (manual) evidence carries no such id, so `.get` keeps today's
+        # alternating-strategy default for that path exactly as before.
+        measure_strategy_id = operational_check_evidence.get(
+            "target_strategy_id", _AUTOMATED_TARGET_STRATEGY_ID)
+        # One composer pair per profile is sufficient, provided every split with at least two
+        # profiles collectively reaches every depth `measure_strategy_id` targets.
+        _require_collective_target_depths(
+            calibration_profiles, split=_SPLIT_CALIBRATION, strategy_id=measure_strategy_id)
+        _require_collective_target_depths(
+            heldout_profiles, split=_SPLIT_HELDOUT, strategy_id=measure_strategy_id)
         _validate_profile_advance_clears(
             calibration_profiles + heldout_profiles, identity_band=effective_identity,
             confirm_template=confirm_template)
@@ -5925,6 +6044,15 @@ def main(argv: list[str] | None = None) -> None:
                      help="automated transport with fail-closed AI review checkpoints before every "
                           "heart/Pass and after every heart result; mutually exclusive with "
                           "--unattended")
+    cap.add_argument(
+        "--target-items", choices=sorted(_TARGET_ITEMS_FLAG_STRATEGY_IDS),
+        default="alternate-1-3",
+        help="which automated/hybrid photo-item targeting strategy to run. alternate-1-3 "
+             "(default) targets photo model item 1 on odd profile ordinals and item 3 on even "
+             "ordinals -- unchanged default behaviour. photo-1-only always targets item 1 and "
+             "DOES NOT EXERCISE DEEP-ITEM NAVIGATION: real decks rarely carry three numberable "
+             "photos, so this is an explicit, narrower calibration that proves less about deep "
+             "navigation -- pick it deliberately, not as a default.")
     cap.add_argument("--confirmation", default="",
                      help="required exact phrase: "
                           f"--unattended={_UNATTENDED_CONFIRMATION}; "

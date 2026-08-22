@@ -2970,6 +2970,14 @@ def _cmd_observe_check(args: argparse.Namespace) -> None:
         sys.exit(2)
 
     cfg = cfg_mod.load(args.config)
+    # Validate for the same reason capture does (see _cmd_capture): the process-local
+    # still-photo licence only exists after config.validate(), and this command opens a real
+    # driver session whose behaviour must match a production process, not an unvalidated one.
+    try:
+        cfg_mod.validate(cfg)
+    except Exception as exc:  # noqa: BLE001 -- any invalid config is fatal before the device
+        print(f"ERROR: config.validate() refused {args.config}: {exc}", file=sys.stderr)
+        sys.exit(1)
     # Same read-only exact-device preflight as a calibration capture.  `open_session` only
     # proves the configured serial is present; evidence must prove it was the one device.
     _preflight_serial(cfg)
@@ -3198,6 +3206,19 @@ def _cmd_capture(args: argparse.Namespace) -> None:
           "dating profiles, so do not upload, copy outside the repo, or transmit them anywhere.")
 
     cfg = cfg_mod.load(args.config)
+    # VALIDATE, not just load (found live 2026-08-22, attempt 3 of the first campaign): the
+    # still-photo licence is installed process-locally by config.validate() and by NOTHING
+    # else, and `_verified_still_photo_proof`'s ladder consults it through
+    # `hinge_targeting_unavailable_reason()`.  A capture that only loads runs the entire read,
+    # numbering, and navigation flawlessly and then has the pre-heart proof refuse every heart
+    # at the policy rung -- fail-closed, correct, and utterly indistinguishable from a licence
+    # problem in config.yaml until the skip detail names the rung.  Validation failures are
+    # config problems, so they get the tool's standard fatal treatment.
+    try:
+        cfg_mod.validate(cfg)
+    except Exception as exc:  # noqa: BLE001 -- any invalid config is fatal before the device
+        print(f"ERROR: config.validate() refused {args.config}: {exc}", file=sys.stderr)
+        sys.exit(1)
     try:
         config_provenance = _config_provenance(args.config, cfg) if automated else None
     except RuntimeError as exc:

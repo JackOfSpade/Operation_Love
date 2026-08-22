@@ -1751,6 +1751,10 @@ def _wire_inert_skip_capture(monkeypatch, tmp_path):
         def close(self): pass
 
     monkeypatch.setattr(cal.cfg_mod, "load", lambda _path: SimpleNamespace(apps={}))
+    # The shell now validates before touching the device (the validate call is what installs
+    # the process-local still-photo licence); this harness is about the loop's console/manifest
+    # wiring, so validation is stubbed inert like every other collaborator here.
+    monkeypatch.setattr(cal.cfg_mod, "validate", lambda _cfg: None)
     monkeypatch.setattr(cal, "HingeDriver", _Driver)
     monkeypatch.setattr(cal, "_preflight_serial", lambda _cfg: ("PIXEL-TEST", "adb"))
     monkeypatch.setattr(cal, "_capture_out_dir", lambda *_a, **_kw: tmp_path)
@@ -2873,3 +2877,40 @@ def test_terminal_advance_evidence_refuses_same_profile_identity(monkeypatch):
     with pytest.raises(cal._MeasureRefused, match="same-profile scroll"):
         cal._validate_profile_advance_clears(
             [profile], identity_band=_IDENTITY_BAND, confirm_template=object())
+
+
+def test_capture_validates_the_config_so_the_licence_its_proof_consults_is_installed(
+        tmp_path, monkeypatch, capsys):
+    """FOUND LIVE 2026-08-22, attempt 3 of the first hybrid campaign after the licence shipped.
+
+    `config.validate()` is the ONLY thing that installs the process-local still-photo licence,
+    and `_verified_still_photo_proof`'s ladder consults it via
+    `hinge_targeting_unavailable_reason()`.  The capture command only ever *loaded* the config,
+    so the tool read, numbered, and navigated a real profile perfectly and then refused every
+    heart at the policy rung -- a full profile's gestures spent to discover the process forgot
+    to license itself.  Capture must validate before it touches the device.
+    """
+    import operation_love.config as cfg_mod_real
+
+    calls = []
+    monkeypatch.setattr(cal.cfg_mod, "validate",
+                        lambda cfg: calls.append("validate"))
+    # Refuse at the driver so the test never proceeds past config handling: validate must
+    # already have happened by then.
+    monkeypatch.setattr(cal, "HingeDriver",
+                        lambda cfg: (_ for _ in ()).throw(SystemExit(3)))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("enabled_apps: [hinge]\napps: {hinge: {serial: synthetic-pixel}}\n")
+    args = argparse.Namespace(
+        split="calibration", profiles=1, config=str(config_path), out=str(tmp_path / "out"),
+        record_operational_checks=False, unattended=False, hybrid_review=False,
+        confirmation="", send_like=False, send_like_confirmation="",
+        reviewer_model="m", reviewer_process="p", reviewer_id="", reviewer_version="")
+
+    with pytest.raises(SystemExit):
+        cal._cmd_capture(args)
+
+    assert calls == ["validate"], (
+        "capture must call config.validate() (which installs the still-photo licence) "
+        "before constructing the driver")
+    assert cfg_mod_real is cal.cfg_mod  # the monkeypatched module is the real config module

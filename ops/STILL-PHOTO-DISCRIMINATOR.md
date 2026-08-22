@@ -559,6 +559,39 @@ count to depth, or (c) accepting narrow numbering and a campaign that cannot com
 configured. These are the same three options section 5c already recorded; the live evidence
 now says (b) is what makes tonight's campaign finish, and (a) is what makes the product good.
 
+**Blockers twelve and thirteen (OPEN, 2026-08-22 end of session).**
+
+TWELVE — navigation cannot confirm identity at a card's scroll top. `navigate_to_item`
+refuses with "the screen is at a card's scroll top, where the identity band shows Hinge's
+profile-independent filter-chips row ... this is 'cannot tell', never 'same profile'",
+which is the SAME chrome-at-top fact as blocker eight, in a third place. It is correct to
+refuse — counting hearts on a card that might belong to someone else is precisely the
+owner rule against substituting the liked item. But it means SHORT profiles (a photo plus
+a video, no long tail) can never be targeted, because their read ends at top rather than
+scrolled with the sticky header showing. Observed repeatedly tonight; it is the main
+consumer of the bounded skip budget now. The principled fix already exists in config and
+is used by observe: `apps.hinge.identity_top_name_band`, the OCR card-header name band
+consulted exactly when the pixel verdict is "top". Navigation does not consult it. Wiring
+it in is a safety-critical change to the never-substitute path and should be measured, not
+improvised.
+
+THIRTEEN — the composer adjacency check refuses a visibly correct 10.0.1 composer:
+"the selected-card preview is not immediately above the independently detected inline
+comment field and Send Like CTA". The persisted diagnostic (added earlier tonight for
+exactly this purpose) captured the frame: the preview shows the correct photo, the comment
+field sits directly beneath it, and the Send CTA beneath that — the layout the check
+describes. Recorded evidence: `refused_composer_p1_item1.png` + `.json`
+(frame_sha256 29175f91…, hinge_version_name 10.0.1, frame 1080x2400,
+stored_crop_height_px 974, preview showing ~87% of the crop, well inside the 30% reframe
+limit, so this is NOT the reframe issue of blocker ten). Another 10.0.1 layout constant
+measured against 9.134 geometry. Do not widen it from one frame; measure it from the
+persisted corpus the diagnostic now collects.
+
+Its abort cleanup reported `not_cleared`, which by design leaves the phone untouched for
+forensics: a composer stays open with a heart applied and NOTHING sent. That is the
+intended fail-closed end state, not a leak — but it does mean the operator finds an open
+composer and should dismiss it by hand.
+
 **The lesson, stated once for both failures of the day:** a gate is only as real
 as the evidence PATH that feeds it. Wiring the strict ladder into a loop that
 can never possess dwell evidence did not make the loop safer — it made the loop

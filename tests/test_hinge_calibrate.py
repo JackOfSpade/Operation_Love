@@ -359,9 +359,13 @@ def test_every_automated_profile_enters_through_the_visual_rewind(monkeypatch, t
     assert calls[0]["like_threshold"] == cal.hinge_mod._LIKE_MATCH_THRESHOLD
 
 
-def _unattended_single_item_fixtures(monkeypatch):
+def _unattended_single_item_fixtures(monkeypatch, *, extra_screencaps: int = 0):
     """Wire every seam a one-photo, ordinal=1 automated profile touches through to its terminal
     advance, without a real card scan/navigation stack.
+
+    `extra_screencaps` prepends that many filler framebuffer reads, for callers that make the
+    pre-heart loop take a corrective gesture before it reaches the composer -- each visual
+    adjustment re-reads the screen, exactly as the reviewer-directed path does.
 
     `_automated_pass_from_verified_composer`/`_automated_send_from_verified_composer` are spied
     rather than exercised for real here: their own exact trace shapes are covered directly by
@@ -378,7 +382,8 @@ def _unattended_single_item_fixtures(monkeypatch):
 
     class _Adb:
         def __init__(self):
-            self.frames = iter([b"composer-1", b"pass-frame", b"advance-identity"])
+            self.frames = iter([*(b"adjustment-%d" % i for i in range(extra_screencaps)),
+                                b"composer-1", b"pass-frame", b"advance-identity"])
 
         def screencap(self):
             return next(self.frames)
@@ -400,7 +405,10 @@ def _unattended_single_item_fixtures(monkeypatch):
             self.taps.append(point)
 
         def _scroll_down_one(self, frac, x_frac):
-            self.scrolls.append((frac, x_frac))
+            self.scrolls.append(("down", frac, x_frac))
+
+        def _scroll_up_one(self, frac, x_frac):
+            self.scrolls.append(("up", frac, x_frac))
 
     driver = _Driver()
     pass_calls: list = []
@@ -778,6 +786,142 @@ def test_a_blocked_item_is_skipped_by_the_screen_itself_not_by_a_restated_litera
 
     assert gate.checkpoints == []
     assert driver.taps == []
+
+
+# The pre-heart loop's centring arithmetic, in the same geometry the fixtures use: a 2000px
+# frame with content band (0.125, 0.875) puts the content centre at row 1000 and makes the band
+# 1500px tall, so a card's signed offset is (centre_row - 1000) / 1500 against a 0.150 limit.
+_PARK_FRAME_HEIGHT_PX = 2000
+_PARK_OFF_ZONE_ROWS = (557, 757)      # centre 657  -> -0.229, the live 2026-08-22 measurement
+_PARK_IN_ZONE_ROWS = (900, 1100)      # centre 1000 ->  0.000, dead centre
+
+
+def _parked_target(rows):
+    """What `navigate_to_item` hands back after parking the card at `rows` on the action frame."""
+    return SimpleNamespace(frame=b"target-pre", point=(500, 800), block_frame_rows=rows)
+
+
+def _park_bound_proof(_driver, target, **_kw):
+    """`_verified_target_frame_proof` as the real one behaves: the block it matched is the one
+    whose frame rows ARE `target.block_frame_rows` on this exact frame."""
+    return cal._TargetFrameProof(
+        block=SimpleNamespace(x0=53, y0=target.block_frame_rows[0], x1=1027,
+                              y1=target.block_frame_rows[1], hearts=(target.point,)),
+        frame_sha256=cal._sha256(target.frame), mute_control_absent=True, heart_visible=True)
+
+
+def test_a_card_parked_outside_the_autoplay_zone_is_recentred_instead_of_skipped(
+        monkeypatch, tmp_path):
+    """THE LIVE FAILURE (2026-08-22, campaign attempt 5), pinned.
+
+    Navigation parked a depth-1 target one read-scroll quantum low; the still-photo proof
+    honestly refused at its centring rung, and because that refusal happens BEFORE any reviewer
+    checkpoint the loop's own SCROLL_UP/SCROLL_DOWN machinery could never be asked to fix it, so
+    a profile the same card would have passed from true scroll top was Passed instead.  A
+    positional refusal must now cost one bounded corrective scroll and a re-navigation -- and
+    must cost it before the proof spends its dwell bursts and probe gestures.
+    """
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(
+        monkeypatch, extra_screencaps=1)
+    monkeypatch.setattr(cal, "_frame_height_px", lambda _frame: _PARK_FRAME_HEIGHT_PX)
+    parks = iter([_PARK_OFF_ZONE_ROWS, _PARK_IN_ZONE_ROWS])
+    navigations: list[tuple[int, int]] = []
+
+    def next_park(*_a, **_kw):
+        rows = next(parks)
+        navigations.append(rows)
+        return _parked_target(rows)
+
+    monkeypatch.setattr(cal, "navigate_to_item", next_park)
+    monkeypatch.setattr(cal, "_verified_target_frame_proof", _park_bound_proof)
+    stub_proof = cal._verified_still_photo_proof
+    proved_rows: list[tuple[int, int]] = []
+
+    def recording_proof(driver_, *, frame, block):
+        proved_rows.append((block.y0, block.y1))
+        return stub_proof(driver_, frame=frame, block=block)
+
+    monkeypatch.setattr(cal, "_verified_still_photo_proof", recording_proof)
+    gate = _RecordingGate()
+
+    cal._capture_one_profile_unattended(
+        driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+        review_gate=gate, send_like=False)
+
+    # Re-navigated rather than translating the stale rect, and only once.
+    assert navigations == [_PARK_OFF_ZONE_ROWS, _PARK_IN_ZONE_ROWS]
+    # The card sat HIGH of the content centre, so the CONTENT had to come down: exactly one
+    # planner-sized `_scroll_up_one`, and it came before anything else this profile scrolled.
+    assert driver.scrolls[0] == ("up", 0.1, 0.5)
+    assert [direction for direction, _frac, _x in driver.scrolls].count("up") == 1
+    # The expensive proof never ran on the off-zone park -- that is the whole point of measuring
+    # the position from evidence already in hand.
+    assert proved_rows == [_PARK_IN_ZONE_ROWS]
+    assert [state for state, _plan in gate.checkpoints if state == "target_heart_visible"]
+
+
+def test_centring_corrections_share_the_reviewer_adjustment_budget(monkeypatch, tmp_path):
+    """A card that keeps parking off-zone must not scroll forever: the corrections draw on the
+    SAME bounded per-heart allowance a reviewer's adjustments draw on, and the profile skips
+    when it is spent.  The skip detail names every offset that was tried and the zone, because
+    "refused for centring" alone cannot tell a hopeless geometry from a correction that was
+    converging and ran out of budget -- and those need opposite responses from the operator."""
+    budget = cal._HYBRID_MAX_ADJUSTMENTS_PER_ACTION
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(
+        monkeypatch, extra_screencaps=budget)
+    monkeypatch.setattr(cal, "_frame_height_px", lambda _frame: _PARK_FRAME_HEIGHT_PX)
+    # Converging, but never far enough: -0.229, -0.220, -0.211, -0.203.
+    parks = iter([(557, 757), (570, 770), (583, 783), (596, 796)])
+    monkeypatch.setattr(cal, "navigate_to_item", lambda *_a, **_kw: _parked_target(next(parks)))
+    monkeypatch.setattr(cal, "_verified_target_frame_proof", _park_bound_proof)
+    monkeypatch.setattr(cal, "_skip_automated_profile_before_heart",
+                        lambda _driver, **kwargs: {"reason_code": kwargs["reason"].code,
+                                                   "reason_detail": kwargs["reason"].detail})
+    gate = _RecordingGate()
+
+    with pytest.raises(cal._ProfileSkipped) as excinfo:
+        cal._capture_one_profile_unattended(
+            driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+            review_gate=gate, send_like=False)
+
+    assert excinfo.value.record["reason_code"] == "target_verification_blocked"
+    detail = excinfo.value.record["reason_detail"]
+    assert "-0.229 then -0.220 then -0.211 then -0.203" in detail
+    assert f"{budget} corrective scroll(s)" in detail
+    assert "limit 0.150" in detail
+    # Exactly `budget` gestures were spent, and no heart was ever offered or taken.
+    assert [direction for direction, _frac, _x in driver.scrolls] == ["up"] * budget
+    assert gate.checkpoints == []
+    assert driver.taps == []
+
+
+def test_a_card_parked_inside_the_autoplay_zone_is_never_scrolled_before_its_proof(
+        monkeypatch, tmp_path):
+    """The common case must be untouched: an in-zone park navigates once, takes no corrective
+    gesture, and runs straight through the proof, checkpoint and terminal Pass as it does today.
+    A centring guard that re-scrolls a card already inside the zone would be spending real
+    gestures -- and real re-navigations -- on every profile."""
+    driver, pass_calls, send_calls = _unattended_single_item_fixtures(monkeypatch)
+    monkeypatch.setattr(cal, "_frame_height_px", lambda _frame: _PARK_FRAME_HEIGHT_PX)
+    navigations: list[tuple[int, int]] = []
+
+    def one_park(*_a, **_kw):
+        navigations.append(_PARK_IN_ZONE_ROWS)
+        return _parked_target(_PARK_IN_ZONE_ROWS)
+
+    monkeypatch.setattr(cal, "navigate_to_item", one_park)
+    monkeypatch.setattr(cal, "_verified_target_frame_proof", _park_bound_proof)
+    gate = _RecordingGate()
+
+    cal._capture_one_profile_unattended(
+        driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+        review_gate=gate, send_like=False)
+
+    assert navigations == [_PARK_IN_ZONE_ROWS]
+    # The only scroll this profile makes is the terminal bounded sticky-header probe.
+    assert [direction for direction, _frac, _x in driver.scrolls] == ["down"]
+    assert (pass_calls, send_calls) == ([1], [])
+    assert [state for state, _plan in gate.checkpoints if state == "target_heart_visible"]
 
 
 # A 1080x2000 action frame puts the content band's centre at row 1000, so the block used

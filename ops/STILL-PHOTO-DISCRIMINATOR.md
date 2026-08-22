@@ -358,6 +358,22 @@ the top stop the clamp forces exactness, but a deep-parked target whose return
 under-delivers will skip at that rung; if attempt 5+ shows such skips, the return leg
 needs micro-step refinement, not a relaxed comparison.
 
+**Blocker five, attempt 5 (same night).** With the probe fixed, the proof got to its
+centring rung and honestly refused a card navigation had parked ~one scroll quantum
+(216px) below scroll top: measured offset -0.229 vs the ±0.150 zone, while the same
+profile's true scroll-top offset is -0.109 — centrable, just mis-parked. Navigation's
+contract tolerates a ~109px residual; a top-parked card can have as little as ~74px of
+zone margin, so depth-1 targets frequently park just outside the zone. The reviewer
+SCROLL_UP/SCROLL_DOWN machinery could never help because a still-photo refusal skips
+BEFORE any checkpoint. Fix: positional refusals are now separated from content refusals —
+the parked offset is measured cheaply from the exact rows the target proof re-proved,
+BEFORE the still-photo proof spends dwell/probe gestures; an off-zone park gets one
+planned corrective scroll (sharing the bounded reviewer adjustment budget) and re-enters
+the loop's tested re-navigate/re-prove path; only an in-zone park reaches the proof.
+Content refusals (mute, motion, probe) keep their immediate-skip behaviour. The
+budget-exhausted skip detail lists every offset tried so a hopeless geometry reads
+differently from a converging correction.
+
 **The lesson, stated once for both failures of the day:** a gate is only as real
 as the evidence PATH that feeds it. Wiring the strict ladder into a loop that
 can never possess dwell evidence did not make the loop safer — it made the loop

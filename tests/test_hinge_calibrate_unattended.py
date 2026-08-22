@@ -414,6 +414,9 @@ def _wire_inert_capture_driver(monkeypatch, tmp_path, config_path):
             pass
 
     monkeypatch.setattr(cal.cfg_mod, "load", lambda _path: SimpleNamespace(apps={}))
+    # See test_hinge_calibrate.py's _wire_inert_skip_capture: the capture shell now validates
+    # (installing the still-photo licence is validate's job); stubbed inert for these harnesses.
+    monkeypatch.setattr(cal.cfg_mod, "validate", lambda _cfg_obj: None)
     monkeypatch.setattr(cal, "HingeDriver", _Driver)
     monkeypatch.setattr(cal, "_preflight_serial", lambda _cfg: ("PIXEL-TEST", "adb"))
     monkeypatch.setattr(cal, "_capture_out_dir", lambda *_a, **_kw: tmp_path)

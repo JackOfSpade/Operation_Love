@@ -902,6 +902,32 @@ def _dwell_centering(rect, frame: bytes, content_band):
     return abs(offset) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC, float(offset)
 
 
+def _parked_card_center_offset(target, proof, *, frame: bytes, content_band) -> float | None:
+    """Signed autoplay-zone offset of the card navigation just parked, or None if unmeasurable.
+
+    Cheap on purpose.  It re-uses evidence already in hand: the frame rows are the ones
+    `_verified_target_frame_proof` just re-proved by EXACT match on these bytes, and the x bounds
+    are the block it matched them against, so asking "is this card near enough to the centre for
+    Hinge to have been asked to play it" costs no gesture, no dwell and no second segmentation.
+
+    None means NOT MEASURED, and is never read as centred.  A caller that cannot measure the
+    position falls through to `_verified_still_photo_proof`, whose own centring rung refuses an
+    unmeasured card rather than accepting it -- the same fail-closed answer, reached by the path
+    that also holds the rest of the ladder.
+    """
+    rows = getattr(target, "block_frame_rows", None)
+    block = getattr(proof, "block", None)
+    height = _frame_height_px(frame)
+    if rows is None or block is None or not height or content_band is None:
+        return None
+    try:
+        return float(card_center_offset_frac(
+            (block.x0, rows[0], block.x1, rows[1]), frame_height=height,
+            content_band=content_band))
+    except ItemCropError:
+        return None
+
+
 def _parked_signature_drift(frames, rect: tuple[int, int, int, int],
                             ) -> tuple[float | None, tuple[int, ...]]:
     """C1's re-observation drift over frames taken at ONE parked card position.
@@ -2442,6 +2468,7 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
             raise skip_before_heart(retry, identity)
         review_before = None
         adjustment_count = 0
+        center_offsets_tried: list[float] = []
         while True:
             try:
                 heart_ordinal = payload.item(item_number).heart_ordinal
@@ -2460,6 +2487,69 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                 target_proof = _verified_target_frame_proof(
                     driver, target, frame=target_pre, content_band=content_band,
                     like_template=like_template, like_threshold=like_threshold)
+            except _CaptureAbort as exc:
+                retry = _PreActionProfileRetry(
+                    "target_verification_blocked",
+                    f"item {item_number}: {exc}")
+                raise skip_before_heart(retry, identity) from exc
+            # A POSITIONAL REFUSAL IS NOT A CONTENT REFUSAL, and only one of the two is
+            # correctable.  The reviewer-directed SCROLL_UP/SCROLL_DOWN machinery below already
+            # knows how to move a card and re-prove it from the new position -- but a
+            # still-photo refusal raises straight past that machinery into the bounded profile
+            # SKIP, before any checkpoint exists to direct an adjustment.  So a card that was
+            # merely PARKED IN THE WRONG PLACE could never be corrected: the profile was Passed
+            # and a real person spent.  Centring is the one rung of that ladder a bounded scroll
+            # can fix, so it is measured HERE, from the exact rows the target proof just
+            # re-proved by exact match on this frame, and BEFORE the proof spends its dwell
+            # bursts and the two real gestures of its re-attach probe on a card that cannot
+            # clear the rung anyway.
+            # LIVE FAILURE 2026-08-22 (campaign attempt 5): navigation parked a depth-1 target
+            # one read-scroll quantum low and it measured -0.229 against the 0.150 limit, while
+            # the same card at true scroll top measures -0.109 -- inside the zone, one
+            # corrective step away.  Navigation only promises a residual under about half a
+            # quantum while a top-parked card can have as little as ~74px of zone margin, so
+            # this is the ordinary case for depth-1 targets, not a rare one.
+            # The correction RE-ENTERS THE LOOP rather than translating the stale rect or point:
+            # `navigate_to_item` is the already-tested re-anchoring path, and rows, offset and
+            # heart are all measured again from the corrected position.  That is also why an
+            # overcorrection needs no clamp -- the deck stops at the top, and the next pass
+            # simply measures whatever is really on the screen.
+            center_offset = _parked_card_center_offset(
+                target, target_proof, frame=target_pre, content_band=content_band)
+            if (center_offset is not None
+                    and abs(center_offset) > STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC):
+                center_offsets_tried.append(center_offset)
+                # SHARED with the reviewer's budget on purpose: one heart gets one bounded
+                # allowance of visual adjustments, however they were requested.
+                adjustment_count += 1
+                if adjustment_count > _HYBRID_MAX_ADJUSTMENTS_PER_ACTION:
+                    # Name every offset that was tried.  "Refused for centring" alone cannot
+                    # tell a hopeless geometry from a correction that was converging and ran out
+                    # of budget, and those need opposite responses from the operator.
+                    tried = " then ".join(f"{value:.3f}" for value in center_offsets_tried)
+                    retry = _PreActionProfileRetry(
+                        "target_verification_blocked",
+                        f"item {item_number}: navigation could not park this card inside "
+                        f"Hinge's autoplay trigger zone (card centre offset {tried} over "
+                        f"{len(center_offsets_tried) - 1} corrective scroll(s), limit "
+                        f"{STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:.3f})")
+                    raise skip_before_heart(retry, identity)
+                try:
+                    step, _ = _plan_card_scroll(
+                        target_pre, content_band=content_band, like_template=like_template,
+                        like_threshold=like_threshold, profile_min_spacing_px=None)
+                except (SegmentationError, ScrollStepError) as exc:
+                    raise _CaptureAbort("centring correction could not be planned as a bounded "
+                                        f"scroll: {exc}") from exc
+                if center_offset < 0:
+                    # The card sits HIGH of the content centre, so the CONTENT has to come DOWN.
+                    driver._scroll_up_one(step.frac, step.x_frac)
+                else:
+                    driver._scroll_down_one(step.frac, step.x_frac)
+                # Never reuse a target point across a visual adjustment; re-navigate instead.
+                driver.adb.screencap()
+                continue
+            try:
                 # The dwell runs HERE, inside the pre-heart window and after the card is parked
                 # by navigation, because that is the only moment the card sits still with the
                 # heart in view.  Its first burst is screencaps only; its re-attach probe DOES

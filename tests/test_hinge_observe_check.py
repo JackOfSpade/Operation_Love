@@ -94,6 +94,9 @@ def test_observe_check_writes_hashed_evidence_and_only_uses_passive_driver_calls
     surface = ComposerSurface("hinge_inline_v1", Rect(1, 2, 3, 4), Rect(5, 6, 7, 8), (6, 7))
 
     monkeypatch.setattr(calibration.cfg_mod, "load", lambda _path: _cfg())
+    # The shell validates before touching the device (validate is what installs the process-local
+    # still-photo licence); this harness tests the observe-check wiring, so it is stubbed inert.
+    monkeypatch.setattr(calibration.cfg_mod, "validate", lambda _cfg_obj: None)
     monkeypatch.setattr(calibration, "HingeDriver", lambda _cfg: Driver())
     monkeypatch.setattr(calibration, "_capture_out_dir", lambda *_a, **_kw: tmp_path)
     monkeypatch.setattr(calibration, "_preflight_serial", lambda _cfg: ("pixel", "adb"))

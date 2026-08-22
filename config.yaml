@@ -133,6 +133,36 @@ apps:
     # To replace it with real evidence later, collect a corpus with tools/hinge_video_bound
     # (owner labeled) or tools/hinge_video_bound_auto (circular), then swap this block for
     # `still_photo_bound_evidence`. The two keys are mutually exclusive by design.
+    # TARGETING CALIBRATION — installed 2026-08-22 from the hybrid AI-reviewed campaign.
+    #
+    # Emitted by `tools.hinge_calibrate measure` from two SEPARATELY COLLECTED sessions
+    # (targeting_20260822T_calA, targeting_20260822T_heldB), each 2 profiles with zero skips,
+    # every heart and Pass approved at a hash-bound reviewer checkpoint. Strategy
+    # `photo_1_only_v1` — item 1 on every ordinal — so this calibration does NOT exercise
+    # deep-item navigation; the manifests record that and `measure` refuses to mix strategies.
+    #
+    # Measured separations (ops/calibration/targeting_20260822T_heldB/measurement_ledger.json):
+    #   identity  same-profile 0.0    vs different-profile 7.188
+    #   inline    intended     2.365  vs foreign           85.439
+    # Both frozen bounds are CAPPED by prior-corpus limits (2.565 cross-profile, 14.91 foreign
+    # false-match) rather than by this campaign's own wider gaps, which is the conservative
+    # direction: the cap encodes the tightest distance ever observed, not the loosest tonight.
+    #
+    # This is an AUTOMATED CIRCULAR-RISK candidate: AI-reviewed, `human_ground_truth: false`.
+    # It licenses numbered targeted suggestions in OBSERVE. It does NOT release AUTO, which
+    # still needs its own production-OBSERVE release chain (see the note further below).
+    targeting_calibration:
+      schema_version: 3
+      device: "33111JEHN04475"
+      hinge_version_name: "10.0.1"
+      frame_size_px: [1080, 2400]
+      composer_layout_id: hinge_inline_v1
+      item_selection_policy_id: hinge_photos_only_v2
+      identity_match_max_dist: 2.5649
+      inline_item_max_dist: 14.9099
+      calibrated_at: "2026-08-22T23:50:45.216285+00:00 — measured from session(s): targeting_20260822T_calA, targeting_20260822T_heldB"
+      identity_band: [0.1, 0.048, 0.8, 0.094]
+      content_band: [0.125, 0.875]
     still_photo_assumption_acceptance:
       acceptance: I_ACCEPT_UNMEASURED_CENTERED_AUTOPLAY_ASSUMPTION
       accepted_at: "2026-08-21 owner decision, recorded in ops/STILL-PHOTO-DISCRIMINATOR.md section 5b"

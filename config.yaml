@@ -125,14 +125,43 @@ apps:
     # never persisted to the label store, but disabling it can leave real scroll-top advances
     # unresolved on this device because touch watching is unavailable. Keep true here.
     observe_name_ocr: true
-    # TARGETED SUGGESTIONS AND AUTO RELEASE GATES INTENTIONALLY ABSENT (2026-08-21).
+    # NUMBERING LICENSED BY AN ACCEPTED, UNMEASURED ASSUMPTION (owner decision 2026-08-21).
+    #
+    # This is NOT a measured bound. Nothing here reports a video false-accept rate, because
+    # none was measured. See ops/STILL-PHOTO-DISCRIMINATOR.md section 5b for the full record.
+    # Every run states this in the operator log and on the hub.
+    # To replace it with real evidence later, collect a corpus with tools/hinge_video_bound
+    # (owner labeled) or tools/hinge_video_bound_auto (circular), then swap this block for
+    # `still_photo_bound_evidence`. The two keys are mutually exclusive by design.
+    still_photo_assumption_acceptance:
+      acceptance: I_ACCEPT_UNMEASURED_CENTERED_AUTOPLAY_ASSUMPTION
+      accepted_at: "2026-08-21 owner decision, recorded in ops/STILL-PHOTO-DISCRIMINATOR.md section 5b"
+      device: "33111JEHN04475"
+      hinge_version_name: "10.0.1"
+      rationale: >-
+        Measuring the held-out video false-accept rate needs roughly 420 profiles and 420 real
+        passes at the observed rate of one video per seven profiles, which the owner judged
+        disproportionate. Hinge autoplays a card only at screen center and nothing else on a
+        profile changes pixels over time, so a centered video is playing and a playing video is
+        detectable by the byte-exactness test. Accepted residual: a video that is not playing at
+        all while observed, meaning stalled, buffering, unloaded, or an ended non-looping clip.
+        The re-attach probe gives such a card a second trigger before anything is called a photo.
+    # AUTO RELEASE GATES INTENTIONALLY ABSENT (2026-08-21).
     #
     # The 10.0.1 numeric calibration remains archived as historical evidence, but it cannot
-    # license `hinge_photos_only_v1`: photographic pixels, low drift, and a clean mute-control
-    # screen do not positively exclude a paused/static video. Config validation structurally
-    # rejects reinstalling that mapping until a positive still-photo discriminator is available.
-    # OBSERVE remains usable without `targeting_calibration`; it reads profiles and records the
-    # owner's deck decisions but offers no numbered targeted suggestion.
+    # license `hinge_photos_only_v2`: photographic pixels, low drift, and a clean mute-control
+    # screen do not positively exclude a paused/static video. That mapping was measured under
+    # the retired `hinge_photos_only_v1`, which numbered on those rejectors alone; v2 also
+    # requires a byte-exact un-interacted dwell and a still-photo licence, installed from either
+    # `apps.hinge.still_photo_bound_evidence` or the acceptance block above
+    # (ops/STILL-PHOTO-DISCRIMINATOR.md sections 5 and 5b). Config validation structurally
+    # rejects reinstalling the v1 mapping; a fresh campaign under v2 is the only route back.
+    #
+    # WHAT IS ACTUALLY MISSING TODAY (2026-08-22): only `targeting_calibration`. The acceptance
+    # block above licenses still-photo numbering, so nothing upstream blocks a calibration
+    # campaign — capture, measure, and paste the emitted block (ops/RUNBOOK.md section 2) and
+    # targeted suggestions return. OBSERVE stays usable meanwhile; it reads profiles and records
+    # the owner's deck decisions but offers no numbered targeted suggestion.
     #
     # The previous `ai_reviewed_observe_release_evidence` block bound the 9.134.0 calibration
     # (calibration_sha256 8df4ac29…, production run 312b80bf4b50). The archived 10.0.1 numeric
@@ -141,9 +170,11 @@ apps:
     # It is removed rather than edited: a release gate is earned by a production OBSERVE run on
     # the build it releases, never by retargeting an older run's hashes at a newer calibration.
     #
-    # Before AUTO can run again, first implement and measure positive still-photo proof, then
-    # produce a new targeting calibration and production OBSERVE release artifact — see
-    # ops/RUNBOOK.md. Changing mode or pasting either stale mapping fails closed.
+    # Before AUTO can run again: produce a new targeting calibration, then a production OBSERVE
+    # release artifact on that exact calibration — see ops/RUNBOOK.md. The still-photo licence
+    # above satisfies AUTO's targeting-policy precondition but can never license AUTO itself;
+    # the release gate is separate and unchanged. Changing mode or pasting either stale mapping
+    # fails closed.
 
 paths:
   data_dir: ./data

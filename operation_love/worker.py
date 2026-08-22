@@ -76,6 +76,9 @@ from .interaction import AutoSessionPolicy
 from .opener.opener import INDEX_SPACE_MODEL_ITEMS, ITEM_INDEX_ABSENT, ItemRequest
 from .ranker.decider import Decider, Decision
 from .status import cleared_opener_fields
+from .targeting_policy import (
+    still_photo_licence_operator_notice, still_photo_licence_provenance,
+    targeting_setup_next_step)
 
 _OBSERVE_CAPTURE_BUSY = "Capturing profile — please wait before your next decision"
 _OBSERVE_PROCESSING_BUSY = "Processing — please wait before your next decision"
@@ -704,6 +707,33 @@ class Worker(threading.Thread):
         if callable(bind):
             bind(self.run_id)
 
+    def _announce_targeting_licence_provenance(self) -> None:
+        """Say once per run, in both channels the operator watches, what licensed numbering.
+
+        Numbering behaves identically whether it was licensed by a measured held-out bound or by
+        the owner's accepted centered-autoplay assumption (owner decision 2026-08-21), so the
+        difference cannot be inferred from anything on screen.  If it is not printed and
+        published it does not exist for the operator, and a licence that nobody can tell apart
+        from a measurement is exactly how an accepted risk quietly becomes a believed fact.
+
+        Called from run(), OUTSIDE the restart loop, so it is exactly once per run and applies to
+        observe and auto alike.  The status field is set through RunStatus directly rather than
+        _stat(): the driver session is not open yet, and _stat() repaints the driver's overlay.
+
+        Only Hinge has this licence, and only the assumption channel produces a notice: a
+        measured bound is the state the design doc assumes, and a banner on every ordinary run is
+        how operators learn to stop reading banners.
+        """
+        if self.app != "hinge":
+            return
+        notice = still_photo_licence_operator_notice()
+        if not notice:
+            return
+        provenance = still_photo_licence_provenance()
+        print(f"{self.app.title()}: {notice} [{provenance}].")
+        if self.status:
+            self.status.set_app(self.app, targeting_licence_notice=notice)
+
     def _announce_observe_targeting_setup(self) -> None:
         """Explain a run-level targeted-opener prerequisite once, without blocking labels.
 
@@ -731,10 +761,14 @@ class Worker(threading.Thread):
         except Exception:  # noqa: BLE001 -- an optional startup notice must not break Observe
             return
         if reason:
+            next_step = targeting_setup_next_step()
+            # The next step is printed VERBATIM, as a clause rather than a sentence, so the
+            # log and the hub carry byte-identical guidance. Re-casing it here would make the
+            # two surfaces differ on exactly the text an operator compares between them.
             print(f"{self.app.title()} observe: targeted opener suggestions need setup "
-                  f"({reason}). Manual pass/like labels still work. Follow ops/RUNBOOK.md: "
-                  "positive still-photo proof must exist before a fresh calibration can "
-                  "enable suggestions.")
+                  f"({reason}). Manual pass/like labels still work; {next_step}.")
+            if self.status:
+                self.status.set_app(self.app, targeting_setup_next_step=next_step)
 
     def _capture_failure(self, exc: BaseException) -> None:
         """Let the driver snapshot the on-screen failure state into its debug log. Called from
@@ -893,6 +927,7 @@ class Worker(threading.Thread):
         if self.status:
             self.status.set_app(self.app, mode=self.mode)
         self._bind_debug_run()
+        self._announce_targeting_licence_provenance()
         while not self.stop_event.is_set():
             # _finish_session unregisters after every loop attempt. Observe's explicit
             # restart path therefore must renew the bridge binding for each new session.

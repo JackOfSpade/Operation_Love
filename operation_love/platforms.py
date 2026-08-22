@@ -23,6 +23,16 @@ KIND_LABELS = {KIND_ANDROID: "App-based"}
 # can never run at once -- see _EXCLUSIVE below and supervisor's device lock.
 RESOURCE_ANDROID_DEVICE = "android-device"
 
+# Why Hinge Auto stays blocked once numbered targeting IS licensed. The two gates are separate
+# on purpose: a verified still-photo bound is a perception licence (numbers may be suggested in
+# Observe and calibration capture), while Auto is the licence to act unattended on those numbers
+# and is earned by a production-OBSERVE run on the same device/build, never by an artifact.
+HINGE_AUTO_RELEASE_BLOCKER = (
+    "numbered still-photo targeting is licensed, but Auto additionally requires a fresh "
+    "production-OBSERVE release chain (apps.hinge.observe_release_evidence, or its explicitly "
+    "accepted AI-reviewed equivalent) and a deliberate registry release"
+)
+
 
 @dataclass(frozen=True)
 class Platform:
@@ -132,6 +142,11 @@ def unavailable_reason(app: str, mode: str | None = None) -> str | None:
             blocker = hinge_targeting_unavailable_reason()
             if blocker is not None:
                 return f"Hinge Auto is blocked: {blocker}."
+            # Readiness answered "numbering is licensed", which is a different question from
+            # "Auto is released" (ops/STILL-PHOTO-DISCRIMINATOR.md section 3, gate split). Fall
+            # through to a static blocker rather than to None: if this returned None, a bound
+            # artifact alone would make Auto read as available in the hub.
+            return f"Hinge Auto is blocked: {HINGE_AUTO_RELEASE_BLOCKER}."
         available_modes = _AVAILABLE_MODES.get(app, frozenset())
         if mode in available_modes:
             return None

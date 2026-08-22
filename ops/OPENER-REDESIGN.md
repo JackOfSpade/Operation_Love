@@ -3641,3 +3641,84 @@ release does **not** embed a numeric
 calibration or manufacture one from offline material: the two acceptance ceilings must be
 measured and recorded for the actual device before any targeted like or targeted OBSERVE text is
 licensed. `ops/RUNBOOK.md` is the operational source for that final handoff.
+
+#### Addendum — 2026-08-21: the run-level setup notice must never restyle the decision window
+
+**DEFECT THREE, of the same class as defects one and two and found the same way — by an operator
+actually sitting in the window.** With `targeting_calibration` intentionally absent
+(config.yaml, 2026-08-21: withheld until positive still-photo proof exists), the driver's
+run-level "no numbered item list" reason reached the hub as `opener_warning` on every card, and
+renderSwipe routed every warning through the WAIT-styled `openerWarnBox` — amber, led by
+"🔴 targeted opener setup required". In the owner's circle convention (and in every other box of
+that function) amber+🔴 means "hands off", so the one mode whose entire output is the owner's own
+pass/like labels spent the whole run telling the owner not to act in the exact window that was
+waiting on them. The owner obeyed it for 2m24s, stopped the run, and filed it as a bug — twice in
+one day; the first fix reworded the string but kept the box's WAIT identity, which is why it was
+re-reported.
+
+The fix draws the line the two earlier defects already gestured at: WAIT styling on a warning is
+licensed by "there is something here you must not copy/do", and a run-level, intentional,
+currently-unfixable condition licenses no such thing. In the decision window the banner is now
+byte-identical to the plain waiting state's 🟢 GO box, with the setup situation demoted to the
+box's fine-print sub row (which states the still-photo-proof precondition rather than promising
+that a fresh calibration would enable suggestions today). With the sheet open it is a GO box
+saying to type your own opener. Any other state falls through to that state's own cue instead of
+being intercepted. The driver's internal consequence clauses ("…no numbered item list would have
+a usable consumer" / "; no opener text is offered") stay in logs and bug reports but are stripped
+from the operator surface, degrading harmlessly to the full sentence if the driver wording ever
+drifts. Per-card mismatch warnings keep their deliberate WAIT treatment unchanged — there, the
+thing not to do is real.
+
+Pinned in `tests/test_hub.py::test_observe_banner_keeps_the_go_cue_when_hinge_targeting_calibration_is_absent`
+(rewritten from the test that had pinned the amber shape): GO box style with a single 🟢 in both
+decision states, jargon stripped, no-promise phrasing, capturing-state fall-through, the stopping
+intercept still outranking the GO cue, and escaping of the displayed reason.
+
+#### Addendum — 2026-08-22: the setup notice must name the step that is actually left
+
+**DEFECT FOUR, in the very sentence defect three added, and reported the same way — by an
+operator who read the box and concluded there was nothing they could do.** Defect three's fix
+demoted the missing-calibration condition to fine print and, correctly for that day, made the
+sub row state the still-photo-proof precondition rather than promising that a fresh calibration
+would enable suggestions. Both the hub (`hub.html`) and the worker's startup notice
+(`worker.py::_announce_observe_targeting_setup`) hardcoded that sentence.
+
+Hours later the owner accepted the centered-autoplay assumption
+(ops/STILL-PHOTO-DISCRIMINATOR.md section 5b) and `config.validate()` began installing a
+still-photo licence from `apps.hinge.still_photo_assumption_acceptance`. From that moment
+`hinge_targeting_unavailable_reason()` returned `None`, numbering was licensed, and the only
+remaining gate on targeted suggestions was the absent `apps.hinge.targeting_calibration` — a
+step the owner could have taken that same evening. But both surfaces went on stating a
+prerequisite the owner had already satisfied, and neither ever named the calibration campaign.
+The run log said `targeted suggestions enabled under an UNMEASURED assumption` two lines above
+a banner that said still-photo proof must come first. The owner read the fine print as an
+upstream block, filed "still has this error. not giving openers", and the calibration stayed
+uncaptured.
+
+The lesson is narrower than defect three's and worth stating separately: **operator guidance
+that encodes a precondition must be derived from that precondition, not written down beside
+it.** A hardcoded next step is correct exactly until the state it describes changes, and then
+it is worse than silence — it actively routes the operator away from the fix. Wording review
+cannot catch this, because the sentence was true when it was written and no diff touched it
+when it became false.
+
+The fix: `targeting_policy.targeting_setup_next_step()` branches on the installed licence and
+returns the one action that would restore suggestions —
+`TARGETING_SETUP_NEXT_STEP_BLOCKED` (still-photo proof first) while nothing licenses numbering,
+`TARGETING_SETUP_NEXT_STEP_CALIBRATE` (capture, measure, paste the block) once something does.
+The worker prints it and publishes it as `RunStatus.targeting_setup_next_step`, run-level and
+outside `_OPENER_FIELDS`' clearing net exactly like `targeting_licence_notice`. The hub renders
+what it is given: it cannot work the branch out for itself, because the licence lives in the
+process that ran config validation. With nothing published the note ends after "manual pass/like
+labels still work" rather than asserting a precondition the page cannot verify — silence cannot
+go stale.
+
+Everything defect three fixed is unchanged and still pinned: a single 🟢 GO box in both decision
+states, jargon stripped, capturing-state fall-through, the stopping intercept outranking the GO
+cue, escaping of the displayed reason. Which next step is named never restyles the window.
+
+Pinned in `tests/test_hub.py::test_observe_banner_keeps_the_go_cue_when_hinge_targeting_calibration_is_absent`
+(both branches plus the unpublished case) and in `tests/test_worker.py`'s
+`test_the_targeting_setup_notice_names_the_calibration_once_numbering_is_licensed`,
+`…_names_the_still_photo_proof_while_nothing_licenses_numbering`, and
+`test_a_calibrated_run_publishes_no_targeting_setup_step`.

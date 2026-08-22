@@ -19,7 +19,7 @@ def _canon(value):
 def _calibration():
     return {"schema_version": 3, "device": "pixel", "hinge_version_name": "9.134.0",
             "frame_size_px": [1080, 2400], "composer_layout_id": "hinge_inline_v1",
-            "item_selection_policy_id": "hinge_photos_only_v1", "identity_match_max_dist": 1.0,
+            "item_selection_policy_id": "hinge_photos_only_v2", "identity_match_max_dist": 1.0,
             "inline_item_max_dist": 2.0, "calibrated_at": "2026-08-14T00:00:00Z",
             "identity_band": [0.0, 0.0, 1.0, 0.1], "content_band": [0.1, 0.9]}
 

@@ -11,7 +11,6 @@ this package lazily before answering readiness queries.
 from __future__ import annotations
 
 from ... import platforms
-from ...targeting_policy import hinge_targeting_unavailable_reason
 from ..android_spec import AndroidAppSpec
 from ..hinge import HINGE_SPEC, AndroidDriver, HingeDriver
 from .bumble import BUMBLE_SPEC, BumbleAndroidDriver
@@ -19,9 +18,13 @@ from .bumble import BUMBLE_SPEC, BumbleAndroidDriver
 platforms._apply_calibration({
     "hinge": {
         "observe": HINGE_SPEC.observe_ready,
-        # Action coordinates remain calibrated, but Auto also needs a positive still-photo
-        # discriminator before numbered targeting can be release-licensed.
-        "auto": HINGE_SPEC.calibrated and hinge_targeting_unavailable_reason() is None,
+        # Statically False, and deliberately not derived from numbering readiness (see the
+        # "Gate split" in ops/STILL-PHOTO-DISCRIMINATOR.md section 3).  Action coordinates
+        # remain calibrated and a verified still-photo bound may well be installed, but a bound
+        # licenses NUMBERED SUGGESTIONS in Observe and calibration capture only.  Auto needs a
+        # fresh production-OBSERVE release chain on this exact device/build plus a deliberate
+        # edit here, so a weak or forged bound artifact can never turn Auto on by itself.
+        "auto": False,
     },
     # Both modes derive from the spec.  In particular, the existence of testable card-drag
     # mechanics is not a licence to run a real Bumble session: BUMBLE_SPEC stays fail-closed

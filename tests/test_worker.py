@@ -3926,3 +3926,184 @@ def test_observe_mode_cannot_reach_the_targeting_stop_at_all():
 
     assert driver.likes == []              # never called, so the tripwire never fired
     assert store.labels                     # and the human's own decision still got recorded
+
+
+# --- run-level provenance of the numbering licence (owner decision 2026-08-21) ----------
+# Numbering behaves identically whether it was licensed by a measured held-out bound or by the
+# owner's accepted, UNMEASURED centered-autoplay assumption. The difference can therefore only
+# reach a person in words, which is why it is announced rather than merely recorded.
+
+@pytest.fixture
+def _licence_slot():
+    """Numbering readiness is process-global: never let one test license the next one."""
+    from operation_love import targeting_policy as tp
+
+    tp._reset_installed_still_photo_bound_for_tests()
+    yield tp
+    tp._reset_installed_still_photo_bound_for_tests()
+
+
+def _assumption_record(tp):
+    return tp.StillPhotoAssumptionAcceptance(
+        acceptance=tp.STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION,
+        accepted_at="2026-08-21", device="synthetic-pixel", hinge_version_name="10.0.1",
+        rationale="owner judged the held-out campaign not worth ~420 real passes")
+
+
+def _measured_record(tp):
+    return tp.StillPhotoBoundSummary(
+        ground_truth_channel=tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL, human_ground_truth=True,
+        video_cards=60, video_accepts=0, photo_cards=60, photo_false_refusals=3,
+        max_video_exact_run_s=1.5, artifact_sha256="a" * 64, device="synthetic-pixel",
+        hinge_version_name="10.0.1")
+
+
+def _run_hinge_observe(status):
+    driver = _ObserveLikeIntentDriver(gate=_settled(status, app="hinge"))
+    store = FakeStore()
+    Worker("hinge", driver, _ObserveDecider(), _RecordingOpenerService(), store, "run1",
+           _Pacing(), threading.Event(), mode="observe", status=status).run()
+    return store
+
+
+def test_a_run_licensed_by_an_assumption_says_so_in_the_log_and_on_the_hub(
+        capsys, _licence_slot):
+    """The honesty requirement: an UNMEASURED licence is news on EVERY run, not once ever."""
+    from operation_love.status import RunStatus
+
+    tp = _licence_slot
+    tp.install_accepted_still_photo_assumption(_assumption_record(tp))
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="observe")
+
+    store = _run_hinge_observe(status)
+
+    out = capsys.readouterr().out
+    assert "UNMEASURED assumption (centered autoplay)" in out
+    assert "no video false-accept rate has been measured" in out
+    # Announced exactly once: run() calls it OUTSIDE the restart loop, so a restart cannot
+    # turn a standing fact into a per-card banner.
+    assert out.count("targeted suggestions enabled under an UNMEASURED assumption") == 1
+    # And it reaches the hub as a run-level field, not as a per-card opener warning (which the
+    # banner renders in the WAIT style the owner's status-indicator rule reserves for "hands off").
+    view = status.app_view("hinge")["app"]
+    assert view["targeting_licence_notice"] == tp.STILL_PHOTO_ASSUMPTION_OPERATOR_NOTICE
+    assert view["opener_warning"] is None
+    # Labelling is completely unaffected: this is context, never a gate.
+    assert len(store.labels) == 1
+
+
+def test_a_run_licensed_by_a_measured_bound_announces_no_assumption(capsys, _licence_slot):
+    """The provenance line must be absent when there is nothing unmeasured to confess."""
+    from operation_love.status import RunStatus
+
+    tp = _licence_slot
+    tp.install_verified_still_photo_bound(_measured_record(tp))
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="observe")
+
+    _run_hinge_observe(status)
+
+    out = capsys.readouterr().out
+    assert "UNMEASURED" not in out
+    assert "false-accept rate" not in out
+    assert status.app_view("hinge")["app"]["targeting_licence_notice"] is None
+
+
+def test_an_unlicensed_run_announces_no_provenance_at_all(capsys, _licence_slot):
+    from operation_love.status import RunStatus
+
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="observe")
+
+    _run_hinge_observe(status)
+
+    assert "UNMEASURED" not in capsys.readouterr().out
+    assert status.app_view("hinge")["app"]["targeting_licence_notice"] is None
+
+
+def test_the_hinge_numbering_licence_is_never_announced_on_another_platform(
+        capsys, _licence_slot):
+    """The licence is Hinge's numbered-item readiness; a Bumble run must not claim it."""
+    from operation_love.status import RunStatus
+
+    tp = _licence_slot
+    tp.install_accepted_still_photo_assumption(_assumption_record(tp))
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
+    Worker("bumble", driver, _ObserveDecider(), _RecordingOpenerService(), FakeStore(), "run1",
+           _Pacing(), threading.Event(), mode="observe", status=status).run()
+
+    assert "UNMEASURED" not in capsys.readouterr().out
+    assert status.app_view("bumble")["app"]["targeting_licence_notice"] is None
+
+
+class _UncalibratedHingeObserveDriver(_ObserveLikeIntentDriver):
+    """Hinge with a still-photo licence but no `targeting_calibration` — the reported state."""
+
+    def targeted_suggestion_blocker(self):
+        return ("apps.hinge.targeting_calibration is unavailable (not configured in "
+                "config.yaml); no opener text is offered")
+
+
+def _run_uncalibrated_hinge_observe(status):
+    driver = _UncalibratedHingeObserveDriver(gate=_settled(status, app="hinge"))
+    Worker("hinge", driver, _ObserveDecider(), _RecordingOpenerService(), FakeStore(), "run1",
+           _Pacing(), threading.Event(), mode="observe", status=status).run()
+
+
+def test_the_targeting_setup_notice_names_the_calibration_once_numbering_is_licensed(
+        capsys, _licence_slot):
+    """BUG REPORT 2026-08-22. The setup notice must name the step that is actually left.
+
+    Both operator surfaces stated the still-photo prerequisite unconditionally. That was true
+    only while nothing licensed numbering; after the owner's centered-autoplay acceptance
+    installed a licence it named a prerequisite ALREADY satisfied and never named the one
+    remaining step, so a run whose only gate was "capture the calibration" read as an upstream
+    block and the calibration stayed uncaptured. The notice is derived from the installed
+    licence for exactly this reason.
+    """
+    from operation_love.status import RunStatus
+
+    tp = _licence_slot
+    tp.install_accepted_still_photo_assumption(_assumption_record(tp))
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="observe")
+
+    _run_uncalibrated_hinge_observe(status)
+
+    out = capsys.readouterr().out
+    assert "targeted opener suggestions need setup" in out
+    assert tp.TARGETING_SETUP_NEXT_STEP_CALIBRATE in out
+    # The satisfied prerequisite is not restated: that sentence is what sent the owner upstream.
+    assert tp.TARGETING_SETUP_NEXT_STEP_BLOCKED not in out
+    # And it reaches the hub, which cannot work the branch out for itself (the licence lives in
+    # this process, installed by config.validate()).
+    view = status.app_view("hinge")["app"]
+    assert view["targeting_setup_next_step"] == tp.TARGETING_SETUP_NEXT_STEP_CALIBRATE
+
+
+def test_the_targeting_setup_notice_names_the_still_photo_proof_while_nothing_licenses_numbering(
+        capsys, _licence_slot):
+    """The other branch, unchanged: with no licence, the calibration is not the next step."""
+    from operation_love.status import RunStatus
+
+    tp = _licence_slot
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="observe")
+
+    _run_uncalibrated_hinge_observe(status)
+
+    out = capsys.readouterr().out
+    assert tp.TARGETING_SETUP_NEXT_STEP_BLOCKED in out
+    assert tp.TARGETING_SETUP_NEXT_STEP_CALIBRATE not in out
+    view = status.app_view("hinge")["app"]
+    assert view["targeting_setup_next_step"] == tp.TARGETING_SETUP_NEXT_STEP_BLOCKED
+
+
+def test_a_calibrated_run_publishes_no_targeting_setup_step(_licence_slot):
+    """No blocker, no guidance: the field exists to explain a blocker, never as decoration."""
+    from operation_love.status import RunStatus
+
+    tp = _licence_slot
+    tp.install_accepted_still_photo_assumption(_assumption_record(tp))
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="observe")
+
+    _run_hinge_observe(status)
+
+    assert status.app_view("hinge")["app"]["targeting_setup_next_step"] is None

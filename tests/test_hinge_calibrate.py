@@ -19,8 +19,11 @@ import stat
 from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
+import numpy as np
 import pytest
 
+from operation_love import targeting_policy as tp
 from tools import hinge_calibrate as cal
 from operation_love.drivers.item_identity import ProfileIdentity
 from operation_love.drivers.like_composer import ComposerDetectionError, ComposerSurface, Rect
@@ -369,8 +372,10 @@ def _unattended_single_item_fixtures(monkeypatch):
     """
     identity = ProfileIdentity((1,), _IDENTITY_BAND, (64, 16), 0, 20.0, "known", agreeing_frames=2)
     index = SimpleNamespace(usable=True, translation=(1,), complete=False)
-    payload = SimpleNamespace(item=lambda _n: SimpleNamespace(heart_ordinal=1))
-    target = SimpleNamespace(frame=b"target-pre", point=(500, 800))
+    payload = SimpleNamespace(item=lambda _n: SimpleNamespace(
+        heart_ordinal=1, signature_drift=0.0, drift_frames=(1, 2)))
+    target = SimpleNamespace(frame=b"target-pre", point=(500, 800),
+                             block_frame_rows=(700, 900))
 
     class _Adb:
         def __init__(self):
@@ -427,7 +432,25 @@ def _unattended_single_item_fixtures(monkeypatch):
     monkeypatch.setattr(cal, "_target_scoped_prefix_reason", lambda *_a, **_kw: None)
     monkeypatch.setattr(cal, "verification_blocker", lambda *_a, **_kw: None)
     monkeypatch.setattr(cal, "navigate_to_item", lambda *_a, **_kw: target)
-    monkeypatch.setattr(cal, "_verified_target_frame_block", lambda *_a, **_kw: object())
+    # The pre-heart checkpoint reads its mute-control predicate out of this proof, so the stub
+    # has to supply real evidence bound to the exact target frame -- an opaque object would be
+    # accepted only by an implementation that restates the verdict as a literal.
+    monkeypatch.setattr(
+        cal, "_verified_target_frame_proof",
+        lambda *_a, **_kw: cal._TargetFrameProof(
+            block=SimpleNamespace(x0=53, y0=700, x1=1027, y1=900, hearts=(target.point,)),
+            frame_sha256=cal._sha256(target.frame), mute_control_absent=True,
+            heart_visible=True))
+    # The still-photo proof takes a real no-input dwell burst off a real device; its own
+    # producer/reader contract is covered directly below.
+    monkeypatch.setattr(
+        cal, "_verified_still_photo_proof",
+        lambda *_a, **_kw: cal._StillPhotoProof(
+            frame_sha256=cal._sha256(target.frame),
+            dwell_frame_sha256s=(cal._sha256(target.frame), cal._sha256(b"dwell")),
+            dwell_span_s=6.0, still_photo_verified=True,
+            reattach_frame_sha256s=(cal._sha256(target.frame), cal._sha256(b"reattach")),
+            reattach_dwell_span_s=6.0))
     monkeypatch.setattr(
         cal, "_fresh_reviewed_target_point",
         lambda _driver, target, **_kw: target.point)
@@ -498,6 +521,8 @@ def test_hybrid_pre_action_checkpoint_action_matches_the_accepted_terminal_trans
     heart_plan = next(plan for state, plan in checkpoints if state == "target_heart_visible")
     assert heart_plan["predicates"]["positive_still_photo_evidence_verified"] is True
     assert heart_plan["predicates"]["target_frame_mute_control_screened_absent"] is True
+    assert heart_plan["predicates"]["verification_blocker_absent"] is True
+    assert heart_plan["predicates"]["target_heart_visible"] is True
     assert "photo_only_item_verified" not in heart_plan["predicates"]
 
     pre_action_plan = next(plan for state, plan in checkpoints if state == "composer_open_before_pass")
@@ -506,6 +531,609 @@ def test_hybrid_pre_action_checkpoint_action_matches_the_accepted_terminal_trans
     # The checkpoint describes the plan, not an already-completed action: nothing has been
     # tapped yet at the moment the reviewer sees it, regardless of which transport is planned.
     assert pre_action_plan["predicates"]["send_like_tapped"] is False
+
+
+class _RecordingGate:
+    """A hybrid gate that approves everything and remembers exactly what it was shown."""
+
+    def __init__(self):
+        self.checkpoints = []
+
+    def checkpoint(self, _frame, *, claimed_state, action_plan):
+        self.checkpoints.append((claimed_state, action_plan))
+        return {"decision": "approved", "action_plan": action_plan}
+
+
+def _mute_proof(*, frame=b"target-pre", mute_control_absent=True, heart_visible=True):
+    """One exact-frame target screen result, as `_verified_target_frame_proof` would return it."""
+    return cal._TargetFrameProof(
+        block=SimpleNamespace(x0=53, y0=700, x1=1027, y1=900, hearts=((500, 800),)),
+        frame_sha256=cal._sha256(frame), mute_control_absent=mute_control_absent,
+        heart_visible=heart_visible)
+
+
+def test_pre_heart_checkpoint_publishes_the_mute_verdict_of_the_screen_that_ran(
+        monkeypatch, tmp_path):
+    """`target_frame_mute_control_screened_absent` may say True only because a mute screen of
+    THESE exact bytes said so.  Pair with the refusal cases below: together they fail for any
+    implementation that restates the verdict as a literal beside the call that proves it."""
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    monkeypatch.setattr(cal, "_verified_target_frame_proof", lambda *_a, **_kw: _mute_proof())
+    gate = _RecordingGate()
+
+    cal._capture_one_profile_unattended(
+        driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+        review_gate=gate, send_like=False)
+
+    heart_plan = next(plan for state, plan in gate.checkpoints if state == "target_heart_visible")
+    assert heart_plan["predicates"]["target_frame_mute_control_screened_absent"] is True
+
+
+@pytest.mark.parametrize(
+    ("build_proof", "expected"),
+    [
+        (lambda: _mute_proof(mute_control_absent=False), "found a visible mute control"),
+        (lambda: _mute_proof(frame=b"a-different-frame"),
+         "no target-frame mute-control screen is bound"),
+    ],
+    ids=["screen-saw-a-mute-control", "screen-proved-some-other-frame"],
+)
+def test_pre_heart_checkpoint_refuses_instead_of_claiming_an_unscreened_frame(
+        monkeypatch, tmp_path, build_proof, expected):
+    """The two ways the claim can come loose from its evidence: the screen returns a negative
+    verdict, and the screen ran somewhere else (what a refactor that moves or wraps the call
+    actually produces).  Both must stop the run before a reviewer is ever offered the heart --
+    an approval on an unscreened frame is how a real video got within one keystroke of a like."""
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    monkeypatch.setattr(cal, "_verified_target_frame_proof", lambda *_a, **_kw: build_proof())
+    gate = _RecordingGate()
+
+    with pytest.raises(cal._CaptureAbort, match=expected):
+        cal._capture_one_profile_unattended(
+            driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+            review_gate=gate, send_like=False)
+
+    assert [state for state, _plan in gate.checkpoints if state == "target_heart_visible"] == []
+    assert driver.taps == []
+
+
+def test_real_target_frame_screen_seeing_a_mute_control_never_reaches_the_checkpoint(
+        monkeypatch, tmp_path):
+    """End-to-end through the production screen rather than a stubbed proof: a driver that
+    reports Hinge's mute control on the exact action frame skips the profile before any
+    checkpoint or tap, so no predicate about that frame is ever published."""
+    real_proof = cal._verified_target_frame_proof
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    monkeypatch.setattr(cal, "_verified_target_frame_proof", real_proof)
+    monkeypatch.setattr(
+        cal, "segment_frame",
+        lambda *_a, **_kw: SimpleNamespace(
+            ok=True, failures=(),
+            blocks=(SimpleNamespace(x0=53, y0=700, x1=1027, y1=900, hearts=((500, 800),)),)))
+    monkeypatch.setattr(cal, "_skip_automated_profile_before_heart",
+                        lambda *_a, **_kw: {"reason_code": "target_verification_blocked"})
+    driver._target_frame_video_screen_reason = lambda *_a: (
+        "target frame contains Hinge's mute control (score 0.999999); "
+        "the selected media is a video")
+    gate = _RecordingGate()
+
+    with pytest.raises(cal._ProfileSkipped, match="target_verification_blocked"):
+        cal._capture_one_profile_unattended(
+            driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+            review_gate=gate, send_like=False)
+
+    assert gate.checkpoints == []
+    assert driver.taps == []
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (lambda m: m.setattr(
+            cal, "_verified_still_photo_proof",
+            lambda *_a, **_kw: cal._StillPhotoProof(
+                frame_sha256=cal._sha256(b"some-other-frame"), dwell_frame_sha256s=("a", "b"),
+                dwell_span_s=6.0, still_photo_verified=True)),
+         "no still-photo .C1-C3. verdict is bound"),
+        (lambda m: m.setattr(
+            cal, "_verified_still_photo_proof",
+            lambda *_a, **_kw: cal._StillPhotoProof(
+                frame_sha256=cal._sha256(b"target-pre"), dwell_frame_sha256s=("a", "b"),
+                dwell_span_s=6.0, still_photo_verified=False)),
+         "still-photo acceptance did not pass"),
+        (lambda m: m.setattr(cal, "_verified_target_frame_proof",
+                             lambda *_a, **_kw: _mute_proof(heart_visible=False)),
+         "target-heart location did not find"),
+        (lambda m: m.setattr(
+            cal, "_verified_blocker_absence",
+            lambda payload, item_number: cal._VerificationBlockerProof(
+                item_number=item_number + 1, heart_ordinal=1, blocker="", blocker_absent=True)),
+         "no verification-blocker screen is bound"),
+        (lambda m: m.setattr(
+            cal, "_verified_blocker_absence",
+            lambda payload, item_number: cal._VerificationBlockerProof(
+                item_number=item_number, heart_ordinal=99, blocker="", blocker_absent=True)),
+         "no verification-blocker screen is bound"),
+    ],
+    ids=["still-photo-proved-another-frame", "still-photo-verdict-negative",
+         "heart-not-located", "blocker-screened-another-item", "blocker-screened-another-heart"],
+)
+def test_every_pre_heart_predicate_refuses_rather_than_restating_an_unearned_true(
+        monkeypatch, tmp_path, mutate, expected):
+    """Mutation coverage for the whole predicate block.  Each case breaks ONE underlying check or
+    its binding and requires the run to stop before a reviewer is offered the heart.  Together
+    they fail for any implementation that publishes a literal beside the call that proves it --
+    which is precisely how `photo_only_item_verified` shipped as a hardcoded True."""
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    mutate(monkeypatch)
+    gate = _RecordingGate()
+
+    with pytest.raises(cal._CaptureAbort, match=expected):
+        cal._capture_one_profile_unattended(
+            driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+            review_gate=gate, send_like=False)
+
+    assert [state for state, _plan in gate.checkpoints if state == "target_heart_visible"] == []
+    assert driver.taps == []
+
+
+def test_a_blocked_item_is_skipped_by_the_screen_itself_not_by_a_restated_literal(
+        monkeypatch, tmp_path):
+    """The positive half of the blocker predicate: the screen's own verdict decides both the
+    skip and the published claim, so the two can never disagree."""
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    monkeypatch.setattr(cal, "verification_blocker",
+                        lambda *_a, **_kw: "item 1 has no separable reference")
+    monkeypatch.setattr(cal, "_skip_automated_profile_before_heart",
+                        lambda *_a, **_kw: {"reason_code": "target_verification_blocked"})
+    gate = _RecordingGate()
+
+    with pytest.raises(cal._ProfileSkipped, match="target_verification_blocked"):
+        cal._capture_one_profile_unattended(
+            driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+            review_gate=gate, send_like=False)
+
+    assert gate.checkpoints == []
+    assert driver.taps == []
+
+
+# A 1080x2000 action frame puts the content band's centre at row 1000, so the block used
+# throughout these tests (rows 700..1300, centre 1000) sits dead centre of Hinge's autoplay
+# trigger zone. The zone is a precondition on the dwell (owner fact 2026-08-21: a video only
+# plays near the centre of the screen), so a proof taken anywhere else refuses.
+_ACTION_FRAME_SIZE = (1080, 2000)
+_CENTRED_BLOCK = dict(x0=53, y0=700, x1=1027, y1=1300)
+_OFF_CENTRE_BLOCK = dict(x0=53, y0=1500, x1=1027, y1=1900)
+
+
+def _action_frame(value: int = 9) -> bytes:
+    return _png(value, size=_ACTION_FRAME_SIZE)
+
+
+def _still_photo_driver(*, burst=None, span_s=6.0, mute_score=0.0,
+                        content_band=(0.125, 0.875), probe=...,
+                        probe_burst=None, probe_span_s=6.0):
+    """A driver stub exposing only what the still-photo proof consumes: a dwell burst, the mute
+    matcher, the content band the autoplay-centring precondition is measured against, and the
+    re-attach probe.
+
+    The FIRST burst issues no input; the probe does, and it hands back the settled frame it
+    finished on. `probe=None` is the probe that could not complete, which must refuse the card
+    rather than fall through to the first burst's verdict.
+    """
+    if burst is None:
+        burst = (_action_frame(11), _action_frame(11))
+    frame = _action_frame()
+    if probe is ...:
+        probe = SimpleNamespace(
+            anchor=frame,
+            frames=tuple(probe_burst if probe_burst is not None
+                         else (_action_frame(), _action_frame())),
+            span_s=probe_span_s, page_shift_px=0)
+    return SimpleNamespace(
+        content_band=content_band,
+        _still_photo_dwell_burst=lambda: (list(burst), span_s),
+        _still_photo_reattach_probe=lambda _frame, _rect: probe,
+        _match_video_mute=lambda _frame, _rect: (True, mute_score))
+
+
+def test_without_a_verified_bound_the_still_photo_proof_can_never_pass(monkeypatch):
+    """The unlicensed case is not special-cased anywhere: the SAME acceptance runs and refuses
+    with the policy blocker, so a capture with no artifact cannot reach a heart even if every
+    other gate above it were satisfied.  (The payload also numbers nothing, so the capture path
+    never gets here in the first place -- this pins the second, independent stop.)"""
+    monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: True)
+
+    with pytest.raises(cal._CaptureAbort, match="positive still-photo discriminator unavailable"):
+        cal._verified_still_photo_proof(
+            _still_photo_driver(), frame=_action_frame(),
+            block=SimpleNamespace(**_CENTRED_BLOCK),
+            signature_drift=0.0, drift_frames=(1, 2))
+
+
+@pytest.fixture
+def installed_still_photo_bound():
+    """The numbering licence, installed through the real config-validation API and torn down."""
+    tp.install_verified_still_photo_bound(tp.StillPhotoBoundSummary(
+        ground_truth_channel=tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
+        human_ground_truth=True, video_cards=60, video_accepts=0, photo_cards=60,
+        photo_false_refusals=0, max_video_exact_run_s=1.0, artifact_sha256="d" * 64,
+        device="synthetic-pixel", hinge_version_name="10.0.1"))
+    yield
+    tp._reset_installed_still_photo_bound_for_tests()
+
+
+def test_the_still_photo_proof_binds_the_action_frame_and_every_dwell_frame_by_digest(
+        monkeypatch, installed_still_photo_bound):
+    """With a bound installed and TWO byte-exact, fully screened dwells, the proof passes -- and
+    it names the exact frames each was computed from, action frame first in both."""
+    monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: True)
+
+    frame = _action_frame()
+    proof = cal._verified_still_photo_proof(
+        _still_photo_driver(), frame=frame,
+        block=SimpleNamespace(**_CENTRED_BLOCK),
+        signature_drift=0.0, drift_frames=(1, 2))
+
+    assert proof.still_photo_verified is True
+    assert proof.frame_sha256 == cal._sha256(frame)
+    assert proof.dwell_frame_sha256s[0] == cal._sha256(frame)
+    assert len(proof.dwell_frame_sha256s) == 3
+    # The re-attach burst is bound the SAME way: the action frame leads it, because the probe
+    # only accepts a round trip that came back byte-for-byte.
+    assert proof.reattach_frame_sha256s[0] == cal._sha256(frame)
+    assert len(proof.reattach_frame_sha256s) == 3
+    assert proof.reattach_dwell_span_s == 6.0
+    assert cal._verified_still_photo_evidence(proof, frame) is True
+    with pytest.raises(cal._CaptureAbort, match="no still-photo .C1-C3. verdict is bound"):
+        cal._verified_still_photo_evidence(proof, b"a-different-frame")
+
+
+@pytest.mark.parametrize("proof_kwargs, expected", [
+    ({"reattach_frame_sha256s": ()},
+     "no re-attach dwell burst is chained"),
+    ({"reattach_frame_sha256s": ("a" * 64,)},
+     "no re-attach dwell burst is chained"),
+    ({"reattach_frame_sha256s": ("a" * 64, "b" * 64)},
+     "no re-attach dwell burst is chained"),
+    ({"dwell_frame_sha256s": ("a" * 64, "b" * 64)},
+     "un-interacted dwell is not chained"),
+], ids=["second-burst-missing", "second-burst-too-short", "second-burst-wrong-frame",
+        "first-burst-wrong-frame"])
+def test_the_checkpoint_refuses_a_proof_whose_bursts_do_not_bind_the_action_frame(
+        proof_kwargs, expected):
+    """A published predicate is a claim.  Both bursts have to name the frame whose heart would be
+    approved, or the claim is about some other screen -- which is how a real video came one
+    keystroke from a like."""
+    frame = _action_frame()
+    fields = {"frame_sha256": cal._sha256(frame),
+              "dwell_frame_sha256s": (cal._sha256(frame), "b" * 64),
+              "dwell_span_s": 6.0, "still_photo_verified": True,
+              "reattach_frame_sha256s": (cal._sha256(frame), "c" * 64),
+              "reattach_dwell_span_s": 6.0}
+    proof = cal._StillPhotoProof(**{**fields, **proof_kwargs})
+
+    with pytest.raises(cal._CaptureAbort, match=expected):
+        cal._verified_still_photo_evidence(proof, frame)
+
+
+@pytest.mark.parametrize("kwargs, expected", [
+    ({"probe": None}, "re-attach probe could not take this card"),
+    # A probe that gestured but brought back no burst made no observation either: one frame is
+    # zero consecutive pairs, so it lands on the same "no probe" refusal rather than on motion.
+    ({"probe_burst": ()}, "no re-attach probe scrolled this card"),
+], ids=["probe-refused", "probe-took-no-frames"])
+def test_the_still_photo_proof_refuses_a_card_the_re_attach_probe_could_not_clear(
+        monkeypatch, installed_still_photo_bound, kwargs, expected):
+    """The stalled-video residual, at the load-bearing gate: a card whose media was never asked
+    to restart is skipped, exactly like a card the mute screen rejects."""
+    monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: True)
+
+    with pytest.raises(cal._CaptureAbort, match=expected):
+        cal._verified_still_photo_proof(
+            _still_photo_driver(**kwargs), frame=_action_frame(),
+            block=SimpleNamespace(**_CENTRED_BLOCK), signature_drift=0.0, drift_frames=(1, 2))
+
+
+def test_the_still_photo_proof_refuses_a_probe_that_did_not_restore_the_screen(
+        monkeypatch, installed_still_photo_bound):
+    """`_fresh_reviewed_target_point` demands byte identity with the reviewed frame immediately
+    before the tap, so a probe that left the page displaced would buy a checkpoint that could
+    never be spent.  Refusing here means the reviewed frame, the navigator's point and both
+    bursts always describe one screen."""
+    monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: True)
+    moved = SimpleNamespace(anchor=_action_frame(77), frames=(_action_frame(), _action_frame()),
+                            span_s=6.0, page_shift_px=12)
+
+    with pytest.raises(cal._CaptureAbort, match="did not restore the screen byte-for-byte"):
+        cal._verified_still_photo_proof(
+            _still_photo_driver(probe=moved), frame=_action_frame(),
+            block=SimpleNamespace(**_CENTRED_BLOCK), signature_drift=0.0, drift_frames=(1, 2))
+
+
+def test_the_second_burst_is_measured_for_real_and_motion_in_it_refuses_the_card(
+        monkeypatch, installed_still_photo_bound):
+    """Byte-exactness of the SECOND burst is recomputed from its own bytes.  Media that starts
+    when Hinge re-attaches it is a video, however still it was while the first burst watched."""
+    monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: True)
+    playing = (_action_frame(30), _action_frame(31))
+
+    with pytest.raises(cal._CaptureAbort, match="second dwell burst"):
+        cal._verified_still_photo_proof(
+            _still_photo_driver(probe_burst=playing), frame=_action_frame(),
+            block=SimpleNamespace(**_CENTRED_BLOCK), signature_drift=0.0, drift_frames=(1, 2))
+
+
+def test_a_card_that_fails_a_cheaper_rung_is_never_charged_a_probe(
+        monkeypatch, installed_still_photo_bound):
+    """The probe costs two real gestures, so it runs only once every rung that answers from
+    frames we already hold has passed -- and the refusal names that rung, not the probe."""
+    monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: False)
+    probes = []
+    driver = _still_photo_driver()
+    driver._still_photo_reattach_probe = (
+        lambda _frame, _rect: probes.append(1) or SimpleNamespace(
+            anchor=_action_frame(), frames=(_action_frame(),), span_s=6.0, page_shift_px=0))
+
+    with pytest.raises(cal._CaptureAbort, match="no un-interacted dwell proved"):
+        cal._verified_still_photo_proof(
+            driver, frame=_action_frame(), block=SimpleNamespace(**_CENTRED_BLOCK),
+            signature_drift=0.0, drift_frames=(1, 2))
+
+    assert probes == [], "a card refused by a cheaper rung must not move the screen"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "exact", "expected"),
+    [
+        ({}, False, "no un-interacted dwell proved"),
+        ({"mute_score": 0.999}, True, "mute-control screening did not complete"),
+        ({"span_s": 0.0}, True, "dwell window is missing or non-positive"),
+        ({"burst": ()}, True, "no un-interacted dwell proved"),
+    ],
+    ids=["not-byte-exact", "mute-control-rendered-during-dwell", "no-window", "no-dwell"],
+)
+def test_the_still_photo_proof_refuses_the_card_rather_than_returning_a_negative_verdict(
+        monkeypatch, installed_still_photo_bound, kwargs, exact, expected):
+    """A card the acceptance rejects is skipped exactly like one the mute screen rejects, so the
+    reviewer is never offered its heart and no False can reach a checkpoint at all."""
+    monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: exact)
+
+    with pytest.raises(cal._CaptureAbort, match=expected):
+        cal._verified_still_photo_proof(
+            _still_photo_driver(**kwargs), frame=_action_frame(),
+            block=SimpleNamespace(**_CENTRED_BLOCK),
+            signature_drift=0.0, drift_frames=(1, 2))
+
+
+@pytest.mark.parametrize("block, band, reason", [
+    (_OFF_CENTRE_BLOCK, (0.125, 0.875), "autoplay trigger zone"),
+    (_CENTRED_BLOCK, None, "autoplay trigger zone"),
+], ids=["off-centre-card", "no-content-band-to-measure-against"])
+def test_the_still_photo_proof_refuses_a_card_outside_the_autoplay_trigger_zone(
+        monkeypatch, installed_still_photo_bound, block, band, reason):
+    """Hinge plays a video only near the centre, so a dwell taken elsewhere proves nothing.
+
+    The second case is the fail-closed one: a driver that cannot say where the card sat has not
+    made the observation, and an unmeasured position must never read as a passing one.
+    """
+    monkeypatch.setattr(cal, "dwell_exact_over_rect", lambda *_a, **_kw: True)
+
+    with pytest.raises(cal._CaptureAbort, match=reason):
+        cal._verified_still_photo_proof(
+            _still_photo_driver(content_band=band), frame=_action_frame(),
+            block=SimpleNamespace(**block), signature_drift=0.0, drift_frames=(1, 2))
+
+
+def _png(value: int, size=(1000, 600)) -> bytes:
+    ok, buf = cv2.imencode(".png", np.full((size[1], size[0]), value, np.uint8))
+    assert ok
+    return buf.tobytes()
+
+
+def _dwell_campaign(tmp_path, frames, *, rect=(0, 0, 900, 500), span_s=6.0, tamper=False,
+                    content_band=None, reattach=..., reattach_shift=0, reattach_span_s=6.0):
+    """A campaign dir carrying persisted dwell frames, in the shape the reader documents.
+
+    `reattach` defaults to a second burst identical to the first, because that is what a still
+    photograph produces on both sides of a re-attach probe; `reattach=None` is a campaign
+    captured before the probe existed, which must refuse.
+    """
+    root = tmp_path / cal._STILL_PHOTO_DWELL_DIR / "p0001"
+    root.mkdir(parents=True)
+    records = []
+    for position, data in enumerate(frames):
+        (root / f"frame_{position:03d}.png").write_bytes(data)
+        records.append({"file": f"p0001/frame_{position:03d}.png",
+                        "sha256": cal._sha256(b"tampered" if tamper else data)})
+    if reattach is ...:
+        reattach = list(frames)
+    reattach_records = []
+    for position, data in enumerate(reattach or ()):
+        (root / f"reattach_{position:03d}.png").write_bytes(data)
+        reattach_records.append({"file": f"p0001/reattach_{position:03d}.png",
+                                 "sha256": cal._sha256(b"tampered" if tamper else data)})
+    index = {
+        "schema_version": 1, "kind": cal._STILL_PHOTO_DWELL_INDEX_KIND,
+        "profiles": [{"profile_ordinal": 1, "cards": [
+            {"heart_ordinal": 2, "rect": list(rect), "dwell_span_s": span_s,
+             # A recorded verdict that is a LIE, to prove nothing reads it.
+             "dwell_exact": False, "mute_screens_complete": False,
+             "reattach_dwell_exact": False, "reattach_probe_ran": True,
+             "frames": records, "reattach_frames": reattach_records,
+             "reattach_span_s": reattach_span_s,
+             "reattach_page_shift_px": reattach_shift}]}]}
+    if content_band is not None:
+        index["content_band"] = list(content_band)
+    (tmp_path / cal._STILL_PHOTO_DWELL_DIR / "index.json").write_text(json.dumps(index))
+    return tmp_path
+
+
+def test_a_campaign_dir_with_no_dwell_frames_rebuilds_on_drift_only(tmp_path):
+    """Which fail-closes the moment a bound is installed, and is the correct answer: a replay
+    that never held a screen still has not made the observation."""
+    assert cal._persisted_still_photo_dwell(None, 1) is None
+    assert cal._persisted_still_photo_dwell(tmp_path, 1) is None
+
+
+def test_persisted_dwell_exactness_is_recomputed_from_the_bytes_not_read_back(tmp_path):
+    """`dwell_exact: false` sits in the artifact and is ignored; the verdict comes from the PNGs.
+    A recorded boolean is a claim, and this whole design refuses to accept claims."""
+    still = _png(120)
+    campaign = _dwell_campaign(tmp_path, [still, still, still])
+
+    evidence = cal._persisted_still_photo_dwell(campaign, 1)
+
+    assert set(evidence) == {2}
+    assert evidence[2].dwell_exact is True
+    assert evidence[2].mute_screens_complete is True
+    assert evidence[2].dwell_span_s == 6.0
+    assert len(evidence[2].dwell_frame_sha256s) == 3
+
+
+def test_persisted_dwell_frames_that_differ_are_not_exact(tmp_path):
+    campaign = _dwell_campaign(tmp_path, [_png(120), _png(121)])
+
+    evidence = cal._persisted_still_photo_dwell(campaign, 1)
+
+    assert evidence[2].dwell_exact is False
+
+
+def test_a_replay_with_no_recorded_content_band_cannot_claim_the_card_was_centred(
+        tmp_path, installed_still_photo_bound):
+    """Fail closed: a capture taken before the autoplay precondition never made the observation.
+
+    The bound has to be installed for the ladder to reach this rung at all; without one the
+    policy blocker speaks first, which is a different (and also correct) refusal.
+    """
+    still = _png(120)
+    evidence = cal._persisted_still_photo_dwell(_dwell_campaign(tmp_path, [still, still]), 1)
+    assert evidence[2].centered is None and evidence[2].center_offset_frac is None
+    reason = cal.unnumber_without_still_photo_evidence(
+        cal.still_photo_evidence_from_drift(0.01, (1, 2), evidence[2]))
+    assert reason is not None and "autoplay trigger zone" in reason
+
+
+def test_a_replay_recomputes_centring_from_the_recorded_geometry(tmp_path):
+    """`content_band` is geometry read from the index, like the rect; the verdict is recomputed."""
+    still = _png(120, size=(1000, 600))
+    # Rows 0..500 of a 600-row frame over the whole band: centre 250 vs band centre 300.
+    centred = cal._persisted_still_photo_dwell(
+        _dwell_campaign(tmp_path / "a", [still, still], content_band=(0.0, 1.0)), 1)
+    assert centred[2].centered is True
+    assert centred[2].center_offset_frac == pytest.approx((250 - 300) / 600)
+
+    off = cal._persisted_still_photo_dwell(
+        _dwell_campaign(tmp_path / "b", [still, still], rect=(0, 0, 900, 120),
+                        content_band=(0.0, 1.0)), 1)
+    assert off[2].centered is False
+    assert abs(off[2].center_offset_frac) > cal.STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
+
+
+def test_the_replay_recomputes_the_second_burst_from_its_own_persisted_bytes(tmp_path):
+    """Both bursts, from bytes.  The artifact's `reattach_dwell_exact: false` is a lie sitting
+    right next to the frames, and nothing reads it."""
+    still = _png(120, size=(1000, 600))
+    campaign = _dwell_campaign(tmp_path, [still, still], content_band=(0.0, 1.0))
+
+    evidence = cal._persisted_still_photo_dwell(campaign, 1)
+
+    assert evidence[2].reattach_probe_ran is True
+    assert evidence[2].reattach_dwell_exact is True
+    assert evidence[2].reattach_mute_screens_complete is True
+    assert evidence[2].reattach_dwell_span_s == 6.0
+    assert len(evidence[2].reattach_dwell_frame_sha256s) == 2
+    assert evidence[2].reattach_centered is True
+
+
+def test_a_replay_second_burst_that_moved_is_measured_as_motion(tmp_path):
+    campaign = _dwell_campaign(tmp_path, [_png(120), _png(120)],
+                               reattach=[_png(120), _png(121)])
+
+    evidence = cal._persisted_still_photo_dwell(campaign, 1)
+
+    assert evidence[2].dwell_exact is True and evidence[2].reattach_dwell_exact is False
+
+
+def test_a_campaign_captured_before_the_probe_existed_refuses_at_the_re_attach_rung(
+        tmp_path, installed_still_photo_bound):
+    """Fail closed, and the honest answer: a replay that never made a stalled video restart has
+    not excluded one."""
+    still = _png(120, size=(1000, 600))
+    campaign = _dwell_campaign(tmp_path, [still, still], content_band=(0.0, 1.0),
+                               reattach=None)
+
+    evidence = cal._persisted_still_photo_dwell(campaign, 1)
+
+    assert evidence[2].dwell_exact is True and evidence[2].centered is True
+    assert evidence[2].reattach_probe_ran is False
+    reason = cal.unnumber_without_still_photo_evidence(
+        cal.still_photo_evidence_from_drift(0.01, (1, 2), evidence[2]))
+    assert reason == cal.EXCLUSION_REATTACH_PROBE_MISSING
+
+
+def test_a_replay_translates_the_second_burst_rect_by_the_recorded_page_shift(tmp_path):
+    """`reattach_page_shift_px` is GEOMETRY, read like the rect, and it only ever moves the rows
+    the verdict is measured over.  Pushed far enough, the card left the screen and the replay
+    reports a MISSING observation rather than a failed one."""
+    still = _png(120, size=(1000, 600))
+    campaign = _dwell_campaign(tmp_path, [still, still], content_band=(0.0, 1.0),
+                               reattach_shift=-100_000)
+
+    evidence = cal._persisted_still_photo_dwell(campaign, 1)
+
+    assert evidence[2].reattach_probe_ran is False
+    assert evidence[2].reattach_dwell_exact is None
+
+
+def test_a_replay_with_a_malformed_page_shift_refuses_loudly(tmp_path):
+    still = _png(120)
+    campaign = _dwell_campaign(tmp_path, [still, still])
+    index_path = campaign / cal._STILL_PHOTO_DWELL_DIR / "index.json"
+    index = json.loads(index_path.read_text())
+    index["profiles"][0]["cards"][0]["reattach_page_shift_px"] = "0"
+    index_path.write_text(json.dumps(index))
+
+    with pytest.raises(cal._MeasureRefused, match="malformed re-attach page shift"):
+        cal._persisted_still_photo_dwell(campaign, 1)
+
+
+def test_persisted_dwell_frames_that_changed_after_capture_refuse_loudly(tmp_path):
+    campaign = _dwell_campaign(tmp_path, [_png(120), _png(120)], tamper=True)
+
+    with pytest.raises(cal._MeasureRefused, match="changed after capture"):
+        cal._persisted_still_photo_dwell(campaign, 1)
+
+
+def test_target_frame_proof_carries_the_screen_verdict_bound_to_the_screened_frame(monkeypatch):
+    """The proof object itself is the contract the checkpoint reads: it must report the screen's
+    own verdict for the exact bytes it was given, and vouch for no other frame."""
+    target = SimpleNamespace(frame=b"target-pre", point=(500, 800), block_frame_rows=(700, 900))
+    driver = SimpleNamespace()
+    driver._target_frame_video_screen_reason = lambda *_a: None
+    monkeypatch.setattr(
+        cal, "segment_frame",
+        lambda *_a, **_kw: SimpleNamespace(
+            ok=True, failures=(),
+            blocks=(SimpleNamespace(x0=53, y0=700, x1=1027, y1=900, hearts=((500, 800),)),)))
+
+    proof = cal._verified_target_frame_proof(
+        driver, target, frame=b"target-pre", content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=0.8)
+
+    assert proof.mute_control_absent is True
+    assert proof.heart_visible is True
+    assert proof.frame_sha256 == cal._sha256(b"target-pre")
+    assert cal._screened_mute_control_absent(proof, b"target-pre") is True
+    assert cal._located_target_heart_visible(proof, b"target-pre") is True
+    with pytest.raises(cal._CaptureAbort, match="no target-frame mute-control screen is bound"):
+        cal._screened_mute_control_absent(proof, b"another-frame")
+    with pytest.raises(cal._CaptureAbort, match="no target-frame mute-control screen is bound"):
+        cal._screened_mute_control_absent(True, b"target-pre")
+    with pytest.raises(cal._CaptureAbort, match="no target-heart location is bound"):
+        cal._located_target_heart_visible(proof, b"another-frame")
+    with pytest.raises(cal._CaptureAbort, match="no target-heart location is bound"):
+        cal._located_target_heart_visible(True, b"target-pre")
 
 
 @pytest.mark.parametrize(
@@ -1312,7 +1940,7 @@ def test_measure_success_prints_exact_calibration_mapping_and_full_ledger(monkey
     assert block["hinge_version_name"] == "1.0"
     assert block["frame_size_px"] == [1080, 2400]
     assert block["composer_layout_id"] == "hinge_inline_v1"
-    assert block["item_selection_policy_id"] == "hinge_photos_only_v1"
+    assert block["item_selection_policy_id"] == "hinge_photos_only_v2"
     assert block["device"] == "PIXEL-TEST"
     assert re.search(r"20\d\d-\d\d-\d\dT", block["calibrated_at"])
     assert "placeholder" not in block["calibrated_at"].lower()
@@ -1453,7 +2081,7 @@ def test_load_session_refuses_changed_frame_bytes(tmp_path):
         "identity_band": list(_IDENTITY_BAND), "content_band": list(_CONTENT_BAND),
         "device": _device(), "requested_profiles": 1,
         "calibration_schema_version": 3, "composer_layout_id": "hinge_inline_v1",
-        "item_selection_policy_id": "hinge_photos_only_v1",
+        "item_selection_policy_id": "hinge_photos_only_v2",
         "frame_size_px": [1080, 2400],
         "profiles": [{"ordinal": 1, "profile_id": "p", "card_scroll_frames": 1,
                       "composer_items": [1], "profile_advance_cleared_composer": True,
@@ -1543,7 +2171,7 @@ def _write_complete_manifest(directory, *, interrupted=False, requested_profiles
     manifest = {
         "tool_version": cal._TOOL_VERSION, "interrupted": interrupted,
         "calibration_schema_version": 3, "composer_layout_id": "hinge_inline_v1",
-        "item_selection_policy_id": "hinge_photos_only_v1",
+        "item_selection_policy_id": "hinge_photos_only_v2",
         "frame_size_px": [1080, 2400],
         "split": "calibration", "identity_band": list(_IDENTITY_BAND),
         "content_band": list(_CONTENT_BAND), "device": _device(),

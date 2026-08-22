@@ -23,6 +23,7 @@ Every positive is paired with a negative: for each thing the enumeration produce
 test that it is REFUSED, by name and with a reason, rather than degraded into raw frames.
 """
 import dataclasses
+import hashlib
 import json
 import math
 import random
@@ -34,6 +35,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from operation_love import targeting_policy as tp
 from operation_love.drivers import (
     hinge, item_crops, item_identity, item_index, scroll_step, scroll_top, segment)
 from operation_love.drivers.hinge import HingeDriver
@@ -150,7 +152,7 @@ _TARGETING_CALIBRATION = {
     "hinge_version_name": "9.134.0",
     "frame_size_px": [1080, 2400],
     "composer_layout_id": "hinge_inline_v1",
-    "item_selection_policy_id": "hinge_photos_only_v1",
+    "item_selection_policy_id": "hinge_photos_only_v2",
     "identity_match_max_dist": 2.0,
     "inline_item_max_dist": 10.0,
     "device": "pixel",
@@ -302,7 +304,7 @@ def _no_sleep(monkeypatch, request):
     # geometry by labelling every synthetic selectable card a photo.
     monkeypatch.setattr(hinge, "unnumber_unless_confident_photo", lambda _crop: None)
     monkeypatch.setattr(
-        hinge, "unnumber_without_still_photo_evidence", lambda _drift, _frames: None)
+        hinge, "unnumber_without_still_photo_evidence", lambda _evidence: None)
     # Video screening has its own exact-template/ROI tests below. Every synthetic noise card here
     # is a successfully screened still by default.
     if request.node.name != "test_video_mute_template_is_a_near_perfect_app_ui_match":
@@ -443,6 +445,435 @@ def test_driver_refuses_auto_hidden_video_risk_when_still_photo_evidence_is_abse
     assert profile is not None and profile.items == ()
     assert "no policy-approved selectable item" in profile.items_unavailable
     assert drv._current_item_payload is None
+
+
+@pytest.fixture
+def installed_still_photo_bound():
+    """Numbering readiness exactly as config.validate() installs it, dropped again at teardown.
+
+    Readiness is process-global (ops/STILL-PHOTO-DISCRIMINATOR.md section 5), so it is installed
+    through the real API rather than monkeypatched, and always torn down.
+    """
+    tp.install_verified_still_photo_bound(tp.StillPhotoBoundSummary(
+        ground_truth_channel=tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
+        human_ground_truth=True, video_cards=60, video_accepts=0, photo_cards=60,
+        photo_false_refusals=3, max_video_exact_run_s=0.2, artifact_sha256="b" * 64,
+        device="synthetic-pixel", hinge_version_name="10.0.1"))
+    yield
+    tp._reset_installed_still_photo_bound_for_tests()
+
+
+def test_an_unlicensed_read_takes_no_dwell_burst_at_all(monkeypatch):
+    """With no verified bound the payload can number nothing whatever the dwell says, so a burst
+    would spend seconds of screen time to change no outcome.  This read must be byte-identical
+    to the pre-dwell driver: no extra screencap, no extra sleep, no dwell record."""
+    bursts = []
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_burst",
+                        lambda self: bursts.append(1) or ([], 0.0))
+    drv = _drv(WorldAdb())
+
+    profile = drv._capture_current()
+
+    assert bursts == []
+    assert profile is not None and len(profile.items) == 4
+    assert drv._current_item_payload.translation == (1, 2, 3, 4)
+
+
+def test_a_licensed_read_dwells_persists_every_frame_and_threads_the_evidence(
+        monkeypatch, tmp_path, installed_still_photo_bound):
+    """The other half: once a bound is installed the driver holds the screen, screencaps it
+    several times with NO input, keeps every frame and its digest, and hands the per-card verdict
+    to the payload builder as the `still_photo_dwell` mapping."""
+    monkeypatch.setattr(hinge, "unnumber_without_still_photo_evidence",
+                        item_crops.unnumber_without_still_photo_evidence)
+    seen = {}
+
+    def dwell_spy(index, frames, dwell_frames, **kw):
+        seen["burst"] = list(dwell_frames)
+        return item_crops.still_photo_dwell_evidence(index, frames, dwell_frames, **kw)
+
+    real_payload = hinge.build_item_payload
+
+    def payload_spy(*args, **kw):
+        seen["threaded"] = kw.get("still_photo_dwell")
+        return real_payload(*args, **kw)
+
+    monkeypatch.setattr(hinge, "still_photo_dwell_evidence", dwell_spy)
+    monkeypatch.setattr(hinge, "build_item_payload", payload_spy)
+    adb = WorldAdb()
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="still-photo-dwell")
+    # Snapshot the transport either side of the burst: "no input" is the load-bearing claim, and
+    # a dwell that scrolled would be measuring a moving card while calling it still.
+    real_burst = HingeDriver._still_photo_dwell_burst
+
+    def guarded_burst(self):
+        before = (adb.scrolls, len(adb.gestures), len(adb.taps))
+        result = real_burst(self)
+        seen["input_during_dwell"] = (adb.scrolls, len(adb.gestures), len(adb.taps)) != before
+        return result
+
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_burst", guarded_burst)
+
+    drv._capture_current()
+
+    burst = seen["burst"]
+    assert hinge._STILL_PHOTO_DWELL_FRAMES[0] <= len(burst) <= hinge._STILL_PHOTO_DWELL_FRAMES[1]
+    assert adb.taps == [] and adb.texts == [], "a dwell issues no input of any kind"
+    assert seen["input_during_dwell"] is False
+    # The evidence really reached the gate, keyed by heart ordinal, with C2 and C3 both PASSING
+    # on a motionless synthetic screen -- which is what a still photo looks like.
+    threaded = seen["threaded"]
+    assert threaded, "the dwell verdict must reach build_item_payload"
+    for entry in threaded.values():
+        assert entry.dwell_exact is True
+        assert entry.mute_screens_complete is True
+        assert entry.dwell_span_s > 0
+        assert len(entry.dwell_frame_sha256s) == len(burst) + 1  # the anchor leads the burst
+    # A still photo produces N identical frames, which is exactly the shape the debug log's
+    # per-label dedup collapses.  Every dwell frame must survive on disk regardless.
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    frame_records = [r for r in records if r["action"].startswith("still_photo_dwell_")]
+    assert len(frame_records) == len(burst)
+    for position, record in enumerate(frame_records):
+        assert record["dwell_frame_index"] == position
+        assert (drv._dbg.dir / record["before"]).read_bytes() == burst[position]
+        assert record["sha256"] == hashlib.sha256(burst[position]).hexdigest()
+    summary = next(r for r in records if r["action"] == "still_photo_dwell")
+    assert summary["dwell_frames"] == len(burst)
+    assert summary["dwell_span_s"] > 0
+    assert summary["cards"], "the summary names what the dwell concluded per card"
+
+
+@pytest.fixture
+def accepted_still_photo_assumption():
+    """The OTHER readiness channel: the owner's accepted centred-autoplay assumption, which
+    carries no measured worst-case exact run at all."""
+    tp.install_accepted_still_photo_assumption(tp.StillPhotoAssumptionAcceptance(
+        acceptance=tp.STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION,
+        accepted_at="2026-08-21", device="synthetic-pixel", hinge_version_name="10.0.1",
+        rationale="owner accepted the centred-autoplay assumption instead of the held-out "
+                  "false-accept measurement"))
+    yield
+    tp._reset_installed_still_photo_bound_for_tests()
+
+
+def test_the_dwell_window_is_anchored_on_whichever_licence_is_installed(
+        monkeypatch, installed_still_photo_bound):
+    """The measured channel multiplies the artifact's worst held-out exact run by the safety
+    factor. Nothing here is a constant chosen in the driver."""
+    windows = []
+    monkeypatch.setattr(hinge, "human_cooldown", lambda seconds: windows.append(seconds) or 0.0)
+    drv = _drv(WorldAdb())
+
+    drv._still_photo_dwell_burst()
+
+    bound = tp.installed_still_photo_bound()
+    assert windows == [max(hinge._STILL_PHOTO_DWELL_MIN_WINDOW_S,
+                           tp.STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR
+                           * bound.max_video_exact_run_s)]
+
+
+def test_an_assumption_licence_dwells_on_its_named_default_instead_of_crashing(
+        monkeypatch, accepted_still_photo_assumption):
+    """REGRESSION. The burst used to read `installed_still_photo_bound().max_video_exact_run_s`
+    behind a guard that only asked whether numbering was licensed AT ALL. Under the assumption
+    channel that guard passes while the measured bound is None, so the live run raised
+    AttributeError here. The assumption has no measurement to multiply, so the window comes from
+    a named accepted default -- and it is never shorter than the measured path's."""
+    windows = []
+    real_cooldown = hinge.human_cooldown
+    monkeypatch.setattr(hinge, "human_cooldown",
+                        lambda seconds: windows.append(seconds) or real_cooldown(seconds))
+    drv = _drv(WorldAdb())
+
+    burst, span_s = drv._still_photo_dwell_burst()
+
+    assert windows == [hinge._STILL_PHOTO_DWELL_ASSUMED_WINDOW_S]
+    assert hinge._STILL_PHOTO_DWELL_ASSUMED_WINDOW_S >= hinge._STILL_PHOTO_DWELL_MIN_WINDOW_S
+    assert hinge._STILL_PHOTO_DWELL_FRAMES[0] <= len(burst) <= hinge._STILL_PHOTO_DWELL_FRAMES[1]
+    assert span_s >= 0
+
+
+def test_an_assumption_licence_produces_real_dwell_evidence_end_to_end(
+        accepted_still_photo_assumption):
+    """The same regression from the other side: the licensed path must actually run and produce
+    per-card evidence, not merely avoid an exception."""
+    index, frames = _centred_capture()
+    drv = _drv(ProbeWorldAdb(start=_CENTRED_SCROLLS[-1]))
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    assert evidence[_CENTRED_ORDINAL].dwell_exact is True
+    assert evidence[_CENTRED_ORDINAL].reattach_probe_ran is True
+
+
+def test_no_licence_means_no_burst_at_all_rather_than_a_missing_bound():
+    """The third state, unchanged: with nothing installed the burst is empty, which every caller
+    already treats as "no dwell happened" and refuses on."""
+    assert tp.installed_still_photo_licence() is None
+
+    assert _drv(WorldAdb())._still_photo_dwell_burst() == ([], 0.0)
+
+
+def test_a_blank_screen_ends_the_burst_and_yields_no_dwell_evidence(monkeypatch):
+    """A screen that cannot be read has not been dwelled on.  Returning the frames it did get
+    would be a SHORTER dwell still claiming to be one, so the burst comes back empty and the
+    gate refuses for the reason it should: no dwell."""
+    drv = _drv(WorldAdb())
+    monkeypatch.setattr(HingeDriver, "_screencap", lambda self, **_kw: None)
+    tp.install_verified_still_photo_bound(tp.StillPhotoBoundSummary(
+        ground_truth_channel=tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
+        human_ground_truth=True, video_cards=60, video_accepts=0, photo_cards=60,
+        photo_false_refusals=0, max_video_exact_run_s=0.1, artifact_sha256="c" * 64,
+        device="synthetic-pixel", hinge_version_name="10.0.1"))
+    try:
+        assert drv._still_photo_dwell_burst() == ([], 0.0)
+    finally:
+        tp._reset_installed_still_photo_bound_for_tests()
+
+
+def test_an_empty_dwell_burst_refuses_the_whole_numbered_payload(
+        monkeypatch, installed_still_photo_bound):
+    """End to end: a licensed read whose dwell produced nothing numbers nothing, and says so."""
+    monkeypatch.setattr(hinge, "unnumber_without_still_photo_evidence",
+                        item_crops.unnumber_without_still_photo_evidence)
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_burst", lambda self: ([], 0.0))
+    drv = _drv(WorldAdb())
+
+    profile = drv._capture_current()
+
+    assert profile is not None and profile.items == ()
+    assert "no policy-approved selectable item" in profile.items_unavailable
+    assert drv._current_item_payload is None
+
+
+# =====================================================================================
+# The re-attach probe: the residual a single centred dwell cannot see
+# =====================================================================================
+
+# Scroll positions whose LAST frame puts one card dead-centre in the content band, which is the
+# only situation the probe is ever spent on. Card 3 lands on page rows 2434..3434, so at 1734 it
+# occupies frame rows 700..1700 -- centre 1200, exactly the band's own centre.
+_CENTRED_SCROLLS = (0, 260, 520, 780, 1040, 1300, 1560, 1734)
+_CENTRED_ORDINAL = 3
+
+
+class ProbeWorldAdb(WorldAdb):
+    """WorldAdb that also honours the REVERSE read-scroll, which the probe's exit leg is.
+
+    The base fake only models `scroll_up` (the forward stroke); a reverse stroke arrives as a
+    plain downward `swipe`, exactly as `_scroll(..., reverse=True)` delivers it. Mirroring the
+    same transport model in both directions is what lets the round trip be measured rather than
+    assumed -- and lets this file assert that it really nets to zero.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.reverse_swipes = 0
+
+    def swipe(self, _x1, y1, _x2, y2, **_kwargs):
+        if y2 <= y1:
+            return
+        self.reverse_swipes += 1
+        self.scroll = max(0, self.scroll - scroll_step.step_px_for_frac((y2 - y1) / _H, _H))
+
+
+class RestartingVideoWorldAdb(ProbeWorldAdb):
+    """A card that holds byte-exact until Hinge re-attaches it, then starts playing.
+
+    This is the whole residual: stalled, buffering, unloaded and ended-non-looping video all emit
+    nothing while the first burst watches. The repainted pixel sits inside the centred card's
+    rect and changes on every read once the card has left the autoplay band and come back.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._plays = 0
+
+    def screencap(self):
+        frame = super().screencap()
+        if not (self.reverse_swipes and self.scrolls):
+            return frame
+        self._plays += 1
+        image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_GRAYSCALE).copy()
+        image[1200, 500] = (self._plays * 29) % 255
+        ok, buf = cv2.imencode(".png", image)
+        assert ok
+        return buf.tobytes()
+
+
+def _centred_capture():
+    """The index and frames whose anchor holds one card inside the autoplay trigger zone."""
+    frames = [_frame(s) for s in _CENTRED_SCROLLS]
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True,
+        identity_band=_IDENTITY_BAND)
+    assert index.usable, index.failures
+    return index, frames
+
+
+def test_the_centred_fixture_really_centres_a_card():
+    """A guard on the fixture, not the driver: every probe assertion below is meaningless if the
+    anchor frame does not actually hold a card in Hinge's autoplay trigger zone."""
+    index, frames = _centred_capture()
+    rects = item_crops.dwell_card_rects(index, len(frames) - 1)
+
+    assert set(rects) == {_CENTRED_ORDINAL}
+    assert item_crops.card_center_offset_frac(
+        rects[_CENTRED_ORDINAL], frame_height=_H, content_band=_CONTENT_BAND) == 0.0
+
+
+def test_a_centred_byte_exact_card_is_probed_and_the_page_is_left_where_it_was(
+        installed_still_photo_bound):
+    """The headline. A first burst that comes back byte-exact does NOT buy an acceptance: the
+    card is taken out of the autoplay band and brought back, and only a second byte-exact,
+    screened, centred burst after that re-entry can be numbered."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb)
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    entry = evidence[_CENTRED_ORDINAL]
+    assert (entry.dwell_exact, entry.centered) == (True, True)
+    assert entry.reattach_probe_ran is True
+    assert entry.reattach_dwell_exact is True
+    assert entry.reattach_mute_screens_complete is True
+    assert entry.reattach_centered is True
+    assert entry.reattach_dwell_span_s > 0
+    assert len(entry.reattach_dwell_frame_sha256s) >= 2
+    # Out once, back once, and the page ends exactly where the read left it -- which is what
+    # keeps `_index_captured_items`'s entry anchor, and bottom-up navigation, unaffected.
+    assert adb.reverse_swipes == 1 and adb.scrolls == 1
+    assert adb.scroll == _CENTRED_SCROLLS[-1]
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_the_probe_uses_only_the_drivers_guarded_humanized_read_scrolls(
+        tmp_path, installed_still_photo_bound):
+    """Owner rule: best humanized interaction or fail loudly. Every gesture the probe issues has
+    to arrive through the ledger-keeping, forbidden-zone-guarded read-scroll primitives, never a
+    raw coordinate and never the transport directly."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="reattach-probe")
+
+    drv._still_photo_dwell(frames, index)
+
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    inputs = [r for r in records if r["action"] == "device_input"]
+    assert [(r["kind"], r["source"]) for r in inputs] == [
+        ("swipe", "_scroll"),              # the reverse exit, through _scroll's guarded stroke
+        ("scroll", "_scroll_down_one"),    # the forward return, through the read-scroll ledger
+    ]
+    for record in inputs:
+        assert record["transport"] == type(drv.touch).__name__
+    # Both distances live inside the read-scroll envelope every other gesture here lives in.
+    forward = next(r for r in inputs if r["kind"] == "scroll")
+    assert hinge._READ_SCROLL_FRAC_MIN <= forward["distance_frac"] <= hinge._READ_SCROLL_FRAC_MAX
+    # And the probe's frames are kept, under their own labels, beside the first burst's.
+    probe_frames = [r for r in records if r["action"].startswith("still_photo_reattach_")]
+    assert len(probe_frames) >= 3
+    for position, record in enumerate(probe_frames):
+        assert record["reattach_frame_index"] == position
+        assert record["sha256"] == hashlib.sha256(
+            (drv._dbg.dir / record["before"]).read_bytes()).hexdigest()
+    summary = next(r for r in records if r["action"] == "still_photo_dwell")
+    assert summary["reattach_probe_ran"] is True
+    assert summary["reattach_page_shift_px"] == 0
+    assert summary["reattach_span_s"] > 0
+
+
+def test_media_that_only_starts_on_re_attach_is_caught_by_the_second_burst(
+        installed_still_photo_bound):
+    """The defect the probe exists for, end to end: a card that was NOT PLAYING while the first
+    burst watched it holds byte-exact and looks exactly like a photograph."""
+    index, frames = _centred_capture()
+    adb = RestartingVideoWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb)
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    entry = evidence[_CENTRED_ORDINAL]
+    assert entry.dwell_exact is True, "the first burst saw a perfectly still card"
+    assert entry.reattach_probe_ran is True
+    assert entry.reattach_dwell_exact is False
+    assert item_crops.unnumber_without_still_photo_evidence(
+        item_crops.still_photo_evidence_from_drift(0.0, (1, 2), entry)) is not None
+
+
+def test_an_off_centre_capture_is_never_charged_a_probe(installed_still_photo_bound):
+    """No card could reach the probe rung, so no gesture is spent proving it. The cards demote at
+    the centring rung above, exactly as they did before the probe existed."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb)
+    # The same capture, with the one centred card demoted to off-centre before the probe is
+    # considered: the driver must then spend nothing at all.
+    real = hinge.still_photo_dwell_evidence
+
+    def off_centre(*args, **kwargs):
+        return {ordinal: dataclasses.replace(entry, centered=False, center_offset_frac=0.42)
+                for ordinal, entry in real(*args, **kwargs).items()}
+
+    original, hinge.still_photo_dwell_evidence = hinge.still_photo_dwell_evidence, off_centre
+    try:
+        evidence = drv._still_photo_dwell(frames, index)
+    finally:
+        hinge.still_photo_dwell_evidence = original
+
+    assert evidence[_CENTRED_ORDINAL].reattach_probe_ran is None
+    assert (adb.reverse_swipes, adb.scrolls) == (0, 0)
+    reason = item_crops.unnumber_without_still_photo_evidence(
+        item_crops.still_photo_evidence_from_drift(0.0, (1, 2), evidence[_CENTRED_ORDINAL]))
+    assert reason is not None and "autoplay trigger zone" in reason
+
+
+def test_an_unlicensed_build_never_moves_the_screen_for_a_probe():
+    """The probe is the only still-photo path that spends real gestures, so it re-asserts the
+    licence itself rather than trusting the caller."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb)
+
+    assert drv._still_photo_reattach_probe(frames[-1], (53, 700, 1027, 1700)) is None
+    assert (adb.reverse_swipes, adb.scrolls, adb.taps) == (0, 0, [])
+
+
+def test_a_probe_whose_page_will_not_move_refuses_rather_than_claiming_a_re_attach(
+        monkeypatch, installed_still_photo_bound):
+    """Fail closed: a page that did not move detached nothing, so nothing can re-attach, and
+    calling the re-entry a re-attach anyway would manufacture the observation the rung exists to
+    earn."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1], frozen=True)
+    drv = _drv(adb)
+    monkeypatch.setattr(HingeDriver, "_measured_page_shift",
+                        lambda self, _before, _after: 0)
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    assert evidence[_CENTRED_ORDINAL].reattach_probe_ran is None
+
+
+def test_a_probe_that_cannot_measure_where_the_page_went_refuses(
+        monkeypatch, installed_still_photo_bound):
+    """`estimate_shift` is the one comparator here that says "I cannot tell"; the probe never
+    falls back to the distance it asked for, because the rect has to follow the page."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb)
+    monkeypatch.setattr(HingeDriver, "_measured_page_shift",
+                        lambda self, _before, _after: None)
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    assert evidence[_CENTRED_ORDINAL].reattach_probe_ran is None
 
 
 def test_video_screen_reads_only_card_local_upper_left_sightings(monkeypatch):
@@ -966,6 +1397,37 @@ def test_missing_targeting_calibration_skips_unusable_enumeration_in_every_mode(
     assert "targeting_calibration" in profile.items_unavailable
     assert drv._profile_capture_limit == drv.scroll_captures
     assert {frac for frac, _lane in adb.gestures} == {drv.read_scroll_frac}
+
+
+def test_a_superseded_v1_selection_policy_gets_its_own_parse_refusal():
+    """The driver repeats config's policy pin at the gesture boundary, and names the fix.
+
+    v1 was measured against a selection contract that no longer exists (C1-C4 replaced it, see
+    ops/STILL-PHOTO-DISCRIMINATOR.md section 3), so retyping the id over an old mapping would be
+    exactly the wrong repair. An UNKNOWN id keeps the generic "unsupported" wording.
+    """
+    superseded, reason = hinge._parse_targeting_calibration(
+        {**_TARGETING_CALIBRATION, "item_selection_policy_id": "hinge_photos_only_v1"},
+        "pixel", identity_band=hinge.HINGE_SPEC.identity_band,
+        content_band=hinge.HINGE_SPEC.content_band)
+
+    assert superseded is None
+    assert "hinge_photos_only_v1 is superseded by hinge_photos_only_v2" in reason
+    assert "recalibrate under the current policy" in reason
+
+    unknown, unknown_reason = hinge._parse_targeting_calibration(
+        {**_TARGETING_CALIBRATION, "item_selection_policy_id": "hinge_written_only_v9"},
+        "pixel", identity_band=hinge.HINGE_SPEC.identity_band,
+        content_band=hinge.HINGE_SPEC.content_band)
+
+    assert unknown is None
+    assert "must be the supported 'hinge_photos_only_v2' policy" in unknown_reason
+
+    parsed, no_reason = hinge._parse_targeting_calibration(
+        _TARGETING_CALIBRATION, "pixel", identity_band=hinge.HINGE_SPEC.identity_band,
+        content_band=hinge.HINGE_SPEC.content_band)
+
+    assert no_reason is None and parsed is not None
 
 
 def test_openers_enabled_by_default_preserves_every_other_enumeration_test():

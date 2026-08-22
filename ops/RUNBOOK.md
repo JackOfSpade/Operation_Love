@@ -187,7 +187,7 @@ apps:
       hinge_version_name: <exact versionName>
       frame_size_px: [<width>, <height>]
       composer_layout_id: hinge_inline_v1
-      item_selection_policy_id: hinge_photos_only_v1
+      item_selection_policy_id: hinge_photos_only_v2
       identity_match_max_dist: <measured identity bound>
       inline_item_max_dist: <measured inline-item bound>
       calibrated_at: <date/time and measurement-run reference>
@@ -198,16 +198,36 @@ apps:
 Those are the **exact** `apps.<app>.targeting_calibration` keys: no missing or additional keys.
 `schema_version` must be the integer `3`; legacy sheet calibrations are rejected.
 `hinge_version_name`, `frame_size_px`, `composer_layout_id`, and `item_selection_policy_id` bind the evidence to the exact
-live app/layout/display and selection contract. `hinge_photos_only_v1` is currently **disabled
-fail-closed for numbered targeting**: the crop classifier recognises photographic pixels, not
-still media; a paused video can have zero drift; and Hinge's mute control auto-hides. The measured
-`0.24` static-photo drift ceiling and mute matcher are valid rejection signals, but neither proves
-the complement, and the corpus has no held-out video false-accept bound. Consequently every
-photographic-looking crop remains readable unnumbered context and no targeted suggestion is
-offered. Observe can continue reading profiles; AUTO and calibration targeting remain blocked
-until a positive still-photo discriminator is implemented and measured. Confirmed videos remain
-fully excluded, while WRITTEN and UNKNOWN crops remain readable unnumbered context
-because neither aspect ratio nor a presumed item count is item-type evidence. Both distance fields must be finite positive numbers. `device` must exactly equal the nonempty
+live app/layout/display and selection contract. `hinge_photos_only_v1` is **superseded** and
+config validation rejects it by name; the current contract is `hinge_photos_only_v2`
+(see [ops/STILL-PHOTO-DISCRIMINATOR.md](STILL-PHOTO-DISCRIMINATOR.md)). The v2 discriminator
+(un-interacted dwell byte-exactness plus complete-ROI mute screening on every dwell frame, on
+top of the unchanged rejection signals: the `0.24` static-photo drift ceiling, the crop
+classifier, and the mute matcher) is implemented fail-closed. It licenses numbering ONLY while
+config validation has installed a still-photo readiness licence, and readiness cannot be enabled
+by editing code. There are exactly three licence channels and they are not interchangeable:
+a verified `apps.hinge.still_photo_bound_evidence` mapping from the owner-labeled video
+false-accept bound campaign above; the same key carrying the explicitly accepted circular
+AI-labeled channel; or `apps.hinge.still_photo_assumption_acceptance`, the owner's accepted but
+UNMEASURED centered-autoplay assumption (decision 2026-08-21, ops/STILL-PHOTO-DISCRIMINATOR.md
+section 5b). The bound key and the assumption key are mutually exclusive by design.
+
+**The shipped config today carries the assumption acceptance**, so numbering readiness IS
+installed and no still-photo work blocks a calibration campaign. Confirm rather than assume,
+because this sentence is the kind that goes stale:
+
+```bash
+python -c "from operation_love import config, targeting_policy as tp; \
+c = config.load('config.yaml'); config.validate(c); \
+print('numbering readiness installed:', tp.hinge_targeting_unavailable_reason() is None)"
+```
+
+While NO licence is installed, every photographic-looking crop remains readable unnumbered
+context and no targeted suggestion is offered. Observe can continue reading profiles; AUTO
+remains separately blocked behind production-OBSERVE release evidence under every licence
+channel, and an assumption can never license it.
+Confirmed videos remain fully excluded, while WRITTEN and UNKNOWN crops remain readable
+unnumbered context because neither aspect ratio nor a presumed item count is item-type evidence. Both distance fields must be finite positive numbers. `device` must exactly equal the nonempty
 `apps.hinge.serial` ADB serial; it is a machine-checked binding, not free-form device evidence.
 `calibrated_at` must be nonempty evidence text, not a placeholder. `identity_match_max_dist` must be strictly less than
 the known 2.565 different-profile distance; this is a hard upper limit, not a recommended
@@ -227,7 +247,99 @@ The two values serve different tests and must be measured separately:
   its relevant display/app-build evidence with the private measurement ledger; `calibrated_at`
   identifies when and which measurement run produced that evidence.
 
+#### Still-photo video false-accept bound campaign (do this before either protocol below)
+
+Design of record: `ops/STILL-PHOTO-DISCRIMINATOR.md`. Section 4 is this procedure and section 5
+is the readiness plumbing. Neither protocol below can complete until this campaign has produced
+a verified `bound.json`, because capture cannot number an item without one.
+
+`python -m tools.hinge_video_bound` never touches the screen. It runs read-only
+`adb exec-out screencap` and asks questions on stdin; you do every scroll and every card tap by
+hand. That is the point, not a convenience: the label channel has to be something the mute
+matcher cannot produce, or the bound is circular (section 2, objection 1). The matcher still
+runs and its per-frame scores are persisted beside each card, explicitly marked observational.
+They are never a label.
+
+1. **Run the falsifier first.** Park one KNOWN video fully in view, hands off the phone:
+
+```bash
+python -m tools.hinge_video_bound hold-test --config config.yaml \
+  --out ops/calibration/videobound_hold_<UTC> --seconds 60 --interval 0.5
+```
+
+Read the verdict line, the changed-row-block table, and the never-changed row count. If any two
+consecutive frames come back byte-exact over the content band, the dwell window has to grow past
+that run with margin, or the dwell design is abandoned honestly. Do not patch around that result.
+
+2. **Capture the corpus.** You scroll. For each card the harness waits for the screen to settle,
+records a hazard-randomized dwell burst, and only then prints the label prompt, so your
+tap-to-play can never land inside a dwell frame. Tap the card, watch whether it plays, then
+answer `video`, `photo`, `unsure`, `skip`, or `done` to end the session.
+
+```bash
+python -m tools.hinge_video_bound capture --config config.yaml \
+  --out ops/calibration/videobound_<UTC> --profiles 140
+```
+
+Section 4 requires at least 60 owner-labeled video cards and at least 60 owner-labeled still
+photos. `unsure` and `skip` cards stay on disk and are excluded from both denominators, so
+answer `unsure` freely rather than guessing. Never label from a thumbnail; tap it.
+
+3. **Measure offline.** No device, no ADB, no screencap. It re-verifies every frame digest and
+reports per CARD, never per frame pair.
+
+```bash
+python -m tools.hinge_video_bound measure ops/calibration/videobound_<UTC> --config config.yaml
+```
+
+It refuses, nonzero and without writing anything, on too few cards of either label, any
+owner-labeled video that would have been accepted at the candidate dwell window, more than 5%
+false refusals across the owner-labeled still photos, a window longer than the campaign actually
+watched every card for, a frame whose sha256 does not match the manifest, or a label typed
+before its burst closed. A refusal is a stop and a recapture. It is never a threshold to widen.
+
+4. **Freeze the artifact and paste the block.**
+
+```bash
+python -m tools.hinge_video_bound emit ops/calibration/videobound_<UTC> --config config.yaml
+```
+
+This writes `bound.json` (per-card verdicts, every frame sha256, device serial, Hinge build,
+frame geometry, config sha256, and its own `evidence_sha256`) and prints the exact
+`apps.hinge.still_photo_bound_evidence` mapping. Paste it into `config.yaml` by hand; this tool
+never edits config, so binding a bound to a running config stays a deliberate act.
+
+5. **Re-run config validation**, which is the only thing that can install readiness:
+
+```bash
+python -c "from operation_love import config, targeting_policy as tp; \
+c = config.load('config.yaml'); config.validate(c); \
+print('numbering readiness installed:', tp.hinge_targeting_unavailable_reason() is None)"
+```
+
+`validate()` re-reads the artifact off disk, checks its sha256 against the pasted
+`artifact_sha256`, requires `human_ground_truth: true` and the `owner_tap_to_play_v1` ground
+truth channel, and re-checks the section 4 thresholds before installing anything. A mapping
+whose numbers disagree with the artifact is fatal, never a warning.
+
+**These numbers install NUMBERING readiness only.** They unblock numbered suggestions in OBSERVE
+and in calibration capture, and nothing else. AUTO stays separately blocked behind its own
+production OBSERVE release chain (`observe_release_evidence` or the AI-reviewed equivalent), so
+a weak or fraudulent bound artifact can never enable AUTO by itself. The calibration and
+held-out splits still have to be recaptured afterwards; a bound artifact is a prerequisite for
+those protocols, not a substitute for them.
+
 #### Held-out real-device measurement protocol
+
+> **Runnable once a still-photo licence is installed — verify with the one-liner above.** This
+> protocol was blocked for as long as nothing licensed numbering, because capture could not
+> number any item and neither split could complete. The owner's accepted centered-autoplay
+> assumption (2026-08-21) lifted that block; the shipped config carries it.
+>
+> A capture is still never free. It attaches to the phone and can spend up to twelve real Passes
+> through bounded pre-action skips before the session aborts, on real profiles in the owner's
+> real deck. Decide the advance action per run — it is an owner decision every time, never a
+> standing default — and do not start a campaign you cannot sit through.
 
 Use the fail-closed harness for the capture and measurement phases. It writes private frames
 only below gitignored `ops/calibration/`, never taps a heart/types/sends, and refuses to print a
@@ -274,13 +386,15 @@ point and is recorded as `not_cleared`. This is escape handling, never a retry o
 bad heart valid. Modify code/config if needed and launch a fresh split directory from a confirmed
 top; never substitute blind coordinates.
 
-**Current blocking state:** with the fail-closed policy above, capture cannot produce an
-`automated_photo_heart` checkpoint; a reviewer cannot override the missing positive proof. The
-commands below are retained as the procedure to use only after that proof is implemented,
-measured on held-out videos, and the selection policy/calibration is renewed. At that point, the
-checkpoint action plan must record `positive_still_photo_evidence_verified` and
-`target_frame_mute_control_screened_absent`; the former hardcoded `photo_only_item_verified`
-intent label is gone. The tool already takes another screenshot immediately before an approved
+**Licence state, checked not assumed:** capture can only produce an `automated_photo_heart`
+checkpoint while a still-photo licence is installed, and a reviewer can never override a missing
+one — `APPROVE` is a safety layer on top of the policy, never a way around it. Run the readiness
+one-liner above before a campaign; with the shipped assumption acceptance in place it prints
+`True` and the commands below are the live procedure rather than a retained one. Every checkpoint
+action plan must record `positive_still_photo_evidence_verified` and
+`target_frame_mute_control_screened_absent`, both derived from the C1–C3 verdict on the
+digest-bound action frames; the former hardcoded `photo_only_item_verified` intent label is gone,
+and emitting an unearned predicate is structurally impossible rather than merely untested. The tool already takes another screenshot immediately before an approved
 tap, requires byte equality with the approved frame, and repeats the card/heart, identity, and
 mute-control checks at the identical point. The reviewer remains an independent safety layer:
 if the frame visibly shows a mute/speaker-with-x control, or you cannot establish that it is a
@@ -566,7 +680,9 @@ Worker/hub/store or make a real profile request. After installing the measured c
   authorizing a gesture. This is offline evidence only; it does not prove a live gesture was
   transported.
 - **Item 1 inline composer identity:** heart item 1 without an intervening scroll. Hinge's
-  inline composer (introduced in 9.134 and retained by the current 10.0.1 calibration)
+  inline composer (introduced in 9.134 and still present in the live 10.0.1 build; no targeting
+  calibration is installed in config.yaml, deliberately, and config validation would reject one
+  while the still-photo policy blocker stands)
   auto-focuses immediately, so collect an initial and a settled auto-focused
   reading rather than inventing an unfocused-to-focused transition. Confirm the selected card
   through the full calibration capture's item proof; the small operational recorder can prove

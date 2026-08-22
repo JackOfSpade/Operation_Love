@@ -1,9 +1,11 @@
 """Platform registry safety and selection behaviour."""
+import importlib
 import threading
 
 import pytest
 
 from operation_love import platforms
+from operation_love import targeting_policy as tp
 
 
 @pytest.fixture(autouse=True)
@@ -18,6 +20,35 @@ def _restore_registry():
     platforms._AVAILABLE_MODES = saved_modes
     platforms._calibration_loaded = saved_loaded
     platforms._calibration_loading_thread = saved_loading_thread
+
+
+@pytest.fixture(autouse=True)
+def _still_photo_readiness_is_never_inherited():
+    """Numbering readiness is process-global: never let one test license the next one."""
+    tp._reset_installed_still_photo_bound_for_tests()
+    yield
+    tp._reset_installed_still_photo_bound_for_tests()
+
+
+@pytest.fixture
+def installed_bound():
+    """A verified still-photo bound, installed exactly as config.validate() would install it."""
+    tp.install_verified_still_photo_bound(tp.StillPhotoBoundSummary(
+        ground_truth_channel=tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
+        human_ground_truth=True, video_cards=60, video_accepts=0, photo_cards=60,
+        photo_false_refusals=3, max_video_exact_run_s=1.5, artifact_sha256="a" * 64,
+        device="synthetic-pixel", hinge_version_name="10.0.1"))
+
+
+@pytest.fixture
+def installed_circular_bound():
+    """The same, on the opted-in circular AI-labelled channel (owner decision 2026-08-21)."""
+    tp.install_verified_still_photo_bound(tp.StillPhotoBoundSummary(
+        ground_truth_channel=tp.STILL_PHOTO_BOUND_CIRCULAR_CHANNEL,
+        human_ground_truth=False, video_cards=60, video_accepts=0, photo_cards=60,
+        photo_false_refusals=3, max_video_exact_run_s=1.5, artifact_sha256="a" * 64,
+        device="synthetic-pixel", hinge_version_name="10.0.1",
+        accepted_circular_risk=tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE))
 
 
 def test_only_android_targets_are_registered():
@@ -51,6 +82,44 @@ def test_hinge_observe_stays_available_while_auto_targeting_policy_fails_closed(
     reason = platforms.unavailable_reason("hinge", "auto")
     assert reason and "Hinge Auto is blocked" in reason
     assert "positive still-photo discriminator unavailable" in reason
+
+
+def test_a_verified_still_photo_bound_licenses_numbering_but_never_auto(installed_bound):
+    """The gate split (ops/STILL-PHOTO-DISCRIMINATOR.md section 3): a bound is a perception
+    licence for Observe suggestions, and can never make Auto read as available on its own."""
+    assert tp.hinge_targeting_unavailable_reason() is None
+    assert platforms.mode_available("hinge", "observe") is True
+
+    reason = platforms.unavailable_reason("hinge", "auto")
+
+    assert reason and reason.startswith("Hinge Auto is blocked")
+    assert "production-OBSERVE release chain" in reason
+    assert "positive still-photo discriminator unavailable" not in reason
+    assert platforms.mode_available("hinge", "auto") is False
+
+
+def test_an_accepted_circular_bound_reaches_the_same_gate_split(installed_circular_bound):
+    """The second channel changes what the licence is worth, never which gates it opens."""
+    assert tp.hinge_targeting_unavailable_reason() is None
+    assert platforms.mode_available("hinge", "observe") is True
+
+    reason = platforms.unavailable_reason("hinge", "auto")
+
+    assert reason and "production-OBSERVE release chain" in reason
+    assert platforms.mode_available("hinge", "auto") is False
+
+
+def test_the_android_registry_registers_hinge_auto_as_statically_false(installed_bound):
+    """The driver package's own entry, not just the refusal layer above it.
+
+    Re-executing the package body is the only way to observe what it registers: the module is
+    already imported by the time any test runs, so a lazy _ensure_calibration() would find it
+    in sys.modules and never re-apply. The registry fixture restores the tables afterwards.
+    """
+    importlib.reload(importlib.import_module("operation_love.drivers.android"))
+
+    assert platforms._AVAILABLE_MODES["hinge"] == frozenset({"observe"})
+    assert platforms.unavailable_reason("hinge", "auto") is not None
 
 
 def test_mode_unavailable_reason_is_directional_for_observe_only_platform():

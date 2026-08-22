@@ -156,6 +156,9 @@ def _paste_block(driver: HingeDriver) -> None:
         print(f"      {name}: [{frac[0]}, {frac[1]}]")
 
 
+from tools._devicelock import run_holding_the_device
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="Confirm Hinge's vision-located buttons + observe detection.")
@@ -165,7 +168,13 @@ def main() -> None:
     ap.add_argument("--out-dir", default="./data/hinge_inspect",
                     help="where to save annotated screenshots")
     args = ap.parse_args()
+    # Device lock (tools/_devicelock.py): this probe taps and scrolls the real deck, so it must
+    # never run beside a hub run on the same phone. Held for the whole probe, which waits on
+    # human ENTER presses -- exactly the long idle window an honour system loses.
+    run_holding_the_device(args.config, _inspect, args)
 
+
+def _inspect(args) -> None:
     cfg = cfg_mod.load(args.config)
     driver = HingeDriver(cfg)
     out_dir = Path(args.out_dir)

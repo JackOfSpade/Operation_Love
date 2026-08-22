@@ -866,6 +866,9 @@ def print_report(report: AnalysisReport, *,
 # main
 # =====================================================================================
 
+from tools._devicelock import holding_the_device
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         description="Bot-driven Hinge scroll probe: one real HingeDriver.current_profile() "
@@ -940,6 +943,13 @@ def main(argv: list[str] | None = None) -> None:
               "pip install -e '.[hinge]'", file=sys.stderr)
         sys.exit(1)
 
+    # Device lock (tools/_devicelock.py): the probe opens a real session and drives
+    # production's own read-scroll, so it must never share the phone with a hub run.
+    with holding_the_device(args.config):
+        _probe(args)
+
+
+def _probe(args: argparse.Namespace) -> None:
     cfg = cfg_mod.load(args.config)
     driver = HingeDriver(cfg)
     out_dir = Path(args.out) if args.out else _default_out_dir()

@@ -1,12 +1,16 @@
 """config.validate() — fail-fast checks (offline)."""
 import copy
+import hashlib
+import json
 import math
+import re
 import tempfile
 
 import pytest
 import yaml
 
 from operation_love import config as c
+from operation_love import targeting_policy as tp
 
 BASE = {
     # hinge: the one platform the registry ships available/calibrated by default. "bumble"
@@ -36,7 +40,7 @@ _TARGETING_SCHEMA_V2 = {
     "hinge_version_name": "9.134.0",
     "frame_size_px": [1080, 2400],
     "composer_layout_id": "hinge_inline_v1",
-    "item_selection_policy_id": "hinge_photos_only_v1",
+    "item_selection_policy_id": "hinge_photos_only_v2",
 }
 
 
@@ -1248,3 +1252,873 @@ def test_targeting_calibration_must_bind_the_effective_identity_and_content_band
         },
     }}}
     _expect_error(matching, "positive still-photo discriminator unavailable")
+
+
+# --- Artifact-derived still-photo numbering readiness ---------------------------------
+# ops/STILL-PHOTO-DISCRIMINATOR.md section 5. There is no hand-editable ready boolean any
+# more: apps.hinge.still_photo_bound_evidence is the ONLY thing that can turn numbering on,
+# and it has to survive a sha256-bound on-disk artifact check first.
+
+_BOUND_ARTIFACT = {
+    "ground_truth_channel": "owner_tap_to_play_v1",
+    "human_ground_truth": True,
+    "video_cards": 60,
+    "video_accepts": 0,
+    "photo_cards": 60,
+    "photo_false_refusals": 3,
+    "max_video_exact_run_s": 1.5,
+    "captured_at": "2026-08-21T00:00:00Z",
+    "device": "synthetic-pixel",
+    "hinge_version_name": "10.0.1",
+}
+_BOUND_MIRRORED_KEYS = ("ground_truth_channel", "video_cards", "video_accepts", "photo_cards",
+                        "photo_false_refusals", "max_video_exact_run_s", "captured_at",
+                        "device", "hinge_version_name")
+_BOUND_REL_PATH = "ops/calibration/still_photo_bound.json"
+
+
+@pytest.fixture(autouse=True)
+def _still_photo_readiness_is_never_inherited():
+    """Numbering readiness is process-global: never let one test license the next one."""
+    tp._reset_installed_still_photo_bound_for_tests()
+    yield
+    tp._reset_installed_still_photo_bound_for_tests()
+
+
+def _write_bound_artifact(root, **overrides):
+    """Write a bound artifact under `root` and return its (repo-relative path, sha256, body)."""
+    artifact = {**_BOUND_ARTIFACT, **overrides}
+    out = root / _BOUND_REL_PATH
+    out.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps(artifact, sort_keys=True).encode("utf-8")
+    out.write_bytes(raw)
+    return _BOUND_REL_PATH, hashlib.sha256(raw).hexdigest(), artifact
+
+
+def _bound_evidence(path, digest, artifact, **overrides):
+    """The config mapping that binds that artifact, before any deliberate corruption."""
+    mapping = {"artifact_path": path, "artifact_sha256": digest}
+    mapping.update({key: artifact[key] for key in _BOUND_MIRRORED_KEYS})
+    mapping.update(overrides)
+    return mapping
+
+
+def _calibration(**overrides):
+    """A complete, valid v2 targeting calibration for the synthetic pixel."""
+    return {
+        "identity_match_max_dist": 2.0, "inline_item_max_dist": 4.0,
+        "device": "synthetic-pixel", "calibrated_at": "2026-08-12",
+        **_TARGETING_SCHEMA_V2, **_TARGETING_GEOMETRY, **overrides,
+    }
+
+
+def _bound_config(tmp_path, monkeypatch, *, evidence=None, artifact_overrides=None, **app):
+    """A hinge config whose still-photo evidence points at a freshly written artifact."""
+    monkeypatch.chdir(tmp_path)
+    path, digest, artifact = _write_bound_artifact(tmp_path, **(artifact_overrides or {}))
+    mapping = _bound_evidence(path, digest, artifact) if evidence is None else evidence(
+        path, digest, artifact)
+    return {**BASE, "apps": {"hinge": {
+        "serial": "synthetic-pixel", "still_photo_bound_evidence": mapping, **app,
+    }}}
+
+
+def test_no_bound_evidence_key_leaves_numbering_disabled_exactly_as_before():
+    c.validate(_load(BASE))
+
+    assert tp.installed_still_photo_bound() is None
+    assert tp.hinge_targeting_unavailable_reason() == tp.HINGE_TARGETING_UNAVAILABLE_REASON
+
+
+def test_verified_bound_evidence_installs_readiness_and_licenses_the_calibration(
+        tmp_path, monkeypatch):
+    d = _bound_config(tmp_path, monkeypatch, targeting_calibration=_calibration())
+
+    c.validate(_load(d))   # no raise: the policy blocker is what used to reject this mapping
+
+    summary = tp.installed_still_photo_bound()
+    assert summary == tp.StillPhotoBoundSummary(
+        ground_truth_channel="owner_tap_to_play_v1", human_ground_truth=True,
+        video_cards=60, video_accepts=0, photo_cards=60, photo_false_refusals=3,
+        max_video_exact_run_s=1.5, artifact_sha256=summary.artifact_sha256,
+        device="synthetic-pixel", hinge_version_name="10.0.1")
+    assert tp.hinge_targeting_unavailable_reason() is None
+
+
+def test_a_later_validate_without_the_key_turns_readiness_back_off(tmp_path, monkeypatch):
+    """Process-global readiness must never outlive the config that presented the evidence."""
+    c.validate(_load(_bound_config(tmp_path, monkeypatch)))
+    assert tp.installed_still_photo_bound() is not None
+
+    c.validate(_load(BASE))
+
+    assert tp.installed_still_photo_bound() is None
+    assert tp.hinge_targeting_unavailable_reason() is not None
+
+
+def test_a_failing_later_validate_also_turns_readiness_back_off(tmp_path, monkeypatch):
+    c.validate(_load(_bound_config(tmp_path, monkeypatch)))
+
+    _expect_error({**BASE, "enabled_apps": ["tinder"]}, "unknown app")
+
+    assert tp.installed_still_photo_bound() is None
+
+
+def test_bound_evidence_must_carry_its_exact_key_set(tmp_path, monkeypatch):
+    incomplete = _bound_config(
+        tmp_path, monkeypatch,
+        evidence=lambda path, digest, artifact: {
+            k: v for k, v in _bound_evidence(path, digest, artifact).items()
+            if k != "photo_cards"})
+    _expect_error(incomplete, "missing ['photo_cards']")
+    unknown = _bound_config(
+        tmp_path, monkeypatch,
+        evidence=lambda path, digest, artifact: _bound_evidence(
+            path, digest, artifact, note="looks fine to me"))
+    _expect_error(unknown, "unknown ['note']")
+
+
+def test_bound_evidence_requires_the_artifact_to_exist_on_disk(tmp_path, monkeypatch):
+    d = _bound_config(tmp_path, monkeypatch)
+    (tmp_path / _BOUND_REL_PATH).unlink()
+
+    _expect_error(d, "artifact is unreadable")
+
+
+def test_bound_evidence_refuses_an_absolute_or_escaping_artifact_path(tmp_path, monkeypatch):
+    absolute = _bound_config(
+        tmp_path, monkeypatch,
+        evidence=lambda path, digest, artifact: _bound_evidence(
+            path, digest, artifact, artifact_path=str(tmp_path / path)))
+    _expect_error(absolute, "must be a repo-relative local path")
+    escaping = _bound_config(
+        tmp_path, monkeypatch,
+        evidence=lambda path, digest, artifact: _bound_evidence(
+            path, digest, artifact, artifact_path="../" + path))
+    _expect_error(escaping, "escapes the repository")
+
+
+def test_bound_evidence_digest_must_match_the_artifact_bytes(tmp_path, monkeypatch):
+    d = _bound_config(tmp_path, monkeypatch)
+    (tmp_path / _BOUND_REL_PATH).write_text("{}")
+
+    _expect_error(d, "artifact_sha256 does not match its artifact")
+
+
+def test_bound_evidence_cannot_claim_numbers_the_artifact_does_not_carry(tmp_path, monkeypatch):
+    """A pasted mapping is a claim; the digest-bound artifact is the evidence."""
+    inflated = _bound_config(
+        tmp_path, monkeypatch,
+        evidence=lambda path, digest, artifact: _bound_evidence(
+            path, digest, artifact, video_cards=600))
+    _expect_error(inflated, "artifact disagrees on video_cards")
+    retimed = _bound_config(
+        tmp_path, monkeypatch,
+        evidence=lambda path, digest, artifact: _bound_evidence(
+            path, digest, artifact, max_video_exact_run_s=0.25))
+    _expect_error(retimed, "artifact disagrees on max_video_exact_run_s")
+    relabelled = _bound_config(
+        tmp_path, monkeypatch,
+        evidence=lambda path, digest, artifact: _bound_evidence(
+            path, digest, artifact, hinge_version_name="9.134.0"))
+    _expect_error(relabelled, "artifact disagrees on hinge_version_name")
+
+
+@pytest.mark.parametrize("overrides", [
+    {"human_ground_truth": False},
+    {"human_ground_truth": "yes"},
+])
+def test_bound_evidence_requires_the_artifacts_own_human_ground_truth(
+        tmp_path, monkeypatch, overrides):
+    """The one claim nothing downstream can re-derive is not a config key at all."""
+    d = _bound_config(tmp_path, monkeypatch, artifact_overrides=overrides)
+
+    _expect_error(d, "must declare human_ground_truth=true")
+
+
+def test_bound_evidence_requires_the_owner_tap_to_play_label_channel(tmp_path, monkeypatch):
+    d = _bound_config(
+        tmp_path, monkeypatch,
+        artifact_overrides={"ground_truth_channel": "mute_matcher_v1"},
+        evidence=lambda path, digest, artifact: _bound_evidence(path, digest, artifact))
+
+    _expect_error(d, "owner_tap_to_play_v1")
+
+
+def test_bound_evidence_device_must_equal_the_exact_adb_serial(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path, digest, artifact = _write_bound_artifact(tmp_path, device="other-pixel")
+    mismatched = {**BASE, "apps": {"hinge": {
+        "serial": "synthetic-pixel",
+        "still_photo_bound_evidence": _bound_evidence(path, digest, artifact),
+    }}}
+    _expect_error(mismatched, "must exactly equal apps.hinge.serial")
+
+    d = _bound_config(tmp_path, monkeypatch)
+    d["apps"]["hinge"].pop("serial")
+    _expect_error(d, "requires a nonempty apps.hinge.serial")
+
+
+@pytest.mark.parametrize(("overrides", "needle"), [
+    ({"video_cards": 59}, "video_cards must be an integer >= 60"),
+    ({"video_accepts": 1}, "video_accepts must be exactly 0"),
+    ({"photo_cards": 59, "photo_false_refusals": 0}, "photo_cards must be an integer >= 60"),
+    ({"photo_false_refusals": 4}, "photo_false_refusals 4 exceeds"),
+])
+def test_bound_evidence_enforces_the_shippable_thresholds_end_to_end(
+        tmp_path, monkeypatch, overrides, needle):
+    """The install API's thresholds surface through config with their own reason attached."""
+    d = _bound_config(
+        tmp_path, monkeypatch, artifact_overrides=overrides,
+        evidence=lambda path, digest, artifact: _bound_evidence(path, digest, artifact))
+
+    _expect_error(d, "is not a shippable bound")
+    _expect_error(d, needle)
+
+
+@pytest.mark.parametrize(("key", "value"), [
+    ("video_cards", True),
+    ("video_accepts", 1.0),
+    ("photo_cards", "60"),
+    ("max_video_exact_run_s", float("inf")),
+    ("captured_at", ""),
+])
+def test_bound_evidence_rejects_malformed_scalars_before_reading_the_artifact(
+        tmp_path, monkeypatch, key, value):
+    d = _bound_config(
+        tmp_path, monkeypatch,
+        evidence=lambda path, digest, artifact: _bound_evidence(
+            path, digest, artifact, **{key: value}))
+
+    _expect_error(d, f"still_photo_bound_evidence.{key}")
+
+
+def test_bound_evidence_must_be_a_mapping(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    d = {**BASE, "apps": {"hinge": {"serial": "synthetic-pixel",
+                                    "still_photo_bound_evidence": "trust me"}}}
+
+    _expect_error(d, "still_photo_bound_evidence must be a mapping")
+
+
+# --- The opted-in circular AI-labelled channel ----------------------------------------
+# Owner decision 2026-08-21: a second channel whose video labels come from the mute-glyph
+# matcher the bound is supposed to bound. It is admitted only with the acceptance phrase in
+# BOTH the pasted mapping and the digest-bound artifact, and it may never claim human ground
+# truth. The owner-labelled channel above is untouched and stays the preferred one.
+
+_CIRCULAR_ARTIFACT = {
+    "ground_truth_channel": tp.STILL_PHOTO_BOUND_CIRCULAR_CHANNEL,
+    "human_ground_truth": False,
+    "accepted_circular_risk": tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE,
+}
+
+
+def _circular_config(tmp_path, monkeypatch, *, artifact_overrides=None, mapping=None, **app):
+    """A hinge config on the circular channel; `mapping` overrides the pasted evidence keys."""
+    if mapping is None:
+        mapping = {"accepted_circular_risk": tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE}
+    return _bound_config(
+        tmp_path, monkeypatch,
+        artifact_overrides={**_CIRCULAR_ARTIFACT, **(artifact_overrides or {})},
+        evidence=lambda path, digest, artifact: _bound_evidence(
+            path, digest, artifact, **mapping),
+        **app)
+
+
+def test_an_accepted_circular_bound_round_trips_through_config_and_licenses_numbering(
+        tmp_path, monkeypatch):
+    d = _circular_config(tmp_path, monkeypatch)
+
+    c.validate(_load(d))
+
+    summary = tp.installed_still_photo_bound()
+    assert summary is not None
+    assert summary.ground_truth_channel == tp.STILL_PHOTO_BOUND_CIRCULAR_CHANNEL
+    # Recorded honestly on the installed summary: this bound has no human labels at all.
+    assert summary.human_ground_truth is False
+    assert summary.accepted_circular_risk == tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE
+    assert tp.hinge_targeting_unavailable_reason() is None
+
+    # The autouse fixture resets readiness, but assert the same drop config validation performs
+    # so the circular channel cannot outlive the config that accepted it either.
+    c.validate(_load(BASE))
+    assert tp.installed_still_photo_bound() is None
+    assert tp.hinge_targeting_unavailable_reason() is not None
+
+
+def test_a_circular_mapping_without_the_acceptance_phrase_is_refused(tmp_path, monkeypatch):
+    """Silence is not acceptance: the key set makes it optional, the channel makes it required."""
+    d = _circular_config(tmp_path, monkeypatch, mapping={})
+
+    _expect_error(d, "accepted_circular_risk must be exactly")
+    _expect_error(d, tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE)
+    _expect_error(d, tp.STILL_PHOTO_BOUND_CIRCULAR_CHANNEL)
+
+
+@pytest.mark.parametrize("phrase", [
+    "I accept the circular risk",
+    tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE.lower(),
+    tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE + " ",
+    True,
+])
+def test_a_circular_mapping_needs_the_acceptance_phrase_byte_for_byte(
+        tmp_path, monkeypatch, phrase):
+    d = _circular_config(tmp_path, monkeypatch, mapping={"accepted_circular_risk": phrase})
+
+    _expect_error(d, "accepted_circular_risk must be exactly")
+
+
+def test_the_owner_channel_refuses_an_accepted_circular_risk_key(tmp_path, monkeypatch):
+    """An owner-labelled bound accepted nothing, so it may not look like it accepted something."""
+    d = _bound_config(
+        tmp_path, monkeypatch,
+        evidence=lambda path, digest, artifact: _bound_evidence(
+            path, digest, artifact,
+            accepted_circular_risk=tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE))
+
+    _expect_error(d, "accepted_circular_risk accepts the circular AI-labelled channel")
+    _expect_error(d, "and is valid only there")
+    _expect_error(d, "owner_tap_to_play_v1")
+
+
+def test_a_circular_artifact_may_never_claim_human_ground_truth(tmp_path, monkeypatch):
+    d = _circular_config(tmp_path, monkeypatch, artifact_overrides={"human_ground_truth": True})
+
+    _expect_error(d, "must declare human_ground_truth=false")
+    _expect_error(d, "is a lie")
+
+
+@pytest.mark.parametrize("artifact_overrides", [
+    {"accepted_circular_risk": "some other phrase"},
+    {"accepted_circular_risk": None},
+])
+def test_the_artifact_must_carry_the_same_acceptance_as_the_mapping(
+        tmp_path, monkeypatch, artifact_overrides):
+    """A config edit alone can never opt the owner in: the measurement run has to say it too."""
+    d = _circular_config(tmp_path, monkeypatch, artifact_overrides=artifact_overrides)
+
+    _expect_error(d, "artifact disagrees on accepted_circular_risk")
+
+
+def test_an_unaccepted_artifact_channel_names_both_admissible_channels(tmp_path, monkeypatch):
+    """The mapping and artifact agree on a channel that is neither of the two we accept."""
+    d = _bound_config(
+        tmp_path, monkeypatch,
+        artifact_overrides={"ground_truth_channel": "mute_matcher_v1"},
+        evidence=lambda path, digest, artifact: _bound_evidence(path, digest, artifact))
+
+    _expect_error(d, "owner_tap_to_play_v1")
+    _expect_error(d, tp.STILL_PHOTO_BOUND_CIRCULAR_CHANNEL)
+
+
+@pytest.mark.parametrize(("overrides", "needle"), [
+    ({"video_cards": 59}, "video_cards must be an integer >= 60"),
+    ({"video_accepts": 1}, "video_accepts must be exactly 0"),
+    ({"photo_cards": 59, "photo_false_refusals": 0}, "photo_cards must be an integer >= 60"),
+    ({"photo_false_refusals": 4}, "photo_false_refusals 4 exceeds"),
+])
+def test_the_circular_channel_buys_a_cheaper_campaign_never_a_looser_bound(
+        tmp_path, monkeypatch, overrides, needle):
+    """Accepting the circularity moves no number: same corpus sizes, same zero accepts."""
+    d = _circular_config(tmp_path, monkeypatch, artifact_overrides=overrides)
+
+    _expect_error(d, "is not a shippable bound")
+    _expect_error(d, needle)
+
+
+# --- Gate split: a bound licenses numbering, never Auto -------------------------------
+
+def test_a_bound_alone_never_satisfies_the_hinge_auto_release_gate(tmp_path, monkeypatch):
+    """Numbering readiness removes the policy blocker and nothing else (design doc, section 3)."""
+    d = _bound_config(tmp_path, monkeypatch, mode="auto",
+                      targeting_calibration=_calibration())
+
+    _expect_error(d, "observe_release_evidence")
+
+    d_no_bound = {**BASE, "apps": {"hinge": {
+        "serial": "synthetic-pixel", "mode": "auto",
+        "targeting_calibration": _calibration(),
+    }}}
+    _expect_error(d_no_bound, "positive still-photo discriminator unavailable")
+
+
+# --- The retired v1 selection policy --------------------------------------------------
+
+def test_targeting_calibration_rejects_the_superseded_v1_policy_id(tmp_path, monkeypatch):
+    """v1 measured a different selection contract, so its mapping can never be reinstalled."""
+    d = _bound_config(
+        tmp_path, monkeypatch,
+        targeting_calibration=_calibration(item_selection_policy_id="hinge_photos_only_v1"))
+
+    _expect_error(d, "hinge_photos_only_v1 is superseded by hinge_photos_only_v2")
+    _expect_error(d, "recalibrate under the current policy")
+
+
+def test_targeting_calibration_reports_an_unknown_policy_id_differently(tmp_path, monkeypatch):
+    d = _bound_config(
+        tmp_path, monkeypatch,
+        targeting_calibration=_calibration(item_selection_policy_id="hinge_written_only_v9"))
+
+    _expect_error(d, "item_selection_policy_id must be 'hinge_photos_only_v2'")
+
+
+# --- install_verified_still_photo_bound(): the threshold matrix ------------------------
+# Tested directly as well as through config because this function, not the config schema, is
+# what every future consumer (the measurement tool included) has to clear.
+
+def _summary(**overrides):
+    fields = {
+        "ground_truth_channel": "owner_tap_to_play_v1", "human_ground_truth": True,
+        "video_cards": 60, "video_accepts": 0, "photo_cards": 60, "photo_false_refusals": 3,
+        "max_video_exact_run_s": 1.5, "artifact_sha256": "a" * 64,
+        "device": "synthetic-pixel", "hinge_version_name": "10.0.1",
+    }
+    fields.update(overrides)
+    return tp.StillPhotoBoundSummary(**fields)
+
+
+def test_a_valid_summary_installs_and_answers_the_policy_blocker():
+    tp.install_verified_still_photo_bound(_summary())
+
+    assert tp.installed_still_photo_bound() == _summary()
+    assert tp.hinge_targeting_unavailable_reason() is None
+
+
+@pytest.mark.parametrize(("overrides", "needle"), [
+    ({"ground_truth_channel": "mute_matcher_v1"}, "ground_truth_channel must be"),
+    ({"human_ground_truth": False}, "human_ground_truth must be exactly True"),
+    ({"human_ground_truth": 1}, "human_ground_truth must be exactly True"),
+    ({"video_cards": 59}, "video_cards must be an integer >= 60"),
+    ({"video_cards": 60.0}, "video_cards must be an integer >= 60"),
+    ({"video_accepts": 1}, "video_accepts must be exactly 0"),
+    ({"video_accepts": -1}, "video_accepts must be a non-negative integer"),
+    ({"photo_cards": 59, "photo_false_refusals": 0}, "photo_cards must be an integer >= 60"),
+    ({"photo_false_refusals": 4}, "photo_false_refusals 4 exceeds"),
+    ({"photo_false_refusals": -1}, "photo_false_refusals must be a non-negative integer"),
+    ({"max_video_exact_run_s": -0.1}, "max_video_exact_run_s must be a finite"),
+    ({"max_video_exact_run_s": float("inf")}, "max_video_exact_run_s must be a finite"),
+    ({"max_video_exact_run_s": float("nan")}, "max_video_exact_run_s must be a finite"),
+    ({"artifact_sha256": "A" * 64}, "artifact_sha256 must be 64 lowercase hex"),
+    ({"artifact_sha256": "a" * 63}, "artifact_sha256 must be 64 lowercase hex"),
+    ({"device": ""}, "device must be the nonempty ADB serial"),
+    ({"device": "   "}, "device must be the nonempty ADB serial"),
+    ({"hinge_version_name": ""}, "hinge_version_name must be the nonempty"),
+])
+def test_install_refuses_every_unmet_threshold_with_its_own_reason(overrides, needle):
+    with pytest.raises(ValueError, match=re.escape(needle)):
+        tp.install_verified_still_photo_bound(_summary(**overrides))
+
+    assert tp.installed_still_photo_bound() is None
+    assert tp.hinge_targeting_unavailable_reason() is not None
+
+
+def test_the_false_refusal_ceiling_is_a_fraction_of_the_photo_corpus():
+    """The ceiling scales with the corpus: 4 refusals pass on 80 photos and fail on 60."""
+    tp.install_verified_still_photo_bound(_summary(photo_cards=60, photo_false_refusals=3))
+    tp._reset_installed_still_photo_bound_for_tests()
+    tp.install_verified_still_photo_bound(_summary(photo_cards=80, photo_false_refusals=4))
+    tp._reset_installed_still_photo_bound_for_tests()
+
+    with pytest.raises(ValueError, match="exceeds 5%"):
+        tp.install_verified_still_photo_bound(_summary(photo_cards=60, photo_false_refusals=4))
+    with pytest.raises(ValueError, match="exceeds 5%"):
+        tp.install_verified_still_photo_bound(_summary(photo_cards=80, photo_false_refusals=5))
+    # A corpus that is too small never reaches the fraction check at all: the minimum-cards
+    # threshold owns that refusal, and its message has to say so.
+    with pytest.raises(ValueError, match="photo_cards must be an integer >= 60"):
+        tp.install_verified_still_photo_bound(_summary(photo_cards=59, photo_false_refusals=0))
+
+
+def test_reinstalling_the_identical_summary_is_a_no_op():
+    tp.install_verified_still_photo_bound(_summary())
+    tp.install_verified_still_photo_bound(_summary())
+
+    assert tp.installed_still_photo_bound() == _summary()
+
+
+def test_installing_a_different_summary_never_silently_swaps_the_licence():
+    tp.install_verified_still_photo_bound(_summary())
+
+    with pytest.raises(ValueError, match="different verified still-photo bound"):
+        tp.install_verified_still_photo_bound(_summary(video_cards=120))
+
+    assert tp.installed_still_photo_bound() == _summary()
+
+
+def test_install_refuses_anything_that_is_not_a_summary():
+    with pytest.raises(ValueError, match="must be a StillPhotoBoundSummary"):
+        tp.install_verified_still_photo_bound({"video_cards": 60})
+
+
+# --- install_verified_still_photo_bound(): the circular channel ------------------------
+
+def _circular_summary(**overrides):
+    """The same measured bound, declared on the opted-in circular AI-labelled channel."""
+    fields = {
+        "ground_truth_channel": tp.STILL_PHOTO_BOUND_CIRCULAR_CHANNEL,
+        "human_ground_truth": False,
+        "accepted_circular_risk": tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE,
+    }
+    fields.update(overrides)
+    return _summary(**fields)
+
+
+def test_the_circular_channel_installs_with_the_phrase_and_an_honest_label():
+    tp.install_verified_still_photo_bound(_circular_summary())
+
+    assert tp.installed_still_photo_bound() == _circular_summary()
+    assert tp.hinge_targeting_unavailable_reason() is None
+
+
+def test_the_owner_channel_summary_still_defaults_to_having_accepted_nothing():
+    """The new field is additive: every existing owner-labelled construction is unchanged."""
+    assert _summary().accepted_circular_risk is None
+
+    tp.install_verified_still_photo_bound(_summary())
+
+    assert tp.installed_still_photo_bound().accepted_circular_risk is None
+
+
+@pytest.mark.parametrize(("overrides", "needle"), [
+    # The one refusal the whole channel exists to make: an AI-labelled bound that claims a human
+    # labelled it is not a weaker bound, it is a false statement.
+    ({"human_ground_truth": True}, "claiming human ground truth there is a lie"),
+    ({"human_ground_truth": 0}, "human_ground_truth must be exactly False"),
+    ({"accepted_circular_risk": None}, "accepted_circular_risk must be exactly"),
+    ({"accepted_circular_risk": "I accept the circular risk"},
+     "accepted_circular_risk must be exactly"),
+    ({"accepted_circular_risk": tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE.lower()},
+     "accepted_circular_risk must be exactly"),
+    ({"accepted_circular_risk": tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE + " "},
+     "accepted_circular_risk must be exactly"),
+    # Identical thresholds on both channels: accepting the circularity buys a cheaper campaign,
+    # never a smaller corpus or a nonzero accept count.
+    ({"video_cards": 59}, "video_cards must be an integer >= 60"),
+    ({"video_accepts": 1}, "video_accepts must be exactly 0"),
+    ({"photo_cards": 59, "photo_false_refusals": 0}, "photo_cards must be an integer >= 60"),
+    ({"photo_false_refusals": 4}, "photo_false_refusals 4 exceeds"),
+])
+def test_the_circular_channel_refuses_every_unmet_condition_with_its_own_reason(
+        overrides, needle):
+    with pytest.raises(ValueError, match=re.escape(needle)):
+        tp.install_verified_still_photo_bound(_circular_summary(**overrides))
+
+    assert tp.installed_still_photo_bound() is None
+    assert tp.hinge_targeting_unavailable_reason() is not None
+
+
+def test_the_owner_channel_never_carries_a_circular_acceptance():
+    with pytest.raises(ValueError, match="accepted_circular_risk must be None"):
+        tp.install_verified_still_photo_bound(
+            _summary(accepted_circular_risk=tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE))
+
+    assert tp.installed_still_photo_bound() is None
+
+
+def test_an_unknown_channel_names_both_admissible_channels():
+    with pytest.raises(ValueError, match="ground_truth_channel must be") as exc:
+        tp.install_verified_still_photo_bound(_summary(ground_truth_channel="mute_matcher_v1"))
+
+    assert tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL in str(exc.value)
+    assert tp.STILL_PHOTO_BOUND_CIRCULAR_CHANNEL in str(exc.value)
+
+
+# --- the THIRD readiness channel: an accepted assumption, not a measurement ------------
+# Owner decision 2026-08-21: measuring the held-out video false-accept rate costs ~420 profiles
+# and ~420 real passes, which the owner judged not worth paying, and directed instead that a
+# video moved to the centre of the screen is ASSUMED to be playing (and therefore visible to the
+# deterministic motion test). These tests exist to pin that the licence stays legible as an
+# assumption at every layer -- never installable as, comparable to, or reportable as a bound.
+
+def _acceptance(**overrides):
+    """The mapping an owner pastes to ship numbering on the unmeasured assumption."""
+    mapping = {
+        "acceptance": tp.STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION,
+        "accepted_at": "2026-08-21",
+        "device": "synthetic-pixel",
+        "hinge_version_name": "10.0.1",
+        "rationale": ("owner judged a ~420-profile held-out campaign not worth its cost and "
+                      "directed that a centred video is assumed to be playing"),
+    }
+    mapping.update(overrides)
+    return mapping
+
+
+def _acceptance_record(**overrides):
+    return tp.StillPhotoAssumptionAcceptance(**_acceptance(**overrides))
+
+
+def _assumption_config(*, acceptance=None, **app):
+    """A hinge config licensed by the assumption instead of by a measured artifact."""
+    return {**BASE, "apps": {"hinge": {
+        "serial": "synthetic-pixel",
+        "still_photo_assumption_acceptance": (
+            _acceptance() if acceptance is None else acceptance),
+        **app,
+    }}}
+
+
+def test_an_accepted_assumption_installs_readiness_and_names_itself_the_assumption_channel():
+    tp.install_accepted_still_photo_assumption(_acceptance_record())
+
+    licence = tp.installed_still_photo_licence()
+    assert licence is not None
+    assert licence.channel == tp.STILL_PHOTO_LICENCE_ASSUMPTION
+    assert licence.assumed and not licence.measured
+    assert licence.record == _acceptance_record()
+    assert tp.hinge_targeting_unavailable_reason() is None
+    # The one thing that must never be true: an assumption readable as a measured bound.
+    assert tp.installed_still_photo_bound() is None
+
+
+@pytest.mark.parametrize(("overrides", "needle"), [
+    ({"acceptance": "I accept the unmeasured centered autoplay assumption"},
+     "acceptance must be exactly"),
+    ({"acceptance": tp.STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION.lower()},
+     "acceptance must be exactly"),
+    ({"acceptance": tp.STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION + " "},
+     "acceptance must be exactly"),
+    ({"acceptance": tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE}, "acceptance must be exactly"),
+    ({"accepted_at": ""}, "accepted_at must be nonempty text"),
+    ({"accepted_at": "   "}, "accepted_at must be nonempty text"),
+    ({"device": ""}, "device must be the nonempty ADB serial"),
+    ({"hinge_version_name": ""}, "hinge_version_name must be the nonempty"),
+    ({"rationale": ""}, "rationale must be the nonempty reason"),
+    ({"rationale": "  "}, "rationale must be the nonempty reason"),
+])
+def test_installing_an_assumption_refuses_every_unmet_field_with_its_own_reason(
+        overrides, needle):
+    with pytest.raises(ValueError, match=re.escape(needle)):
+        tp.install_accepted_still_photo_assumption(_acceptance_record(**overrides))
+
+    assert tp.installed_still_photo_licence() is None
+    assert tp.hinge_targeting_unavailable_reason() is not None
+
+
+def test_installing_an_assumption_refuses_anything_that_is_not_an_acceptance():
+    with pytest.raises(ValueError, match="must be a StillPhotoAssumptionAcceptance"):
+        tp.install_accepted_still_photo_assumption(_acceptance())
+
+    with pytest.raises(ValueError, match="must be a StillPhotoAssumptionAcceptance"):
+        tp.install_accepted_still_photo_assumption(_summary())
+
+
+def test_reinstalling_the_identical_assumption_is_a_no_op():
+    tp.install_accepted_still_photo_assumption(_acceptance_record())
+    tp.install_accepted_still_photo_assumption(_acceptance_record())
+
+    assert tp.installed_still_photo_licence().record == _acceptance_record()
+
+
+def test_installing_a_different_assumption_never_silently_swaps_the_licence():
+    tp.install_accepted_still_photo_assumption(_acceptance_record())
+
+    with pytest.raises(ValueError, match="different accepted still-photo assumption"):
+        tp.install_accepted_still_photo_assumption(_acceptance_record(accepted_at="2026-09-01"))
+
+    assert tp.installed_still_photo_licence().record == _acceptance_record()
+
+
+def test_an_assumption_cannot_be_installed_beside_a_measured_bound():
+    """One licence at a time: an assumption must never shadow a bound somebody measured."""
+    tp.install_verified_still_photo_bound(_summary())
+
+    with pytest.raises(ValueError, match="one licence at a time") as exc:
+        tp.install_accepted_still_photo_assumption(_acceptance_record())
+
+    assert tp.STILL_PHOTO_LICENCE_MEASURED in str(exc.value)
+    assert tp.STILL_PHOTO_LICENCE_ASSUMPTION in str(exc.value)
+    assert tp.installed_still_photo_bound() == _summary()
+
+
+def test_a_measured_bound_cannot_be_installed_beside_an_assumption():
+    """And the mirror: a bound must not be quietly swapped in under an accepted assumption."""
+    tp.install_accepted_still_photo_assumption(_acceptance_record())
+
+    with pytest.raises(ValueError, match="one licence at a time"):
+        tp.install_verified_still_photo_bound(_summary())
+
+    assert tp.installed_still_photo_licence().channel == tp.STILL_PHOTO_LICENCE_ASSUMPTION
+    assert tp.installed_still_photo_bound() is None
+
+
+def test_clearing_drops_an_assumption_exactly_like_it_drops_a_bound():
+    tp.install_accepted_still_photo_assumption(_acceptance_record())
+
+    tp.clear_installed_still_photo_bound()
+
+    assert tp.installed_still_photo_licence() is None
+    assert tp.hinge_targeting_unavailable_reason() == tp.HINGE_TARGETING_UNAVAILABLE_REASON
+    # And the slot is free again, so the other channel can now take it.
+    tp.install_verified_still_photo_bound(_summary())
+    assert tp.installed_still_photo_bound() == _summary()
+
+
+# --- provenance: the difference between the channels survives only in words ------------
+
+def test_provenance_reports_nothing_while_numbering_is_unlicensed():
+    assert tp.still_photo_licence_provenance() is None
+    assert tp.still_photo_licence_operator_notice() is None
+
+
+def test_provenance_of_a_measured_bound_quotes_the_corpus_and_claims_no_more():
+    tp.install_verified_still_photo_bound(_summary())
+
+    provenance = tp.still_photo_licence_provenance()
+
+    assert provenance == "measured held-out bound (60 video cards, 0 accepts)"
+    assert "UNMEASURED" not in provenance
+    # A measured bound is the state the design doc assumes, so it produces no run-level notice:
+    # a banner on every ordinary run is how operators learn to stop reading banners.
+    assert tp.still_photo_licence_operator_notice() is None
+
+
+def test_provenance_of_a_circular_bound_says_the_accept_count_is_zero_by_construction():
+    """Quoting "0 accepts" from the circular channel without that clause overstates it."""
+    tp.install_verified_still_photo_bound(_circular_summary())
+
+    provenance = tp.still_photo_licence_provenance()
+
+    assert provenance.startswith("measured held-out bound (60 video cards, 0 accepts)")
+    assert "circular AI-labelled channel" in provenance
+    assert "zero by construction" in provenance
+    assert tp.still_photo_licence_operator_notice() is None
+
+
+def test_provenance_of_an_assumption_leads_with_unmeasured_and_denies_a_false_accept_rate():
+    tp.install_accepted_still_photo_assumption(_acceptance_record())
+
+    provenance = tp.still_photo_licence_provenance()
+
+    assert provenance == (
+        "UNMEASURED: centered-autoplay assumption accepted by the owner; no video "
+        "false-accept rate has been measured")
+    assert provenance.startswith("UNMEASURED")
+    assert "bound" not in provenance and "cards" not in provenance
+    notice = tp.still_photo_licence_operator_notice()
+    assert notice == (
+        "targeted suggestions enabled under an UNMEASURED assumption (centered autoplay); "
+        "no video false-accept rate has been measured")
+
+
+# --- config: apps.hinge.still_photo_assumption_acceptance ------------------------------
+
+def test_no_assumption_key_leaves_numbering_disabled_exactly_as_before():
+    c.validate(_load(BASE))
+
+    assert tp.installed_still_photo_licence() is None
+    assert tp.hinge_targeting_unavailable_reason() == tp.HINGE_TARGETING_UNAVAILABLE_REASON
+
+
+def test_configured_assumption_installs_readiness_and_licenses_the_calibration():
+    c.validate(_load(_assumption_config(targeting_calibration=_calibration())))
+
+    licence = tp.installed_still_photo_licence()
+    assert licence.channel == tp.STILL_PHOTO_LICENCE_ASSUMPTION
+    assert licence.record == _acceptance_record()
+    assert tp.hinge_targeting_unavailable_reason() is None
+    assert tp.still_photo_licence_provenance().startswith("UNMEASURED")
+
+
+def test_a_later_validate_without_the_assumption_key_turns_readiness_back_off():
+    """Process-global readiness must never outlive the config that accepted the assumption."""
+    c.validate(_load(_assumption_config()))
+    assert tp.installed_still_photo_licence() is not None
+
+    c.validate(_load(BASE))
+
+    assert tp.installed_still_photo_licence() is None
+    assert tp.hinge_targeting_unavailable_reason() is not None
+
+
+def test_assumption_acceptance_must_carry_its_exact_key_set():
+    incomplete = _acceptance()
+    incomplete.pop("rationale")
+    _expect_error(_assumption_config(acceptance=incomplete), "must carry exactly")
+    _expect_error(_assumption_config(acceptance=incomplete), "missing ['rationale']")
+
+    extra = _acceptance(video_cards=60)
+    _expect_error(_assumption_config(acceptance=extra), "unknown ['video_cards']")
+
+    assert tp.installed_still_photo_licence() is None
+
+
+@pytest.mark.parametrize("key", ["acceptance", "accepted_at", "device", "hinge_version_name",
+                                 "rationale"])
+def test_every_assumption_field_must_be_nonempty_text(key):
+    _expect_error(_assumption_config(acceptance=_acceptance(**{key: ""})),
+                  f"still_photo_assumption_acceptance.{key} must be nonempty text")
+    _expect_error(_assumption_config(acceptance=_acceptance(**{key: 3})),
+                  f"still_photo_assumption_acceptance.{key} must be nonempty text")
+
+    assert tp.installed_still_photo_licence() is None
+
+
+def test_assumption_acceptance_must_be_the_exact_phrase():
+    _expect_error(
+        _assumption_config(acceptance=_acceptance(
+            acceptance="I accept the unmeasured centered autoplay assumption")),
+        "acceptance must be exactly 'I_ACCEPT_UNMEASURED_CENTERED_AUTOPLAY_ASSUMPTION'")
+    # The other channel's phrase is not this channel's phrase: accepting circular AI labels is a
+    # different decision about a different risk, and one must never license the other.
+    _expect_error(
+        _assumption_config(acceptance=_acceptance(
+            acceptance=tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE)),
+        "acceptance must be exactly")
+
+    assert tp.installed_still_photo_licence() is None
+
+
+def test_assumption_acceptance_is_bound_to_the_exact_device_serial():
+    _expect_error(_assumption_config(acceptance=_acceptance(device="some-other-pixel")),
+                  "device must exactly equal apps.hinge.serial")
+    without_serial = {**BASE, "apps": {"hinge": {
+        "still_photo_assumption_acceptance": _acceptance()}}}
+    _expect_error(without_serial, "requires a nonempty apps.hinge.serial")
+
+    assert tp.installed_still_photo_licence() is None
+
+
+def test_assumption_acceptance_must_be_a_mapping():
+    _expect_error(_assumption_config(acceptance="I_ACCEPT_UNMEASURED_CENTERED_AUTOPLAY_ASSUMPTION"),
+                  "still_photo_assumption_acceptance must be a mapping")
+
+
+def test_configuring_both_readiness_channels_is_a_hard_error_naming_both_keys(
+        tmp_path, monkeypatch):
+    """A measured bound must not be shadowed by an assumption, nor an assumption by a bound."""
+    both = _bound_config(tmp_path, monkeypatch,
+                         still_photo_assumption_acceptance=_acceptance())
+
+    _expect_error(both, "apps.hinge.still_photo_bound_evidence")
+    _expect_error(both, "apps.hinge.still_photo_assumption_acceptance")
+    _expect_error(both, "mutually exclusive")
+
+    # And the rejected config leaves readiness OFF rather than installing whichever ran first.
+    assert tp.installed_still_photo_licence() is None
+    assert tp.hinge_targeting_unavailable_reason() is not None
+
+
+def test_an_assumption_never_licenses_hinge_auto(tmp_path, monkeypatch):
+    """The gate split of ops/STILL-PHOTO-DISCRIMINATOR.md section 3 holds for the new channel.
+
+    An unmeasured assumption is the weakest licence in the system, so if anything at all could
+    turn AUTO on without a production-OBSERVE release chain it would be this. AUTO must still
+    refuse on observe_release_evidence, exactly as it does with a measured bound.
+    """
+    monkeypatch.chdir(tmp_path)
+    auto = _assumption_config(mode="auto", targeting_calibration=_calibration())
+
+    _expect_error(auto, "observe_release_evidence")
+
+    # The refusal is the RELEASE gate, not the readiness gate: numbering itself was licensed.
+    _expect_error(auto, "verified production-OBSERVE mapping")
+    assert tp.installed_still_photo_licence().channel == tp.STILL_PHOTO_LICENCE_ASSUMPTION
+
+
+def test_hinge_auto_without_a_calibration_still_demands_the_release_evidence(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    _expect_error(_assumption_config(mode="auto"),
+                  "separately verified apps.hinge.observe_release_evidence")

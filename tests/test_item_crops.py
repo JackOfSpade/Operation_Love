@@ -15,12 +15,16 @@ numbers and the exact pixels each crop must contain.
 The negative that matters most is checked pixel by pixel: an item that was never bounded end to
 end must produce NO image at all, not a crop of the part that happened to be visible.
 """
+import hashlib
 import math
 
 import cv2
 import numpy as np
+import dataclasses
+
 import pytest
 
+from operation_love import targeting_policy as tp
 from operation_love.drivers import (
     hinge, item_crops, item_identity, item_index, item_type_preflight, segment)
 
@@ -743,23 +747,407 @@ def test_an_item_nothing_re_observed_is_undetermined_and_never_reported_stable()
     assert payload.max_signature_drift is None, "no evidence is not zero drift"
 
 
+def _evidence(drift, frames=(2,), *, dwell=None):
+    """The gate's argument, built the way every production caller builds it."""
+    return item_crops.still_photo_evidence_from_drift(drift, frames, dwell)
+
+
+def _full_dwell(*, exact=True, span_s=6.0, screened=True, digests=2, centered=True,
+                offset=0.02, probe_ran=True, probe_exact=True, probe_screened=True,
+                probe_digests=2, probe_centered=True, probe_offset=0.02, probe_span_s=6.0):
+    """A dwell that passes every rung, so one field at a time can be spoiled.
+
+    `centered` is the autoplay precondition (2026-08-21): Hinge plays a video only near the
+    centre of the screen, so byte-exactness measured off-centre proves nothing. It defaults True
+    here so the OTHER rungs stay individually spoilable; its own rung is exercised below.
+
+    The `probe_*` half is the RE-ATTACH probe's second burst, taken after the card was scrolled
+    out of the autoplay band and back. It defaults to passing for the same reason: each of its
+    rungs is spoiled one at a time below.
+    """
+    return item_crops.StillPhotoDwell(
+        dwell_frame_sha256s=tuple(f"{i:064x}" for i in range(digests)),
+        dwell_exact=exact, dwell_span_s=span_s, mute_screens_complete=screened,
+        centered=centered, center_offset_frac=offset,
+        reattach_probe_ran=probe_ran,
+        reattach_dwell_frame_sha256s=tuple(f"{i:064x}" for i in range(probe_digests)),
+        reattach_dwell_exact=probe_exact, reattach_dwell_span_s=probe_span_s,
+        reattach_mute_screens_complete=probe_screened, reattach_centered=probe_centered,
+        reattach_center_offset_frac=probe_offset)
+
+
+@pytest.mark.parametrize("centered, offset", [(None, None), (False, 0.42), (1, 0.02)])
+def test_the_dwell_rung_refuses_a_card_that_was_not_in_the_autoplay_trigger_zone(
+        centered, offset, installed_still_photo_bound):
+    """Hinge autoplays only near the centre, so an off-centre still run is not evidence.
+
+    `1` is included deliberately: a truthy placeholder must not buy the observation, exactly as
+    every other three-valued field on this object is compared with `is True`.
+    """
+    reason = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(0.01, dwell=_full_dwell(centered=centered, offset=offset)))
+    assert reason is not None
+    assert "autoplay trigger zone" in reason
+    assert "never near enough to the centre" in reason
+
+
+def test_a_centred_card_passes_the_autoplay_rung_and_reaches_the_later_ones(
+        installed_still_photo_bound):
+    """The rung is a precondition on byte-exactness, not an extra veto on everything after it."""
+    reason = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(0.01, dwell=_full_dwell(centered=True, screened=False)))
+    assert reason is not None and "mute-control screening" in reason
+
+
+def test_still_photo_dwell_evidence_measures_centring_from_the_content_band():
+    """The producer computes `centered` itself; a caller cannot assert it into existence."""
+    index, frames = _full()
+    without = item_crops.still_photo_dwell_evidence(
+        index, frames, [frames[-1], frames[-1]], dwell_span_s=6.0,
+        mute_screen=lambda _frame, _rect: True)
+    assert without, "the fixture must produce at least one dwell entry"
+    # No content_band -> the observation was never made -> fail closed, never a silent pass.
+    assert all(entry.centered is None and entry.center_offset_frac is None
+               for entry in without.values())
+
+    with_band = item_crops.still_photo_dwell_evidence(
+        index, frames, [frames[-1], frames[-1]], dwell_span_s=6.0,
+        mute_screen=lambda _frame, _rect: True, content_band=(0.0, 1.0))
+    assert with_band and set(with_band) == set(without)
+    for entry in with_band.values():
+        assert isinstance(entry.center_offset_frac, float)
+        assert entry.centered is (abs(entry.center_offset_frac)
+                                  <= item_crops.STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC)
+
+
+def _fold_reattach(dwell, index, frames, *, burst=None, shift=0,
+                   mute_screen=lambda _frame, _rect: True):
+    """Fold one probe's second burst in, the way the driver and the replay both do."""
+    probe = item_crops.ReattachProbe(
+        anchor=frames[-1], frames=tuple(frames[-1:] if burst is None else burst),
+        span_s=6.0, page_shift_px=shift)
+    return item_crops.still_photo_reattach_evidence(
+        dwell, index, frame_count=len(frames), probe=probe, mute_screen=mute_screen,
+        content_band=(0.0, 1.0))
+
+
+def _first_burst(index, frames, mute_screen=lambda _frame, _rect: True):
+    return item_crops.still_photo_dwell_evidence(
+        index, frames, [frames[-1], frames[-1]], dwell_span_s=6.0, mute_screen=mute_screen,
+        content_band=(0.0, 1.0))
+
+
+def _repaint(frame: bytes, rect) -> bytes:
+    """The same frame with one pixel inside `rect` inverted: motion, at zero tolerance."""
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR).copy()
+    row = (rect[1] + rect[3]) // 2
+    col = (rect[0] + rect[2]) // 2
+    image[row, col, 0] = 255 - image[row, col, 0]
+    ok, buf = cv2.imencode(".png", image)
+    assert ok
+    return buf.tobytes()
+
+
+def test_the_reattach_producer_records_a_second_burst_that_agrees_with_the_first():
+    """A probe that ran, came back, and saw nothing move: every second-burst leg is measured."""
+    index, frames = _full()
+    folded = _fold_reattach(_first_burst(index, frames), index, frames,
+                            burst=[frames[-1], frames[-1]])
+
+    assert folded, "the fixture must produce at least one dwell entry"
+    for entry in folded.values():
+        assert entry.reattach_probe_ran is True
+        assert entry.reattach_dwell_exact is True
+        assert entry.reattach_mute_screens_complete is True
+        assert entry.reattach_dwell_span_s == 6.0
+        assert len(entry.reattach_dwell_frame_sha256s) == 3   # the probe anchor leads its burst
+        assert entry.reattach_centered is (abs(entry.reattach_center_offset_frac)
+                                           <= item_crops.STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC)
+
+
+def test_motion_in_the_second_burst_alone_is_still_motion():
+    """The whole point of looking twice: media that only starts once Hinge re-attaches it."""
+    index, frames = _full()
+    rect = item_crops.dwell_card_rects(index, len(frames) - 1)
+    ordinal = sorted(rect)[0]
+    first = _first_burst(index, frames)
+    assert first[ordinal].dwell_exact is True
+
+    folded = _fold_reattach(first, index, frames,
+                            burst=[frames[-1], _repaint(frames[-1], rect[ordinal])])
+
+    assert folded[ordinal].dwell_exact is True, "the FIRST burst still saw nothing move"
+    assert folded[ordinal].reattach_dwell_exact is False
+
+
+def test_a_mute_control_that_renders_only_on_re_entry_fails_the_second_screen():
+    """C3 on the second burst, for the control Hinge redraws when it re-attaches media."""
+    index, frames = _full()
+    folded = _fold_reattach(_first_burst(index, frames), index, frames,
+                            burst=[frames[-1], frames[-1]],
+                            mute_screen=lambda _frame, _rect: False)
+
+    assert all(entry.reattach_mute_screens_complete is False for entry in folded.values())
+
+
+def test_a_card_the_probe_pushed_off_the_screen_made_no_second_observation():
+    """Missing, not failed: an unmeasurable card refuses at the probe rung and is never read as
+    motion, which would name it a video on the strength of nothing."""
+    index, frames = _full()
+    folded = _fold_reattach(_first_burst(index, frames), index, frames,
+                            burst=[frames[-1], frames[-1]], shift=100_000)
+
+    assert folded
+    for entry in folded.values():
+        assert entry.reattach_probe_ran is False
+        assert entry.reattach_dwell_exact is None
+        assert entry.reattach_dwell_frame_sha256s == ()
+
+
+def test_the_second_burst_follows_the_measured_page_shift_rather_than_the_card():
+    """The rect is TRANSLATED by what the probe measured, so the second burst looks at the card
+    the first one measured instead of at whatever now occupies those rows.  Nothing here
+    re-identifies a card, which is what keeps the probe from substituting one."""
+    index, frames = _full()
+    rects = item_crops.dwell_card_rects(index, len(frames) - 1)
+    ordinal = sorted(rects)[0]
+    shift = 40
+    moved_rect = (rects[ordinal][0], rects[ordinal][1] - shift,
+                  rects[ordinal][2], rects[ordinal][3] - shift)
+    seen: list[tuple[int, int, int, int]] = []
+
+    def record(_frame, rect):
+        seen.append(rect)
+        return True
+
+    _fold_reattach(_first_burst(index, frames), index, frames,
+                   burst=[frames[-1], frames[-1]], shift=shift, mute_screen=record)
+
+    assert moved_rect in seen
+    assert rects[ordinal] not in seen
+
+
+def test_the_centering_geometry_is_defined_once_and_measured_from_the_content_band():
+    band = (0.125, 0.875)
+    height = 2400
+    centre_row = item_crops.content_band_center_row(height, band)
+    assert centre_row == pytest.approx(1200.0)
+    # A card centred on the band's centre has zero offset and is inside the zone.
+    dead_centre = (53, int(centre_row) - 487, 1027, int(centre_row) + 487)
+    assert item_crops.card_center_offset_frac(
+        dead_centre, frame_height=height, content_band=band) == pytest.approx(0.0, abs=1e-3)
+    assert item_crops.card_is_centered(dead_centre, frame_height=height, content_band=band)
+    # A card near the bottom of the band is outside it, and the sign says which way to scroll.
+    low = (53, 1900, 1027, 2100)
+    assert item_crops.card_center_offset_frac(
+        low, frame_height=height, content_band=band) > item_crops.STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
+    assert not item_crops.card_is_centered(low, frame_height=height, content_band=band)
+    high = (53, 300, 1027, 500)
+    assert item_crops.card_center_offset_frac(
+        high, frame_height=height, content_band=band) < 0
+
+
 @pytest.mark.parametrize("drift", [None, True, -0.01, float("nan"), float("inf")])
 def test_still_photo_gate_rejects_missing_or_invalid_reobservation_evidence(drift):
-    reason = item_crops.unnumber_without_still_photo_evidence(drift, (1,))
+    reason = item_crops.unnumber_without_still_photo_evidence(_evidence(drift, (1,)))
 
     assert reason is not None
     assert "auto-hidden video cannot be ruled out" in reason
 
 
+def test_still_photo_gate_rejects_anything_that_is_not_an_evidence_object():
+    """A caller that still passes a bare drift number has not been ported, and a number is not
+    evidence.  Refusing rather than duck-typing is what stops the old two-argument reading --
+    "drift is low, therefore still" -- from surviving in some unported corner."""
+    for stale in (0.0, (0.0, (2,)), None, object()):
+        reason = item_crops.unnumber_without_still_photo_evidence(stale)
+        assert reason is not None
+        assert "auto-hidden video cannot be ruled out" in reason
+
+
 def test_still_photo_gate_uses_drift_only_to_reject_and_never_as_positive_proof():
     ceiling = item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
 
-    stable_reason = item_crops.unnumber_without_still_photo_evidence(ceiling, (2,))
+    stable_reason = item_crops.unnumber_without_still_photo_evidence(_evidence(ceiling))
     assert stable_reason is not None
     assert "positive still-photo discriminator unavailable" in stable_reason
-    assert item_crops.unnumber_without_still_photo_evidence(0.0, ()) is not None
-    reason = item_crops.unnumber_without_still_photo_evidence(ceiling + 1e-6, (2,))
+    assert item_crops.unnumber_without_still_photo_evidence(_evidence(0.0, ())) is not None
+    reason = item_crops.unnumber_without_still_photo_evidence(_evidence(ceiling + 1e-6))
     assert reason is not None and "animated or video media is not targetable" in reason
+
+
+@pytest.fixture
+def installed_still_photo_bound():
+    """Numbering readiness exactly as config.validate() installs it, dropped again at teardown.
+
+    Readiness is process-global (ops/STILL-PHOTO-DISCRIMINATOR.md section 5), so it is installed
+    through the real API rather than monkeypatched, and always torn down.
+    """
+    tp.install_verified_still_photo_bound(tp.StillPhotoBoundSummary(
+        ground_truth_channel=tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
+        human_ground_truth=True, video_cards=60, video_accepts=0, photo_cards=60,
+        photo_false_refusals=3, max_video_exact_run_s=1.5, artifact_sha256="a" * 64,
+        device="synthetic-pixel", hinge_version_name="10.0.1"))
+    yield
+    tp._reset_installed_still_photo_bound_for_tests()
+
+
+def test_drift_alone_is_never_positive_proof_even_with_a_bound_installed(
+        installed_still_photo_bound):
+    """The heart of the design: a bound licenses the RULE, never an individual card.  With a
+    verified bound installed and nothing but a clean drift measurement, the gate still refuses --
+    naming the dwell it never took, not the policy blocker it no longer has."""
+    ceiling = item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
+
+    reason = item_crops.unnumber_without_still_photo_evidence(_evidence(ceiling))
+
+    assert reason is not None
+    assert "no un-interacted dwell proved" in reason
+
+
+def test_the_still_photo_gate_stops_refusing_only_once_a_verified_bound_is_installed(
+        installed_still_photo_bound):
+    """The policy blocker is the middle check, so the rejectors above it are unaffected by it."""
+    ceiling = item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
+
+    assert item_crops.unnumber_without_still_photo_evidence(
+        _evidence(ceiling, dwell=_full_dwell())) is None
+    # Readiness licenses numbering; it never excuses missing or failing re-observation evidence.
+    drifted = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(ceiling + 1e-6, dwell=_full_dwell()))
+    assert drifted is not None and "animated or video media is not targetable" in drifted
+    assert item_crops.unnumber_without_still_photo_evidence(
+        _evidence(None, dwell=_full_dwell())) is not None
+    assert item_crops.unnumber_without_still_photo_evidence(
+        _evidence(0.0, (), dwell=_full_dwell())) is not None
+
+
+@pytest.mark.parametrize(
+    ("dwell", "expected"),
+    [
+        (_full_dwell(exact=None), "no un-interacted dwell proved"),
+        (_full_dwell(exact=False), "no un-interacted dwell proved"),
+        (_full_dwell(exact="yes"), "no un-interacted dwell proved"),
+        (_full_dwell(digests=1), "no un-interacted dwell proved"),
+        (_full_dwell(screened=None), "mute-control screening did not complete"),
+        (_full_dwell(screened=False), "mute-control screening did not complete"),
+        (_full_dwell(screened=1), "mute-control screening did not complete"),
+        (_full_dwell(span_s=None), "dwell window is missing or non-positive"),
+        (_full_dwell(span_s=0.0), "dwell window is missing or non-positive"),
+        (_full_dwell(span_s=-1.0), "dwell window is missing or non-positive"),
+        (_full_dwell(span_s=float("nan")), "dwell window is missing or non-positive"),
+        (_full_dwell(span_s=True), "dwell window is missing or non-positive"),
+    ],
+    ids=["exact-none", "exact-false", "exact-truthy", "one-digest", "screen-none",
+         "screen-false", "screen-truthy", "span-none", "span-zero", "span-negative",
+         "span-nan", "span-bool"],
+)
+def test_every_dwell_rung_of_the_evidence_ladder_is_reachable_and_says_which_one_failed(
+        installed_still_photo_bound, dwell, expected):
+    """One spoiled field at a time, with everything else passing, so each rung is proven to be
+    load-bearing rather than shadowed by an earlier one.  `is not True` matters here: a truthy
+    placeholder must not be able to claim an observation nothing made."""
+    reason = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT, dwell=dwell))
+
+    assert reason is not None and expected in reason
+    assert reason.startswith(item_crops.EXCLUSION_NON_PHOTO + ":")
+
+
+@pytest.mark.parametrize(
+    ("dwell", "expected"),
+    [
+        (_full_dwell(probe_ran=None), "no re-attach probe scrolled this card"),
+        (_full_dwell(probe_ran=False), "no re-attach probe scrolled this card"),
+        (_full_dwell(probe_ran=1), "no re-attach probe scrolled this card"),
+        (_full_dwell(probe_exact=None), "second dwell burst"),
+        (_full_dwell(probe_exact=False), "second dwell burst"),
+        (_full_dwell(probe_exact="yes"), "second dwell burst"),
+        (_full_dwell(probe_digests=1), "second dwell burst"),
+        (_full_dwell(probe_centered=None), "did not put this card back inside"),
+        (_full_dwell(probe_centered=False, probe_offset=0.42), "did not put this card back"),
+        (_full_dwell(probe_centered=1), "did not put this card back inside"),
+        (_full_dwell(probe_screened=None), "every re-attach burst frame"),
+        (_full_dwell(probe_screened=False), "every re-attach burst frame"),
+        (_full_dwell(probe_screened=1), "every re-attach burst frame"),
+        (_full_dwell(probe_span_s=None), "re-attach dwell window is missing"),
+        (_full_dwell(probe_span_s=0.0), "re-attach dwell window is missing"),
+        (_full_dwell(probe_span_s=float("nan")), "re-attach dwell window is missing"),
+        (_full_dwell(probe_span_s=True), "re-attach dwell window is missing"),
+    ],
+    ids=["probe-none", "probe-false", "probe-truthy", "exact-none", "exact-false",
+         "exact-truthy", "one-digest", "centred-none", "centred-false", "centred-truthy",
+         "screen-none", "screen-false", "screen-truthy", "span-none", "span-zero", "span-nan",
+         "span-bool"],
+)
+def test_the_reattach_rung_refuses_the_stalled_video_the_dwell_cannot_see(
+        installed_still_photo_bound, dwell, expected):
+    """The residual rung (g) exists for.  A centred byte-exact burst proves Hinge was ASKED to
+    play the card and that nothing moved; it cannot prove the media ANSWERED, so a video that
+    was stalled, buffering, unloaded or already ended holds byte-exact for as long as anyone
+    watches.  Every leg of the second burst is spoiled one at a time, with the first burst
+    passing, so each is proven load-bearing rather than shadowed."""
+    reason = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT, dwell=dwell))
+
+    assert reason is not None and expected in reason
+    assert reason.startswith(item_crops.EXCLUSION_NON_PHOTO + ":")
+
+
+def test_the_missing_probe_names_the_stalled_video_residual_it_exists_to_catch():
+    """The wording is the contract: an operator reading this refusal has to learn WHY a card
+    that never moved is still not a photograph."""
+    tp.install_verified_still_photo_bound(tp.StillPhotoBoundSummary(
+        ground_truth_channel=tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
+        human_ground_truth=True, video_cards=60, video_accepts=0, photo_cards=60,
+        photo_false_refusals=3, max_video_exact_run_s=1.5, artifact_sha256="e" * 64,
+        device="synthetic-pixel", hinge_version_name="10.0.1"))
+    try:
+        reason = item_crops.unnumber_without_still_photo_evidence(
+            _evidence(0.01, dwell=_full_dwell(probe_ran=None)))
+    finally:
+        tp._reset_installed_still_photo_bound_for_tests()
+
+    assert "autoplay band and back into it" in reason
+    for residual in ("stalled", "buffering", "unloaded", "already ended"):
+        assert residual in reason
+
+
+def test_the_reattach_rung_is_the_last_word_and_never_speaks_over_an_earlier_one(
+        installed_still_photo_bound):
+    """Order is contract: the probe costs two real gestures, so it answers only once every
+    cheaper, always-available rung has passed."""
+    for spoiled, expected in (
+            (dict(exact=False), "no un-interacted dwell proved"),
+            (dict(centered=False), "autoplay trigger zone"),
+            (dict(screened=False), "mute-control screening did not complete"),
+            (dict(span_s=0.0), "dwell window is missing or non-positive"),
+    ):
+        reason = item_crops.unnumber_without_still_photo_evidence(
+            _evidence(item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT,
+                      dwell=_full_dwell(probe_ran=None, **spoiled)))
+        assert reason is not None and expected in reason
+        assert "re-attach" not in reason
+
+
+def test_the_ladder_answers_with_the_cheapest_failing_rung_first(installed_still_photo_bound):
+    """Order is part of the contract: an animated card is reported as animated whatever the
+    dwell did, so the operator-facing vocabulary does not change with the bound."""
+    animated = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT + 1e-6,
+                  dwell=_full_dwell(exact=False)))
+
+    assert animated is not None and "animated or video media is not targetable" in animated
+
+
+def test_the_policy_blocker_outranks_the_dwell_rungs_when_no_bound_is_installed():
+    """With no artifact the operator's fix is the campaign, not the dwell, so the blocker is
+    what the reason names -- and rungs (d)-(f) stay unreachable, exactly as designed."""
+    reason = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(0.0, dwell=_full_dwell(exact=False)))
+
+    assert reason is not None
+    assert "positive still-photo discriminator unavailable" in reason
 
 
 def test_payload_disables_targeting_when_no_positive_still_photo_proof_exists():
@@ -778,6 +1166,145 @@ def test_payload_disables_targeting_when_no_positive_still_photo_proof_exists():
     assert "animated or video media is not targetable" in demoted.reason
     assert any("positive still-photo discriminator unavailable" in crop.reason
                for crop in payload.context if crop.heart_ordinal != 2)
+
+
+# =====================================================================================
+# C2: the dwell, which is the only POSITIVE observation the discriminator makes
+# =====================================================================================
+
+def test_dwell_exactness_is_byte_equality_and_one_pixel_breaks_it():
+    """Zero tolerance over the rect, and only over the rect.  The one-pixel case is the point:
+    an autoplaying video's strips match CONFIDENTLY WRONG rather than weakly, so any score-based
+    test goes bimodal on exactly the population this has to catch."""
+    rect = (100, 200, 400, 700)
+    still = _frame(0)
+    moved = np.frombuffer(cv2.imdecode(np.frombuffer(still, np.uint8), cv2.IMREAD_COLOR),
+                          np.uint8).reshape(_H, _W, 3).copy()
+    moved[300, 200, 0] = 255 - moved[300, 200, 0]
+    ok, buf = cv2.imencode(".png", moved)
+    assert ok
+
+    assert item_crops.dwell_exact_over_rect([still, still, still], rect) is True
+    assert item_crops.dwell_exact_over_rect([still, buf.tobytes()], rect) is False
+    # The changed pixel is INSIDE the rect above and outside this one, so the same pair of
+    # frames answers differently -- the rect is doing the work, not a whole-frame compare.
+    assert item_crops.dwell_exact_over_rect([still, buf.tobytes()], (500, 900, 900, 1400)) is True
+
+
+def test_a_dwell_that_never_happened_is_not_an_exact_dwell():
+    """Fewer than two frames means zero consecutive pairs, and a vacuous "all pairs matched" is
+    exactly the unearned True this whole design exists to prevent."""
+    rect = (100, 200, 400, 700)
+
+    assert item_crops.dwell_exact_over_rect([], rect) is False
+    assert item_crops.dwell_exact_over_rect([_frame(0)], rect) is False
+    # Undecodable bytes are a failed observation, never a passing one.
+    assert item_crops.dwell_exact_over_rect([b"not-a-png", b"not-a-png"], rect) is False
+    # A rect off the end of the frame is likewise unobserved, not equal-by-emptiness.
+    assert item_crops.dwell_exact_over_rect([_frame(0), _frame(0)], (0, 0, _W + 1, 10)) is False
+
+
+@pytest.mark.parametrize("rect", [(10, 10, 10, 20), (10, 10, 20, 10), (-1, 0, 20, 20),
+                                  (0, 0, 20), "rect", (0.0, 0.0, 20.0, 20.0)])
+def test_a_structurally_invalid_dwell_rect_is_a_caller_bug_and_raises(rect):
+    """A degenerate rect is not an observation that failed; it is a caller that never had one.
+    Returning False would let it read as a measured refusal in a log."""
+    with pytest.raises(item_crops.ItemCropError, match="dwell rect"):
+        item_crops.dwell_exact_over_rect([_frame(0), _frame(0)], rect)
+
+
+def test_dwell_evidence_covers_only_the_cards_the_anchor_frame_bounded():
+    """A card that scrolled out of view before the read ended cannot be held still and looked
+    at, so it gets NO entry -- rather than an entry measured on the last rect it happened to
+    occupy, which would be a dwell of the wrong pixels."""
+    index, frames = _full()
+    dwell = item_crops.still_photo_dwell_evidence(
+        index, frames, [frames[-1], frames[-1]], dwell_span_s=6.0,
+        mute_screen=lambda _frame, _rect: True)
+
+    anchor_cards = {block.heart_ordinal for block in index.selectable
+                    if any(obs.frame_index == len(frames) - 1 for obs in block.croppable)}
+    assert set(dwell) == anchor_cards and anchor_cards
+    for entry in dwell.values():
+        assert entry.dwell_exact is True
+        assert entry.mute_screens_complete is True
+        assert entry.dwell_span_s == 6.0
+        # The anchor frame is chained in front of the burst, so its digest leads the list.
+        assert entry.dwell_frame_sha256s[0] == hashlib.sha256(frames[-1]).hexdigest()
+        assert len(entry.dwell_frame_sha256s) == 3
+
+
+def test_dwell_evidence_without_a_mute_screen_leaves_that_leg_unmeasured():
+    """None, never False and never True: C3 either ran on every frame or it did not run."""
+    index, frames = _full()
+
+    dwell = item_crops.still_photo_dwell_evidence(
+        index, frames, [frames[-1]], dwell_span_s=6.0)
+
+    assert dwell and all(e.mute_screens_complete is None for e in dwell.values())
+
+
+def test_no_dwell_frames_means_no_dwell_evidence_at_all():
+    index, frames = _full()
+
+    assert item_crops.still_photo_dwell_evidence(
+        index, frames, [], dwell_span_s=6.0) == {}
+
+
+def test_a_bound_plus_a_complete_dwell_is_what_finally_numbers_a_photo(
+        installed_still_photo_bound):
+    """The whole C1-C4 conjunction, end to end through the payload builder: with a verified
+    bound installed AND a byte-exact, fully screened dwell of every candidate, numbering is
+    allowed.  Nothing short of that has ever produced a number in this test file."""
+    index, frames = _full()
+    dwell = item_crops.still_photo_dwell_evidence(
+        index, frames, [frames[-1], frames[-1]], dwell_span_s=6.0,
+        mute_screen=lambda _frame, _rect: True)
+    # This test is about the C1-C4 conjunction, not about where the synthetic cards happen to sit
+    # on a synthetic screen. The autoplay-centring precondition is measured from real geometry in
+    # `test_still_photo_dwell_evidence_measures_centring_from_the_content_band` below, and its
+    # refusal path has its own parametrised test; here it is satisfied explicitly so the rest of
+    # the ladder stays the subject.
+    dwell = {ordinal: dataclasses.replace(entry, centered=True, center_offset_frac=0.0)
+             for ordinal, entry in dwell.items()}
+    # Rung (g): the re-attach probe's second burst, folded in by the shared producer from a probe
+    # whose MEASURED page displacement is zero -- the card came back exactly where it was.
+    dwell = _fold_reattach(dwell, index, frames)
+    dwell = {ordinal: dataclasses.replace(entry, reattach_centered=True,
+                                          reattach_center_offset_frac=0.0)
+             for ordinal, entry in dwell.items()}
+
+    payload = item_crops.build_item_payload(
+        frames, index, unnumber=lambda _image: None,
+        unnumber_without_evidence=item_crops.unnumber_without_still_photo_evidence,
+        still_photo_dwell=dwell)
+
+    numbered = {crop.heart_ordinal for crop in payload.items}
+    assert numbered, "a complete dwell under a verified bound must number something"
+    # And every card the dwell could NOT cover stays unnumbered, naming the missing dwell.
+    for crop in payload.context:
+        if crop.heart_ordinal is not None and crop.heart_ordinal not in dwell:
+            assert "no un-interacted dwell proved" in crop.reason
+
+
+def test_the_payload_hook_receives_one_evidence_object_carrying_both_halves(
+        installed_still_photo_bound):
+    """The hook contract itself: drift comes from the frames the builder holds, the dwell from
+    the mapping the caller supplies, and they arrive together so no caller can grade one alone."""
+    index, frames = _full()
+    dwell = item_crops.still_photo_dwell_evidence(
+        index, frames, [frames[-1], frames[-1]], dwell_span_s=6.0,
+        mute_screen=lambda _frame, _rect: True)
+    seen = []
+
+    item_crops.build_item_payload(
+        frames, index, unnumber=lambda _image: None,
+        unnumber_without_evidence=lambda evidence: seen.append(evidence) or "photo_only: stop",
+        still_photo_dwell=dwell)
+
+    assert seen and all(isinstance(e, item_crops.StillPhotoEvidence) for e in seen)
+    assert any(e.dwell_exact is True and e.dwell_span_s == 6.0 for e in seen)
+    assert all(e.drift_frames == () or e.signature_drift is not None for e in seen)
 
 
 # =====================================================================================

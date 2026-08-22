@@ -12,7 +12,12 @@ from pathlib import Path
 import yaml
 
 from .targeting_policy import (
-    HINGE_PHOTO_SELECTION_POLICY_ID, hinge_targeting_unavailable_reason)
+    HINGE_PHOTO_SELECTION_POLICY_ID, HINGE_SUPERSEDED_PHOTO_SELECTION_POLICY_IDS,
+    STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE, STILL_PHOTO_BOUND_CIRCULAR_CHANNEL,
+    STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL, STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION,
+    StillPhotoAssumptionAcceptance, StillPhotoBoundSummary,
+    clear_installed_still_photo_bound, hinge_targeting_unavailable_reason,
+    install_accepted_still_photo_assumption, install_verified_still_photo_bound)
 
 from . import platforms
 from .costing import ModelPricing
@@ -383,6 +388,38 @@ _TARGETING_CALIBRATION_KEYS = {
     "identity_match_max_dist", "inline_item_max_dist", "device", "calibrated_at",
     "identity_band", "content_band",
 }
+# The optional mapping that binds the measured still-photo bound artifact (see
+# ops/STILL-PHOTO-DISCRIMINATOR.md section 5).  Its presence, and only its presence, installs
+# numbering readiness for this process.  Exact key set on the observe_release_evidence pattern:
+# a missing key is an incomplete claim and an unknown key is a claim we are not checking, and
+# both must fail loudly rather than be ignored.
+_STILL_PHOTO_BOUND_EVIDENCE_KEYS = {
+    "artifact_path", "artifact_sha256", "ground_truth_channel", "video_cards", "video_accepts",
+    "photo_cards", "photo_false_refusals", "max_video_exact_run_s", "captured_at", "device",
+    "hinge_version_name",
+}
+# Config keys the artifact itself must also carry, with equal values.  artifact_path is a
+# repo-local locator and artifact_sha256 is the artifact's own digest, so neither can live
+# inside it; everything else is a measurement claim, and the mapping may not claim a number the
+# artifact does not carry.
+_STILL_PHOTO_BOUND_MIRRORED_INT_KEYS = (
+    "video_cards", "video_accepts", "photo_cards", "photo_false_refusals")
+_STILL_PHOTO_BOUND_MIRRORED_TEXT_KEYS = (
+    "ground_truth_channel", "captured_at", "device", "hinge_version_name")
+# Optional, and optional in one direction only: it is REQUIRED on the circular AI-labelled
+# channel and FORBIDDEN on the owner-labelled one (see _validate_hinge_still_photo_bound_evidence).
+# It is not in the exact key set above because that set is what every bound must carry, and an
+# owner-labelled bound accepted no circular risk at all.
+_STILL_PHOTO_BOUND_OPTIONAL_EVIDENCE_KEYS = {"accepted_circular_risk"}
+
+# The THIRD readiness channel (owner decision 2026-08-21): a licence granted by a person instead
+# of produced by a campaign.  It is a deliberately tiny key set -- there is nothing to bind by
+# sha256, no artifact to re-read and no counts to mirror, because nothing was measured.  What it
+# does demand is that the decision be attributable: which phone, which Hinge build, when, and
+# why, so a reader months later can tell an accepted risk from an accident.
+_STILL_PHOTO_ASSUMPTION_KEYS = {
+    "acceptance", "accepted_at", "device", "hinge_version_name", "rationale",
+}
 
 
 def _is_finite_number(value: object) -> bool:
@@ -476,11 +513,20 @@ def _validate_targeting_calibration(cfg: Config) -> None:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.composer_layout_id must be "
                 f"'hinge_inline_v1' (got {calibration['composer_layout_id']!r})")
-        if calibration["item_selection_policy_id"] != HINGE_PHOTO_SELECTION_POLICY_ID:
+        policy_id = calibration["item_selection_policy_id"]
+        # A retired id gets its own message: it is not a typo, and re-typing the new id over an
+        # old mapping would be exactly the wrong fix.  v1 was measured against a selection
+        # contract that no longer exists, so only a fresh campaign can license v2.
+        if policy_id in HINGE_SUPERSEDED_PHOTO_SELECTION_POLICY_IDS:
+            raise ValueError(
+                f"Config: apps.{app}.targeting_calibration.item_selection_policy_id {policy_id} "
+                f"is superseded by {HINGE_PHOTO_SELECTION_POLICY_ID}; recalibrate under the "
+                f"current policy")
+        if policy_id != HINGE_PHOTO_SELECTION_POLICY_ID:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.item_selection_policy_id must be "
                 f"{HINGE_PHOTO_SELECTION_POLICY_ID!r} "
-                f"(got {calibration['item_selection_policy_id']!r})")
+                f"(got {policy_id!r})")
         frame_size = calibration["frame_size_px"]
         if (not isinstance(frame_size, (list, tuple)) or len(frame_size) != 2
                 or any(type(v) is not int or v <= 0 for v in frame_size)):
@@ -556,6 +602,286 @@ def _validate_targeting_calibration(cfg: Config) -> None:
                     "Config: apps.hinge.targeting_calibration cannot license numbered "
                     f"targeting because {policy_blocker}. Remove the optional mapping; Hinge "
                     "Observe remains available without targeted suggestions")
+
+
+def _validate_hinge_still_photo_bound_evidence(cfg: Config) -> None:
+    """Install artifact-derived numbering readiness, or leave numbering fail-closed.
+
+    This is the ONLY way ``hinge_targeting_unavailable_reason()`` can start returning None (see
+    ops/STILL-PHOTO-DISCRIMINATOR.md section 5).  Readiness is process-global, so the first thing
+    this does is drop whatever an earlier ``validate()`` installed: without that, validating a
+    config that carries the evidence and then one that does not would leave the second run
+    numbering on evidence it never presented.  Absence of the key is not an error (that is the
+    normal, shipped state); a present-but-wrong key is always fatal, never a warning.
+    """
+    clear_installed_still_photo_bound()
+    if "hinge" not in cfg.enabled_apps:
+        return
+    app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
+    if "still_photo_bound_evidence" not in app_cfg:
+        return
+    raw = app_cfg["still_photo_bound_evidence"]
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence must be a mapping "
+            f"(got {type(raw).__name__})")
+    unknown = (set(raw) - _STILL_PHOTO_BOUND_EVIDENCE_KEYS
+               - _STILL_PHOTO_BOUND_OPTIONAL_EVIDENCE_KEYS)
+    missing = _STILL_PHOTO_BOUND_EVIDENCE_KEYS - set(raw)
+    if unknown or missing:
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence must carry exactly "
+            f"{sorted(_STILL_PHOTO_BOUND_EVIDENCE_KEYS)} (missing {sorted(missing)}, "
+            f"unknown {sorted(unknown)}), plus "
+            f"{sorted(_STILL_PHOTO_BOUND_OPTIONAL_EVIDENCE_KEYS)} on the circular AI-labelled "
+            f"{STILL_PHOTO_BOUND_CIRCULAR_CHANNEL} channel only")
+    for key in _STILL_PHOTO_BOUND_MIRRORED_TEXT_KEYS + ("artifact_path", "artifact_sha256"):
+        if not isinstance(raw[key], str) or not raw[key].strip():
+            raise ValueError(
+                f"Config: apps.hinge.still_photo_bound_evidence.{key} must be nonempty text "
+                f"(got {_safe_value_repr(raw[key])})")
+    for key in _STILL_PHOTO_BOUND_MIRRORED_INT_KEYS:
+        # `type(...) is not int` rather than isinstance: bool is an int subclass, so a stray
+        # `video_accepts: true` would otherwise validate as one accept.
+        if type(raw[key]) is not int:
+            raise ValueError(
+                f"Config: apps.hinge.still_photo_bound_evidence.{key} must be an exact integer "
+                f"card count (got {_safe_value_repr(raw[key])})")
+    run_s = raw["max_video_exact_run_s"]
+    if isinstance(run_s, bool) or not isinstance(run_s, Real) or not _is_finite_number(run_s):
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence.max_video_exact_run_s must be a "
+            f"finite number of seconds (got {_safe_value_repr(run_s)})")
+    # The circular AI-labelled channel (owner decision 2026-08-21) labels its videos with the
+    # same mute-glyph matcher whose blind spot the bound is meant to quantify, so it can never
+    # claim human ground truth and is licensed only by the owner's recorded acceptance.  The
+    # phrase is demanded here AND in the digest-bound artifact below: requiring it in the pasted
+    # mapping stops a re-run of the measurement tool from opting the owner in behind their back,
+    # and requiring it in the artifact stops a one-line config edit from doing the same.  On the
+    # owner channel the key is forbidden outright, so an owner-labelled bound can never be read
+    # as having accepted a circularity it does not have.
+    is_circular = raw["ground_truth_channel"] == STILL_PHOTO_BOUND_CIRCULAR_CHANNEL
+    acceptance = raw.get("accepted_circular_risk")
+    if is_circular:
+        if acceptance != STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE:
+            raise ValueError(
+                "Config: apps.hinge.still_photo_bound_evidence.accepted_circular_risk must be "
+                f"exactly {STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE!r} because ground_truth_channel "
+                f"is {STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r}, the circular AI-labelled channel "
+                "whose video labels come from the same mute-glyph matcher the bound measures "
+                f"(got {_safe_value_repr(acceptance)})")
+    elif "accepted_circular_risk" in raw:
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence.accepted_circular_risk accepts the "
+            f"circular AI-labelled channel {STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r} and is valid "
+            f"only there; this bound declares ground_truth_channel "
+            f"{raw['ground_truth_channel']!r}, so remove the key")
+    # The measured bound is only valid for the phone it was measured on.  Same reasoning as
+    # targeting_calibration.device above: an exact ADB serial, compared byte for byte, is the
+    # only thing that stops a copied artifact from licensing numbering on another handset.
+    serial = app_cfg.get("serial")
+    if not isinstance(serial, str) or not serial:
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence requires a nonempty apps.hinge.serial "
+            "exact ADB device serial")
+    if raw["device"] != serial:
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence.device must exactly equal "
+            f"apps.hinge.serial (got {raw['device']!r} != {serial!r})")
+
+    artifact_path = Path(raw["artifact_path"])
+    if artifact_path.is_absolute():
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence.artifact_path must be a "
+            "repo-relative local path")
+    root = Path.cwd().resolve()
+    resolved = (root / artifact_path).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence.artifact_path escapes the repository"
+        ) from exc
+    try:
+        content = resolved.read_bytes()
+    except OSError as exc:
+        raise ValueError(
+            f"Config: apps.hinge.still_photo_bound_evidence artifact is unreadable: {resolved}"
+        ) from exc
+    if hashlib.sha256(content).hexdigest() != raw["artifact_sha256"]:
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence.artifact_sha256 does not match its "
+            "artifact")
+    try:
+        artifact = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence artifact is not JSON") from exc
+    if not isinstance(artifact, dict):
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence artifact must be a JSON object")
+    # Deliberately NOT an exact artifact key set: the measurement tool also records per-card
+    # verdicts, frame digests and geometry, and pinning its full schema here would make config
+    # validation the thing that has to change every time the tool records more evidence.  What
+    # is pinned is that every number the mapping quotes is the artifact's own number.
+    for key in _STILL_PHOTO_BOUND_MIRRORED_TEXT_KEYS:
+        if artifact.get(key) != raw[key]:
+            raise ValueError(
+                f"Config: apps.hinge.still_photo_bound_evidence artifact disagrees on {key} "
+                f"({_safe_value_repr(artifact.get(key))} != {raw[key]!r})")
+    for key in _STILL_PHOTO_BOUND_MIRRORED_INT_KEYS:
+        if type(artifact.get(key)) is not int or artifact[key] != raw[key]:
+            raise ValueError(
+                f"Config: apps.hinge.still_photo_bound_evidence artifact disagrees on {key} "
+                f"({_safe_value_repr(artifact.get(key))} != {raw[key]!r})")
+    artifact_run_s = artifact.get("max_video_exact_run_s")
+    if (isinstance(artifact_run_s, bool) or not isinstance(artifact_run_s, Real)
+            or not _is_finite_number(artifact_run_s)
+            or float(artifact_run_s) != float(run_s)):
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence artifact disagrees on "
+            f"max_video_exact_run_s ({_safe_value_repr(artifact_run_s)} != "
+            f"{_safe_value_repr(run_s)})")
+    # human_ground_truth is deliberately read only from the artifact and is not a config key:
+    # it is the one claim nothing downstream can re-derive, so the measurement run has to make
+    # it, not the person pasting the mapping.  Which value is demanded is decided by the channel,
+    # so a campaign cannot pick its channel in the mapping and its truthfulness in the artifact.
+    human_ground_truth = artifact.get("human_ground_truth")
+    if is_circular:
+        if human_ground_truth is not False:
+            raise ValueError(
+                "Config: apps.hinge.still_photo_bound_evidence artifact must declare "
+                f"human_ground_truth=false on {STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r}, the "
+                "circular AI-labelled channel; claiming human ground truth there is a lie "
+                f"(got {_safe_value_repr(human_ground_truth)})")
+        artifact_acceptance = artifact.get("accepted_circular_risk")
+        if artifact_acceptance != acceptance:
+            raise ValueError(
+                "Config: apps.hinge.still_photo_bound_evidence artifact disagrees on "
+                f"accepted_circular_risk ({_safe_value_repr(artifact_acceptance)} != "
+                f"{acceptance!r}); the circular AI-labelled channel "
+                f"{STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r} must be accepted in the measurement "
+                "artifact itself, not only in the pasted mapping")
+    elif human_ground_truth is not True:
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence artifact must declare "
+            f"human_ground_truth=true (got {_safe_value_repr(human_ground_truth)})")
+    if artifact.get("ground_truth_channel") not in (
+            STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL, STILL_PHOTO_BOUND_CIRCULAR_CHANNEL):
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence artifact must record "
+            f"ground_truth_channel {STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL!r} (owner labelled) "
+            f"or {STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r} (circular AI labelled, opted in through "
+            "accepted_circular_risk)")
+    try:
+        install_verified_still_photo_bound(StillPhotoBoundSummary(
+            ground_truth_channel=raw["ground_truth_channel"],
+            # The artifact's own value, proven exactly True or exactly False just above; never a
+            # constant, so the summary records which channel actually produced the labels.
+            human_ground_truth=human_ground_truth,
+            video_cards=raw["video_cards"],
+            video_accepts=raw["video_accepts"],
+            photo_cards=raw["photo_cards"],
+            photo_false_refusals=raw["photo_false_refusals"],
+            max_video_exact_run_s=float(run_s),
+            artifact_sha256=raw["artifact_sha256"],
+            device=raw["device"],
+            hinge_version_name=raw["hinge_version_name"],
+            accepted_circular_risk=acceptance if is_circular else None,
+        ))
+    except ValueError as exc:
+        raise ValueError(
+            f"Config: apps.hinge.still_photo_bound_evidence is not a shippable bound: {exc}"
+        ) from exc
+
+
+def _validate_hinge_still_photo_assumption_acceptance(cfg: Config) -> None:
+    """Install the owner's centered-autoplay assumption as the numbering licence, or leave it off.
+
+    Deliberately does NOT clear readiness on entry, unlike the measured validator: the two share
+    one slot and one lifecycle, and clearing here would wipe a bound the measured pass had just
+    installed.  ``_validate_hinge_still_photo_readiness`` owns the reset for both, and the
+    mutual-exclusion check there guarantees at most one of the two keys is ever present.
+    """
+    if "hinge" not in cfg.enabled_apps:
+        return
+    app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
+    if "still_photo_assumption_acceptance" not in app_cfg:
+        return
+    raw = app_cfg["still_photo_assumption_acceptance"]
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "Config: apps.hinge.still_photo_assumption_acceptance must be a mapping "
+            f"(got {type(raw).__name__})")
+    unknown = set(raw) - _STILL_PHOTO_ASSUMPTION_KEYS
+    missing = _STILL_PHOTO_ASSUMPTION_KEYS - set(raw)
+    if unknown or missing:
+        raise ValueError(
+            "Config: apps.hinge.still_photo_assumption_acceptance must carry exactly "
+            f"{sorted(_STILL_PHOTO_ASSUMPTION_KEYS)} (missing {sorted(missing)}, "
+            f"unknown {sorted(unknown)})")
+    for key in sorted(_STILL_PHOTO_ASSUMPTION_KEYS):
+        if not isinstance(raw[key], str) or not raw[key].strip():
+            raise ValueError(
+                f"Config: apps.hinge.still_photo_assumption_acceptance.{key} must be nonempty "
+                f"text (got {_safe_value_repr(raw[key])})")
+    if raw["acceptance"] != STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION:
+        # Byte-equal, same reasoning as the circular acceptance above: a sentence naming what is
+        # being accepted cannot be typed by mistake, and a near-miss must not half-license it.
+        raise ValueError(
+            "Config: apps.hinge.still_photo_assumption_acceptance.acceptance must be exactly "
+            f"{STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION!r}; this channel ships numbering with NO "
+            "measured video false-accept rate, so the acceptance is the whole licence "
+            f"(got {_safe_value_repr(raw['acceptance'])})")
+    # An assumption about how Hinge autoplays is an assumption about ONE app build on ONE phone.
+    # Same exact-serial rule as the measured bound: a copied config block must not silently
+    # license numbering on a handset the owner never looked at.
+    serial = app_cfg.get("serial")
+    if not isinstance(serial, str) or not serial:
+        raise ValueError(
+            "Config: apps.hinge.still_photo_assumption_acceptance requires a nonempty "
+            "apps.hinge.serial exact ADB device serial")
+    if raw["device"] != serial:
+        raise ValueError(
+            "Config: apps.hinge.still_photo_assumption_acceptance.device must exactly equal "
+            f"apps.hinge.serial (got {raw['device']!r} != {serial!r})")
+    try:
+        install_accepted_still_photo_assumption(StillPhotoAssumptionAcceptance(
+            acceptance=raw["acceptance"],
+            accepted_at=raw["accepted_at"],
+            device=raw["device"],
+            hinge_version_name=raw["hinge_version_name"],
+            rationale=raw["rationale"],
+        ))
+    except ValueError as exc:
+        raise ValueError(
+            f"Config: apps.hinge.still_photo_assumption_acceptance is not installable: {exc}"
+        ) from exc
+
+
+def _validate_hinge_still_photo_readiness(cfg: Config) -> None:
+    """Install AT MOST ONE numbering licence: the measured bound, or the accepted assumption.
+
+    Readiness is process-global and single-slotted, so the reset lives here, before anything can
+    raise.  The mutual-exclusion check runs before either installer for the same reason: a config
+    carrying both keys must leave readiness OFF, not install one of them and then reject the run.
+    """
+    clear_installed_still_photo_bound()
+    if "hinge" in cfg.enabled_apps:
+        app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
+        if ("still_photo_bound_evidence" in app_cfg
+                and "still_photo_assumption_acceptance" in app_cfg):
+            raise ValueError(
+                "Config: apps.hinge.still_photo_bound_evidence and "
+                "apps.hinge.still_photo_assumption_acceptance are mutually exclusive; numbering "
+                "accepts exactly one licence. A measured held-out bound must not be shadowed by "
+                "an unmeasured assumption, and an assumption must not be dressed up as a "
+                "measurement: keep the evidence and delete the acceptance, or delete the "
+                "evidence to ship on the assumption alone")
+    # Order matters only in that the measured pass also performs the reset for a direct caller
+    # (the measurement tool's own tests call it standalone); it is idempotent here.
+    _validate_hinge_still_photo_bound_evidence(cfg)
+    _validate_hinge_still_photo_assumption_acceptance(cfg)
 
 
 def _canonical_sha256(value) -> str:
@@ -1268,6 +1594,11 @@ _MAX_ADVISORY_DEADLINE_S = 300.0
 
 def validate(cfg: Config) -> None:
     """Fail fast with a clear message on misconfig (called by the entry points)."""
+    # Numbered-targeting readiness is process-global, and only the evidence check below can
+    # turn it on.  Clear it here, before anything can raise, so a config that fails validation
+    # for an unrelated reason (or one that simply omits the evidence key) can never inherit a
+    # licence installed by an earlier validate() in this process.
+    clear_installed_still_photo_bound()
     _validate_config_shape(cfg)
     if not cfg.enabled_apps:
         raise ValueError("Config: enabled_apps is empty")
@@ -1298,6 +1629,11 @@ def validate(cfg: Config) -> None:
     _validate_storage(cfg)
     _validate_verification(cfg)
     _validate_android_fractions(cfg)
+    # Must run BEFORE the calibration and release gates: those read
+    # hinge_targeting_unavailable_reason(), which this call is what answers.  It covers BOTH
+    # readiness channels (measured bound, accepted assumption) and refuses a config that
+    # configures both.
+    _validate_hinge_still_photo_readiness(cfg)
     _validate_targeting_calibration(cfg)
     _validate_hinge_ai_observe_controller(cfg)
     _validate_hinge_auto_release_gate(cfg)

@@ -44,7 +44,7 @@ def _calibration(**overrides):
         "hinge_version_name": "9.134.0",
         "frame_size_px": [_W, _H],
         "composer_layout_id": "hinge_inline_v1",
-        "item_selection_policy_id": "hinge_photos_only_v1",
+        "item_selection_policy_id": "hinge_photos_only_v2",
         "identity_match_max_dist": 2.0,
         "inline_item_max_dist": 10.0,
         "device": "pixel",
@@ -293,9 +293,38 @@ def test_missing_targeting_calibration_refuses_a_model_item_before_any_gesture()
     with pytest.MonkeyPatch.context() as mp:
         driver = _driver(adb, mp, payload=_payload(), anchor=b"fixture anchor",
                          targeting_calibration=False)
+        # The absent-mapping reason is operator-facing (hub banner, startup notice, bug
+        # reports): plain prose only, never the RUNBOOK's literal `apps.<app>.…` schema
+        # notation, which renders as a failed-interpolation bug (reported 2026-08-21).
+        assert driver._targeting_calibration_unavailable == "not configured in config.yaml"
+        assert "<app>" not in driver._targeting_calibration_unavailable
         with pytest.raises(HingeTargetingError, match="targeting_calibration"):
             driver.like("an opener", model_item_index=1)
     assert adb.calls == [] and adb.taps == [] and adb.texts == []
+
+
+def test_absent_calibration_reasons_match_the_hub_banner_trim_byte_for_byte():
+    """The two run-level reasons are pinned EXACTLY because hub.html depends on their bytes.
+
+    renderSwipe's targeting-setup branch strips these sentences' internal consequence clauses
+    ("…usable consumer" / "no opener text is offered") before showing the reason to the
+    operator as fine print — a literal-string trim that degrades harmlessly (full sentence
+    shown) if the driver wording drifts. Harmless must not also be silent: the operator-jargon
+    leak is the exact class the 2026-08-21 bug report was about. Rewording either sentence
+    here must fail this test, whose fix is to update the trim literals in hub.html's
+    renderSwipe alongside the driver.
+    """
+    adb = SheetAdb(_SHEETS[0])
+    with pytest.MonkeyPatch.context() as mp:
+        driver = _driver(adb, mp, payload=_payload(), anchor=b"fixture anchor",
+                         targeting_calibration=False)
+        assert driver._item_enumeration_blocker() == (
+            "apps.hinge.targeting_calibration is unavailable (not configured in config.yaml), "
+            "so a model-selected item could not be verified or targeted and no numbered item "
+            "list would have a usable consumer")
+        assert driver.targeted_suggestion_blocker() == (
+            "targeted suggestion is unavailable because apps.hinge.targeting_calibration is "
+            "unavailable (not configured in config.yaml); no opener text is offered")
 
 
 def test_targeting_calibration_is_parsed_and_used_for_model_item_likes():

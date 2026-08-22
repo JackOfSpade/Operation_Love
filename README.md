@@ -145,26 +145,31 @@ extra installed.
   stores it as a label, and **retrains the ranker live** (transitions itself
   from `defer` → ready mid-session). No autonomous actions. On Hinge, click the
   pass **X** or a **heart**. Targeted opener suggestions are currently blocked:
-  the available pixel signals do not positively distinguish a still photo from a
-  paused/static video. The archived numeric calibration cannot license the
-  `hinge_photos_only_v1` policy, and config validation rejects reinstalling it.
-  Observe therefore withholds numbered suggestion text, while manual pass/like
-  labels still work normally. Do not add guessed bounds or restore a historical
-  calibration. If a future positive discriminator is implemented and measured,
-  the hub may again show optional help for a like; that help is **not a
-  recommendation or decision**. You can tap **X** to pass or choose a like yourself.
+  the still-photo discriminator (`hinge_photos_only_v2`, see
+  `ops/STILL-PHOTO-DISCRIMINATOR.md`) is implemented fail-closed and stays off
+  until an owner-labeled held-out video false-accept bound is measured on the
+  device and installed as `apps.hinge.still_photo_bound_evidence`. The archived
+  numeric calibration used the superseded `hinge_photos_only_v1` policy and
+  config validation rejects reinstalling it. Observe therefore withholds
+  numbered suggestion text, while manual pass/like labels still work normally.
+  Do not add guessed bounds or restore a historical calibration. Once the bound
+  is measured and a fresh calibration passes, the hub may again show optional
+  help for a like; that help is **not a recommendation or decision**. You can
+  tap **X** to pass or choose a like yourself.
   Written prompts are readable context but are never selectable targets. Then tap
   **Send Like / Send Priority Like** yourself. A Hinge like is persisted only after that final send
   advances the profile. The composer remains inline beneath the selected item;
   hearting another item moves it, and advancing the profile clears it. This is
   how you seed your taste — from real usage, not stock images.
 - **auto** — the bot swipes for you with the learned model. Decisions are recorded
-  for stats and optional limits, but are not fed back as training labels. Hinge Auto
-  is structurally fail-closed while positive still-photo proof is unavailable. A release
-  artifact alone cannot bypass that policy. Enabling it in the future requires the positive
-  discriminator, a new build/device-bound calibration, and then a verified manual
-  `observe_release_evidence` artifact or separately accepted AI-reviewed artifact; the
-  shipped config intentionally contains none of those release-licensing mappings.
+  for stats and optional limits, but are not fed back as training labels. Hinge Auto is
+  structurally fail-closed and stays that way under every still-photo licence: an accepted
+  assumption can never license Auto, and a release artifact alone cannot bypass the targeting
+  policy. Enabling it requires a licensed still-photo discriminator (the shipped config carries
+  the owner's accepted centered-autoplay assumption), a build/device-bound
+  `targeting_calibration`, and then a verified manual `observe_release_evidence` artifact or a
+  separately accepted AI-reviewed one. The shipped config intentionally contains neither the
+  calibration nor a release-licensing mapping.
 
 **Hinge is code-complete** (host-side ADB + vision-located taps — no on-device
 helper, no emulator; see ops/HINGE-PIXEL-RUNBOOK.md) and is the only currently
@@ -184,6 +189,8 @@ Everything machine-independent is done and unit-tested (run `pytest` for the
 current suite/test count). The only remaining work needs your machine + a
 real account, and it's all batched in
 **[ops/RUNBOOK.md](ops/RUNBOOK.md)**: install, connect the physical phone,
-verify Observe-mode behavior, and seed your taste. Hinge Auto and numbered targeted
-suggestions remain blocked until a positive still-photo discriminator is implemented and
-measured; only after that prerequisite can a fresh calibration and release gate be earned.
+verify Observe-mode behavior, and seed your taste. Numbered targeted suggestions are blocked
+only by the absent `apps.hinge.targeting_calibration`: the still-photo discriminator is
+implemented and licensed by the owner's accepted (UNMEASURED) centered-autoplay assumption, so
+the remaining step is the per-device calibration campaign in RUNBOOK section 2. Hinge Auto stays
+blocked behind its own production-OBSERVE release gate on top of that.

@@ -307,6 +307,67 @@ def _secrets_md() -> str:
     return f"- GEMINI_API_KEY: {shown('GEMINI_API_KEY')}"
 
 
+def _targeting_readiness_md(config_path: str) -> str:
+    """Why Hinge is or is not offering numbered targeted openers, as three separable facts.
+
+    ADDED 2026-08-22 with the fix for the bug this section exists to have caught. The report
+    that prompted it said `opener: enabled=True`, `GEMINI_API_KEY: present`, and zero provider
+    calls, and left the actual cause -- one absent config key -- to be reconstructed from a
+    driver sentence buried in the run log. Worse, the two facts that together explain it sat in
+    different places and contradicted each other on a skim: the log announced that targeted
+    suggestions were ENABLED under an accepted assumption, while the hub banner said still-photo
+    proof was still required.
+
+    So report the whole chain, in the order it gates: the still-photo licence, then the
+    calibration, then the resulting blocker and the one step that would clear it. Any of the
+    three can be the answer, and which one it is has never been visible here.
+
+    Deliberately side-effect free: it reads the config file and the process-local licence slot
+    but never calls ``config.validate()``, which would clear and reinstall that slot underneath
+    a live run. When the report is generated from the hub the slot is already populated by the
+    run's own validation, which is exactly the state worth reporting; from a bare CLI it is
+    empty, and the config-key line below is what carries the answer instead.
+    """
+    from . import targeting_policy as tp
+    lines: list[str] = []
+    try:
+        import yaml
+        raw = yaml.safe_load(Path(config_path).read_text()) or {}
+        app = ((raw.get("apps") or {}).get("hinge") or {}) if isinstance(raw, dict) else {}
+        if not isinstance(app, dict):
+            app = {}
+    except Exception as exc:  # noqa: BLE001 -- a diagnostic section must not raise over config
+        return f"- ⚠️ could not read `{config_path}` for targeting state: {exc}"
+
+    licence_keys = [k for k in ("still_photo_bound_evidence", "still_photo_assumption_acceptance")
+                    if k in app]
+    lines.append("- still-photo licence key in config: "
+                 + (", ".join(f"`apps.hinge.{k}`" for k in licence_keys) if licence_keys
+                    else "none — numbering is refused everywhere until one is installed"))
+    provenance = tp.still_photo_licence_provenance()
+    lines.append("- licence installed in THIS process: "
+                 + (provenance if provenance else
+                    "no (expected when the report is generated outside a validated run)"))
+    lines.append("- `apps.hinge.targeting_calibration`: "
+                 + ("present" if isinstance(app.get("targeting_calibration"), dict)
+                    else "ABSENT — no numbered item list, so no targeted opener is generated "
+                         "or offered"))
+    blocker = tp.hinge_targeting_unavailable_reason()
+    lines.append("- targeting-policy blocker: " + (blocker if blocker else "none"))
+    if blocker is not None and licence_keys:
+        # Do not let an unvalidated reporting process contradict the config two lines above.
+        # The blocker and next step are read from THIS process's slot; a config that carries a
+        # licence key would install one the moment a run validated it, and printing the
+        # pre-licence next step without saying so is precisely the stale-guidance failure this
+        # section was added to catch.
+        lines.append("- ⚠️ the blocker above reflects this unvalidated reporting process, not a "
+                     "run: the config key above would install a licence when a run validates "
+                     "it. Re-check inside the run, or with `config.validate(config.load(...))`")
+    else:
+        lines.append("- next step: " + tp.targeting_setup_next_step())
+    return "\n".join(lines)
+
+
 def _diagnostic_improvement_md() -> str:
     return (
         "- If this report is not enough to diagnose the issue, improve "
@@ -2055,6 +2116,7 @@ def build_report(hub_state=None, description: str = "", config_path: str = "conf
         f"## Dependencies\n{_safe_section(_deps_md)}\n\n"
         f"## Capabilities\n{_safe_section(_capabilities_md, config_path)}\n\n"
         f"## Config (config.yaml)\n{_safe_section(_config_md, config_path)}\n\n"
+        f"## Hinge targeting readiness\n{_safe_section(_targeting_readiness_md, config_path)}\n\n"
         f"## Secrets (presence only — never raw values)\n{_safe_section(_secrets_md)}\n\n"
         f"## Diagnostic improvement\n{_safe_section(_diagnostic_improvement_md)}\n\n"
         f"## Run status\n{_safe_section(_status_md, hub_state)}\n\n"

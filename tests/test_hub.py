@@ -2391,34 +2391,144 @@ def test_observe_banner_replaces_the_opener_with_a_warning_on_a_mismatch():
     assert "<img" not in out3["html"] and "&lt;img" in out3["html"]
 
 
-def test_observe_banner_names_missing_hinge_targeting_calibration_as_setup():
-    """A missing calibration is run-level setup, not a profile-specific suggestion failure.
+def test_observe_banner_keeps_the_go_cue_when_hinge_targeting_calibration_is_absent():
+    """A missing calibration is a RUN-LEVEL, currently intentional condition — the decision
+    window must stay a 🟢 GO box, never become a warning.
 
-    The driver includes the detailed reason for diagnosis, while this surface supplies the
-    operator-facing consequence and the fact that Observe still records manual labels.
+    2026-08-21, second bug report about this same banner in one day: rendering the condition
+    through the WAIT-styled warning box put an amber 🔴 "setup required" notice over EVERY
+    decision window of the run. In the owner's circle convention amber+🔴 means "hands off",
+    so the operator sat out a 2m24s window that was waiting on THEM, then stopped the run.
+    The cue must be byte-identical to the plain no-warning waiting state's GO box; the setup
+    situation is context and lives in the box's fine-print sub row.
     """
     if NODE_BIN is None:
         pytest.skip("node not available on this machine")
+    # The REAL driver string (hinge.py's items-unavailable reason), internal consequence
+    # clause included — the trim below must be proven against what production actually sends.
+    driver_warning = (
+        "apps.hinge.targeting_calibration is unavailable (not configured in config.yaml), "
+        "so a model-selected item could not be verified or targeted and no numbered item "
+        "list would have a usable consumer")
+    # The worker publishes the next step because only its process knows which still-photo
+    # licence is installed; this is the real pre-licence string (targeting_policy's
+    # TARGETING_SETUP_NEXT_STEP_BLOCKED), so the rendering is proven against what ships.
+    next_step_blocked = (
+        "per ops/RUNBOOK.md section 2, positive still-photo proof must exist before a fresh "
+        "calibration can enable suggestions")
     snap = {
         "running": True,
         "status": {"apps": {"hinge": {
             "app": "hinge", "mode": "observe", "state": "waiting",
-            "opener_warning": (
-                "apps.hinge.targeting_calibration is unavailable "
-                "(no apps.<app>.targeting_calibration mapping is configured)"),
+            "opener_warning": driver_warning,
+            "targeting_setup_next_step": next_step_blocked,
         }}},
     }
-    html = _run_node(_observe_status_script(snap))["html"]
-    assert "targeted opener setup required" in html
-    assert "manual pass/like labels still work" in html.lower()
-    assert "ops/RUNBOOK.md" in html
+    out = _run_node(_observe_status_script(snap))
+    html = out["html"]
+    assert out["display"] == "block"
+    # The decision cue is the box's full-size title, identical to the plain waiting state,
+    # and the setup note is the fine-print <span> that follows it.
+    assert "🟢 hinge: make your choice: tap X to pass, or tap a heart to like <span" in html
+    # One circle only, and the GO box style — not the amber WAIT style the warning box uses.
+    assert "🔴" not in html
+    assert "background:#123a23" in html and "background:#3a2f12" not in html
+    # The old shape is gone: no "setup required" demand (config validation currently refuses
+    # the very setup it demanded) and no warning-box title.
+    assert "targeted opener setup required" not in html
     assert "no suggestion to type" not in html
+    # The fine print keeps the diagnosable core of the driver's reason but drops the internal
+    # consequence clause — that sentence is for logs and bug reports, not the operator.
+    assert "no targeted suggestion this run" in html
+    assert "not configured in config.yaml" in html
+    assert "usable consumer" not in html
+    assert "manual pass/like labels still work" in html.lower()
+    # The next step is whatever the worker published, verbatim — never a sentence this page
+    # decided for itself. Hardcoding it here is what produced the 2026-08-22 report: the page
+    # kept demanding still-photo proof after the owner's acceptance had already licensed
+    # numbering, so the only remaining step (capture the calibration) was never named.
+    assert "ops/RUNBOOK.md" in html and next_step_blocked in html
+    # GO cue first, context after — the inverse of the reported screenshot.
+    assert html.index("🟢") < html.index("still-photo proof")
 
+    # Sheet open: still a GO box (type and send), with the same fine-print context. The
+    # trim also covers the driver's other phrasing (targeted_suggestion_blocker's).
     sending = {"running": True, "status": {"apps": {"hinge": dict(
-        snap["status"]["apps"]["hinge"], state="waiting_for_send")}}}
+        snap["status"]["apps"]["hinge"], state="waiting_for_send",
+        opener_warning=("targeted suggestion is unavailable because "
+                        "apps.hinge.targeting_calibration is unavailable "
+                        "(not configured in config.yaml); no opener text is offered"))}}}
     sending_html = _run_node(_observe_status_script(sending))["html"]
     assert "type your own opener, then tap Send Like / Send Priority Like" in sending_html
+    assert "background:#123a23" in sending_html and "🔴" not in sending_html
+    assert "targeted suggestion is unavailable because" not in sending_html
+    assert "no opener text is offered" not in sending_html
+    assert "not configured in config.yaml" in sending_html
     assert "click pass X or heart" not in sending_html
+
+    # Any other state falls through to that state's own cue: a stale run-level note must not
+    # override "reading profile" with a GO instruction (the warning branch used to intercept
+    # every state). And the fall-through must not loosen doc 5.9's nothing-copyable pin: even
+    # with an opener_suggestion impossibly present beside the warning, no copyable text may
+    # render — the state box wins, exactly as for the warning-only shape.
+    capturing = {"running": True, "status": {"apps": {"hinge": dict(
+        snap["status"]["apps"]["hinge"], state="capturing",
+        opener_suggestion="Based on that ridgeline I'm going to guess Norway")}}}
+    capturing_html = _run_node(_observe_status_script(capturing))["html"]
+    assert "🔴 wait — reading hinge profile…" in capturing_html
+    assert "make your choice" not in capturing_html
+    assert "still-photo proof" not in capturing_html
+    assert "Norway" not in capturing_html and "type exactly this" not in capturing_html
+
+    # Shutdown still outranks the GO cue: a decision made now would be discarded.
+    stopping = {"running": True, "status": {"stopping": True, "apps": {"hinge": dict(
+        snap["status"]["apps"]["hinge"])}}}
+    stopping_html = _run_node(_observe_status_script(stopping))["html"]
+    assert "stopping — do not swipe" in stopping_html
+    assert "make your choice" not in stopping_html
+
+    # The run-level reason is operator data, not markup: it is escaped like every other
+    # dynamic value that reaches innerHTML.
+    hostile = {"running": True, "status": {"apps": {"hinge": dict(
+        snap["status"]["apps"]["hinge"],
+        opener_warning='targeting_calibration <img src=x onerror="alert(1)">')}}}
+    hostile_html = _run_node(_observe_status_script(hostile))["html"]
+    assert "<img" not in hostile_html and "&lt;img" in hostile_html
+
+    # THE BUG OF 2026-08-22. Once a still-photo licence is installed the worker publishes the
+    # OTHER next step, and the fine print must follow it there. The page must not keep naming a
+    # prerequisite the operator already satisfied, and must name the one step that would restore
+    # suggestions — otherwise a solvable run-level gate reads as an upstream block, which is
+    # exactly why the calibration went uncaptured for a day.
+    next_step_calibrate = (
+        "still-photo numbering is licensed, so the one remaining step is the per-device "
+        "targeting calibration campaign in ops/RUNBOOK.md section 2: capture both splits, "
+        "measure them, and paste the emitted apps.hinge.targeting_calibration block into "
+        "config.yaml")
+    licensed = {"running": True, "status": {"apps": {"hinge": dict(
+        snap["status"]["apps"]["hinge"],
+        targeting_setup_next_step=next_step_calibrate)}}}
+    licensed_html = _run_node(_observe_status_script(licensed))["html"]
+    # No &<>"' in the real string, so escaping is the identity here and a raw match is exact.
+    assert next_step_calibrate in licensed_html
+    assert "still-photo proof must exist" not in licensed_html
+    # Still the same single 🟢 GO cue: which next step is named never restyles the decision window.
+    assert "🟢 hinge: make your choice: tap X to pass, or tap a heart to like <span" in licensed_html
+    assert "🔴" not in licensed_html
+    assert "background:#123a23" in licensed_html and "background:#3a2f12" not in licensed_html
+
+    # With nothing published (an older worker, or a poll that raced the run's start) the note
+    # ends after "manual pass/like labels still work" rather than asserting a prerequisite this
+    # page cannot verify. Guessing is what went stale; silence cannot.
+    unpublished = {"running": True, "status": {"apps": {"hinge": {
+        "app": "hinge", "mode": "observe", "state": "waiting",
+        "opener_warning": driver_warning}}}}
+    unpublished_html = _run_node(_observe_status_script(unpublished))["html"]
+    assert "no targeted suggestion this run" in unpublished_html
+    assert "manual pass/like labels still work" in unpublished_html.lower()
+    assert "still-photo proof" not in unpublished_html
+    assert "ops/RUNBOOK.md" not in unpublished_html
+    assert "🟢 hinge: make your choice: tap X to pass, or tap a heart to like <span" in unpublished_html
 
 
 def test_observe_banner_offers_no_text_to_type_when_a_warning_and_an_opener_arrive_together():
@@ -3224,3 +3334,65 @@ def test_mode_picker_exposes_escaped_config_reason_through_accessible_hint():
     assert result["selectTitle"].startswith("Auto unavailable:")
     assert "<img" not in result["hint"]
     assert "&lt;img" in result["hint"] and "&quot;alert(1)&quot;" in result["hint"]
+
+
+def test_observe_banner_shows_an_unmeasured_licence_as_context_never_as_a_wait_cue():
+    """Owner decision 2026-08-21: numbering may ship on an UNMEASURED centered-autoplay
+    assumption, and when it does every run must SAY so.
+
+    Numbering looks identical whether a measured held-out bound or the owner's assumption
+    licensed it, so words are the only place the difference can survive to an operator. But it
+    is context about a decision already taken, not something they must stop for -- so it obeys
+    the same rule as the targeting-setup note above: the decision window keeps its 🟢 GO box,
+    its GO colours and its single circle, and the provenance is neutral fine print beneath.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node not available on this machine")
+    from operation_love import targeting_policy as tp
+
+    notice = tp.STILL_PHOTO_ASSUMPTION_OPERATOR_NOTICE
+    waiting = {"running": True, "status": {"apps": {"hinge": {
+        "app": "hinge", "mode": "observe", "state": "waiting",
+        "targeting_licence_notice": notice}}}}
+    html = _run_node(_observe_status_script(waiting))["html"]
+
+    # The decision cue is byte-identical to an ordinary waiting run's.
+    assert "🟢 hinge: make your choice: tap X to pass, or tap a heart to like" in html
+    # The provenance is stated plainly, and leads with what is missing.
+    assert "UNMEASURED assumption (centered autoplay)" in html
+    assert "no video false-accept rate has been measured" in html
+    # GO styling only: no amber WAIT box, no second circle, no "hands off" cue.
+    assert "background:#123a23" in html and "background:#3a2f12" not in html
+    assert "🔴" not in html
+    assert html.count("🟢") == 1
+    # GO cue first, context after -- the inverse of the banner bug reported twice on 2026-08-21.
+    assert html.index("🟢") < html.index("UNMEASURED")
+
+    # An ordinary licensed-by-measurement run publishes no notice, so nothing is rendered:
+    # a confession printed on every run regardless is how operators learn to stop reading.
+    measured = {"running": True, "status": {"apps": {"hinge": {
+        "app": "hinge", "mode": "observe", "state": "waiting"}}}}
+    measured_html = _run_node(_observe_status_script(measured))["html"]
+    assert "UNMEASURED" not in measured_html
+    assert "false-accept" not in measured_html
+
+    # It rides along with the copyable-opener box too -- that box is the one the operator reads
+    # most, and it must not become the one run state where the provenance disappears.
+    with_opener = {"running": True, "status": {"apps": {"hinge": dict(
+        waiting["status"]["apps"]["hinge"], state="waiting_for_send",
+        opener_suggestion="That ridgeline looks like the Lofoten traverse")}}}
+    opener_html = _run_node(_observe_status_script(with_opener))["html"]
+    assert "That ridgeline looks like the Lofoten traverse" in opener_html
+    assert "no video false-accept rate has been measured" in opener_html
+    # And it must not be welded onto the opener line itself (owner rule: the string shown for
+    # typing is byte-identical to what auto would type, so hub chrome never shares its row).
+    # The provenance follows the whole opener box, in its own neutral row.
+    assert opener_html.index("Lofoten traverse") < opener_html.index("false-accept")
+    assert "color:#9a9aa2" in opener_html.split("Lofoten traverse")[1]
+
+    # Same escaping rule as every other dynamic value that reaches innerHTML.
+    hostile = {"running": True, "status": {"apps": {"hinge": dict(
+        waiting["status"]["apps"]["hinge"],
+        targeting_licence_notice='<img src=x onerror="alert(1)">')}}}
+    hostile_html = _run_node(_observe_status_script(hostile))["html"]
+    assert "<img" not in hostile_html and "&lt;img" in hostile_html

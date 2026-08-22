@@ -4,9 +4,9 @@ This is deliberately separate from ``hinge_calibrate capture``: it lets an opera
 the RUNBOOK's item-1 and gesture-transport checks while a calibration capture is safely paused
 at its final evidence prompts.  It never constructs a driver or touch transport.  Its only
 device calls are read-only model/framebuffer/build queries and ``screencap``; every heart and
-profile advance in this workflow is performed by the owner by hand.  Hinge 9.134 auto-focuses its
-inline composer as soon as the heart is pressed, so this recorder deliberately does not invent a
-separate unfocused/focus transition.
+profile advance in this workflow is performed by the owner by hand.  The live Hinge build recorded
+in the evidence auto-focuses its inline composer as soon as the heart is pressed, so this
+recorder deliberately does not invent a separate unfocused/focus transition.
 
 The output is private, hashed frame evidence below gitignored ``ops/calibration/``.  It is not a
 targeting calibration and cannot emit configuration: it proves only the supervised operational

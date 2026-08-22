@@ -10,10 +10,14 @@
 > manual deck decisions, but numbered targeted suggestions are withheld.
 > The 9.134 AI-reviewed artifact is hash-bound to the superseded build/calibration
 > and cannot be reused or edited. Hinge Auto is structurally blocked; a new release
-> mapping alone cannot enable it. Positive still-photo proof must first be implemented
-> and measured, followed by a fresh build/device-bound calibration and only then a new
-> production-Observe release cycle. Follow [ops/RUNBOOK.md](ops/RUNBOOK.md),
-> especially sections 2 and 4, for current instructions.
+> mapping alone cannot enable it.
+>
+> **Updated 2026-08-22.** The still-photo discriminator is implemented, and numbering is
+> licensed by the owner's accepted (UNMEASURED) centered-autoplay assumption recorded in
+> `apps.hinge.still_photo_assumption_acceptance` — so that prerequisite is no longer what
+> blocks anything. What remains is a fresh build/device-bound calibration and only then a new
+> production-Observe release cycle; an assumption can never license Auto. Follow
+> [ops/RUNBOOK.md](ops/RUNBOOK.md), especially sections 2 and 4, for current instructions.
 
 At the time it was written, this handoff replaced the old paused-PTY, manual-only,
 and pending-release instructions, and the 9.134 AI-reviewed production-Observe
@@ -113,9 +117,9 @@ failed send paths leave no committed opener row.
 ## Reusable production OBSERVE release sequence
 
 This sequence is retained as a historical template and must not be run as a route
-around the current targeting blocker. Only after positive still-photo proof exists and a
-fresh calibration passes the current policy may you keep Hinge in OBSERVE and repeat one
-Worker-owned reviewed Pass/Like cycle. Produce provenance, have a
+around the current targeting blocker. Only after a fresh calibration passes the current policy
+(the still-photo licence itself is already installed — see the 2026-08-22 note above) may you
+keep Hinge in OBSERVE and repeat one Worker-owned reviewed Pass/Like cycle. Produce provenance, have a
 different reviewer identity/process review it, then verify against the active
 store:
 

@@ -104,6 +104,24 @@ class AppStatus:
     # which is exactly why it is a flag and not a `state` value. The old "suggesting" state,
     # which DID block the operator, has no producer left in observe.
     opener_pending: bool = False
+    # Run-level provenance for Hinge numbered targeting, published once at the start of a run and
+    # never cleared per card (it is a property of the RUN, not of one suggestion, so it is
+    # deliberately outside _OPENER_FIELDS' clearing net).  Set only when readiness was licensed
+    # by the owner's UNMEASURED centered-autoplay assumption rather than by a measured held-out
+    # bound -- see targeting_policy.still_photo_licence_operator_notice().  The hub renders it as
+    # neutral fine print BESIDE the decision cue, never as a WAIT/warning box: the operator is
+    # not being asked to stop, they are being told what licensed the numbering they are seeing.
+    targeting_licence_notice: str | None = None
+    # The one action that would restore numbered suggestions, published alongside a run-level
+    # targeting blocker (targeting_policy.targeting_setup_next_step()).  Run-level like the
+    # notice above and equally outside _OPENER_FIELDS' clearing net: the blocker holds for every
+    # card of the run, so a per-card clear would blank the guidance mid-run.
+    #
+    # It is PUBLISHED rather than written into the hub because the correct next step depends on
+    # which still-photo licence is installed, which only the process that ran config validation
+    # knows.  The hub hardcoded the pre-licence answer and went on giving it after the licence
+    # landed -- see targeting_policy.targeting_setup_next_step's comment for what that cost.
+    targeting_setup_next_step: str | None = None
     error: str | None = None
     # Human-readable cause of a "stopped" outcome that did NOT come from an exception --
     # `error` already covers the exception path (worker.py's HALT-on-unexpected handler);

@@ -13,6 +13,7 @@ import os
 import signal
 import threading
 import uuid
+from contextlib import contextmanager
 from numbers import Real
 from pathlib import Path
 
@@ -237,6 +238,30 @@ class _AndroidDeviceLock:
             pass
         self._fh = None
         self._backend = None
+
+
+@contextmanager
+def exclusive_android_device(cfg, app: str = "hinge"):
+    """Hold the SAME cross-process Android lock a run holds, for the duration of the block.
+
+    ADDED 2026-08-22. The lock existed only inside run(), so every offline tool that drives the
+    phone -- the calibration capture, the video-bound campaigns, the scroll/inspect probes --
+    competed with a hub run on the honour system. The failure it invites is not hypothetical:
+    run `a01fbcd1e9a0`'s false Malaika Pass came from two drivers on one phone, and it took a
+    hash-bound retraction plan to undo. A capture campaign is exactly the case the honour system
+    loses, because it runs for many minutes beside an idle hub the owner may Start at any moment.
+
+    Exported rather than reimplemented so there is one lock file, one contention message, and one
+    place where the policy can change. Tools call it around their device session; `run()` keeps
+    its own acquire/release because it must hand the lock to a wedged-worker reaper, which a
+    context manager cannot express.
+    """
+    lock = _AndroidDeviceLock(_android_lock_path(cfg, app))
+    lock.acquire()      # raises RuntimeError naming the holding pid if contended
+    try:
+        yield lock
+    finally:
+        lock.release()
 
 
 _RETAINED_DEVICE_LOCKS: set[_AndroidDeviceLock] = set()

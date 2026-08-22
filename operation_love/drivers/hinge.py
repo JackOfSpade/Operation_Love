@@ -84,6 +84,9 @@ from ..typography import format_duration
 from ..human import human_cooldown, human_delay
 from ..human_motion import tap_jitter_margin_px
 from ..perception.capture import Profile
+from ..targeting_policy import (
+    HINGE_SUPERSEDED_PHOTO_SELECTION_POLICY_IDS, STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR,
+    hinge_targeting_unavailable_reason, installed_still_photo_licence)
 from .adb import (
     SCROLL_X_JITTER_PX, Adb, AdbError, clamp_xy, quote_android_package_id, scroll_x,
     validate_android_package_id)
@@ -95,7 +98,9 @@ from .base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClo
 from .frameshift import SHIFT_MEASURED, ShiftEstimationError, estimate_shift
 from .item_crops import (
     CROP_CONTEXT, CROP_EXCLUDED, CROP_ITEM, CROP_UNCROPPABLE, EXCLUSION_NON_PHOTO,
-    PHOTO_ONLY_POLICY_ID, ItemCropError, build_item_payload, unnumber_unless_confident_photo,
+    PHOTO_ONLY_POLICY_ID, STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC, ItemCropError, ReattachProbe,
+    build_item_payload, card_center_offset_frac, dwell_card_rects, still_photo_dwell_evidence,
+    still_photo_reattach_evidence, unnumber_unless_confident_photo,
     unnumber_without_still_photo_evidence)
 from .item_type_preflight import INCONCLUSIVE, ItemTypePreflight, preflight_item_type
 from .item_identity import IdentityError, compare_profile_identity
@@ -113,7 +118,7 @@ from .like_composer import (
     ComposerDetectionError, ComposerSurface, locate_inline_composer)
 from .scroll_step import (MAX_SEGMENTATION_FALLBACK_FRAMES, STEP_SEGMENTATION_FALLBACK,
                           ScrollStepError,
-                          plan_scroll_step)
+                          frac_for_step_px, plan_scroll_step, step_px_for_frac)
 from .scroll_top import ScrollTopError, confirm_scroll_top
 from .segment import SegmentationError, segment_frame
 from .touchwatch import TouchWatcher, TouchWatchUnavailable
@@ -389,7 +394,11 @@ def _parse_targeting_calibration(raw, serial: str | None, *, identity_band, cont
     that binding rather than trusting a free-form evidence string.
     """
     if raw is None:
-        return None, "no apps.<app>.targeting_calibration mapping is configured"
+        # Plain prose, not the RUNBOOK's `apps.<app>.…` schema notation: every surface that
+        # shows this reason already names the concrete `apps.hinge.targeting_calibration`
+        # path, and a literal `<app>` on the hub reads as failed interpolation (reported as
+        # a bug on 2026-08-21).
+        return None, "not configured in config.yaml"
     if not isinstance(raw, dict):
         return None, "targeting_calibration is not a mapping"
     unknown = set(raw) - _TARGETING_CALIBRATION_KEYS
@@ -407,7 +416,14 @@ def _parse_targeting_calibration(raw, serial: str | None, *, identity_band, cont
         return None, (
             "targeting_calibration.composer_layout_id must be the supported "
             "'hinge_inline_v1' layout")
-    if raw["item_selection_policy_id"] != PHOTO_ONLY_POLICY_ID:
+    policy_id = raw["item_selection_policy_id"]
+    # A retired policy id gets its own refusal: v1 was measured against a selection contract
+    # that no longer exists, so the fix is a recalibration campaign, not editing the id string.
+    if policy_id in HINGE_SUPERSEDED_PHOTO_SELECTION_POLICY_IDS:
+        return None, (
+            f"targeting_calibration.item_selection_policy_id {policy_id} is superseded by "
+            f"{PHOTO_ONLY_POLICY_ID}; recalibrate under the current policy")
+    if policy_id != PHOTO_ONLY_POLICY_ID:
         return None, (
             "targeting_calibration.item_selection_policy_id must be the supported "
             f"{PHOTO_ONLY_POLICY_ID!r} policy")
@@ -771,6 +787,90 @@ _VIDEO_MUTE_TEMPLATE_B64 = (
     "GKaF1heS9XAuBCSz9+YEJ85e8AUSZou07mJQziBJlmnluKeMGKogS5R+Jw0cLCT3dQ5Qo/yk"
     "7sx1+Nz4mSpQZNlTP6XrDLESJS5S4RIlLlLhEiUuUuESJ6w+BFL9vsnkW/AAAAABJRU5ErkJ"
     "ggg==")
+
+# --- still-photo dwell (ops/STILL-PHOTO-DISCRIMINATOR.md C2/C3) ----------------------------
+# The no-input burst that produces the only POSITIVE still-media observation this driver makes.
+# Both knobs are drawn per call rather than fixed, under the standing owner rule restated above
+# _observe_stuck_budget: every timing/probability parameter is randomized/hazard-based, because a
+# fixed constant is a bot signature. A dwell is only screencaps, but the rule is deliberately
+# uniform rather than applied wherever a single pass of reasoning judges the knob observable.
+#
+# The WINDOW is anchored on the installed artifact, not on a number chosen here: it must exceed
+# the worst byte-exact run any owner-labelled held-out video managed, by
+# STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR. The floor below only covers a bound whose worst run is
+# tiny; it is not an alternative to the artifact, and with no artifact no dwell runs at all.
+_STILL_PHOTO_DWELL_MIN_WINDOW_S = 2.0
+# The window the ASSUMPTION licence anchors on instead. That channel exists because the owner
+# accepted the centred-autoplay assumption rather than buying the held-out false-accept
+# measurement (2026-08-21), so there is no `max_video_exact_run_s` to multiply and this number is
+# an ACCEPTED DEFAULT, not evidence -- nothing downstream may read it as a bound. It is set
+# longer than the measured channel typically yields (held-out worst runs around a second, times
+# the x3 safety factor), so swapping a measured licence for the assumption can only lengthen the
+# look, never shorten it. The draw around it stays hazard-based, like every other timing here.
+_STILL_PHOTO_DWELL_ASSUMED_WINDOW_S = 6.0
+# Frame COUNT range. More frames is more chances to catch a single emitted video frame, and the
+# cost is only screencaps; the low end still gives >= 5 consecutive pairs plus the anchor pair.
+_STILL_PHOTO_DWELL_FRAMES = (6, 10)
+
+# --- the re-attach probe (the C2 residual) ------------------------------------------------
+# A centred byte-exact burst proves Hinge was ASKED to play the card and that nothing moved. It
+# does NOT prove the media answered: a video that was stalled, still buffering, never attached,
+# or that ended without looping emits no frame for as long as anybody watches, and that is
+# precisely the false accept the dwell alone cannot exclude. Leaving the autoplay band and
+# re-entering it is the event Hinge re-attaches/restarts media on, so the probe scrolls the card
+# out, brings it back and dwells a SECOND time. Deterministic stimulus, no statistics: the point
+# is to give a non-playing video another chance to reveal itself before we call a card a photo.
+#
+# HOW FAR OUT. Expressed as a multiple of the autoplay band's half-width rather than as a
+# distance, so it follows STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC instead of being a second copy
+# of it, and drawn per probe under the standing rule that no gesture parameter is a constant.
+# The low end already puts the card clear of the zone; the high end is still well inside the
+# read-scroll envelope on the calibrated 1080x2400 device (270..810px, frac 0.12..0.35).
+_REATTACH_EXIT_BAND_MULTIPLE_SPAN = (1.6, 2.4)
+# Corrective strokes the return leg gets before the probe gives up on re-seating the card. The
+# smallest legal read-scroll moves ~219px on the calibrated device, so the return cannot be
+# fine-tuned below that quantum; it aims for the page position the first burst was taken at and
+# stops when the next stroke would overshoot by more than it would recover.
+_REATTACH_RETURN_STEPS_SPAN = (2, 4)
+# Hard ceiling on the exit distance, as a fraction of the analysed band. Every leg of the probe
+# is verified by `estimate_shift`, whose trust window is half the band, so an exit drawn past
+# that window would come back SHIFT_BEYOND_WINDOW and the probe would refuse itself for a reason
+# that has nothing to do with the card. 0.35 keeps the largest exit (630px on the calibrated
+# band) inside both that window and the 787px largest step in the hand-scrolled corpus.
+_REATTACH_MAX_EXIT_BAND_FRAC = 0.35
+
+
+def video_mute_screen_reason(frame: bytes, rect: tuple[int, int, int, int], *,
+                             match=None) -> str | None:
+    """Screen ONE card rect of one exact frame for Hinge's mute control.
+
+    The vocabulary here is load-bearing and deliberately unchanged: the payload exclusion strings
+    it feeds are prefix-matched elsewhere in this module. Extracted from
+    `HingeDriver._target_frame_video_screen_reason` so the C3 leg of the still-photo dwell and an
+    offline replay of persisted dwell frames run the SAME screen with the SAME ROI arithmetic,
+    rather than each re-deriving the bands and drifting apart from the live path.
+
+    Returns None only when the screen RAN over a geometrically complete ROI, decoded, and matched
+    nothing; every other outcome is a reason string, so silence is never mistaken for absence.
+    """
+    x0, y0, x1, y1 = rect
+    card_width = x1 - x0
+    block_height = y1 - y0
+    roi_x0 = x0 + round(_VIDEO_MUTE_X_BAND[0] * card_width)
+    roi_x1 = x0 + round(_VIDEO_MUTE_X_BAND[1] * card_width)
+    roi_y0 = y0 + round(_VIDEO_MUTE_Y_BAND[0] * block_height)
+    roi_y1 = y0 + round(_VIDEO_MUTE_Y_BAND[1] * block_height)
+    if (roi_x1 - roi_x0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX
+            or roi_y1 - roi_y0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX):
+        return "target card does not expose a complete mute-control screening ROI"
+    matcher = match if match is not None else HingeDriver._match_video_mute
+    screened, score = matcher(frame, (roi_x0, roi_y0, roi_x1, roi_y1))
+    if not screened or score is None:
+        return "target card mute-control screening could not be completed"
+    if score >= _VIDEO_MUTE_MATCH_THRESHOLD:
+        return ("target frame contains Hinge's mute control "
+                f"(score {score:.6f}); the selected media is a video")
+    return None
 
 # Hinge's spec: exactly today's values (formerly the module-level `DEFAULTS` dict + the
 # `apps.hinge` block in config.yaml). calibrated=True — coords/templates verified live on the
@@ -3672,23 +3772,272 @@ class AndroidDriver(DatingAppDriver):
         This last-moment check closes the other half of the gate: navigation can make Hinge show
         its auto-hidden video controls again, so an exact action frame with a mute match is a
         video even when older enumeration frames looked clean.
+
+        Thin over the module-level screen so a subclass/test that replaces `_match_video_mute`
+        still governs the verdict, while the dwell path and the offline replay can screen a bare
+        rect without inventing a driver.
         """
-        card_width = block.x1 - block.x0
-        block_height = block.y1 - block.y0
-        x0 = block.x0 + round(_VIDEO_MUTE_X_BAND[0] * card_width)
-        x1 = block.x0 + round(_VIDEO_MUTE_X_BAND[1] * card_width)
-        y0 = block.y0 + round(_VIDEO_MUTE_Y_BAND[0] * block_height)
-        y1 = block.y0 + round(_VIDEO_MUTE_Y_BAND[1] * block_height)
-        if (x1 - x0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX
-                or y1 - y0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX):
-            return "target card does not expose a complete mute-control screening ROI"
-        screened, score = self._match_video_mute(frame, (x0, y0, x1, y1))
-        if not screened or score is None:
-            return "target card mute-control screening could not be completed"
-        if score >= _VIDEO_MUTE_MATCH_THRESHOLD:
-            return ("target frame contains Hinge's mute control "
-                    f"(score {score:.6f}); the selected media is a video")
-        return None
+        return video_mute_screen_reason(
+            frame, (block.x0, block.y0, block.x1, block.y1), match=self._match_video_mute)
+
+    def _still_photo_dwell_burst(self) -> tuple[list[bytes], float]:
+        """Take C2's observation: N screencaps over W seconds, with NO input of any kind.
+
+        The window is anchored on the installed LICENCE rather than on a constant chosen here,
+        and which anchor applies depends on the channel: a measured bound supplies
+        `STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR` x the worst byte-exact run any owner-labelled
+        held-out video managed, while the owner's accepted centred-autoplay assumption has no
+        such measurement and uses the named default above. Both N and W are drawn per call under
+        the standing owner rule that no timing parameter may be a fixed constant.
+        `human_cooldown` is the right primitive for the window because it never returns BELOW its
+        anchor: a draw under it would be a shorter look than the licence covers.
+
+        Only `_screencap` is used, so the dwell inherits the blank-frame guard and adds no touch,
+        scroll or key event to the session. `on_blank="none"` because this is a passive read like
+        the other no-input polls; a blank frame ends the burst and the missing frames become a
+        REFUSAL downstream rather than a shorter dwell that still claims to be one.
+        """
+        licence = installed_still_photo_licence()
+        if licence is None:
+            # No licence, no dwell: the payload can number nothing either way, and reaching for
+            # a measured bound that is not installed is how this path used to raise. Same empty
+            # result as a blank frame, which every caller already treats as "no dwell happened".
+            return [], 0.0
+        # The two channels anchor the window on different things and that is the whole point of
+        # branching here rather than defaulting: the measured licence has a held-out worst-case
+        # exact run to clear, and the assumption licence has no measurement at all, so it gets a
+        # named accepted default instead of silently inheriting a number that would look like one.
+        anchor_s = (STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR * licence.record.max_video_exact_run_s
+                    if licence.measured else _STILL_PHOTO_DWELL_ASSUMED_WINDOW_S)
+        window_s = human_cooldown(max(_STILL_PHOTO_DWELL_MIN_WINDOW_S, anchor_s))
+        count = random.randint(*_STILL_PHOTO_DWELL_FRAMES)
+        gap_s = window_s / (count - 1)
+        frames: list[bytes] = []
+        first_at = last_at = 0.0
+        for position in range(count):
+            if position:
+                time.sleep(human_delay(gap_s))
+            frame = self._screencap(on_blank="none")
+            if frame is None:
+                return [], 0.0
+            frames.append(frame)
+            last_at = time.monotonic()
+            if not position:
+                first_at = last_at
+        return frames, last_at - first_at
+
+    def _measured_page_shift(self, before: bytes, after: bytes) -> int | None:
+        """How far the page moved between two frames, or None when frameshift could not tell.
+
+        Only a quorate `SHIFT_MEASURED` is an answer; a refusal, a saturation report or an
+        estimator failure is None, and every caller treats None as "this pass cannot claim to
+        know where the card is now" rather than falling back to the distance it asked for. Same
+        contract, and same reason, as `_static_pair_is_the_bottom`: this is the one comparator in
+        the driver that says "I cannot tell" instead of guessing, and the whole value of the
+        re-attach probe is that it never assumes its own gestures landed.
+        """
+        try:
+            shift = estimate_shift(before, after, content_band=self.content_band)
+        except ShiftEstimationError:
+            return None
+        return shift.delta_px if shift.status == SHIFT_MEASURED else None
+
+    @staticmethod
+    def _still_photo_reattach_candidate(evidence: dict) -> int | None:
+        """The heart ordinal whose first burst earned a probe, or None to spend no gesture.
+
+        Only a card that came back BYTE-EXACT and CENTRED can ever reach the probe rung -- every
+        other card is already refused by a rung above it -- so a capture with none of those
+        never moves the screen at all. When several qualify, the most central one is probed: the
+        probe restores ONE page position, and the card nearest the centre is the one that
+        position seats.
+        """
+        eligible = [(abs(dwell.center_offset_frac), ordinal)
+                    for ordinal, dwell in evidence.items()
+                    if dwell.dwell_exact is True and dwell.centered is True
+                    and dwell.center_offset_frac is not None]
+        return min(eligible)[1] if eligible else None
+
+    def _still_photo_reattach_probe(self, anchor: bytes,
+                                    rect: tuple[int, int, int, int]) -> ReattachProbe | None:
+        """Scroll this card OUT of Hinge's autoplay band, bring it back, and dwell again.
+
+        The residual it exists for is stated at `_REATTACH_EXIT_BAND_MULTIPLE_SPAN`: a centred
+        byte-exact burst cannot separate a photograph from a video that was not PLAYING while we
+        watched it. Re-entering the autoplay band is what makes Hinge attach and start the media
+        again, so the second burst is a deterministic second chance for a stalled, buffering,
+        unattached or ended video to emit one frame. There is no statistic here and no threshold:
+        a card is photo-eligible only if BOTH bursts are byte-exact and both were screened clean.
+
+        EVERY LEG IS MEASURED, NEVER ASSUMED. `estimate_shift` says where the page actually went
+        after each stroke, and the card rect travels with that measurement -- the page is
+        tracked, the card is never re-identified from what happens to be on screen afterwards
+        (owner rule 2026-08-11: we never substitute a different item). Any leg that cannot be
+        measured returns None, which leaves `reattach_probe_ran` unset and refuses.
+
+        ONLY GUARDED HUMANIZED PRIMITIVES. `_scroll_up_one`/`_scroll_down_one` are the same
+        forbidden-zone-guarded, column-jittered, ledger-keeping read-scrolls the enumeration read
+        uses; nothing here reaches for the transport, and no distance or lane is a constant.
+
+        IT LEAVES THE PAGE WHERE IT FOUND IT. The return leg drives the MEASURED displacement
+        back to zero rather than aiming at the card, so the position the first burst was taken at
+        -- the position `_index_captured_items` then hands to bottom-up navigation as its entry
+        anchor -- is what the probe restores, and re-centring the card falls out of that. The
+        smallest legal read-scroll moves ~219px, so a residual under half that quantum is left
+        alone; `navigate_to_item` measures its entry shift rather than assuming it, so a residual
+        costs a measurement, not a wrong card.
+        """
+        if hinge_targeting_unavailable_reason() is not None:
+            # Re-asserted here rather than inherited from the caller: this is the only
+            # still-photo path that spends real gestures, and an unlicensed build moves nothing.
+            return None
+        _w, height = self.adb.screen_size()
+        band_px = (float(self.content_band[1]) - float(self.content_band[0])) * height
+        if height <= 0 or band_px <= 0:
+            return None
+        offset = card_center_offset_frac(rect, frame_height=height,
+                                         content_band=self.content_band)
+        # Derived from where the card actually sits, never from where it ought to sit, and
+        # capped so the displacement stays inside the estimator's own trust window.
+        target = STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC * random.uniform(
+            *_REATTACH_EXIT_BAND_MULTIPLE_SPAN)
+        exit_px = min((target - offset) * band_px, _REATTACH_MAX_EXIT_BAND_FRAC * band_px)
+        exit_frac = min(_READ_SCROLL_FRAC_MAX,
+                        max(_READ_SCROLL_FRAC_MIN, frac_for_step_px(int(round(exit_px)), height)))
+        _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
+        self._scroll_up_one(exit_frac, x_frac)   # content down, so the card slides off centre
+        # Let Hinge finish the scroll animation: a frame caught mid-animation has no static
+        # strips for the shift estimator, and a refused measurement would refuse the probe.
+        time.sleep(human_delay(_READ_SCROLL_SETTLE_S))
+        frame = self._screencap(on_blank="none")
+        if frame is None:
+            return None
+        total = self._measured_page_shift(anchor, frame)
+        if total is None:
+            return None
+        if abs(offset - total / band_px) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:
+            # The stroke was delivered and the card is still in the trigger zone: a clamp at the
+            # end of the profile, or a fling Hinge swallowed. Nothing detached, so nothing can
+            # re-attach, and calling the re-entry a re-attach anyway would manufacture exactly
+            # the unearned observation this rung exists to prevent.
+            return None
+        quantum = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
+        for _attempt in range(random.randint(*_REATTACH_RETURN_STEPS_SPAN)):
+            remaining = -total
+            if abs(remaining) <= quantum // 2:
+                break
+            frac = min(_READ_SCROLL_FRAC_MAX,
+                       max(_READ_SCROLL_FRAC_MIN,
+                           frac_for_step_px(int(abs(remaining)), height)))
+            _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
+            if remaining > 0:
+                self._scroll_down_one(frac, x_frac)   # content up: the card climbs back
+            else:
+                self._scroll_up_one(frac, x_frac)
+            time.sleep(human_delay(_READ_SCROLL_SETTLE_S))
+            following = self._screencap(on_blank="none")
+            if following is None:
+                return None
+            step = self._measured_page_shift(frame, following)
+            if step is None:
+                return None
+            total += step
+            frame = following
+        burst, span_s = self._still_photo_dwell_burst()
+        if not burst:
+            return None
+        return ReattachProbe(anchor=frame, frames=tuple(burst), span_s=span_s,
+                             page_shift_px=int(total))
+
+    def _record_still_photo_dwell(self, frames: list[bytes], span_s: float,
+                                  evidence: dict, probe: ReattachProbe | None = None) -> None:
+        """Keep every dwell frame and its digest in the run folder, best-effort as ever.
+
+        One record per frame under its OWN label, because the log dedups identical bytes per
+        label and a genuine still photo produces N identical frames -- the shape the dedup was
+        built for, and precisely the evidence an investigator needs kept apart here. The
+        re-attach probe's frames get the same treatment under their own labels, so an
+        investigator can see which burst a verdict came from without diffing timestamps.
+        """
+        if self._dbg is None:
+            return
+        try:
+            digests = [hashlib.sha256(frame).hexdigest() for frame in frames]
+            for position, frame in enumerate(frames):
+                self._dbg.action(f"still_photo_dwell_{position:02d}", before=frame,
+                                 dwell_frame_index=position, sha256=digests[position])
+            probe_frames = [] if probe is None else [probe.anchor, *probe.frames]
+            probe_digests = [hashlib.sha256(frame).hexdigest() for frame in probe_frames]
+            for position, frame in enumerate(probe_frames):
+                self._dbg.action(f"still_photo_reattach_{position:02d}", before=frame,
+                                 reattach_frame_index=position, sha256=probe_digests[position])
+            self._dbg.action(
+                "still_photo_dwell", dwell_frames=len(frames),
+                dwell_span_s=round(span_s, 6), dwell_frame_sha256s=digests,
+                reattach_probe_ran=probe is not None,
+                reattach_frames=len(probe_frames),
+                reattach_frame_sha256s=probe_digests,
+                reattach_span_s=(None if probe is None or probe.span_s is None
+                                 else round(float(probe.span_s), 6)),
+                reattach_page_shift_px=(None if probe is None else probe.page_shift_px),
+                cards=[{"heart_ordinal": ordinal, "dwell_exact": dwell.dwell_exact,
+                        "mute_screens_complete": dwell.mute_screens_complete,
+                        "center_offset_frac": dwell.center_offset_frac,
+                        "reattach_probe_ran": dwell.reattach_probe_ran,
+                        "reattach_dwell_exact": dwell.reattach_dwell_exact,
+                        "reattach_mute_screens_complete": dwell.reattach_mute_screens_complete,
+                        "reattach_center_offset_frac": dwell.reattach_center_offset_frac}
+                       for ordinal, dwell in sorted(evidence.items())])
+        except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
+            pass
+
+    def _still_photo_dwell(self, frames: list[bytes], index) -> dict:
+        """The C2/C3 dwell evidence for this capture's candidates, or `{}` when unlicensed.
+
+        With no verified bound installed there is no dwell at all: the payload can number nothing
+        either way (the policy blocker refuses first), so a burst would spend seconds of screen
+        time to change no outcome, and this path stays byte-identical to the pre-dwell driver.
+
+        The frames handed over are the INDEXED ones, whose last member is still on screen when
+        the read returns (see `_index_captured_items`); `still_photo_dwell_evidence` chains the
+        burst to it and reads every card rect from it.
+
+        Two bursts, not one: see `_still_photo_reattach_probe` for why a single centred
+        byte-exact run cannot separate a photograph from a video that was never playing.
+        """
+        if hinge_targeting_unavailable_reason() is not None:
+            return {}
+        burst, span_s = self._still_photo_dwell_burst()
+
+        def mute_screen(frame: bytes, rect: tuple[int, int, int, int]) -> bool:
+            return video_mute_screen_reason(frame, rect, match=self._match_video_mute) is None
+
+        # `content_band` is what lets the shared helper measure Hinge's AUTOPLAY precondition
+        # (owner fact 2026-08-21): a video only plays near the centre of the screen, so a
+        # byte-exact run taken off-centre is consistent with a video nobody asked to play. This
+        # capture-time dwell does not reposition the card, so cards that happen to sit away from
+        # the centre now demote at the new rung instead of being accepted -- fail closed, which
+        # is the same direction every other rung here already fails.
+        evidence = still_photo_dwell_evidence(
+            index, frames, burst, dwell_span_s=span_s, mute_screen=mute_screen,
+            content_band=self.content_band)
+        # A centred byte-exact card is not accepted here, it is PROBED: the re-attach probe puts
+        # it out of the autoplay band and back so a video that simply was not playing gets a
+        # second chance to say so. Nothing is probed unless some card actually earned it, so an
+        # ordinary capture spends no extra gesture, and a probe that cannot complete leaves the
+        # `reattach_*` fields unset and refuses.
+        probe = None
+        target = self._still_photo_reattach_candidate(evidence)
+        if target is not None and frames:
+            rect = dwell_card_rects(index, len(frames) - 1).get(target)
+            if rect is not None:
+                probe = self._still_photo_reattach_probe(frames[-1], rect)
+        if probe is not None:
+            evidence = still_photo_reattach_evidence(
+                evidence, index, frame_count=len(frames), probe=probe,
+                mute_screen=mute_screen, content_band=self.content_band)
+        self._record_still_photo_dwell(burst, span_s, evidence, probe)
+        return evidence
 
     def _index_captured_items(self, photos: list[bytes]) -> str:
         """Fold this capture's frames into doc 5.3's index and doc 5.2's crops.
@@ -3778,7 +4127,8 @@ class AndroidDriver(DatingAppDriver):
                 indexed_photos, index,
                 exclude=lambda block: video_exclusions.get(block.heart_ordinal),
                 unnumber=unnumber_unless_confident_photo,
-                unnumber_without_evidence=unnumber_without_still_photo_evidence)
+                unnumber_without_evidence=unnumber_without_still_photo_evidence,
+                still_photo_dwell=self._still_photo_dwell(indexed_photos, index))
             if not payload.usable:
                 return self._item_index_refused(
                     photos, "the item crops this capture produced are not a request the model can "

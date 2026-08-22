@@ -22,6 +22,7 @@ def test_report_has_core_sections():
     md = bugreport.build_report(None, description="it broke")
     for h in ["# Operation Love — Bug Report", "## What happened", "it broke",
               "## Reporter follow-up", "## Build", "## System", "## Dependencies", "## Capabilities", "## Config",
+              "## Hinge targeting readiness",
               "## Secrets", "## Diagnostic improvement", "## Run status", "## Recent openers",
               "## Recent opener rejections",
               "## Debug log (on-disk actions + screenshots)", "## Recent logs"]:
@@ -2005,3 +2006,76 @@ def test_recent_opener_rejections_section_survives_a_raising_call():
     assert "## Recent opener rejections" in md
     assert "⚠️ this section failed to generate" in md
     assert "## Debug log" in md               # the rest of the report still renders
+
+
+def _targeting_config(tmp_path, *, licence_key=None, calibration=False):
+    import yaml
+    app = {"serial": "synthetic-pixel"}
+    if licence_key:
+        app[licence_key] = {"acceptance": "placeholder"}
+    if calibration:
+        app["targeting_calibration"] = {"schema_version": 3}
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({"enabled_apps": ["hinge"], "apps": {"hinge": app}}))
+    return str(path)
+
+
+def test_the_report_names_which_link_of_the_targeting_chain_is_missing(tmp_path):
+    """BUG REPORT 2026-08-22: the cause was one absent config key and the report never said so.
+
+    It showed opener enabled, a present API key, and zero provider calls, leaving the reader to
+    reconstruct the cause from a driver sentence in the log tail. All three gates now report
+    separately, because any of them can be the answer.
+    """
+    from operation_love import targeting_policy as tp
+
+    path = _targeting_config(tmp_path, licence_key="still_photo_assumption_acceptance")
+    md = bugreport._targeting_readiness_md(path)
+
+    assert "`apps.hinge.still_photo_assumption_acceptance`" in md
+    assert "`apps.hinge.targeting_calibration`: ABSENT" in md
+    assert "no targeted opener is generated or offered" in md
+    # No licence in this process, but the config carries one: say that rather than printing a
+    # next step that contradicts the config line two rows above it.
+    assert tp.hinge_targeting_unavailable_reason() in md
+    assert "reflects this unvalidated reporting process" in md
+    assert tp.TARGETING_SETUP_NEXT_STEP_BLOCKED not in md
+
+
+def test_the_report_names_the_calibration_as_the_next_step_once_a_licence_is_installed(tmp_path):
+    from operation_love import targeting_policy as tp
+
+    tp.install_accepted_still_photo_assumption(tp.StillPhotoAssumptionAcceptance(
+        acceptance=tp.STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION, device="synthetic-pixel",
+        hinge_version_name="10.0.1", accepted_at="2026-08-21",
+        rationale="owner judged the held-out campaign not worth ~420 real passes"))
+    try:
+        path = _targeting_config(tmp_path, licence_key="still_photo_assumption_acceptance")
+        md = bugreport._targeting_readiness_md(path)
+    finally:
+        tp._reset_installed_still_photo_bound_for_tests()
+
+    assert "UNMEASURED" in md            # the provenance, never silently upgraded to a bound
+    assert "targeting-policy blocker: none" in md
+    assert tp.TARGETING_SETUP_NEXT_STEP_CALIBRATE in md
+    assert "unvalidated reporting process" not in md
+
+
+def test_the_report_says_when_no_licence_key_exists_at_all(tmp_path):
+    from operation_love import targeting_policy as tp
+
+    md = bugreport._targeting_readiness_md(_targeting_config(tmp_path))
+
+    assert "still-photo licence key in config: none" in md
+    assert tp.TARGETING_SETUP_NEXT_STEP_BLOCKED in md
+
+
+def test_the_targeting_section_never_installs_a_licence_as_a_side_effect(tmp_path):
+    """A diagnostic must not clear and reinstall the slot a live run is reading."""
+    from operation_love import targeting_policy as tp
+
+    path = _targeting_config(tmp_path, licence_key="still_photo_assumption_acceptance")
+    bugreport._targeting_readiness_md(path)
+
+    assert tp.still_photo_licence_provenance() is None
+    assert tp.hinge_targeting_unavailable_reason() is not None

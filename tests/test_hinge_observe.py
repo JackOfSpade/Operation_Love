@@ -3775,7 +3775,7 @@ def test_screencap_retry_still_enforces_v2_calibrated_frame_size():
         "hinge_version_name": "9.134.0",
         "frame_size_px": [1080, 2400],
         "composer_layout_id": "hinge_inline_v1",
-        "item_selection_policy_id": "hinge_photos_only_v1",
+        "item_selection_policy_id": "hinge_photos_only_v2",
         "identity_match_max_dist": 2.0,
         "inline_item_max_dist": 10.0,
         "calibrated_at": "synthetic",

@@ -277,11 +277,25 @@ function renderSwipe(snap){
   // The operator's next action is part of this warning, not fine print.  A warning replaces the
   // opener block, so render its title, reason, and manual-choice cue as one full-size notice.
   const openerWarnBox = (title, warning, next) =>
-    box('wait', `${title}: ${escHtml(warning)} ${next}`);
+    box('wait', `${title}: ${escHtml(warning.replace(/\.+$/, ''))}. ${next}`);
+  // RUN-LEVEL PROVENANCE, NOT A CUE (owner decision 2026-08-21). When Hinge numbering was
+  // licensed by the owner's UNMEASURED centered-autoplay assumption instead of a measured
+  // held-out bound, the operator must be told every run -- numbering looks identical either way,
+  // so words are the only place the difference can survive. It renders as a neutral fine-print
+  // row UNDER whatever box the state produced, never as its own amber box and never with a
+  // circle of its own: the decision window keeps its single 🟢 GO cue and its GO styling, exactly
+  // as the targeting-setup note above is fine print rather than a warning. Same rule, same
+  // reason: a run-level, already-decided condition must never restyle the decision window.
+  const licenceRow = a => {
+    const note = typeof a.targeting_licence_notice === 'string'
+      ? a.targeting_licence_notice.trim() : '';
+    if(!note) return '';
+    return `<div style="margin-top:4px;font-size:12px;line-height:1.4;color:#9a9aa2">${escHtml(note)}</div>`;
+  };
   // The worker may publish an opener while Hinge's comment sheet is open.  The suggested text
   // replaces the ordinary instruction in this same banner; it never goes to terminal output.
   // Every dynamic value is escaped before it enters innerHTML.
-  el.innerHTML = observeApps.map(a => {
+  const appBox = a => {
     const st = a.state || '';
     const last = a.last_decision ? ('last '+a.last_decision) : '';
     const app = escHtml(a.app || 'app');
@@ -292,10 +306,10 @@ function renderSwipe(snap){
     // the first place. The worker publishes opener_warning or opener_suggestion, never both, so
     // the branch below is a belt on top of that rather than a precedence rule.
     const warning = typeof a.opener_warning === 'string' ? a.opener_warning.trim() : '';
-    // Missing Hinge targeting calibration is a run-level setup prerequisite, unlike an
-    // ordinary per-card mismatch or an unavailable provider.  Name it as setup so an operator
-    // does not treat repeated safe withholdings as a mysterious card-level error.  The detail
-    // still comes from the driver and remains escaped in openerWarnBox.
+    // Missing Hinge targeting calibration is a RUN-LEVEL condition, unlike an ordinary
+    // per-card mismatch or an unavailable provider: it holds for every card of the run, and it
+    // is a setup step the operator can complete rather than a per-card failure. Detecting it
+    // here routes it AWAY from the per-card warning box below.
     const needsTargetingSetup = a.app === 'hinge' && warning.includes('targeting_calibration');
     // Hoisted out of the 'waiting' branch below because the opener branch needs it too now:
     // since doc 5.9's inversion a suggestion is published BEFORE the human taps, i.e. during
@@ -312,17 +326,53 @@ function renderSwipe(snap){
     if(stopping && (opener || warning || st==='waiting_for_send' || st==='waiting')) {
       return box('wait', `🔴 ${app}: stopping — do not swipe, this decision will not be recorded`);
     }
-    if(warning) return openerWarnBox(
-      needsTargetingSetup ? '🔴 targeted opener setup required' : '🔴 no suggestion to type',
+    // 2026-08-21 re-report of the same banner: a run-level, intentional condition must NEVER
+    // restyle the decision window as a warning. Routing it through openerWarnBox turned every
+    // card of the run into an amber box led by 🔴 "setup required" — in the owner's circle
+    // convention (and everywhere else in this function) amber+🔴 means "hands off", so the
+    // operator obediently sat out a 2m24s decision window that was waiting on THEM, then
+    // stopped the run. The decision cue must be the SAME 🟢 GO box the plain waiting state
+    // renders — one circle, green — with the setup situation demoted to the box's fine-print
+    // sub row. The driver's internal consequence clauses are for logs/bug reports, not the
+    // operator: strip the exact known tails (hinge.py composes them verbatim), harmlessly
+    // showing the full sentence if the driver's wording drifts.
+    // In every other state (capturing, acting, …) the ordinary state boxes below are already
+    // the correct cue, so fall through rather than letting a stale warning override them.
+    //
+    // THE NEXT STEP IS PUBLISHED, NOT WRITTEN HERE (bug report 2026-08-22). This sub used to
+    // hardcode "positive still-photo proof must exist before a fresh calibration can enable
+    // suggestions". That was true only until the owner's centered-autoplay acceptance licensed
+    // numbering; afterwards it named a prerequisite already satisfied and never named the step
+    // that would actually restore suggestions, so the operator read a solvable run-level gate as
+    // an upstream block and left the calibration uncaptured. Which step is correct depends on
+    // the installed licence, which only the worker's process knows — so it publishes
+    // targeting_setup_next_step and the hub renders it. With no field published (an older
+    // worker, or a poll that raced the run's start) the note simply ends after the reason
+    // rather than asserting a prerequisite this page cannot verify.
+    if(warning && needsTargetingSetup){
+      const reason = warning
+        .replace('targeted suggestion is unavailable because ', '')
+        .replace(', so a model-selected item could not be verified or targeted and no numbered item list would have a usable consumer', '')
+        .replace('; no opener text is offered', '');
+      const nextStep = typeof a.targeting_setup_next_step === 'string'
+        ? a.targeting_setup_next_step.trim() : '';
+      const setupNote = `no targeted suggestion this run — ${escHtml(reason)}. Manual pass/like labels still work`
+        + (nextStep ? `; ${escHtml(nextStep)}.` : '.');
+      if(st==='waiting') return box('go', `🟢 ${app}: make your choice: ${controls}`, setupNote);
+      if(st==='waiting_for_send') return box('go', '💬 no suggestion to type — type your own opener, then tap Send Like / Send Priority Like', setupNote);
+    } else if(warning) return openerWarnBox(
+      '🔴 no suggestion to type',
       warning,
-      needsTargetingSetup
-        ? (st === 'waiting_for_send'
-          ? 'type your own opener, then tap Send Like / Send Priority Like. Manual pass/like labels still work; complete the Hinge targeted-opener calibration in ops/RUNBOOK.md to enable suggestions.'
-          : `🟢 your call: ${controls}. Manual pass/like labels still work; complete the Hinge targeted-opener calibration in ops/RUNBOOK.md to enable suggestions.`)
-        : (st === 'waiting_for_send'
-          ? 'type your own opener, then tap Send Like / Send Priority Like'
-          : `🟢 your call: ${controls}`));
-    if(opener) {
+      st === 'waiting_for_send'
+        ? 'type your own opener, then tap Send Like / Send Priority Like'
+        : `🟢 your call: ${controls}`);
+    // `&& !warning` keeps doc 5.9's nothing-copyable pin state-UNCONDITIONAL: without it, a
+    // setup warning arriving beside a suggestion in a non-decision state would fall through
+    // the setup branch above and render the copyable opener box. Unreachable through today's
+    // producer (worker publishes one field or the other, and every other state transition
+    // clears the set), but this precedence is pinned rather than assumed — same reasoning as
+    // the warning-plus-opener test.
+    if(opener && !warning) {
       // TWO ROWS OF CHROME, AND NEITHER MAY TOUCH THE OPENER ITSELF (owner rule: the string
       // shown here must be byte-identical to what auto would type, so our own words never share
       // a line with it -- see openerBox). Before a heart, the HEADING makes the item conditional
@@ -400,7 +450,8 @@ function renderSwipe(snap){
     if(st==='starting')  return box('wait', `🔴 wait — starting ${app}…`);
     if(st==='out_of_profiles') return box('idle', `${app}: no more profiles`, escHtml(last));
     return box('idle', `${app}: ${escHtml(st||'…')}`, escHtml(last));
-  }).join('');
+  };
+  el.innerHTML = observeApps.map(a => appBox(a) + licenceRow(a)).join('');
   el.style.display = 'block';
 }
 

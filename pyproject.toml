@@ -45,6 +45,13 @@ hinge = ["opencv-python>=4.8"]   # host-side ADB (needs `adb` CLI on PATH) + the
 bq = ["google-cloud-bigquery>=3.20", "google-cloud-storage>=2.16"]
 dev = [
     "pytest>=8.0",
+    # The suite is dominated by a handful of tests that drive the real OpenCV pipeline over
+    # full-resolution 1080x2400 synthetic frames: 60 of ~3800 tests are 61% of the wall clock,
+    # and cv2.matchTemplate inside build_item_index/estimate_shift is most of that. There is
+    # nothing to delete -- the expensive tests are the high-fidelity ones -- so the suite is
+    # parallelised across processes instead (see tests/conftest.py for why OpenCV is pinned to
+    # one thread per worker, and [tool.pytest.ini_options] addopts for the default invocation).
+    "pytest-xdist>=3.6",
     "ruff>=0.15,<0.16",
 ]
 
@@ -63,6 +70,22 @@ operation_love = ["drivers/assets/*.png", "assets/*.html"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# Run the suite across processes by default: measured 2026-08-22 on a 12-core Mac, 19m33s
+# serial -> 2m50s with `-n auto`.  The count is not the reason it was slow -- 3761 of the 3821
+# tests share 458s between them -- 60 tests are 61% of the wall clock, because they drive the
+# real OpenCV pipeline (cv2.matchTemplate inside build_item_index / estimate_shift) over real
+# 1080x2400 frames.  Those are the highest-fidelity tests in the repo, so they are parallelised
+# rather than thinned.  `--dist loadgroup` distributes individual tests while still honouring
+# `@pytest.mark.xdist_group` if a future test ever needs pinning; nothing needs it today (the
+# hub's `_bind` already scans 200 ports and reads the bound one back, and tests/conftest.py's
+# `_machine_global_state_is_never_the_operators` gives every worker its own lock root and temp
+# directory).
+#
+# `-n0` turns it back off, and is what you want for `--pdb`, `-s`, or a readable single-test
+# traceback: `pytest -n0 tests/test_hub.py -k some_test -s`.  This line requires pytest-xdist,
+# which is why it is in the `dev` extra above; an environment without it fails with
+# "unrecognized arguments: -n" rather than silently running serially.
+addopts = ["-n", "auto", "--dist", "loadgroup"]
 
 [tool.ruff]
 target-version = "py311"

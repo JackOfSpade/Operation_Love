@@ -91,6 +91,11 @@ jobs:
           fi
 
       - name: Run tests
+        # No `-n` here on purpose: pyproject's [tool.pytest.ini_options] addopts already carries
+        # `-n auto --dist loadgroup`, so this picks the runner's own core count up automatically
+        # and a second `-n` on this line would just fight it. pytest-xdist arrives via the `dev`
+        # extra installed above; without it pytest aborts with "unrecognized arguments: -n"
+        # rather than quietly falling back to a 19-minute serial run.
         run: python -m pytest -q
 
   lint:

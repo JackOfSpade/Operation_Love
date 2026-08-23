@@ -21,6 +21,18 @@ from operation_love.config import OpenerCfg
 from operation_love.drivers.base import DatingAppDriver
 from operation_love.private_files import UnsafePrivatePathError
 
+# Liveness bound, not a performance bound: it exists only so a genuine hang fails a test
+# instead of hanging the whole suite forever. Widened 2026-08-22 when `python -m pytest` moved
+# to one worker per core (pyproject.toml addopts `-n auto --dist loadgroup`). This file's own
+# device-lock/reaper tests coordinate real threads through supervisor.run(), and
+# test_wedged_android_worker_retains_device_lock_until_it_really_exits was OBSERVED failing
+# under full-suite load at its old 5s bound the same day tests/test_concurrency.py measured a
+# ~15x slowdown (0.33s idle vs 5.06s loaded) on a positive liveness wait of the same shape --
+# so 5s, not just the <=3s gates elsewhere, needed widening here. Nothing about the property
+# under test (does the reaper/worker/lock eventually reach the expected state?) depends on the
+# exact number, so widening it loses nothing.
+_LIVENESS_TIMEOUT_S = 15.0
+
 
 @pytest.fixture(autouse=True)
 def _isolated_android_lock_root(monkeypatch, tmp_path):
@@ -1262,6 +1274,41 @@ def test_android_lock_path_is_one_file_across_serials_and_data_dirs(tmp_path):
     assert "/" not in p.name and ":" not in p.name and " " not in p.name
 
 
+def test_android_lock_root_default_is_the_operators_real_home_directory():
+    """Pins the PRODUCTION default of ``_ANDROID_LOCK_ROOT`` -- the counterweight to
+    tests/conftest.py's session-scoped ``_machine_global_state_is_never_the_operators``
+    fixture, which monkeypatches ``sup._ANDROID_LOCK_ROOT`` to a per-worker tmp_path for this
+    entire test session so no test here can ever collide with (or acquire) the operator's real
+    device lock. That means ``sup._ANDROID_LOCK_ROOT`` -- the live module attribute -- is NOT
+    the production value for as long as the suite runs; every other test in this file that
+    reads it (e.g. the one above, via ``p.parent == sup._ANDROID_LOCK_ROOT``) is only proving
+    internal consistency with whatever the isolation fixture installed, not what a real run
+    actually uses.
+
+    This test reads the module's own SOURCE rather than the (deliberately redirected) live
+    attribute, and touches no lock file and no real filesystem path: ``_ANDROID_LOCK_ROOT`` is
+    supposed to be ``Path.home() / ".operation-love" / "locks"`` -- one fixed, per-user
+    directory outside the repo and outside any config's ``data_dir`` -- exactly so that every
+    Operation Love process on this machine, launched from any config, agrees on the one lock
+    file that keeps two Android runs from ever sharing the phone. If someone changes this
+    default, this is the one test that must change with them, deliberately.
+    """
+    import ast
+    import inspect
+
+    source = inspect.getsource(sup)
+    tree = ast.parse(source)
+    assignments = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "_ANDROID_LOCK_ROOT" for t in node.targets)
+    ]
+    assert len(assignments) == 1, "expected exactly one module-level _ANDROID_LOCK_ROOT default"
+
+    expected = ast.parse('Path.home() / ".operation-love" / "locks"', mode="eval").body
+    assert ast.unparse(assignments[0].value) == ast.unparse(expected)
+
+
 def test_android_lock_contends_across_processes_and_distinct_data_dirs(tmp_path):
     class _First:
         data_dir = tmp_path / "one"
@@ -1393,12 +1440,12 @@ def test_device_lock_prevents_overlapping_runs_even_within_one_process(monkeypat
 
     t = threading.Thread(target=_first)
     t.start()
-    assert gate.wait(timeout=5)                    # first run now holds the device lock
+    assert gate.wait(timeout=_LIVENESS_TIMEOUT_S)  # first run now holds the device lock
 
     with pytest.raises(RuntimeError, match="already in use"):
         sup.run(str(cfg_path), stop_event=threading.Event())
 
-    t.join(timeout=5)
+    t.join(timeout=_LIVENESS_TIMEOUT_S)
     assert not t.is_alive()
     assert "error" not in first_error               # the first run completed cleanly
 
@@ -1414,7 +1461,7 @@ def test_wedged_android_worker_retains_device_lock_until_it_really_exits(
     class _WedgedAndroidDriver(DatingAppDriver):
         def open_session(self):
             entered.set()
-            release.wait(timeout=5)
+            release.wait(timeout=_LIVENESS_TIMEOUT_S)
 
         def next_profile(self):
             return None
@@ -1442,7 +1489,7 @@ def test_wedged_android_worker_retains_device_lock_until_it_really_exits(
     stop = threading.Event()
 
     def stop_after_worker_enters():
-        assert entered.wait(timeout=5)
+        assert entered.wait(timeout=_LIVENESS_TIMEOUT_S)
         stop.set()
 
     threading.Thread(target=stop_after_worker_enters, daemon=True).start()
@@ -1455,7 +1502,12 @@ def test_wedged_android_worker_retains_device_lock_until_it_really_exits(
     assert "retaining Android device lock" in capsys.readouterr().out
 
     release.set()
-    deadline = time.monotonic() + 5
+    # This poll is the exact gate that was OBSERVED to flake under full-suite load on
+    # 2026-08-22 (see _LIVENESS_TIMEOUT_S above): the reaper thread's `worker.join()` plus the
+    # worker actually unwinding through next_profile()/out_of_profiles()/close() has to be
+    # scheduled fairly against every other pytest-xdist worker's CPU-bound test, and 5s of
+    # wall-clock budget was not always enough margin for that under contention.
+    deadline = time.monotonic() + _LIVENESS_TIMEOUT_S
     while True:
         try:
             contender.acquire()
@@ -1481,7 +1533,7 @@ def test_reaper_start_failure_keeps_lock_but_does_not_skip_store_shutdown(
     class _WedgedAndroidDriver(DatingAppDriver):
         def open_session(self):
             stop.set()
-            release.wait(timeout=5)
+            release.wait(timeout=_LIVENESS_TIMEOUT_S)
 
         def next_profile(self):
             return None
@@ -1536,7 +1588,7 @@ def test_reaper_start_failure_keeps_lock_but_does_not_skip_store_shutdown(
         contender.acquire()
 
     release.set()
-    captured["worker"].join(timeout=5)
+    captured["worker"].join(timeout=_LIVENESS_TIMEOUT_S)
     with sup._RETAINED_DEVICE_LOCKS_GUARD:
         retained = list(sup._RETAINED_DEVICE_LOCKS)
         sup._RETAINED_DEVICE_LOCKS.clear()
@@ -1597,7 +1649,12 @@ def test_stopping_is_true_and_phase_is_stopping_before_saving_data_begins(monkey
 
     class _BlockedUntilReleased(DatingAppDriver):
         def open_session(self):
-            release.wait(timeout=5)
+            # This is only a failsafe against the fake driver hanging forever if `release`
+            # somehow never fires -- the test always calls release.set() explicitly at ~0.5s
+            # (line below), well inside this bound regardless of machine load. It is
+            # deliberately independent from the mocked `_worker_join_timeout_s=5.0` below,
+            # which IS an input to the production code under test and must stay as authored.
+            release.wait(timeout=_LIVENESS_TIMEOUT_S)
         def next_profile(self):
             return None
         def out_of_profiles(self):
@@ -1634,7 +1691,7 @@ def test_stopping_is_true_and_phase_is_stopping_before_saving_data_begins(monkey
     time.sleep(0.35)
     mid = captured["status"].snapshot()
     release.set()                            # let the worker (and thus the join loop) finish
-    run_thread.join(timeout=5)
+    run_thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert mid["phase"] == "stopping"
     assert mid["stopping"] is True

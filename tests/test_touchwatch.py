@@ -17,6 +17,14 @@ import pytest
 
 from operation_love.drivers import touchwatch
 
+# Liveness bound, not a performance bound: it exists only so a genuine hang fails this test
+# instead of hanging the whole suite forever. Widened 2026-08-22 when `python -m pytest` moved
+# to one worker per core (pyproject.toml addopts `-n auto --dist loadgroup`), which measured a
+# ~15x slowdown (0.33s idle vs 5.06s under load) on tests/test_concurrency.py's positive
+# liveness waits of the same shape. Nothing about the property under test (did the reader
+# thread reach EOF and exit?) depends on the exact number, so widening it loses nothing.
+_LIVENESS_TIMEOUT_S = 15.0
+
 
 # --- fixtures --------------------------------------------------------------------------
 
@@ -318,7 +326,7 @@ def test_start_streams_getevent_and_close_is_safe_after_eof(monkeypatch):
 
     w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
     w.start()
-    w._thread.join(timeout=2.0)   # the fake stream is finite: the reader hits EOF quickly
+    w._thread.join(timeout=_LIVENESS_TIMEOUT_S)   # the fake stream is finite: the reader hits EOF quickly
 
     assert w.device_path == "/dev/input/event3"
     assert w.device_name == "goodix_ts0"

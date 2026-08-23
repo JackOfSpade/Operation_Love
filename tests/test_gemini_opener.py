@@ -37,6 +37,16 @@ from operation_love.perception.capture import Profile
 _PER_DAY_QUOTA_ID = "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
 _PER_MINUTE_QUOTA_ID = "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"
 
+# Liveness bound, not a performance bound: it exists only so a genuine hang fails this test
+# instead of hanging the whole suite forever. Widened 2026-08-22 when `python -m pytest` moved
+# to one worker per core (pyproject.toml addopts `-n auto --dist loadgroup`), which measured a
+# ~15x slowdown (0.33s idle vs 5.06s under load) on tests/test_concurrency.py's positive
+# liveness waits of the same shape, and was later observed to actually flake a 5s gate under
+# full-suite load in both test_concurrency.py and test_supervisor.py the same day. Nothing
+# about the property under test (did the worker thread finish?) depends on the exact number,
+# so widening it loses nothing.
+_LIVENESS_TIMEOUT_S = 15.0
+
 
 def _quota_exhausted(quota_id=None, quota_metric=None):
     """Build a 429 RESOURCE_EXHAUSTED body, optionally with a QuotaFailure detail entry.
@@ -1012,7 +1022,7 @@ def test_generate_holds_an_internal_lock_so_two_threads_never_double_spend_on_on
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout=5)
+        t.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert not errors
     assert len(results) == 2 and all(r.model == "gemini-second" for r in results)

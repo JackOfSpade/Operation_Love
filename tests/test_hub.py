@@ -25,6 +25,15 @@ from operation_love.hub import HubState, _Handler, _MAC_UPDATE_RUN, _PAGE, _bind
 
 NODE_BIN = shutil.which("node")
 
+# Liveness bound, not a performance bound: it exists only so a genuine hang fails a test
+# instead of hanging the whole suite forever. Widened 2026-08-22 when `python -m pytest` moved
+# to one worker per core (pyproject.toml addopts `-n auto --dist loadgroup`), which measured a
+# ~15x slowdown (0.33s idle vs 5.06s under load) on tests/test_concurrency.py's positive
+# liveness waits of the same shape. Nothing about the property under test (did the background
+# thread reach the expected state / finish?) depends on the exact number, so widening it loses
+# nothing.
+_LIVENESS_TIMEOUT_S = 15.0
+
 
 def _extract_js_function(js: str, name: str) -> str:
     """Pull a top-level `function name(...) { ... }` out of the hub page's <script>, by
@@ -53,7 +62,7 @@ def _run_node(script: str):
     return json.loads(r.stdout)
 
 
-def _join_hub_watch_threads(timeout=3.0):
+def _join_hub_watch_threads(timeout=_LIVENESS_TIMEOUT_S):
     """Wait for hub.py's `hub-tab-stale-watch` daemon threads to exit.
 
     /api/hub/open spawns one, and its loop only notices it should stop on its next wake —
@@ -394,7 +403,7 @@ def test_api_stop_returns_200_with_ok_true_when_a_run_is_active():
     finally:
         httpd.shutdown()
         httpd.server_close()
-        _Handler.state._thread.join(timeout=2)
+        _Handler.state._thread.join(timeout=_LIVENESS_TIMEOUT_S)
         _join_hub_watch_threads()
 
 
@@ -493,7 +502,7 @@ def test_hub_tab_close_shuts_server_after_last_client(monkeypatch):
         code, closed = _post(base, "/api/hub/closed", body)
         assert code == 200 and closed["ok"] is True
 
-        t.join(timeout=4)
+        t.join(timeout=_LIVENESS_TIMEOUT_S)
         assert t.is_alive() is False
     finally:
         httpd.shutdown()
@@ -517,7 +526,7 @@ def test_hub_tab_stale_heartbeat_shutdown_when_close_beacon_is_missing(monkeypat
         code, opened = _post(base, "/api/hub/open", body)
         assert code == 200 and opened["ok"] is True
 
-        t.join(timeout=2)
+        t.join(timeout=_LIVENESS_TIMEOUT_S)
         assert t.is_alive() is False
     finally:
         httpd.shutdown()
@@ -565,7 +574,7 @@ def test_hubstate_stop_after_a_run_already_finished_reports_no_active_run():
     whose run ended (deck exhausted, rate limit, an error halt) claimed a stop had worked."""
     st, done = _live_hubstate()
     done.set()
-    st._thread.join(timeout=5)
+    st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
     ok, msg = st.stop()
     assert ok is False and msg == "no run is active"
@@ -636,10 +645,16 @@ def test_wait_for_run_returns_false_and_does_not_block_past_timeout():
     st._thread.start()
     start = time.monotonic()
     assert st.wait_for_run(timeout=0.1) is False
-    assert time.monotonic() - start < 2.0       # returned promptly, did not hang
+    # `stuck` is never set before this assertion runs, so there is no alternate bounded
+    # path to race against here (unlike the `elapsed < ...` check a few tests down, which
+    # is deliberately compared against a specific in-test duration and must stay tight):
+    # if wait_for_run() ignored its own `timeout=0.1` and blocked for real, this would just
+    # hang forever. So this is pure hang detection and safe to widen like any other liveness
+    # bound.
+    assert time.monotonic() - start < _LIVENESS_TIMEOUT_S   # returned promptly, did not hang
     assert st._thread.is_alive() is True
     stuck.set()
-    st._thread.join(timeout=2)
+    st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
 
 def test_serve_shutdown_warns_and_exits_when_run_does_not_finish_in_time(monkeypatch):
@@ -672,7 +687,7 @@ def test_serve_shutdown_warns_and_exits_when_run_does_not_finish_in_time(monkeyp
         hub_server.serve("config.yaml", open_browser=False)
     finally:
         stuck.set()
-        state._thread.join(timeout=2)
+        state._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert any("did not finish saving" in line for line in printed)
 
@@ -772,8 +787,8 @@ def test_hubstate_forwards_max_per_run(monkeypatch):
     # (platforms.py) and HubState.start() now rejects an unrunnable selection up front.
     ok, _ = st.start(mode="auto", apps=["hinge"], max_per_run=8)
     assert ok is True
-    assert done.wait(timeout=5)
-    st._thread.join(timeout=5)
+    assert done.wait(timeout=_LIVENESS_TIMEOUT_S)
+    st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
     assert seen["mode"] == "auto" and seen["max_per_run"] == 8
 
 
@@ -791,7 +806,7 @@ def test_hubstate_timed_stop_stops_each_run_mode_and_reports_countdown(monkeypat
 
     def fake_run(config_path, **kw):
         entered.set()
-        assert kw["stop_event"].wait(timeout=4)
+        assert kw["stop_event"].wait(timeout=_LIVENESS_TIMEOUT_S)
         finished.set()
 
     # Exercise Timer/Event behavior in both modes without coupling it to release evidence.
@@ -800,15 +815,15 @@ def test_hubstate_timed_stop_stops_each_run_mode_and_reports_countdown(monkeypat
     st = HubState("config.yaml")
     ok, _ = st.start(mode=mode, apps=["hinge"], stop_after_seconds=1)
     assert ok is True
-    assert entered.wait(timeout=2)
+    assert entered.wait(timeout=_LIVENESS_TIMEOUT_S)
 
     timed_stop = st.snapshot()["timed_stop"]
     assert timed_stop is not None
     assert timed_stop["duration_seconds"] == 1
     assert 0 <= timed_stop["remaining_seconds"] <= 1
 
-    assert finished.wait(timeout=3)
-    st._thread.join(timeout=3)
+    assert finished.wait(timeout=_LIVENESS_TIMEOUT_S)
+    st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
     assert st.snapshot()["timed_stop"] is None
 
 
@@ -820,17 +835,17 @@ def test_hubstate_manual_stop_cancels_the_timed_stop(monkeypatch):
 
     def fake_run(config_path, **kw):
         entered.set()
-        assert kw["stop_event"].wait(timeout=3)
+        assert kw["stop_event"].wait(timeout=_LIVENESS_TIMEOUT_S)
         released.set()
 
     monkeypatch.setattr(hub.supervisor, "run", fake_run)
     st = HubState("config.yaml")
     ok, _ = st.start(mode="observe", apps=["hinge"], stop_after_seconds=10)
-    assert ok is True and entered.wait(timeout=2)
+    assert ok is True and entered.wait(timeout=_LIVENESS_TIMEOUT_S)
     assert st.stop()[0] is True
     assert st.snapshot()["timed_stop"] is None
-    assert released.wait(timeout=2)
-    st._thread.join(timeout=2)
+    assert released.wait(timeout=_LIVENESS_TIMEOUT_S)
+    st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
 
 def test_hubstate_stale_timed_stop_cannot_stop_a_newer_generation():
@@ -851,7 +866,7 @@ def test_hubstate_stale_timed_stop_cannot_stop_a_newer_generation():
     assert new_stop.is_set() is False
 
     keep_alive.set()
-    st._thread.join(timeout=2)
+    st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
 
 @pytest.mark.parametrize("value", [True, False, -1, 0.0, -0.0, 1.5, "30", "1.0", []])
@@ -1291,7 +1306,7 @@ def test_eval_snapshot_holds_full_progress_until_background_refresh_finishes(mon
         def load_labels(self):
             store_calls.append("load")
             started.set()
-            assert release.wait(timeout=5)
+            assert release.wait(timeout=_LIVENESS_TIMEOUT_S)
             return [object()] * 45
 
         def close(self):
@@ -1317,14 +1332,19 @@ def test_eval_snapshot_holds_full_progress_until_background_refresh_finishes(mon
     assert first["marker"] == "old"
     assert first["refresh"]["since"] == 5
     assert first["refresh"]["remaining"] == 5
-    assert started.wait(timeout=5)
+    assert started.wait(timeout=_LIVENESS_TIMEOUT_S)
 
     second = st.eval_snapshot(every=5)
     assert second["marker"] == "old"
     assert len(store_calls) == 1
 
     release.set()
-    deadline = time.time() + 5
+    # Same liveness-not-performance bound as `_LIVENESS_TIMEOUT_S`'s own comment: this poll is
+    # waiting for the background refresh thread to publish, and the only failure it is built to
+    # catch is "it never does". The literal 5s it used to carry was the last gate of this shape
+    # left after the 2026-08-22 sweep, and two of its 5s siblings had already been seen failing
+    # live under the one-worker-per-core default.
+    deadline = time.time() + _LIVENESS_TIMEOUT_S
     while time.time() < deadline:
         with st._lock:
             marker = st._eval.get("marker") if st._eval else None
@@ -1884,8 +1904,8 @@ def test_hubstate_start_apps_none_is_not_rejected(monkeypatch):
     st = HubState("config.yaml")
     ok, msg = st.start(apps=None)
     assert ok is True
-    assert done.wait(timeout=5)
-    st._thread.join(timeout=5)
+    assert done.wait(timeout=_LIVENESS_TIMEOUT_S)
+    st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
     assert seen["enabled_apps"] is None
 
 
@@ -1905,7 +1925,7 @@ def test_hubstate_retains_final_status_after_run_thread_exits(monkeypatch):
     st = HubState("config.yaml")
     ok, _ = st.start(mode="auto", apps=["hinge"])
     assert ok is True
-    st._thread.join(timeout=5)
+    st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
     snap = st.snapshot()
     assert snap["running"] is False               # HubState follows Thread.is_alive()
@@ -1926,7 +1946,7 @@ def test_hubstate_surfaces_systemexit_from_supervisor(monkeypatch):
     st = HubState("config.yaml")
     ok, _ = st.start()
     assert ok is True
-    st._thread.join(timeout=5)
+    st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
     assert st._error is not None
     assert st._error.startswith("SystemExit:")
     assert "missing" in st._error
@@ -2020,17 +2040,28 @@ def test_wait_for_run_honors_timeout():
     still_running = threading.Event()
 
     def slow():
-        still_running.wait(timeout=5)
+        # This is only a failsafe against the background thread hanging forever if the test
+        # never reaches `still_running.set()` below; the actual wait it simulates ends there,
+        # long before this elapses even at _LIVENESS_TIMEOUT_S, so widening it only makes the
+        # `elapsed < 2.0` discriminator below MORE reliable (a bigger gap to the buggy-path
+        # duration it is proving wait_for_run() did NOT fall through to), never less.
+        still_running.wait(timeout=_LIVENESS_TIMEOUT_S)
 
     st._thread = threading.Thread(target=slow, daemon=True)
     st._thread.start()
     t0 = time.time()
     st.wait_for_run(timeout=0.2)
     elapsed = time.time() - t0
-    assert elapsed < 2.0             # returned promptly, not blocked for the full 5s
+    # Deliberately NOT widened to _LIVENESS_TIMEOUT_S (2026-08-22 pass): this bound is not a
+    # liveness gate, it is the whole assertion -- it exists to prove wait_for_run() actually
+    # honored its own `timeout=0.2` instead of falling through to the still_running thread's
+    # own (now widened) internal wait above. Raising THIS number past that wait's duration
+    # would let that exact bug pass silently, so it has to stay well under it regardless of
+    # machine load.
+    assert elapsed < 2.0             # returned promptly, not blocked for the full wait above
     assert st._thread.is_alive() is True   # timed out, didn't actually finish
     still_running.set()
-    st._thread.join(timeout=5)
+    st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
 
 def test_swipe_banner_gates_on_per_app_mode_not_global_mode():
@@ -3103,7 +3134,7 @@ def test_eval_snapshot_cold_start_single_flights_concurrent_pollers(monkeypatch)
         def load_labels(self):
             compute_calls.append(1)
             started.set()
-            assert release.wait(timeout=5)
+            assert release.wait(timeout=_LIVENESS_TIMEOUT_S)
             return [object()] * 10
 
         def close(self):
@@ -3128,11 +3159,11 @@ def test_eval_snapshot_cold_start_single_flights_concurrent_pollers(monkeypatch)
     threads = [threading.Thread(target=caller) for _ in range(5)]
     for t in threads:
         t.start()
-    assert started.wait(timeout=5)     # one caller is now inside the (single) computation
+    assert started.wait(timeout=_LIVENESS_TIMEOUT_S)  # one caller is inside the computation
     time.sleep(0.05)                   # let the other pollers reach the cold path as waiters
     release.set()
     for t in threads:
-        t.join(timeout=5)
+        t.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert not errors
     assert len(results) == 5

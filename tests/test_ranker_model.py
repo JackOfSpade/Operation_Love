@@ -5,6 +5,14 @@ import pytest
 
 from operation_love.ranker.model import PreferenceModel
 
+# Liveness bound, not a performance bound: it exists only so a genuine hang fails this test
+# instead of hanging the whole suite forever. Widened 2026-08-22 when `python -m pytest` moved
+# to one worker per core (pyproject.toml addopts `-n auto --dist loadgroup`), which measured a
+# ~15x slowdown (0.33s idle vs 5.06s under load) on tests/test_concurrency.py's positive
+# liveness waits of the same shape. Nothing about the property under test (did the reader/writer
+# thread reach the expected state?) depends on the exact number, so widening it loses nothing.
+_LIVENESS_TIMEOUT_S = 15.0
+
 
 def _separable(n=30):
     liked = [(True, [2.0, 2.0]) for _ in range(n)]
@@ -194,7 +202,7 @@ def test_readers_wait_for_a_gated_retrain_then_see_the_published_model(monkeypat
     class _GatedClassifier(_ReadyClassifier):
         def fit(self, X, y):
             fit_started.set()
-            assert allow_fit_to_finish.wait(timeout=5)
+            assert allow_fit_to_finish.wait(timeout=_LIVENESS_TIMEOUT_S)
 
     classifiers = iter((_ReadyClassifier(), _GatedClassifier()))
     monkeypatch.setattr(model_mod, "new_classifier", lambda: next(classifiers))
@@ -212,7 +220,7 @@ def test_readers_wait_for_a_gated_retrain_then_see_the_published_model(monkeypat
 
     training = threading.Thread(target=retrain)
     training.start()
-    assert fit_started.wait(timeout=2)
+    assert fit_started.wait(timeout=_LIVENESS_TIMEOUT_S)
 
     ready_entered = threading.Event()
     predict_entered = threading.Event()
@@ -234,16 +242,17 @@ def test_readers_wait_for_a_gated_retrain_then_see_the_published_model(monkeypat
     prediction_reader = threading.Thread(target=predict)
     ready_reader.start()
     prediction_reader.start()
-    assert ready_entered.wait(timeout=2) and predict_entered.wait(timeout=2)
+    assert (ready_entered.wait(timeout=_LIVENESS_TIMEOUT_S)
+            and predict_entered.wait(timeout=_LIVENESS_TIMEOUT_S))
 
     try:
         assert not ready_done.wait(timeout=0.1)
         assert not predict_done.wait(timeout=0.1)
     finally:
         allow_fit_to_finish.set()
-        training.join(timeout=2)
-        ready_reader.join(timeout=2)
-        prediction_reader.join(timeout=2)
+        training.join(timeout=_LIVENESS_TIMEOUT_S)
+        ready_reader.join(timeout=_LIVENESS_TIMEOUT_S)
+        prediction_reader.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert not training.is_alive()
     assert not ready_reader.is_alive()

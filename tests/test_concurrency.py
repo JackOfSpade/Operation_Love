@@ -15,6 +15,14 @@ from operation_love.worker import Worker
 
 PRICING = {"gemini-test-model": ModelPricing(input=5.0, output=25.0)}
 
+# Liveness bound, not a performance bound: it exists only so a genuine hang fails this test
+# instead of hanging the whole suite forever. Widened 2026-08-22 when `python -m pytest` moved
+# to one worker per core (pyproject.toml addopts `-n auto --dist loadgroup`) -- this file alone
+# measured 0.33s idle vs 5.06s under load (~15x), and a 2s budget on a positive liveness wait
+# was seen to fail once under that contention. Nothing about the property under test (does B
+# eventually reach its parked state?) depends on the exact number, so widening it loses nothing.
+_LIVENESS_TIMEOUT_S = 15.0
+
 
 class _Driver(DatingAppDriver):
     def __init__(self, n):
@@ -133,7 +141,7 @@ def test_one_worker_budget_exhaustion_stops_the_other_worker_before_it_likes():
             self.closed = False
         def open_session(self): pass
         def next_profile(self):
-            self.b_parked.wait(timeout=5)         # act only once B is parked (determinism)
+            self.b_parked.wait(_LIVENESS_TIMEOUT_S)  # act only once B is parked (determinism)
             if self.i >= 1:
                 return None
             self.i += 1
@@ -153,7 +161,7 @@ def test_one_worker_budget_exhaustion_stops_the_other_worker_before_it_likes():
         def open_session(self): pass
         def next_profile(self):
             self.parked.set()                     # signal B is in its loop, waiting
-            self.stop.wait(timeout=5)             # released only when A exhausts -> stop set
+            self.stop.wait(_LIVENESS_TIMEOUT_S)   # released only when A exhausts -> stop set
             return Profile(photos=[b"x"])         # returns AFTER stop; worker breaks before acting
         def out_of_profiles(self): return False
         def like(self, opener=None, item_index=None, *, model_item_index=None): self.likes.append(opener)
@@ -172,7 +180,7 @@ def test_one_worker_budget_exhaustion_stops_the_other_worker_before_it_likes():
     wb = Worker("bumble", b, _LikeDecider(), svc, store, "r", _Pacing(), stop, mode="auto")
 
     wb.start()
-    assert b.parked.wait(2)                        # B is in its loop, waiting on the shared stop
+    assert b.parked.wait(_LIVENESS_TIMEOUT_S)       # B is in its loop, waiting on the shared stop
     wa.start()
     wa.join(timeout=10)
     wb.join(timeout=10)
@@ -259,7 +267,8 @@ def test_second_workers_own_stop_reason_is_published_even_though_it_never_calls_
         def out_of_profiles(self): return False
         def like(self, opener=None, item_index=None, *, model_item_index=None): pass
         def dislike(self):
-            assert a_exhausted.wait(timeout=5), "A never signalled exhaustion -- test is broken"
+            assert a_exhausted.wait(timeout=_LIVENESS_TIMEOUT_S), \
+                "A never signalled exhaustion -- test is broken"
         def close(self): self.closed = True
 
     a_driver, b_driver = _ADriver(), _BDriver()
@@ -363,14 +372,14 @@ def test_ensure_builds_models_exactly_once_under_concurrent_access(monkeypatch):
     barrier = threading.Barrier(n)
 
     def run():
-        barrier.wait(timeout=5)      # all threads hit _ensure() at essentially the same instant
+        barrier.wait(timeout=_LIVENESS_TIMEOUT_S)  # all threads hit _ensure() at ~the same instant
         embedder._ensure()
 
     threads = [threading.Thread(target=run) for _ in range(n)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout=5)
+        t.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert not any(t.is_alive() for t in threads)
     assert len(clip_calls) == 1, f"CLIP built {len(clip_calls)} times (expected 1 -> double-init race!)"
@@ -422,16 +431,16 @@ def test_ensure_never_exposes_a_half_initialized_embedder_to_a_racing_reader(mon
     barrier = threading.Barrier(n)
 
     def run():
-        barrier.wait(timeout=5)
+        barrier.wait(timeout=_LIVENESS_TIMEOUT_S)
         embedder._ensure()
 
     threads = [threading.Thread(target=run) for _ in range(n)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout=5)
+        t.join(timeout=_LIVENESS_TIMEOUT_S)
     stop.set()
-    watcher.join(timeout=5)
+    watcher.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert violations == [], (
         f"a racing reader observed self._arc set while self._clip was still None: {violations}"
@@ -475,7 +484,7 @@ def test_ensure_stays_retryable_for_a_concurrent_caller_after_clip_load_fails(mo
     barrier = threading.Barrier(2)
 
     def run():
-        barrier.wait(timeout=5)
+        barrier.wait(timeout=_LIVENESS_TIMEOUT_S)
         try:
             embedder._ensure()
         except Exception as exc:  # noqa: BLE001
@@ -485,7 +494,7 @@ def test_ensure_stays_retryable_for_a_concurrent_caller_after_clip_load_fails(mo
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout=5)
+        t.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert len(errors) == 1 and isinstance(errors[0], RuntimeError)
     assert len(create_calls) == 2       # first attempt failed; the concurrent 2nd caller retried

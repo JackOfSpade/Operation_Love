@@ -7,6 +7,14 @@ import pytest
 from operation_love import platforms
 from operation_love import targeting_policy as tp
 
+# Liveness bound, not a performance bound: it exists only so a genuine hang fails this test
+# instead of hanging the whole suite forever. Widened 2026-08-22 when `python -m pytest` moved
+# to one worker per core (pyproject.toml addopts `-n auto --dist loadgroup`), which measured a
+# ~15x slowdown (0.33s idle vs 5.06s under load) on tests/test_concurrency.py -- the same kind
+# of positive liveness wait used here. Nothing about the property under test (did the reader
+# thread reach the expected state?) depends on the exact number, so widening it loses nothing.
+_LIVENESS_TIMEOUT_S = 15.0
+
 
 @pytest.fixture(autouse=True)
 def _restore_registry():
@@ -166,7 +174,7 @@ def test_lazy_calibration_serializes_concurrent_readers(monkeypatch):
     def load():
         calls.append(threading.get_ident())
         entered.set()
-        assert release.wait(2)
+        assert release.wait(_LIVENESS_TIMEOUT_S)
         platforms._apply_calibration({
             "hinge": {"observe": True, "auto": False},
             "bumble": {"observe": False, "auto": False},
@@ -185,13 +193,13 @@ def test_lazy_calibration_serializes_concurrent_readers(monkeypatch):
 
     second = threading.Thread(target=second_reader)
     first.start()
-    assert entered.wait(1)
+    assert entered.wait(_LIVENESS_TIMEOUT_S)
     second.start()
-    assert second_started.wait(1)
+    assert second_started.wait(_LIVENESS_TIMEOUT_S)
     assert not second_done.wait(0.05), "second reader bypassed in-progress registration"
     release.set()
-    first.join(2)
-    second.join(2)
+    first.join(_LIVENESS_TIMEOUT_S)
+    second.join(_LIVENESS_TIMEOUT_S)
 
     assert not first.is_alive() and not second.is_alive()
     assert len(calls) == 1

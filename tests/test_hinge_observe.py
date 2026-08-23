@@ -1699,6 +1699,58 @@ def test_external_current_profile_or_scroll_refuses_during_observe_wait():
     assert controller_adb.swipes == 0
 
 
+def test_observe_input_lease_key_is_a_stable_non_identifying_hash_of_app_and_serial():
+    """Pins the on-disk NAME `_observe_input_lease_key()` computes -- the counterweight to
+    tests/conftest.py's session-scoped `_machine_global_state_is_never_the_operators` fixture,
+    which redirects `tempfile.tempdir` for the whole suite so that two xdist workers using
+    fixed fake serials can no longer genuinely contend over a real file via `fcntl.flock`
+    (root cause A of the machine-global-state incident: two worker PROCESSES computing the
+    identical lock path under the real system temp directory and actually locking each other
+    out). That fixture only moves WHERE the file lives (by redirecting what
+    `tempfile.gettempdir()` returns); it never touches what HingeDriver puts in the file's
+    NAME, so this test calls the real method directly. `_observe_input_lease_key()` only
+    formats a path string -- it opens nothing and acquires no lock either way, so this needs
+    no lock and touches no real filesystem path.
+
+    The contract that makes the shared lease actually work is the name: it must be
+    `operation-love-observe-<24 lowercase hex chars>.lock`, where the hex digest is
+    `sha256(f"{app}:{serial}")` truncated to 24 characters. That makes the name STABLE (the
+    same app/serial always resolve to the same file, so a hub run and a separately launched
+    controller sharing one real device agree on one lease to contend over), NON-IDENTIFYING
+    (a hash, never the raw serial, appears in the name), and PER APP/DEVICE PAIR (two
+    different phones, or one phone running two different apps, must never collide on the
+    same lease file).
+    """
+    import hashlib
+    import re
+    from pathlib import Path
+
+    class _SerialCfg:
+        apps = {"hinge": {"serial": "33111JEHN04475"}}
+
+    drv_a = HingeDriver(_SerialCfg())
+    drv_b = HingeDriver(_SerialCfg())          # a second instance, identical inputs
+
+    key_a = drv_a._observe_input_lease_key()
+    key_b = drv_b._observe_input_lease_key()
+    assert key_a == key_b, "same app/serial must resolve to the same lease file every time"
+
+    name = Path(key_a).name
+    match = re.fullmatch(r"operation-love-observe-([0-9a-f]{24})\.lock", name)
+    assert match is not None, f"unexpected lease filename shape: {name!r}"
+
+    expected_digest = hashlib.sha256(
+        f"{drv_a.spec.app}:{drv_a.serial}".encode()).hexdigest()[:24]
+    assert match.group(1) == expected_digest
+    assert drv_a.serial not in name    # non-identifying: the raw serial must not leak into it
+
+    class _OtherSerialCfg:
+        apps = {"hinge": {"serial": "some-other-pixel"}}
+
+    drv_c = HingeDriver(_OtherSerialCfg())
+    assert drv_c._observe_input_lease_key() != key_a, "different serials must not share a lease"
+
+
 def test_identity_new_profile_plus_deck_ready_and_settle_confirms_a_pass(monkeypatch):
     """The positive-path complement to the test above: proving the identity anchor also
     lets a REAL advance through, not just refuses to mistake a scroll for one. The identity

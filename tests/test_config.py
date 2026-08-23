@@ -1061,6 +1061,9 @@ def test_android_package_accepts_identifier_safe_segments():
     ("scroll_captures", True), ("scroll_captures", 0),
     ("scroll_captures", 1.5), ("scroll_captures", "12"),
     ("scroll_captures", c._MAX_ANDROID_SCROLL_CAPTURES + 1),
+    ("still_photo_dwell_candidates", True), ("still_photo_dwell_candidates", 0),
+    ("still_photo_dwell_candidates", 1.5), ("still_photo_dwell_candidates", "3"),
+    ("still_photo_dwell_candidates", c._MAX_STILL_PHOTO_DWELL_CANDIDATES + 1),
     ("dwell_s", math.nan), ("dwell_s", 0), ("dwell_s", -0.1),
     ("dwell_s", c._MAX_ANDROID_DWELL_S + 1), ("dwell_s", "1.1"),
     ("change_threshold", math.inf), ("change_threshold", 0),
@@ -1082,8 +1085,20 @@ def test_android_operational_scalar_valid_boundaries_pass():
         "debug_log": False, "observe_touch_watch": False,
         "observe_name_ocr": True, "touch_backend": "uhid", "adb_path": "adb",
         "debug_dir": "./data/debug", "serial": None,
+        "still_photo_dwell_candidates": c._MAX_STILL_PHOTO_DWELL_CANDIDATES,
     }}}
     c.validate(_load(d))
+
+
+def test_still_photo_dwell_candidates_huge_integer_reported_as_config_error():
+    # Mirrors test_bounded_android_numbers_report_huge_integers_as_config_errors: a bignum must
+    # fail the SAME clean way scroll_captures already does, not overflow or hang isinstance/int
+    # comparison machinery.
+    huge = 1 << 20_000
+    cfg = _load(BASE)
+    cfg.apps = {"hinge": {"still_photo_dwell_candidates": huge}}
+    with pytest.raises(ValueError, match="still_photo_dwell_candidates"):
+        c.validate(cfg)
 
 
 def test_android_app_coords_entry_negative_is_rejected():

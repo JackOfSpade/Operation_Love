@@ -531,7 +531,11 @@ def test_a_licensed_read_dwells_persists_every_frame_and_threads_the_evidence(
     monkeypatch.setattr(hinge, "still_photo_dwell_evidence", dwell_spy)
     monkeypatch.setattr(hinge, "build_item_payload", payload_spy)
     adb = WorldAdb()
-    drv = _drv(adb)
+    # still_photo_dwell_candidates=1: this test is about the ONE free card's dwell burst
+    # (2026-08-23's K-candidate walk is untested here on purpose -- see the dedicated section
+    # near the end of this file), and WorldAdb's `swipe` is a deliberate no-op the walk's
+    # navigation hops cannot climb with.
+    drv = _drv(adb, still_photo_dwell_candidates=1)
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="still-photo-dwell")
     # Snapshot the transport either side of the burst: "no input" is the load-bearing claim, and
     # a dwell that scrolled would be measuring a moving card while calling it still.
@@ -798,7 +802,11 @@ def test_a_centred_byte_exact_card_is_probed_and_the_page_is_left_where_it_was(
     screened, centred burst after that re-entry can be numbered."""
     index, frames = _centred_capture()
     adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
-    drv = _drv(adb)
+    # still_photo_dwell_candidates=1: this test's gesture-count assertions below are about the
+    # ONE free card's re-attach probe specifically (2026-08-23's K-candidate walk, which would
+    # otherwise also climb to hearts 2 and 1 here, has its own dedicated section near the end of
+    # this file).
+    drv = _drv(adb, still_photo_dwell_candidates=1)
 
     evidence = drv._still_photo_dwell(frames, index)
 
@@ -824,7 +832,10 @@ def test_the_probe_uses_only_the_drivers_guarded_humanized_read_scrolls(
     raw coordinate and never the transport directly."""
     index, frames = _centred_capture()
     adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
-    drv = _drv(adb)
+    # still_photo_dwell_candidates=1: the exact input trace asserted below is the ONE free
+    # card's probe; the K-candidate walk (2026-08-23) is exercised separately near the end of
+    # this file.
+    drv = _drv(adb, still_photo_dwell_candidates=1)
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="reattach-probe")
 
     drv._still_photo_dwell(frames, index)
@@ -877,7 +888,11 @@ def test_an_off_centre_capture_is_never_charged_a_probe(installed_still_photo_bo
     the centring rung above, exactly as they did before the probe existed."""
     index, frames = _centred_capture()
     adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
-    drv = _drv(adb)
+    # still_photo_dwell_candidates=1: "spend nothing at all" below is about the PROBE
+    # specifically: the K-candidate walk (2026-08-23) would otherwise still climb to hearts 2
+    # and 1 for its OWN reason (covering more of the profile), which is unrelated to this
+    # test's off-centre-demotion claim and is exercised separately near the end of this file.
+    drv = _drv(adb, still_photo_dwell_candidates=1)
     # The same capture, with the one centred card demoted to off-centre before the probe is
     # considered: the driver must then spend nothing at all.
     real = hinge.still_photo_dwell_evidence
@@ -952,7 +967,10 @@ def test_a_card_parked_at_the_scroll_top_exits_forward_when_backward_rubber_band
     card leaves through the top instead. The page still comes back to where the read left it."""
     index, frames = _centred_capture()
     adb = ScrollTopWorldAdb(start=_CENTRED_SCROLLS[-1])
-    drv = _drv(adb)
+    # still_photo_dwell_candidates=1: the exact input trace asserted below is the ONE free
+    # card's clamped probe; the K-candidate walk (2026-08-23) is exercised separately near the
+    # end of this file.
+    drv = _drv(adb, still_photo_dwell_candidates=1)
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="reattach-scroll-top")
 
     evidence = drv._still_photo_dwell(frames, index)
@@ -1137,7 +1155,10 @@ def test_the_dwell_and_probe_are_unchanged_by_a_should_stop_that_never_fires(
 
     for stop in (None, lambda: False):
         adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
-        drv = _drv(adb)
+        # still_photo_dwell_candidates=1: the gesture counts asserted below are the ONE free
+        # card's probe; the K-candidate walk (2026-08-23) is exercised separately near the end
+        # of this file.
+        drv = _drv(adb, still_photo_dwell_candidates=1)
 
         evidence = drv._still_photo_dwell(frames, index, stop)
 
@@ -2846,3 +2867,263 @@ def test_the_dossier_keeps_the_failing_pairs_own_frames_when_the_cap_has_to_drop
     assert numbers[0] == 35 and numbers[-1] == 63, "breadth still reaches both endpoints"
     for name in saved:
         assert (drv._dbg.dir / name).exists()
+
+
+# =====================================================================================
+# The K-candidate walk (2026-08-23): a still-photo dwell used to cover exactly ONE card per
+# capture -- whichever one happened to have a complete sighting in the read's own last frame,
+# i.e. wherever the read stopped -- because that card is free (the phone is already parked on
+# it). `_still_photo_dwell_candidate_walk` spends up to `still_photo_dwell_candidates - 1` MORE
+# real `item_nav.navigate_to_item` hops to cover more of the profile per capture, each one
+# proved by the identical two-burst evidence and returned to the entry before the next.
+#
+# `_full_read_capture` reuses this file's own `_LAYOUT` (four selectable cards) read all the way
+# to the bottom, so its last frame completely sights only card 4 -- the free candidate -- leaving
+# cards 3, 2 and 1 reachable only by a climb. `ProbeWorldAdb` (not the plain `WorldAdb` every
+# other section of this file uses) is required throughout: navigation's ascending walk issues
+# REVERSE strokes (`_scroll_up_one`), which only `ProbeWorldAdb.swipe` actually moves the world
+# for -- the base fixture's `swipe` is a deliberate no-op (see its own docstring).
+# =====================================================================================
+
+_FULL_READ_SCROLLS = tuple(260 * i for i in range(10))
+
+
+def _full_read_capture():
+    """The index and frames for a read that reaches the bottom of the profile. See the guard
+    test immediately below for why its last frame frees only card 4."""
+    frames = [_frame(s) for s in _FULL_READ_SCROLLS]
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True,
+        identity_band=_IDENTITY_BAND)
+    assert index.usable, index.failures
+    assert index.at_scroll_top
+    assert index.translation == (1, 2, 3, 4)
+    return index, frames
+
+
+def test_the_full_read_fixture_leaves_only_the_last_card_free():
+    """A guard on the fixture, not the driver: every walk assertion below depends on ordinal 4
+    being the only one `dwell_card_rects` can resolve from the read's own frames, so cards 3, 2
+    and 1 can only ever get evidence from a real navigation hop."""
+    index, frames = _full_read_capture()
+    assert set(item_crops.dwell_card_rects(index, len(frames) - 1)) == {4}
+
+
+def test_default_still_photo_dwell_candidates_is_three():
+    """The config default this feature ships behind (config.py validates
+    `apps.hinge.still_photo_dwell_candidates` the same way it validates `scroll_captures`)."""
+    assert _drv(WorldAdb()).still_photo_dwell_candidates == 3
+
+
+def test_one_candidate_reproduces_the_pre_walk_driver_byte_for_byte(installed_still_photo_bound):
+    """K=1 is the floor `_still_photo_dwell_candidate_walk` must be a complete no-op at: exactly
+    the one free card's evidence, no extra screencap, no extra scroll gesture of any kind."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=1)
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    assert set(evidence) == {4}
+    assert (adb.scrolls, adb.reverse_swipes) == (0, 0)
+    assert adb.scroll == _FULL_READ_SCROLLS[-1]
+    assert adb.taps == []
+
+
+def test_three_candidates_produce_evidence_for_three_distinct_hearts(installed_still_photo_bound):
+    """The headline: K=3 walks two real navigation hops beyond the free card, bottom-most first
+    (heart 3, then heart 2), and both come back proved."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=3)
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    assert set(evidence) == {4, 3, 2}
+    for ordinal, dwell in evidence.items():
+        assert dwell.dwell_exact is True, ordinal
+    # Every hop returns to the entry before the next starts, and the walk ends there VERIFIED --
+    # but "verified" is a measured residual under the entry-drift bound, same as the re-attach
+    # probe's own return leg, never a claim of byte-exact restoration (climbing back ~1434px for
+    # heart 2 over several capped, measured strokes accumulates a real few-pixel residual).
+    drift_bound = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
+    assert abs(adb.scroll - _FULL_READ_SCROLLS[-1]) < drift_bound
+
+
+def test_the_number_of_candidates_never_exceeds_k(installed_still_photo_bound):
+    """K=2 on a profile with four selectable cards: only ONE extra candidate -- the one nearest
+    the entry -- is ever attempted, never all three that are structurally available."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=2)
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    assert set(evidence) == {4, 3}
+    assert 2 not in evidence and 1 not in evidence
+
+
+def test_every_walk_gesture_goes_through_the_ledgered_scroll_helpers(installed_still_photo_bound):
+    """Owner rule: best humanized interaction or fail loudly. Asserted on the driver's own scroll
+    ledger against the fake transport's own gesture counters -- not on a comment -- because a
+    gesture that bypassed `_scroll_down_one`/`_scroll_up_one` (a raw `adb.scroll_up`/`swipe` call)
+    would move the fake phone without the ledger ever growing to match."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=3)
+
+    drv._still_photo_dwell(frames, index)
+
+    assert len(drv._capture_scroll_ledger) == adb.scrolls + adb.reverse_swipes
+    assert adb.scrolls + adb.reverse_swipes > 0, "the walk must have actually moved the phone"
+
+
+def test_a_navigation_refusal_on_the_second_candidate_abandons_the_walk(
+        monkeypatch, installed_still_photo_bound):
+    """Candidate 1 (heart 3) is proved and kept; candidate 2 (heart 2) refuses; candidate 3
+    (heart 1) is NEVER attempted and never appears in the evidence -- no substitution, no retry
+    of a different ordinal for the one that was asked for."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=4)
+    real_navigate = hinge.navigate_to_item
+    calls: list[int] = []
+
+    def flaky_navigate(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise hinge.ItemNavigationError("navigation_refused_for_test", "synthetic refusal")
+        return real_navigate(*args, **kwargs)
+
+    monkeypatch.setattr(hinge, "navigate_to_item", flaky_navigate)
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    assert set(evidence) == {4, 3}
+    assert 2 not in evidence and 1 not in evidence
+    assert len(calls) == 2, "candidate 3 (heart 1) must never be attempted"
+
+
+def test_an_unverified_return_abandons_the_walk_and_stops_further_candidates(
+        monkeypatch, installed_still_photo_bound):
+    """Candidate 1 (heart 3) is proved; ITS OWN return to the entry cannot be verified; the walk
+    stops there -- candidate 2 (heart 2), nearer the entry than the one that failed and the card
+    that would ordinarily be tried next, is never attempted at all."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=4)
+    navigate_calls: list[int] = []
+    real_navigate = hinge.navigate_to_item
+
+    def counting_navigate(*args, **kwargs):
+        navigate_calls.append(1)
+        return real_navigate(*args, **kwargs)
+
+    monkeypatch.setattr(hinge, "navigate_to_item", counting_navigate)
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_walk_return_to_entry",
+                        lambda self, target, probe, entry_reference: False)
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    assert set(evidence) == {4, 3}
+    assert 2 not in evidence and 1 not in evidence
+    assert len(navigate_calls) == 1, "no candidate may be attempted after an unverified return"
+
+
+def test_should_stop_between_candidates_stops_the_walk_with_no_partial_candidate(
+        monkeypatch, installed_still_photo_bound):
+    """`should_stop` becomes true only once candidate 1 (heart 3) has FULLY completed -- proof
+    and a verified return -- so its own evidence is untouched by the stop; candidate 2 (heart 2)
+    is then never attempted at all (caught at the walk's own top-of-loop check, before a single
+    navigate_to_item call)."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=4)
+    state = {"returns": 0}
+    real_return = HingeDriver._still_photo_dwell_walk_return_to_entry
+
+    def counting_return(self, target, probe, entry_reference):
+        ok = real_return(self, target, probe, entry_reference)
+        state["returns"] += 1
+        return ok
+
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_walk_return_to_entry", counting_return)
+    navigate_calls: list[int] = []
+    real_navigate = hinge.navigate_to_item
+
+    def counting_navigate(*args, **kwargs):
+        navigate_calls.append(1)
+        return real_navigate(*args, **kwargs)
+
+    monkeypatch.setattr(hinge, "navigate_to_item", counting_navigate)
+
+    evidence = drv._still_photo_dwell(frames, index, lambda: state["returns"] >= 1)
+
+    assert set(evidence) == {4, 3}
+    assert 2 not in evidence and 1 not in evidence
+    assert len(navigate_calls) == 1, "no candidate after the first must ever be attempted"
+
+
+def test_should_stop_mid_proof_yields_no_partial_candidate(
+        monkeypatch, installed_still_photo_bound):
+    """The stricter form of the same rule: `should_stop` fires WHILE candidate 2 (heart 2)'s own
+    two-burst proof is running -- after navigation already parked it, so the phone genuinely
+    moved -- not merely between candidates. That candidate must still get NO evidence entry at
+    all: a `StillPhotoDwell` built from an interrupted burst would misrepresent an observation
+    that was never completed, exactly as an interrupted burst on the free card already does
+    (`_still_photo_dwell_burst`'s own STOP contract). The walk must not attempt a third
+    candidate afterwards either."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=4)
+    state = {"navigations": 0}
+    real_navigate = hinge.navigate_to_item
+
+    def counting_navigate(*args, **kwargs):
+        target = real_navigate(*args, **kwargs)
+        state["navigations"] += 1
+        return target
+
+    monkeypatch.setattr(hinge, "navigate_to_item", counting_navigate)
+
+    evidence = drv._still_photo_dwell(frames, index, lambda: state["navigations"] >= 2)
+
+    assert set(evidence) == {4, 3}
+    assert 2 not in evidence and 1 not in evidence
+    assert state["navigations"] == 2, "candidate 2's navigation DID run, just not its proof"
+
+
+def test_no_targeting_calibration_means_the_walk_never_runs(installed_still_photo_bound):
+    """With no `apps.hinge.targeting_calibration` installed, `navigate_to_item` has no
+    `identity_match_max_dist` to navigate with, so the walk must not run at all -- and the base
+    (K=1) path is completely unaffected: same evidence, zero extra device gestures."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, targeting_calibration=False, still_photo_dwell_candidates=4)
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    assert set(evidence) == {4}
+    assert (adb.scrolls, adb.reverse_swipes) == (0, 0)
+    assert adb.scroll == _FULL_READ_SCROLLS[-1]
+
+
+def test_the_walk_records_one_debug_row_per_candidate_it_attempted(
+        tmp_path, installed_still_photo_bound):
+    """"Record each candidate's outcome" (parked/proved/refused/return-unverified), following
+    the surrounding `self._dbg.action(...)` style every other still-photo debug record uses."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=3)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="walk-candidates")
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    records = [json.loads(line)
+              for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    walk_rows = [r for r in records if r["action"] == "still_photo_dwell_walk_candidate"]
+    assert [r["heart_ordinal"] for r in walk_rows] == [3, 2]
+    assert all(r["outcome"] == "proved" for r in walk_rows)
+    assert {r["heart_ordinal"]: r["dwell_exact"] for r in walk_rows} == {
+        ordinal: evidence[ordinal].dwell_exact for ordinal in (3, 2)}

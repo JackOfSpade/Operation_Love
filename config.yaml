@@ -52,6 +52,19 @@ apps:
     # first few observe runs for materially longer per-profile capture time before trusting it
     # unattended, same as any other geometry/behavior value in this file.
     scroll_captures: 12     # max screencaps while reading one profile
+    # How many cards the still-photo dwell proves per capture. The read itself only ever leaves
+    # the phone parked on ONE card, and only a parked, centred card can be proved (Hinge autoplays
+    # a video near screen centre and nowhere else), so before 2026-08-23 at most one item on a
+    # profile could ever be numbered no matter how many the model was shown -- measured live at
+    # 15 cards indexed, 0 numbered (ops/STILL-PHOTO-DISCRIMINATOR.md 5d). Above 1, the dwell
+    # walks that many MINUS one extra navigation hops per capture, nearest the read's end first,
+    # proving each parked card and returning to the entry before the next hop.
+    #
+    # THIS COSTS REAL GESTURES AND REAL DEVICE TIME: roughly 15-30s and ~3 scrolls per extra
+    # card, on top of the read. Set it to 1 to get the pre-2026-08-23 behaviour back exactly --
+    # every refusal in the walk already abandons only the WALK, never the capture, so 1 is also
+    # what the worst case degrades to on its own. LIVE-VERIFY: unverified on-device at 3.
+    still_photo_dwell_candidates: 3
     dwell_s: 1.1            # per-card read dwell, humanized (Signals #1: read before deciding)
     read_scroll_frac: 0.55  # how far each read-scroll advances the profile
     # Return navigation is intentionally longer than a read step: a single manual Hinge flick

@@ -791,6 +791,64 @@ all four sites that render capture outcomes.
 **What is still true after all of this:** on a typical profile the ladder can still only
 ever be offered ONE card, and 5d's three routes remain the owner's to choose.
 
+## 5f. Addendum 2026-08-23: route 1 of 5d is CHOSEN and BUILT (unvalidated on device)
+
+The owner chose the first of 5d's three routes -- park and dwell each candidate, paying the
+gesture and time cost -- capped at three cards. This section records what shipped and, more
+importantly, what it is NOT.
+
+**The constraint that shapes the whole design.** Only a card that is parked and CENTRED can be
+proved, because Hinge autoplays a video near screen centre and nowhere else; byte-exactness on
+an off-centre card proves nothing. One card can be centred at a time. So per-card evidence
+means per-card page manipulation. There is no batching trick and no estimator that avoids it.
+
+**Why each hop returns to the entry.** `item_nav.navigate_to_item` is ascending-only and always
+anchors on `entry_reference` with a hard-coded `reference_offset = index.offsets[-1]`. It
+refuses (`NAV_ANCHOR_UNMEASURED`) once the phone has drifted more than one smallest-legal
+read-scroll from that reference, and refuses earlier still beyond `estimate_shift`'s trust
+window. **It cannot resume from wherever a previous hop parked the phone.** The alternative to
+returning between hops was to change navigation's anchoring model -- i.e. to modify the one
+module whose entire job is that we never land on the wrong card. That was not done, and should
+not be done to buy a few gestures.
+
+**Selection is structural, not preferential, and this is a real limitation.** There is no
+ranker at dwell time: the ranker lives above the driver and only ever sees a `Profile`, which
+`build_item_payload` has not built yet when the dwell runs (the dwell is an argument to that
+build). So "the three best photos" is not expressible here. What ships is "the three nearest the
+read's end", chosen because `navigate_to_item` climbs upward from the entry and nearest means
+shortest climb and fewest gestures. If the owner later wants preference-ordered candidates, that
+needs a ranker signal plumbed to a layer that currently, by design, has none.
+
+**What it costs.** Roughly 15-30s and about three gestures per extra card, on top of the read.
+At K=3 that is ~1 minute and ~6 extra gestures per profile. The knob is
+`apps.hinge.still_photo_dwell_candidates`; `1` restores the pre-2026-08-23 behaviour exactly.
+
+**The safety argument for defaulting it on.** Every precondition failure and every refusal
+inside the walk -- a navigation refusal, an unverifiable return, `should_stop` -- abandons the
+WALK and never the capture, keeping whatever was already measured. The worst case is therefore
+byte-identical to K=1. Never substitute: a candidate that cannot be parked or proved simply goes
+unmeasured; no other card is dwelt in its place and no other ordinal is retried for it. The
+return is measured in chained steps each capped inside the estimator's trust window and verified
+against the entry with the same bound navigation itself refuses at -- so a return this code
+calls verified is one a following `navigate_to_item` would also accept. When it cannot be
+verified the walk stops and `_current_item_anchor` is deliberately left alone, so a later real
+navigation re-measures and refuses loudly on its own.
+
+**A prerequisite fixed on the way.** Nothing between the end of the read loop and the return to
+`next_profile` polled `should_stop`. The dwell burst and the re-attach probe -- the latter
+issuing 3-6 real scroll gestures -- ran to completion regardless. That was already wrong at one
+card; at three it would have been a multi-minute uninterruptible window. `should_stop` is now
+threaded through the whole dwell path. The re-attach probe's RETURN leg is deliberately not
+stop-gated: once an exit stroke has displaced the page, walking it back is an obligation, not an
+optional gesture.
+
+**NOT VALIDATED ON DEVICE.** The suite exercises the walk end to end over synthetic frames --
+real navigation, real segmentation, real shift estimation, the page verified back within the
+drift bound -- but every previous first contact between this path and a real Pixel produced
+live-only blockers that no synthetic frame could show (5c lists six; the calibration campaign
+added more). Expect the same here. The first live run should be watched, and
+`still_photo_dwell_candidates: 1` is the instant revert.
+
 ## 6. Plan B (documented, not chosen)
 
 If held-out video accepts never reach zero, the honest fallback is to change the

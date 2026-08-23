@@ -101,8 +101,9 @@ from .item_crops import (
     CROP_CONTEXT, CROP_EXCLUDED, CROP_ITEM, CROP_UNCROPPABLE, EXCLUSION_NEVER_DWELLED,
     EXCLUSION_NON_PHOTO, NO_NUMBERED_ITEMS_REASON, PHOTO_ONLY_POLICY_ID,
     STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC, ItemCropError, ReattachProbe,
-    build_item_payload, card_center_offset_frac, dwell_card_rects, still_photo_dwell_evidence,
-    still_photo_reattach_evidence, unnumber_unless_confident_photo,
+    build_item_payload, card_center_offset_frac, decoded_frame_height, dwell_card_rects,
+    dwell_evidence_for_rect, still_photo_dwell_evidence, still_photo_reattach_evidence,
+    still_photo_reattach_legs, unnumber_unless_confident_photo,
     unnumber_without_still_photo_evidence)
 from .item_type_preflight import INCONCLUSIVE, ItemTypePreflight, preflight_item_type
 from .item_identity import IdentityError, compare_profile_identity
@@ -1743,6 +1744,15 @@ class AndroidDriver(DatingAppDriver):
         except ValueError as exc:
             raise DriverClosed(f"{spec.app}: {exc}") from exc
         self.scroll_captures = max(1, int(app_cfg.get("scroll_captures", spec.scroll_captures)))
+        # How many cards the still-photo dwell (C2/C3) walks a real navigation hop out to for
+        # ONE capture, beyond the free card the read already left the phone parked on. 1
+        # reproduces the driver's pre-2026-08-23 single-card behaviour exactly -- see
+        # `_still_photo_dwell`'s own docstring for the walk this licenses. config.py validates
+        # the config-supplied value as a bounded positive int the same way it validates
+        # scroll_captures; the `max(1, ...)` here is the same defensive floor scroll_captures
+        # keeps, not a second copy of that validation.
+        self.still_photo_dwell_candidates = max(
+            1, int(app_cfg.get("still_photo_dwell_candidates", 3)))
         self.dwell_s = float(app_cfg.get("dwell_s", spec.dwell_s))
         self.read_scroll_frac = float(app_cfg.get("read_scroll_frac", spec.read_scroll_frac))
         # Returning to the top is navigation, not the measured content-reading cadence.  Hinge
@@ -4123,6 +4133,21 @@ class AndroidDriver(DatingAppDriver):
         early, the result is the same `{}` an unlicensed build already returns for -- "no dwell
         evidence" -- which `unnumber_without_still_photo_evidence` already refuses fail-closed,
         so this never changes a gate decision, only how quickly a Stop is noticed.
+
+        ONE FREE CARD, THEN A WALK FOR MORE (2026-08-23). Everything above this point produces
+        evidence for exactly one candidate -- whichever heart-bearing block happens to have a
+        complete sighting in `frames[-1]`, i.e. wherever the read happened to stop -- because
+        that card is free: the phone is already parked on it. On a profile with more than one
+        selectable card that is almost never the only one worth judging, and it is never more
+        than one, so `unnumber_without_still_photo_evidence` had at most one card to accept no
+        matter how many the model was shown (ops/STILL-PHOTO-DISCRIMINATOR.md 5d). The walk below
+        (`_still_photo_dwell_candidate_walk`) spends up to `still_photo_dwell_candidates - 1` MORE
+        real navigation hops -- each one parks a different card via `item_nav.navigate_to_item`,
+        runs this exact same two-burst proof over it, and returns the phone to the entry before
+        the next hop -- to cover more of the profile in one capture. See that method's own
+        docstring for the full design and its non-negotiable safety rule: it can only ever ADD
+        evidence on top of what is returned here, never remove or replace it, and any refusal
+        anywhere in the walk abandons the WALK, never the capture.
         """
         if hinge_targeting_unavailable_reason() is not None:
             return {}
@@ -4158,7 +4183,291 @@ class AndroidDriver(DatingAppDriver):
                 evidence, index, frame_count=len(frames), probe=probe,
                 mute_screen=mute_screen, content_band=self.content_band)
         self._record_still_photo_dwell(burst, span_s, evidence, probe)
+        return self._still_photo_dwell_candidate_walk(
+            evidence, frames=frames, index=index, mute_screen=mute_screen, should_stop=should_stop)
+
+    def _dbg_still_photo_walk_candidate(self, heart_ordinal: int, outcome: str, *,
+                                        frame: bytes | None = None, **fields) -> None:
+        """One best-effort debug row per candidate the K-candidate walk attempted.
+
+        Same contract as `_record_still_photo_dwell`: diagnostics only, and a failure to write
+        one must never alter what the walk itself decided. `outcome` is one of "navigation_refused"
+        / "parked_unproved" / "proved" / "return_unverified" / "stop", matching the walk's own
+        vocabulary for why a candidate did or did not end up in the returned evidence.
+        """
+        if self._dbg is None:
+            return
+        try:
+            self._dbg.action("still_photo_dwell_walk_candidate", before=frame,
+                             heart_ordinal=heart_ordinal, outcome=outcome, **fields)
+        except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
+            pass
+
+    def _still_photo_dwell_candidate_walk(self, base_evidence: dict, *, frames: list[bytes],
+                                          index, mute_screen, should_stop=None) -> dict:
+        """Fan the C2/C3 dwell out to up to `still_photo_dwell_candidates - 1` MORE cards.
+
+        `base_evidence` is exactly what `_still_photo_dwell` already produced for the one free
+        card the read left the phone parked on -- this method's return value is always that dict,
+        possibly with more entries merged in, and NEVER a dict with fewer or different entries.
+        `still_photo_dwell_candidates == 1` (the config default's floor, and the shipped default
+        before this walk existed) must therefore reproduce the pre-walk driver byte for byte,
+        which is why every precondition below is a plain early return of `base_evidence` rather
+        than a refusal of any kind: this whole method is additive, never load-bearing for the
+        capture's own success.
+
+        WHY "THE K NEAREST THE ENTRY" AND NOT "THE K BEST" -- A STRUCTURAL CHOICE, NOT A
+        PREFERENCE ONE. There is no ranker to prefer WITH at dwell time: the ranker lives above
+        the driver and only ever sees a `perception.capture.Profile`, which
+        `item_crops.build_item_payload` has not built yet when this runs (it runs INSIDE that
+        build, as the `still_photo_dwell` argument -- see `_index_captured_items`). So "which
+        card is worth an extra navigation hop" has no candidate answer here beyond "the model
+        still gets to pick among whatever survives"; what IS available to optimise is cost, and
+        the cards nearest the entry (bottom-most first, since `navigate_to_item` only ever walks
+        UP from the entry) are the ones each cost the fewest gestures and the least device time to
+        reach. Ordering by proximity is therefore the only ordering this layer can justify.
+
+        EVERY HOP RETURNS TO THE ENTRY BEFORE THE NEXT ONE STARTS, because `navigate_to_item` is
+        ASCENDING-ONLY and always anchors on `entry_reference` with a HARD-CODED
+        `reference_offset = int(index.offsets[-1])` (item_nav.py) -- it cannot resume a walk from
+        wherever a previous hop parked the phone, only from the entry the read itself left it at.
+        See `_still_photo_dwell_walk_return_to_entry` for how that return is measured and
+        verified, never assumed.
+
+        ANY REFUSAL ABANDONS THE WALK; IT NEVER FAILS THE CAPTURE (owner rule, restated from the
+        design this implements). A navigation refusal, an unverified return, or `should_stop`
+        firing all stop the walk in place and keep whatever was already measured -- the worst
+        case is byte-identical to `still_photo_dwell_candidates == 1`, which is the whole safety
+        argument for defaulting this on. NEVER SUBSTITUTE: a candidate that cannot be parked or
+        proved simply goes unmeasured -- this method never dwells a different card in its place
+        and never retries a different ordinal for the one that was asked for.
+        """
+        limit = self.still_photo_dwell_candidates
+        if limit <= 1 or not frames or not getattr(index, "at_scroll_top", False):
+            return base_evidence
+        remaining = limit - len(base_evidence)
+        if remaining <= 0:
+            return base_evidence
+        covered = set(base_evidence)
+        # STRUCTURAL, not a preference (see the docstring above): descending heart ordinal is
+        # "bottom-most first" on an at_scroll_top index, whose ordinals count top to bottom, and
+        # bottom-most is nearest the entry the read left the phone at -- the shortest possible
+        # climb for `navigate_to_item`'s ascending-only walk.
+        candidates = [ordinal for ordinal in reversed(index.translation)
+                     if ordinal not in covered][:remaining]
+        if not candidates:
+            return base_evidence
+        try:
+            # Reuses `_navigate_to_model_item`'s own plumbing for the calibration bound rather
+            # than reading `self.targeting_calibration` directly, because THIS is what re-checks
+            # the live app build/frame geometry against it (an ADB dumpsys + screen_size round
+            # trip) on every call -- skipping that would let a stale calibration license
+            # navigation gestures on a build it was never measured against. `-1` is not a real
+            # model item number: this gate runs before ANY model item exists (dwell precedes
+            # `item_crops.build_item_payload`), so there is nothing to name in the one place that
+            # number is used, which is this call's own error message on the abandon path below.
+            calibration = self._require_targeting_calibration(-1)
+        except HingeTargetingError:
+            return base_evidence
+        entry_reference = frames[-1]
+        evidence = dict(base_evidence)
+        for heart_ordinal in candidates:
+            if should_stop is not None and should_stop():
+                self._dbg_still_photo_walk_candidate(heart_ordinal, "stop")
+                break
+            nav_index = index.translation.index(heart_ordinal) + 1
+            try:
+                target = navigate_to_item(
+                    self, index, nav_index, entry_reference=entry_reference,
+                    identity_match_max_dist=calibration.identity_match_max_dist,
+                    should_stop=should_stop)
+            except ItemNavigationError as exc:
+                self._dbg_still_photo_walk_candidate(
+                    heart_ordinal, "navigation_refused", frame=exc.frame, reason=exc.code)
+                break
+            except (ActionCancelled, ScrollStepError, SegmentationError, ShiftEstimationError,
+                    IdentityError) as exc:
+                # Uncoded refusals from the vision/should_stop layers underneath navigate_to_item
+                # (see its own docstring: "propagate ... unchanged"). The phone may be left
+                # PARTWAY through a climb here -- navigate_to_item's own counting walk can issue
+                # gestures before one of these fires -- and this method deliberately does not try
+                # to walk it back: `_current_item_anchor` is left alone (this method never writes
+                # it), so a later real navigation re-measures against the entry itself and refuses
+                # loudly on its own `NAV_ANCHOR_UNMEASURED` bound if the drift is unsafe, which is
+                # the same fail-closed outcome an unverified return below produces on purpose.
+                self._dbg_still_photo_walk_candidate(
+                    heart_ordinal, "navigation_refused", reason=type(exc).__name__)
+                break
+            card_evidence, probe = self._still_photo_dwell_over_navigated_target(
+                target, index.block_for(nav_index), heart_ordinal=heart_ordinal,
+                mute_screen=mute_screen, should_stop=should_stop)
+            if card_evidence is not None:
+                evidence[heart_ordinal] = card_evidence
+                self._dbg_still_photo_walk_candidate(
+                    heart_ordinal, "proved", frame=target.frame,
+                    climbed_px=target.climbed_px, dwell_exact=card_evidence.dwell_exact,
+                    reattach_probe_ran=card_evidence.reattach_probe_ran)
+            else:
+                self._dbg_still_photo_walk_candidate(
+                    heart_ordinal, "parked_unproved", frame=target.frame,
+                    climbed_px=target.climbed_px)
+            # UNCONDITIONAL cleanup, on `_still_photo_reattach_probe`'s own precedent (see its
+            # STOP paragraph): navigate_to_item already displaced the page by this point, so
+            # walking it back is an obligation once started, never one more optional gesture a
+            # `should_stop` between here and the next candidate should skip. `probe` is threaded
+            # through so the return leg starts from wherever the phone REALLY is -- `target.frame`
+            # when no probe ran (the two-burst proof's first leg is screencaps only, no gesture),
+            # or the probe's own settled position when one did (its own return leg only ever
+            # promised a MEASURED residual, never byte identity).
+            if not self._still_photo_dwell_walk_return_to_entry(target, probe, entry_reference):
+                self._dbg_still_photo_walk_candidate(heart_ordinal, "return_unverified")
+                break
         return evidence
+
+    def _still_photo_dwell_over_navigated_target(self, target, block, *, heart_ordinal: int,
+                                                  mute_screen, should_stop=None):
+        """The same two-burst C2/C3 proof `_still_photo_dwell` runs for its free card, run here
+        over a card `item_nav.navigate_to_item` just parked. Returns `(dwell, probe)`: `dwell` is
+        `None` if no observation could be made at all (an empty first burst, e.g. `should_stop`
+        firing mid-burst or a blank screencap), which the walk above treats as "this candidate
+        goes unmeasured", never as a negative verdict; `probe` is the `ReattachProbe` the second
+        burst ran over, or `None` if the first burst never earned one, and is handed to the
+        caller's return-to-entry step because ONLY the probe knows where its own return leg
+        actually left the phone (see `_still_photo_dwell_walk_return_to_entry`).
+
+        Built from the SAME primitives the free card's evidence is (`dwell_evidence_for_rect` /
+        `still_photo_reattach_legs` / `card_center_offset_frac` / `mute_screen`), not a second
+        implementation of the same arithmetic. What differs is only how the rect is found:
+        `item_crops.dwell_card_rects` resolves a rect by looking up which of THIS profile's
+        ORIGINAL read frames a block has a complete sighting in (`BlockObservation.frame_index`),
+        and a card parked by a fresh navigation hop was never one of those frames -- it is a
+        brand-new capture `dwell_card_rects` has no way to know about. `target.block_frame_rows`
+        (the card's rows in `target.frame`, freshly measured by navigate_to_item's own
+        segmentation of the landing frame) stands in for the frame-lookup half; `block` (the
+        caller's `index.block_for(nav_index)` for this SAME heart ordinal) supplies `x0`/`x1`,
+        because Hinge's cards never move horizontally as the page scrolls -- the same invariant
+        `still_photo_reattach_evidence` already relies on when it translates a rect by the
+        probe's measured page shift without touching its `x0`/`x1` at all.
+        """
+        rect = (block.x0, target.block_frame_rows[0], block.x1, target.block_frame_rows[1])
+        burst, span_s = self._still_photo_dwell_burst(should_stop)
+        if not burst:
+            return None, None
+        sequence = [target.frame, *burst]
+        frame_height = decoded_frame_height(target.frame)
+        digests = tuple(hashlib.sha256(frame).hexdigest() for frame in sequence)
+        dwell = dwell_evidence_for_rect(
+            rect, sequence, digests=digests, dwell_span_s=span_s, mute_screen=mute_screen,
+            frame_height=frame_height, content_band=self.content_band)
+        # Same probe-eligibility rule as the free card's: only a byte-exact, centred first burst
+        # ever earns the probe, decided by the SAME static method over a one-entry stand-in dict.
+        probe = None
+        if self._still_photo_reattach_candidate({heart_ordinal: dwell}) is not None:
+            probe = self._still_photo_reattach_probe(target.frame, rect, should_stop)
+        if probe is not None:
+            probe_sequence = [probe.anchor, *probe.frames]
+            probe_frame_height = decoded_frame_height(probe.anchor)
+            shifted_rect = (rect[0], rect[1] - probe.page_shift_px,
+                            rect[2], rect[3] - probe.page_shift_px)
+            dwell = dataclasses.replace(dwell, **still_photo_reattach_legs(
+                probe_sequence, shifted_rect, span_s=probe.span_s, mute_screen=mute_screen,
+                frame_height=probe_frame_height, content_band=self.content_band))
+        return dwell, probe
+
+    def _still_photo_dwell_walk_return_to_entry(self, target, probe, entry_reference: bytes) -> bool:
+        """Drive the page back down to the entry after one candidate hop, and VERIFY it landed
+        there -- never assume the climb (`target.climbed_px`) undoes itself just because an equal
+        and opposite distance was requested.
+
+        MEASURED STEPS, CHAINED, THE SAME SHAPE AS `_still_photo_reattach_probe`'s OWN RETURN
+        LEG: `estimate_shift`'s trust window is bounded (~900px on the calibrated band), so a
+        multi-card climb cannot always be verified against `entry_reference` in one shot. Each
+        stroke here is instead measured against the frame the PREVIOUS stroke landed on -- always
+        close, always inside the window -- and the running total is only ever compared against
+        `entry_reference` once, at the very end, when it is expected to already be small.
+
+        THE STARTING DISTANCE IS BOOKKEEPING, NOT A FRESH MEASUREMENT, and deliberately so: the
+        phone's distance from the entry right now is `target.climbed_px` (bottom-up navigation's
+        own measured, chained distance from the entry) MINUS `probe.page_shift_px` when the
+        two-burst proof spent a probe on this candidate (that probe's own return leg already
+        walked part of this same distance back, on its way to the second burst, and its own
+        `page_shift_px` is the MEASURED residual of that -- never assumed zero). Composing the
+        two by subtraction, rather than re-measuring the total distance from scratch with one
+        more `estimate_shift` call, is the same reasoning
+        `_still_photo_dwell_over_navigated_target` uses for reusing `index.block_for`'s `x0`/`x1`
+        instead of re-segmenting: a second independent way to arrive at the same number is a
+        second thing free to disagree with the first, and both `climbed_px` and `page_shift_px`
+        are themselves already-measured (never planned) quantities. `probe.frames[-1]` -- not
+        `target.frame` -- is where the loop below starts walking FROM whenever a probe ran, for
+        the same reason: it is the last frame anything actually observed, and no burst (first or
+        second) issues a gesture of its own that could have moved the phone since.
+
+        NOT should_stop-GATED, on `_still_photo_reattach_probe`'s own precedent and for its
+        stated reason: `navigate_to_item` has already displaced the page from the position
+        `_index_captured_items` anchors bottom-up navigation on, so walking it back is a cleanup
+        obligation once a hop has run, never one more optional gesture.
+
+        Returns True only once a FINAL `estimate_shift` against `entry_reference` measures a
+        drift strictly under the same smallest-legal-read-scroll bound `navigate_to_item`'s own
+        entry gate refuses at (`NAV_ANCHOR_UNMEASURED`) -- so a candidate this method verifies is,
+        by construction, one a following `navigate_to_item` call would also accept. False on
+        anything else (an unmeasurable step, an unmeasurable final position, or a final drift at
+        or beyond that bound); the caller abandons the walk on False and otherwise leaves
+        `_current_item_anchor` untouched, so a later real navigation still refuses loudly and
+        fail-closed on its own if this method's best effort was somehow still wrong.
+        """
+        _w, height = self.adb.screen_size()
+        if height <= 0:
+            return False
+        quantum = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
+        frame = target.frame if probe is None or not probe.frames else probe.frames[-1]
+        total = -target.climbed_px + (0 if probe is None else probe.page_shift_px)
+        # EACH STROKE'S OWN TARGET IS CAPPED WELL INSIDE `estimate_shift`'s TRUST WINDOW
+        # (~900px on the calibrated band), not merely inside `_READ_SCROLL_FRAC_MAX`'s much
+        # larger ~1800px reach -- a single stroke sized at the full remaining distance for a
+        # multi-card climb would ask `_measured_page_shift` to confirm a shift the estimator
+        # refuses to trust at all (`SHIFT_BEYOND_WINDOW`), turning a perfectly good return into
+        # an unmeasurable one. Reuses `_REATTACH_MAX_EXIT_BAND_FRAC` (630px on the calibrated
+        # band) rather than a second cap chosen here: it is already the vetted "largest exit that
+        # stays inside both the trust window and the largest step the hand-scrolled corpus ever
+        # delivered" bound (see its own comment), and the same `estimate_shift` mechanics apply
+        # to this leg exactly as they do to the probe's.
+        band_px = (float(self.content_band[1]) - float(self.content_band[0])) * height
+        max_measurable_step_px = max(1, int(_REATTACH_MAX_EXIT_BAND_FRAC * band_px))
+        # Derived from the distance actually owed, unlike the probe's own fixed
+        # `_REATTACH_RETURN_STEPS_SPAN`: that span is sized for the probe's own single ~630px
+        # exit, while a multi-card climb can owe several strokes of that size. Worst case (every
+        # stroke only delivers the SMALLEST legal step) plus the same +2 slack the probe's own
+        # return leg budgets for a transport that under-delivers, floored at the probe's own span
+        # so a short climb behaves identically to it.
+        max_attempts = max(_REATTACH_RETURN_STEPS_SPAN[1],
+                           math.ceil(abs(total) / max_measurable_step_px) + 2)
+        for _attempt in range(max_attempts):
+            remaining = -total
+            if abs(remaining) <= quantum // 2:
+                break
+            step_target_px = min(abs(remaining), max_measurable_step_px)
+            frac = min(_READ_SCROLL_FRAC_MAX,
+                      max(_READ_SCROLL_FRAC_MIN, frac_for_step_px(int(step_target_px), height)))
+            _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
+            if remaining > 0:
+                self._scroll_down_one(frac, x_frac)   # content up: climbing back down the page
+            else:
+                self._scroll_up_one(frac, x_frac)
+            time.sleep(human_delay(_READ_SCROLL_SETTLE_S))
+            following = self._screencap(on_blank="none")
+            if following is None:
+                return False
+            step = self._measured_page_shift(frame, following)
+            if step is None:
+                return False
+            total += step
+            frame = following
+        verified = self._measured_page_shift(entry_reference, frame)
+        if verified is None:
+            return False
+        drift_bound = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
+        return abs(verified) < drift_bound
 
     def _index_captured_items(self, photos: list[bytes], should_stop=None) -> str:
         """Fold this capture's frames into doc 5.3's index and doc 5.2's crops.

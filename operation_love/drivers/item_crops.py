@@ -1023,6 +1023,44 @@ def dwell_exact_over_rect(frames_rgb: Sequence, rect: tuple[int, int, int, int])
     return True
 
 
+def dwell_evidence_for_rect(rect: tuple[int, int, int, int], sequence: Sequence[bytes], *,
+                            digests: tuple[str, ...], dwell_span_s: float | None,
+                            mute_screen: Callable[[bytes, tuple[int, int, int, int]], bool]
+                            | None = None,
+                            frame_height: int | None = None,
+                            content_band: Sequence[float] | None = None) -> StillPhotoDwell:
+    """The C2/C3 first-burst verdict for ONE already-known card rect (2026-08-23).
+
+    Factored out of `still_photo_dwell_evidence`'s per-block loop so a caller holding its OWN
+    rect -- one `dwell_card_rects` cannot resolve, because that lookup is keyed to the frame
+    provenance `frame_index` values `HingeDriver._index_captured_items`'s read recorded, and a
+    card parked by a FRESH `item_nav.navigate_to_item` hop was never one of those frames -- gets
+    the identical evidence from the identical primitives (`dwell_exact_over_rect`,
+    `card_center_offset_frac`) instead of a second copy of this arithmetic
+    (`HingeDriver._still_photo_dwell`'s K-candidate walk is that caller). `still_photo_dwell_evidence`
+    below is now a thin fan-out over this function for the anchor-frame case it always handled;
+    behaviour there is unchanged.
+
+    `sequence` is `[anchor_frame, *dwell_frames]`, exactly as the fan-out builds it. `digests`
+    are `sequence`'s own sha256 hexdigests, passed in rather than recomputed here so a multi-card
+    fan-out hashes the one shared anchor once instead of once per card.
+    """
+    offset = None
+    centered = None
+    if frame_height:
+        offset = card_center_offset_frac(rect, frame_height=frame_height,
+                                         content_band=content_band)
+        centered = abs(offset) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
+    return StillPhotoDwell(
+        dwell_frame_sha256s=digests,
+        dwell_exact=dwell_exact_over_rect(sequence, rect),
+        dwell_span_s=dwell_span_s,
+        mute_screens_complete=(None if mute_screen is None
+                               else all(bool(mute_screen(frame, rect)) for frame in sequence)),
+        centered=centered,
+        center_offset_frac=(None if offset is None else float(offset)))
+
+
 def still_photo_dwell_evidence(index: ItemIndex, frames: Sequence[bytes],
                               dwell_frames: Sequence[bytes], *, dwell_span_s: float | None,
                               mute_screen: Callable[[bytes, tuple[int, int, int, int]], bool]
@@ -1061,23 +1099,10 @@ def still_photo_dwell_evidence(index: ItemIndex, frames: Sequence[bytes],
     sequence = [frames[anchor_position], *dwell_frames]
     frame_height = None if content_band is None else decoded_frame_height(sequence[0])
     digests = tuple(hashlib.sha256(frame).hexdigest() for frame in sequence)
-    evidence: dict[int, StillPhotoDwell] = {}
-    for heart_ordinal, rect in dwell_card_rects(index, anchor_position).items():
-        offset = None
-        centered = None
-        if frame_height:
-            offset = card_center_offset_frac(rect, frame_height=frame_height,
-                                             content_band=content_band)
-            centered = abs(offset) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
-        evidence[heart_ordinal] = StillPhotoDwell(
-            dwell_frame_sha256s=digests,
-            dwell_exact=dwell_exact_over_rect(sequence, rect),
-            dwell_span_s=dwell_span_s,
-            mute_screens_complete=(None if mute_screen is None
-                                   else all(bool(mute_screen(frame, rect)) for frame in sequence)),
-            centered=centered,
-            center_offset_frac=(None if offset is None else float(offset)))
-    return evidence
+    return {heart_ordinal: dwell_evidence_for_rect(
+                rect, sequence, digests=digests, dwell_span_s=dwell_span_s,
+                mute_screen=mute_screen, frame_height=frame_height, content_band=content_band)
+            for heart_ordinal, rect in dwell_card_rects(index, anchor_position).items()}
 
 
 @dataclass(frozen=True)

@@ -1125,6 +1125,10 @@ _MAX_SWIPE_DELAY_S = 3600.0
 _MIN_ANDROID_DWELL_S = 0.1
 _MAX_ANDROID_DWELL_S = 60.0
 _MAX_ANDROID_SCROLL_CAPTURES = 100
+# Each candidate beyond the first spends a real navigation hop plus a full two-burst dwell, so
+# this ceiling is far tighter than scroll_captures' -- a value this high is already several times
+# more cards than any real Hinge profile carries.
+_MAX_STILL_PHOTO_DWELL_CANDIDATES = 20
 
 
 def _require_bool(value, label: str) -> None:
@@ -1471,6 +1475,20 @@ def _validate_android_fractions(cfg: Config) -> None:
                     f"Config: apps.{app}.scroll_captures must not exceed "
                     f"{_MAX_ANDROID_SCROLL_CAPTURES} "
                     f"(got {_safe_value_repr(app_cfg['scroll_captures'])})")
+        # 2026-08-23: how many cards ONE capture's still-photo dwell (C2/C3) walks a real
+        # navigation hop out to, beyond the free card the read already left the phone parked on.
+        # 1 reproduces the pre-walk driver exactly. Each extra candidate spends a live
+        # navigate_to_item climb, a fresh two-burst dwell and a measured walk back to the entry,
+        # so -- same reasoning as scroll_captures -- an unbounded value is an operational mistake
+        # rather than useful tuning.
+        if "still_photo_dwell_candidates" in app_cfg:
+            _require_positive_int(app_cfg["still_photo_dwell_candidates"],
+                                  f"apps.{app}.still_photo_dwell_candidates")
+            if app_cfg["still_photo_dwell_candidates"] > _MAX_STILL_PHOTO_DWELL_CANDIDATES:
+                raise ValueError(
+                    f"Config: apps.{app}.still_photo_dwell_candidates must not exceed "
+                    f"{_MAX_STILL_PHOTO_DWELL_CANDIDATES} "
+                    f"(got {_safe_value_repr(app_cfg['still_photo_dwell_candidates'])})")
         if "dwell_s" in app_cfg:
             _require_finite_real(app_cfg["dwell_s"], f"apps.{app}.dwell_s",
                                  minimum=_MIN_ANDROID_DWELL_S,

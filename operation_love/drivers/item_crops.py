@@ -422,6 +422,19 @@ def card_is_centered(rect: tuple[int, int, int, int], *, frame_height: int,
 # it here — see the module docstring.
 EXCLUSION_ENDORSEMENT = "endorsement"
 
+# `build_item_payload`'s "Rule four" refusal: not a per-ITEM exclusion like the `EXCLUSION_*`
+# family above (it names no block and no card), but the PAYLOAD-level fact that the loop over
+# `index.blocks` numbered nothing at all. Exported as a stable prefix, not just embedded in the
+# f-string below, because exactly one caller today (`HingeDriver._index_captured_items`) has to
+# tell "nothing survived, and that is the ONLY thing wrong with this payload" from every other
+# way `usable` can be False (an over-tall block, a resolved-but-uncroppable contradiction) --
+# see the docstring on `ItemPayload.usable` for why this module itself must not soften Rule
+# four's own meaning: a generic caller with no other use for an empty list still has nothing to
+# do with one (test_photo_only_policy_refuses_a_capture_with_no_numbered_photographs). Hinge is
+# the one caller that has somewhere else to put the answer -- `Profile.items_unnumbered` -- and
+# it does that by recognising this prefix, never by re-deriving the sentence.
+NO_NUMBERED_ITEMS_REASON = "no policy-approved selectable item survived to be numbered"
+
 # Rung (g)'s refusal when no probe has run YET. Exported as a constant, not just returned as
 # prose, because a producer that takes the two bursts IN SEQUENCE has to tell "every cheaper
 # rung passed, go and spend the probe's real gestures" from "this card already failed
@@ -430,6 +443,22 @@ EXCLUSION_REATTACH_PROBE_MISSING = (
     f"{EXCLUSION_NON_PHOTO}: no re-attach probe scrolled this card out of Hinge's autoplay band "
     "and back into it, so a video that was stalled, buffering, unloaded or already ended during "
     "the dwell would have held byte-exact and passed as a photograph")
+
+# The dwell rung's refusal for a card that was NEVER OBSERVED, as opposed to one that was
+# observed and measured moving (found+fixed 2026-08-22, ops/STILL-PHOTO-DISCRIMINATOR.md 5d).
+# Production takes exactly one dwell burst, at the position the read stopped
+# (`HingeDriver._still_photo_dwell`), and `dwell_card_rects` only returns entries for cards with
+# a complete sighting in that one anchor frame -- so on a real multi-card profile most candidates
+# never had a rect to dwell over at all. That is a coverage gap, not a detection, and it must not
+# read as the same sentence a card gets when a dwell actually ran and caught it moving: an
+# operator (or an auto-derived summary, see hinge.py's `_index_captured_items`) needs to be able
+# to tell "we never looked at this card" (expected, structural, every run) from "we looked and it
+# is a video" (rung below, a real result). Exported as a constant, like rung (g)'s sibling above,
+# because the sentence is fixed regardless of which card it names.
+EXCLUSION_NEVER_DWELLED = (
+    f"{EXCLUSION_NON_PHOTO}: no dwell ever covered this card -- production takes one dwell burst, "
+    "at the position the read stopped, and this card was not in it, so it was never observed; "
+    "that is a coverage gap, not a judgement, and still cannot be excluded")
 
 
 class ItemCropError(RuntimeError):
@@ -1284,6 +1313,22 @@ def unnumber_without_still_photo_evidence(evidence: StillPhotoEvidence) -> str |
     # a truthy placeholder must not be able to claim an observation nothing made. The digest
     # count is part of the same claim -- "byte-identical across every consecutive pair" is
     # vacuous with fewer than two frames, so a True with no frames behind it is refused too.
+    #
+    # NEVER OBSERVED reads as the same sentence as OBSERVED AND REFUSED unless this rung splits
+    # them (found+fixed 2026-08-22, ops/STILL-PHOTO-DISCRIMINATOR.md 5d). `dwell_exact is None`
+    # WITH NO FRAMES BEHIND IT is the specific, common shape a producer emits when it never took
+    # a dwell of this card at all -- production dwells once, at the position the read stopped
+    # (`HingeDriver._still_photo_dwell`), and `dwell_card_rects` only returns entries for cards
+    # complete in that one anchor frame, so most cards on a real profile never had a rect to
+    # dwell over in the first place. That is a coverage gap this rung still has to refuse (an
+    # un-photographed card is exactly as unproven as an un-photographed video), but it is not the
+    # same FINDING as a dwell that ran and caught the card moving, and an operator reading the
+    # sentence needs to be able to tell them apart. `dwell_exact is None` WITH frames present
+    # (a producer that measured something and still could not call it exact) and `dwell_exact is
+    # False` (a measured, positive refusal) both keep the ORIGINAL wording below: something was
+    # observed, and it did not pass.
+    if evidence.dwell_exact is None and not evidence.dwell_frame_sha256s:
+        return EXCLUSION_NEVER_DWELLED
     if evidence.dwell_exact is not True or len(evidence.dwell_frame_sha256s) < 2:
         return (f"{EXCLUSION_NON_PHOTO}: no un-interacted dwell proved this card's rect "
                 "byte-identical across consecutive captures; a video that emitted a single "
@@ -1736,9 +1781,11 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
 
     if not number:
         # Rule four. An empty numbered list is not a request the model can answer, and shipping
-        # one would spend a call to be told so.
+        # one would spend a call to be told so. The sentence starts with `NO_NUMBERED_ITEMS_
+        # REASON` rather than a fresh string -- see that constant's docstring for why one caller
+        # needs to recognise this exact failure apart from every other one.
         failures.append(
-            f"no policy-approved selectable item survived to be numbered, from "
+            f"{NO_NUMBERED_ITEMS_REASON}, from "
             f"{len(index.blocks)} indexed block(s) — there is nothing for the model to choose "
             "between")
 

@@ -369,6 +369,15 @@ class _ObserveSuggestion:
         if unavailable:
             return _operator_items_unavailable_warning(unavailable)
         if not getattr(self._profile, "items", ()):
+            # `items_unnumbered` (found+fixed 2026-08-22, see perception.capture.Profile) is the
+            # driver's own derived reason for THIS capture -- enumeration finished and legitimately
+            # numbered nothing -- and is strictly more useful than the generic line below when the
+            # driver bothered to record one.  Preferring it here changes only what the operator
+            # reads: this stays a WARNING exactly as before, never the auto loop's hard stop,
+            # which reads `items_unavailable` alone and is untouched by this branch.
+            unnumbered = getattr(self._profile, "items_unnumbered", "")
+            if unnumbered:
+                return unnumbered
             return ("this capture produced no numbered items, so there is nothing for the model "
                     "to choose from")
         # The canary property is the whole point of this workflow, so the check that protects it
@@ -1642,6 +1651,30 @@ class Worker(threading.Thread):
                     # refuse. `items_unavailable` is what distinguishes the two, which is why the
                     # driver must set exactly one of the pair (see perception.capture.Profile).
                     #
+                    # A THIRD state exists (found+fixed 2026-08-22, see `Profile.items_unnumbered`):
+                    # enumeration ran to completion and legitimately numbered nothing (a profile
+                    # of videos, say). This whole opener block only runs for a LIKE decision (see
+                    # the `if d.decision == "like":` a few lines up) -- a PASS decision never
+                    # reaches this code at all, so it sails straight past a zero-item profile
+                    # unconditionally, which is the correct, preserved behaviour
+                    # (ops/STILL-PHOTO-DISCRIMINATOR.md 5d measured exactly this: a normal
+                    # profile, not a failure).
+                    #
+                    # For a LIKE decision, though, this state gets its OWN hard stop immediately
+                    # below, right after the `items_unavailable` one (found+fixed 2026-08-22,
+                    # second pass, same day -- the first pass left this branch as the comment used
+                    # to read here: "`items` stays `None`... no opener is requested"). That claim
+                    # was false. With `items` left `None` and nothing else stopping the run,
+                    # control fell straight through to `maybe_opener(..., items=None)`, which DOES
+                    # request an opener -- just from the raw scroll frames instead of numbered
+                    # crops, exactly the ambiguity doc 5.2 exists to remove ("one card appears in
+                    # several frames, one frame can hold two cards, and the returned item number
+                    # would be confidently meaningless"). Worse, on Hinge the pick that comes back
+                    # would still be treated as naming a real item and a like would be sent against
+                    # it, in direct violation of the owner's never-substitute-liked-item rule: if
+                    # we cannot land on the exact item the model chose, the run stops rather than
+                    # sending a like attached to something else. The block below closes that gap.
+                    #
                     # `not disabled` (audit fix, "BUG 2", 2026-08-12): `opener.enabled: false`
                     # constructs a live-but-disabled OpenerService (client=None,
                     # self.opener_service is not None, disabled=True from construction -- see the
@@ -1673,6 +1706,32 @@ class Worker(threading.Thread):
                             # (assets/hub.html) and this IS the opener path refusing to send --
                             # the like is withheld because no opener request can be built, which
                             # is the same operator-facing situation as every other opener stop.
+                            stop_kind = "opener"
+                            self._stat(state="stopped", stop_reason=stop_reason,
+                                       stop_kind=stop_kind)
+                            self.stop_event.set()
+                            break
+                        unnumbered = getattr(profile, "items_unnumbered", "")
+                        if unnumbered:
+                            # The `items_unavailable` stop above is "the capture failed"; this
+                            # one is "the capture worked and nothing survived policy" -- a
+                            # different operator situation, so it gets its own reason rather than
+                            # being folded into the wording above. Today that usually means dwell
+                            # coverage (ops/STILL-PHOTO-DISCRIMINATOR.md 5d: a burst that only
+                            # ever reached one card of fifteen), not anything broken, which is
+                            # exactly why the sentence is quoted from the driver's own per-capture
+                            # `items_unnumbered` rather than a hardcoded guess at the cause --
+                            # this repo's standing rule that guidance must derive from the
+                            # condition it describes (see `Profile.items_unnumbered`'s docstring).
+                            stop_reason = (
+                                f"the ranker wants to LIKE this profile, but enumeration ran to "
+                                f"completion and legitimately numbered nothing, so there is no "
+                                f"verifiable item an opener request could name and the like is "
+                                f"not sent: {unnumbered}. (Owner rule: if we cannot land on the "
+                                f"exact item the model would choose, the run stops rather than "
+                                f"substituting a different one or falling back to the raw scroll "
+                                f"frames -- ops/OPENER-REDESIGN.md 5.2.)"
+                            )
                             stop_kind = "opener"
                             self._stat(state="stopped", stop_reason=stop_reason,
                                        stop_kind=stop_kind)

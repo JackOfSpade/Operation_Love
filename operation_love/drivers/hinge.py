@@ -57,6 +57,7 @@ browser-closed path) so the worker stops cleanly and flushes buffered labels.
 """
 from __future__ import annotations
 
+from collections import Counter
 from contextlib import contextmanager
 import base64
 import dataclasses
@@ -97,8 +98,9 @@ from .base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClo
                    snapshot_failure_frame)
 from .frameshift import SHIFT_MEASURED, ShiftEstimationError, estimate_shift
 from .item_crops import (
-    CROP_CONTEXT, CROP_EXCLUDED, CROP_ITEM, CROP_UNCROPPABLE, EXCLUSION_NON_PHOTO,
-    PHOTO_ONLY_POLICY_ID, STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC, ItemCropError, ReattachProbe,
+    CROP_CONTEXT, CROP_EXCLUDED, CROP_ITEM, CROP_UNCROPPABLE, EXCLUSION_NEVER_DWELLED,
+    EXCLUSION_NON_PHOTO, NO_NUMBERED_ITEMS_REASON, PHOTO_ONLY_POLICY_ID,
+    STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC, ItemCropError, ReattachProbe,
     build_item_payload, card_center_offset_frac, dwell_card_rects, still_photo_dwell_evidence,
     still_photo_reattach_evidence, unnumber_unless_confident_photo,
     unnumber_without_still_photo_evidence)
@@ -1920,8 +1922,14 @@ class AndroidDriver(DatingAppDriver):
         # `_current_item_payload` is what the model was shown (the numbered crops, their
         # signatures, and `translation` from model item number to heart ordinal, which is the
         # authoritative copy whenever policy excluded anything selectable).
-        # `_current_items_unavailable` is the one-sentence reason there is no payload, and
-        # exactly one of it and the payload is ever set.
+        # `_current_items_unavailable` is the one-sentence reason there is no payload; when it is
+        # set, the payload is not.
+        # `_current_items_unnumbered` is the DIFFERENT one-sentence reason for the third state
+        # this lifetime can be in (found+fixed 2026-08-22, see `Profile.items_unnumbered`):
+        # enumeration ran to completion -- the payload above IS set -- and every candidate was
+        # legitimately excluded, so there is nothing to number. Never both this and
+        # `_current_items_unavailable` at once; they answer "did enumeration finish?" and, given
+        # that it did, "did anything survive?".
         #
         # `_current_item_anchor` is the FOURTH member of the same lifetime, added with doc 5.5's
         # bottom-up navigation: the last frame the index was built from, i.e. the frame
@@ -1936,6 +1944,7 @@ class AndroidDriver(DatingAppDriver):
         self._current_item_anchor = None
         self._current_items_unavailable = (
             "no profile has been read yet, so this driver has enumerated nothing")
+        self._current_items_unnumbered = ""
         self._touch = None            # touch transport: UhidTouch (genuine) or Adb (input fallback)
         self.touch_backend = app_cfg.get("touch_backend", "auto")   # auto | uhid | adb
         self._observe_ready = False   # True once open_session validated PIL/numpy + device
@@ -4094,6 +4103,16 @@ class AndroidDriver(DatingAppDriver):
         `Profile.items_unavailable` and then worker.py's stop line. Called exactly once per
         capture, after the read loop, with the frames that were actually kept.
 
+        ONE SUCCESS RETURNS TWO DIFFERENT OUTCOMES (found+fixed 2026-08-22, see
+        `Profile.items_unnumbered`'s docstring for the two-vs-three-state history). Returning ""
+        does not by itself mean the model was offered anything: it also covers a capture whose
+        index and crops were both sound and every candidate was still legitimately excluded (no
+        dwell covered it, or the dwell that did cover it found motion). That is `numbered_nothing`
+        below, and it is deliberately NOT folded into a refusal -- `item_crops.build_item_payload`
+        marks such a payload `usable=False` for its OWN generic reason (a caller with no other use
+        for an empty item list has nothing to do with one), but Hinge has somewhere else to put
+        that answer, so it reads `payload.failures` itself rather than trusting `usable` blindly.
+
         `at_scroll_top=True` is passed because `_confirm_enumeration_top` confirmed it
         affirmatively for this very read -- that argument is an assertion by the caller and this
         is the caller doc 5.5 had in mind. It is what buys ABSOLUTE heart ordinals, which is
@@ -4176,7 +4195,27 @@ class AndroidDriver(DatingAppDriver):
                 unnumber=unnumber_unless_confident_photo,
                 unnumber_without_evidence=unnumber_without_still_photo_evidence,
                 still_photo_dwell=self._still_photo_dwell(indexed_photos, index))
-            if not payload.usable:
+            # `payload.usable` is False the instant zero cards survive to be numbered -- see
+            # `NO_NUMBERED_ITEMS_REASON`'s docstring in item_crops.py -- and that is the RIGHT
+            # default for a generic caller, but wrong for Hinge's own auto loop: worker.py treats
+            # `items_unavailable` as a HARD STOP (doc 5.2's "sending raw frames instead would give
+            # the model a numbering nothing can act on"), and a profile whose cards are all
+            # legitimately video, or whose dwell only ever reached one of many cards, is not that
+            # -- it is a normal outcome measured live (ops/STILL-PHOTO-DISCRIMINATOR.md 5d: 15
+            # blocks indexed, 0 numbered, entirely by design). So the ONE failure this method must
+            # not translate into `items_unavailable` is Rule four's own, and ONLY when nothing
+            # ELSE is wrong with the payload -- an over-tall block or an unresolved sighting
+            # alongside it is still a real refusal, unchanged below.
+            #
+            # Short-circuited on `not payload.usable` so a USABLE payload never has `.failures`
+            # read at all -- a real `ItemPayload.usable=True` already guarantees an empty
+            # `.failures`, so there is nothing to gain, and a handful of tests double `payload`
+            # as a bare `usable=True` stand-in with no other attributes.
+            numbered_nothing = (
+                not payload.usable
+                and len(payload.failures) == 1
+                and payload.failures[0].startswith(NO_NUMBERED_ITEMS_REASON))
+            if not payload.usable and not numbered_nothing:
                 return self._item_index_refused(
                     photos, "the item crops this capture produced are not a request the model can "
                     "be asked to answer: " + "; ".join(payload.failures), index)
@@ -4186,6 +4225,8 @@ class AndroidDriver(DatingAppDriver):
                 f"({type(exc).__name__}: {exc})", index)
         self._current_item_index = index
         self._current_item_payload = payload
+        self._current_items_unnumbered = (
+            self._items_unnumbered_summary(payload) if numbered_nothing else "")
         self._record_item_index_recovery(photos, index)
         self._record_item_index_notes(photos, index)
         # Doc 5.5's bottom-up entry anchor. `photos[-1]` is the last frame the index was folded
@@ -4196,6 +4237,44 @@ class AndroidDriver(DatingAppDriver):
         # ordinary case, and a measurement rather than an assumption in every case.
         self._current_item_anchor = photos[-1] if photos else None
         return ""
+
+    @staticmethod
+    def _items_unnumbered_summary(payload) -> str:
+        """One operator-readable sentence for `Profile.items_unnumbered`, derived from THIS
+        capture's actual per-item refusal reasons rather than a fixed sentence.
+
+        This repo's standing rule is that guidance must derive from the condition it describes,
+        never outlive it -- a hardcoded "it's probably a video" would already be wrong the day
+        dwell coverage widens (ops/STILL-PHOTO-DISCRIMINATOR.md 5d names that as the open
+        follow-up). So this reads `payload.crops` instead of naming a cause:
+        every heart-bearing crop is one "selectable card" the ladder considered, `reason ==
+        EXCLUSION_NEVER_DWELLED` (exact match -- that constant is a fixed sentence, not a prefix)
+        counts the ones the one dwell burst never reached, and whatever is left is bucketed by its
+        exact reason text so the single most common OTHER finding can be named -- if two cards
+        share a reason verbatim (no interpolated number), that is a real repeated finding, not a
+        coincidence this function invents.
+
+        Called only once `_index_captured_items` has already decided this capture IS the
+        "enumeration ran fine, policy numbered nothing" outcome, so every crop here was actually
+        looked at -- this is never a stand-in for a capture that failed outright.
+        """
+        selectable = [c for c in payload.crops if c.heart_ordinal is not None]
+        if not selectable:
+            return ("this capture's item index carries no heart-bearing card at all, so there "
+                    "was nothing to number")
+        never_dwelled = sum(1 for c in selectable if c.reason == EXCLUSION_NEVER_DWELLED)
+        other_reasons = [c.reason for c in selectable
+                         if c.kind != CROP_ITEM and c.reason != EXCLUSION_NEVER_DWELLED]
+        parts = [f"{len(selectable)} selectable card(s) were considered"]
+        if never_dwelled:
+            parts.append(
+                f"{never_dwelled} could not be judged because the one dwell burst this capture "
+                "takes never covered them")
+        if other_reasons:
+            reason, count = Counter(other_reasons).most_common(1)[0]
+            parts.append(f"the most common other reason ({count} of {len(other_reasons)}): "
+                        f"{reason}")
+        return "; ".join(parts) + "."
 
     @staticmethod
     def _item_payload_debug_manifest(payload, index) -> list[dict]:
@@ -4779,11 +4858,17 @@ class AndroidDriver(DatingAppDriver):
 
         Sets the reason as `_current_items_unavailable` rather than clearing it, so the state is
         never "no payload and no explanation": every reader gets either crops or a sentence.
+
+        Also clears `_current_items_unnumbered`: that field's whole meaning is "enumeration
+        finished and this is what survived", which is no longer true the moment the table is
+        dropped -- leaving a stale summary here would let a NEXT profile's hard stop appear
+        beside THIS profile's leftover "numbered nothing" sentence.
         """
         self._current_item_index = None
         self._current_item_payload = None
         self._current_item_anchor = None
         self._current_items_unavailable = reason
+        self._current_items_unnumbered = ""
 
     # --- capture (Signals #1: read the whole profile, human-paced) ------
     def _capture_current(self, should_stop=None) -> Profile | None:
@@ -5289,6 +5374,7 @@ class AndroidDriver(DatingAppDriver):
                                  if payload is not None and self._current_item_index is not None
                                  else []),
                              items_unavailable=self._current_items_unavailable or None,
+                             items_unnumbered=self._current_items_unnumbered or None,
                              # "BUG 3" fix: only present (and only ever < photos) when this read
                              # raised the enumeration ceiling and the ranker's copy was thinned
                              # back down for it -- absent, not equal to photos, on every ordinary
@@ -5314,13 +5400,18 @@ class AndroidDriver(DatingAppDriver):
             #
             # `payload.images` is deliberately not used here even though it is the same bytes in
             # the same order: it concatenates the two tiers, and the split is what stops a
-            # context crop from being numbered. Exactly one of `items` and `items_unavailable`
-            # is ever non-empty.
+            # context crop from being numbered. `items` empty means exactly one of
+            # `items_unavailable` (enumeration could not produce a payload -- worker.py's auto
+            # loop HARD STOPS on this) and `items_unnumbered` (enumeration finished and legitimately
+            # numbered nothing -- a warning only, never a stop) is set; see Profile's own
+            # docstring for the three-state contract this used to describe as only two
+            # (found+fixed 2026-08-22).
             name=self._identity_name or "",
             items=tuple(c.image for c in payload.items) if payload is not None else (),
             item_context=tuple(c.image for c in payload.context) if payload is not None else (),
             items_truncated=bool(payload.truncated) if payload is not None else False,
             items_unavailable=self._current_items_unavailable,
+            items_unnumbered=self._current_items_unnumbered,
         )
 
     def next_profile(self, *, should_stop=None) -> Profile | None:

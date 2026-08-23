@@ -998,9 +998,10 @@ def test_still_photo_gate_uses_drift_only_to_reject_and_never_as_positive_proof(
     assert (f"exceeds the measured static-photo ceiling {ceiling:.6g}") in over
     assert "animated or video media is not targetable" in over
     # And what it may never say: a drift UNDER the ceiling is not proof of anything.  It passes
-    # its own rung and hands the question straight to the dwell, which has nothing to show.
+    # its own rung and hands the question straight to the dwell, which never ran at all here
+    # (no `dwell=` given) -- the NEVER OBSERVED wording, not the measured-and-refused one below.
     silent = item_crops.unnumber_without_still_photo_evidence(_evidence(ceiling))
-    assert silent is not None and "no un-interacted dwell proved" in silent
+    assert silent is not None and "never observed" in silent
     # Same with a perfect drift beside a dwell that failed: the refusal is the dwell's, and no
     # amount of clean re-observation buys it off.
     spoiled = item_crops.unnumber_without_still_photo_evidence(
@@ -1034,7 +1035,7 @@ def test_drift_alone_is_never_positive_proof_even_with_a_bound_installed(
     reason = item_crops.unnumber_without_still_photo_evidence(_evidence(ceiling))
 
     assert reason is not None
-    assert "no un-interacted dwell proved" in reason
+    assert reason == item_crops.EXCLUSION_NEVER_DWELLED
 
 
 def test_the_still_photo_gate_stops_refusing_only_once_a_verified_bound_is_installed(
@@ -1258,6 +1259,37 @@ def test_every_dwell_rung_of_the_evidence_ladder_is_reachable_and_says_which_one
 
     assert reason is not None and expected in reason
     assert reason.startswith(item_crops.EXCLUSION_NON_PHOTO + ":")
+
+
+def test_never_dwelled_reads_differently_from_dwelled_and_refused(installed_still_photo_bound):
+    """found+fixed 2026-08-22 (ops/STILL-PHOTO-DISCRIMINATOR.md 5d): "we never looked at this
+    card" (a structural coverage gap that happens on nearly every real profile -- production
+    dwells once, at wherever the read stopped) must not read as the same sentence as "we looked
+    and it moved" (an actual measurement). Both still refuse -- neither is weakened by one
+    micron -- but only a dwell with BOTH `dwell_exact is None` AND no frames behind it is the
+    never-observed case; `dwell_exact is None` with frames present, or a measured `False`, keep
+    the original wording because something really was observed."""
+    ceiling = item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
+
+    never_dwelled = item_crops.unnumber_without_still_photo_evidence(_evidence(ceiling))
+    assert never_dwelled == item_crops.EXCLUSION_NEVER_DWELLED
+
+    measured_but_inconclusive = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(ceiling, dwell=_full_dwell(exact=None)))
+    assert measured_but_inconclusive is not None
+    assert measured_but_inconclusive != item_crops.EXCLUSION_NEVER_DWELLED
+    assert "no un-interacted dwell proved" in measured_but_inconclusive
+
+    measured_and_moved = item_crops.unnumber_without_still_photo_evidence(
+        _evidence(ceiling, dwell=_full_dwell(exact=False)))
+    assert measured_and_moved is not None
+    assert measured_and_moved != item_crops.EXCLUSION_NEVER_DWELLED
+    assert "no un-interacted dwell proved" in measured_and_moved
+
+    # Both refuse -- the EXCLUSION_NON_PHOTO prefix and the gate's decision are unchanged, only
+    # the wording differs.
+    for reason in (never_dwelled, measured_but_inconclusive, measured_and_moved):
+        assert reason.startswith(item_crops.EXCLUSION_NON_PHOTO)
 
 
 @pytest.mark.parametrize(
@@ -1487,10 +1519,12 @@ def test_a_bound_plus_a_complete_dwell_is_what_finally_numbers_a_photo(
 
     numbered = {crop.heart_ordinal for crop in payload.items}
     assert numbered, "a complete dwell under a verified bound must number something"
-    # And every card the dwell could NOT cover stays unnumbered, naming the missing dwell.
+    # And every card the dwell could NOT cover stays unnumbered, with the NEVER OBSERVED wording
+    # (found+fixed 2026-08-22) rather than the measured-and-refused one: nothing dwelled these
+    # cards at all, so they were never judged.
     for crop in payload.context:
         if crop.heart_ordinal is not None and crop.heart_ordinal not in dwell:
-            assert "no un-interacted dwell proved" in crop.reason
+            assert crop.reason == item_crops.EXCLUSION_NEVER_DWELLED
 
 
 def test_the_payload_hook_receives_one_evidence_object_carrying_both_halves(

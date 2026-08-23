@@ -494,6 +494,30 @@ def test_debug_log_section_explains_latest_observe_wait_and_reproduction_context
     assert "capture completed → READY/manual decision prompt → no pass/like record yet" in md
 
 
+def test_debug_log_section_distinguishes_items_unnumbered_from_items_unavailable(tmp_path):
+    """`items_unnumbered` (enumeration ran to completion and legitimately numbered nothing,
+    e.g. every card was a still-photo-discriminator video) must read as a normal outcome, not
+    as the failure `items_unavailable` describes -- see Profile's three-state docstring and
+    ops/STILL-PHOTO-DISCRIMINATOR.md 5d. This is the sibling of the `items_unavailable` case
+    covered above; the wording must never overlap so a reader cannot mistake one for the other.
+    """
+    run = tmp_path / "run_observe_context_unnumbered"
+    run.mkdir(parents=True)
+    capture = {"ts": "2026-08-14T13:20:24", "action": "capture", "photos": 38,
+               "profile_name": "Anita", "items": 0,
+               "items_unnumbered": "12 selectable card(s) were considered; all excluded."}
+    wait = {"ts": "2026-08-14T13:21:04", "action": "observe_waiting", "reason": "no_change"}
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, [capture, wait])) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert ("identity read `Anita`; 38 captured photo(s); 0 numbered item(s); enumeration "
+            "completed but numbered nothing: `12 selectable card(s) were considered; all "
+            "excluded.`" in md)
+    assert "numbered items unavailable" not in md
+    assert "items unavailable" not in md
+
+
 def test_debug_log_section_explains_like_candidate_without_claiming_a_sheet(tmp_path):
     """A bottom-delta candidate is specifically NOT evidence that a composer opened or
     closed. The report must preserve that distinction from `like_sending`."""
@@ -726,6 +750,37 @@ def test_debug_log_section_summarises_item_index_refusals_and_realised_steps(tmp
     assert "in-memory splitter `aaaaaaaaaaaa`" in md
 
 
+def test_compact_debug_tail_line_truncates_long_items_unnumbered_like_items_unavailable():
+    """The raw tail compactor already replaces an oversized `items_unavailable` geometry wall
+    with a pointer (see the long-reason test below). `items_unnumbered` -- the different,
+    non-failure state-3 reason (Profile's docstring) -- can grow just as long when many
+    selectable cards each carry their own exclusion reason, and deserves the identical
+    treatment rather than being left as an unformatted wall just because its field name
+    differs. Compacting one field must never touch or invent the other."""
+    long_reason = "this capture's item index carries " + "many selectable card(s); " * 40
+    raw_unnumbered = json.dumps({"action": "capture", "items": 0,
+                                 "items_unnumbered": long_reason})
+    raw_unavailable = json.dumps({"action": "capture", "items": 0,
+                                  "items_unavailable": long_reason})
+
+    compacted_unnumbered = json.loads(bugreport._compact_debug_tail_line(raw_unnumbered))
+    compacted_unavailable = json.loads(bugreport._compact_debug_tail_line(raw_unavailable))
+
+    expected = bugreport._compact_item_index_refusal_text(long_reason)
+    assert compacted_unnumbered["items_unnumbered"] == expected
+    assert compacted_unnumbered["items_unnumbered"] != long_reason
+    assert "full geometry is in the item-index summary below" in compacted_unnumbered["items_unnumbered"]
+    assert "items_unavailable" not in compacted_unnumbered
+    assert "items_unnumbered" not in compacted_unavailable
+
+
+def test_compact_debug_tail_line_leaves_a_short_items_unnumbered_untouched():
+    raw = json.dumps({"action": "capture", "items": 0,
+                       "items_unnumbered": "1 selectable card(s) were considered; all excluded."})
+    compacted = json.loads(bugreport._compact_debug_tail_line(raw))
+    assert compacted["items_unnumbered"] == "1 selectable card(s) were considered; all excluded."
+
+
 def test_item_index_summary_keeps_long_geometry_once_and_separates_trailing_saturation(tmp_path):
     """The full refusal is useful once; repeating it in capture context and raw tail turns a
     report into a wall.  A final clamp step is also not evidence of unstable mid-run spacing."""
@@ -948,6 +1003,41 @@ def test_debug_report_marks_prior_manifest_when_latest_capture_refused(tmp_path)
     assert '"item_manifest": []' in md
 
 
+def test_debug_report_marks_prior_manifest_when_latest_capture_numbered_nothing(tmp_path):
+    """An empty manifest is not always a refusal: `items_unnumbered` means enumeration RAN TO
+    COMPLETION and legitimately numbered nothing (Profile's state 3), which is a normal outcome
+    and must never be reported as "no items_unavailable reason was logged" -- that fallback
+    text is for when NEITHER field was set, not for when the other one was."""
+    run = tmp_path / "run_prior_item_manifest_unnumbered"
+    run.mkdir(parents=True)
+    successful = {
+        "ts": "2026-08-15T06:10:25", "action": "capture", "profile_name": "Winnie",
+        "items": 1, "item_translation": [1],
+        "item_manifest": [{
+            "kind": "item", "model_item": 1, "heart_ordinal": 1,
+            "source_frame_index": 0, "page_rows": [553, 1527],
+            "crop_size": [974, 974], "crop_sha256": "prior-winnie-crop",
+            "reason": "item 1 (heart 1 on the page)",
+        }],
+    }
+    numbered_nothing = {
+        "ts": "2026-08-15T06:17:55", "action": "capture", "profile_name": "Shannon",
+        "items": 0, "item_translation": [], "item_manifest": [],
+        "items_unnumbered": "9 selectable card(s) were considered; all excluded.",
+    }
+    (run / "actions.jsonl").write_text(
+        json.dumps(successful) + "\n" + json.dumps(numbered_nothing) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "prior successful capture at `2026-08-15T06:10:25` for profile `Winnie`" in md
+    assert ("latest capture at `2026-08-15T06:17:55` for profile `Shannon` had no numbered "
+            "manifest; enumeration completed but numbered nothing: `9 selectable card(s) were "
+            "considered; all excluded.`" in md)
+    assert "no items_unavailable reason was logged" not in md
+    assert "items unavailable" not in md
+
+
 def test_debug_report_marks_prior_manifest_when_the_next_read_was_stopped(tmp_path):
     """A Stop mid-read writes `capture_aborted` and NO capture record at all.
 
@@ -1101,6 +1191,30 @@ def test_debug_log_capture_split_summary_says_when_no_recovery_capture_followed(
     assert "source screenshot `00001_capture_split_before.png`" in md
     assert "boundary-trigger screenshot" not in md
     assert "no later completed capture was recorded" in md
+
+
+def test_debug_log_capture_split_recovery_distinguishes_unnumbered_from_unavailable(tmp_path):
+    """The recovery capture after a split can land in either of Profile's zero-item states, and
+    they must not read alike: `items_unavailable` is the enumeration failure that halts an auto
+    LIKE, `items_unnumbered` is a normal "nothing survived policy" outcome (see the sibling
+    `items_unavailable` case in the recovery test above, and Profile's own docstring)."""
+    run = tmp_path / "run_split_recovery_unnumbered"
+    run.mkdir(parents=True)
+    split = {"ts": "2026-08-13T00:20:55", "action": "capture_split", "photos": 2,
+             "before": "00001_capture_split_before.png"}
+    recovery = {
+        "ts": "2026-08-13T00:21:54", "action": "capture", "photos": 12,
+        "capture_truncated": True, "items": 0,
+        "items_unnumbered": "3 selectable card(s) were considered; all excluded.",
+    }
+    (run / "actions.jsonl").write_text(json.dumps(split) + "\n" + json.dumps(recovery) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert ("later capture/recovery followed: 12 photo(s); capture truncated; 0 numbered "
+            "item(s); enumeration completed but numbered nothing: `3 selectable card(s) were "
+            "considered; all excluded.`" in md)
+    assert "items unavailable" not in md
 
 
 def test_debug_log_section_handles_missing_dir():

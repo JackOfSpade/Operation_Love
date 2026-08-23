@@ -948,8 +948,17 @@ def _capture_split_summary_md(lines: list[str]) -> str:
                                   else "")
                 parts.append(f"{items} numbered item(s){context_suffix}")
             unavailable = recovery.get("items_unavailable")
+            # `items_unavailable` (enumeration could not produce a payload) and
+            # `items_unnumbered` (enumeration finished and legitimately numbered nothing --
+            # e.g. every card was a still-photo-discriminator video, ops/STILL-PHOTO-
+            # DISCRIMINATOR.md 5d) are never both set (see Profile's own docstring). Report
+            # them as the two different things they are: only one reads as a failure.
+            unnumbered = recovery.get("items_unnumbered")
             if unavailable:
                 parts.append(f"items unavailable: `{_compact_item_index_refusal_text(unavailable)}`")
+            elif unnumbered:
+                parts.append("enumeration completed but numbered nothing: "
+                             f"`{_compact_item_index_refusal_text(unnumbered)}`")
             detail = "; ".join(parts) if parts else "no capture details were logged"
             recovery_text = f"later capture/recovery followed: {detail}"
         out.append(f"- `{ts}`: deck advanced mid-read{frame_text}; {evidence_text}{name_text}; "
@@ -1249,9 +1258,19 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
                        "own and none of the numbers below describe it")
         else:
             latest_reason = latest_capture.get("items_unavailable")
-            reason_text = (
-                f"; items unavailable: `{_compact_item_index_refusal_text(latest_reason)}`"
-                if latest_reason else "; no items_unavailable reason was logged")
+            # An empty manifest means either state 2 (`items_unavailable`, enumeration failed)
+            # or state 3 (`items_unnumbered`, enumeration finished and legitimately numbered
+            # nothing) of Profile's three-state contract -- never both. Falling back to "no
+            # items_unavailable reason was logged" when `items_unnumbered` was in fact the
+            # live field would misreport a normal outcome as an unexplained failure.
+            latest_unnumbered = latest_capture.get("items_unnumbered")
+            if latest_reason:
+                reason_text = f"; items unavailable: `{_compact_item_index_refusal_text(latest_reason)}`"
+            elif latest_unnumbered:
+                reason_text = ("; enumeration completed but numbered nothing: "
+                               f"`{_compact_item_index_refusal_text(latest_unnumbered)}`")
+            else:
+                reason_text = "; no items_unavailable reason was logged"
             out.append("- ⚠️ " + " ".join(prior_bits) + " — the manifest below belongs to it; "
                        + " ".join(latest_bits) + " had no numbered manifest" + reason_text)
     if isinstance(translation, list):
@@ -1333,6 +1352,11 @@ def _compact_debug_tail_line(raw: str, expanded: dict | None = None) -> str:
         rec["reason"] = _compact_item_index_refusal_text(rec["reason"])
     elif rec.get("action") == "capture" and rec.get("items_unavailable"):
         rec["items_unavailable"] = _compact_item_index_refusal_text(rec["items_unavailable"])
+    # `items_unnumbered` is the different, non-failure state-3 sentence (enumeration finished
+    # and legitimately numbered nothing) -- never set alongside `items_unavailable` above, but
+    # can grow just as long, so it gets the same compaction rather than being left as a wall.
+    elif rec.get("action") == "capture" and rec.get("items_unnumbered"):
+        rec["items_unnumbered"] = _compact_item_index_refusal_text(rec["items_unnumbered"])
     if rec.get("action") == "capture" and rec.get("item_manifest"):
         if expanded is not None and rec == expanded:
             rec["item_manifest"] = "see item-numbering manifest above"
@@ -1732,6 +1756,11 @@ def _latest_observe_context_md(lines: list[str], run: Path) -> str:
         if capture.get("items_unavailable"):
             bits.append("numbered items unavailable: `"
                         f"{_compact_item_index_refusal_text(capture['items_unavailable'])}`")
+        elif capture.get("items_unnumbered"):
+            # Distinct from the failure above: enumeration finished and legitimately numbered
+            # nothing (Profile's state 3), so this must never read as "something broke".
+            bits.append("enumeration completed but numbered nothing: `"
+                        f"{_compact_item_index_refusal_text(capture['items_unnumbered'])}`")
         detail = "; ".join(bits) if bits else "no capture detail was logged"
         out.append(f"- last capture before this wait (`{_record_time(capture)}`): {detail}.")
 

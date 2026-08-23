@@ -29,6 +29,15 @@ from operation_love.worker import Worker
 
 PRICING = {"gemini-test-model": ModelPricing(input=5.0, output=25.0)}
 
+# Liveness bound, not a performance bound: it exists only so a genuine hang fails these tests
+# instead of hanging the whole suite forever. Widened 2026-08-22 when `python -m pytest` moved
+# to one worker per core (pyproject.toml addopts `-n auto --dist loadgroup`), which measured a
+# ~15x slowdown (0.33s idle vs 5.06s under load) on tests/test_concurrency.py's positive
+# liveness waits of the same shape. Nothing about the property under test (did the background
+# thread reach the expected state / finish?) depends on the exact number, so widening it loses
+# nothing.
+_LIVENESS_TIMEOUT_S = 15.0
+
 
 # --- fakes ---------------------------------------------------------------
 class FakeDriver(DatingAppDriver):
@@ -313,7 +322,7 @@ def test_budget_caps_openers_across_concurrent_workers():
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout=2)
+        t.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert all(not t.is_alive() for t in threads)
     assert client.calls == 1
@@ -2303,7 +2312,7 @@ def test_confirmed_observe_like_commits_before_a_concurrent_stop():
     """
     class StopAfterConfirmedDecisionWorker(Worker):
         def _wait_for_observed_decision(self, suggestion, profile_token=None):
-            deadline = time.monotonic() + 2.0
+            deadline = time.monotonic() + _LIVENESS_TIMEOUT_S
             while suggestion._pick is None and time.monotonic() < deadline:
                 time.sleep(0.002)
             assert suggestion._pick is not None, "the staged advisory opener never arrived"
@@ -2658,16 +2667,16 @@ def test_observe_cancelled_before_publish_never_announces_a_stale_ready_suggesti
     def pause_before_final_publish(*, announce_pick=None):
         if announce_pick is not None:
             entered_publish.set()
-            assert release_publish.wait(timeout=2)
+            assert release_publish.wait(timeout=_LIVENESS_TIMEOUT_S)
         return real_publish(announce_pick=announce_pick)
 
     monkeypatch.setattr(suggestion, "_publish", pause_before_final_publish)
     suggestion.start()
-    assert entered_publish.wait(timeout=2)
+    assert entered_publish.wait(timeout=_LIVENESS_TIMEOUT_S)
     suggestion.cancel()
     release_publish.set()
     assert suggestion._thread is not None
-    suggestion._thread.join(timeout=2)
+    suggestion._thread.join(timeout=_LIVENESS_TIMEOUT_S)
     assert not suggestion._thread.is_alive()
 
     assert "suggestion ready" not in capsys.readouterr().out
@@ -2714,7 +2723,7 @@ def test_observe_cancelled_queued_suggestion_never_reaches_provider_and_does_not
                 self.provider_calls.append(profile.bio)
                 if profile.bio == "first":
                     self.first_at_provider.set()
-                    assert self.release_first.wait(timeout=2)
+                    assert self.release_first.wait(timeout=_LIVENESS_TIMEOUT_S)
                 return OpenerPick("hello", index=1)
 
     service = SerializedService()
@@ -2728,20 +2737,20 @@ def test_observe_cancelled_queued_suggestion_never_reaches_provider_and_does_not
     newest._profile.bio = "newest"
 
     first.start()
-    assert service.first_at_provider.wait(timeout=2)
+    assert service.first_at_provider.wait(timeout=_LIVENESS_TIMEOUT_S)
     second.start()
-    assert service.second_queued.wait(timeout=2)
+    assert service.second_queued.wait(timeout=_LIVENESS_TIMEOUT_S)
     second.cancel()
     service.release_first.set()
     assert first._thread is not None and second._thread is not None
-    first._thread.join(timeout=2)
-    second._thread.join(timeout=2)
+    first._thread.join(timeout=_LIVENESS_TIMEOUT_S)
+    second._thread.join(timeout=_LIVENESS_TIMEOUT_S)
     assert not first._thread.is_alive() and not second._thread.is_alive()
     assert service.provider_calls == ["first"]
 
     newest.start()
     assert newest._thread is not None
-    newest._thread.join(timeout=2)
+    newest._thread.join(timeout=_LIVENESS_TIMEOUT_S)
     assert not newest._thread.is_alive()
     assert service.provider_calls == ["first", "newest"]
 
@@ -2862,6 +2871,57 @@ def test_observe_warns_and_never_asks_when_the_capture_could_not_be_enumerated()
     assert svc.calls == [], "no numbered items means no request, never a frame-shape fallback"
     warned = next(c for c in calls if c.get("opener_warning"))
     assert warned["opener_warning"] == "the scroll top was not confirmed"
+    assert not w.stop_event.is_set() and len(store.labels) == 1
+
+
+def test_observe_prefers_the_drivers_derived_reason_when_nothing_was_numbered():
+    """found+fixed 2026-08-22: a capture that enumerated fine but numbered nothing (every card
+    demoted by the still-photo gate, say) is `items_unnumbered`, not `items_unavailable` -- and
+    unlike the sibling test above, this must never stop the run (the auto loop's own hard-stop
+    check reads `items_unavailable` alone, untouched here). The hub warning should still prefer
+    the driver's own derived sentence over the generic "no numbered items" fallback."""
+    from operation_love.status import RunStatus
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
+    driver.cards = [Profile(
+        photos=[b"x"],
+        items_unnumbered="15 selectable card(s) were considered; 15 could not be judged because "
+                         "the one dwell burst this capture takes never covered them.")]
+    store = FakeStore()
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService()
+    w = Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+               threading.Event(), mode="observe", status=status)
+    w.run()
+
+    assert svc.calls == [], "no numbered items means no request"
+    warned = next(c for c in calls if c.get("opener_warning"))
+    assert warned["opener_warning"].startswith("15 selectable card(s) were considered")
+    assert not w.stop_event.is_set() and len(store.labels) == 1
+
+
+def test_observe_falls_back_to_the_generic_message_when_the_driver_recorded_no_reason():
+    """A driver that leaves BOTH `items_unavailable` and `items_unnumbered` empty -- every
+    non-Hinge driver today, or a Hinge capture that never attempted enumeration at all -- still
+    gets a sentence on the hub, never a blank warning."""
+    from operation_love.status import RunStatus
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="observe")
+    driver = _ObserveLikeIntentDriver(gate=_settled(status))
+    driver.cards = [Profile(photos=[b"x"])]
+    store = FakeStore()
+    calls = _record_state_transitions(status)
+    svc = _RecordingOpenerService()
+    w = Worker("bumble", driver, _ObserveDecider(), svc, store, "run1", _Pacing(),
+               threading.Event(), mode="observe", status=status)
+    w.run()
+
+    assert svc.calls == []
+    warned = next(c for c in calls if c.get("opener_warning"))
+    assert warned["opener_warning"] == (
+        "this capture produced no numbered items, so there is nothing for the model "
+        "to choose from")
     assert not w.stop_event.is_set() and len(store.labels) == 1
 
 
@@ -3766,6 +3826,132 @@ def test_auto_does_not_stop_on_items_unavailable_when_openers_are_disabled():
     assert svc.stop_requested is False
     assert driver.likes == [None]     # liked normally, with no opener -- exactly as if openers
                                        # did not exist for this run at all
+
+
+# --- THE items_unnumbered REGRESSION (found+fixed 2026-08-22, second pass, same day) -----------
+# `items_unnumbered` is the third state `Profile` can be in: enumeration ran to completion and
+# legitimately numbered nothing (a profile of all video, or a dwell burst that only ever covered
+# one card of fifteen -- ops/STILL-PHOTO-DISCRIMINATOR.md 5d). The first pass that introduced it
+# made a PASS decision sail past a zero-item profile, correctly. But it did that by leaving the
+# whole state invisible to the AUTO loop's opener block -- which meant a LIKE decision fell
+# through with `items` left `None`, all the way to `maybe_opener(..., items=None)`. Per that
+# method's own docstring, `items=None` means "fall back to the raw scroll frames", exactly the
+# ambiguity ops/OPENER-REDESIGN.md 5.2 exists to remove, and a live violation of the owner's
+# never-substitute-liked-item rule: there is no verifiable item for that opener to have named.
+# These tests pin the fix -- a LIKE decision now stops here, by call count, not just by message --
+# and re-confirm the PASS side the first pass already got right.
+
+def test_auto_stops_on_like_when_enumeration_numbered_nothing():
+    """The regression itself. `maybe_opener` must never be reached -- not "reached and it
+    returned nothing useful", literally never invoked -- and `driver.like` must never be called
+    either. Checking call counts is the point: a test that only inspected the stop message would
+    have passed on the old, buggy code path too (a stop can still fire later, from `pick is
+    None`, after `maybe_opener` already ran on the wrong request)."""
+    from operation_love.status import RunStatus
+
+    svc = _SequencedOpenerService([])   # any call at all is a bug; nothing is scripted to return
+    driver = FakeDriver(1)
+    driver.cards[0] = Profile(
+        photos=[b"frame-0"], items=(),
+        items_unnumbered="15 selectable card(s) were considered; 15 could not be judged because "
+                          "the one dwell burst this capture takes never covered them.")
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+
+    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] == "stopped"
+    assert app["stop_kind"] == "opener"
+    assert svc.calls == [], "maybe_opener must not be invoked when nothing was numbered"
+    assert driver.likes == [], "no like may be sent with no verifiable item to attach it to"
+
+
+def test_auto_does_not_stop_on_pass_when_enumeration_numbered_nothing():
+    """The other half of the same profile: a PASS decision is exactly the improvement this
+    whole state exists to preserve (a profile of videos is a normal outcome), and it must sail
+    past the zero-item profile and keep running -- unaffected by the LIKE-path stop added above,
+    because a PASS decision never reaches that opener code at all."""
+    svc = _SequencedOpenerService([])
+    driver = FakeDriver(2)
+    driver.cards[0] = Profile(
+        photos=[b"frame-0"], items=(),
+        items_unnumbered="15 selectable card(s) were considered; 15 could not be judged because "
+                          "the one dwell burst this capture takes never covered them.")
+
+    Worker("bumble", driver, FakeDecider("dislike"), svc, FakeStore(), "run1", _Pacing(),
+           threading.Event(), mode="auto").run()
+
+    assert driver.dislikes == 2, "both cards were reached -- the run did not stop on card one"
+    assert svc.calls == []
+    assert driver.out_of_profiles()
+
+
+def test_items_unnumbered_stop_reason_is_distinguishable_from_items_unavailable():
+    """The two stops share `stop_kind == "opener"` (the hub branches on that alone), so the
+    `stop_reason` TEXT is the only thing that tells an operator which situation they are in: an
+    `items_unavailable` stop means the capture itself failed, while an `items_unnumbered` stop
+    means the capture worked and nothing survived policy -- different operator next-steps, so
+    the wording must not collide. This also pins that the unnumbered reason quotes the profile's
+    own sentence rather than a hardcoded cause (doc STILL-PHOTO-DISCRIMINATOR.md 5d's own
+    standing rule: guidance must derive from the condition it describes)."""
+    from operation_love.status import RunStatus
+
+    unavailable_status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    unavailable_driver = FakeDriver(1)
+    unavailable_driver.cards[0] = Profile(
+        photos=[b"frame-0"],
+        items_unavailable="the card is not confirmed to be at its scroll top (confirmed_not_top)")
+    Worker("bumble", unavailable_driver, FakeDecider("like"), _SequencedOpenerService([]),
+           FakeStore(), "run1", _Pacing(), threading.Event(),
+           mode="auto", status=unavailable_status).run()
+    unavailable_reason = unavailable_status.app_view("bumble")["app"]["stop_reason"]
+
+    unnumbered_status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    unnumbered_driver = FakeDriver(1)
+    unnumbered_driver.cards[0] = Profile(
+        photos=[b"frame-0"], items=(),
+        items_unnumbered="15 selectable card(s) were considered; 15 could not be judged because "
+                          "the one dwell burst this capture takes never covered them.")
+    Worker("bumble", unnumbered_driver, FakeDecider("like"), _SequencedOpenerService([]),
+           FakeStore(), "run1", _Pacing(), threading.Event(),
+           mode="auto", status=unnumbered_status).run()
+    unnumbered_reason = unnumbered_status.app_view("bumble")["app"]["stop_reason"]
+
+    assert "15 selectable card(s) were considered" in unnumbered_reason
+    assert unnumbered_reason != unavailable_reason
+    assert "confirmed_not_top" not in unnumbered_reason
+    assert "15 selectable card(s)" not in unavailable_reason
+
+
+def test_all_video_profile_reaches_neither_the_opener_nor_the_targeting_path():
+    """Re-pins the property `test_all_video_profile_fails_before_opener_or_targeting`
+    (tests/test_hinge_item_capture.py, added 2026-08-16) used to encode at the DRIVER level,
+    before that test was renamed to `test_all_video_profile_numbers_nothing_but_does_not_stop_the_run`
+    on 2026-08-22 (an all-video profile is no longer a driver-level failure -- it is
+    `items_unnumbered`, not `items_unavailable`, precisely so a PASS decision does not stop). The
+    "fails before opener or targeting" half of that property did not move with it: it belongs
+    here, at the WORKER level, and it is specifically a LIKE-decision property, since a PASS
+    decision was never at risk of reaching either. `driver.like` is the single call both the
+    opener request (via `item_index=`/`model_item_index=`) and the targeting path route through
+    -- so asserting it was never invoked pins both at once."""
+    from operation_love.status import RunStatus
+
+    svc = _SequencedOpenerService([])
+    driver = FakeDriver(1)
+    driver.cards[0] = Profile(
+        photos=[b"frame-0", b"frame-1"], items=(),
+        items_unnumbered="4 selectable card(s) were considered; 4 could not be judged because "
+                          "video_mute_v1 matched every one of them.")
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+
+    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    assert svc.calls == [], "the opener path was never reached"
+    assert driver.likes == [] and driver.like_item_indexes == [] \
+        and driver.like_model_item_indexes == [], "the targeting path was never reached either"
+    assert status.app_view("bumble")["app"]["state"] == "stopped"
 
 
 # --- DOC 5.6'S HARD STOP: a targeting/verification miss stops the run --------------------------

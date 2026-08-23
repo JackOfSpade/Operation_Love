@@ -186,11 +186,17 @@ optional `web` extra as reference for a future browser-based platform; launchers
 install it or Chromium now that no runnable target uses it.
 
 Everything machine-independent is done and unit-tested (run `pytest` for the
-current suite/test count). The only remaining work needs your machine + a
-real account, and it's all batched in
+current suite/test count; it runs across processes by default and takes about three minutes --
+add `-n0` for a serial run when you want `--pdb`, `-s`, or a readable traceback). The only
+remaining work needs your machine + a real account, and it's all batched in
 **[ops/RUNBOOK.md](ops/RUNBOOK.md)**: install, connect the physical phone,
-verify Observe-mode behavior, and seed your taste. Numbered targeted suggestions are blocked
-only by the absent `apps.hinge.targeting_calibration`: the still-photo discriminator is
-implemented and licensed by the owner's accepted (UNMEASURED) centered-autoplay assumption, so
-the remaining step is the per-device calibration campaign in RUNBOOK section 2. Hinge Auto stays
-blocked behind its own production-OBSERVE release gate on top of that.
+verify Observe-mode behavior, and seed your taste.
+
+Numbered targeted suggestions are licensed and unblocked: `apps.hinge.targeting_calibration` was
+measured and installed on 2026-08-22, and the still-photo discriminator runs under the owner's
+accepted (UNMEASURED) centered-autoplay assumption. What limits them now is COVERAGE, not
+readiness -- production takes its one dwell burst at the position the read stops, so on a
+profile of fifteen cards only the card the read parked on can be numbered, and a live run has
+already produced zero. The routes out of that, and what each one costs, are the open owner
+decision in [ops/STILL-PHOTO-DISCRIMINATOR.md](ops/STILL-PHOTO-DISCRIMINATOR.md) section 5d.
+Hinge Auto stays blocked behind its own production-OBSERVE release gate on top of all of this.

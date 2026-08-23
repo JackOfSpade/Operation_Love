@@ -40,6 +40,7 @@ from operation_love.drivers import (
     hinge, item_crops, item_identity, item_index, scroll_step, scroll_top, segment)
 from operation_love.drivers.hinge import HingeDriver
 from operation_love.drivers.debuglog import HingeDebugLog
+from operation_love.perception.capture import Profile
 
 _W, _H = 1080, 2400                        # the calibrated Pixel 7a screencap size
 _SEED = 11
@@ -361,7 +362,8 @@ def test_auto_capture_enumerates_the_profile_into_numbered_crops():
     """Doc 5.2/5.3 end to end. The read produces one crop per heart-bearing item in model order,
     the heartless vitals block as unnumbered context, her name as text, and a truncation flag
     that is False because the capture demonstrably started at a confirmed top and reached the
-    end. `items_unavailable` is empty: exactly one of it and `items` is ever set."""
+    end. `items_unavailable` and `items_unnumbered` are both empty: `items` is the live one of
+    the three (see perception.capture.Profile's docstring for all three states)."""
     adb = WorldAdb()
     drv = _drv(adb)
 
@@ -373,6 +375,7 @@ def test_auto_capture_enumerates_the_profile_into_numbered_crops():
     assert profile.name == "Ada"
     assert profile.items_truncated is False
     assert profile.items_unavailable == ""
+    assert profile.items_unnumbered == ""
 
 
 def test_hinge_numbers_only_policy_approved_photos_and_preserves_prompt_heart(monkeypatch):
@@ -414,7 +417,23 @@ def test_video_mute_exclusion_keeps_heart_space_but_removes_model_choice(monkeyp
     assert "video_mute_v1" in video.reason
 
 
-def test_all_video_profile_fails_before_opener_or_targeting(monkeypatch):
+def test_profile_items_unnumbered_defaults_to_empty():
+    """The plain dataclass default, independent of any driver: a `Profile` nobody populated has
+    produced a numbered list (vacuously, via an empty `items`) and has nothing to explain about
+    a captured-but-empty enumeration, so `items_unnumbered` is "" exactly like `items_unavailable`
+    is not the live reason by default."""
+    profile = Profile()
+    assert profile.items_unnumbered == ""
+    assert profile.items == ()
+
+
+def test_all_video_profile_numbers_nothing_but_does_not_stop_the_run(monkeypatch):
+    """found+fixed 2026-08-22 (ops/STILL-PHOTO-DISCRIMINATOR.md 5d): a profile whose every card is
+    excluded still finishes enumeration -- the index and crops are both sound, nothing survived
+    policy, and that is `Profile.items_unnumbered`, never `items_unavailable`. The OLD assertion
+    here (`items_unavailable` set, `_current_item_index is None`) encoded exactly the bug this
+    fix removes: worker.py's auto loop hard-stops on `items_unavailable`, and a profile of videos
+    is a normal outcome that must never do that."""
     monkeypatch.setattr(
         HingeDriver, "_video_selection_exclusions",
         lambda self, frames, index: {
@@ -425,13 +444,23 @@ def test_all_video_profile_fails_before_opener_or_targeting(monkeypatch):
     profile = drv._capture_current()
 
     assert profile is not None and profile.items == ()
-    assert "no policy-approved selectable item" in profile.items_unavailable
-    assert drv._current_item_index is None and drv._current_item_payload is None
+    assert profile.items_unavailable == ""
+    assert "video_mute_v1" in profile.items_unnumbered
+    assert "selectable card" in profile.items_unnumbered
+    # The index and payload are real and current -- enumeration succeeded -- not invalidated the
+    # way a genuine refusal (`_item_index_refused`) would leave them.
+    assert drv._current_item_index is not None and drv._current_item_payload is not None
+    assert drv._current_item_payload.item_count == 0
 
 
 def test_driver_refuses_auto_hidden_video_risk_when_still_photo_evidence_is_absent(
         monkeypatch):
-    """Clean mute screens alone never authorize a production numbered payload."""
+    """Clean mute screens alone never authorize a production numbered payload.
+
+    Every candidate is still refused (the gate's per-item decision is unchanged), but as of
+    2026-08-22 that no longer reads as a capture failure: enumeration ran fine, so this is
+    `items_unnumbered`, not `items_unavailable` -- see the sibling test above for the full
+    reasoning."""
     monkeypatch.setattr(
         hinge, "unnumber_without_still_photo_evidence",
         item_crops.unnumber_without_still_photo_evidence)
@@ -443,8 +472,9 @@ def test_driver_refuses_auto_hidden_video_risk_when_still_photo_evidence_is_abse
     profile = drv._capture_current()
 
     assert profile is not None and profile.items == ()
-    assert "no policy-approved selectable item" in profile.items_unavailable
-    assert drv._current_item_payload is None
+    assert profile.items_unavailable == ""
+    assert profile.items_unnumbered != ""
+    assert drv._current_item_payload is not None
 
 
 @pytest.fixture
@@ -634,9 +664,12 @@ def test_a_blank_screen_ends_the_burst_and_yields_no_dwell_evidence(monkeypatch)
         tp._reset_installed_still_photo_bound_for_tests()
 
 
-def test_an_empty_dwell_burst_refuses_the_whole_numbered_payload(
+def test_an_empty_dwell_burst_numbers_nothing_but_still_finishes_enumeration(
         monkeypatch, installed_still_photo_bound):
-    """End to end: a licensed read whose dwell produced nothing numbers nothing, and says so."""
+    """End to end: a licensed read whose dwell produced nothing numbers nothing, and says so --
+    as `items_unnumbered`, not `items_unavailable` (found+fixed 2026-08-22; see the sibling
+    all-video tests above for the full reasoning). An empty dwell burst is exactly the "never
+    observed" case, so every selectable card's own reason is `EXCLUSION_NEVER_DWELLED`."""
     monkeypatch.setattr(hinge, "unnumber_without_still_photo_evidence",
                         item_crops.unnumber_without_still_photo_evidence)
     monkeypatch.setattr(HingeDriver, "_still_photo_dwell_burst", lambda self: ([], 0.0))
@@ -645,8 +678,9 @@ def test_an_empty_dwell_burst_refuses_the_whole_numbered_payload(
     profile = drv._capture_current()
 
     assert profile is not None and profile.items == ()
-    assert "no policy-approved selectable item" in profile.items_unavailable
-    assert drv._current_item_payload is None
+    assert profile.items_unavailable == ""
+    assert "could not be judged because the one dwell burst" in profile.items_unnumbered
+    assert drv._current_item_payload is not None
 
 
 # =====================================================================================
@@ -1582,6 +1616,10 @@ def test_an_index_that_contradicts_itself_is_reported_and_never_degrades_to_raw_
 
     assert profile.items == () and profile.item_context == ()
     assert "frame 3 contradicts itself" in profile.items_unavailable
+    # `items_unnumbered` is the DIFFERENT field for "enumeration finished and numbered nothing"
+    # (found+fixed 2026-08-22); a genuine index failure never reaches that state, so it must stay
+    # empty here even though `items` is also empty -- the two reasons are never both live.
+    assert profile.items_unnumbered == ""
     assert profile.photos, "the frames are still the ranker's"
     assert drv._current_item_index is None and drv._current_item_payload is None
 

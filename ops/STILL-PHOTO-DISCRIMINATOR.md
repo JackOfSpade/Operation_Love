@@ -739,6 +739,58 @@ signature against choice. What IS now true and was not before: the calibration e
 the gate opens, and the remaining question is purely how many items the ladder can
 afford to prove.
 
+## 5e. Addendum 2026-08-23: the operator can now learn WHY nothing was numbered
+
+Section 5d ends with an open owner decision about dwell COVERAGE. **That decision is
+untouched by this addendum and remains open.** Nothing here numbers one extra card, and
+no rung of the ladder moved by a micron. What changed is that a run which numbers
+nothing now says which of two very different things happened, in the three places an
+operator actually looks.
+
+Three defects were found while tracing 5d's live result through the code, all of them
+the same shape: a refusal that collapsed two outcomes into one sentence.
+
+**1. The dwell rung could not tell "never looked" from "looked and it moved."**
+`unnumber_without_still_photo_evidence` refused `dwell_exact is not True` with a single
+string. But production dwells ONCE, at the position the read stops, and
+`dwell_card_rects` only returns entries for cards complete in that anchor frame — so on
+a fifteen-card profile roughly fourteen cards arrive with an all-`None` `StillPhotoDwell`
+and were refused in the same words as a card that was genuinely watched and caught
+moving. `EXCLUSION_NEVER_DWELLED` now names the coverage gap for exactly the shape a
+producer emits when it never observed the card (`dwell_exact is None` AND no frames).
+Both branches still refuse; the new branch is a strict subset of the old condition, so
+the accept/refuse decision is unchanged by construction.
+
+**2. A capture that numbered nothing violated `Profile`'s own documented contract.**
+`Profile.items_unavailable` promised "a driver that enumerates MUST set exactly one of
+`items` / this", and hinge.py repeated it. Both were false: when enumeration SUCCEEDED
+and every candidate was legitimately excluded, `items` and `items_unavailable` were BOTH
+empty. That mattered because worker.py's auto loop treats `items_unavailable` as a hard
+stop, so the only way to report the outcome was to call a normal profile a failure. The
+contract is now honestly three-state, with `items_unnumbered` carrying the third — and
+its sentence is DERIVED from the capture's own per-card reasons (how many were
+considered, how many were never dwelled, the most common other finding), never a
+hardcoded cause, because the cause changes the day coverage widens.
+
+**3. Closing (2) briefly opened a real hole, which is worth recording.**
+Once "numbered nothing" stopped setting `items_unavailable`, the AUTO like path no longer
+stopped — and control fell through to `maybe_opener(..., items=None)`, which does not
+decline to run: it requests an opener from the RAW SCROLL FRAMES, the exact ambiguity
+doc 5.2 exists to remove, and would then have liked an item nobody could verify. The
+pass path continuing is the correct half of the change; the like path now has its own
+hard stop naming `items_unnumbered`. The lesson generalises: **when a condition stops
+being reported as a failure, find what that failure was silently guarding.** Here the
+hard stop was load-bearing for the owner's never-substitute-the-liked-item rule, and
+nothing in the type system said so.
+
+Operator surfaces updated to match: the hub's observe warning now shows the derived
+sentence instead of "this capture produced no numbered items"; the bug report
+distinguishes "enumeration completed but numbered nothing" from "items unavailable" at
+all four sites that render capture outcomes.
+
+**What is still true after all of this:** on a typical profile the ladder can still only
+ever be offered ONE card, and 5d's three routes remain the owner's to choose.
+
 ## 6. Plan B (documented, not chosen)
 
 If held-out video accepts never reach zero, the honest fallback is to change the

@@ -27,11 +27,35 @@ def test_config_yaml_loads_without_error(cfg):
     assert cfg.enabled_apps                        # at least one app
     assert cfg.mode in {"observe", "auto"}
     assert cfg.budget.run_budget_usd is not None   # a run budget is set
-    # In particular, Hinge's intentionally absent targeting calibration remains a valid
-    # observe configuration: it prevents targeted suggestions at runtime, but must not turn
-    # the whole shipped application configuration into an unloadable file.
-    assert "targeting_calibration" not in cfg.apps["hinge"]
     validate(cfg)
+
+
+def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
+    """2026-08-22: the shipped config now CARRIES a targeting calibration.
+
+    This assertion used to be its inverse — the file deliberately shipped WITHOUT one, and
+    pinning that absence was how we proved an uncalibrated config was still a loadable,
+    valid observe configuration. That premise expired the moment a real calibration was
+    measured and installed (commit 0c41bb1a), so the pin flips rather than disappears: the
+    shipped block must be COMPLETE and BOUND to this exact device and build, because a
+    half-written or foreign calibration is the failure this file exists to catch, and
+    `validate()` above already refuses one.
+
+    The bounds are asserted against the hard prior-corpus ceilings rather than the values
+    measured on any one campaign — those ceilings (2.565 different-profile, 14.91 foreign
+    false-match) are the limits ops/RUNBOOK.md states can never be exceeded, so a future
+    recalibration may legitimately move the numbers underneath them without touching this.
+    """
+    cal = cfg.apps["hinge"]["targeting_calibration"]
+    assert cal["schema_version"] == 3
+    assert cal["device"] == cfg.apps["hinge"]["serial"], "calibration must bind the exact serial"
+    assert cal["item_selection_policy_id"] == "hinge_photos_only_v2"
+    assert cal["composer_layout_id"] == "hinge_inline_v1"
+    assert 0 < cal["identity_match_max_dist"] < 2.565, "hard different-profile ceiling"
+    assert 0 < cal["inline_item_max_dist"] < 14.91, "hard foreign false-match ceiling"
+    # The effective bands the calibration was measured under must still be the ones in force.
+    assert list(cal["identity_band"]) == list(cfg.apps["hinge"]["identity_band"])
+    assert list(cal["content_band"]) == list(cfg.apps["hinge"]["content_band"])
 
 
 def test_shipped_config_defaults_to_hinge_observe_with_bumble_card_drag_coordinates_staged(cfg):

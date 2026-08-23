@@ -3005,6 +3005,63 @@ def test_a_navigation_refusal_on_the_second_candidate_abandons_the_walk(
     assert len(calls) == 2, "candidate 3 (heart 1) must never be attempted"
 
 
+def test_a_card_below_the_entry_is_stepped_over_not_treated_as_a_failed_walk(
+        monkeypatch, installed_still_photo_bound):
+    """found 2026-08-23, before the walk had ever run on a device: the bottom-most uncovered card
+    is very often one the read left cut off BELOW the analysed band, and an ascending-only
+    navigator refuses exactly that with NAV_ITEM_BELOW_ENTRY -- raised on the first frame, `if not
+    steps`, with ZERO gestures spent. Abandoning the whole walk over it meant the single most
+    likely first-candidate outcome silently reduced K back to 1. Nothing moved, so the walk steps
+    over that card, keeps its budget, and the reachable cards above it are still proved."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=3)
+    real_navigate = hinge.navigate_to_item
+    asked: list[int] = []
+
+    def below_entry_for_the_first_candidate(driver, idx, model_index, **kwargs):
+        asked.append(model_index)
+        if len(asked) == 1:
+            raise hinge.ItemNavigationError(
+                hinge.NAV_ITEM_BELOW_ENTRY, "synthetic: below the analysed band")
+        return real_navigate(driver, idx, model_index, **kwargs)
+
+    monkeypatch.setattr(hinge, "navigate_to_item", below_entry_for_the_first_candidate)
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    # The skipped card contributes nothing, but the budget was NOT spent on it: two hops still
+    # ran, so two cards above it are proved on top of the free one.
+    assert 3 not in evidence
+    assert set(evidence) == {4, 2, 1}
+    assert len(asked) == 3, "the skip must not consume one of the K hops"
+
+
+def test_an_unreachable_run_of_cards_is_bounded_and_never_scans_the_whole_index(
+        monkeypatch, installed_still_photo_bound):
+    """The complement: a skip is cheap but not free -- navigate_to_item still pays a screencap, a
+    segmentation and an identity compare before it can say "below the entry" -- so the walk is
+    allowed only `_STILL_PHOTO_WALK_SKIP_SLACK` attempts beyond its hop budget rather than
+    scanning every card on the profile at that price for no evidence."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=2)      # remaining == 1 hop
+    asked: list[int] = []
+
+    def always_below_entry(driver, idx, model_index, **kwargs):
+        asked.append(model_index)
+        raise hinge.ItemNavigationError(
+            hinge.NAV_ITEM_BELOW_ENTRY, "synthetic: below the analysed band")
+
+    monkeypatch.setattr(hinge, "navigate_to_item", always_below_entry)
+
+    evidence = drv._still_photo_dwell(frames, index)
+
+    assert set(evidence) == {4}, "no candidate was reachable, so only the free card survives"
+    assert len(asked) <= 1 + hinge._STILL_PHOTO_WALK_SKIP_SLACK
+    assert adb.scrolls == 0 and adb.reverse_swipes == 0, "a skip must move nothing at all"
+
+
 def test_an_unverified_return_abandons_the_walk_and_stops_further_candidates(
         monkeypatch, installed_still_photo_bound):
     """Candidate 1 (heart 3) is proved; ITS OWN return to the entry cannot be verified; the walk

@@ -60,10 +60,22 @@ apps:
     # walks that many MINUS one extra navigation hops per capture, nearest the read's end first,
     # proving each parked card and returning to the entry before the next hop.
     #
-    # THIS COSTS REAL GESTURES AND REAL DEVICE TIME: roughly 15-30s and ~3 scrolls per extra
-    # card, on top of the read. Set it to 1 to get the pre-2026-08-23 behaviour back exactly --
-    # every refusal in the walk already abandons only the WALK, never the capture, so 1 is also
-    # what the worst case degrades to on its own. LIVE-VERIFY: unverified on-device at 3.
+    # THIS COSTS REAL GESTURES AND REAL DEVICE TIME, AND THE COST IS NOT LINEAR IN K. The walk
+    # cannot chain -- navigate_to_item is ascending-only and always anchors on the read's last
+    # frame -- so every hop climbs from the entry AGAIN and the distance grows with each card.
+    # Modelled 2026-08-23 from the code's own constants against 125 measured enumeration reads
+    # (median read: 227s, 36 frames): the 1st extra card costs ~27-63s, the 2nd ~46-89s, the 3rd
+    # ~69-116s, the 8th ~190-284s. Per-profile capture, read included: K=1 ~4.0-4.5 min, K=3
+    # ~5.2-7.1 min, K=5 ~7.8-11.4 min, K=8 ~14.5-21.8 min. The earlier note here said "15-30s per
+    # extra card" flat -- that was right for the first card only and understated every one after.
+    #
+    # K SATURATES AT THE CARD COUNT: a real profile carries ~9 selectable cards (median over 122
+    # live manifests), so K=10 and K=15 buy nothing over K=9.
+    #
+    # Set it to 1 to get the pre-2026-08-23 behaviour back exactly -- every refusal in the walk
+    # already abandons only the WALK, never the capture, so 1 is also what the worst case
+    # degrades to on its own. LIVE-VERIFY: unverified on-device at 3, and the model's own largest
+    # uncertainty is not the timings but how often a hop is attempted at all.
     still_photo_dwell_candidates: 3
     dwell_s: 1.1            # per-card read dwell, humanized (Signals #1: read before deciding)
     read_scroll_frac: 0.55  # how far each read-scroll advances the profile

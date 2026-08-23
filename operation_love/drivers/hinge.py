@@ -114,7 +114,7 @@ from .item_index import (
     _project_to_exact_full_layout, _structural_tail_shift, VideoMuteMarker, build_item_index,
     _video_track_deltas,
 )
-from .item_nav import ItemNavigationError, navigate_to_item
+from .item_nav import NAV_ITEM_BELOW_ENTRY, ItemNavigationError, navigate_to_item
 from .item_verify import (VERIFY_MISMATCH, SheetVerificationError, verification_blocker,
                           verify_sheet_item)
 from .like_composer import (
@@ -811,6 +811,12 @@ _STILL_PHOTO_DWELL_MIN_WINDOW_S = 2.0
 # the x3 safety factor), so swapping a measured licence for the assumption can only lengthen the
 # look, never shorten it. The draw around it stays hazard-based, like every other timing here.
 _STILL_PHOTO_DWELL_ASSUMED_WINDOW_S = 6.0
+# How many EXTRA navigate_to_item attempts the K-candidate walk may spend stepping over cards
+# that are structurally unreachable from the entry (NAV_ITEM_BELOW_ENTRY, raised before any
+# gesture). Bounded rather than unlimited because each such attempt still costs a screencap, a
+# segmentation and an identity compare even though it moves nothing: unbounded, a profile whose
+# lower cards all sit below the band would scan the whole index at ~2s each for no evidence.
+_STILL_PHOTO_WALK_SKIP_SLACK = 2
 # Frame COUNT range. More frames is more chances to catch a single emitted video frame, and the
 # cost is only screencaps; the low end still gives >= 5 consecutive pairs plus the anchor pair.
 _STILL_PHOTO_DWELL_FRAMES = (6, 10)
@@ -4254,9 +4260,23 @@ class AndroidDriver(DatingAppDriver):
         # bottom-most is nearest the entry the read left the phone at -- the shortest possible
         # climb for `navigate_to_item`'s ascending-only walk.
         candidates = [ordinal for ordinal in reversed(index.translation)
-                     if ordinal not in covered][:remaining]
+                     if ordinal not in covered]
         if not candidates:
             return base_evidence
+        # ATTEMPTS, not candidates, is what the slice above used to bound (found 2026-08-23,
+        # before the walk ever ran on a device). The bottom-most uncovered card is very often
+        # one the read left CUT OFF BELOW the analysed band, and an ascending-only navigator
+        # refuses that outright with NAV_ITEM_BELOW_ENTRY -- a refusal raised on the FIRST frame,
+        # `if not steps`, i.e. with ZERO gestures spent (item_nav.py's own `NAV_ITEM_BELOW_ENTRY
+        # if not steps else NAV_ITEM_NOT_FULLY_VISIBLE`). Slicing to `remaining` up front spent
+        # the entire budget on cards that may be structurally unreachable, and breaking on that
+        # code killed the whole walk over a card nothing had even moved for. So the budget is
+        # now spent on hops that ACTUALLY RUN, and the loop is allowed a bounded number of extra
+        # attempts to step over unreachable ones. The bound exists because a skip is cheap but
+        # not free -- navigate_to_item still pays one screencap, one segmentation and one
+        # identity compare (~2s) before it can say "below the entry".
+        max_attempts = remaining + _STILL_PHOTO_WALK_SKIP_SLACK
+        hops_run = 0
         try:
             # Reuses `_navigate_to_model_item`'s own plumbing for the calibration bound rather
             # than reading `self.targeting_calibration` directly, because THIS is what re-checks
@@ -4271,7 +4291,9 @@ class AndroidDriver(DatingAppDriver):
             return base_evidence
         entry_reference = frames[-1]
         evidence = dict(base_evidence)
-        for heart_ordinal in candidates:
+        for attempt, heart_ordinal in enumerate(candidates):
+            if hops_run >= remaining or attempt >= max_attempts:
+                break
             if should_stop is not None and should_stop():
                 self._dbg_still_photo_walk_candidate(heart_ordinal, "stop")
                 break
@@ -4282,8 +4304,20 @@ class AndroidDriver(DatingAppDriver):
                     identity_match_max_dist=calibration.identity_match_max_dist,
                     should_stop=should_stop)
             except ItemNavigationError as exc:
+                # SKIP vs ABANDON turns on whether anything MOVED, and exactly one code says it
+                # did not. NAV_ITEM_BELOW_ENTRY is raised on the first frame, before a single
+                # gesture (`if not steps` in item_nav.py), and it means only "this card sits
+                # below the band the read ended on" -- a fact about THAT card, not evidence the
+                # page state is wrong. The card above it may be perfectly reachable, so the walk
+                # steps over this one and keeps its budget. Every other code (and the uncoded
+                # refusals below) can fire AFTER gestures have already been spent, which leaves
+                # the phone somewhere this method cannot account for -- those still abandon.
+                below_entry = exc.code == NAV_ITEM_BELOW_ENTRY
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, "navigation_refused", frame=exc.frame, reason=exc.code)
+                    heart_ordinal, "unreachable_below_entry" if below_entry
+                    else "navigation_refused", frame=exc.frame, reason=exc.code)
+                if below_entry:
+                    continue
                 break
             except (ActionCancelled, ScrollStepError, SegmentationError, ShiftEstimationError,
                     IdentityError) as exc:
@@ -4298,6 +4332,7 @@ class AndroidDriver(DatingAppDriver):
                 self._dbg_still_photo_walk_candidate(
                     heart_ordinal, "navigation_refused", reason=type(exc).__name__)
                 break
+            hops_run += 1
             card_evidence, probe = self._still_photo_dwell_over_navigated_target(
                 target, index.block_for(nav_index), heart_ordinal=heart_ordinal,
                 mute_screen=mute_screen, should_stop=should_stop)

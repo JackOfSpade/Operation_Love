@@ -911,6 +911,43 @@ FREE with a measured bound behind it -- which also moves the licence off the ass
 If any video holds byte-exact across a whole burst, the probe IS load-bearing and the ceiling is
 ~7-9 minutes instead of ~5. It is a device session, not a code change. Do it BEFORE choosing.
 
+## 5h. Addendum 2026-08-23: the mute screen had a structural blind spot, in BOTH regimes
+
+`video_mute_screen_reason` anchored its search window to the BLOCK top and scaled it by BLOCK
+height (`roi_y1 = y0 + 0.14 * block_height`). Hinge's mute control sits a fixed ~53px below the
+**MEDIA** top, which coincides with the block top only on a plain card. A compound card --
+a ~135px prompt caption above ~974px of media -- puts the glyph at ~188px inside a window ending
+at ~155px. **Structurally unscreenable, and it did not fail closed:** the function returned
+`None`, whose own docstring defines it as "the screen RAN over a geometrically complete ROI,
+decoded, and matched nothing", i.e. it read as CLEAN everywhere downstream.
+
+The expensive ladder inherited the same hole, because `dwell_card_rects` hands the same
+whole-block rect to the C3 leg. So paying 21 minutes for motion evidence did not close it either.
+
+**The fix cost nothing.** `_video_mute_marker_rows` already locates the glyph at its TRUE position
+on every capture and already reaches `build_item_index` as `video_mute_markers`. Those positioned
+markers are now consulted by `_video_selection_exclusions` as a second, additive pass: a card
+containing a located marker is excluded even when the block-relative screen came back clean. Zero
+new gestures, zero new frames, zero new device time.
+
+**Verified empirically, not just by construction:** a scan of every non-review PNG under
+ops/calibration (3176 frames, 1862 selectable blocks) found 93 marker sightings, 87 caught by the
+old screen and **6 missed** -- all six the same physical card across
+scroll_20260811T211209Z/00040..00045, block height 1109, glyph at dy=188, match score 1.0 every
+time. Exactly the predicted geometry.
+
+**What was deliberately NOT done:** the ROI arithmetic was left alone. Re-anchoring to the media
+top is not safely derivable -- segment.py documents that a compound card is deliberately never
+split into caption and media sub-regions, so nothing upstream records where the media begins.
+Guessing a threshold on block height would be inventing exactly the kind of constant this design
+refuses, and widening the band was already rejected (it would start catching the per-card like
+heart and the Android status bar). The honest limit is recorded in the function's docstring and
+pinned by a regression test rather than papered over.
+
+**The lesson:** a screen that returns "found nothing" must be able to distinguish that from "the
+thing could not have been inside the region I searched". This one could not, for 2.5 days, in a
+system whose entire premise is that silence is never mistaken for absence.
+
 ## 6. Plan B (documented, not chosen)
 
 If held-out video accepts never reach zero, the honest fallback is to change the

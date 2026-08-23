@@ -898,6 +898,28 @@ def video_mute_screen_reason(frame: bytes, rect: tuple[int, int, int, int], *,
 
     Returns None only when the screen RAN over a geometrically complete ROI, decoded, and matched
     nothing; every other outcome is a reason string, so silence is never mistaken for absence.
+
+    HONESTY LIMIT (found 2026-08-23, not fixed here -- see `_video_mute_marker_in_block` below
+    for the mitigation that WAS shipped). `rect` is anchored to `y0`, the caller's BLOCK top, on
+    the assumption that Hinge's media -- and therefore the mute glyph a fixed ~53px below its top
+    -- starts flush with the card. That assumption is false for a compound card: Hinge can draw a
+    short prompt caption above the media inside ONE rounded card (segment.py:243-252 deliberately
+    keeps the two as a single block; splitting caption from photo by gutter length alone was
+    tried and rejected as an active hazard, see that comment), which pushes the true glyph to
+    ~188px below the BLOCK top -- outside `_VIDEO_MUTE_Y_BAND`'s 0..14% window entirely. A `None`
+    return from such a card is therefore NOT the "ran a complete ROI and found nothing" guarantee
+    the paragraph above promises; it can equally mean the ROI never had a chance to contain the
+    control. This function cannot tell the two apart and must not guess at it: `rect` is a bare
+    bounding box, and nothing upstream (`segment.py` never splits caption rows from media rows;
+    `IndexedBlock`/`BlockObservation` carry only the whole card's extent) records where inside a
+    block its media actually begins. Re-anchoring the window to a media top that is nowhere
+    computed would be exactly the guess the owner ruled out, and widening the window instead was
+    already rejected for a different reason (`_VIDEO_MUTE_Y_BAND`'s own comment: it would start
+    catching the per-card like heart and the Android status bar). So this ROI arithmetic is left
+    exactly as measured, and the residual is covered the other way: `_video_selection_exclusions`
+    additionally consults `_video_mute_marker_in_block`, which finds the control at its TRUE
+    position (from `_locate_video_mute`'s unbounded, block-agnostic search) rather than inside
+    this necessarily-sometimes-blind window, and excludes a card either route affirms.
     """
     x0, y0, x1, y1 = rect
     card_width = x1 - x0
@@ -916,6 +938,36 @@ def video_mute_screen_reason(frame: bytes, rect: tuple[int, int, int, int], *,
     if score >= _VIDEO_MUTE_MATCH_THRESHOLD:
         return ("target frame contains Hinge's mute control "
                 f"(score {score:.6f}); the selected media is a video")
+    return None
+
+
+def _video_mute_marker_in_block(block, markers: tuple[VideoMuteMarker, ...]):
+    """The first positioned mute marker whose (x, y) genuinely falls inside this physical card.
+
+    `_video_mute_marker_rows` locates Hinge's mute glyph by an unbounded search of the full
+    left-30%-of-screen column on every capture frame -- it makes no assumption about where a
+    card's media begins, unlike `video_mute_screen_reason`'s block-relative ROI above, which is
+    why it still finds the glyph on a compound prompt-then-media card that ROI cannot reach (see
+    that function's HONESTY LIMIT paragraph). This is the containment test that turns one of
+    those positioned hits into card identity: a marker in page chrome, in a gutter, or on a
+    different card is never evidence about THIS one.
+
+    Mirrors `item_index._marker_block`'s containment test (card-local x/y strictly inside the
+    card's own rect, in the SAME frame the marker was matched against, with no `top_observed`
+    requirement -- a card whose true top edge was never confirmed in a frame can still have its
+    VISIBLE rows in that frame contain the marker) but works from the folded `IndexedBlock`'s own
+    `observations`, which is all a caller downstream of `build_item_index` still has: there is no
+    live pointer back to the frame-local `segment.Block` a marker was originally tested against.
+
+    Returns `(marker, observation)` so a caller can report both the match and which sighting it
+    came from, or `None` when no marker lands inside this block in any frame it was observed in.
+    """
+    for obs in block.observations:
+        for marker in markers:
+            if (marker.frame_index == obs.frame_index
+                    and block.x0 <= marker.x < block.x1
+                    and obs.frame_y0 <= marker.y < obs.frame_y1):
+                return marker, obs
     return None
 
 # Hinge's spec: exactly today's values (formerly the module-level `DEFAULTS` dict + the
@@ -3740,6 +3792,27 @@ class AndroidDriver(DatingAppDriver):
         from automatic targeting. A successful full-ROI search with no mute control clears it;
         clipped slivers are skipped as geometry, and the independent photo classifier still
         decides whether the crop is actually photographic.
+
+        SECOND ROUTE (found+fixed 2026-08-23). The block-relative screen above is structurally
+        blind on a compound card -- prompt caption then media in one block -- because it anchors
+        its ROI to the BLOCK's own top rather than the media's, and nothing in this pipeline
+        records where inside a block the media begins (see `video_mute_screen_reason`'s HONESTY
+        LIMIT paragraph for why that arithmetic is not fixed here). The investigation that found
+        this measured 121 of 660 numbered items across its live manifests as exactly this shape,
+        all silently cleared by the screen above. Independently reproduced from this repo's own
+        checked-in frames on the exact geometry: one real physical card tracked across
+        ops/calibration/scroll_20260811T211209Z/00040..00045.png (six consecutive sightings) has
+        block height 1109 and its mute glyph at dy=188 -- score 1.0 every time -- which a
+        from-scratch scan of every selectable block in every non-hybrid-review frame under
+        ops/calibration/ confirms the block-relative screen above catches zero times out of six.
+        `_video_mute_marker_rows` already runs an unbounded, block-agnostic search for the same
+        glyph over every capture frame and its output already reaches this method as
+        `index.video_mute_markers` -- it was simply never consulted here before this fix. A
+        marker `_video_mute_marker_in_block` finds truly inside a card is exactly the affirmative
+        evidence the screen above is trying to obtain, so it is added as a SECOND, independent
+        way to exclude a card and can only ever ADD an exclusion: a block the screen above
+        already excluded is left with the screen's own reason untouched, and a block with a
+        clean screen and no located marker is still cleared.
         """
         blocks = tuple(getattr(index, "selectable", ()) or ())
         excluded: dict[int, str] = {}
@@ -3825,6 +3898,30 @@ class AndroidDriver(DatingAppDriver):
                 excluded[ordinal] = (
                     f"video_mute_v1: not targetable because {blocker}; screen outcomes: "
                     + outcome_summary(outcomes))
+
+        # SECOND ROUTE: positioned markers, additive only (see the docstring's SECOND ROUTE
+        # paragraph for why the screen above cannot see this on a compound card). Every block
+        # already excluded above keeps that reason unchanged -- this loop only ever fills in
+        # ordinals the first loop left clear, so it can add an exclusion but never remove or
+        # overwrite one.
+        mute_markers = tuple(getattr(index, "video_mute_markers", ()) or ())
+        if mute_markers:
+            for block in blocks:
+                ordinal = block.heart_ordinal
+                if ordinal is None or ordinal in excluded:
+                    continue
+                hit = _video_mute_marker_in_block(block, mute_markers)
+                if hit is None:
+                    continue
+                marker, obs = hit
+                excluded[ordinal] = (
+                    "video_mute_v1: upper-left Hinge mute control located by the positioned "
+                    f"marker track (score {marker.score:.6f}) in card source frame "
+                    f"{marker.frame_index} at card-local point ({marker.x - block.x0}, "
+                    f"{marker.y - obs.frame_y0}) -- {marker.y - obs.frame_y0}px below this "
+                    "sighting's own card top, which is outside the block-relative screen's "
+                    "narrow window above and is exactly why that screen alone missed it; "
+                    "videos are retained for scroll geometry but are never numbered or likeable")
         return excluded
 
     def _target_frame_video_screen_reason(self, frame: bytes, block) -> str | None:

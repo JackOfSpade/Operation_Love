@@ -1301,6 +1301,143 @@ def test_only_clipped_mute_rois_still_fail_closed_without_calling_matcher(monkey
     assert "insufficient_visible_roi" in reason
 
 
+# --- the positioned-marker route (found+fixed 2026-08-23) ---------------------------------------
+# `video_mute_screen_reason`'s ROI is anchored to the BLOCK's own top and assumes the mute glyph
+# sits within the top 14% of the block's OWN height. That is true for a plain photo/video card
+# (glyph ~53px below a block top that IS the media top) but false for a compound card -- a short
+# prompt caption drawn above the media inside ONE rounded block (segment.py:243-252 deliberately
+# never splits the two) -- where the glyph is really ~188px below the block top: measured live,
+# block height ~1109px (~135px caption + 974px media), glyph offset 188px, well outside the
+# 0..14% (0..155px) window the screen searches. The numbers below are exactly those measured
+# ones, not round test fixtures, so a regression here reproduces the real geometry.
+def test_prompt_caption_card_is_excluded_by_the_located_marker_the_screen_cannot_see(monkeypatch):
+    """A compound prompt-then-media card the block-relative screen legitimately clears (it
+    searched the wrong sub-window and correctly found nothing there) is still excluded, because
+    `_video_mute_marker_rows`'s unbounded, block-agnostic search located the real glyph inside
+    this same card."""
+    block_height = 1109
+    glyph_dy = 188
+    block = SimpleNamespace(
+        heart_ordinal=5, x0=_CARD_X0, x1=_CARD_X1, height=block_height,
+        observations=(
+            SimpleNamespace(top_observed=True, frame_index=0,
+                            frame_y0=1600, frame_y1=1600 + block_height),
+        ))
+    index = SimpleNamespace(
+        selectable=(block,),
+        video_mute_markers=(item_index.VideoMuteMarker(
+            frame_index=0, x=_CARD_X0 + 12, y=1600 + glyph_dy, score=0.991234),))
+    # The block-relative screen, asked about ITS OWN (wrong) sub-window, legitimately finds
+    # nothing there -- this is what "the screen cannot see it" looks like from inside the code,
+    # not a matcher failure.
+    monkeypatch.setattr(HingeDriver, "_match_video_mute", staticmethod(
+        lambda _frame, _rect: (True, 0.0)))
+
+    exclusions = _drv(WorldAdb())._video_selection_exclusions([_frame(0)], index)
+
+    assert exclusions.keys() == {5}
+    reason = exclusions[5]
+    # Load-bearing prefix (`model_item_media_ordinal` prefix-matches it as affirmative video
+    # evidence, same as the screen route) plus a distinguishable detail an operator/debug log
+    # can use to tell the two routes apart.
+    assert reason.startswith("video_mute_v1: upper-left")
+    assert "positioned marker track" in reason
+    assert "188" in reason  # the card-local offset actually located, for an operator to audit
+
+
+def test_plain_card_is_still_excluded_by_the_existing_screen_route_unchanged(monkeypatch):
+    """The ordinary case (glyph inside the screen's own window) is untouched by this fix: the
+    screen route still fires, and its own wording is not replaced even though a marker is ALSO
+    supplied at the same position -- the two routes may agree, but the screen's reason is never
+    overwritten by the marker's."""
+    block_height = 974
+    glyph_dy = 53
+    block = SimpleNamespace(
+        heart_ordinal=2, x0=_CARD_X0, x1=_CARD_X1, height=block_height,
+        observations=(
+            SimpleNamespace(top_observed=True, frame_index=0,
+                            frame_y0=700, frame_y1=700 + block_height),
+        ))
+    index = SimpleNamespace(
+        selectable=(block,),
+        video_mute_markers=(item_index.VideoMuteMarker(
+            frame_index=0, x=_CARD_X0 + 12, y=700 + glyph_dy, score=0.995),))
+    monkeypatch.setattr(HingeDriver, "_match_video_mute", staticmethod(
+        lambda _frame, _rect: (True, 1.0)))
+
+    exclusions = _drv(WorldAdb())._video_selection_exclusions([_frame(0)], index)
+
+    assert exclusions.keys() == {2}
+    reason = exclusions[2]
+    assert reason.startswith(
+        "video_mute_v1: upper-left Hinge mute control matched in card source frame(s)")
+    assert "positioned marker track" not in reason
+
+
+def test_marker_route_only_ever_adds_never_clears_a_card_the_screen_left_clean(monkeypatch):
+    """A card with a clean screen and no located marker at all must still be numberable -- the
+    second route may only ADD an exclusion, never invent one from nothing."""
+    block = SimpleNamespace(
+        heart_ordinal=3, x0=_CARD_X0, x1=_CARD_X1, height=974,
+        observations=(
+            SimpleNamespace(top_observed=True, frame_index=0, frame_y0=700, frame_y1=1674),
+        ))
+    index = SimpleNamespace(selectable=(block,), video_mute_markers=())
+    monkeypatch.setattr(HingeDriver, "_match_video_mute", staticmethod(
+        lambda _frame, _rect: (True, 0.0)))
+
+    exclusions = _drv(WorldAdb())._video_selection_exclusions([_frame(0)], index)
+
+    assert exclusions == {}
+
+
+def test_marker_outside_this_cards_own_rows_does_not_exclude_it(monkeypatch):
+    """Containment matters: a positioned marker that belongs to page chrome, a gutter, or a
+    DIFFERENT card must never be read as evidence about this one."""
+    block = SimpleNamespace(
+        heart_ordinal=4, x0=_CARD_X0, x1=_CARD_X1, height=974,
+        observations=(
+            SimpleNamespace(top_observed=True, frame_index=0, frame_y0=700, frame_y1=1674),
+        ))
+    index = SimpleNamespace(
+        selectable=(block,),
+        # One row below this card's own last observed row -- belongs to whatever is next, not
+        # to this block.
+        video_mute_markers=(item_index.VideoMuteMarker(
+            frame_index=0, x=_CARD_X0 + 12, y=1674, score=0.99),))
+    monkeypatch.setattr(HingeDriver, "_match_video_mute", staticmethod(
+        lambda _frame, _rect: (True, 0.0)))
+
+    exclusions = _drv(WorldAdb())._video_selection_exclusions([_frame(0)], index)
+
+    assert exclusions == {}
+
+
+def test_video_mute_screen_reason_return_contract_is_unchanged_by_this_fix():
+    """Pins the deliberate non-fix: `video_mute_screen_reason`'s ROI arithmetic is left exactly
+    as measured (see its HONESTY LIMIT paragraph). Re-anchoring the window to a media top is not
+    attempted because nothing in this pipeline records where inside a block the media begins
+    (`segment.py` never splits a prompt caption from its media), and widening the window was
+    already rejected for a different, unrelated reason (it would start catching the per-card
+    like heart and the Android status bar). So on the exact measured prompt-caption geometry --
+    block height 1109, real glyph 188px down -- the screen given only that block's own rect still
+    legitimately finds nothing in its own window and returns None: the honest answer for the
+    information THIS function has, not a guarantee no control is really on the card. Closing that
+    gap is `_video_selection_exclusions`'s job now (see the marker-route tests above), not this
+    function's."""
+    block_height = 1109
+    glyph_dy = 188
+    rect = (_CARD_X0, 0, _CARD_X1, block_height)
+
+    def match_only_at_true_offset(_frame, roi):
+        _x0, y0, _x1, y1 = roi
+        return True, (1.0 if y0 <= glyph_dy < y1 else 0.0)
+
+    reason = hinge.video_mute_screen_reason(_frame(0), rect, match=match_only_at_true_offset)
+
+    assert reason is None
+
+
 def test_video_mute_template_is_a_near_perfect_app_ui_match():
     """The embedded template contains only the stable glyph/black disk, not video pixels."""
     template = cv2.imdecode(

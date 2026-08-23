@@ -324,7 +324,7 @@ def test_capture_carries_one_contradictory_frame_to_index_rebuild(monkeypatch):
 
     monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
     monkeypatch.setattr(drv, "_index_captured_items",
-                        lambda photos: indexed.append(list(photos)) or "")
+                        lambda photos, should_stop=None: indexed.append(list(photos)) or "")
 
     profile = drv._capture_current()
 
@@ -351,7 +351,7 @@ def test_capture_carries_two_adjacent_contradictory_frames_to_index_rebuild(monk
 
     monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
     monkeypatch.setattr(drv, "_index_captured_items",
-                        lambda photos: indexed.append(list(photos)) or "")
+                        lambda photos, should_stop=None: indexed.append(list(photos)) or "")
 
     assert drv._capture_current() is not None
     assert calls == [True, True, True]
@@ -377,7 +377,7 @@ def test_capture_carries_four_adjacent_contradictory_frames_to_index_rebuild(mon
 
     monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
     monkeypatch.setattr(drv, "_index_captured_items",
-                        lambda photos: indexed.append(list(photos)) or "")
+                        lambda photos, should_stop=None: indexed.append(list(photos)) or "")
 
     assert drv._capture_current() is not None
     assert calls == [True, True, True, True, False]
@@ -405,7 +405,7 @@ def test_capture_refuses_a_fifth_contradictory_frame(monkeypatch):
 
     monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
     monkeypatch.setattr(drv, "_index_captured_items",
-                        lambda photos: indexed.append(list(photos)) or "")
+                        lambda photos, should_stop=None: indexed.append(list(photos)) or "")
 
     assert drv._capture_current() is not None
     assert calls == [True, True, True, True, False]

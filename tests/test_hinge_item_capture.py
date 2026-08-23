@@ -537,9 +537,9 @@ def test_a_licensed_read_dwells_persists_every_frame_and_threads_the_evidence(
     # a dwell that scrolled would be measuring a moving card while calling it still.
     real_burst = HingeDriver._still_photo_dwell_burst
 
-    def guarded_burst(self):
+    def guarded_burst(self, should_stop=None):
         before = (adb.scrolls, len(adb.gestures), len(adb.taps))
-        result = real_burst(self)
+        result = real_burst(self, should_stop)
         seen["input_during_dwell"] = (adb.scrolls, len(adb.gestures), len(adb.taps)) != before
         return result
 
@@ -672,7 +672,8 @@ def test_an_empty_dwell_burst_numbers_nothing_but_still_finishes_enumeration(
     observed" case, so every selectable card's own reason is `EXCLUSION_NEVER_DWELLED`."""
     monkeypatch.setattr(hinge, "unnumber_without_still_photo_evidence",
                         item_crops.unnumber_without_still_photo_evidence)
-    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_burst", lambda self: ([], 0.0))
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_burst",
+                        lambda self, should_stop=None: ([], 0.0))
     drv = _drv(WorldAdb())
 
     profile = drv._capture_current()
@@ -1004,6 +1005,166 @@ def test_a_probe_clamped_in_both_directions_refuses_as_it_always_did(
     assert (adb.reverse_swipes, adb.scrolls) == (1, 1), "one stroke each way, and not one more"
     assert bursts == [], "a card that never left the zone is charged no second burst"
     assert adb.scroll == _CENTRED_SCROLLS[-1] and adb.taps == []
+
+
+# =====================================================================================
+# STOP after the read loop (found+fixed 2026-08-23): the dwell burst and the re-attach probe
+# are not cheap -- a burst alone can hold the screen for several real seconds, and the probe
+# spends real scroll gestures on top of that -- and until this fix nothing polled `should_stop`
+# for any of it once the read loop itself had finished. See `_capture_current`'s "STOP, PART 2"
+# docstring paragraph for the full incident and `_still_photo_reattach_probe`'s STOP paragraph
+# for the return-leg decision pinned below.
+# =====================================================================================
+
+def test_a_stop_before_the_dwell_starts_takes_no_burst_at_all(
+        monkeypatch, installed_still_photo_bound):
+    """Pins the fix's headline claim: a Stop noticed the instant the read loop ends -- before
+    `_still_photo_dwell` has spent even the opening screencap of its first burst -- must not
+    call the burst at all, not merely call it and have it come back empty."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb)
+    bursts = []
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_burst",
+                        lambda self, should_stop=None: bursts.append(1) or ([], 0.0))
+
+    evidence = drv._still_photo_dwell(frames, index, should_stop=lambda: True)
+
+    assert bursts == [], "the burst must never be called, not just called and cut short"
+    assert evidence == {}
+    assert (adb.reverse_swipes, adb.scrolls, adb.taps) == (0, 0, [])
+
+
+def test_a_stop_mid_burst_returns_no_dwell_and_never_a_shorter_completed_one(
+        monkeypatch, installed_still_photo_bound):
+    """A Stop that lands partway through the burst's own sampled window must come back as the
+    SAME empty `([], 0.0)` a blank frame already returns -- never a shorter list of real frames
+    that still claims to be a completed dwell. Every caller trusts a non-empty burst to mean
+    exactly that, so a truncated one reported as real would be a silent correctness bug, not
+    merely a slower stop."""
+    drv = _drv(WorldAdb())
+    calls = {"n": 0}
+    real_screencap = HingeDriver._screencap
+
+    def counting_screencap(self, **kw):
+        calls["n"] += 1
+        return real_screencap(self, **kw)
+
+    monkeypatch.setattr(HingeDriver, "_screencap", counting_screencap)
+
+    burst, span_s = drv._still_photo_dwell_burst(should_stop=lambda: calls["n"] >= 2)
+
+    assert (burst, span_s) == ([], 0.0)
+    assert calls["n"] == 2, "stopped mid-window, not after finishing a shorter one"
+    assert calls["n"] < hinge._STILL_PHOTO_DWELL_FRAMES[0]
+
+
+def test_a_stop_before_any_probe_gesture_returns_none_and_moves_nothing(
+        installed_still_photo_bound):
+    """The probe's own "check before each gesture" contract: a Stop that is already true before
+    the first exit stroke costs one poll, not one more humanized swipe the operator did not ask
+    for, and never a partial `ReattachProbe`."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb)
+    rect = item_crops.dwell_card_rects(index, len(frames) - 1)[_CENTRED_ORDINAL]
+
+    assert drv._still_photo_reattach_probe(frames[-1], rect, should_stop=lambda: True) is None
+    assert (adb.reverse_swipes, adb.scrolls, adb.taps) == (0, 0, [])
+
+
+def test_a_stop_mid_probe_reaches_the_ladder_as_no_reattach_evidence(
+        installed_still_photo_bound):
+    """End to end through `_still_photo_dwell`: a card that earned the probe rung (byte-exact,
+    centred first burst) but whose probe was cut short by a Stop must reach the evidence ladder
+    with `reattach_probe_ran` unset -- exactly the same refusal shape a probe that failed to
+    measure its own displacement already produces -- never a `reattach_dwell_exact=True` built
+    from frames the probe never actually took."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb)
+
+    def should_stop():
+        return adb.reverse_swipes >= 1     # true only once the exit stroke has fired
+
+    evidence = drv._still_photo_dwell(frames, index, should_stop)
+
+    entry = evidence[_CENTRED_ORDINAL]
+    assert (entry.dwell_exact, entry.centered) == (True, True)   # earned the probe rung
+    assert entry.reattach_probe_ran is None    # ...but the probe itself never completed
+    reason = item_crops.unnumber_without_still_photo_evidence(
+        item_crops.still_photo_evidence_from_drift(0.0, (1, 2), entry))
+    assert reason is not None, "no partial probe evidence may reach the ladder as a pass"
+
+
+def test_a_stop_after_the_exit_still_completes_the_return_leg_before_bailing(
+        monkeypatch, installed_still_photo_bound):
+    """Pins the return-leg design decision (see `_still_photo_reattach_probe`'s STOP
+    docstring paragraph): once the exit stroke has displaced the page, a Stop does not truncate
+    the walk back. The alternative -- bailing immediately -- would leave the phone scrolled to
+    an arbitrary, unmeasured offset for the rest of the session, which is worse for the operator
+    watching the screen (and for the "leaves the page where it found it" contract bottom-up
+    navigation relies on) than paying for the few remaining, already-bounded
+    (`_REATTACH_RETURN_STEPS_SPAN`) read-scrolls it takes to walk back. Only the expensive,
+    gesture-free second burst that would follow is skipped."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb)
+    rect = item_crops.dwell_card_rects(index, len(frames) - 1)[_CENTRED_ORDINAL]
+    bursts = []
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_burst",
+                        lambda self, should_stop=None: bursts.append(1) or ([], 0.0))
+
+    def should_stop():
+        return adb.reverse_swipes >= 1
+
+    result = drv._still_photo_reattach_probe(frames[-1], rect, should_stop)
+
+    assert result is None
+    assert bursts == [], "the second burst is the expensive part and must not be spent"
+    assert (adb.reverse_swipes, adb.scrolls) == (1, 1), "the return leg still ran to completion"
+    assert adb.scroll == _CENTRED_SCROLLS[-1], "the page is restored despite the stop"
+
+
+def test_the_dwell_and_probe_are_unchanged_by_a_should_stop_that_never_fires(
+        installed_still_photo_bound):
+    """`should_stop` defaults to None throughout this chain; threading an always-False callable
+    instead must reach the exact same verdict -- a full C2/C3 dwell plus a completed re-attach
+    probe -- as the existing `should_stop=None` callers already get. Compares the OUTCOME and
+    the physical trace (gesture counts, final scroll position) rather than wall-clock-derived
+    timing fields, which are not expected to match to the microsecond across two separate runs."""
+    index, frames = _centred_capture()
+
+    for stop in (None, lambda: False):
+        adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+        drv = _drv(adb)
+
+        evidence = drv._still_photo_dwell(frames, index, stop)
+
+        entry = evidence[_CENTRED_ORDINAL]
+        assert (entry.dwell_exact, entry.centered) == (True, True)
+        assert entry.reattach_probe_ran is True
+        assert entry.reattach_dwell_exact is True
+        assert entry.reattach_mute_screens_complete is True
+        assert entry.reattach_centered is True
+        assert (adb.reverse_swipes, adb.scrolls) == (1, 1)
+        assert adb.scroll == _CENTRED_SCROLLS[-1]
+
+
+def test_the_whole_capture_path_is_unchanged_by_a_should_stop_that_never_fires():
+    """The same guarantee end to end, on the ordinary (unlicensed) enumeration path every other
+    test in this file already exercises with `should_stop=None`: threading an always-False
+    callable through `_capture_current` instead must be a complete no-op."""
+    for stop in (None, lambda: False):
+        drv = _drv(WorldAdb())
+
+        profile = drv._capture_current(stop)
+
+        assert profile is not None
+        assert len(profile.items) == len(_CARDS) == 4
+        assert profile.items_unavailable == ""
+        assert profile.items_unnumbered == ""
+        assert profile.name == "Ada"
 
 
 def test_video_screen_reads_only_card_local_upper_left_sightings(monkeypatch):

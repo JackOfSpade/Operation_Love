@@ -3789,7 +3789,7 @@ class AndroidDriver(DatingAppDriver):
         return video_mute_screen_reason(
             frame, (block.x0, block.y0, block.x1, block.y1), match=self._match_video_mute)
 
-    def _still_photo_dwell_burst(self) -> tuple[list[bytes], float]:
+    def _still_photo_dwell_burst(self, should_stop=None) -> tuple[list[bytes], float]:
         """Take C2's observation: N screencaps over W seconds, with NO input of any kind.
 
         The window is anchored on the installed LICENCE rather than on a constant chosen here,
@@ -3805,6 +3805,17 @@ class AndroidDriver(DatingAppDriver):
         scroll or key event to the session. `on_blank="none"` because this is a passive read like
         the other no-input polls; a blank frame ends the burst and the missing frames become a
         REFUSAL downstream rather than a shorter dwell that still claims to be one.
+
+        STOP (found+fixed 2026-08-23): this burst alone can hold the screen for several real
+        seconds with nothing to interrupt it (`window_s` is `human_cooldown`-anchored, never
+        shorter than `_STILL_PHOTO_DWELL_MIN_WINDOW_S`), and until this fix nothing polled
+        `should_stop` for the whole time it ran -- see `_capture_current`'s own STOP paragraph
+        for how far that gap reached. `should_stop` is now checked before every screencap, and
+        the inter-frame wait goes through `_interruptible_sleep` instead of a bare `time.sleep`
+        so a Stop lands inside the gap too, not just between frames. A stop returns the SAME
+        `([], 0.0)` a blank frame already returns: every caller already treats that as "no dwell
+        happened", fail-closed by construction, so a truncated burst must never be reported as a
+        completed one.
         """
         licence = installed_still_photo_licence()
         if licence is None:
@@ -3825,7 +3836,13 @@ class AndroidDriver(DatingAppDriver):
         first_at = last_at = 0.0
         for position in range(count):
             if position:
-                time.sleep(human_delay(gap_s))
+                if not self._interruptible_sleep(human_delay(gap_s), should_stop):
+                    return [], 0.0
+            if should_stop is not None and should_stop():
+                # Checked again right before the screencap rather than folded into the sleep
+                # above: position 0 takes no sleep at all, so without this a stop landing before
+                # the very first frame would not be seen until the whole burst had already run.
+                return [], 0.0
             frame = self._screencap(on_blank="none")
             if frame is None:
                 return [], 0.0
@@ -3868,7 +3885,8 @@ class AndroidDriver(DatingAppDriver):
         return min(eligible)[1] if eligible else None
 
     def _still_photo_reattach_probe(self, anchor: bytes,
-                                    rect: tuple[int, int, int, int]) -> ReattachProbe | None:
+                                    rect: tuple[int, int, int, int],
+                                    should_stop=None) -> ReattachProbe | None:
         """Scroll this card OUT of Hinge's autoplay band, bring it back, and dwell again.
 
         The residual it exists for is stated at `_REATTACH_EXIT_BAND_MULTIPLE_SPAN`: a centred
@@ -3907,6 +3925,22 @@ class AndroidDriver(DatingAppDriver):
         smallest legal read-scroll moves ~219px, so a residual under half that quantum is left
         alone; `navigate_to_item` measures its entry shift rather than assuming it, so a residual
         costs a measurement, not a wrong card.
+
+        STOP (found+fixed 2026-08-23): every gesture this method issues is checked against
+        `should_stop` immediately before it fires -- see `exit_leg`'s own first line -- so a
+        Stop pressed before the probe has moved anything costs one poll and returns None with
+        the screen untouched, exactly like `_measured_page_shift` returning None already does.
+        Once an exit stroke HAS displaced the page, though, the return-leg loop below runs to
+        completion even if a Stop lands mid-way: the alternative is leaving the phone scrolled
+        to an arbitrary, unmeasured offset for the rest of the session, which is worse for the
+        operator watching the screen -- and for "IT LEAVES THE PAGE WHERE IT FOUND IT" above --
+        than paying for the few remaining, already-bounded (`_REATTACH_RETURN_STEPS_SPAN`)
+        read-scrolls it takes to walk back. The one place a Stop still buys something once the
+        return leg has started is the SECOND burst that follows it: that is the expensive,
+        gesture-free part this bug was actually about (seconds of held dwell with no gesture of
+        its own to interrupt it), so it is the one thing skipped, and a stop there returns None
+        -- "the probe could not be completed" -- never a `ReattachProbe` built from a burst that
+        never ran.
         """
         if hinge_targeting_unavailable_reason() is not None:
             # Re-asserted here rather than inherited from the caller: this is the only
@@ -3926,6 +3960,11 @@ class AndroidDriver(DatingAppDriver):
             same gestures in the same order, off the same random draws, as it did before the
             forward retry existed -- a clamp is what buys a second set of draws, nothing else.
             """
+            if should_stop is not None and should_stop():
+                # Checked before the stroke, not after: this is a REAL scroll gesture on the
+                # device, and a Stop that lands here must cost nothing more than a dead poll --
+                # never one more humanized swipe the operator did not ask for.
+                return None
             # Derived from where the card actually sits, never from where it ought to sit, and
             # capped so the displacement stays inside the estimator's own trust window. The
             # forward leg is the same derivation mirrored about the band centre, which is why it
@@ -3978,6 +4017,12 @@ class AndroidDriver(DatingAppDriver):
                 # manufacture exactly the unearned observation this rung exists to prevent.
                 return None
         quantum = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
+        # THE RETURN LEG IS NOT should_stop-GATED, DELIBERATELY (see the STOP paragraph in the
+        # docstring above). By the time control reaches here an exit stroke has already
+        # displaced the page from the position `_index_captured_items` anchors bottom-up
+        # navigation on, so walking it back is a cleanup obligation, not one more optional
+        # gesture -- and it is short and bounded (`_REATTACH_RETURN_STEPS_SPAN`, 2-4 strokes),
+        # unlike the burst that follows it.
         for _attempt in range(random.randint(*_REATTACH_RETURN_STEPS_SPAN)):
             remaining = -total
             if abs(remaining) <= quantum // 2:
@@ -3999,7 +4044,14 @@ class AndroidDriver(DatingAppDriver):
                 return None
             total += step
             frame = following
-        burst, span_s = self._still_photo_dwell_burst()
+        if should_stop is not None and should_stop():
+            # The page is back where the read left it (or as close as the loop above could
+            # measure); only the SECOND burst -- the expensive, gesture-free part this bug is
+            # actually about -- remains, and is not worth spending once the run is stopping.
+            # None is the same "the probe could not be completed" answer a measurement failure
+            # gives above, and the ladder already refuses fail-closed on it.
+            return None
+        burst, span_s = self._still_photo_dwell_burst(should_stop)
         if not burst:
             return None
         return ReattachProbe(anchor=frame, frames=tuple(burst), span_s=span_s,
@@ -4047,7 +4099,7 @@ class AndroidDriver(DatingAppDriver):
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
 
-    def _still_photo_dwell(self, frames: list[bytes], index) -> dict:
+    def _still_photo_dwell(self, frames: list[bytes], index, should_stop=None) -> dict:
         """The C2/C3 dwell evidence for this capture's candidates, or `{}` when unlicensed.
 
         With no verified bound installed there is no dwell at all: the payload can number nothing
@@ -4060,10 +4112,23 @@ class AndroidDriver(DatingAppDriver):
 
         Two bursts, not one: see `_still_photo_reattach_probe` for why a single centred
         byte-exact run cannot separate a photograph from a video that was never playing.
+
+        STOP (found+fixed 2026-08-23): `should_stop` is threaded to both bursts and to the
+        probe, which honour it themselves (see their own STOP paragraphs), plus one check here
+        that fires BEFORE the first burst is even attempted. That extra check is what makes "a
+        stop landing the instant the read loop ends spends no burst at all" true rather than
+        merely "spends an interrupted one": the read loop that produced `frames` already polled
+        `should_stop` at every one of its own iterations (see `_capture_current`'s STOP
+        paragraph), and this is the first opportunity after it ends. Whatever stops the dwell
+        early, the result is the same `{}` an unlicensed build already returns for -- "no dwell
+        evidence" -- which `unnumber_without_still_photo_evidence` already refuses fail-closed,
+        so this never changes a gate decision, only how quickly a Stop is noticed.
         """
         if hinge_targeting_unavailable_reason() is not None:
             return {}
-        burst, span_s = self._still_photo_dwell_burst()
+        if should_stop is not None and should_stop():
+            return {}
+        burst, span_s = self._still_photo_dwell_burst(should_stop)
 
         def mute_screen(frame: bytes, rect: tuple[int, int, int, int]) -> bool:
             return video_mute_screen_reason(frame, rect, match=self._match_video_mute) is None
@@ -4087,7 +4152,7 @@ class AndroidDriver(DatingAppDriver):
         if target is not None and frames:
             rect = dwell_card_rects(index, len(frames) - 1).get(target)
             if rect is not None:
-                probe = self._still_photo_reattach_probe(frames[-1], rect)
+                probe = self._still_photo_reattach_probe(frames[-1], rect, should_stop)
         if probe is not None:
             evidence = still_photo_reattach_evidence(
                 evidence, index, frame_count=len(frames), probe=probe,
@@ -4095,13 +4160,20 @@ class AndroidDriver(DatingAppDriver):
         self._record_still_photo_dwell(burst, span_s, evidence, probe)
         return evidence
 
-    def _index_captured_items(self, photos: list[bytes]) -> str:
+    def _index_captured_items(self, photos: list[bytes], should_stop=None) -> str:
         """Fold this capture's frames into doc 5.3's index and doc 5.2's crops.
 
         Sets `_current_item_index` / `_current_item_payload` on success and returns ""; on any
         refusal it leaves both None and returns the reason, which becomes
         `Profile.items_unavailable` and then worker.py's stop line. Called exactly once per
         capture, after the read loop, with the frames that were actually kept.
+
+        `should_stop`, when supplied, is passed straight through to `_still_photo_dwell` (which
+        is the only stop-aware thing this method does -- see its own STOP paragraph, and
+        `_capture_current`'s, for why that check exists at all). Nothing else here is gated on
+        it: the index and crop building below are pure computation over frames already in hand,
+        never a device gesture, so a stop noticed mid-way through them would only cost latency,
+        never disturb the phone.
 
         ONE SUCCESS RETURNS TWO DIFFERENT OUTCOMES (found+fixed 2026-08-22, see
         `Profile.items_unnumbered`'s docstring for the two-vs-three-state history). Returning ""
@@ -4194,7 +4266,7 @@ class AndroidDriver(DatingAppDriver):
                 exclude=lambda block: video_exclusions.get(block.heart_ordinal),
                 unnumber=unnumber_unless_confident_photo,
                 unnumber_without_evidence=unnumber_without_still_photo_evidence,
-                still_photo_dwell=self._still_photo_dwell(indexed_photos, index))
+                still_photo_dwell=self._still_photo_dwell(indexed_photos, index, should_stop))
             # `payload.usable` is False the instant zero cards survive to be numbered -- see
             # `NO_NUMBERED_ITEMS_REASON`'s docstring in item_crops.py -- and that is the RIGHT
             # default for a generic caller, but wrong for Hinge's own auto loop: worker.py treats
@@ -4889,6 +4961,22 @@ class AndroidDriver(DatingAppDriver):
         The partial frames are dropped rather than returned precisely because a half-read profile
         must never reach the ranker as if it were a whole one.
 
+        STOP, PART 2 (found+fixed 2026-08-23): the paragraph above covers the read loop itself,
+        but until this fix nothing polled `should_stop` again once that loop ended -- not while
+        folding the kept frames into the item index, not during the still-photo dwell burst (a
+        held, no-input screen watch that can run several real seconds), and not during the
+        re-attach probe (which spends real scroll gestures, see `_still_photo_reattach_probe`).
+        An operator who clicked Stop right after the read finished still watched the phone keep
+        moving for tens of seconds. `should_stop` is now threaded through
+        `_index_captured_items` -> `_still_photo_dwell` -> `_still_photo_dwell_burst` /
+        `_still_photo_reattach_probe`; see each one's own STOP paragraph for exactly what it
+        finishes and what it skips once a stop lands mid-way. Unlike a stop during the read loop
+        above, a stop noticed there does NOT abandon the whole capture: it is fed to the same
+        evidence ladder an unlicensed build or a blank dwell frame already feeds -- "no dwell
+        evidence" -- which the ladder already refuses fail-closed, so the capture still returns
+        a normal (possibly unnumbered) Profile rather than None. No gate decision, refusal
+        wording, or evidence standard changes; only how soon a Stop is noticed does.
+
         ENUMERATION (ops/OPENER-REDESIGN.md 5.2/5.3/5.5): an AUTO read is also the pass that
         builds the profile's item index. It confirms the scroll top affirmatively before the
         first gesture, sizes every step against the card spacing the current frame shows instead
@@ -5332,7 +5420,7 @@ class AndroidDriver(DatingAppDriver):
         # read was an enumeration read: a capture that stopped enumerating half way through has
         # a mixed cadence, and folding those frames would be indexing a page nobody scrolled.
         if enumerating:
-            enumeration_reason = self._index_captured_items(photos)
+            enumeration_reason = self._index_captured_items(photos, should_stop)
         if enumeration_reason:
             self._invalidate_item_index(enumeration_reason)
             print(f"{self.spec.app}: no numbered item list for this profile -- "

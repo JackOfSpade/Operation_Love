@@ -3012,7 +3012,18 @@ def test_a_card_below_the_entry_is_stepped_over_not_treated_as_a_failed_walk(
     navigator refuses exactly that with NAV_ITEM_BELOW_ENTRY -- raised on the first frame, `if not
     steps`, with ZERO gestures spent. Abandoning the whole walk over it meant the single most
     likely first-candidate outcome silently reduced K back to 1. Nothing moved, so the walk steps
-    over that card, keeps its budget, and the reachable cards above it are still proved."""
+    over that card, keeps its budget, and the two hops that DO run are each judged on their own
+    merits.
+
+    Candidate 1 -- this fixture's own FIRST photo -- is one of those two hops, and its outcome
+    changed once centring correction shipped (still 2026-08-23): it climbs close enough to the
+    true top of this fixture's scrollable world that the reverse correction an above-centre park
+    needs has nowhere left to reveal, rubber-bands at 0px, and the card is still outside Hinge's
+    autoplay zone once the correction budget runs out. That is a genuine, structural refusal --
+    `STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC` is never relaxed to paper over it, see
+    `_still_photo_dwell_over_navigated_target`'s own CENTERING CORRECTION paragraph -- not a walk
+    failure: it costs no burst, candidate 2 above it is unaffected and still fully proved, and the
+    earlier skip still cost nothing."""
     index, frames = _full_read_capture()
     adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
     drv = _drv(adb, still_photo_dwell_candidates=3)
@@ -3030,10 +3041,13 @@ def test_a_card_below_the_entry_is_stepped_over_not_treated_as_a_failed_walk(
 
     evidence = drv._still_photo_dwell(frames, index)
 
-    # The skipped card contributes nothing, but the budget was NOT spent on it: two hops still
-    # ran, so two cards above it are proved on top of the free one.
+    # The skipped card (heart 3) contributes nothing, but the budget was NOT spent on it: two
+    # hops still ran. Candidate 2 is proved; candidate 1 hits the scroll-top centring clamp
+    # described above and goes unmeasured -- a per-candidate refusal, not a walk abandon (the
+    # walk did not stop there; it simply ran out of candidates to try).
     assert 3 not in evidence
-    assert set(evidence) == {4, 2, 1}
+    assert set(evidence) == {4, 2}
+    assert 1 not in evidence
     assert len(asked) == 3, "the skip must not consume one of the K hops"
 
 
@@ -3079,7 +3093,7 @@ def test_an_unverified_return_abandons_the_walk_and_stops_further_candidates(
 
     monkeypatch.setattr(hinge, "navigate_to_item", counting_navigate)
     monkeypatch.setattr(HingeDriver, "_still_photo_dwell_walk_return_to_entry",
-                        lambda self, target, probe, entry_reference: False)
+                        lambda self, target, probe, entry_reference, correction: False)
 
     evidence = drv._still_photo_dwell(frames, index)
 
@@ -3100,8 +3114,8 @@ def test_should_stop_between_candidates_stops_the_walk_with_no_partial_candidate
     state = {"returns": 0}
     real_return = HingeDriver._still_photo_dwell_walk_return_to_entry
 
-    def counting_return(self, target, probe, entry_reference):
-        ok = real_return(self, target, probe, entry_reference)
+    def counting_return(self, target, probe, entry_reference, correction):
+        ok = real_return(self, target, probe, entry_reference, correction)
         state["returns"] += 1
         return ok
 
@@ -3184,3 +3198,199 @@ def test_the_walk_records_one_debug_row_per_candidate_it_attempted(
     assert all(r["outcome"] == "proved" for r in walk_rows)
     assert {r["heart_ordinal"]: r["dwell_exact"] for r in walk_rows} == {
         ordinal: evidence[ordinal].dwell_exact for ordinal in (3, 2)}
+
+
+# =====================================================================================
+# Centring correction after navigate_to_item parks a card off-zone (2026-08-23). Verified live on
+# this repo's own harness that `item_nav.navigate_to_item` has no centring objective and parks a
+# card -0.187..-0.287 against the +-0.150 `STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC` gate -- its
+# ascending walk stops the instant the target block is merely `complete`, with the card's top
+# edge freshly cleared and the rest of it still below. `tools/hinge_calibrate.py`'s own
+# `_apply_bounded_centering_correction` is the proven fix `_still_photo_dwell_over_navigated_
+# target` now mirrors.
+#
+# `SimpleNamespace` stands in for `item_nav.ItemTarget` / the index block below because the
+# method under test only ever reads `.frame`/`.block_frame_rows` off the former and `.x0`/`.x1`
+# off the latter -- a synthetic rect lets these tests place the "card" wherever a scenario needs
+# without spending a real navigation hop to get there.
+# =====================================================================================
+
+def _stub_target(frame: bytes, rows: tuple[int, int], **extra):
+    return SimpleNamespace(frame=frame, block_frame_rows=rows, **extra)
+
+
+_STUB_BLOCK = SimpleNamespace(x0=_CARD_X0, x1=_CARD_X1)
+
+
+def test_a_card_parked_out_of_zone_is_corrected_and_then_dwelt(installed_still_photo_bound):
+    """The headline case this fix exists for: a card parked at -0.222 (past the +-0.150 gate, in
+    the same direction this repo measured live: -0.187, -0.232, -0.287) is corrected INTO the
+    zone before the two-burst proof runs, rather than being dwelt anyway and refused downstream
+    for a guaranteed reason."""
+    adb = ProbeWorldAdb(start=1200)
+    drv = _drv(adb)
+    frame = _frame(1200)
+    rows = (400, 1200)                          # centre 800 vs band centre 1200 -> offset -0.222
+    rect = (_CARD_X0, rows[0], _CARD_X1, rows[1])
+    initial_offset = item_crops.card_center_offset_frac(
+        rect, frame_height=_H, content_band=_CONTENT_BAND)
+    assert initial_offset < -item_crops.STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC, (
+        "fixture guard: this rect must actually start out of zone")
+    target = _stub_target(frame, rows)
+
+    dwell, probe, correction = drv._still_photo_dwell_over_navigated_target(
+        target, _STUB_BLOCK, heart_ordinal=1, mute_screen=lambda _f, _r: True)
+
+    assert dwell is not None, "a correctable card must still be dwelt, not abandoned"
+    assert dwell.centered is True
+    assert dwell.center_offset_frac == 0.0
+    assert correction.total_px != 0, "the correction must have actually issued a gesture"
+    assert adb.reverse_swipes > 0, "an above-centre card corrects with a REVERSE read-scroll"
+
+
+def test_a_card_parked_above_centre_is_corrected_with_a_reverse_scroll(
+        monkeypatch, installed_still_photo_bound):
+    """Direction pin. `card_center_offset_frac`'s own docstring: NEGATIVE means the card sits
+    ABOVE the content centre. Bringing it toward centre needs content to move DOWN the screen,
+    which is the REVERSE read-scroll (`_scroll_up_one`) -- never the forward one. Get this
+    backwards and the correction pushes the card FURTHER from centre instead of into it, exactly
+    the class of bug this repo has hit live before (the re-attach probe's own exit stroke, once
+    hardcoded backwards, found on a device). Asserted on the measured offset actually SHRINKING
+    AND on which scroll counter moved -- either alone could pass by coincidence, an inverted
+    direction fails both."""
+    # Isolated from the re-attach probe on purpose: a centred, byte-exact burst earns one too,
+    # and the probe's own exit leg is ALSO allowed to go backward first (see
+    # `_still_photo_reattach_probe`'s docstring), which would blur which stroke this test is
+    # pinning the direction of.
+    monkeypatch.setattr(HingeDriver, "_still_photo_reattach_candidate",
+                        staticmethod(lambda evidence: None))
+    adb = ProbeWorldAdb(start=1200)
+    drv = _drv(adb)
+    frame = _frame(1200)
+    rows = (400, 1200)                          # centre 800 vs band centre 1200 -> offset -0.222
+    rect = (_CARD_X0, rows[0], _CARD_X1, rows[1])
+    initial_offset = item_crops.card_center_offset_frac(
+        rect, frame_height=_H, content_band=_CONTENT_BAND)
+    assert initial_offset < 0, "fixture guard: this rect must start ABOVE centre"
+    target = _stub_target(frame, rows)
+
+    dwell, probe, correction = drv._still_photo_dwell_over_navigated_target(
+        target, _STUB_BLOCK, heart_ordinal=1, mute_screen=lambda _f, _r: True)
+
+    assert probe is None, "isolated above -- only the correction may have moved anything"
+    assert dwell is not None and dwell.centered is True
+    assert abs(dwell.center_offset_frac) < abs(initial_offset), "the offset must have shrunk"
+    assert (adb.scrolls, adb.reverse_swipes) == (0, 1), (
+        "an above-centre card must correct with exactly one REVERSE read-scroll, never a "
+        "forward one")
+
+
+def test_a_card_parked_below_centre_is_corrected_with_a_forward_scroll(
+        monkeypatch, installed_still_photo_bound):
+    """The other half of the same pin: POSITIVE means the card sits BELOW centre, and a FORWARD
+    read-scroll (`_scroll_down_one`) is what brings it up -- the mirror image of the case above,
+    proved the same way so an implementation that only gets ONE direction right cannot pass
+    both."""
+    monkeypatch.setattr(HingeDriver, "_still_photo_reattach_candidate",
+                        staticmethod(lambda evidence: None))
+    adb = ProbeWorldAdb(start=1200)
+    drv = _drv(adb)
+    frame = _frame(1200)
+    rows = (1600, 2000)                         # centre 1800 vs band centre 1200 -> offset +0.333
+    rect = (_CARD_X0, rows[0], _CARD_X1, rows[1])
+    initial_offset = item_crops.card_center_offset_frac(
+        rect, frame_height=_H, content_band=_CONTENT_BAND)
+    assert initial_offset > 0, "fixture guard: this rect must start BELOW centre"
+    target = _stub_target(frame, rows)
+
+    dwell, probe, correction = drv._still_photo_dwell_over_navigated_target(
+        target, _STUB_BLOCK, heart_ordinal=1, mute_screen=lambda _f, _r: True)
+
+    assert probe is None, "isolated above -- only the correction may have moved anything"
+    assert dwell is not None and dwell.centered is True
+    assert abs(dwell.center_offset_frac) < abs(initial_offset), "the offset must have shrunk"
+    assert (adb.scrolls, adb.reverse_swipes) == (1, 0), (
+        "a below-centre card must correct with exactly one FORWARD read-scroll, never a "
+        "reverse one")
+
+
+def test_a_card_that_cannot_be_centred_within_budget_costs_no_burst(
+        monkeypatch, installed_still_photo_bound):
+    """The correction budget is bounded on purpose (see `_STILL_PHOTO_WALK_CENTERING_BUDGET`'s
+    own comment): a card whose park is too far out of zone to fix within it must go UNMEASURED,
+    never dwelt anyway, because the centring rung would refuse it regardless and a burst spent on
+    it would buy nothing. Forcing the budget to 0 exercises this deterministically on ANY
+    out-of-zone card, without depending on exactly how far one corrective stroke reaches."""
+    monkeypatch.setattr(hinge, "_STILL_PHOTO_WALK_CENTERING_BUDGET", 0)
+    burst_calls: list[int] = []
+
+    def spy_burst(self, should_stop=None):
+        burst_calls.append(1)
+        return [], 0.0
+
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_burst", spy_burst)
+    adb = ProbeWorldAdb(start=1200)
+    drv = _drv(adb)
+    frame = _frame(1200)
+    rows = (400, 1200)
+    target = _stub_target(frame, rows)
+
+    dwell, probe, correction = drv._still_photo_dwell_over_navigated_target(
+        target, _STUB_BLOCK, heart_ordinal=1, mute_screen=lambda _f, _r: True)
+
+    assert dwell is None and probe is None
+    assert correction.total_px == 0 and correction.frame is frame
+    assert burst_calls == [], "a candidate that cannot be centred must cost no burst"
+    assert (adb.scrolls, adb.reverse_swipes) == (0, 0), "budget exhausted before any gesture"
+
+
+def test_an_unmeasurable_correction_refuses_the_whole_candidate(
+        monkeypatch, installed_still_photo_bound):
+    """`_measured_page_shift` returning None must be treated exactly like every other caller in
+    this file treats it: 'this pass cannot claim to know where the card is now', never an
+    assumption that the requested scroll landed where it was asked to
+    (`_measured_page_shift`'s own contract). The whole candidate is refused -- dwell, probe AND
+    correction all `None` -- so the caller can never be tempted to walk back a distance nobody
+    actually measured."""
+    monkeypatch.setattr(HingeDriver, "_measured_page_shift", lambda self, before, after: None)
+    adb = ProbeWorldAdb(start=1200)
+    drv = _drv(adb)
+    frame = _frame(1200)
+    rows = (400, 1200)
+    target = _stub_target(frame, rows)
+
+    result = drv._still_photo_dwell_over_navigated_target(
+        target, _STUB_BLOCK, heart_ordinal=1, mute_screen=lambda _f, _r: True)
+
+    assert result == (None, None, None)
+
+
+def test_return_to_entry_accounts_for_a_corrective_scroll(
+        monkeypatch, installed_still_photo_bound):
+    """`_still_photo_dwell_walk_return_to_entry` now composes THREE measured displacements: the
+    navigation climb, the centring correction, and (when one ran) the re-attach probe's own
+    residual. Isolated here with a real correction and NO probe (monkeypatched off, same as the
+    direction-pin tests above) so a wrong sign in the composition shows up as a verification
+    failure rather than as a smaller residual that might still happen to clear the drift bound by
+    coincidence."""
+    monkeypatch.setattr(HingeDriver, "_still_photo_reattach_candidate",
+                        staticmethod(lambda evidence: None))
+    entry_reference = _frame(1200)
+    adb = ProbeWorldAdb(start=1200)
+    drv = _drv(adb)
+    # Simulate a navigation hop that climbed 300px up from the entry (scroll 1200 -> 900) and
+    # parked its card 400px above the content band's centre -- the same shape `navigate_to_item`
+    # itself produces, without spending a real navigation hop's own gestures to get there.
+    adb.scroll = 900
+    target = _stub_target(_frame(900), (400, 1200), climbed_px=300)
+
+    dwell, probe, correction = drv._still_photo_dwell_over_navigated_target(
+        target, _STUB_BLOCK, heart_ordinal=1, mute_screen=lambda _f, _r: True)
+    assert probe is None
+    assert dwell is not None and dwell.centered is True
+    assert correction.total_px != 0, "fixture guard: the correction must have actually run"
+
+    assert drv._still_photo_dwell_walk_return_to_entry(
+        target, probe, entry_reference, correction) is True
+    drift_bound = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
+    assert abs(adb.scroll - 1200) < drift_bound

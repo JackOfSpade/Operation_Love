@@ -820,6 +820,43 @@ _STILL_PHOTO_WALK_SKIP_SLACK = 2
 # Frame COUNT range. More frames is more chances to catch a single emitted video frame, and the
 # cost is only screencaps; the low end still gives >= 5 consecutive pairs plus the anchor pair.
 _STILL_PHOTO_DWELL_FRAMES = (6, 10)
+# How many bounded corrective read-scrolls `_still_photo_dwell_over_navigated_target` may spend
+# nudging a freshly-navigated card into Hinge's autoplay centring band before giving up on it
+# (found+fixed 2026-08-23: `item_nav.navigate_to_item` has no centring objective of its own -- it
+# returns at the first frame where the target block is merely `complete`, which its own
+# ascending-only walk reaches with the card parked well ABOVE centre, -0.187..-0.287 measured
+# against the +-0.150 gate). Bounded, not unlimited, for the same reason every other gesture
+# budget in this file is: each correction is a REAL scroll and a REAL screencap, so a loop that
+# kept chasing centre would be both a time hazard and a bot signature (owner rule: no unbounded
+# retry loop against a live device). `tools/hinge_calibrate.py`'s own
+# `_apply_bounded_centering_correction` is the proven precedent this mirrors.
+_STILL_PHOTO_WALK_CENTERING_BUDGET = 2
+
+
+@dataclasses.dataclass(frozen=True)
+class _CenteringCorrection:
+    """One bounded run of corrective read-scrolls `_still_photo_dwell_over_navigated_target`
+    issued to bring a freshly-navigated card back inside Hinge's autoplay centring band, before
+    that card's own two-burst proof ran.
+
+    `total_px` is the NET measured displacement across every corrective stroke, in
+    `frameshift.estimate_shift`'s own convention (positive means content moved UP the screen) --
+    the same convention `ReattachProbe.page_shift_px` already uses -- so
+    `_still_photo_dwell_walk_return_to_entry` can fold it into the distance it owes by plain
+    addition, exactly as it already folds in a re-attach probe's residual. It is `0` when the
+    card was already inside the band and no stroke was needed.
+
+    `frame` is the LAST real screencap the correction left the phone at -- `target.frame`
+    unchanged when no stroke ran. Every downstream measurement (the dwell burst's own anchor, a
+    probe's anchor, and the return leg's own first comparison) must chain from this, never from
+    the stale pre-correction `target.frame`, because "how far has moved so far" and "the last
+    frame actually seen" are two different things a caller needs -- conflating them would ask
+    `estimate_shift` to explain a multi-stroke displacement as if it were one gesture.
+    """
+
+    total_px: int
+    frame: bytes
+
 
 # --- the re-attach probe (the C2 residual) ------------------------------------------------
 # A centred byte-exact burst proves Hinge was ASKED to play the card and that nothing moved. It
@@ -4333,7 +4370,7 @@ class AndroidDriver(DatingAppDriver):
                     heart_ordinal, "navigation_refused", reason=type(exc).__name__)
                 break
             hops_run += 1
-            card_evidence, probe = self._still_photo_dwell_over_navigated_target(
+            card_evidence, probe, correction = self._still_photo_dwell_over_navigated_target(
                 target, index.block_for(nav_index), heart_ordinal=heart_ordinal,
                 mute_screen=mute_screen, should_stop=should_stop)
             if card_evidence is not None:
@@ -4353,8 +4390,14 @@ class AndroidDriver(DatingAppDriver):
             # through so the return leg starts from wherever the phone REALLY is -- `target.frame`
             # when no probe ran (the two-burst proof's first leg is screencaps only, no gesture),
             # or the probe's own settled position when one did (its own return leg only ever
-            # promised a MEASURED residual, never byte identity).
-            if not self._still_photo_dwell_walk_return_to_entry(target, probe, entry_reference):
+            # promised a MEASURED residual, never byte identity). `correction` is threaded the
+            # same way for the SAME reason: a centring correction is a third real gesture that
+            # can run before either burst, and the return leg owes that displacement back too
+            # (see `_still_photo_dwell_over_navigated_target`'s own CENTERING CORRECTION
+            # paragraph) -- `None` means a corrective stroke's own displacement could not be
+            # measured, which the return leg must refuse on rather than guess past.
+            if not self._still_photo_dwell_walk_return_to_entry(
+                    target, probe, entry_reference, correction):
                 self._dbg_still_photo_walk_candidate(heart_ordinal, "return_unverified")
                 break
         return evidence
@@ -4362,12 +4405,15 @@ class AndroidDriver(DatingAppDriver):
     def _still_photo_dwell_over_navigated_target(self, target, block, *, heart_ordinal: int,
                                                   mute_screen, should_stop=None):
         """The same two-burst C2/C3 proof `_still_photo_dwell` runs for its free card, run here
-        over a card `item_nav.navigate_to_item` just parked. Returns `(dwell, probe)`: `dwell` is
-        `None` if no observation could be made at all (an empty first burst, e.g. `should_stop`
-        firing mid-burst or a blank screencap), which the walk above treats as "this candidate
-        goes unmeasured", never as a negative verdict; `probe` is the `ReattachProbe` the second
-        burst ran over, or `None` if the first burst never earned one, and is handed to the
-        caller's return-to-entry step because ONLY the probe knows where its own return leg
+        over a card `item_nav.navigate_to_item` just parked. Returns `(dwell, probe, correction)`:
+        `dwell` is `None` if no observation could be made at all (an empty first burst, e.g.
+        `should_stop` firing mid-burst or a blank screencap) OR if the card could not be centred
+        within budget (see CENTERING CORRECTION below), which the walk above treats as "this
+        candidate goes unmeasured", never as a negative verdict; `probe` is the `ReattachProbe`
+        the second burst ran over, or `None` if the first burst never earned one; `correction` is
+        a `_CenteringCorrection` describing every corrective read-scroll this call issued, or
+        `None` when one of those strokes could not be measured. All three are handed to the
+        caller's return-to-entry step because ONLY this call knows where its own gestures
         actually left the phone (see `_still_photo_dwell_walk_return_to_entry`).
 
         Built from the SAME primitives the free card's evidence is (`dwell_evidence_for_rect` /
@@ -4383,13 +4429,97 @@ class AndroidDriver(DatingAppDriver):
         because Hinge's cards never move horizontally as the page scrolls -- the same invariant
         `still_photo_reattach_evidence` already relies on when it translates a rect by the
         probe's measured page shift without touching its `x0`/`x1` at all.
+
+        CENTERING CORRECTION (found+fixed 2026-08-23, verified against this repo's own harness:
+        parked offsets of -0.187, -0.232, -0.287 against the +-0.150
+        `STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC` gate). `item_nav.navigate_to_item` has no
+        centring objective -- it returns at the FIRST frame where the target block is merely
+        `complete`, and because its walk is ASCENDING that is the frame where the card's top edge
+        has just cleared the band, parking it well ABOVE centre. Every rung downstream of here
+        (`_still_photo_reattach_candidate` just below, and `item_crops.
+        unnumber_without_still_photo_evidence` a layer above this one) refuses an off-centre card
+        outright, so dwelling one anyway would spend a burst on a guaranteed refusal.
+        `tools/hinge_calibrate.py`'s own `_apply_bounded_centering_correction` hit this first on a
+        real device and is the proven fix mirrored here: one bounded corrective read-scroll at a
+        time, re-measured, never assumed -- up to `_STILL_PHOTO_WALK_CENTERING_BUDGET` of them.
+
+        The correction runs BEFORE either burst, over the rect `navigate_to_item` handed back, and
+        translates that rect by each stroke's OWN measured shift (`_measured_page_shift`'s
+        convention: positive means content moved UP the screen, so a rect row `y` before the
+        stroke is at `y - shift` after it -- the same convention `probe.page_shift_px` already
+        uses to translate a rect). Direction is read off `card_center_offset_frac`'s own
+        documented sign, not assumed: NEGATIVE means the card sits ABOVE the content centre, which
+        a REVERSE read-scroll (`_scroll_up_one`, content DOWN) corrects; POSITIVE means BELOW
+        centre, which a FORWARD read-scroll (`_scroll_down_one`, content UP) corrects. Getting
+        this backwards would push the card further from centre instead of into it -- exactly the
+        class of bug this repo has hit live before (the re-attach probe's own exit stroke, once
+        hardcoded backwards) -- which is why the direction is pinned by a dedicated test rather
+        than only exercised incidentally.
+
+        A card still out of zone once the budget is spent goes UNMEASURED (`dwell=None`, no
+        burst spent -- the centring rung would refuse it regardless, so a burst here would buy
+        nothing). A corrective stroke whose own displacement cannot be measured refuses the WHOLE
+        candidate (`dwell=None`, `probe=None`, `correction=None`) rather than assume it landed,
+        on `_measured_page_shift`'s own contract. Either way the accumulated `correction` -- real
+        gestures that really moved the phone -- is still reported so the caller's cleanup step
+        can account for it, except when it is itself unmeasurable and there is nothing safe to
+        report.
         """
         rect = (block.x0, target.block_frame_rows[0], block.x1, target.block_frame_rows[1])
+        _w, height = self.adb.screen_size()
+        band_px = ((float(self.content_band[1]) - float(self.content_band[0])) * height
+                   if height > 0 else 0)
+        if height <= 0 or band_px <= 0:
+            return None, None, None
+        anchor = target.frame
+        correction_total_px = 0
+        corrections_used = 0
+        while True:
+            offset = card_center_offset_frac(rect, frame_height=height,
+                                             content_band=self.content_band)
+            if abs(offset) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:
+                break
+            if corrections_used >= _STILL_PHOTO_WALK_CENTERING_BUDGET:
+                return None, None, _CenteringCorrection(
+                    total_px=correction_total_px, frame=anchor)
+            if should_stop is not None and should_stop():
+                # Checked before the stroke, on the re-attach probe's exit_leg's own precedent:
+                # this is a real scroll gesture, not yet committed, and a Stop landing here must
+                # cost one dead poll, never one more humanized swipe the operator did not ask for.
+                return None, None, _CenteringCorrection(
+                    total_px=correction_total_px, frame=anchor)
+            # Sized to the distance actually owed -- never larger than needed -- floored at the
+            # smallest legal read-scroll this driver can make, the same `_READ_SCROLL_FRAC_MIN`/
+            # `_READ_SCROLL_FRAC_MAX` clamp `_still_photo_dwell_walk_return_to_entry` sizes its
+            # own measured strokes with.
+            needed_px = abs(offset) * band_px
+            frac = min(_READ_SCROLL_FRAC_MAX,
+                      max(_READ_SCROLL_FRAC_MIN, frac_for_step_px(int(round(needed_px)), height)))
+            _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
+            if offset < 0:
+                self._scroll_up_one(frac, x_frac)     # card sits ABOVE centre: bring content DOWN
+            else:
+                self._scroll_down_one(frac, x_frac)   # card sits BELOW centre: bring content UP
+            time.sleep(human_delay(_READ_SCROLL_SETTLE_S))
+            following = self._screencap(on_blank="none")
+            if following is None:
+                return None, None, None
+            step = self._measured_page_shift(anchor, following)
+            if step is None:
+                # An unmeasurable correction is a refusal for THIS candidate, never an assumption
+                # that the requested scroll landed -- `_measured_page_shift`'s own contract.
+                return None, None, None
+            rect = (rect[0], rect[1] - step, rect[2], rect[3] - step)
+            anchor = following
+            correction_total_px += step
+            corrections_used += 1
+        correction = _CenteringCorrection(total_px=correction_total_px, frame=anchor)
+
         burst, span_s = self._still_photo_dwell_burst(should_stop)
         if not burst:
-            return None, None
-        sequence = [target.frame, *burst]
-        frame_height = decoded_frame_height(target.frame)
+            return None, None, correction
+        sequence = [anchor, *burst]
+        frame_height = decoded_frame_height(anchor)
         digests = tuple(hashlib.sha256(frame).hexdigest() for frame in sequence)
         dwell = dwell_evidence_for_rect(
             rect, sequence, digests=digests, dwell_span_s=span_s, mute_screen=mute_screen,
@@ -4398,7 +4528,7 @@ class AndroidDriver(DatingAppDriver):
         # ever earns the probe, decided by the SAME static method over a one-entry stand-in dict.
         probe = None
         if self._still_photo_reattach_candidate({heart_ordinal: dwell}) is not None:
-            probe = self._still_photo_reattach_probe(target.frame, rect, should_stop)
+            probe = self._still_photo_reattach_probe(anchor, rect, should_stop)
         if probe is not None:
             probe_sequence = [probe.anchor, *probe.frames]
             probe_frame_height = decoded_frame_height(probe.anchor)
@@ -4407,9 +4537,10 @@ class AndroidDriver(DatingAppDriver):
             dwell = dataclasses.replace(dwell, **still_photo_reattach_legs(
                 probe_sequence, shifted_rect, span_s=probe.span_s, mute_screen=mute_screen,
                 frame_height=probe_frame_height, content_band=self.content_band))
-        return dwell, probe
+        return dwell, probe, correction
 
-    def _still_photo_dwell_walk_return_to_entry(self, target, probe, entry_reference: bytes) -> bool:
+    def _still_photo_dwell_walk_return_to_entry(self, target, probe, entry_reference: bytes,
+                                                correction: _CenteringCorrection | None) -> bool:
         """Drive the page back down to the entry after one candidate hop, and VERIFY it landed
         there -- never assume the climb (`target.climbed_px`) undoes itself just because an equal
         and opposite distance was requested.
@@ -4423,19 +4554,25 @@ class AndroidDriver(DatingAppDriver):
 
         THE STARTING DISTANCE IS BOOKKEEPING, NOT A FRESH MEASUREMENT, and deliberately so: the
         phone's distance from the entry right now is `target.climbed_px` (bottom-up navigation's
-        own measured, chained distance from the entry) MINUS `probe.page_shift_px` when the
-        two-burst proof spent a probe on this candidate (that probe's own return leg already
-        walked part of this same distance back, on its way to the second burst, and its own
-        `page_shift_px` is the MEASURED residual of that -- never assumed zero). Composing the
-        two by subtraction, rather than re-measuring the total distance from scratch with one
-        more `estimate_shift` call, is the same reasoning
+        own measured, chained distance from the entry) MINUS `correction.total_px` (2026-08-23:
+        `_still_photo_dwell_over_navigated_target`'s own bounded centring correction, `0` when
+        none ran) MINUS `probe.page_shift_px` when the two-burst proof spent a probe on this
+        candidate (that probe's own return leg already walked part of this same distance back, on
+        its way to the second burst, and its own `page_shift_px` is the MEASURED residual of that
+        -- never assumed zero). Composing the three by subtraction, rather than re-measuring the
+        total distance from scratch with one more `estimate_shift` call, is the same reasoning
         `_still_photo_dwell_over_navigated_target` uses for reusing `index.block_for`'s `x0`/`x1`
         instead of re-segmenting: a second independent way to arrive at the same number is a
-        second thing free to disagree with the first, and both `climbed_px` and `page_shift_px`
-        are themselves already-measured (never planned) quantities. `probe.frames[-1]` -- not
-        `target.frame` -- is where the loop below starts walking FROM whenever a probe ran, for
-        the same reason: it is the last frame anything actually observed, and no burst (first or
-        second) issues a gesture of its own that could have moved the phone since.
+        second thing free to disagree with the first, and `climbed_px`, `correction.total_px` and
+        `page_shift_px` are themselves already-measured (never planned) quantities.
+        `probe.frames[-1]` -- not `correction.frame` -- is where the loop below starts walking
+        FROM whenever a probe ran; `correction.frame` (which IS `target.frame` when no correction
+        ran) otherwise, for the same reason: it is the last frame anything actually observed, and
+        no burst (first or second) issues a gesture of its own that could have moved the phone
+        since. `correction=None` means one of this hop's own corrective strokes could not be
+        measured -- the phone genuinely moved by an unknown amount, so this method fails closed
+        exactly like an unmeasurable step in the loop below already does, rather than walk back a
+        distance it cannot account for.
 
         NOT should_stop-GATED, on `_still_photo_reattach_probe`'s own precedent and for its
         stated reason: `navigate_to_item` has already displaced the page from the position
@@ -4451,12 +4588,15 @@ class AndroidDriver(DatingAppDriver):
         `_current_item_anchor` untouched, so a later real navigation still refuses loudly and
         fail-closed on its own if this method's best effort was somehow still wrong.
         """
+        if correction is None:
+            return False
         _w, height = self.adb.screen_size()
         if height <= 0:
             return False
         quantum = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
-        frame = target.frame if probe is None or not probe.frames else probe.frames[-1]
-        total = -target.climbed_px + (0 if probe is None else probe.page_shift_px)
+        frame = correction.frame if probe is None or not probe.frames else probe.frames[-1]
+        total = (-target.climbed_px + correction.total_px
+                + (0 if probe is None else probe.page_shift_px))
         # EACH STROKE'S OWN TARGET IS CAPPED WELL INSIDE `estimate_shift`'s TRUST WINDOW
         # (~900px on the calibrated band), not merely inside `_READ_SCROLL_FRAC_MAX`'s much
         # larger ~1800px reach -- a single stroke sized at the full remaining distance for a

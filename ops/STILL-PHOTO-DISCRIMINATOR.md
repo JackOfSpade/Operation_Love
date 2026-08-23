@@ -849,6 +849,68 @@ live-only blockers that no synthetic frame could show (5c lists six; the calibra
 added more). Expect the same here. The first live run should be watched, and
 `still_photo_dwell_candidates: 1` is the instant revert.
 
+## 5g. Addendum 2026-08-23: the walk parked cards OUT of the autoplay zone, and what it costs
+
+**Found before the walk ever ran on a device, by modelling its cost rather than by running it.**
+`item_nav.navigate_to_item` has NO CENTRING OBJECTIVE. It returns at the first frame where the
+target block is `complete`, and because it climbs UPWARD that is the frame where the card's TOP
+edge has just cleared the band. Measured parked offsets: -0.187, -0.232, -0.287 against the
++/-0.150 autoplay gate. So every walked candidate was parked above the zone, `centered` came back
+False, the re-attach probe was never spent, and the ladder refused the card.
+
+**The walk as first shipped therefore cost ~17 minutes per profile and numbered nothing.** The
+fix is not a new mechanism: `tools/hinge_calibrate.py::_apply_bounded_centering_correction`
+already did exactly this, "right after navigation parks the card", in the device-validated flow
+that produced the shipped calibration. Production simply never got it. One bounded corrective
+read-scroll, direction derived from `card_center_offset_frac`'s own sign convention (positive =
+below centre), each stroke MEASURED not assumed, the displacement threaded into the
+return-to-entry accounting, and a card that cannot be centred within budget going unmeasured
+rather than being dwelt for a guaranteed refusal.
+
+**Note for the tail:** a card at the very top of the scrollable world can rubber-band at 0px and
+be structurally uncentrable -- the same depth-1/scroll-top clamp already documented for the
+re-attach probe's exit stroke (5c blocker 4). That card goes unmeasured, which is correct.
+
+### The cost picture this exposed, and the shape of the answer
+
+Modelled from the code's constants against 125 MEASURED enumeration reads:
+
+  * base profile read 227s (36 frames) -- FIXED, and 77% of the floor
+  * the walk cannot chain, so every hop re-climbs from the entry: travel at K=9 is 61kpx on a
+    ~10kpx page, i.e. the profile is re-walked about six times
+  * full photo coverage today: ~21 minutes per profile
+
+The owner has ruled that unacceptable. The evaluated levers, adversarially refuted:
+
+  * **FREE, no evidence weakened:** the centring fix (above); a content prefilter that spends no
+    hop on a card `classify_crop`/the mute screen will discard anyway (output-neutral by
+    construction, because `unnumber` already `continue`s before the dwell gate is consulted --
+    but it only PAYS at K>=8 and costs ~22s at the shipped K=3, so it ships with a K change or
+    not at all); a monotonic sweep (free on evidence, ~450 lines in the never-substitute module
+    for ~30s once the stack below lands -- NOT recommended).
+  * **TRADES, owner's call:** drop the re-attach probe; dwell DURING the read instead of at a
+    navigated park; shorten the burst via jittered cumulative deadlines.
+  * **REJECTED:** a mid-read byte-exact pair 1.1s apart (below the repo's own worst measured
+    video byte-exact run of 1.935s -- zero discriminating power); shrinking the probe's exit
+    band; relaxing the +/-0.150 centring gate (the answer to an off-zone park is a corrective
+    scroll, never a wider gate); and the literal "ignore everything under the video" rule, which
+    is backwards under bottom-first ordering -- it discards the cheap 47s hops and keeps the
+    expensive 210s ones.
+
+With the trades taken, full coverage lands near **5 minutes** per profile instead of 21, and
+proves MORE photos than today (today's 21 minutes buys 9 attempts of which ~3.5 are prompt cards
+that can never be numbered).
+
+### The one measurement that decides all three trades at once
+
+Run `tools/hinge_video_bound.py` against ~20 owner-labelled VIDEO cards, taking each burst **at
+the position a read scroll leaves the card** -- not a hand-centred one -- with NO probe, and
+record the longest byte-exact run. If it stays well under a burst span, the probe is not
+load-bearing, the shorter window is provably safe, and the whole stack converts from TRADE to
+FREE with a measured bound behind it -- which also moves the licence off the assumption channel.
+If any video holds byte-exact across a whole burst, the probe IS load-bearing and the ceiling is
+~7-9 minutes instead of ~5. It is a device session, not a code change. Do it BEFORE choosing.
+
 ## 6. Plan B (documented, not chosen)
 
 If held-out video accepts never reach zero, the honest fallback is to change the

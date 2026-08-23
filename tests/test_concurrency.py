@@ -223,6 +223,16 @@ def test_second_workers_own_stop_reason_is_published_even_though_it_never_calls_
     has fully finished exhausting the shared OpenerService and set the shared stop_event.
     """
     a_exhausted = threading.Event()
+    # B has REACHED dislike(), i.e. is past every earlier stop_event check for this profile.
+    # Added 2026-08-23: `wb.start(); wa.start()` alone only ASSUMES B gets scheduled into its
+    # loop before A finishes, and that assumption broke for real once the suite moved to one
+    # pytest worker per core -- A occasionally ran to completion and set `stop` before B's
+    # thread reached its loop-top `while not self.stop_event.is_set()`, so B exited immediately,
+    # never entered dislike(), never reached the second check under test, and `b_reason` came
+    # back None. This is the same handshake the sibling test above uses (`b.parked`), and it
+    # cannot deadlock: B sets this BEFORE it waits on `a_exhausted`, which only the main thread
+    # sets, and only after A has finished.
+    b_in_dislike = threading.Event()
     stop = threading.Event()
     store = _SpendStore()
     status = RunStatus("r", ["hinge", "bumble"], min_labels=0, mode="auto")
@@ -267,6 +277,7 @@ def test_second_workers_own_stop_reason_is_published_even_though_it_never_calls_
         def out_of_profiles(self): return False
         def like(self, opener=None, item_index=None, *, model_item_index=None): pass
         def dislike(self):
+            b_in_dislike.set()             # past every earlier stop_event check for this profile
             assert a_exhausted.wait(timeout=_LIVENESS_TIMEOUT_S), \
                 "A never signalled exhaustion -- test is broken"
         def close(self): self.closed = True
@@ -277,7 +288,11 @@ def test_second_workers_own_stop_reason_is_published_even_though_it_never_calls_
     wb = Worker("bumble", b_driver, _DislikeDecider(), svc, store, "r", _Pacing(), stop,
                mode="auto", status=status)
 
-    wb.start()                             # enters its loop and blocks inside dislike()
+    wb.start()
+    # Ordering, not patience: A must not be allowed to exhaust the service until B is genuinely
+    # mid-profile, because the check under test only fires for a worker that is already past its
+    # earlier stop_event checks. Waiting on the handshake makes that a fact rather than a race.
+    assert b_in_dislike.wait(_LIVENESS_TIMEOUT_S), "B never reached dislike() -- test is broken"
     wa.start()
     wa.join(timeout=10)                    # A fully exhausts the service and sets `stop`
     assert stop.is_set()

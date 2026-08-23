@@ -694,6 +694,51 @@ live read only cards complete in the final parked frame get real dwell evidence,
 the other half of item 3's complaint ("at most one item, always the last photo")
 belongs to the dwell's coverage and is NOT addressed here. That remains open.
 
+## 5d. The calibration exists; numbering breadth is now the whole remaining problem
+
+**2026-08-22, end of session.** `apps.hinge.targeting_calibration` is INSTALLED
+(commit 0c41bb1a) from two separately collected hybrid AI-reviewed sessions, 2+2
+profiles, zero skips. `hinge_targeting_unavailable_reason()` returns None, observe is
+runnable, AUTO stays blocked behind its own release chain. Measured separations were
+excellent — identity 0.0 same-profile vs 7.188 different; inline 2.365 intended vs
+85.439 foreign — and both frozen bounds are capped by prior-corpus limits rather than
+by this campaign's wider gaps.
+
+**But a live observe run still offered no opener, and the reason is not the
+calibration.** The capture indexed 15 blocks from 52 photos and numbered ZERO:
+"no policy-approved selectable item survived to be numbered". The dwell record says
+why, precisely:
+
+  * dwell ran once, 9 frames over 13.9s, and covered exactly ONE card — heart ordinal
+    11 of 15. Production takes its dwell from the FINAL PARKED FRAME
+    (`HingeDriver._still_photo_dwell`), so only cards complete in that frame get any
+    dwell evidence at all. Everything above it is unnumberable regardless of content.
+  * that one card measured `centered` true and `mute_screens_complete` true, but
+    `dwell_exact` FALSE, so the ladder refused it and correctly declined to spend the
+    re-attach probe's gestures on a card that had already failed a cheaper rung.
+
+So the ladder behaved exactly as designed. The limit is COVERAGE, not correctness:
+even a perfect card would have yielded one candidate, which is the "at most one item,
+always the last photo" behaviour the adversarial replay predicted and section 5c
+recorded as the unfixed half of the owner decision. The drift-regime fix widened the
+CHOICE SET among cards that have dwell evidence; it could not widen the set that has
+any.
+
+**The decision this leaves, stated plainly.** Making numbering broad enough for "the
+model picks WHICH item" requires giving more cards real parked dwell evidence, and
+every route costs something:
+  * park and dwell each candidate during the read — real gesture and time cost per
+    profile, and more on-screen activity per profile is itself a bot-signature
+    consideration;
+  * accept drift-only evidence for cards without dwell — that is exactly the
+    vacuous-strict trap inverted, and it would weaken the only rung that actually
+    measures motion;
+  * accept narrow numbering and let the model choose among one or two items.
+Nothing here should be chosen by an engineer mid-session; it trades safety, time and
+signature against choice. What IS now true and was not before: the calibration exists,
+the gate opens, and the remaining question is purely how many items the ladder can
+afford to prove.
+
 ## 6. Plan B (documented, not chosen)
 
 If held-out video accepts never reach zero, the honest fallback is to change the

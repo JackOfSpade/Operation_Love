@@ -371,6 +371,14 @@ def no_device(monkeypatch):
     monkeypatch.setattr(bound, "_load_config_mapping", _boom)
     monkeypatch.setattr(bound, "_resolve_serial", _boom)
     monkeypatch.setattr(bound, "_private_out_dir", _boom)
+    # found+fixed 2026-08-22: `_refuse_unconfirmed` used to run INSIDE the device lock
+    # (`run_holding_the_device`), so an unconfirmed invocation took the operator's real lock
+    # first and only then refused -- a live campaign already holding it turned every such mistake
+    # into "Android device is already in use..." instead of the confirmation error the operator
+    # actually needed. Booming the lock function itself, not just what runs after it acquires
+    # the lock, is what makes this fixture (and every parametrized case below that uses it) catch
+    # a regression of that ordering rather than only the driver/config calls deeper inside.
+    monkeypatch.setattr(auto, "run_holding_the_device", _boom)
     return monkeypatch
 
 
@@ -391,6 +399,24 @@ def test_capture_refuses_before_touching_anything(argv, expected, no_device, cap
         auto.main(argv)
     assert exit_info.value.code != 0
     assert expected in capsys.readouterr().err
+
+
+def test_capture_refuses_before_taking_the_device_lock(capsys, monkeypatch):
+    """found+fixed 2026-08-22: `_capture_command` used to acquire the device lock and only THEN
+    call `_refuse_unconfirmed` (inside `_capture_command_unlocked`), so a live campaign already
+    holding the lock made an unconfirmed invocation print the lock's contention error instead of
+    the confirmation error the operator actually needed to see. Pin the order directly, without
+    `no_device`'s broader net, by making the lock function itself the only thing that can fail:
+    if `capture` ever reaches it before refusing, this raises instead of exiting cleanly."""
+    def _boom(*_a, **_kw):
+        raise AssertionError("the device lock was acquired before the confirmation check")
+
+    monkeypatch.setattr(auto, "run_holding_the_device", _boom)
+
+    with pytest.raises(SystemExit) as exit_info:
+        auto.main(_BASE + ["--advance", "pass"])
+    assert exit_info.value.code != 0
+    assert "confirmation" in capsys.readouterr().err
 
 
 def test_capture_refuses_a_missing_advance_action(no_device, capsys):

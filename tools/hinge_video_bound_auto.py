@@ -1479,12 +1479,21 @@ def _capture_command(args) -> int:
     ADDED 2026-08-22 (tools/_devicelock.py): this command spends real advance actions on real
     profiles over many profiles, and until now nothing stopped a hub run from driving the same
     phone mid-campaign.
+
+    `_refuse_unconfirmed` runs HERE, before the lock is requested (found+fixed 2026-08-22): it
+    used to live inside `_capture_command_unlocked`, so an invocation missing a confirmation
+    phrase took the operator's real device lock FIRST and only then refused. A live campaign
+    already holding that lock turned every such mistake into "Android device is already in
+    use...", hiding the actual confirmation error the operator needed to see and act on.
+    `_refuse_unconfirmed`'s own docstring already promises "before ... a device is touched" --
+    the lock is a device touch too, so the call has to be out here, with the lock scoped to the
+    real campaign it protects rather than to the argument validation that precedes it.
     """
+    _refuse_unconfirmed(args)
     return run_holding_the_device(args.config, _capture_command_unlocked, args)
 
 
 def _capture_command_unlocked(args) -> int:
-    _refuse_unconfirmed(args)
     cfg_map, cfg_raw = bound._load_config_mapping(args.config)
     app_cfg = bound._hinge_app_config(cfg_map)
     serial, adb_path = bound._resolve_serial(app_cfg, args.serial)

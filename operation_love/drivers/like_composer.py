@@ -268,7 +268,8 @@ def _comment_for_cta(mask, cv2, np, *, send: Rect) -> Rect:
                 max(row[2] for row in top + bottom), bottom_y + 1)
 
 
-def locate_inline_composer(frame: bytes, confirm_template, threshold: float = 0.8) -> ComposerSurface:
+def locate_inline_composer(frame: bytes, confirm_template, threshold: float = 0.8,
+                           *, image=None) -> ComposerSurface:
     """Affirmatively locate Hinge 9.134.0's inline composer or fail closed.
 
     ``confirm_template`` is the preloaded grayscale image for the literal ``Send Like`` glyph.
@@ -276,11 +277,26 @@ def locate_inline_composer(frame: bytes, confirm_template, threshold: float = 0.
     are; the caller must separately establish profile identity and that the selected item is the
     model-selected item before typing.  A detection failure must be treated as *no safe tap*,
     never as permission to use legacy modal coordinates.
+
+    ``image`` lets a caller that already decoded this exact ``frame`` to grayscale (Hinge's
+    passive observation path calls this function TWICE on the same frame -- once at the strict
+    0.80 threshold, then again at 0.68 only if that failed -- see
+    ``HingeDriver._locate_observed_inline_composer``) hand that array straight through instead of
+    paying for a second ``cv2.imdecode`` of the SAME bytes (2026-08-23 perf pass). ``None``, the
+    default, decodes ``frame`` here exactly as before, so every existing caller is unaffected.
+    This does NOT change what either call sees: `_confirm_matches` below still runs
+    ``cv2.matchTemplate`` against the full, uncropped array either way, at whatever size that
+    array is -- only WHERE the decode happens moves, never the size or content of what gets
+    correlated. That distinction matters here specifically: cropping this search image before
+    matching is a separate, measured trap (a 0.045 correlation drift against a 0.04 ambiguity
+    margin, because cv2 switches between spatial and DFT correlation by input size) that this
+    change does not go anywhere near.
     """
     if not isinstance(threshold, (int, float)) or not 0.0 < float(threshold) <= 1.0:
         raise ValueError("threshold must be a finite correlation value in (0, 1]")
     cv2, np = _require_vision()
-    gray = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+    gray = image if image is not None else cv2.imdecode(
+        np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
     if gray is None:
         raise ComposerDetectionError(f"inline-composer frame did not decode as an image ({len(frame)} bytes)")
     height, width = gray.shape

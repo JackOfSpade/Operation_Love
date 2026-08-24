@@ -168,9 +168,13 @@ def test_hinge_observe_recognizes_priority_like_with_geometry_but_keeps_typing_s
     checked = []
     surface = ComposerSurface("hinge_inline_v1", Rect(95, 1124, 985, 1302),
                               Rect(390, 1334, 985, 1443), (630, 1383))
-    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: None)
+    # Both stand-ins accept `image=` (2026-08-23 perf pass: `_locate_observed_inline_composer`
+    # now decodes the frame once and threads it into both calls below to skip a second
+    # cv2.imdecode of the same bytes -- see that method's own docstring) and ignore it, since
+    # this test is about which THRESHOLD the fallback call uses, not about the shared decode.
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame, **_kw: None)
 
-    def low_confidence_surface(frame, template, *, threshold):
+    def low_confidence_surface(frame, template, *, threshold, **_kw):
         checked.append((frame, template, threshold))
         assert threshold == 0.68
         return surface

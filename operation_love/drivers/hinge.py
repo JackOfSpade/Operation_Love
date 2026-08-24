@@ -791,6 +791,29 @@ _VIDEO_MUTE_TEMPLATE_B64 = (
     "7sx1+Nz4mSpQZNlTP6XrDLESJS5S4RIlLlLhEiUuUuESJ6w+BFL9vsnkW/AAAAABJRU5ErkJ"
     "ggg==")
 
+
+@functools.lru_cache(maxsize=1)
+def _video_mute_template():
+    """Hinge's mute-glyph template, decoded once from `_VIDEO_MUTE_TEMPLATE_B64` and cached.
+
+    `_load_template`'s precedent above (module-level `@functools.lru_cache` over a fixed asset):
+    the base64 string is a module CONSTANT, so decoding it fresh on every `_match_video_mute` /
+    `_locate_video_mute` call was pure waste layered on top of the one `cv2.imdecode` that
+    actually varies -- the candidate FRAME (2026-08-23 perf pass; measured as part of the
+    ~0.9s `_video_mute_marker_rows` saving on ops/calibration/scroll_20260811T211209Z).
+
+    `maxsize=1` rather than `_load_template`'s `maxsize=None` because there is only ever one
+    argument-less call to memoize, not a family of named assets. Safe to cache unconditionally,
+    unlike `_band`'s or `estimate_shift`'s frame-keyed state: the input here is not a frame at
+    all, just this one hardcoded constant, so there is no frame identity that could go stale.
+    """
+    import cv2
+    import numpy as np
+    return cv2.imdecode(
+        np.frombuffer(base64.b64decode(_VIDEO_MUTE_TEMPLATE_B64), dtype=np.uint8),
+        cv2.IMREAD_GRAYSCALE)
+
+
 # --- still-photo dwell (ops/STILL-PHOTO-DISCRIMINATOR.md C2/C3) ----------------------------
 # The no-input burst that produces the only POSITIVE still-media observation this driver makes.
 # Both knobs are drawn per call rather than fixed, under the standing owner rule restated above
@@ -1132,6 +1155,35 @@ _IDENTITY_DS = (64, 16)   # identity-band downsample (w, h) -- see _band. Matche
 # downsample is only for the pixel-distance comparison _identity_of makes on every poll).
 
 
+def _band_of_image(im, rect: tuple[float, float, float, float],
+                   size: tuple[int, int] = _IDENTITY_DS):
+    """`_band`'s crop-and-resize step, on an ALREADY-DECODED grayscale PIL image `im`.
+
+    Split out (2026-08-23 perf pass) so a caller that needs MANY crops of the SAME frame can
+    decode it once and call this repeatedly instead of paying for a fresh PNG decode per crop.
+    `scroll_top.confirm_scroll_top`'s `_ALIGNMENT_SEARCH_PX` vertical sweep is exactly that
+    caller: it used to run this same crop-and-resize arithmetic behind a full `_band(frame, ...)`
+    redecode for each of 25 candidate offsets (measured 468ms/call on
+    ops/calibration/scroll_20260811T211209Z); now it decodes once and calls this 25 times instead
+    (measured 19.6ms/call, a 23.9x speedup).
+
+    `_band` below is now a decode-then-delegate wrapper around this function, which makes this
+    the ONLY crop-and-resize implementation in the file. That matters at the 3.0-grey-level
+    confirm bound `scroll_top._CONFIRM_MAX_DIST` decides on: see `_band`'s own docstring for the
+    measured cost of a second one (`item_crops.signature_of`'s cv2-vs-PIL grayscale disagreement,
+    1.46 grey levels on average and 9.8 on a signature crop). Any caller that needs several crops
+    of one frame must decode once and call THIS, never reimplement the crop math beside it.
+
+    Raises whatever `im.crop` / `.resize` / `np.asarray` raise on a malformed rect; callers that
+    need the "unreadable -> None" contract wrap this the way `_band` does below.
+    """
+    import numpy as np
+    w, h = im.size
+    x0, y0, x1, y1 = rect
+    crop = im.crop((round(x0 * w), round(y0 * h), round(x1 * w), round(y1 * h)))
+    return np.asarray(crop.resize(size), dtype="int16")
+
+
 def _band(frame: bytes, rect: tuple[float, float, float, float],
           size: tuple[int, int] = _IDENTITY_DS):
     """Downsampled grayscale crop of the normalised rect `(x0, y0, x1, y1)` of `frame`, at
@@ -1153,17 +1205,18 @@ def _band(frame: bytes, rect: tuple[float, float, float, float],
     `item_crops.signature_of`'s docstring, where cv2's IMREAD_GRAYSCALE and a
     decode-then-cvtColor landed 1.46 grey levels apart on average and 9.8 apart on a 32x32
     signature -- twice the distance separating the two most alike items on that profile).
+
+    Decode-then-delegate to `_band_of_image` (2026-08-23): this function's own body used to
+    inline the crop-and-resize math that now lives there. Nothing about the decode, the crop
+    bounds or the resize changed -- only where the code that does them lives -- so every existing
+    caller of `_band` keeps seeing byte-identical output.
     """
     try:
         from io import BytesIO
 
-        import numpy as np
         from PIL import Image
         im = Image.open(BytesIO(frame)).convert("L")
-        w, h = im.size
-        x0, y0, x1, y1 = rect
-        crop = im.crop((round(x0 * w), round(y0 * h), round(x1 * w), round(y1 * h)))
-        return np.asarray(crop.resize(size), dtype="int16")
+        return _band_of_image(im, rect, size)
     except Exception:  # noqa: BLE001 — any decode/dep failure -> caller falls back to 'unknown'
         return None
 
@@ -1227,9 +1280,16 @@ def _split_diff(a: bytes, b: bytes) -> tuple[float, float]:
     return float(np.mean(d[: h // 2])), float(np.mean(d[h // 2:]))
 
 
-def _frame_sig(frame: bytes) -> bytes:
-    """Stable signature for dedup: the downsampled bytes, or a hash fallback."""
-    arr = _downsample(frame)
+def _frame_sig(frame: bytes, *, ds=None) -> bytes:
+    """Stable signature for dedup: the downsampled bytes, or a hash fallback.
+
+    `ds` lets a caller that already computed `_downsample(frame)` for its own purposes hand it
+    through instead of paying for a second downsample of the SAME frame (2026-08-23 perf pass;
+    the profile read loop is the one caller that always has already done so, unconditionally,
+    before this function is ever called there). `None`, the default, downsamples `frame` itself
+    exactly as before -- every existing direct caller (tests included) is unaffected.
+    """
+    arr = _downsample(frame) if ds is None else ds
     if arr is not None:
         return arr.tobytes()
     import hashlib
@@ -3678,9 +3738,7 @@ class AndroidDriver(DatingAppDriver):
             import numpy as np
 
             image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
-            template = cv2.imdecode(
-                np.frombuffer(base64.b64decode(_VIDEO_MUTE_TEMPLATE_B64), dtype=np.uint8),
-                cv2.IMREAD_GRAYSCALE)
+            template = _video_mute_template()
             if image is None or template is None:
                 return False, None
             x0, y0, x1, y1 = rect
@@ -3696,17 +3754,23 @@ class AndroidDriver(DatingAppDriver):
             return False, None
 
     @staticmethod
-    def _locate_video_mute(frame: bytes, rect: tuple[int, int, int, int],
-                           ) -> tuple[bool, float | None, tuple[int, int] | None]:
-        """Return the origin of the same exact mute match used by the selection screen."""
+    def _locate_video_mute(frame: bytes, rect: tuple[int, int, int, int], *,
+                           image=None) -> tuple[bool, float | None, tuple[int, int] | None]:
+        """Return the origin of the same exact mute match used by the selection screen.
+
+        `image` lets a caller that already decoded this exact `frame` -- `_video_mute_marker_rows`
+        decodes it anyway to read its own `height`/`width` for `rect` -- pass that array straight
+        through instead of paying for a second `cv2.imdecode` of the SAME bytes (2026-08-23 perf
+        pass). `None` (the default) decodes `frame` here exactly as before, so any other caller
+        sees no change.
+        """
         try:
             import cv2
             import numpy as np
 
-            image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
-            template = cv2.imdecode(
-                np.frombuffer(base64.b64decode(_VIDEO_MUTE_TEMPLATE_B64), dtype=np.uint8),
-                cv2.IMREAD_GRAYSCALE)
+            if image is None:
+                image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+            template = _video_mute_template()
             if image is None or template is None:
                 return False, None, None
             x0, y0, x1, y1 = rect
@@ -3769,7 +3833,10 @@ class AndroidDriver(DatingAppDriver):
                 height, width = image.shape
                 rect = (0, round(self.content_band[0] * height), round(0.30 * width),
                         round(self.content_band[1] * height))
-                ok, score, origin = self._locate_video_mute(frame, rect)
+                # `image` is already this exact frame's decode (just above, for height/width) --
+                # hand it through so _locate_video_mute does not decode the same PNG a second
+                # time (2026-08-23 perf pass; see its own docstring).
+                ok, score, origin = self._locate_video_mute(frame, rect, image=image)
                 if ok and origin is not None and score is not None and score >= _VIDEO_MUTE_MATCH_THRESHOLD:
                     markers.append(VideoMuteMarker(
                         frame_index=frame_index, x=origin[0], y=origin[1], score=score))
@@ -5668,6 +5735,20 @@ class AndroidDriver(DatingAppDriver):
             if self._observe_like_sheet_visible(frame):
                 return None
             ds = _downsample(frame)                    # None if PIL/numpy unavailable or undecodable
+            # Read ONCE per frame, not once per consumer (2026-08-23 perf pass). Both the
+            # mid-capture boundary check just below and the "lock the identity anchor inline"
+            # block near the end of this loop used to call `_band(frame, self.identity_band)`
+            # separately -- a full PNG decode each -- even though they always see the SAME frame
+            # and the SAME `self.identity_band`. That duplication is safe to collapse into one
+            # call here because `self._identity_sig` (which gates the first block) can only ever
+            # transition away from None inside the second block's own `self.identity_band is not
+            # None` guard (see where it is assigned, below) -- so `self._identity_sig is not
+            # None` already implies `self.identity_band is not None`, and computing this
+            # unconditionally under that weaker, already-true-whenever-either-block-needs-it
+            # guard costs nothing extra in any case: the second block computed it under this
+            # exact condition every time regardless.
+            identity_band_of_frame = (
+                _band(frame, self.identity_band) if self.identity_band is not None else None)
             # A profile boundary reached MID-CAPTURE. The deck can advance while this loop is
             # still reading -- Hinge draws no on-screen busy overlay (worker.py's WAIT cue
             # lives on the hub, not the phone), and the human's finger and the bot's own
@@ -5681,7 +5762,7 @@ class AndroidDriver(DatingAppDriver):
             # different card: stop before appending it and mark the capture, so the worker
             # discards and recaptures instead of scoring a chimera.
             if self._identity_sig is not None:
-                band = _band(frame, self.identity_band)
+                band = identity_band_of_frame
                 if band is not None:
                     identity_dist = _band_dist(band, self._identity_sig)
                     top_dist = (None if self._identity_top_sig is None
@@ -5774,7 +5855,7 @@ class AndroidDriver(DatingAppDriver):
                             self._capture_split_evidence = evidence
                             self._current_capture_split = True
                             break
-            sig = _frame_sig(frame)
+            sig = _frame_sig(frame, ds=ds)
             if sig in seen:
                 # A repeat frame = reached the bottom (the screen stopped changing). Only treat
                 # the very FIRST scroll repeating as a static screen (Out of Profiles / Loading)
@@ -5824,7 +5905,7 @@ class AndroidDriver(DatingAppDriver):
             # post-hoc scan would establish it only after the foreign frames had already been
             # appended -- i.e. exactly too late to keep them out.
             if self.identity_band is not None:
-                band = _band(frame, self.identity_band)
+                band = identity_band_of_frame
                 if band is not None:
                     if self._identity_top_sig is None:
                         self._identity_top_sig = band     # frame 0: the app's scroll-top chrome
@@ -9275,9 +9356,10 @@ class HingeDriver(AndroidDriver):
                 "typed or sent, and the legacy fixed comment/send coordinates are not used.")
         return surface
 
-    def _locate_inline_composer(self, frame: bytes) -> ComposerSurface | None:
+    def _locate_inline_composer(self, frame: bytes, *, image=None) -> ComposerSurface | None:
         try:
-            return locate_inline_composer(frame, self._template("confirm"), threshold=0.8)
+            return locate_inline_composer(frame, self._template("confirm"), threshold=0.8,
+                                          image=image)
         except ComposerDetectionError:
             return None
 
@@ -9290,13 +9372,33 @@ class HingeDriver(AndroidDriver):
         and filled-CTA checks remain intact.  The reduced threshold is safe for
         observation because ``locate_inline_composer`` still proves the entire
         topology; it must not be used to type or send.
+
+        Decodes `frame` to grayscale ONCE and hands it to BOTH the strict (0.80) and the
+        Priority-Like fallback (0.68) attempts below (2026-08-23 perf pass): this method runs on
+        every observed frame via `_observe_like_sheet_visible`, and the two attempts used to
+        `cv2.imdecode` the same bytes independently. This shares only the decode -- each attempt
+        still runs its own complete, independent `locate_inline_composer` pass (full-frame
+        `matchTemplate`, its own ambiguity check) at its own threshold; see
+        `locate_inline_composer`'s own docstring for why collapsing those two passes, or cropping
+        what gets correlated, is explicitly NOT done here. A frame that fails to decode at all
+        (`image` stays None) falls through to each call's own internal decode attempt, which
+        fails identically and is not on any hot path.
         """
-        surface = self._locate_inline_composer(frame)
+        try:
+            import cv2
+            import numpy as np
+            image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        except Exception:  # noqa: BLE001 -- share nothing on a decode hiccup; each call below
+            # still makes its own independent, unshared attempt, exactly as before this frame
+            # was ever pre-decoded.
+            image = None
+        surface = self._locate_inline_composer(frame, image=image)
         if surface is not None:
             self._observe_like_sheet_detection = "strict"
             return surface
         try:
-            surface = locate_inline_composer(frame, self._template("confirm"), threshold=0.68)
+            surface = locate_inline_composer(frame, self._template("confirm"), threshold=0.68,
+                                             image=image)
         except ComposerDetectionError:
             self._observe_like_sheet_detection = "not_visible"
             return None

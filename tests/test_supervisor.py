@@ -1517,8 +1517,26 @@ def test_wedged_android_worker_retains_device_lock_until_it_really_exits(
                 raise AssertionError("reaper did not release lock after worker exit") from exc
             time.sleep(0.01)
     contender.release()
-    with sup._RETAINED_DEVICE_LOCKS_GUARD:
-        assert not sup._RETAINED_DEVICE_LOCKS
+    # A SECOND wait, not a bare read (found 2026-08-23, an intermittent under the parallel
+    # default): the poll above proves the reaper called `device_lock.release()`, which is a
+    # DIFFERENT event from the reaper finishing its bookkeeping. `_reap_wedged_android_lock`'s
+    # reaper releases the OS lock first and only then discards itself from
+    # `_RETAINED_DEVICE_LOCKS` (supervisor.py -- and that order is correct in production; you
+    # would never drop the registry entry while the flock is still held). So there is a real
+    # window where the contender can acquire while the set still holds the entry, and reading it
+    # instantaneously here is a race the test loses under CPU contention. This is the same
+    # liveness bound as `_LIVENESS_TIMEOUT_S` above: the property is "the reaper eventually
+    # finishes", never "it finishes within N seconds".
+    deadline = time.monotonic() + _LIVENESS_TIMEOUT_S
+    while True:
+        with sup._RETAINED_DEVICE_LOCKS_GUARD:
+            retained = set(sup._RETAINED_DEVICE_LOCKS)
+        if not retained:
+            break
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"reaper released the lock but never cleared its registry entry: {retained}")
+        time.sleep(0.01)
 
 
 def test_reaper_start_failure_keeps_lock_but_does_not_skip_store_shutdown(

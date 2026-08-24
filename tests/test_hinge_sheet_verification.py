@@ -890,7 +890,11 @@ def test_observe_check_allows_a_structurally_confirmed_priority_like_surface(mon
     with pytest.MonkeyPatch.context() as mp:
         driver = _observing(adb, mp)
 
-        def priority_surface(_frame, _template, *, threshold):
+        # `image=` accepted and ignored: `_locate_observed_inline_composer` now decodes the frame
+        # once and passes it to both the strict and fallback calls below (2026-08-23 perf pass;
+        # see that method's docstring) -- this test is about the threshold retry sequence, not
+        # about the shared decode.
+        def priority_surface(_frame, _template, *, threshold, **_kw):
             calls.append(threshold)
             if threshold == 0.8:
                 raise hinge.ComposerDetectionError("literal Send Like glyph is a Priority Like")

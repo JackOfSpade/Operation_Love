@@ -252,9 +252,22 @@ def test_undecodable_bytes_raise_rather_than_answering_cannot_tell():
 
 
 def test_a_band_the_driver_could_not_read_raises_rather_than_answering(monkeypatch):
-    """The control for the test above, isolating the mechanism: `_band` returning None is what
-    "could not look" means, whatever caused it."""
-    monkeypatch.setattr(hinge, "_band", lambda *a, **k: None)
+    """The control for the test above, isolating the mechanism: the driver's crop-and-resize
+    primitive failing on an otherwise-decodable frame is what "could not look" means, whatever
+    caused it.
+
+    Re-pointed 2026-08-23 from `hinge._band` to `hinge._band_of_image`: `confirm_scroll_top`'s
+    alignment sweep now decodes `frame` once for its dy=0 crop AND every offset (see
+    `_band_of_image`'s docstring for the measured 23.9x this bought), so `hinge._band` — the
+    decode-then-delegate wrapper — is no longer on that call path at all, and monkeypatching it
+    would exercise nothing. `_band_of_image` is the seam every one of those crops now goes
+    through, dy=0 included, so it is where this failure must be injected to still isolate the
+    same mechanism: a real, decodable frame whose crop step refuses must still raise, never
+    silently answer 'cannot tell'.
+    """
+    def boom(*_a, **_k):
+        raise RuntimeError("simulated crop-and-resize failure")
+    monkeypatch.setattr(hinge, "_band_of_image", boom)
 
     with pytest.raises(scroll_top.ScrollTopError):
         scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
@@ -365,17 +378,24 @@ def test_the_metric_is_the_same_one_the_driver_already_uses_on_this_band():
 
 
 def test_band_fingerprint_reads_the_declared_band_at_the_declared_grid(monkeypatch):
-    """The control that proves the gate goes through the driver's ONE decode of this rect, with
-    the rect and the grid it was given — a second crop-and-resize here would be free to disagree
-    with `_identity_of`'s by a grey level, and the confirm bound is only 3 wide."""
+    """The control that proves the gate goes through the driver's ONE crop-and-resize
+    implementation, with the rect and the grid it was given — a second one here would be free to
+    disagree with `_identity_of`'s by a grey level, and the confirm bound is only 3 wide.
+
+    Re-pointed 2026-08-23 from `hinge._band` to `hinge._band_of_image`: `_band_of_image` is now
+    the actual crop-and-resize seam, shared by `_band`'s single dy=0 crop AND by
+    `confirm_scroll_top`'s alignment sweep (25 crops of one decoded frame — see
+    `_band_of_image`'s own docstring). Spying one level lower makes this control's guarantee
+    cover both, rather than only the dy=0 call `band_fingerprint` itself makes.
+    """
     seen = {}
-    real = hinge._band
+    real = hinge._band_of_image
 
-    def spy(frame, rect, size=hinge._IDENTITY_DS):
+    def spy(im, rect, size=hinge._IDENTITY_DS):
         seen["rect"], seen["size"] = rect, size
-        return real(frame, rect, size)
+        return real(im, rect, size)
 
-    monkeypatch.setattr(hinge, "_band", spy)
+    monkeypatch.setattr(hinge, "_band_of_image", spy)
     scroll_top.band_fingerprint(_frame(_flat(_BASE)), identity_band=_IB, grid=(8, 2))
 
     assert seen == {"rect": _IB, "size": (8, 2)}
@@ -399,11 +419,29 @@ def test_all_shipped_fingerprint_variants_match_grid_and_are_in_range():
         assert all(isinstance(v, int) and 0 <= v <= 255 for v in fp)
 
 
+# Every fixed-fingerprint regression below mocks the driver's crop step to hand back a specific
+# 64-value array regardless of the frame it is given, so the test can pin a REAL observed
+# fingerprint (a past incident's exact grey levels) without smuggling a dating-profile screenshot
+# into the repo. Two things about that mock changed together on 2026-08-23, when
+# `confirm_scroll_top` started decoding its frame ONCE for the whole `_ALIGNMENT_SEARCH_PX` sweep
+# instead of once per candidate offset (see `hinge._band_of_image`'s docstring for the measured
+# 23.9x this bought):
+#
+#   1. The mock target moved from `hinge._band` to `hinge._band_of_image`. `_band` is no longer on
+#      this call path at all -- `confirm_scroll_top` now decodes the frame itself and calls
+#      `_band_of_image` directly for every crop, dy=0 included -- so mocking `_band` would
+#      silently mock nothing.
+#   2. The frame argument moved from an undecodable placeholder (`b"synthetic-frame"`) to a real,
+#      trivially decodable one (`_frame(_flat(_BASE))`). The old placeholder relied on the ONE
+#      decode being safely skippable behind the `_band` mock; now that decode happens
+#      unconditionally before any mock runs, so it must succeed. `_band_of_image` staying mocked
+#      is what keeps the actual pixel content of that placeholder frame irrelevant to the
+#      assertion below -- every offset in the sweep still reads back the SAME fixed `arr`.
 def test_either_shipped_variant_confirms_scroll_top_under_default_matching(monkeypatch):
     for fp in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS:
         arr = np.array(fp, dtype="uint8").reshape(_GRID[1], _GRID[0])
-        monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size, arr=arr: arr)
-        verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+        monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size, arr=arr: arr)
+        verdict = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
         assert verdict.confirmed is True
         assert verdict.distance == 0.0
 
@@ -423,9 +461,9 @@ def test_hingex_signals_chip_variants_are_default_scroll_top_candidates(monkeypa
     """
     assert fp in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS
     arr = np.array(fp, dtype="uint8").reshape(_GRID[1], _GRID[0])
-    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
-    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+    verdict = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
 
     assert verdict.confirmed is True
     assert verdict.distance == 0.0
@@ -443,11 +481,11 @@ def test_observed_selected_signals_top_is_not_rejected_into_the_dead_zone(monkey
         215, 88, 126, 120, 89, 218, 221, 196, 232, 233, 237, 198, 193, 226, 235, 236,
     )
     arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
-    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
     assert scroll_top.fingerprint_distance(
         observed, scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS) == 3.28125
-    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+    verdict = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
 
     assert verdict.confirmed is True
     assert verdict.distance == 0.0
@@ -468,9 +506,9 @@ def test_hingex_signals_dark_pill_variants_are_default_scroll_top_candidates(mon
     """
     assert fp in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS
     arr = np.array(fp, dtype="uint8").reshape(_GRID[1], _GRID[0])
-    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
-    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+    verdict = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
 
     assert verdict.confirmed is True
     assert verdict.distance == 0.0
@@ -502,10 +540,10 @@ def test_observed_current_age_height_top_is_not_refused_in_dead_zone(monkeypatch
     """
     observed = scroll_top._SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_CURRENT
     arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
-    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
     assert observed in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS
-    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+    verdict = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
 
     assert verdict.confirmed is True
     assert verdict.distance == 0.0
@@ -528,9 +566,9 @@ def test_observed_signals_purple_banner_top_is_not_refused_in_dead_zone(monkeypa
     assert scroll_top.fingerprint_distance(
         observed, scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL) == 8.953125
     arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
-    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
-    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+    verdict = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
 
     assert verdict.confirmed is True
     assert verdict.distance == 0.0
@@ -560,9 +598,9 @@ def test_observed_hinge_10_0_1_signals_unselected_top_is_not_refused_in_dead_zon
         observed, scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED) == 6.671875
     assert scroll_top._CONFIRM_MAX_DIST < 6.671875 < scroll_top._REFUTE_MIN_DIST
     arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
-    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
-    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+    verdict = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
 
     assert verdict.confirmed is True
     assert verdict.distance == 0.0
@@ -586,9 +624,9 @@ def test_hinge_10_0_1_variant_does_not_pull_a_scrolled_frame_into_the_dead_zone(
     # `refute_min`, matching the 15.1--16.7 margins measured on the real composer-open frames.
     scrolled = _offset(new_variant, -16)
     arr = np.array(scrolled, dtype="uint8").reshape(_GRID[1], _GRID[0])
-    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect, _size: arr)
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
-    verdict = scroll_top.confirm_scroll_top(b"synthetic-frame", identity_band=_IB)
+    verdict = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
 
     assert verdict.refuted is True
     assert verdict.confirmed is False

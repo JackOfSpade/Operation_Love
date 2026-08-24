@@ -514,36 +514,60 @@ def band_fingerprint(frame: bytes, *, identity_band: tuple[float, float, float, 
     return tuple(int(v) for v in band.reshape(-1))
 
 
-def _band_fingerprint_at_offset(frame: bytes, *, identity_band: tuple[float, float, float, float],
-                                grid: tuple[int, int], dy_px: int) -> tuple[int, ...] | None:
-    """`band_fingerprint`'s decode, with the identity band's crop shifted `dy_px` pixels DOWN
-    (negative moves it up) in the source frame before `_hinge._band` crops and resizes it. This
-    is `confirm_scroll_top`'s alignment search calling the SAME shipped decode at a different
-    crop, not a second crop-and-resize implementation — see `band_fingerprint`'s own docstring
-    for why that distinction matters at a 3.0-grey-level confirm bound.
+def _decode_for_alignment_sweep(frame: bytes):
+    """Frame bytes -> one decoded grayscale PIL image, or None if it cannot be decoded at all.
 
-    `identity_band` is normalised fractions of the frame, so an exact-PIXEL shift needs the
-    frame's actual height; nothing here decodes further than that to get it, and the crop and
-    resize both still happen inside `_hinge._band`.
-
-    Returns None — never raises — for two distinct "skip this one offset" situations: the shift
-    would push the band off the top or bottom edge of the frame, or the frame's size could not be
-    read for a nonzero shift. Both are safe to skip because `confirm_scroll_top` always evaluates
-    dy=0 first, through `band_fingerprint`'s unchanged raising contract — a frame that cannot be
-    decoded AT ALL fails loudly there before any offset is tried, so a broken PIL/numpy install
-    can never be silently absorbed by "skip this offset" here.
+    The SAME PIL call `hinge._band` makes before its own crop-and-resize step (see
+    `hinge._band_of_image`'s docstring) — pulled out here, not reimplemented, so
+    `confirm_scroll_top`'s `_ALIGNMENT_SEARCH_PX` sweep can decode a frame ONCE and hand the
+    result to `_band_fingerprint_at_offset` for every one of its 25 candidate crops, instead of
+    the sweep paying for a fresh PNG decode per crop (measured 468ms -> 19.6ms per
+    `confirm_scroll_top` call, a 23.9x speedup, 2026-08-23 perf pass). It does no crop or resize
+    of its own — that stays exclusively `hinge._band_of_image`'s job, so these crops can never
+    drift from `_band`'s single-crop callers by so much as a rounding step.
     """
-    from . import hinge as _hinge
-
-    x0, y0, x1, y1 = identity_band
     try:
         from io import BytesIO
 
         from PIL import Image
-        frame_h = Image.open(BytesIO(frame)).size[1]
-    except Exception:  # noqa: BLE001 — dy=0 already proved this frame decodes; a sizing
-        # failure at a nonzero offset is "skip this offset", not a fresh "could not look".
+        return Image.open(BytesIO(frame)).convert("L")
+    except Exception:  # noqa: BLE001 — any decode/dep failure -> caller treats it as "could not look"
         return None
+
+
+def _band_fingerprint_at_offset(frame: bytes, *, identity_band: tuple[float, float, float, float],
+                                grid: tuple[int, int], dy_px: int,
+                                image=None) -> tuple[int, ...] | None:
+    """`band_fingerprint`'s decode, with the identity band's crop shifted `dy_px` pixels DOWN
+    (negative moves it up) in the source frame before `hinge._band_of_image` crops and resizes
+    it. This is `confirm_scroll_top`'s alignment search calling the SAME shipped crop-and-resize
+    at a different rect, not a second crop-and-resize implementation — see `band_fingerprint`'s
+    own docstring for why that distinction matters at a 3.0-grey-level confirm bound.
+
+    `identity_band` is normalised fractions of the frame, so an exact-PIXEL shift needs the
+    frame's actual height. `image` is an already-decoded frame (`_decode_for_alignment_sweep`'s
+    return value) that a caller sweeping many offsets of the SAME frame — `confirm_scroll_top` is
+    the only one — has already paid to decode; passing it here is what lets the sweep avoid
+    redecoding the PNG per offset. `None` (the default, and what every direct caller in
+    tests/test_scroll_top.py uses) decodes `frame` itself first, unchanged from before this
+    parameter existed.
+
+    Returns None — never raises — for three distinct "skip this one offset" situations: `image`
+    was not supplied and this frame could not be decoded on its own, the shift would push the
+    band off the top or bottom edge of the frame, or the shifted crop could not be produced from
+    an otherwise-decoded frame. All three are safe to skip because `confirm_scroll_top` always
+    resolves dy=0 first and raises loudly there if the frame cannot be read at all — see its own
+    docstring — so a broken PIL/numpy install can never be silently absorbed by "skip this
+    offset" here.
+    """
+    from . import hinge as _hinge
+
+    x0, y0, x1, y1 = identity_band
+    if image is None:
+        image = _decode_for_alignment_sweep(frame)
+        if image is None:
+            return None
+    frame_h = image.size[1]
     if frame_h <= 0:
         return None
 
@@ -552,8 +576,10 @@ def _band_fingerprint_at_offset(frame: bytes, *, identity_band: tuple[float, flo
     if y0 < 0.0 or y1 > 1.0:
         return None  # would slide the crop off the top or bottom edge of the frame
 
-    band = _hinge._band(frame, (x0, y0, x1, y1), grid)
-    if band is None:
+    try:
+        band = _hinge._band_of_image(image, (x0, y0, x1, y1), grid)
+    except Exception:  # noqa: BLE001 — malformed crop at this offset -> skip it, not a fresh
+        # "could not look": dy=0 already proved (or will prove) this frame decodes.
         return None
     return tuple(int(v) for v in band.reshape(-1))
 
@@ -621,11 +647,31 @@ def confirm_scroll_top(frame: bytes, *,
             reason=("no identity_band declared for this app, so the filter-chips signal doc 5.5 "
                     "requires cannot be read at all — this is 'cannot tell', never 'at top'"))
 
-    # dy=0 first and unconditionally, through band_fingerprint's own raising contract: a frame
-    # that cannot be decoded at all must fail loudly here, before the alignment search below gets
-    # a chance to treat every other offset's failure as merely "skip it" (see
-    # _band_fingerprint_at_offset's docstring).
-    seen = band_fingerprint(frame, identity_band=identity_band, grid=grid)
+    # ONE decode for the whole sweep -- dy=0 included (2026-08-23 perf pass). Every one of the
+    # 2*_ALIGNMENT_SEARCH_PX + 1 candidate crops below used to redecode the whole PNG from
+    # scratch (dy=0 through band_fingerprint -> hinge._band, every other offset through its own
+    # hinge._band call inside _band_fingerprint_at_offset); measured 468ms/call on
+    # ops/calibration/scroll_20260811T211209Z. They now all read from this single decoded image
+    # instead, via hinge._band_of_image (measured 19.6ms/call, 23.9x). A frame that cannot be
+    # decoded at all must still fail LOUDLY here, before the alignment search below gets a chance
+    # to treat every other offset's failure as merely "skip it" (see
+    # _band_fingerprint_at_offset's docstring) -- this replaces band_fingerprint's own raising
+    # contract for that same "could not look" case, word for word, so no caller sees a different
+    # failure mode than before this frame was shared.
+    image = _decode_for_alignment_sweep(frame)
+    if image is None:
+        raise ScrollTopError(
+            f"identity band {identity_band} could not be read from {len(frame)} bytes of frame "
+            "— either the vision extras (PIL/numpy) are missing or the bytes are not an image. "
+            "This is 'could not look', which is not a verdict")
+
+    seen = _band_fingerprint_at_offset(frame, identity_band=identity_band, grid=grid, dy_px=0,
+                                       image=image)
+    if seen is None:
+        raise ScrollTopError(
+            f"identity band {identity_band} could not be read from {len(frame)} bytes of frame "
+            "— either the vision extras (PIL/numpy) are missing or the bytes are not an image. "
+            "This is 'could not look', which is not a verdict")
     dist = min(fingerprint_distance(seen, fp) for fp in candidates)
     offset = 0
 
@@ -633,7 +679,7 @@ def confirm_scroll_top(frame: bytes, *,
         if dy == 0:
             continue
         shifted = _band_fingerprint_at_offset(frame, identity_band=identity_band, grid=grid,
-                                              dy_px=dy)
+                                              dy_px=dy, image=image)
         if shifted is None:
             continue
         shifted_dist = min(fingerprint_distance(shifted, fp) for fp in candidates)

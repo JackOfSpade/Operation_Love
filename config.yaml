@@ -44,21 +44,25 @@ apps:
     # pressure). There is no silent fallback: choosing the weaker signature is an explicit act.
     # uhid_persistent = the SAME genuine UHID touches as uhid, delivered through ONE
     # virtual device held open for the whole session (operation_love/drivers/uhid.py's
-    # PersistentUhidTouch) instead of re-registered per gesture. LIVE-VERIFY: unverified at
-    # full-session scale (2026-08-24). What WAS validated live on the Pixel 7a: the
-    # persistent `adb shell -tt "hid /proc/self/fd/0"` mechanism survives across multiple
-    # gestures with no re-registration, a real read-scroll against live Hinge landed
-    # correctly (screenshot-confirmed), and `proc.kill()` alone tears the virtual device
-    # down cleanly (4/4 live kills, `/proc/bus/input/devices` confirmed empty after). What
-    # was NOT independently proven: a remote mid-session crash being noticed on the host
-    # side — that is INFERRED from the same adb exit-propagation contract the shipped `uhid`
-    # transport already depends on, not measured directly (a `ps`-based kill-and-detect test
-    # could not reliably identify the remote PID to test it, and correctly refused to
-    # blind-kill an unverified one). `auto`/`uhid` do NOT pick this up automatically — only
-    # writing `uhid_persistent` here does, the same explicit opt-in `adb` already requires
-    # for the degraded transport, watch the first several unattended runs before trusting it
-    # the way `auto`/`uhid` are trusted today.
-    touch_backend: auto
+    # PersistentUhidTouch) instead of re-registered per gesture — measured live on the
+    # Pixel 7a at 50s for a 9-gesture read vs ~102s on the per-gesture transport. OWNER
+    # CHOSE THIS AS THE DEFAULT 2026-08-24, after that live comparison, accepting the one
+    # known residual gap below with eyes open.
+    #
+    # LIVE-VERIFY: what WAS validated live: the persistent `adb shell -tt
+    # "hid /proc/self/fd/0"` mechanism survives across multiple gestures with no
+    # re-registration, a real read-scroll against live Hinge landed correctly
+    # (screenshot-confirmed), a full 9-gesture read completed correctly through the real
+    # driver, and `proc.kill()` alone tears the virtual device down cleanly (4/4 live
+    # kills, `/proc/bus/input/devices` confirmed empty after). What was NOT independently
+    # proven, and is not fixable without a larger redesign of the confirmation protocol
+    # itself: a remote mid-session crash being noticed on the host side rests on an
+    # INFERENCE (the process still appears alive after a host-side wait), not the genuine
+    # blocking round-trip confirmation the per-gesture `uhid` transport gets for free — see
+    # PersistentUhidTouch's own docstring for the full reasoning and the adversarial review
+    # that found this. Watch real unattended runs for a gesture that silently doesn't land;
+    # `touch_backend: uhid` reverts to the fully-proven per-gesture transport instantly.
+    touch_backend: uhid_persistent
     # 2026-08-10: raised 8 -> 12 after a bug report traced a false observe-mode PASS partly to
     # this ceiling — 2 of the last 3 profiles in that run hit exactly 8 captures (the old
     # value), meaning the automated read hadn't reached the true bottom before the owner

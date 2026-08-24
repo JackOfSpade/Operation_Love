@@ -3189,6 +3189,99 @@ def test_make_touch_refuses_to_downgrade_when_probe_raises_adb_error():
         drv._make_touch()
 
 
+# --- Phase 4b: touch_backend="uhid_persistent" (2026-08-24) -----------------------------
+class _MinimalFakePersistentPopen:
+    """Just enough of subprocess.Popen for PersistentUhidTouch.open() to succeed with no
+    real device or real `adb` involved: a live (never-dying) process whose stdin accepts
+    every write. The write/report content itself is already pinned by
+    tests/test_uhid.py's own PersistentUhidTouch suite -- this fake only needs to prove
+    _make_touch() picked the RIGHT CLASS, not re-prove what that class does internally."""
+
+    def __init__(self, argv, **kwargs):
+        self.argv = list(argv)
+
+    def write(self, s):
+        pass
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+    def poll(self):
+        return None
+
+    def kill(self):
+        pass
+
+    def wait(self, timeout=None):
+        return 0
+
+    @property
+    def stdin(self):
+        return self
+
+    @property
+    def stdout(self):
+        return self
+
+    @property
+    def stderr(self):
+        return self
+
+
+def test_make_touch_selects_persistent_uhid_when_backend_is_uhid_persistent(monkeypatch):
+    from operation_love.drivers import uhid as uhid_mod
+    from operation_love.drivers.uhid import PersistentUhidTouch, UhidTouch
+
+    monkeypatch.setattr(uhid_mod.subprocess, "Popen", _MinimalFakePersistentPopen)
+    monkeypatch.setattr(uhid_mod.time, "sleep", lambda *_a, **_k: None)
+
+    adb = _HidAdb([b"x"])
+    adb.adb_path = "adb"    # PersistentUhidTouch.open() reads these directly off self.adb,
+    adb.serial = "pixel"    # the same convention Adb._run already uses (see adb.py)
+    drv = HingeDriver(type("C", (), {"apps": {"hinge": {"touch_backend": "uhid_persistent"}}}))
+    drv._adb = adb
+
+    touch = drv._make_touch()
+
+    assert isinstance(touch, PersistentUhidTouch)
+    assert not isinstance(touch, UhidTouch)   # a genuinely different class, not a subclass
+
+
+def test_touch_backend_uhid_persistent_required_raises_when_unavailable(monkeypatch):
+    from operation_love.drivers import uhid as uhid_mod
+
+    def _must_not_spawn(*_a, **_k):
+        raise AssertionError("no real adb process should be spawned when hid is absent")
+
+    monkeypatch.setattr(uhid_mod.subprocess, "Popen", _must_not_spawn)
+    adb = FakeAdb([b"x"])                 # no hid -> UhidUnavailable, same probe as `uhid`
+    drv = HingeDriver(type("C", (), {"apps": {"hinge": {"touch_backend": "uhid_persistent"}}}))
+    drv._adb = adb
+    with pytest.raises(DriverClosed):     # fails loudly -- no silent fallback to UhidTouch/adb
+        drv._make_touch()
+
+
+def test_touch_backend_auto_and_uhid_never_select_persistent_uhid(monkeypatch):
+    """The behavior-preservation half of this wiring: `auto` (the default) and the explicit
+    `uhid` value must keep constructing plain UhidTouch, byte-for-byte as before this class
+    existed -- only the literal string "uhid_persistent" may ever select the new class."""
+    from operation_love.drivers import uhid as uhid_mod
+    from operation_love.drivers.uhid import PersistentUhidTouch, UhidTouch
+
+    monkeypatch.setattr(uhid_mod.subprocess, "Popen", _MinimalFakePersistentPopen)
+
+    for backend_cfg in ({"serial": "pixel"}, {"serial": "pixel", "touch_backend": "uhid"}):
+        adb = _HidAdb([b"x"])
+        drv = HingeDriver(type("C", (), {"apps": {"hinge": backend_cfg}}))
+        drv._adb = adb
+        touch = drv._make_touch()
+        assert isinstance(touch, UhidTouch)
+        assert not isinstance(touch, PersistentUhidTouch)
+
+
 def _modal_frame():
     """A decodable frame containing the 'Send Like anyway' modal text (the Rose upsell)."""
     import cv2

@@ -5,6 +5,7 @@ report bytes, the dynamic descriptor sizing, the register+report/delay gesture s
 and that each gesture writes a file then runs `hid <file>`. The live `hid`/`/dev/uhid`
 behaviour is verified on-device separately.
 """
+import functools
 import json
 import random
 import shlex
@@ -14,7 +15,7 @@ import pytest
 from operation_love.drivers import uhid
 from operation_love.drivers.adb import AdbError
 from operation_love.drivers.base import DriverClosed
-from operation_love.drivers.uhid import UhidTouch, _build_descriptor, _report
+from operation_love.drivers.uhid import PersistentUhidTouch, UhidTouch, UhidUnavailable, _build_descriptor, _report
 from operation_love.human_motion import TouchSample
 
 
@@ -393,3 +394,329 @@ def test_gesture_file_write_may_retry_before_any_hid_delivery(monkeypatch):
 
     assert fa.write_calls == 2
     assert sum(1 for c in fa.shell_calls if c.startswith("hid ")) == 1
+
+
+# =====================================================================================
+# PersistentUhidTouch (2026-08-24) -- one virtual device registered ONCE per session, not
+# per gesture. No real device or real `adb`: subprocess.Popen is monkeypatched with a fake
+# that captures every write to a fake stdin and exposes a controllable poll()/kill(), the
+# same convention tests/test_touchwatch.py already uses for its own persistent-Popen class
+# (a different module, the identical shape: a long-lived Popen this driver owns).
+# =====================================================================================
+
+def _cmds_from_strings(lines: list) -> list:
+    """Same job as this file's `_cmds(data: bytes)` above, for PersistentUhidTouch's
+    str-mode stdin writes instead of UhidTouch's one-shot bytes payload: `lines` is every
+    individual `.write()` call's argument, in order; joining and re-splitting recovers the
+    full command sequence regardless of exactly how many separate write() calls produced it."""
+    return [json.loads(ln) for ln in "".join(lines).splitlines() if ln.strip()]
+
+
+def _popen_must_not_be_called(*_a, **_k):
+    raise AssertionError(
+        "subprocess.Popen must not be called on this path (a real adb process would "
+        "otherwise be spawned by this test)")
+
+
+class _FakePersistentStream:
+    """Stands in for Popen.stdout/stderr: PersistentUhidTouch never reads from either, they
+    only need to exist and be closeable (see close()'s stream-closing loop)."""
+
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _FakePersistentStdin:
+    """Stands in for Popen.stdin: captures every write() call's argument verbatim, and can
+    be told to raise (simulating a broken pipe, or a stream already closed out from under
+    this object) starting from the `fail_after`-th write -- `fail_after=0` means "fail on
+    the very first write", matching how a registration- or gesture-time failure is tested."""
+
+    def __init__(self, fail_after: int | None = None, raise_type=BrokenPipeError):
+        self.written: list = []
+        self.flush_count = 0
+        self.closed = False
+        self._fail_after = fail_after
+        self._raise_type = raise_type
+
+    def write(self, s):
+        if self._fail_after is not None and len(self.written) >= self._fail_after:
+            raise self._raise_type("broken pipe")
+        self.written.append(s)
+
+    def flush(self):
+        self.flush_count += 1
+
+    def close(self):
+        self.closed = True
+
+
+class _FakePersistentPopen:
+    """Stands in for subprocess.Popen for PersistentUhidTouch. `poll()` returns None while
+    alive; `die_after_polls`, when given, makes the N-th `poll()` call (and every one after
+    it) report death -- this is what lets a test put the process's death at an EXACT point
+    in a gesture's guard-check / post-wait-check sequence without a real clock or a real
+    subprocess. `start_alive=False` is the simpler "already dead from the very first check"
+    case (dies during open()'s own registration/enumeration window)."""
+
+    instances: list = []   # every instance constructed since the last `.clear()` -- lets a
+    # test assert exactly one process was ever spawned for a whole session (no re-registration).
+
+    def __init__(self, argv, *, start_alive: bool = True, die_after_polls: int | None = None,
+                 stdin_fail_after: int | None = None, stdin_raise_type=BrokenPipeError, **kwargs):
+        self.argv = list(argv)
+        self.kwargs = kwargs
+        self.stdin = _FakePersistentStdin(fail_after=stdin_fail_after, raise_type=stdin_raise_type)
+        self.stdout = _FakePersistentStream()
+        self.stderr = _FakePersistentStream()
+        self._alive = start_alive
+        self._die_after_polls = die_after_polls
+        self._poll_calls = 0
+        self.kill_called = False
+        self.wait_calls = 0
+        _FakePersistentPopen.instances.append(self)
+
+    def poll(self):
+        self._poll_calls += 1
+        if self._die_after_polls is not None and self._poll_calls >= self._die_after_polls:
+            self._alive = False
+        return None if self._alive else 1
+
+    def kill(self):
+        self.kill_called = True
+        self._alive = False
+
+    def wait(self, timeout=None):
+        self.wait_calls += 1
+        return 0
+
+
+@pytest.fixture(autouse=True)
+def _reset_fake_persistent_popen_instances():
+    _FakePersistentPopen.instances.clear()
+    yield
+    _FakePersistentPopen.instances.clear()
+
+
+def _quiet_sleep(monkeypatch):
+    """PersistentUhidTouch sleeps for real durations in open() (enumerate_ms) and every
+    gesture (the sum of that gesture's own delay durations) -- monkeypatched to a no-op in
+    every test below, same as this file's existing UhidTouch tests already do for their own
+    retry-backoff sleep (`test_write_file_permanent_failure_still_attempts_a_fallback_cleanup`,
+    `test_gesture_file_write_may_retry_before_any_hid_delivery`)."""
+    monkeypatch.setattr(uhid.time, "sleep", lambda *a, **k: None)
+
+
+# --- open(): registration, no re-registration on later gestures ------------------------
+def test_persistent_open_registers_once_and_gestures_never_reregister(monkeypatch):
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+    fa = FakeAdb()
+    drv = PersistentUhidTouch(fa, rng=random.Random(1))
+    drv.open()
+
+    assert len(_FakePersistentPopen.instances) == 1
+    proc = _FakePersistentPopen.instances[0]
+    open_cmds = _cmds_from_strings(proc.stdin.written)
+    assert [c["command"] for c in open_cmds] == ["register", "delay"]
+    assert open_cmds[0]["descriptor"] and open_cmds[0]["name"] == drv.name
+    assert drv.enumerate_ms <= open_cmds[1]["duration"] <= drv.enumerate_ms + 180
+
+    before = len(proc.stdin.written)
+    drv.swipe(540, 1700, 540, 700)
+    drv.swipe(540, 700, 540, 1700)
+
+    assert len(_FakePersistentPopen.instances) == 1        # same process, no re-spawn
+    gesture_cmds = _cmds_from_strings(proc.stdin.written[before:])
+    assert gesture_cmds                                     # gestures actually wrote something
+    assert all(c["command"] != "register" for c in gesture_cmds)
+
+
+def test_persistent_two_gestures_write_distinct_report_streams_no_register(monkeypatch):
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+    drv = PersistentUhidTouch(FakeAdb(), rng=random.Random(2))
+    drv.open()
+    proc = _FakePersistentPopen.instances[0]
+
+    mark = len(proc.stdin.written)
+    drv.tap(200, 900)
+    first = _cmds_from_strings(proc.stdin.written[mark:])
+    mark = len(proc.stdin.written)
+    drv.tap(800, 1900)
+    second = _cmds_from_strings(proc.stdin.written[mark:])
+
+    assert all(c["command"] != "register" for c in first + second)
+    first_reports = [c["report"] for c in first if c["command"] == "report"]
+    second_reports = [c["report"] for c in second if c["command"] == "report"]
+    assert first_reports and second_reports
+    assert first_reports != second_reports     # different tap coords -> genuinely distinct streams
+
+
+# --- open() failure modes: all UhidUnavailable, never DriverClosed ---------------------
+def test_persistent_open_raises_uhid_unavailable_when_hid_missing(monkeypatch):
+    monkeypatch.setattr(uhid.subprocess, "Popen", _popen_must_not_be_called)
+
+    class NoHid(FakeAdb):
+        def shell(self, cmd):
+            self.shell_calls.append(cmd)
+            return "no"
+
+    with pytest.raises(UhidUnavailable):
+        PersistentUhidTouch(NoHid()).open()
+
+
+def test_persistent_open_raises_uhid_unavailable_when_popen_cannot_start(monkeypatch):
+    def boom(*_a, **_k):
+        raise OSError("adb binary not found")
+
+    monkeypatch.setattr(uhid.subprocess, "Popen", boom)
+    with pytest.raises(UhidUnavailable):
+        PersistentUhidTouch(FakeAdb()).open()
+
+
+def test_persistent_open_raises_uhid_unavailable_when_registration_write_fails(monkeypatch):
+    monkeypatch.setattr(
+        uhid.subprocess, "Popen", functools.partial(_FakePersistentPopen, stdin_fail_after=0))
+
+    with pytest.raises(UhidUnavailable, match="rejected registration"):
+        PersistentUhidTouch(FakeAdb()).open()
+
+    proc = _FakePersistentPopen.instances[0]
+    assert proc.kill_called      # the half-registered process is torn down, not left dangling
+
+
+def test_persistent_open_raises_uhid_unavailable_when_process_dies_during_enumerate(monkeypatch):
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(
+        uhid.subprocess, "Popen", functools.partial(_FakePersistentPopen, start_alive=False))
+
+    with pytest.raises(UhidUnavailable, match="exited during registration"):
+        PersistentUhidTouch(FakeAdb()).open()
+
+
+# --- gesture delivery: success, and both "never replay" failure modes ------------------
+def test_persistent_gesture_succeeds_silently_when_process_stays_alive(monkeypatch):
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+    drv = PersistentUhidTouch(FakeAdb(), rng=random.Random(3))
+    drv.open()
+    drv.swipe(540, 1700, 540, 700)          # must not raise
+    drv.tap(540, 1200)                       # must not raise
+
+
+def test_persistent_death_after_gesture_marks_session_dead_and_next_call_never_writes(monkeypatch):
+    _quiet_sleep(monkeypatch)
+    # poll() call #1 is open()'s own post-enumerate check (must read alive); #2 is the NEXT
+    # gesture's guard check (must also still read alive, or delivery would never be
+    # attempted); #3 is that same gesture's post-wait check, where death is revealed.
+    monkeypatch.setattr(
+        uhid.subprocess, "Popen", functools.partial(_FakePersistentPopen, die_after_polls=3))
+    drv = PersistentUhidTouch(FakeAdb(), rng=random.Random(4))
+    drv.open()
+    proc = _FakePersistentPopen.instances[0]
+
+    with pytest.raises(DriverClosed, match="died during or after delivery"):
+        drv.swipe(540, 1700, 540, 700)
+
+    # THE most important property in this set: a session found dead must never be silently
+    # reopened or resent against -- the very next call raises immediately, before writing
+    # anything at all, proven here by the write count not moving.
+    written_after_death = len(proc.stdin.written)
+    with pytest.raises(DriverClosed, match="already died"):
+        drv.swipe(540, 700, 540, 1700)
+    assert len(proc.stdin.written) == written_after_death
+
+
+def test_persistent_write_failure_marks_session_dead_and_next_call_never_writes(monkeypatch):
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+    drv = PersistentUhidTouch(FakeAdb(), rng=random.Random(5))
+    drv.open()
+    proc = _FakePersistentPopen.instances[0]
+    written_after_open = len(proc.stdin.written)
+    proc.stdin._fail_after = 0     # every write from here on raises BrokenPipeError
+
+    with pytest.raises(DriverClosed, match="stdin write"):
+        drv.swipe(540, 1700, 540, 700)
+    assert len(proc.stdin.written) == written_after_open   # nothing from this gesture landed
+
+    with pytest.raises(DriverClosed, match="already died"):
+        drv.swipe(540, 700, 540, 1700)
+    assert len(proc.stdin.written) == written_after_open   # still nothing -- no retry, no reopen
+
+
+def test_persistent_run_gesture_empty_samples_is_a_true_noop(monkeypatch):
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+    drv = PersistentUhidTouch(FakeAdb())
+    drv.open()
+    proc = _FakePersistentPopen.instances[0]
+    before = len(proc.stdin.written)
+
+    drv._run_gesture([])
+
+    assert len(proc.stdin.written) == before
+
+
+# --- flush delay: same jittered range as UhidTouch's, not weakened ---------------------
+def test_persistent_gesture_flush_delay_matches_uhid_touchs_jittered_range(monkeypatch):
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+    drv = PersistentUhidTouch(FakeAdb(), rng=random.Random(6))
+    drv.open()
+    proc = _FakePersistentPopen.instances[0]
+
+    seen = set()
+    for _ in range(30):
+        mark = len(proc.stdin.written)
+        drv.swipe(540, 1700, 540, 700)
+        cmds = _cmds_from_strings(proc.stdin.written[mark:])
+        seen.add(cmds[-1]["duration"])     # the trailing flush delay is always the last command
+
+    assert len(seen) > 5                                              # genuinely jittered
+    assert all(drv.flush_ms <= v <= drv.flush_ms + 90 for v in seen)   # never below the safe baseline
+
+
+# --- close(): idempotent, best-effort, never raises -------------------------------------
+def test_persistent_close_is_idempotent_and_never_raises_even_when_never_opened():
+    drv = PersistentUhidTouch(FakeAdb())
+    drv.close()     # never opened at all -- must not raise
+    drv.close()     # idempotent
+
+
+def test_persistent_close_kills_and_waits_on_the_process_and_closes_its_pipes(monkeypatch):
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+    drv = PersistentUhidTouch(FakeAdb())
+    drv.open()
+    proc = _FakePersistentPopen.instances[0]
+
+    drv.close()
+
+    assert proc.kill_called and proc.wait_calls == 1
+    assert proc.stdin.closed and proc.stdout.closed and proc.stderr.closed
+
+    drv.close()     # idempotent: second close is a pure no-op, not a second kill/wait
+    assert proc.wait_calls == 1
+
+
+def test_persistent_close_swallows_kill_and_wait_failures(monkeypatch):
+    _quiet_sleep(monkeypatch)
+
+    class BoomOnTeardown(_FakePersistentPopen):
+        def kill(self):
+            raise OSError("no such process")
+
+        def wait(self, timeout=None):
+            raise TimeoutError("still running")
+
+    monkeypatch.setattr(uhid.subprocess, "Popen", BoomOnTeardown)
+    drv = PersistentUhidTouch(FakeAdb())
+    drv.open()
+
+    drv.close()     # must not raise despite kill()/wait() both blowing up
+    assert drv._proc is None    # still torn down from this object's point of view

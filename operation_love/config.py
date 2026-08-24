@@ -1463,10 +1463,11 @@ def _validate_android_fractions(cfg: Config) -> None:
                 _require_bool(app_cfg[key], f"apps.{app}.{key}")
         if "touch_backend" in app_cfg:
             backend = app_cfg["touch_backend"]
-            if not isinstance(backend, str) or backend not in {"auto", "uhid", "adb"}:
+            if not isinstance(backend, str) or backend not in {
+                    "auto", "uhid", "adb", "uhid_persistent"}:
                 raise ValueError(
-                    f"Config: apps.{app}.touch_backend must be auto, uhid, or adb "
-                    f"(got {backend!r})")
+                    f"Config: apps.{app}.touch_backend must be auto, uhid, adb, or "
+                    f"uhid_persistent (got {backend!r})")
         if "scroll_captures" in app_cfg:
             _require_positive_int(app_cfg["scroll_captures"],
                                   f"apps.{app}.scroll_captures")

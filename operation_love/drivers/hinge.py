@@ -128,7 +128,7 @@ from .scroll_step import (COVERAGE_STEP_SEGMENTATION_FALLBACK, MAX_SEGMENTATION_
 from .scroll_top import ScrollTopError, confirm_scroll_top
 from .segment import SegmentationError, segment_frame
 from .touchwatch import TouchWatcher, TouchWatchUnavailable
-from .uhid import UhidTouch, UhidUnavailable
+from .uhid import PersistentUhidTouch, UhidTouch, UhidUnavailable
 
 _ASSETS = Path(__file__).parent / "assets"
 
@@ -2135,7 +2135,7 @@ class AndroidDriver(DatingAppDriver):
             "no profile has been read yet, so this driver has enumerated nothing")
         self._current_items_unnumbered = ""
         self._touch = None            # touch transport: UhidTouch (genuine) or Adb (input fallback)
-        self.touch_backend = app_cfg.get("touch_backend", "auto")   # auto | uhid | adb
+        self.touch_backend = app_cfg.get("touch_backend", "auto")   # auto | uhid | adb | uhid_persistent
         self._observe_ready = False   # True once open_session validated PIL/numpy + device
         # Rate-limit state for _note_observe_waiting. Both are re-anchored at the top of every
         # wait_for_decision call (one call = one profile's wait); initialised here as well so
@@ -2371,13 +2371,26 @@ class AndroidDriver(DatingAppDriver):
 
         So `auto` now means "prefer UHID and fail loudly if it is unavailable". The
         degraded path is still reachable, but only by explicitly writing
-        `touch_backend: adb`, which is an operator decision rather than an accident."""
+        `touch_backend: adb`, which is an operator decision rather than an accident.
+
+        A THIRD real transport exists too (2026-08-24): `touch_backend: uhid_persistent`
+        selects PersistentUhidTouch (uhid.py) instead of UhidTouch — same genuine
+        kernel-level touches, same planned motion, but the virtual device is registered
+        ONCE per session instead of once per gesture (see that class's own docstring for
+        the live validation this rests on, and just as importantly, the one edge it does
+        NOT directly prove: a remote mid-session crash being noticed locally). `auto` and
+        `uhid` do NOT select it — what was validated live there is real, but it is a
+        handful of gestures against one profile, not the scale of confidence this repo's
+        LIVE-VERIFY convention (config.yaml) reserves for changing a DEFAULT. Reaching it
+        requires writing `uhid_persistent` explicitly, the same kind of deliberate operator
+        opt-in `touch_backend: adb` already requires for the degraded transport above."""
         if self.touch_backend == "adb":
             print(f"{self.spec.app}: touch_backend='adb' — using the DEGRADED input transport "
                   f"(humanized paths, but constant pressure). Set 'auto' for genuine UHID touches.")
             return self._adb
+        touch_cls = PersistentUhidTouch if self.touch_backend == "uhid_persistent" else UhidTouch
         try:
-            t = UhidTouch(self._adb)
+            t = touch_cls(self._adb)
             t.open()
             return t
         except (UhidUnavailable, AdbError) as exc:

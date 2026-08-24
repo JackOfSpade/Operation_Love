@@ -1090,6 +1090,15 @@ def test_android_operational_scalar_valid_boundaries_pass():
     c.validate(_load(d))
 
 
+def test_touch_backend_accepts_uhid_persistent():
+    # 2026-08-24: a fourth explicit touch_backend value (operation_love/drivers/uhid.py's
+    # PersistentUhidTouch) alongside auto/uhid/adb -- an invalid value must still fail the
+    # same clean way (test_android_operational_scalars_fail_cleanly's "fallback"/[] cases,
+    # unchanged above), and this one specific new value must now be accepted.
+    d = {**BASE, "apps": {"hinge": {"touch_backend": "uhid_persistent"}}}
+    c.validate(_load(d))
+
+
 def test_still_photo_dwell_candidates_huge_integer_reported_as_config_error():
     # Mirrors test_bounded_android_numbers_report_huge_integers_as_config_errors: a bignum must
     # fail the SAME clean way scroll_captures already does, not overflow or hang isinstance/int

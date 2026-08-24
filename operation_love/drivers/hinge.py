@@ -119,9 +119,9 @@ from .item_verify import (VERIFY_MISMATCH, SheetVerificationError, verification_
                           verify_sheet_item)
 from .like_composer import (
     ComposerDetectionError, ComposerSurface, locate_inline_composer)
-from .scroll_step import (MAX_SEGMENTATION_FALLBACK_FRAMES, STEP_SEGMENTATION_FALLBACK,
+from .scroll_step import (COVERAGE_STEP_SEGMENTATION_FALLBACK, MAX_SEGMENTATION_FALLBACK_FRAMES,
                           ScrollStepError,
-                          frac_for_step_px, plan_scroll_step, step_px_for_frac)
+                          frac_for_step_px, plan_coverage_step, step_px_for_frac)
 from .scroll_top import ScrollTopError, confirm_scroll_top
 from .segment import SegmentationError, segment_frame
 from .touchwatch import TouchWatcher, TouchWatchUnavailable
@@ -3785,41 +3785,50 @@ class AndroidDriver(DatingAppDriver):
                     f"{verdict.reason}")
         return ""
 
-    def _plan_enumeration_step(self, frame: bytes, x_frac: float, min_spacing_px: int | None,
+    def _plan_enumeration_step(self, frame: bytes, x_frac: float,
                                *, allow_segmentation_failure_fallback: bool = False):
-        """Size the next enumeration scroll against the spacing THIS frame shows.
+        """Size the next enumeration scroll against what THIS frame's own geometry needs for
+        coverage (`scroll_step.plan_coverage_step`, 2026-08-24), replacing the tracking-safe
+        ratio rule `plan_scroll_step` used for this read until this change -- see that module's
+        own "COVERAGE-AIMED STEP" section for the full derivation of why the two bounds this now
+        respects (frameshift's trust window; a card being observed complete in some single frame)
+        replace doc 5.10.1's step/spacing ratio for this read, and why `item_nav.py`'s
+        counting-navigation climb still calls `plan_scroll_step`, unchanged, for a different pass.
 
-        Returns the `ScrollStep`; `.frac` and `.x_frac` go straight to `_scroll_down_one`, both
+        Returns the `CoverageStep`; `.frac` and `.x_frac` go straight to `_scroll_down_one`, both
         of them, always (passing the frac alone makes that method re-sample both from the
         behaviour policy and silently issue production's 0.55 cadence instead).
 
         `x_frac` is the LANE the behaviour policy already drew for this step, handed through
-        rather than replaced: the distance is what has to follow the card in front of us (doc
-        5.10.1's ratio rule), while the column the thumb travels in is ordinary humanization and
-        has no business being decided by a geometry module. `_sample_read_step` has already
-        validated it into 0.10..0.90, which is exactly the window `plan_scroll_step` accepts.
+        rather than replaced: the distance is what has to follow the band's own geometry, while
+        the column the thumb travels in is ordinary humanization and has no business being
+        decided by a geometry module. `_sample_read_step` has already validated it into
+        0.10..0.90, which is exactly the window `plan_coverage_step` accepts.
 
-        `min_spacing_px` is the smallest spacing measured anywhere on THIS profile so far, which
-        is the loop's only piece of memory: it makes the step shrink permanently once a short
-        card has been seen, which is the only defence against a card that is still below the
-        fold. Per profile -- carrying it across a deck advance would be wrong.
+        NO PIECE OF CROSS-FRAME STATE IS THREADED IN, deliberately, and that is new: the old
+        ratio rule needed `min_spacing_px` (the profile's smallest measured spacing so far) as
+        its one piece of memory, because a short card still below the fold was a hazard the
+        CURRENT frame's own geometry could not see. The coverage throttle has no equivalent gap
+        -- `plan_coverage_step`'s own module docstring proves it needs only THIS frame's trailing
+        card, never a running minimum -- so there is nothing here for a caller to carry between
+        calls.
 
-        NO `**plan_kwargs` PASS-THROUGH, deliberately. `ratio_window`, `max_step_px` and
-        `fallback_spacing_px` are the offline-validation door doc 5.6 flags: widening one takes
-        the gesture outside the envelope every measurement in this stack was taken inside. A
-        production caller passes none of them, and the way to keep that true is to have nowhere
-        to put them. ``allow_segmentation_failure_fallback`` is intentionally not a geometry
-        override: the capture loop may use it only for the capped contiguous run, producing an
-        explicitly marked corpus-minimum step whose contradictory frames must be omitted by
-        item_index's separate measured-bridge rebuild before they can ever produce an opener.
+        NO `**plan_kwargs` PASS-THROUGH, deliberately, on `plan_scroll_step`'s own precedent:
+        `trust_ceiling_band_frac`, `max_card_height_px` and `window_low_frac` are the offline-
+        validation door doc 5.6 flags for THIS rule; widening one takes the gesture outside the
+        envelope every measurement in this stack was taken inside. A production caller passes
+        none of them, and the way to keep that true is to have nowhere to put them.
+        ``allow_segmentation_failure_fallback`` is intentionally not a geometry override: the
+        capture loop may use it only for the capped contiguous run, producing an explicitly
+        marked corpus-minimum step whose contradictory frames must be omitted by item_index's
+        separate measured-bridge rebuild before they can ever produce an opener.
         """
         segmentation = segment_frame(frame, content_band=self.content_band,
                                      like_template=self._template("like"),
                                      like_threshold=_LIKE_MATCH_THRESHOLD)
-        return plan_scroll_step(segmentation, x_frac=x_frac,
-                                profile_min_spacing_px=min_spacing_px,
-                                allow_segmentation_failure_fallback=
-                                allow_segmentation_failure_fallback)
+        return plan_coverage_step(segmentation, x_frac=x_frac,
+                                  allow_segmentation_failure_fallback=
+                                  allow_segmentation_failure_fallback)
 
     @staticmethod
     def _match_video_mute(frame: bytes, rect: tuple[int, int, int, int],
@@ -5969,9 +5978,13 @@ class AndroidDriver(DatingAppDriver):
         enumeration_ceiling_raised = enumerating
         self._profile_capture_limit = self._capture_limit_for_profile(
             _ENUMERATION_CAPTURE_LIMIT if enumerating else None)
-        # The smallest heart-bearing card spacing measured anywhere on THIS profile so far; see
-        # _plan_enumeration_step. None until the first frame that can measure one.
-        enum_min_spacing_px: int | None = None
+        # NOTE for anyone looking for a `enum_min_spacing_px`-shaped running minimum here: the
+        # coverage-aimed rule (2026-08-24, scroll_step.plan_coverage_step) does not carry one.
+        # Its throttle is read entirely off the CURRENT frame's own trailing card (see
+        # `_open_trailing_block_depth`'s module comment for the proof that this needs no
+        # cross-frame memory to stay sound), unlike the aliasing-ratio rule it replaced for this
+        # read, which had to remember a profile's smallest spacing to defend against a short card
+        # still below the fold.
         # A short contiguous contradictory run can continue at the corpus-minimum cadence, but
         # only so item_index gets a consecutive sequence in which to independently omit it and
         # remeasure its direct bridge. A fifth contradiction ends enumeration as before.
@@ -6284,7 +6297,7 @@ class AndroidDriver(DatingAppDriver):
                         try:
                             with _time_bucket(stamps, "enumeration_step_s"):
                                 step = self._plan_enumeration_step(
-                                    frame, x_frac, enum_min_spacing_px,
+                                    frame, x_frac,
                                     allow_segmentation_failure_fallback=
                                     len(enum_segmentation_fallback_frames)
                                     < MAX_SEGMENTATION_FALLBACK_FRAMES)
@@ -6295,7 +6308,7 @@ class AndroidDriver(DatingAppDriver):
                                 f"{len(photos) - 1} of this profile ({type(exc).__name__}: {exc})")
                         else:
                             frac, x_frac = step.frac, step.x_frac
-                            if step.basis == STEP_SEGMENTATION_FALLBACK:
+                            if step.basis == COVERAGE_STEP_SEGMENTATION_FALLBACK:
                                 # This is only reachable inside the explicitly capped bad-frame run:
                                 # the next call after the cap disables the opt-in and raises normally.
                                 # Save every raw frame permanently for the direct-bridge audit.
@@ -6308,13 +6321,8 @@ class AndroidDriver(DatingAppDriver):
                                         frame_index=fallback_frame,
                                         fallback_frame_indices=enum_segmentation_fallback_frames,
                                         reason=step.reason,
-                                        profile_min_spacing_px=enum_min_spacing_px,
                                         step_px=step.step_px,
-                                        sized_against_px=step.sized_against_px)
-                            if step.spacing.measured:
-                                enum_min_spacing_px = (
-                                    step.spacing.px if enum_min_spacing_px is None
-                                    else min(enum_min_spacing_px, step.spacing.px))
+                                        cap_px=step.cap_px)
                     # The read dwell is the single longest stretch of this loop (dwell_s=1.1
                     # humanized, x11), so it is where a Stop most often lands. Credit
                     # read_dwell_s_total only with time actually spent: this counter is the

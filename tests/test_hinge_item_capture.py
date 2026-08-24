@@ -1565,13 +1565,14 @@ def test_the_crops_are_crops_and_not_the_frames_they_came_from():
 # The scroll: sized from the card in front of us, still through the humanized path
 # =====================================================================================
 
-def test_the_enumeration_step_is_sized_from_local_spacing_never_the_config_cadence():
-    """Doc 5.10.1's ratio rule, on the gestures actually issued. Production's `read_scroll_frac`
-    (0.55, 1299px) is ~1.6x this page's smallest 813px heart spacing, i.e. deep inside the
-    aliasing band where "the same heart moved" and "the next heart arrived" are geometrically
-    indistinguishable. Every gesture this read makes must instead land inside the window the
-    plan drew from: at or above the driver's own smallest legal read-scroll, and at or below
-    0.36 of the local spacing."""
+def test_the_enumeration_step_is_sized_from_page_geometry_never_the_config_cadence():
+    """`scroll_step.plan_coverage_step` (2026-08-24), on the gestures actually issued. Production's
+    `read_scroll_frac` (0.55, 1299px) is past `frameshift.estimate_shift`'s 900px trust window
+    outright — a pair at that cadence is refused before any card-spacing question is even asked.
+    Every gesture this read makes must instead land inside the coverage-aimed window: at or above
+    the driver's own smallest legal read-scroll, and at or below the 720px trust-window ceiling
+    (`_ENUM_TRUST_CEILING_BAND_FRAC` of this device's 1800px analysed band) — never above it, even
+    when a still-open card's own depth would have permitted less."""
     adb = WorldAdb()
     drv = _drv(adb)
 
@@ -1579,8 +1580,7 @@ def test_the_enumeration_step_is_sized_from_local_spacing_never_the_config_caden
 
     assert adb.gestures, "the read must have scrolled"
     floor_px = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
-    ceiling_px = int(scroll_step._STEP_RATIO_MAX * min(
-        b - a for a, b in zip(_HEART_PAGE_Y, _HEART_PAGE_Y[1:], strict=False)))
+    ceiling_px = round(scroll_step._ENUM_TRUST_CEILING_BAND_FRAC * (_BAND1 - _BAND0))
     for frac, _lane in adb.gestures:
         assert frac != drv.read_scroll_frac
         assert floor_px <= scroll_step.step_px_for_frac(frac, _H) <= ceiling_px
@@ -1719,6 +1719,24 @@ def test_the_ranker_still_sees_scroll_captures_frames_not_the_enumeration_ceilin
     real_screencap = adb.screencap
     monkeypatch.setattr(adb, "screencap", lambda: served.__iadd__([real_screencap()]) and served[-1])
     drv = _drv(adb)
+
+    # Force the smallest legal step every gesture, decoupling this test from whatever cadence
+    # plan_coverage_step's real page-geometry throttle happens to choose on this fixture's world
+    # (2026-08-24: the coverage-aimed rule reads this same WorldAdb page in far fewer frames than
+    # the old ratio rule did, since it is not bound to ~1/3 of the local card spacing). The
+    # property under test is the THINNING (BUG 3's fix) firing when enumeration reads MORE frames
+    # than `scroll_captures`, not any particular step size, so forcing the driver's own smallest
+    # sanctioned read-scroll is the most direct way to guarantee that precondition here.
+    real_plan = HingeDriver._plan_enumeration_step
+
+    def forced_floor_step(self, frame, x_frac, **kwargs):
+        step = real_plan(self, frame, x_frac, **kwargs)
+        floor_px = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
+        return dataclasses.replace(
+            step, frac=hinge._READ_SCROLL_FRAC_MIN, step_px=floor_px,
+            window_px=(floor_px, floor_px))
+
+    monkeypatch.setattr(HingeDriver, "_plan_enumeration_step", forced_floor_step)
 
     profile = drv._capture_current()
 
@@ -2137,7 +2155,21 @@ def test_item_index_runtime_provenance_hashes_loaded_indexer_not_worktree_source
 
     # Loaded calibration globals are part of the same contract, rather than an invisible
     # behavioural input outside the code-object digest.
-    monkeypatch.setattr(item_index, "_MAX_STEP_PX", item_index._MAX_STEP_PX + 1)
+    #
+    # NOT `_MAX_STEP_PX` (2026-08-24): that constant stopped being a global any reachable function
+    # body reads live the day `_structural_landmarks` and its family took a `max_step_px`
+    # PARAMETER instead (see item_index.py's "PITCH-RELATIVE LANDMARK-PAIRING BOUND" section) --
+    # production now always threads a profile-derived value in explicitly, and `_MAX_STEP_PX`
+    # survives only as that parameter's bare-test DEFAULT, captured once into each function's own
+    # `__defaults__` at import time. A default is already part of the code hash below (see
+    # `encoded_defaults`), but rebinding the MODULE-LEVEL name afterwards changes nothing a
+    # function reads, which is a correct reflection of production reality, not a gap: production
+    # never falls back to that default. `_AGREEMENT_TOLERANCE_PX` is `_matched_delta_clusters`'s
+    # own live-read global (reached one level below the seed list, exactly what
+    # `test_item_index_runtime_provenance_reaches_the_helpers_below_its_leaf_dependencies` checks
+    # for) and keeps this test's original point intact.
+    monkeypatch.setattr(
+        item_index, "_AGREEMENT_TOLERANCE_PX", item_index._AGREEMENT_TOLERANCE_PX + 1)
     calibration_changed = hinge._item_index_runtime_provenance()
     assert calibration_changed["indexer_code_sha256"] != helper_changed["indexer_code_sha256"]
 
@@ -2187,19 +2219,24 @@ def test_item_index_runtime_provenance_survives_a_self_referential_global(monkey
     baseline = hinge._item_index_runtime_provenance()
     assert baseline["indexer_code_sha256"] is not None
 
-    # `_MAX_STEP_PX` is read inside a function BODY, so it reaches the globals walk. Prove that
-    # here rather than assuming it: a constant that only supplies a keyword default would NOT
-    # reach it (those are captured off the loaded function's `__defaults__`, where a post-import
-    # rebinding correctly changes nothing), and this test would then pass without exercising
-    # anything at all.
+    # `_AGREEMENT_TOLERANCE_PX` is read inside a function BODY (`_matched_delta_clusters`), so it
+    # reaches the globals walk. Prove that here rather than assuming it: a constant that only
+    # supplies a keyword default would NOT reach it (those are captured off the loaded function's
+    # `__defaults__`, where a post-import rebinding correctly changes nothing), and this test
+    # would then pass without exercising anything at all. `_MAX_STEP_PX` was this test's original
+    # example and stopped being one 2026-08-24, when `_structural_landmarks` and its family moved
+    # to a `max_step_px` PARAMETER (item_index.py's "PITCH-RELATIVE LANDMARK-PAIRING BOUND"); see
+    # `test_item_index_runtime_provenance_hashes_loaded_indexer_not_worktree_source`'s own comment
+    # on the same swap for the full reasoning.
     with monkeypatch.context() as patched:
-        patched.setattr(item_index, "_MAX_STEP_PX", item_index._MAX_STEP_PX + 1)
+        patched.setattr(
+            item_index, "_AGREEMENT_TOLERANCE_PX", item_index._AGREEMENT_TOLERANCE_PX + 1)
         assert (hinge._item_index_runtime_provenance()["indexer_code_sha256"]
                 != baseline["indexer_code_sha256"]), "pick a global the walk actually reads"
 
     cyclic: dict = {"frames": 3}
     cyclic["self"] = cyclic
-    monkeypatch.setattr(item_index, "_MAX_STEP_PX", cyclic)
+    monkeypatch.setattr(item_index, "_AGREEMENT_TOLERANCE_PX", cyclic)
 
     provenance = hinge._item_index_runtime_provenance()
     assert provenance["indexer_code_sha256"] is not None
@@ -2462,10 +2499,10 @@ def test_a_dependency_that_raises_becomes_the_same_stated_reason(tmp_path):
 
 
 def test_a_scroll_that_cannot_be_sized_ends_the_enumeration_without_ending_the_read():
-    """`plan_scroll_step` raises rather than substituting a larger step when the local card
-    spacing is too small for any permitted gesture to respect the ratio rule. That must end the
-    ENUMERATION (no crops, a stated reason) while the read finishes normally -- the frames have
-    a second consumer that has no index in them to be wrong about."""
+    """`plan_coverage_step` raises rather than substituting a larger step when even the smallest
+    permitted gesture would risk scrolling an open card's top row out of the band. That must end
+    the ENUMERATION (no crops, a stated reason) while the read finishes normally -- the frames
+    have a second consumer that has no index in them to be wrong about."""
     adb = WorldAdb()
     drv = _drv(adb)
 
@@ -2473,7 +2510,7 @@ def test_a_scroll_that_cannot_be_sized_ends_the_enumeration_without_ending_the_r
         raise scroll_step.ScrollStepError("the local card spacing is 400px")
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(hinge, "plan_scroll_step", _refuse)
+        mp.setattr(hinge, "plan_coverage_step", _refuse)
         profile = drv._capture_current()
 
     assert profile.items == ()

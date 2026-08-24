@@ -819,3 +819,402 @@ def _frac_window() -> tuple[float, float]:
     """
     from .hinge import _READ_SCROLL_FRAC_MAX, _READ_SCROLL_FRAC_MIN
     return float(_READ_SCROLL_FRAC_MIN), float(_READ_SCROLL_FRAC_MAX)
+
+
+# =====================================================================================
+# COVERAGE-AIMED STEP (2026-08-24). A second, independent rule for the SAME `frac`/`x_frac`
+# call site, replacing `plan_scroll_step` for the enumeration read only.
+#
+# WHY A SECOND RULE, RATHER THAN A BIGGER `_STEP_RATIO_MAX` ABOVE
+# ------------------------------------------------------------------
+# Live per-frame instrumentation on the real Pixel 7a (2026-08-23, unattributed 0.0%) measured a
+# 227s / 36-frame enumeration read at ~6.0s/frame, ~2.94s of it the gesture alone. Cutting frames
+# is worth ~6s each, and 36 frames on a ~9,843px profile is ~280px/step -- far finer than the
+# index actually needs. But `plan_scroll_step` above is not sized for speed; it is sized so a
+# NAIVE frame-to-frame HEART-TRACKING match cannot alias against the card pitch (5.10.1). The
+# item index this repo ships (`item_index.build_item_index`) does not track hearts frame to frame
+# at all -- it folds every sighting by ABSOLUTE PAGE POSITION from `frameshift.estimate_shift`'s
+# offset chain (item_index.py's own module docstring, "THE TWO INDEX SPACES"), and its own
+# module docstring records what an over-large step actually costs THAT architecture: a stride-2
+# resample of the 363px-cadence corpus (726px/pair, ratio 0.99 against the profile's own 738px
+# minimum spacing -- deep in 5.10.1's "aliasing band") still produced a USABLE index with every
+# heart page row EXACT; the only cost was one card never bounded end to end, so it stayed
+# `ITEM_PARTIAL` (a heart ordinal, no crop) instead of `ITEM_SELECTABLE`. The aliasing ratio rule
+# above defends a hazard THIS architecture no longer has. Bumping `_STEP_RATIO_MAX`/`_MAX_STEP_PX`
+# would not fix that -- it would just relax a defense against the wrong failure while leaving the
+# real one (below) unexamined, and `item_index._structural_landmarks` would keep using the OLD
+# `_MAX_STEP_PX` as its landmark-pairing bound regardless (see that module's own comment on why
+# that bound has to move with this one, not stay fixed).
+#
+# So this is a clean second function rather than a widened first one, for the same reason
+# `frameshift.py` is a separate file from `segment.py`: a second subject of comparable size (a
+# different failure model, a different derivation) does not belong under one docstring, and
+# `item_nav.py`'s counting-navigation climb still calls `plan_scroll_step` UNCHANGED -- it is a
+# different pass (post-enumeration, walking back UP to a chosen item) that this rule was never
+# asked to touch and that still benefits from the old rule's tracking-safe cadence.
+#
+# THE TWO BOUNDS THIS RULE ACTUALLY RESPECTS, AND WHY THEY ARE DIFFERENT
+# ------------------------------------------------------------------------
+#   1. `frameshift.estimate_shift`'s TRUST WINDOW. Past `_TRUST_WINDOW_BAND_FRAC` (0.5) of the
+#      analysed band -- 900px on the calibrated 1800-row band -- a pair is refused outright
+#      (`SHIFT_BEYOND_WINDOW`), and a refused pair breaks the offset chain that makes heart
+#      ordinals ABSOLUTE (item_index.py, "THE FAILURE THIS MODULE EXISTS TO MAKE IMPOSSIBLE").
+#      The step must stay MEANINGFULLY under it, not merely under it: frameshift's own strip-
+#      quorum arithmetic ([corpus] cited in `_TRUST_WINDOW_BAND_FRAC`'s comment) says only 6 of
+#      13 strips are still geometrically eligible right at the 900px edge, so a plan that
+#      routinely asks for close to the window is routinely spending most of its quorum margin. A
+#      wide safety margin is cheap here (frames, not correctness) so this rule takes it.
+#   2. CARD COMPLETENESS. `item_index.IndexedBlock.kind` is only ever `ITEM_SELECTABLE` -- the
+#      model-choosable class -- when SOME SINGLE FRAME observed both of its edges (item_index.py:
+#      "an extent some single frame actually OBSERVED -- never a blend of two"). Skip a card past
+#      without ever showing a frame that contains it whole, top corner to bottom corner, and it
+#      demotes to `ITEM_PARTIAL`: correctly counted (heart ordinal intact, nothing mis-numbered --
+#      see item_index.py's own stride-2 measurement above) but not choosable. That is a real,
+#      measured cost this rule is built to avoid where the geometry allows it, not merely a nice-
+#      to-have: the whole point of an enumeration read is to produce items the model CAN pick.
+#
+# These are different in kind, not just in size: bound 1 is a hard architectural cliff (crossing
+# it loses the whole pair, and enough lost pairs lose the whole profile); bound 2 is a per-card
+# coverage cost (crossing it loses at most the one card in question). Bound 1 is therefore
+# enforced as a flat ceiling every step must respect; bound 2 is enforced ADAPTIVELY, per frame,
+# because a flat worst-case version of it is far more conservative than the geometry requires --
+# see the derivation below.
+#
+# DERIVING THE COVERAGE-AIMED CEILING (BOUND 1)
+# ------------------------------------------------
+# `_ENUM_TRUST_CEILING_BAND_FRAC` = 0.40, i.e. 720px on the calibrated 1800-row band. Two
+# independent numbers put the line there, both well inside frameshift's own 900px window:
+#   * [corpus] the largest shift ANY capture in this repo has end-to-end MEASURED evidence for
+#     is 787px -- the hostile 114-pair hand-scrolled capture's own maximum step, 112 of which
+#     measured cleanly (frameshift.py's module docstring). 720 sits under that with margin, not
+#     at it.
+#   * [derived] frameshift's own eligibility arithmetic (`_STRIP_COUNT` * (usable band height -
+#     shift) / usable band height, `_STRIP_COUNT`'s comment) gives ~7 of 13 strips still eligible
+#     at a 720px shift on this band, comfortably above both `_MIN_AGREEING_STRIPS` (3) and
+#     `_MIN_SATURATION_STRIPS` (2) with room to spare, against ~6 right at the 900px edge itself.
+# 720px is meaningfully under 900 (a 20% margin) and inside the corpus's own validated range, but
+# unlike the 787px and 900px figures above it has NOT itself been replay-validated end to end --
+# see the verification notes accompanying this change for what real-corpus replay could and could
+# not check about it directly, and report the measured refusal rate this produces rather than
+# assuming the margin above holds it flat.
+#
+# DERIVING THE COVERAGE MARGIN (BOUND 2's WORST CASE), AND WHY IT IS NOT THE STEP CEILING
+# -------------------------------------------------------------------------------------------
+# A card of height H is observed complete in a frame whose analysed band top sits anywhere in a
+# window of width `(band_height - H)` around the card's own top row (proof: band top <= card top
+# AND band top + band_height >= card top + H rearranges to that window). A step is therefore
+# GUARANTEED to land inside that window, for a card of ANY phase relative to it, exactly when the
+# step does not exceed the window's width. Live instrumentation on the real Pixel 7a (2026-08-23)
+# reports the tallest card yet observed at 1467px against the 1800px analysed band -- taller than
+# every card in this repo's own gitignored capture corpus (whose own maximum, `segment.py`'s
+# `685..1114`/`_FALLBACK_SPACING_PX`'s citation, tops out at 1166px, almost certainly because that
+# corpus predates Hinge's optional voice/video prompt content -- see `_ENUMERATION_CAPTURE_LIMIT`
+# in hinge.py for the same corpus-vs-production gap on a different measurement). Applying the
+# formula worst-case gives a margin of only `1800 - 1467 = 333px` -- meaningfully SMALLER than the
+# 720px trust-window ceiling above, and if this were enforced as a FLAT per-step ceiling it would
+# put bound 2, not bound 1, in charge of the frame count and give back nearly all of the saving
+# this change exists to capture (330-ish px steps is close to `_MAX_STEP_PX`, the very ceiling
+# this rule replaces).
+#
+# That flat version is not what ships. It would also be needlessly pessimistic: nothing about the
+# 1467px figure is a property of every card, only of the tallest one anybody has measured, and
+# most of a profile's cards are not that card. `_COVERAGE_MARGIN_PX` (below) exists ONLY as the
+# blind fallback for the one situation where there is truly no better information -- a frame
+# whose analysed band happens to offer no blocks at all, or one whose segmentation contradicted
+# itself. Every ordinary step instead reads the CURRENT frame's own trailing card and, if that
+# card is still open (see `_open_trailing_block_depth`), throttles to the exact distance that
+# keeps its own top row from being scrolled out of the band before it has had a chance to
+# complete -- which is provably always >= 0 and reaches 0 only the step that completes the card
+# (worked below), never a step that could skip it uncounted.
+#
+# THE ADAPTIVE THROTTLE, AND THE PROOF IT NEVER SKIPS A CARD
+# --------------------------------------------------------------
+# Let `D` be `_open_trailing_block_depth`'s answer on the frame about to be scrolled away from:
+# the row distance from the analysed band's own top row down to the still-incomplete trailing
+# block's OWN top row (which this frame, by construction, already observed -- only the block's
+# BOTTOM is missing, cut off by the band's own bottom edge). `D` is None when there is no such
+# block (the band's bottom is clean page background, or the trailing block is already complete),
+# meaning this frame places no coverage constraint on the next step at all.
+#
+# This step is capped at `min(trust_ceiling_px, D)` when `D` is not None. Two cases, and both are
+# safe by construction:
+#   * `D <= trust_ceiling_px`: the step can be exactly `D`, landing the new band's top row EXACTLY
+#     on the card's own top row. Slack against the new band's bottom is then the FULL band height,
+#     1800 on the calibrated device -- and every card this repo or its owner has ever measured,
+#     685 to 1467px, is shorter than that, so the card is complete on the very next frame. (The
+#     bound here is the band height, not the 1467px figure above; the throttle is sound for any
+#     card height less than the full band, which is a strictly weaker and safer assumption than
+#     "at most 1467px".)
+#   * `D > trust_ceiling_px`: the step is capped at `trust_ceiling_px`, the new band's top row
+#     stays strictly above the card's own top row (`D` shrinks by exactly the step taken, staying
+#     positive), and the SAME reasoning applies again next frame. `D` is monotonically decreasing
+#     under this rule and bounded below by 0, so it reaches the first case in a bounded number of
+#     steps and the card completes there -- never later, and never by being scrolled past.
+# Either way the analysed band's top row never advances past the trailing card's own top row while
+# that card remains incomplete, which is the only way this design could ever fail to eventually
+# show it whole. A card can still end up `ITEM_PARTIAL` under this rule -- exactly as it can under
+# the old ratio rule -- but only by running the loop out of its capture ceiling first
+# (`hinge._ENUMERATION_CAPTURE_LIMIT`) or the profile bottoming out first, never by this rule
+# choosing a step that skips a card's completion window it could have taken instead.
+#
+# WHAT THIS BUYS, IN FRAMES: most steps carry no open trailing card at all, or one whose depth
+# already exceeds `trust_ceiling_px` (case 2 above, itself no smaller than the flat rule this
+# replaces), so the realised cadence is dominated by bound 1's 720px ceiling; the throttle only
+# ever narrows a step below that, and only while a specific card is still being completed. See
+# the accompanying replay notes for the measured frames-per-profile this produces against real
+# capture sequences, and for how often the throttle actually engages.
+#
+# THE FALLBACK, REPORTED (mirrors `plan_scroll_step`'s STEP_FALLBACK philosophy exactly)
+# --------------------------------------------------------------------------------------
+# A frame offering no blocks at all, or one whose own segmentation contradicts itself
+# (`allow_segmentation_failure_fallback`, the capture loop's bounded opt-in -- see
+# `plan_scroll_step`'s own docstring for why that recovery is capped and reported rather than a
+# free pass), has no directly observed depth to throttle against. Both fall back to
+# `min(trust_ceiling_px, _COVERAGE_MARGIN_PX)` -- the worst-case-safe margin derived above --
+# which is smaller than bound 1 and therefore always the binding one whenever it is used, exactly
+# as `plan_scroll_step`'s own blind fallback is sized against the smallest evidence-backed spacing
+# rather than a guess. `CoverageStep.basis` reports every time this happens, precisely as
+# `ScrollStep.basis` already does for the other rule.
+#
+# NO FEEDBACK FROM THE DELIVERED DISTANCE (owner rule: open-loop planning)
+# ---------------------------------------------------------------------------
+# This module never reads `frameshift.estimate_shift`'s measured delta for the stroke it just
+# planned, and nothing here should ever be changed to make it do so. Steps are bounded from
+# ABOVE only, so an under-delivered stroke (touch slop, a swallowed gesture, a fling that fell
+# short) yields MORE frame-to-frame overlap, never less -- the safe direction, and the reason a
+# closed loop on delivered distance would buy nothing but a second source of noise. The `frame`
+# actually captured after the stroke is what the NEXT call's `segmentation` is built from, which
+# is the same open-loop, re-observe-and-replan shape `plan_scroll_step` already uses.
+# =====================================================================================
+
+# See "DERIVING THE COVERAGE-AIMED CEILING" above.
+_ENUM_TRUST_CEILING_BAND_FRAC = 0.40
+
+# Live instrumentation, 2026-08-23 (Pixel 7a, unattributed 0.0%): the tallest card yet observed,
+# against the 1800px calibrated band. Consumed ONLY by the blind fallback below -- see "WHAT THIS
+# BUYS, IN FRAMES" for why the adaptive throttle itself does not need this figure to be sound.
+# NOT independently reproduced from this repo's own gitignored capture corpus, whose own maximum
+# (segment.py/scroll_step.py's `685..1114`/`1166` citations) is smaller, almost certainly because
+# that corpus predates Hinge's optional voice/video prompt content -- flagged here rather than
+# silently treated as re-derived, on the same "report, do not fake" rule `plan_scroll_step`'s own
+# fallback follows.
+_MAX_CARD_HEIGHT_PX = 1467
+
+# How far below `window_px`'s own ceiling (`cap_px`) the draw's floor is allowed to sit, before
+# the driver's own gesture floor takes over -- the coverage rule's analogue of `_STEP_RATIO_MIN`
+# above, sized the same way: wide enough that the realised distance does not pile onto one
+# repeated value (owner rule against a fixed constant), narrow enough that most of the ceiling's
+# saving is kept rather than redrawn away. 0.75 gives a +-12.5% draw around the ceiling's own
+# midpoint, the same shape `_STEP_RATIO_MIN`/`_STEP_RATIO_MAX`'s spread has around 0.31 above.
+_ENUM_WINDOW_LOW_FRAC = 0.75
+
+# The blind fallback's worst-case-safe margin: `band_height - _MAX_CARD_HEIGHT_PX` on the
+# calibrated device, 333px. See "DERIVING THE COVERAGE MARGIN" above for the full derivation and
+# why this is the FALLBACK ceiling, never the routine one. Computed in `plan_coverage_step` from
+# the frame's own band height rather than hardcoded here, on `_TRUST_WINDOW_BAND_FRAC`'s own
+# precedent ("follows content_band and screen size instead of silently becoming wrong on a
+# different device").
+
+# --- what sized the step (coverage rule's own vocabulary, deliberately distinct from
+#     `STEP_MEASURED`/`STEP_FALLBACK` above so a debug log or a replay pass can never confuse
+#     which rule planned a given step) ---------------------------------------------------------
+COVERAGE_STEP_OPEN = "coverage_open"                    # no open trailing card: bound 1 alone
+COVERAGE_STEP_THROTTLED = "coverage_throttled"           # bound 2 narrowed this step; see depth_px
+COVERAGE_STEP_FALLBACK = "coverage_fallback"             # no blocks at all: the blind margin
+COVERAGE_STEP_SEGMENTATION_FALLBACK = "coverage_segmentation_fallback"  # frame contradicted
+                                                          # itself; the same bounded, reported
+                                                          # opt-in `plan_scroll_step` uses
+
+
+@dataclass(frozen=True)
+class CoverageStep:
+    """One planned enumeration scroll under the coverage-aimed rule: what to hand
+    `_scroll_down_one`, and why.
+
+    `frac` and `x_frac` are the two arguments of that call and must BOTH be passed, for exactly
+    the reason `ScrollStep`'s own docstring gives -- passing `frac` alone makes `_scroll_down_one`
+    re-sample both from the behaviour policy and silently issue production's cadence instead.
+
+    `cap_px` is the ceiling this specific step respected -- `trust_ceiling_px`, or a smaller value
+    when `depth_px` (bound 2) or the blind fallback margin narrowed it. `depth_px` is
+    `_open_trailing_block_depth`'s answer on the frame this plan was built from: None when no
+    trailing card constrained this step, otherwise the row distance that drove the throttle (see
+    the module docstring's proof). `window_px` is the closed `(low, high)` interval this step's
+    distance was actually drawn from, carried for the same reason `ScrollStep.window_px` is: the
+    entropy of the draw is a safety property in its own right (owner rule against a fixed
+    distance), and a window narrowed to one value must be legible from the result rather than
+    inferred from a suspiciously repetitive log.
+    """
+    frac: float
+    x_frac: float
+    step_px: int
+    cap_px: int
+    trust_ceiling_px: int
+    depth_px: int | None
+    window_px: tuple[int, int]
+    basis: str
+    reason: str
+
+
+def _open_trailing_block_depth(segmentation: FrameSegmentation) -> int | None:
+    """The still-incomplete trailing card's own row distance below the analysed band's top row,
+    or None when this frame places no coverage constraint on the next step at all.
+
+    Only the BOTTOM-most block can be "open" under this design's own discipline: the throttle
+    below never lets a step advance the band's top row past an open block's own top row, so a
+    block whose top was never observed at all should not arise except at the very first captured
+    frame (handled separately by `at_scroll_top`/`ITEM_LEADING_CHROME`, not by this module) or
+    after an explicit segmentation-fallback recovery. That case is handled defensively rather than
+    ignored: it returns 0, the most conservative depth, forcing the next step down to the driver's
+    own gesture floor rather than guessing how much of the card might already be behind us.
+
+    None when `segmentation.blocks` is empty (nothing segmented at all -- treated as no local
+    evidence, not as "no risk", by the blind-fallback branch in `plan_coverage_step`) or when the
+    trailing block is already `complete` (both edges observed in THIS frame, so it needs no
+    further protection; whatever comes after it has not been seen yet and places no constraint of
+    its own until it does).
+    """
+    if not segmentation.blocks:
+        return None
+    last = segmentation.blocks[-1]
+    if last.complete:
+        return None
+    if not last.top.observed:
+        return 0
+    r0, _r1 = segmentation.band
+    return max(0, last.y0 - r0)
+
+
+def plan_coverage_step(segmentation: FrameSegmentation, *,
+                       x_frac: float = _DEFAULT_X_FRAC,
+                       screen_height: int | None = None,
+                       rng: random.Random | None = None,
+                       trust_ceiling_band_frac: float = _ENUM_TRUST_CEILING_BAND_FRAC,
+                       max_card_height_px: int = _MAX_CARD_HEIGHT_PX,
+                       window_low_frac: float = _ENUM_WINDOW_LOW_FRAC,
+                       frac_window: tuple[float, float] | None = None,
+                       allow_segmentation_failure_fallback: bool = False) -> CoverageStep:
+    """Size the next enumeration read-scroll against what THIS frame's own geometry needs for
+    coverage, rather than against the tracking-safe ratio `plan_scroll_step` uses.
+
+    Hand `step.frac` AND `step.x_frac` to `_scroll_down_one` -- both, always; see the module
+    docstring's "Both arguments, always" for `plan_scroll_step`, which applies identically here.
+
+    `screen_height` defaults to the segmented frame's own height, on `plan_scroll_step`'s own
+    reasoning (the geometry was measured in that frame's rows, so the step should be expressed in
+    the same rows by construction).
+
+    `frac_window` defaults to the driver's own sanctioned read-scroll distance window, imported
+    lazily via `_frac_window` for the same reason `plan_scroll_step` does.
+
+    Raises `ScrollStepError` when the frame contradicts itself and no fallback was opted into,
+    when the geometry cannot be computed (a non-positive screen height or band height, an invalid
+    `x_frac`/`frac_window`), when `max_card_height_px` leaves no positive coverage margin against
+    the band, or when even the driver's smallest sanctioned gesture would risk scrolling an open
+    trailing card's own top row out of the band before it could complete -- the coverage rule's
+    analogue of `plan_scroll_step`'s floor/ratio conflict, and equally rare in practice (see the
+    module docstring's proof: an open block's depth cannot be smaller than the driver's gesture
+    floor unless the block's true height would exceed the analysed band outright).
+    """
+    segmentation_failed = not segmentation.ok
+    if segmentation_failed and not allow_segmentation_failure_fallback:
+        raise ScrollStepError(
+            "refusing to size a coverage scroll from a frame whose segmentation contradicts "
+            "itself: " + "; ".join(segmentation.failures))
+
+    height = screen_height if screen_height is not None else segmentation.frame_size[1]
+    if height <= 0:
+        raise ScrollStepError(f"cannot size a scroll on a {height}px screen")
+
+    if not _X_FRAC_WINDOW[0] <= float(x_frac) <= _X_FRAC_WINDOW[1]:
+        raise ScrollStepError(
+            f"lane x_frac={x_frac} is outside the {_X_FRAC_WINDOW} window the driver validates "
+            "every read-scroll lane against; refusing here rather than letting the zone guard "
+            "raise on the gesture")
+
+    frac_lo, frac_hi = _frac_window() if frac_window is None else (
+        float(frac_window[0]), float(frac_window[1]))
+    if not 0.0 < frac_lo <= frac_hi:
+        raise ScrollStepError(
+            f"read-scroll frac window {(frac_lo, frac_hi)} is not a positive, non-inverted range")
+
+    r0, r1 = segmentation.band
+    band_height = r1 - r0
+    if band_height <= 0:
+        raise ScrollStepError(f"analysed band {(r0, r1)} has no rows to size a scroll against")
+
+    trust_ceiling_px = int(round(float(trust_ceiling_band_frac) * band_height))
+    if trust_ceiling_px < 1:
+        raise ScrollStepError(
+            f"trust ceiling resolved to {trust_ceiling_px}px: no step could ever be planned")
+
+    coverage_margin_px = band_height - int(max_card_height_px)
+    if coverage_margin_px < 1:
+        raise ScrollStepError(
+            f"max_card_height_px={max_card_height_px} leaves no positive coverage margin against "
+            f"a {band_height}px analysed band")
+
+    depth: int | None = None
+    if segmentation_failed:
+        cap_px = min(trust_ceiling_px, coverage_margin_px)
+        basis = COVERAGE_STEP_SEGMENTATION_FALLBACK
+        basis_note = (
+            "frame segmentation contradicted itself ("
+            + "; ".join(segmentation.failures) + "); ")
+    else:
+        depth = _open_trailing_block_depth(segmentation)
+        basis_note = ""
+        if depth is not None:
+            cap_px = min(trust_ceiling_px, depth)
+            basis = COVERAGE_STEP_THROTTLED
+        elif segmentation.blocks:
+            cap_px = trust_ceiling_px
+            basis = COVERAGE_STEP_OPEN
+        else:
+            cap_px = min(trust_ceiling_px, coverage_margin_px)
+            basis = COVERAGE_STEP_FALLBACK
+
+    floor_px = step_px_for_frac(frac_lo, height)
+    if floor_px > cap_px:
+        raise ScrollStepError(
+            f"{basis_note}cannot enumerate this profile: even the smallest sanctioned read-scroll "
+            f"(frac {frac_lo:g} on a {height}px screen moves {floor_px}px) would risk scrolling "
+            f"an open card's own top row out of the {band_height}px analysed band "
+            f"(depth {depth}px) before it could ever be observed complete; no larger step is "
+            "substituted, and none is what would fix this -- a smaller one would help and is not "
+            "permitted")
+
+    low_px = max(floor_px, int(round(float(window_low_frac) * cap_px)))
+    if low_px >= cap_px:
+        low_px = floor_px
+    target_px = (rng.randint if rng is not None else random.randint)(low_px, cap_px)
+
+    frac = frac_for_step_px(target_px, height)
+    frac = min(max(frac, frac_lo), frac_hi)
+    step_px = step_px_for_frac(frac, height)
+
+    # Mirrors `plan_scroll_step`'s own correction for the transport's double truncation.
+    while step_px > cap_px and frac > frac_lo:
+        frac = max(frac_lo, frac - 1.0 / height)
+        step_px = step_px_for_frac(frac, height)
+    if step_px > cap_px:  # pragma: no cover — unreachable: floor_px <= cap_px was checked above
+        raise ScrollStepError(
+            f"could not find a frac delivering at most {cap_px}px on a {height}px screen; "
+            f"closest is {step_px}px at frac {frac:g}")
+
+    if basis == COVERAGE_STEP_THROTTLED:
+        reason = (f"step {step_px}px throttled to protect an open card {depth}px below the "
+                  f"band's own top row (trust ceiling {trust_ceiling_px}px)")
+    elif basis == COVERAGE_STEP_OPEN:
+        reason = f"step {step_px}px at the {trust_ceiling_px}px trust-window ceiling"
+    else:
+        reason = (f"{basis_note}stepped {step_px}px, sized against the "
+                  f"{coverage_margin_px}px worst-case coverage margin (max card height "
+                  f"{max_card_height_px}px against a {band_height}px band)")
+    if low_px >= cap_px:
+        reason += (f"; the {low_px}px gesture floor meets the {cap_px}px ceiling here, so this "
+                  "step has no jitter left to draw")
+
+    return CoverageStep(frac=frac, x_frac=float(x_frac), step_px=step_px, cap_px=cap_px,
+                        trust_ceiling_px=trust_ceiling_px, depth_px=depth,
+                        window_px=(low_px, cap_px), basis=basis, reason=reason)

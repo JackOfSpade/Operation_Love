@@ -705,12 +705,12 @@ def test_dissenting_single_strip_requires_exact_top_bottom_and_heart(monkeypatch
         item_index.estimate_shift(_frame(0), _frame(_STEP), content_band=_CONTENT_BAND),
         [_STEP - 5, _STEP - 5, _STEP], status=frameshift.SHIFT_NO_CONSENSUS)
 
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", _STEP), ("bottom", _STEP), ("heart", _STEP + 1)))
     refused, note = item_index._layout_repaired_shift(0, before, after, raw)
     assert refused is raw and note is None
 
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", _STEP), ("bottom", _STEP), ("heart", _STEP)))
     repaired, note = item_index._layout_repaired_shift(0, before, after, raw)
     assert repaired.delta_px == _STEP and repaired.agreeing == 1
@@ -742,7 +742,7 @@ def test_dissenting_single_strip_refuses_two_exact_structural_answers(monkeypatc
         item_index.estimate_shift(*frames, content_band=_CONTENT_BAND),
         [_STEP - 5, _STEP - 5, _STEP, _STEP - 12],
         status=frameshift.SHIFT_NO_CONSENSUS)
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", _STEP), ("bottom", _STEP), ("heart", _STEP),
         ("top", _STEP - 12), ("bottom", _STEP - 12), ("heart", _STEP - 12)))
 
@@ -845,7 +845,7 @@ def test_five_pair_video_refusal_island_accepts_exact_multi_strip_boundaries(
         return (result if votes is None else
                 _shift_with_votes(result, votes, status=frameshift.SHIFT_NO_CONSENSUS))
 
-    def video_landmarks(before, after):
+    def video_landmarks(before, after, **__):
         if before.frame_digest == heartless_digest:
             return (("top", _STEP), ("top", _STEP), ("bottom", _STEP))
         return real_landmarks(before, after)
@@ -975,7 +975,7 @@ def test_exact_multi_strip_boundary_is_never_a_standalone_layout_repair(monkeypa
 
     repeated = _shift_with_votes(
         base, [_STEP, _STEP, _STEP], status=frameshift.SHIFT_NO_CONSENSUS)
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", _STEP), ("bottom", _STEP), ("heart", _STEP + 1)))
     refused, note = item_index._exact_multi_strip_shift(0, before, after, repeated)
     assert refused is repeated and note is None
@@ -983,13 +983,13 @@ def test_exact_multi_strip_boundary_is_never_a_standalone_layout_repair(monkeypa
     ambiguous = _shift_with_votes(
         base, [_STEP] * 3 + [_STEP - 18] * 3,
         status=frameshift.SHIFT_NO_CONSENSUS)
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", _STEP), ("bottom", _STEP), ("heart", _STEP),
         ("top", _STEP - 18), ("bottom", _STEP - 18), ("heart", _STEP - 18)))
     refused, note = item_index._exact_multi_strip_shift(0, before, after, ambiguous)
     assert refused is ambiguous and note is None
 
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", _STEP), ("bottom", _STEP), ("heart", _STEP)))
     proposed, note = item_index._exact_multi_strip_shift(0, before, after, repeated)
     assert proposed.delta_px == _STEP and proposed.agreeing == 3 and note is not None
@@ -1018,10 +1018,10 @@ def test_five_pair_video_grammar_requires_both_measured_brackets(monkeypatch):
     )
     heartless_digest = segmentations[1].frame_digest
     real_landmarks = item_index._structural_landmarks
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda before, after: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda before, after, **__: (
         (("top", _STEP), ("top", _STEP), ("bottom", _STEP))
         if before.frame_digest == heartless_digest else real_landmarks(before, after)))
-    monkeypatch.setattr(item_index, "_shared_gutter_witnesses", lambda *_: (
+    monkeypatch.setattr(item_index, "_shared_gutter_witnesses", lambda *_, **__: (
         (760, 813, 397, 450),))
 
     repaired, notes, provenance = item_index._repair_shifts_from_layout(segmentations, shifts)
@@ -1069,7 +1069,7 @@ def test_two_video_refusals_can_share_one_raw_measured_geometry_bridge(monkeypat
         5: (("top", 251), ("bottom", 251)),
     }
 
-    def video_landmarks(before, after):
+    def video_landmarks(before, after, **__):
         pair = digests.index(before.frame_digest)
         return landmarks[pair]
 
@@ -1176,7 +1176,7 @@ def test_video_marked_two_bridge_window_projects_one_measured_video_centroid(
     monkeypatch.setattr(item_index, "estimate_shift", video_pair)
     monkeypatch.setattr(
         item_index, "_structural_landmarks",
-        lambda before, after: landmarks[digests.index(before.frame_digest)])
+        lambda before, after, **__: landmarks[digests.index(before.frame_digest)])
     monkeypatch.setattr(
         item_index, "_shared_gutter_witnesses",
         lambda before, after, candidate: (
@@ -1529,7 +1529,12 @@ def test_positioned_mute_card_track_survives_a_static_page_stretch(monkeypatch):
     # pairs no longer offer a continuation candidate, `len(candidates) != 1` fires on the very
     # first one, frame 3 never re-enters `active`, and the later refusal at pair 4 has no track
     # left to repair it: the whole capture becomes unusable, exactly as it did live.
-    def old_track_candidate_deltas(pair_index, before, after, raw, *, extent_tolerance_px):
+    def old_track_candidate_deltas(pair_index, before, after, raw, *, extent_tolerance_px,
+                                   max_step_px=None):
+        # `max_step_px` is intentionally unused: this reimplementation reproduces the OLD,
+        # pre-fix behaviour being regression-tested (the `0 < delta` filter, not the later
+        # pitch-relative bound), and that behaviour hardcoded `item_index._MAX_STEP_PX` rather
+        # than threading a caller-supplied bound.
         candidates: set[int] = set()
         if raw.status == frameshift.SHIFT_MEASURED and raw.delta_px is not None:
             candidates.add(raw.delta_px)
@@ -1658,12 +1663,12 @@ def test_structural_measured_tail_requires_one_exact_full_layout_answer(monkeypa
         item_index.estimate_shift(*frames, content_band=_CONTENT_BAND),
         [raw_step, raw_step, raw_step], status=frameshift.SHIFT_MEASURED, delta=raw_step)
 
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", true_step), ("bottom", true_step), ("heart", true_step + 1)))
     refused, note = item_index._structural_tail_shift(0, before, after, raw)
     assert refused is raw and note is None
 
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", true_step), ("bottom", true_step), ("heart", true_step),
         ("top", true_step - 20), ("bottom", true_step - 20), ("heart", true_step - 20)))
     refused, note = item_index._structural_tail_shift(0, before, after, raw)
@@ -1698,12 +1703,12 @@ def test_nonclustered_single_strip_still_requires_an_exact_heart(monkeypatch):
         [_STEP, _STEP - 12], status=frameshift.SHIFT_NO_CONSENSUS)
     assert item_index._matched_delta_clusters(raw) == ()
 
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", _STEP - 12), ("bottom", _STEP - 12), ("heart", _STEP - 11)))
     refused, note = item_index._layout_repaired_shift(0, before, after, raw)
     assert refused is raw and note is None
 
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", _STEP - 12), ("bottom", _STEP - 12), ("heart", _STEP - 12)))
     repaired, note = item_index._layout_repaired_shift(0, before, after, raw)
     assert repaired.delta_px == _STEP - 12 and repaired.agreeing == 1
@@ -1719,7 +1724,7 @@ def test_nonclustered_single_strip_refuses_two_exact_answers(monkeypatch):
     raw = _shift_with_votes(
         item_index.estimate_shift(*frames, content_band=_CONTENT_BAND),
         [_STEP, _STEP - 12], status=frameshift.SHIFT_NO_CONSENSUS)
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", _STEP), ("bottom", _STEP), ("heart", _STEP),
         ("top", _STEP - 12), ("bottom", _STEP - 12), ("heart", _STEP - 12)))
 
@@ -1818,7 +1823,7 @@ def test_three_pair_video_transition_accepts_one_exact_shared_gutter_companion(m
             return _shift_with_votes(result, [_STEP], status=frameshift.SHIFT_NO_CONSENSUS)
         return result
 
-    def old_heart_left_before_new_heart_arrived(before, after):
+    def old_heart_left_before_new_heart_arrived(before, after, **__):
         if before.frame_digest == first_digest:
             return (("top", _STEP), ("bottom", _STEP))
         return real_landmarks(before, after)
@@ -1857,7 +1862,7 @@ def test_edge_only_candidate_cannot_bootstrap_a_short_animation_run(monkeypatch)
     real_landmarks = item_index._structural_landmarks
     monkeypatch.setattr(
         item_index, "_structural_landmarks",
-        lambda before, after: (("top", _STEP), ("bottom", _STEP))
+        lambda before, after, **__: (("top", _STEP), ("bottom", _STEP))
         if before is segmentations[0] else real_landmarks(before, after))
 
     repaired, notes, raw = item_index._repair_shifts_from_layout(
@@ -1884,7 +1889,7 @@ def test_edge_only_three_pair_pattern_requires_a_measured_middle_override(monkey
     real_landmarks = item_index._structural_landmarks
     monkeypatch.setattr(
         item_index, "_structural_landmarks",
-        lambda before, after: (("top", _STEP), ("bottom", _STEP))
+        lambda before, after, **__: (("top", _STEP), ("bottom", _STEP))
         if before is segmentations[0] else real_landmarks(before, after))
 
     repaired, notes, raw = item_index._repair_shifts_from_layout(segmentations, shifts)
@@ -1926,17 +1931,17 @@ def test_one_strip_layout_candidate_requires_all_three_landmark_kinds(monkeypatc
         item_index.estimate_shift(_frame(0), _frame(_STEP), content_band=_CONTENT_BAND),
         [_STEP], status=frameshift.SHIFT_NO_CONSENSUS)
 
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", _STEP), ("bottom", _STEP), ("top", _STEP)))
     refused, note = item_index._layout_repaired_shift(0, before, after, raw)
     assert refused is raw and note is None
 
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", _STEP), ("bottom", _STEP), ("heart", _STEP + 1)))
     refused, note = item_index._layout_repaired_shift(0, before, after, raw)
     assert refused is raw and note is None
 
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", _STEP), ("bottom", _STEP), ("heart", _STEP)))
     repaired, note = item_index._layout_repaired_shift(0, before, after, raw)
     assert repaired.status == frameshift.SHIFT_MEASURED
@@ -1989,7 +1994,7 @@ def test_layout_assisted_pair_requires_three_landmarks_across_two_types(monkeypa
     raw = _shift_with_votes(
         item_index.estimate_shift(_frame(0), _frame(_STEP), content_band=_CONTENT_BAND),
         [_STEP, _STEP], status=frameshift.SHIFT_NO_CONSENSUS)
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: landmarks)
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: landmarks)
     repaired, note = item_index._layout_repaired_shift(0, before, after, raw)
     assert repaired is raw and note is None
 
@@ -2003,12 +2008,12 @@ def test_layout_assisted_pair_rejects_large_or_ambiguous_two_strip_candidates(mo
 
     too_large = _shift_with_votes(base, [400, 400], status=frameshift.SHIFT_NO_CONSENSUS)
     monkeypatch.setattr(item_index, "_structural_landmarks",
-                        lambda *_: (("top", 400), ("bottom", 400), ("heart", 400)))
+                        lambda *_, **__: (("top", 400), ("bottom", 400), ("heart", 400)))
     repaired, note = item_index._layout_repaired_shift(0, before, after, too_large)
     assert repaired is too_large and note is None
 
     ambiguous = _shift_with_votes(base, [300, 300, 363, 363], status=frameshift.SHIFT_NO_CONSENSUS)
-    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_: (
+    monkeypatch.setattr(item_index, "_structural_landmarks", lambda *_, **__: (
         ("top", 300), ("bottom", 300), ("heart", 300),
         ("top", 363), ("bottom", 363), ("heart", 363)))
     repaired, note = item_index._layout_repaired_shift(0, before, after, ambiguous)
@@ -2892,3 +2897,194 @@ def test_usable_is_exactly_the_absence_of_failures():
     anything contradict anything", on every index this file builds."""
     for index in (_full(), _index((0, _STEP, _STEP + 1300), at_scroll_top=True)):
         assert index.usable is (index.failures == ())
+
+
+# =====================================================================================
+# PITCH-RELATIVE LANDMARK BOUND (2026-08-24) — `_pitch_relative_max_step`, replacing the fixed
+# `_MAX_STEP_PX` scalar as `_structural_landmarks`'s cross-card defence now that
+# `scroll_step.plan_coverage_step` routinely asks for steps well past 363px. See that function's
+# own module comment for the full derivation; these tests pin the two numbers it produces on
+# this file's own WORLD and prove the defence still discriminates real single-card shifts from
+# implausible cross-card ones at the new, larger cadence.
+# =====================================================================================
+
+def _blank_segmentation():
+    """A band with no card drawn at all: zero blocks, `ok` True, nothing measurable — the same
+    "no local evidence" case `plan_coverage_step`'s own blind fallback exists for."""
+    col = _page_column(_H)
+    gray = np.repeat(col[:, None], _W, axis=1)
+    gray[:_BAND0] = _CHROME_TOP
+    gray[_BAND1:] = _CHROME_BOTTOM
+    png = cv2.imencode(".png", gray)[1].tobytes()
+    return item_index.segment_frame(
+        png, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+
+
+def test_pitch_relative_bound_uses_the_profiles_own_minimum_measured_spacing():
+    """Over this file's own WORLD, the smallest measured local spacing anywhere is 812px (card 2,
+    760px tall plus the 52px gutter floor) — smaller than every other card's own pitch — and the
+    bound is that minimum less `_MIN_ITEM_GAP_PX` (47px), not a fixed scalar and not the smallest
+    CARD's own extent alone (`measure_local_spacing` already takes the minimum across three
+    measurement kinds; this function's job is only to take the minimum ACROSS FRAMES on top of
+    that, then subtract the safety margin once)."""
+    scrolls = (0, 900, 1800, 2700, 3000)
+    segmentations = [item_index.segment_frame(
+        _frame(s), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for s in scrolls]
+    assert item_index._pitch_relative_max_step(segmentations) == 812 - item_index._MIN_ITEM_GAP_PX
+    assert item_index._pitch_relative_max_step(segmentations) == 765
+    # And it is comfortably above the OLD fixed 363px ceiling: this is the whole point of the
+    # replacement — a bound this profile's own geometry can afford, not one every profile shares.
+    assert item_index._pitch_relative_max_step(segmentations) > item_index._MAX_STEP_PX
+
+
+def test_pitch_relative_bound_falls_back_to_the_corpus_minimum_when_nothing_measures():
+    """No frame in the read offers any of the three local-spacing measurements (a blank band):
+    the bound falls back to `_FALLBACK_SPACING_PX` — the smallest pitch ever measured across this
+    repo's whole calibration corpus — minus the same margin, exactly `plan_scroll_step`'s own
+    blind-fallback philosophy ("no evidence, be the most conservative thing the corpus has ever
+    justified") applied one layer up."""
+    blank = _blank_segmentation()
+    assert blank.ok and not blank.blocks
+    bound = item_index._pitch_relative_max_step([blank, blank])
+    assert bound == item_index._FALLBACK_SPACING_PX - item_index._MIN_ITEM_GAP_PX
+    assert bound == 691
+
+
+def test_pitch_relative_bound_floors_at_one_rather_than_going_non_positive():
+    """A margin larger than the measured pitch must not produce a zero or negative bound, which
+    would make every repair function's own `0 < candidate <= bound` check vacuous instead of
+    reporting a real, positive (if useless) ceiling."""
+    scrolls = (0, 900, 1800)
+    segmentations = [item_index.segment_frame(
+        _frame(s), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD) for s in scrolls]
+    assert item_index._pitch_relative_max_step(segmentations, margin_px=100_000) == 1
+
+
+def test_enum_step_ceiling_is_the_coverage_rules_own_flat_bound_not_the_pitch():
+    """`_enum_step_ceiling` answers a different question from `_pitch_relative_max_step` (how far
+    could N ordinary GESTURES have moved the content, not how close two landmarks may be) and
+    must not accidentally collapse onto it. On this file's calibrated 1800-row band it is
+    `scroll_step._ENUM_TRUST_CEILING_BAND_FRAC` (0.40) of the band height — 720px — regardless of
+    what any particular profile's card pitch happens to be."""
+    segmentations = [item_index.segment_frame(
+        _frame(0), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD)]
+    assert item_index._enum_step_ceiling(segmentations) == 720
+    assert item_index._enum_step_ceiling(segmentations) != item_index._pitch_relative_max_step(
+        segmentations)
+
+
+def test_a_candidate_between_the_old_and_new_bound_is_refused_at_363_and_accepted_past_it(
+        monkeypatch):
+    """The TRAP, demonstrated directly: a +500px candidate — physically impossible for the OLD
+    363px ceiling to ever consider, but well inside this profile's own 765px pitch-relative
+    bound — must be refused when `max_step_px` is still the old fixed scalar and accepted once
+    it is threaded through as the new, profile-derived one. This is `_layout_repaired_shift`
+    itself, not a synthetic stand-in, and the landmarks are the real segmented geometry (this
+    fixture's cards are far enough apart that no monkeypatch is needed to construct a genuine
+    +500px top/bottom/heart landmark triple)."""
+    before = item_index.segment_frame(
+        _frame(0), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+    after = item_index.segment_frame(
+        _frame(500), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+    base = item_index.estimate_shift(_frame(0), _frame(500), content_band=_CONTENT_BAND)
+    raw = _shift_with_votes(base, [500, 500], status=frameshift.SHIFT_NO_CONSENSUS)
+
+    refused, note = item_index._layout_repaired_shift(
+        0, before, after, raw, max_step_px=item_index._MAX_STEP_PX)
+    assert refused is raw and note is None
+
+    pitch_bound = item_index._pitch_relative_max_step([before, after])
+    assert item_index._MAX_STEP_PX < 500 <= pitch_bound
+    repaired, note = item_index._layout_repaired_shift(
+        0, before, after, raw, max_step_px=pitch_bound)
+    assert repaired.delta_px == 500 and note is not None
+
+
+def test_build_item_index_computes_the_pitch_bound_itself_not_the_default(monkeypatch):
+    """End to end: `build_item_index` must thread its OWN computed `_pitch_relative_max_step`
+    into the repair machinery rather than leaving every function at its bare-test default. Proven
+    by capturing what `max_step_px` each call actually receives."""
+    seen: list[int] = []
+    real = item_index._structural_landmarks
+
+    def spy(before, after, *, max_step_px=item_index._MAX_STEP_PX):
+        seen.append(max_step_px)
+        return real(before, after, max_step_px=max_step_px)
+
+    monkeypatch.setattr(item_index, "_structural_landmarks", spy)
+    frames = [_frame(0), _frame(_STEP), _frame(_STEP * 2)]
+    item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert seen, "the repair path must consult the landmark bound at least once"
+    assert all(value == seen[0] for value in seen), "one profile, one bound, every call"
+    assert seen[0] != item_index._MAX_STEP_PX
+    assert seen[0] == item_index._pitch_relative_max_step(
+        tuple(item_index.segment_frame(
+            frame, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+            like_threshold=hinge._LIKE_MATCH_THRESHOLD) for frame in frames))
+
+
+# =====================================================================================
+# COVERAGE COST AT A COARSE CADENCE: a card genuinely never observed complete is REFUSED as a
+# selectable choice — demoted to ITEM_PARTIAL — never mis-numbered. This is the existing safety
+# net (`IndexedBlock.kind`/`heart_ordinal`/`model_index`, unchanged by this pass) exercised at
+# the new, coarser cadence `scroll_step.plan_coverage_step` can now produce, rather than a new
+# mechanism: doc 5.10's fabricated-tenth-item bug is a NAIVE heart-tracker failure this
+# architecture (folding by absolute page position, never by chaining) was already immune to — see
+# item_index.py's own module docstring and scroll_step.py's "WHAT VIOLATING THE RATIO RULE
+# ACTUALLY COSTS" section for the stride-2/stride-3 measurements this test's geometry mirrors.
+# =====================================================================================
+
+def test_a_card_never_observed_complete_at_a_coarse_cadence_is_partial_not_misnumbered():
+    """Five frames at 700/600/850/750/100px steps — every one comfortably under frameshift's
+    900px trust window, so the whole chain measures cleanly — are phased so that card 3
+    (2434..3434, 1000px tall) is NEVER shown whole: frame 2 (scroll 1300, band 1600..3400) sees
+    its top but not its bottom; frame 3 (scroll 2150, band 2450..4250) sees its bottom but not
+    its top, because the band's own top row (2450) has already scrolled past card 3's own top
+    row (2434). No frame in between could have shown it either, since none exists.
+
+    The index still builds (`usable`), every OTHER card keeps its correct heart ordinal and a
+    DENSE model index over exactly the selectable ones (card 3 consumes ordinal 3 but no model
+    slot, and card 4 — heart ordinal 4 — becomes model index 3, not 4), and card 3 itself is
+    reported, not silently dropped: `ITEM_PARTIAL`, ordinal 3, `model_index is None`.
+    """
+    scrolls = (0, 700, 1300, 2150, 2900, 3000)
+    steps = [b - a for a, b in zip(scrolls, scrolls[1:], strict=False)]
+    assert all(step <= 900 for step in steps), "every pair must stay inside the trust window"
+    frames = [_frame(s) for s in scrolls]
+
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert [shift.delta_px for shift in index.shifts] == steps
+
+    by_row = {(block.page_y0, block.page_y1): block for block in index.blocks}
+    card3 = by_row[(_CARD3[1], _CARD3[2])]
+    assert card3.kind == item_index.ITEM_PARTIAL
+    assert card3.heart_ordinal == 3 and card3.model_index is None
+    assert all(not observation.complete for observation in card3.observations), (
+        "the whole point of this fixture: card 3 must never be observed complete anywhere")
+
+    card4 = by_row[(_CARD4[1], _CARD4[2])]
+    assert card4.kind == item_index.ITEM_SELECTABLE
+    assert card4.heart_ordinal == 4 and card4.model_index == 3, (
+        "the model index must stay DENSE over selectable items and skip card 3's consumed slot")
+
+    card1 = by_row[(_CARD1[1], _CARD1[2])]
+    card2 = by_row[(_CARD2[1], _CARD2[2])]
+    assert (card1.heart_ordinal, card1.model_index) == (1, 1)
+    assert (card2.heart_ordinal, card2.model_index) == (2, 2)
+    # Every heart ordinal 1..4 is accounted for exactly once — the never-substitute invariant
+    # this whole architecture exists to protect does not depend on every item being selectable.
+    assert sorted(block.heart_ordinal for block in index.blocks if block.heart_ordinal) == [
+        1, 2, 3, 4]

@@ -760,4 +760,232 @@ def test_the_fallback_spacing_is_the_corpus_minimum_and_the_ratio_window_is_abou
     assert scroll_step._FALLBACK_SPACING_PX == 738
     assert scroll_step._STEP_RATIO_MIN < 1 / 3 < scroll_step._STEP_RATIO_MAX
     assert scroll_step._STEP_RATIO_MAX <= 0.36
-    assert scroll_step._TOUCH_SLOP_PX == 21
+
+
+# =====================================================================================
+# COVERAGE-AIMED STEP (plan_coverage_step, 2026-08-24) — the enumeration read's REPLACEMENT
+# rule. `plan_scroll_step` above is untouched and is what `item_nav.py`'s counting-navigation
+# climb still calls; every test below exercises the new, separate function only.
+#
+# Ground truth for the two hard bounds, on this file's calibrated 1080x2400 device
+# (`_BAND0, _BAND1 = 300, 2100`, band height 1800):
+#   trust ceiling  = round(0.40 * 1800) = 720   (`_ENUM_TRUST_CEILING_BAND_FRAC`)
+#   coverage margin = 1800 - 1467 = 333          (`_MAX_CARD_HEIGHT_PX`)
+#   gesture floor   = 219                        (`step_px_for_frac(_READ_SCROLL_FRAC_MIN, _H)`)
+# =====================================================================================
+
+_BAND_H = _BAND1 - _BAND0                                                          # 1800
+_TRUST_CEILING_PX = round(scroll_step._ENUM_TRUST_CEILING_BAND_FRAC * _BAND_H)     # 720
+_COVERAGE_MARGIN_PX = _BAND_H - scroll_step._MAX_CARD_HEIGHT_PX                    # 333
+_GESTURE_FLOOR_PX = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)  # 219
+
+
+def _coverage_draws(seg, n=200, **kw):
+    rng = random.Random(20260824)
+    return [scroll_step.plan_coverage_step(seg, rng=rng, **kw) for _ in range(n)]
+
+
+def test_the_two_bounds_match_the_derivation():
+    """Pins the two numbers this whole rule is built from, so a later "tuning" pass has to come
+    back and read why, on `test_the_fallback_spacing_is_the_corpus_minimum...`'s own precedent."""
+    assert _TRUST_CEILING_PX == 720
+    assert _COVERAGE_MARGIN_PX == 333
+    assert _TRUST_CEILING_PX < round(0.5 * _BAND_H)          # meaningfully under frameshift's 900
+
+
+def test_an_open_frame_with_no_trailing_card_is_capped_at_the_trust_ceiling():
+    """A single short card, fully bounded well inside the band, with page background below it:
+    nothing here constrains the next step, so it is capped only by bound 1."""
+    seg = _stack((600,), top=500).segment()
+    assert scroll_step._open_trailing_block_depth(seg) is None
+    for plan in _coverage_draws(seg, n=50):
+        assert plan.basis == scroll_step.COVERAGE_STEP_OPEN
+        assert plan.depth_px is None
+        assert plan.cap_px == _TRUST_CEILING_PX
+        assert _GESTURE_FLOOR_PX <= plan.step_px <= _TRUST_CEILING_PX
+
+
+def test_an_open_card_below_the_trust_ceiling_throttles_the_step_to_its_own_depth():
+    """A short first card puts the second (incomplete, band-cut) card's own top row only 653px
+    below the band's own top row — inside the 720px trust ceiling, so bound 2 is what actually
+    binds this step, not bound 1."""
+    seg = _stack((400, 2000), top=500).segment()
+    depth = scroll_step._open_trailing_block_depth(seg)
+    assert depth == 653
+    for plan in _coverage_draws(seg, n=50):
+        assert plan.basis == scroll_step.COVERAGE_STEP_THROTTLED
+        assert plan.depth_px == depth
+        assert plan.cap_px == depth
+        assert plan.step_px <= depth < _TRUST_CEILING_PX
+
+
+def test_an_open_card_beyond_the_trust_ceiling_is_capped_at_bound_one_not_its_own_depth():
+    """The mirror of the previous test: `_tall_frame`'s second card sits 1227px below the band's
+    own top row — past the trust ceiling — so bound 1 binds instead, exactly as the module
+    docstring's case analysis says it must (the throttle can only ever narrow a step, never
+    widen it past bound 1)."""
+    seg = _tall_frame().segment()
+    depth = scroll_step._open_trailing_block_depth(seg)
+    assert depth == 1227 > _TRUST_CEILING_PX
+    for plan in _coverage_draws(seg, n=50):
+        assert plan.basis == scroll_step.COVERAGE_STEP_THROTTLED
+        assert plan.depth_px == depth
+        assert plan.cap_px == _TRUST_CEILING_PX
+        assert plan.step_px <= _TRUST_CEILING_PX
+
+
+def _reseg_after_scroll(card1_h, card2_h, *, top, cumulative_px):
+    """Re-cut `_stack((card1_h, card2_h), top=...)` as it would appear after the page has
+    already scrolled forward `cumulative_px`: every card's frame-local row is `top - moved`,
+    exactly the rigid translation a real forward scroll applies. `_stack`/`_Frame.card` already
+    clip a card's rows to `[0, _H)`, so a first card scrolled mostly off the top degrades the way
+    a real one does (fewer of its own rows visible) rather than raising -- this fixture only
+    needs its SECOND card to stay meaningful, which is what every assertion below reads.
+    """
+    return _stack((card1_h, card2_h), top=top - cumulative_px).segment()
+
+
+def test_the_adaptive_throttle_never_lets_a_step_scroll_past_an_open_cards_own_top():
+    """The module docstring's proof, run for real: repeatedly re-plan and re-segment the SAME
+    open card as the simulated band top advances, and confirm two things every step: the band top
+    never advances past the card's own top row (`depth_px` never goes negative), and the card
+    does eventually complete. A generous step ceiling on the loop itself turns a hang into a
+    reported failure instead.
+
+    Starts the open (second) card 1653px below the band's own top — past the 720px trust
+    ceiling, so the first steps are bound-1-limited exactly as
+    `test_an_open_card_beyond_the_trust_ceiling_is_capped_at_bound_one_not_its_own_depth` proved
+    in isolation — and gives it a 1750px height, taller than the 1467px worst case the blind
+    fallback assumes (but, necessarily, still under the 1800px band itself: nothing can ever
+    complete a card taller than the band regardless of step size, which is a structural
+    impossibility rather than a step-sizing question), specifically to show the adaptive path
+    does not need the 1467px figure to be correct — see the module docstring: it is sound for
+    any height under the full band.
+    """
+    card1_h, card2_h, top = 1400, 1750, 500
+    rng = random.Random(20260824)
+    cumulative_px = 0
+    depths: list[int] = []
+    for _ in range(20):
+        seg = _reseg_after_scroll(card1_h, card2_h, top=top, cumulative_px=cumulative_px)
+        depth = scroll_step._open_trailing_block_depth(seg)
+        if depth is None:
+            assert seg.blocks[-1].complete, "the only way depth is None is a resolved trailing card"
+            break
+        assert depth >= 0, "the simulated band top has scrolled past the open card's own top row"
+        depths.append(depth)
+        plan = scroll_step.plan_coverage_step(seg, rng=rng)
+        assert plan.step_px <= depth, "one step must not exceed what the proof allows"
+        cumulative_px += plan.step_px
+    else:
+        pytest.fail(f"the card never completed in 20 steps; depths were {depths}")
+
+    # The proof's own shape: depth is non-increasing (this design never backs off), and it does
+    # shrink — a throttle that let depth stall while the card stayed incomplete would be the bug
+    # this whole rule exists to prevent.
+    assert depths == sorted(depths, reverse=True)
+    assert depths[0] > depths[-1]
+
+
+def test_a_frame_with_no_blocks_at_all_falls_back_to_the_blind_coverage_margin():
+    """A blank band (no card drawn) offers no trailing block to read a depth off — the coverage
+    rule's analogue of `plan_scroll_step`'s STEP_FALLBACK, and it is bounded by the SAME derived
+    worst-case margin (333px) rather than the trust ceiling, since there is no local evidence to
+    trust further than that."""
+    seg = _Frame().segment()
+    assert seg.ok and not seg.blocks
+    for plan in _coverage_draws(seg, n=50):
+        assert plan.basis == scroll_step.COVERAGE_STEP_FALLBACK
+        assert plan.depth_px is None
+        assert plan.cap_px == _COVERAGE_MARGIN_PX
+        assert plan.step_px <= _COVERAGE_MARGIN_PX
+
+
+def test_a_self_contradictory_frame_is_refused_without_the_opt_in():
+    """Mirrors `plan_scroll_step`'s own refusal: a frame whose OWN segmentation contradicts
+    itself (two hearts in one block) is not something this rule will size a blind step from
+    unless the caller explicitly opts in, on `MAX_SEGMENTATION_FALLBACK_FRAMES`'s bounded-run
+    precedent."""
+    frame = _Frame().card(500, 1474, heart=True)
+    frame.heart(1474 - 300)                    # a second heart inside the same card
+    seg = frame.segment()
+    assert not seg.ok
+    with pytest.raises(scroll_step.ScrollStepError):
+        scroll_step.plan_coverage_step(seg)
+
+
+def test_the_opted_in_segmentation_fallback_is_bounded_and_reported():
+    """The explicit opt-in produces the same blind margin, correctly labelled so a debug log or
+    a replay pass can tell it apart from an ordinary unmeasured frame."""
+    frame = _Frame().card(500, 1474, heart=True)
+    frame.heart(1474 - 300)
+    seg = frame.segment()
+    plan = scroll_step.plan_coverage_step(
+        seg, allow_segmentation_failure_fallback=True, rng=random.Random(1))
+    assert plan.basis == scroll_step.COVERAGE_STEP_SEGMENTATION_FALLBACK
+    assert plan.cap_px == _COVERAGE_MARGIN_PX
+    assert "contradicted itself" in plan.reason
+
+
+def test_an_open_card_too_close_to_the_bands_top_refuses_rather_than_risking_it():
+    """The coverage rule's analogue of `plan_scroll_step`'s floor/ratio conflict: a card whose
+    true height exceeds the analysed band cannot be protected by any legal gesture once its
+    own depth has shrunk below the gesture floor — 10px of slack against a 219px floor. Refusing
+    is correct here (see the module docstring's proof: real Hinge cards are all measured under
+    the band height, so this specific shape should not arise in production; the test constructs
+    it directly to prove the refusal path exists and fires rather than silently skipping the
+    card)."""
+    seg = _stack((5000,), top=310).segment()
+    depth = scroll_step._open_trailing_block_depth(seg)
+    assert depth == 10 < _GESTURE_FLOOR_PX
+    with pytest.raises(scroll_step.ScrollStepError, match="risk"):
+        scroll_step.plan_coverage_step(seg)
+
+
+def test_max_card_height_at_the_band_height_leaves_no_margin_and_refuses():
+    """The boundary of the coverage-margin derivation itself: `band_height - max_card_height_px`
+    must stay positive, or the blind fallback would have no safe distance to stand on."""
+    seg = _stack((600,), top=500).segment()
+    with pytest.raises(scroll_step.ScrollStepError, match="coverage margin"):
+        scroll_step.plan_coverage_step(seg, max_card_height_px=_BAND_H)
+
+
+def test_the_step_is_hazard_drawn_not_a_fixed_content_locked_distance():
+    """The owner rule against a fixed constant, checked the same way
+    `test_the_step_is_jittered_rather_than_a_fixed_content_locked_distance` checks it for the
+    other rule: many draws on the identical frame must not collapse onto one repeated value."""
+    seg = _stack((600,), top=500).segment()
+    plans = _coverage_draws(seg, n=200)
+    distinct = {plan.step_px for plan in plans}
+    assert len(distinct) > 20, "too many draws are landing on the same few pixel values"
+    most_common = max({v: sum(1 for p in plans if p.step_px == v) for v in distinct}.values())
+    assert most_common / len(plans) < 0.10
+
+
+def test_the_jitter_window_narrows_from_the_gesture_floor_when_the_ceiling_is_tight():
+    """`window_low_frac` narrows the draw window's low end toward the ceiling as usual, but the
+    gesture floor always wins over it — the same override `plan_scroll_step`'s own ratio-window
+    low end respects, on the same device-imposed reasoning."""
+    # A depth just above the gesture floor: 0.75 * 250 = 187.5 < 219, so the floor wins and the
+    # window closes onto a narrow band anchored at the floor rather than at 0.75 * cap. (The
+    # second card's frame-local top is `top + 400 + _GUTTER`, so depth = top + 453 - _BAND0;
+    # top=97 is what puts it at exactly 250.)
+    seg = _stack((400, 2000), top=97).segment()
+    depth = scroll_step._open_trailing_block_depth(seg)
+    assert depth == 250
+    plan = scroll_step.plan_coverage_step(seg, rng=random.Random(2))
+    assert plan.window_px[0] == _GESTURE_FLOOR_PX
+    assert plan.window_px[1] == depth
+
+
+def test_importing_the_coverage_rule_does_not_pull_in_the_driver():
+    """The same leaf property `test_importing_this_module_does_not_pull_in_the_driver` checks for
+    `plan_scroll_step`, run against the new function -- both share this module's deferred
+    `_frac_window` import, so neither should ever import hinge.py at module load time."""
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; import operation_love.drivers.scroll_step as m; "
+         "print('operation_love.drivers.hinge' in sys.modules); "
+         "print(m.plan_coverage_step.__name__)"],
+        capture_output=True, text=True, check=True)
+    assert out.stdout.split() == ["False", "plan_coverage_step"], out.stdout + out.stderr

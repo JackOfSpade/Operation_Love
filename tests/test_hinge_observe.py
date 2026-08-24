@@ -314,11 +314,11 @@ def test_capture_carries_one_contradictory_frame_to_index_rebuild(monkeypatch):
     monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
     monkeypatch.setattr(drv, "_confirm_enumeration_top", lambda: "")
 
-    def plan(_frame, _lane, _minimum, *, allow_segmentation_failure_fallback=False):
+    def plan(_frame, _lane, *, allow_segmentation_failure_fallback=False):
         calls.append(allow_segmentation_failure_fallback)
         return SimpleNamespace(
             frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
-            basis=(hinge.STEP_SEGMENTATION_FALLBACK if len(calls) == 1 else "measured"),
+            basis=(hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK if len(calls) == 1 else "measured"),
             spacing=SimpleNamespace(measured=False, px=None),
             reason="synthetic contradictory frame")
 
@@ -342,11 +342,11 @@ def test_capture_carries_two_adjacent_contradictory_frames_to_index_rebuild(monk
     monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
     monkeypatch.setattr(drv, "_confirm_enumeration_top", lambda: "")
 
-    def plan(_frame, _lane, _minimum, *, allow_segmentation_failure_fallback=False):
+    def plan(_frame, _lane, *, allow_segmentation_failure_fallback=False):
         calls.append(allow_segmentation_failure_fallback)
         return SimpleNamespace(
             frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
-            basis=(hinge.STEP_SEGMENTATION_FALLBACK if len(calls) <= 2 else "measured"),
+            basis=(hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK if len(calls) <= 2 else "measured"),
             spacing=SimpleNamespace(measured=False, px=None), reason="synthetic contradiction")
 
     monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
@@ -368,11 +368,11 @@ def test_capture_carries_four_adjacent_contradictory_frames_to_index_rebuild(mon
     monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
     monkeypatch.setattr(drv, "_confirm_enumeration_top", lambda: "")
 
-    def plan(_frame, _lane, _minimum, *, allow_segmentation_failure_fallback=False):
+    def plan(_frame, _lane, *, allow_segmentation_failure_fallback=False):
         calls.append(allow_segmentation_failure_fallback)
         return SimpleNamespace(
             frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
-            basis=(hinge.STEP_SEGMENTATION_FALLBACK if len(calls) <= 4 else "measured"),
+            basis=(hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK if len(calls) <= 4 else "measured"),
             spacing=SimpleNamespace(measured=False, px=None), reason="synthetic contradiction")
 
     monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
@@ -394,13 +394,13 @@ def test_capture_refuses_a_fifth_contradictory_frame(monkeypatch):
     monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
     monkeypatch.setattr(drv, "_confirm_enumeration_top", lambda: "")
 
-    def plan(_frame, _lane, _minimum, *, allow_segmentation_failure_fallback=False):
+    def plan(_frame, _lane, *, allow_segmentation_failure_fallback=False):
         calls.append(allow_segmentation_failure_fallback)
         if not allow_segmentation_failure_fallback:
             raise hinge.ScrollStepError("synthetic fifth contradiction")
         return SimpleNamespace(
             frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
-            basis=hinge.STEP_SEGMENTATION_FALLBACK,
+            basis=hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK,
             spacing=SimpleNamespace(measured=False, px=None), reason="synthetic contradiction")
 
     monkeypatch.setattr(drv, "_plan_enumeration_step", plan)

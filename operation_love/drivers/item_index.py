@@ -191,10 +191,19 @@ from .item_identity import ProfileIdentity, capture_profile_identity
 from .segment import (
     _GUTTER_PX, _GUTTER_TOLERANCE_PX, _HEART_SEPARATED_NEAR_GUTTER_PX,
     EDGE_CARD_CORNER, RUN_TOO_LONG, FrameSegmentation, segment_frame)
-# `_MAX_STEP_PX` is borrowed for the same reason: the ceiling on ONE read gesture is measured and
-# cited in scroll_step.py, and it is the gesture that produced the frames folded here, so a
-# second copy of it would be free to drift away from the step the reader actually makes.
-from .scroll_step import MAX_SEGMENTATION_FALLBACK_FRAMES, _MAX_STEP_PX
+# `_MAX_STEP_PX` is kept as the DEFAULT for every function below that takes a `max_step_px`
+# parameter -- almost every direct unit test in tests/test_item_index.py calls these functions
+# without threading one, and 363 remains a safe (if no longer profile-tuned) bound for a bare
+# two-frame synthetic pair. Production never relies on the default: `build_item_index` computes
+# `_pitch_relative_max_step` from the profile's OWN measured card spacing (see that function's
+# docstring, and item_index.py's "PITCH-RELATIVE LANDMARK-PAIRING BOUND" note below for why a
+# fixed scalar stopped being sound the day the enumeration read's cadence changed) and threads it
+# down explicitly. `_ENUM_TRUST_CEILING_BAND_FRAC`, `measure_local_spacing` and
+# `_FALLBACK_SPACING_PX` are the raw materials that computation and the separate multi-gesture
+# bridge bound (see `_enum_step_ceiling`) are built from.
+from .scroll_step import (
+    MAX_SEGMENTATION_FALLBACK_FRAMES, _ENUM_TRUST_CEILING_BAND_FRAC, _FALLBACK_SPACING_PX,
+    _MAX_STEP_PX, measure_local_spacing)
 
 
 # =====================================================================================
@@ -281,10 +290,10 @@ _MAJORITY_OVERRIDE_PX = (_EXTENT_TOLERANCE_PX + 1, 12)
 # Nothing currently authorises a 15px structure-only correction.
 _STRUCTURAL_TAIL_CORRECTION_PX = (_MAJORITY_OVERRIDE_PX[1] + 1, 14)
 
-# `_MAX_STEP_PX` (imported above) bounds a layout-supported repair: the reader targets about one
-# third of the locally observed card spacing, so a repair must still fit inside one ordinary read
-# step.  It is never a back door for a large jump that frameshift deliberately refused outside its
-# 900px trust window.
+# `_MAX_STEP_PX` (imported above) is kept only as the DEFAULT for the functions below -- the
+# scalar a bare unit test gets when it does not thread a computed bound. It is never used by
+# `build_item_index` itself; see `_pitch_relative_max_step` immediately below for what replaced
+# it there, and why a fixed scalar cannot do this job any more.
 
 # The smallest page-row gap that can separate two DISTINCT blocks. Derived, not chosen: within a
 # single frame segment.py only ever cuts on a background run inside its gutter window or on a
@@ -298,6 +307,99 @@ _STRUCTURAL_TAIL_CORRECTION_PX = (_MAJORITY_OVERRIDE_PX[1] + 1, 14)
 # groups, i.e. a fabricated item of exactly the kind doc 5.10 measured. `_EXTENT_TOLERANCE_PX` is
 # subtracted at the use site so chain slack cannot fire it on its own.
 _MIN_ITEM_GAP_PX = min(_GUTTER_PX) - _GUTTER_TOLERANCE_PX
+
+
+# =====================================================================================
+# PITCH-RELATIVE LANDMARK-PAIRING BOUND (2026-08-24)
+#
+# THE TRAP THIS REPLACES. `_structural_landmarks` (below) pairs a same-type landmark -- a card
+# top, a card bottom, a heart -- seen in `before` with one seen in `after`, and its ONLY defence
+# against pairing two DIFFERENT physical cards is `0 <= a - b <= max_step_px`: a candidate that
+# large can only be one card's own landmark, seen twice, because no smaller gap separates it from
+# its neighbour's. That defence was sound at the fixed `_MAX_STEP_PX` (363) solely because 363 is
+# smaller than 737, the smallest card pitch this repo has ever measured (scroll_step.py's own
+# `_FALLBACK_SPACING_PX` citation). It stops being a defence, silently, the moment the bound is
+# allowed to reach or exceed a real profile's own pitch -- at that point a landmark on the card
+# BELOW the true match becomes numerically indistinguishable from the true match itself, and nothing
+# else in `_structural_landmarks` would notice.
+#
+# `scroll_step.plan_coverage_step` (the enumeration read's new planner, replacing
+# `plan_scroll_step` for that read only) routinely asks for steps well past 363 -- see its own
+# module docstring -- so simply reusing 363 here would make `_structural_landmarks` reject most of
+# the profile's real landmark pairings (false negatives: fewer proposed repairs, not wrong ones),
+# while bumping the SCALAR to match the new cadence is exactly the trap above: whatever fixed
+# number covers a ~720px step is not guaranteed to stay under every profile's own pitch, and the
+# corpus's own minimum (737px) is barely above 720 in the first place.
+#
+# THE FIX is what the trap's own escape hatch says it has to be: derive the bound from THIS
+# profile's own measured card spacing, using `scroll_step.measure_local_spacing` -- the exact
+# function `plan_coverage_step`'s sibling rule (`plan_scroll_step`) already trusts for the same
+# job on the same frames -- rather than importing a constant that describes no particular profile.
+# A bound built this way is self-defending: on a profile whose cards happen to sit unusually close
+# together, `_pitch_relative_max_step` comes back smaller, `_structural_landmarks` proposes fewer
+# repairs, and MORE pairs fall through to an ordinary refusal -- exactly the accepted trade (owner-
+# approved rise in enumeration refusal rate, ~20% to ~29%) rather than a silent wrong pairing. A
+# repair that cannot be safely proposed is not attempted; it is never approximated.
+def _pitch_relative_max_step(segmentations: Sequence[FrameSegmentation], *,
+                             margin_px: int = _MIN_ITEM_GAP_PX,
+                             fallback_spacing_px: int = _FALLBACK_SPACING_PX) -> int:
+    """The landmark-pairing ceiling for THIS profile: strictly below its own smallest measured
+    card pitch, by at least one real Hinge gutter's worth of margin.
+
+    Takes the MINIMUM of `measure_local_spacing` over every segmentation in the read -- not just
+    the one pair being repaired -- on the same reasoning `plan_scroll_step`'s own
+    `profile_min_spacing_px` threading uses: a short card seen ANYWHERE on this profile is a fact
+    about the profile, not about the one frame that happened to observe it, and using only the
+    two frames of the pair under repair could let an early short-pitch profile look permissive by
+    the time a later pair needs the bound. Falls back to `_FALLBACK_SPACING_PX` (the smallest
+    pitch ever measured across this repo's whole calibration corpus, scroll_step.py's own
+    citation) when NO frame in the read offers a local measurement at all -- the same
+    "no evidence, be the most conservative thing the corpus has ever justified" rule that
+    function's own blind fallback follows, rather than inventing an unbounded pairing bound from
+    nothing.
+
+    `margin_px` is `_MIN_ITEM_GAP_PX` (47px on this device): the smallest gap this module already
+    treats as proof that two resolved blocks are DISTINCT (the comment above this function's own
+    constant). Subtracting it here is the same argument run one layer earlier -- a landmark
+    pairing within one gutter's width of the profile's own pitch is already close enough to a
+    different card's landmark that treating it as a safe single-card pairing would be no more
+    defensible than accepting two blocks that close together as separate items.
+
+    Floored at 1: a profile whose margin would go non-positive (pitch at or below the gutter
+    margin) still returns a positive bound rather than 0 or negative, which would make every
+    candidate `0 < candidate <= bound` check vacuously reject everything -- correct in spirit (no
+    safe pairing exists) but better expressed by every repair function's own dead code path than
+    by an accidental degenerate range here.
+    """
+    measured = [px for px in (measure_local_spacing(seg).px for seg in segmentations)
+               if px is not None]
+    pitch = min(measured) if measured else int(fallback_spacing_px)
+    return max(1, pitch - int(margin_px))
+
+
+# The multi-gesture bridge bound (`_repair_shifts_from_layout`'s and `build_item_index`'s own
+# frame-omission recovery use this, NOT the pitch-relative bound above -- see their call sites'
+# comments for why the two are different questions). This one answers "how far could N ordinary
+# enumeration gestures have moved the content", which tracks `plan_coverage_step`'s own flat
+# ceiling (bound 1: the trust-window margin, NOT the per-frame coverage throttle, which can only
+# ever be smaller) rather than anything about card pitch. Recomputed from the frame's own band
+# height on `frameshift._TRUST_WINDOW_BAND_FRAC`'s stated precedent ("follows content_band and
+# screen size instead of silently becoming wrong on a different device") rather than imported as a
+# px constant, because `plan_coverage_step` itself does not have one -- it derives its ceiling the
+# same way, from `_ENUM_TRUST_CEILING_BAND_FRAC` times whatever band the frame in hand actually
+# has.
+def _enum_step_ceiling(segmentations: Sequence[FrameSegmentation]) -> int:
+    """The largest a single ordinary enumeration gesture could have been asked to move.
+
+    Reads the band height off the first segmentation -- every frame in one capture shares one
+    device and one `content_band`, so any of them would answer identically; the first is simply
+    the one every existing call site in this module already has to hand (e.g.
+    `segmentations[0].band`, already read the same way for `_frame_offsets`' recovery window a
+    few lines below this function's call sites).
+    """
+    band_height = segmentations[0].band[1] - segmentations[0].band[0]
+    return max(1, int(round(_ENUM_TRUST_CEILING_BAND_FRAC * band_height)))
+
 
 # Page-background rows required BELOW the final frame's last block before the capture is called
 # "reached the end". Sized at the top of the gutter window: a gap wider than the widest gutter
@@ -716,7 +818,8 @@ def _matched_delta_clusters(shift: ShiftEstimate) -> tuple[tuple[int, tuple[int,
                  if i not in overlapping)
 
 
-def _structural_landmarks(before: FrameSegmentation, after: FrameSegmentation,
+def _structural_landmarks(before: FrameSegmentation, after: FrameSegmentation, *,
+                          max_step_px: int = _MAX_STEP_PX,
                           ) -> tuple[tuple[str, int], ...]:
     """Independent same-type landmark deltas that physically fit one read-scroll.
 
@@ -725,6 +828,11 @@ def _structural_landmarks(before: FrameSegmentation, after: FrameSegmentation,
     not yet know which blocks correspond -- that is exactly the question the candidate shift is
     answering.  The later candidate check requires several of these pairings and more than one
     landmark type, so coincidental repeated gutters alone cannot repair a shift.
+
+    `max_step_px` is the ONLY defence against pairing a landmark with a different physical card's
+    landmark of the same type -- see `_pitch_relative_max_step`'s module comment for why it must
+    be derived from THIS profile's own measured card spacing rather than a fixed scalar, and why
+    the default here is a fallback for bare unit tests, never a value production relies on.
     """
     landmarks: list[tuple[str, int]] = []
     for kind, attr in (("top", "top"), ("bottom", "bottom")):
@@ -733,11 +841,11 @@ def _structural_landmarks(before: FrameSegmentation, after: FrameSegmentation,
         right = [getattr(block, attr).y for block in after.blocks
                  if getattr(block, attr).observed]
         landmarks.extend((kind, a - b) for a in left for b in right
-                         if 0 <= a - b <= _MAX_STEP_PX)
+                         if 0 <= a - b <= max_step_px)
     left_hearts = [heart for block in before.blocks for heart in block.hearts]
     right_hearts = [heart for block in after.blocks for heart in block.hearts]
     landmarks.extend(("heart", ay - by) for ax, ay in left_hearts for bx, by in right_hearts
-                     if abs(ax - bx) <= 2 and 0 <= ay - by <= _MAX_STEP_PX)
+                     if abs(ax - bx) <= 2 and 0 <= ay - by <= max_step_px)
     return tuple(landmarks)
 
 
@@ -773,19 +881,25 @@ def _shared_gutter_witnesses(before: FrameSegmentation, after: FrameSegmentation
 
 
 def _edge_only_two_strip_shift(pair_index: int, before: FrameSegmentation,
-                               after: FrameSegmentation, shift: ShiftEstimate,
+                               after: FrameSegmentation, shift: ShiftEstimate, *,
+                               max_step_px: int = _MAX_STEP_PX,
                                ) -> tuple[ShiftEstimate, str | None]:
     """Propose the saved transition's two-NCC plus exact-shared-gutter shift.
 
     This helper never grants ordinary layout acceptance.  `_repair_shifts_from_layout` admits
     its tagged proposal only as the first member of one exact three-pair animation pattern, and
     the builder still probes the complete page before committing it.
+
+    `max_step_px` -- see `_structural_landmarks`'s docstring; this call site does not build its
+    candidates FROM that helper (it filters raw strip clusters directly) but needs the identical
+    bound for the identical reason: a candidate this large can only be a genuine single-card
+    shift when it is still safely under this profile's own measured card pitch.
     """
     if shift.status != SHIFT_NO_CONSENSUS:
         return shift, None
     passing: list[tuple[int, tuple[int, ...], tuple[int, int, int, int]]] = []
     for candidate, voters in _matched_delta_clusters(shift):
-        if len(voters) != 2 or not 0 < candidate <= _MAX_STEP_PX:
+        if len(voters) != 2 or not 0 < candidate <= max_step_px:
             continue
         witnesses = _shared_gutter_witnesses(before, after, candidate)
         if len(witnesses) == 1:
@@ -814,6 +928,7 @@ def _edge_only_two_strip_shift(pair_index: int, before: FrameSegmentation,
 def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: FrameSegmentation,
                            shift: ShiftEstimate, *,
                            extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
+                           max_step_px: int = _MAX_STEP_PX,
                            ) -> tuple[ShiftEstimate, str | None]:
     """Return a strictly layout-corroborated two-strip repair, or the original shift.
 
@@ -827,15 +942,19 @@ def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: Fr
     bank ``+256,+256,+261``, whose independently segmented top, bottom and heart all move
     ``+261``.  The enclosing run check still prevents either one-strip form from repairing an
     isolated pair.  More than one passing candidate is ambiguity, hence no repair.
+
+    `max_step_px` -- see `_structural_landmarks`'s docstring (it is threaded straight through to
+    build `landmarks` below) and `_pitch_relative_max_step`'s module comment for the full
+    derivation. It gates the raw strip-cluster `candidate` here for the identical reason.
     """
     if shift.status not in (SHIFT_NO_CONSENSUS, SHIFT_MEASURED):
         return shift, None
 
     candidates = _matched_delta_clusters(shift)
-    landmarks = _structural_landmarks(before, after)
+    landmarks = _structural_landmarks(before, after, max_step_px=max_step_px)
     passing: list[tuple[int, tuple[int, ...], tuple[tuple[str, int], ...]]] = []
     for candidate, voters in candidates:
-        if not 0 < candidate <= _MAX_STEP_PX:
+        if not 0 < candidate <= max_step_px:
             continue
         corroborating = tuple((kind, delta) for kind, delta in landmarks
                                if abs(delta - candidate) <= _AGREEMENT_TOLERANCE_PX)
@@ -861,7 +980,7 @@ def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: Fr
         matched = tuple(s.delta_px for s in shift.strips
                         if s.state == STRIP_MATCHED and s.delta_px is not None)
         for candidate in sorted(set(matched)):
-            if matched.count(candidate) != 1 or not 0 < candidate <= _MAX_STEP_PX:
+            if matched.count(candidate) != 1 or not 0 < candidate <= max_step_px:
                 continue
             exact = tuple((kind, delta) for kind, delta in landmarks if delta == candidate)
             if {kind for kind, _delta in exact} == {"top", "bottom", "heart"}:
@@ -901,7 +1020,7 @@ def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: Fr
             f"layout-assisted acceptance from {old}: {witness_label} "
             f"({', '.join(f'{value:+d}px' for value in voters)}) form +{candidate}px; "
             f"{len(corroborating)} observed structural landmark pairings across {types} "
-            f"also land within {_AGREEMENT_TOLERANCE_PX}px (one-step maximum {_MAX_STEP_PX}px)"))
+            f"also land within {_AGREEMENT_TOLERANCE_PX}px (one-step maximum {max_step_px}px)"))
     note = (
         f"frame {pair_index}'s pair with frame {pair_index + 1}: layout-assisted shift from {old} "
         f"to +{candidate}px using {witness_label} {list(voters)} plus "
@@ -910,7 +1029,8 @@ def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: Fr
 
 
 def _structural_tail_shift(pair_index: int, before: FrameSegmentation, after: FrameSegmentation,
-                           shift: ShiftEstimate,
+                           shift: ShiftEstimate, *,
+                           max_step_px: int = _MAX_STEP_PX,
                            ) -> tuple[ShiftEstimate, str | None]:
     """Propose one exact-layout tail beyond the ordinary majority-override ceiling.
 
@@ -923,13 +1043,15 @@ def _structural_tail_shift(pair_index: int, before: FrameSegmentation, after: Fr
     Its two-pixel correction window begins one pixel beyond the existing strip-supported ceiling
     and ends at the saved transition's +207px raw versus +221px exact geometry.  Fourteen pixels
     is still far below half one Hinge gutter; nothing authorises a wider structural-only answer.
+
+    `max_step_px` -- see `_structural_landmarks`'s docstring.
     """
     if shift.status != SHIFT_MEASURED or shift.delta_px is None:
         return shift, None
-    landmarks = _structural_landmarks(before, after)
+    landmarks = _structural_landmarks(before, after, max_step_px=max_step_px)
     candidates = tuple(sorted({
         delta for _kind, delta in landmarks
-        if 0 < delta <= _MAX_STEP_PX
+        if 0 < delta <= max_step_px
         and {kind for kind, other in landmarks if other == delta}
         == {"top", "bottom", "heart"}
     }))
@@ -961,7 +1083,8 @@ def _structural_tail_shift(pair_index: int, before: FrameSegmentation, after: Fr
 
 
 def _exact_multi_strip_shift(pair_index: int, before: FrameSegmentation,
-                             after: FrameSegmentation, shift: ShiftEstimate,
+                             after: FrameSegmentation, shift: ShiftEstimate, *,
+                             max_step_px: int = _MAX_STEP_PX,
                              ) -> tuple[ShiftEstimate, str | None]:
     """Propose one exact 3+-strip/full-layout boundary, for the five-pair or two-pair grammars.
 
@@ -972,16 +1095,18 @@ def _exact_multi_strip_shift(pair_index: int, before: FrameSegmentation,
     on that same pixel.  `_repair_shifts_from_layout` still grants the proposal authority only as
     a measured-bracketed endpoint of one exact five-pair refusal island, or as one of a bare
     two-pair window where both pairs clear this same bar with no interior pair between them.
+
+    `max_step_px` -- see `_structural_landmarks`'s docstring.
     """
     if shift.status != SHIFT_NO_CONSENSUS:
         return shift, None
     matched = tuple(s.delta_px for s in shift.strips
                     if s.state == STRIP_MATCHED and s.delta_px is not None)
-    landmarks = _structural_landmarks(before, after)
+    landmarks = _structural_landmarks(before, after, max_step_px=max_step_px)
     passing: list[tuple[int, int, tuple[tuple[str, int], ...]]] = []
     for candidate in sorted(set(matched)):
         supporters = matched.count(candidate)
-        if supporters < 3 or not 0 < candidate <= _MAX_STEP_PX:
+        if supporters < 3 or not 0 < candidate <= max_step_px:
             continue
         exact = tuple((kind, delta) for kind, delta in landmarks if delta == candidate)
         if {kind for kind, _delta in exact} == {"top", "bottom", "heart"}:
@@ -1009,6 +1134,7 @@ def _measured_layout_bridge(pair_index: int, before: FrameSegmentation,
                             after: FrameSegmentation, shift: ShiftEstimate, *,
                             allow_full_layout_projection: bool = False,
                             extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
+                            max_step_px: int = _MAX_STEP_PX,
                             ) -> tuple[ShiftEstimate, str | None]:
     """Describe a raw measured pair strong enough to bridge two nearby repair proposals.
 
@@ -1021,11 +1147,14 @@ def _measured_layout_bridge(pair_index: int, before: FrameSegmentation,
     remove a small NCC centroid error when at least one matched strip lands on that exact answer.
     That projection is still only a proposal; refusal pairs on both sides plus the complete page
     rebuild remain mandatory.  Anchors never use it, and nothing here lowers frameshift quorum.
+
+    `max_step_px` -- see `_structural_landmarks`'s docstring. Gates both the raw measured delta
+    (a bridge cannot exceed one plausible single-card step either) and the projection candidates.
     """
     if (shift.status != SHIFT_MEASURED or shift.delta_px is None or shift.agreeing < 3
-            or not 0 < shift.delta_px <= _MAX_STEP_PX):
+            or not 0 < shift.delta_px <= max_step_px):
         return shift, None
-    landmarks = _structural_landmarks(before, after)
+    landmarks = _structural_landmarks(before, after, max_step_px=max_step_px)
     exact = tuple((kind, delta) for kind, delta in landmarks if delta == shift.delta_px)
     kinds = {kind for kind, _delta in exact}
     if len(exact) >= 2 and len(kinds) >= 2:
@@ -1038,7 +1167,7 @@ def _measured_layout_bridge(pair_index: int, before: FrameSegmentation,
 
     candidates = tuple(sorted({
         delta for _kind, delta in landmarks
-        if 0 < delta <= _MAX_STEP_PX
+        if 0 < delta <= max_step_px
         and 0 < abs(delta - shift.delta_px) <= extent_tolerance_px
         and {kind for kind, other in landmarks if other == delta}
         == {"top", "bottom", "heart"}
@@ -1069,7 +1198,8 @@ def _measured_layout_bridge(pair_index: int, before: FrameSegmentation,
 
 def _project_to_exact_full_layout(pair_index: int, before: FrameSegmentation,
                                   after: FrameSegmentation, raw: ShiftEstimate,
-                                  proposed: ShiftEstimate,
+                                  proposed: ShiftEstimate, *,
+                                  max_step_px: int = _MAX_STEP_PX,
                                   ) -> tuple[ShiftEstimate, str | None]:
     """Project one two-strip proposal onto its unique exact full-layout delta, if different.
 
@@ -1078,6 +1208,8 @@ def _project_to_exact_full_layout(pair_index: int, before: FrameSegmentation,
     used only by the measured-bridge window.  Both selected NCC voters must remain within the
     ordinary agreement tolerance of the exact structural answer, so geometry can remove the
     rounding error but cannot nominate an unrelated shift.
+
+    `max_step_px` -- see `_structural_landmarks`'s docstring.
     """
     if (raw.status != SHIFT_NO_CONSENSUS or proposed.delta_px is None
             or proposed.agreeing != 2):
@@ -1087,10 +1219,10 @@ def _project_to_exact_full_layout(pair_index: int, before: FrameSegmentation,
                    and abs(s.delta_px - proposed.delta_px) <= _AGREEMENT_TOLERANCE_PX)
     if len(voters) != 2:
         return proposed, None
-    landmarks = _structural_landmarks(before, after)
+    landmarks = _structural_landmarks(before, after, max_step_px=max_step_px)
     candidates = tuple(sorted({
         delta for _kind, delta in landmarks
-        if 0 < delta <= _MAX_STEP_PX
+        if 0 < delta <= max_step_px
         and {kind for kind, other in landmarks if other == delta}
         == {"top", "bottom", "heart"}
         and all(abs(voter - delta) <= _AGREEMENT_TOLERANCE_PX for voter in voters)
@@ -1123,27 +1255,32 @@ def _marker_block(segmentation: FrameSegmentation, marker: VideoMuteMarker):
 
 def _track_candidate_deltas(pair_index: int, before: FrameSegmentation,
                             after: FrameSegmentation, raw: ShiftEstimate, *,
-                            extent_tolerance_px: int) -> tuple[int, ...]:
+                            extent_tolerance_px: int,
+                            max_step_px: int = _MAX_STEP_PX) -> tuple[int, ...]:
     """Strict candidate deltas a *known* video card may use to link adjacent sightings.
 
     This merely supplies alternatives for card-identity matching.  The caller separately keeps
     the raw quorum and only records a repair when the complete assembly succeeds.
+
+    `max_step_px` -- see `_structural_landmarks`'s docstring; threaded through to every nested
+    repair call below and to this function's own final filter.
     """
     candidates: set[int] = set()
     if raw.status == SHIFT_MEASURED and raw.delta_px is not None:
         candidates.add(raw.delta_px)
         projected, note = _measured_layout_bridge(
             pair_index, before, after, raw, allow_full_layout_projection=True,
-            extent_tolerance_px=extent_tolerance_px)
+            extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px)
         if note is not None and projected.delta_px is not None:
             candidates.add(projected.delta_px)
     elif raw.status == SHIFT_NO_CONSENSUS:
         proposed, note = _layout_repaired_shift(
-            pair_index, before, after, raw, extent_tolerance_px=extent_tolerance_px)
+            pair_index, before, after, raw, extent_tolerance_px=extent_tolerance_px,
+            max_step_px=max_step_px)
         if note is not None and proposed.delta_px is not None:
             candidates.add(proposed.delta_px)
             projected, projection_note = _project_to_exact_full_layout(
-                pair_index, before, after, raw, proposed)
+                pair_index, before, after, raw, proposed, max_step_px=max_step_px)
             if projection_note is not None and projected.delta_px is not None:
                 candidates.add(projected.delta_px)
     # 0 is admissible HERE and nowhere else. A page that has hit its bottom while a video keeps
@@ -1155,7 +1292,7 @@ def _track_candidate_deltas(pair_index: int, before: FrameSegmentation,
     # a shift: `_layout_repaired_shift` and `_exact_multi_strip_shift` both still refuse to
     # propose a non-positive candidate, so a 0 link can only ever confirm a pair frameshift
     # already measured as 0 and can never repair one it refused.
-    return tuple(sorted(delta for delta in candidates if 0 <= delta <= _MAX_STEP_PX))
+    return tuple(sorted(delta for delta in candidates if 0 <= delta <= max_step_px))
 
 
 def _track_anchor_count(before, after, delta: int, *,
@@ -1185,6 +1322,7 @@ def _direct_marker_bridge_delta(before_segmentation: FrameSegmentation,
                                 after_segmentation: FrameSegmentation, *,
                                 before_marker: VideoMuteMarker | None,
                                 after_marker: VideoMuteMarker | None,
+                                max_step_px: int = _MAX_STEP_PX,
                                 ) -> int | None:
     """One direct mute-control bridge across a pair with no usable pixel shift.
 
@@ -1194,6 +1332,11 @@ def _direct_marker_bridge_delta(before_segmentation: FrameSegmentation,
     imply one in-range scroll distance, are each contained by a segmented card, and that exact
     distance also moves a distinct card-local anchor.  The marker pins the card identity; the
     second anchor prevents one moving overlay from inventing a page offset by itself.
+
+    `max_step_px` -- see `_structural_landmarks`'s docstring. This function does not itself pair
+    two landmarks (the marker IS the identity evidence), but a bridge implausibly larger than one
+    plausible single-card step is exactly as suspect here as everywhere else in this repair
+    family, so it is held to the same bound.
     """
     if before_marker is None or after_marker is None or before_marker.x != after_marker.x:
         return None
@@ -1201,7 +1344,7 @@ def _direct_marker_bridge_delta(before_segmentation: FrameSegmentation,
     # A direct-marker bridge is a synthetic repair for an otherwise refused pair, never a
     # replacement for a confirmed static observation.  Zero remains valid only when frameshift
     # itself measured it and `_track_candidate_deltas` carries that raw observation forward.
-    if not 0 < delta <= _MAX_STEP_PX:
+    if not 0 < delta <= max_step_px:
         return None
     before_block = _marker_block(before_segmentation, before_marker)
     after_block = _marker_block(after_segmentation, after_marker)
@@ -1214,7 +1357,7 @@ def _direct_marker_bridge_delta(before_segmentation: FrameSegmentation,
     return delta
 
 
-def _video_exit_bridge_delta(raw: ShiftEstimate) -> int | None:
+def _video_exit_bridge_delta(raw: ShiftEstimate, *, max_step_px: int = _MAX_STEP_PX) -> int | None:
     """The one high-specificity strip value permitted immediately after a tracked exit.
 
     Once a contained mute control has affirmatively left the content band, the next frame may
@@ -1222,6 +1365,9 @@ def _video_exit_bridge_delta(raw: ShiftEstimate) -> int | None:
     are enough to nominate a distance only at that one boundary; the caller additionally requires
     the already-tracked card's heart to move by it and a unique destination card.  This never
     weakens the ordinary frameshift quorum for an untracked pair.
+
+    `max_step_px` -- see `_structural_landmarks`'s docstring. Takes only the bound, not a pair of
+    segmentations, because this candidate comes from raw strip votes alone.
     """
     if raw.status != SHIFT_NO_CONSENSUS:
         return None
@@ -1229,7 +1375,7 @@ def _video_exit_bridge_delta(raw: ShiftEstimate) -> int | None:
                     if strip.state == STRIP_MATCHED and strip.delta_px is not None)
     candidates = tuple(sorted(
         delta for delta in set(matched)
-        if 0 < delta <= _MAX_STEP_PX and matched.count(delta) >= 3))
+        if 0 < delta <= max_step_px and matched.count(delta) >= 3))
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -1262,7 +1408,8 @@ def _unique_markers_by_frame(markers: Sequence[VideoMuteMarker], frame_count: in
 def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
                         shifts: Sequence[ShiftEstimate],
                         markers: Sequence[VideoMuteMarker], *,
-                        extent_tolerance_px: int) -> dict[int, int]:
+                        extent_tolerance_px: int,
+                        max_step_px: int = _MAX_STEP_PX) -> dict[int, int]:
     """Return adjacent pair -> exact delta for uniquely tracked physical video cards.
 
     A mute hit seeds a card, then a track may continue after that overlay scrolls out of frame
@@ -1272,6 +1419,9 @@ def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
     three-strip/heart boundary may
     rejoin cards below the video. It cannot jump to the next card merely because a frame contains
     *some* video. Ambiguity removes authority rather than choosing an identity.
+
+    `max_step_px` -- see `_structural_landmarks`'s docstring; threaded to every nested delta
+    proposal below.
     """
     by_frame = _unique_markers_by_frame(markers, len(segmentations))
 
@@ -1303,15 +1453,16 @@ def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
         before_marker = marker_blocks.get(pair_index)  # only contained, unambiguous controls
         after_marker = marker_blocks.get(pair_index + 1)
         direct_marker_delta = _direct_marker_bridge_delta(
-            before_seg, after_seg, before_marker=before_marker, after_marker=after_marker)
-        exit_delta = (_video_exit_bridge_delta(raw)
+            before_seg, after_seg, before_marker=before_marker, after_marker=after_marker,
+            max_step_px=max_step_px)
+        exit_delta = (_video_exit_bridge_delta(raw, max_step_px=max_step_px)
                       if (pair_index in pending_exit_frames
                           and before_marker is None and after_marker is None) else None)
         candidates: list[tuple[object, object, int]] = []
         for before in current:
             deltas = set(_track_candidate_deltas(
                     pair_index, before_seg, after_seg, raw,
-                    extent_tolerance_px=extent_tolerance_px))
+                    extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px))
             # A raw refusal has no trusted strip candidate. A direct marker bridge is the sole
             # exception, and only when it continues the very card that is already active; a
             # later marker may never re-seed a broken trajectory below the video.
@@ -1365,11 +1516,18 @@ def _repair_video_track_shifts(segmentations: Sequence[FrameSegmentation],
                                shifts: Sequence[ShiftEstimate],
                                markers: Sequence[VideoMuteMarker], *,
                                extent_tolerance_px: int,
+                               max_step_px: int = _MAX_STEP_PX,
                                ) -> tuple[tuple[ShiftEstimate, ...], tuple[str, ...],
                                           tuple[tuple[int, ShiftEstimate], ...]]:
-    """Repair only strictly tracked video pairs, then require a whole-page rebuild."""
+    """Repair only strictly tracked video pairs, then require a whole-page rebuild.
+
+    `max_step_px` -- see `_structural_landmarks`'s docstring; threaded to every nested delta
+    proposal below, on the same profile-derived value `build_item_index` computes once via
+    `_pitch_relative_max_step` and passes to this function and to `_repair_shifts_from_layout`
+    alike.
+    """
     links = _video_track_deltas(segmentations, shifts, markers,
-                                extent_tolerance_px=extent_tolerance_px)
+                                extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px)
     markers_by_frame = _unique_markers_by_frame(markers, len(segmentations))
     repaired = list(shifts)
     notes: list[str] = []
@@ -1380,7 +1538,8 @@ def _repair_video_track_shifts(segmentations: Sequence[FrameSegmentation],
         direct_delta = _direct_marker_bridge_delta(
             before, after,
             before_marker=markers_by_frame.get(pair_index),
-            after_marker=markers_by_frame.get(pair_index + 1))
+            after_marker=markers_by_frame.get(pair_index + 1),
+            max_step_px=max_step_px)
         if (raw.status in (SHIFT_NO_CONSENSUS, SHIFT_NO_EVIDENCE)
                 and direct_delta == delta):
             # Two contained controls identify the same physical card across an otherwise noisy
@@ -1392,7 +1551,8 @@ def _repair_video_track_shifts(segmentations: Sequence[FrameSegmentation],
                 reason=("v12 mute-card direct marker bridge: positioned app control plus "
                         "one exact card-local anchor; raw strips retained in "
                         "layout_repaired_shifts"))
-        elif raw.status == SHIFT_NO_CONSENSUS and _video_exit_bridge_delta(raw) == delta:
+        elif (raw.status == SHIFT_NO_CONSENSUS
+              and _video_exit_bridge_delta(raw, max_step_px=max_step_px) == delta):
             # A link can reach this branch only after the prior pair proved the mute control
             # physically exited the band. Recheck that complete, local grammar here instead of
             # inferring it from the repaired list, so a future caller cannot invoke this helper
@@ -1415,10 +1575,11 @@ def _repair_video_track_shifts(segmentations: Sequence[FrameSegmentation],
                         "in layout_repaired_shifts"))
         elif raw.status == SHIFT_NO_CONSENSUS:
             proposed, note = _layout_repaired_shift(
-                pair_index, before, after, raw, extent_tolerance_px=extent_tolerance_px)
+                pair_index, before, after, raw, extent_tolerance_px=extent_tolerance_px,
+                max_step_px=max_step_px)
             if note is not None:
                 projected, projection_note = _project_to_exact_full_layout(
-                    pair_index, before, after, raw, proposed)
+                    pair_index, before, after, raw, proposed, max_step_px=max_step_px)
                 if projection_note is not None:
                     proposed = projected
                     note = f"{note}; {projection_note}"
@@ -1428,7 +1589,7 @@ def _repair_video_track_shifts(segmentations: Sequence[FrameSegmentation],
         elif raw.status == SHIFT_MEASURED and raw.delta_px != delta:
             proposed, note = _measured_layout_bridge(
                 pair_index, before, after, raw, allow_full_layout_projection=True,
-                extent_tolerance_px=extent_tolerance_px)
+                extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px)
             if note is None or proposed.delta_px != delta:
                 continue
             repaired[pair_index] = proposed
@@ -1450,9 +1611,14 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
                                shifts: Sequence[ShiftEstimate], *,
                                extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
                                animation_markers: Sequence[bool] = (),
+                               max_step_px: int = _MAX_STEP_PX,
                                ) -> tuple[tuple[ShiftEstimate, ...], tuple[str, ...],
                                           tuple[tuple[int, ShiftEstimate], ...]]:
     """Propose one bounded animation run, never an isolated layout repair.
+
+    `max_step_px` -- see `_structural_landmarks`'s docstring; threaded to every nested repair
+    proposal and every direct `_structural_landmarks` call below, on the same profile-derived
+    value `build_item_index` computes once via `_pitch_relative_max_step`.
 
     A real animation affects neighbouring capture pairs, whereas a coincidental strip match is
     normally isolated.  Exactly one maximal run of two or three ordinary candidates is therefore
@@ -1498,17 +1664,21 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
     for i, (before, after, shift) in enumerate(zip(segmentations[:-1], segmentations[1:], shifts,
                                                      strict=True)):
         result, note = _layout_repaired_shift(i, before, after, shift,
-                                              extent_tolerance_px=extent_tolerance_px)
+                                              extent_tolerance_px=extent_tolerance_px,
+                                              max_step_px=max_step_px)
         if note is None:
-            result, note = _edge_only_two_strip_shift(i, before, after, shift)
+            result, note = _edge_only_two_strip_shift(i, before, after, shift,
+                                                       max_step_px=max_step_px)
             if note is not None:
                 edge_only_indices.append(i)
         if note is None:
-            result, note = _structural_tail_shift(i, before, after, shift)
+            result, note = _structural_tail_shift(i, before, after, shift,
+                                                   max_step_px=max_step_px)
             if note is not None:
                 structural_tail_indices.append(i)
         if note is None:
-            result, note = _exact_multi_strip_shift(i, before, after, shift)
+            result, note = _exact_multi_strip_shift(i, before, after, shift,
+                                                     max_step_px=max_step_px)
             if note is not None:
                 exact_multi_indices.append(i)
         repaired.append(result)
@@ -1561,7 +1731,7 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
             bridge_shift, bridge_note = _measured_layout_bridge(
                 i, segmentations[i], segmentations[i + 1], shifts[i],
                 allow_full_layout_projection=(i in measured_bridge_indices),
-                extent_tolerance_px=extent_tolerance_px)
+                extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px)
             if bridge_note is None:
                 return tuple(shifts), (), ()
             if i in measured_bridge_indices:
@@ -1579,14 +1749,15 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
         shared_gutter = 0
         for i in proposal_indices:
             projected, projection_note = _project_to_exact_full_layout(
-                i, segmentations[i], segmentations[i + 1], shifts[i], repaired[i])
+                i, segmentations[i], segmentations[i + 1], shifts[i], repaired[i],
+                max_step_px=max_step_px)
             repaired[i] = projected
             if projection_note is not None:
                 notes[i] = f"{notes[i]}; {projection_note}"
             delta = repaired[i].delta_px
             exact_kinds = {
                 kind for kind, landmark_delta in _structural_landmarks(
-                    segmentations[i], segmentations[i + 1])
+                    segmentations[i], segmentations[i + 1], max_step_px=max_step_px)
                 if delta is not None and landmark_delta == delta
             }
             if exact_kinds == {"top", "bottom", "heart"}:
@@ -1642,7 +1813,7 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
                 delta = repaired[i].delta_px
                 exact_kinds = {
                     kind for kind, landmark_delta in _structural_landmarks(
-                        segmentations[i], segmentations[i + 1])
+                        segmentations[i], segmentations[i + 1], max_step_px=max_step_px)
                     if delta is not None and landmark_delta == delta
                 }
                 if exact_kinds != {"top", "bottom", "heart"}:
@@ -1657,7 +1828,7 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
                 delta = repaired[i].delta_px
                 exact_kinds = {
                     kind for kind, landmark_delta in _structural_landmarks(
-                        segmentations[i], segmentations[i + 1])
+                        segmentations[i], segmentations[i + 1], max_step_px=max_step_px)
                     if delta is not None and landmark_delta == delta
                 }
                 if position == 1:
@@ -1681,7 +1852,7 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
             delta = repaired[i].delta_px
             corroborating_kinds = {
                 kind for kind, landmark_delta in _structural_landmarks(
-                    segmentations[i], segmentations[i + 1])
+                    segmentations[i], segmentations[i + 1], max_step_px=max_step_px)
                 if delta is not None
                 and abs(landmark_delta - delta) <= _AGREEMENT_TOLERANCE_PX
             }
@@ -1704,7 +1875,7 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
             delta = repaired[i].delta_px
             exact_kinds = {
                 kind for kind, landmark_delta in _structural_landmarks(
-                    segmentations[i], segmentations[i + 1])
+                    segmentations[i], segmentations[i + 1], max_step_px=max_step_px)
                 if delta is not None and landmark_delta == delta
             }
             if exact_kinds != {"top", "bottom", "heart"}:
@@ -2499,13 +2670,22 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
     # segmenter has produced card edges and heart glyphs may a bounded animation-shaped run
     # *propose* an alternative.  Commit it only if the entire ordinary assembly succeeds at this
     # call's extent bound (8px by default); no omitted frames or best-effort prefix is involved.
+    #
+    # `pitch_max_step_px` is computed ONCE here, from every segmentation this call has in hand,
+    # and threaded into every repair call below instead of letting each one re-derive it (or,
+    # worse, fall back to its own default): see `_pitch_relative_max_step`'s module comment for
+    # why a bound that varies by profile replaced the fixed `_MAX_STEP_PX` this repair family used
+    # to share, and why computing it once here is what lets the frame-omission recovery further
+    # below (which calls `build_item_index` recursively on a REDUCED frame list) get its own
+    # independently profile-derived bound rather than inheriting this one by accident.
+    pitch_max_step_px = _pitch_relative_max_step(segmentations)
     raw_shifts = shifts
     used_video_track = False
     accepted_repair_path: str | None = None
     if mute_markers:
         shifts, repair_notes, layout_repaired_shifts = _repair_video_track_shifts(
             segmentations, shifts, mute_markers,
-            extent_tolerance_px=extent_tolerance_px)
+            extent_tolerance_px=extent_tolerance_px, max_step_px=pitch_max_step_px)
         used_video_track = bool(repair_notes)
         if repair_notes:
             accepted_repair_path = "v12_mute_card_track"
@@ -2515,7 +2695,7 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             # compatibility path as a proposal-only fallback; live Hinge never relies on it.
             shifts, repair_notes, layout_repaired_shifts = _repair_shifts_from_layout(
                 segmentations, raw_shifts, extent_tolerance_px=extent_tolerance_px,
-                animation_markers=marker_evidence)
+                animation_markers=marker_evidence, max_step_px=pitch_max_step_px)
             if repair_notes:
                 accepted_repair_path = "legacy_layout_grammar"
     else:
@@ -2523,7 +2703,7 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         # Production Hinge sends positioned markers and never grants repair authority from this.
         shifts, repair_notes, layout_repaired_shifts = _repair_shifts_from_layout(
             segmentations, shifts, extent_tolerance_px=extent_tolerance_px,
-            animation_markers=marker_evidence)
+            animation_markers=marker_evidence, max_step_px=pitch_max_step_px)
         if repair_notes:
             accepted_repair_path = "legacy_layout_grammar"
     def repair_probe_failed(candidate_shifts: Sequence[ShiftEstimate]) -> bool:
@@ -2544,7 +2724,7 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             # grammar gets one fresh all-or-nothing probe from the original raw shifts.
             legacy_shifts, legacy_notes, legacy_raw = _repair_shifts_from_layout(
                 segmentations, raw_shifts, extent_tolerance_px=extent_tolerance_px,
-                animation_markers=marker_evidence)
+                animation_markers=marker_evidence, max_step_px=pitch_max_step_px)
             if legacy_notes and not repair_probe_failed(legacy_shifts):
                 shifts, repair_notes, layout_repaired_shifts = (
                     legacy_shifts, legacy_notes, legacy_raw)
@@ -2670,6 +2850,16 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
 
     if _allow_frame_omission_recovery and candidate_runs:
         candidates: list[tuple[tuple[float, float, float, int], tuple[int, ...], ItemIndex]] = []
+        # `_enum_step_ceiling`, NOT `_pitch_relative_max_step`/`pitch_max_step_px` above: this is
+        # a different question from the landmark-pairing bound ("how far could N ordinary
+        # enumeration GESTURES have moved the content", not "how close can two landmarks be
+        # before they might belong to different cards"). It tracks the flat ceiling
+        # `scroll_step.plan_coverage_step` itself never exceeds (bound 1 in that module's own
+        # derivation) -- the per-frame coverage throttle can only ever narrow an individual
+        # gesture below this, never past it, so this stays a sound upper bound on N gestures
+        # regardless of how many of them were throttled. Computed once here, on the same
+        # one-value-per-capture reasoning `pitch_max_step_px` above was computed once for.
+        enum_step_ceiling_px = _enum_step_ceiling(segmentations)
         # With one refusal, test both sides as before.  With two adjacent refusals, their shared
         # middle frame is the sole candidate.  A non-adjacent refusal leaves the intersection
         # empty and cannot be disguised as one bad capture.  ``build_item_index`` remeasures the
@@ -2687,7 +2877,7 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
                 default_window = (segmentations[0].band[1] - segmentations[0].band[0]) // 2
                 recovery_trust_window_px = max(
                     default_window if trust_window_px is None else trust_window_px,
-                    (len(omitted_frames) + 1) * _MAX_STEP_PX)
+                    (len(omitted_frames) + 1) * enum_step_ceiling_px)
             recovered = build_item_index(
                 reduced_frames, content_band=content_band, like_template=like_template,
                 like_threshold=like_threshold, at_scroll_top=at_scroll_top,
@@ -2710,7 +2900,7 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             bridge_shift = recovered.shifts[bridge[0]] if recovered.usable else None
             ordinary_pairs_stay_one_step = all(
                 pair_index == bridge[0] or shift.delta_px is not None
-                and 0 <= shift.delta_px <= _MAX_STEP_PX
+                and 0 <= shift.delta_px <= enum_step_ceiling_px
                 for pair_index, shift in enumerate(recovered.shifts))
             if (bridge_shift is not None and bridge_shift.status == SHIFT_MEASURED
                     and ordinary_pairs_stay_one_step):
@@ -2777,7 +2967,7 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
                     f"frame {bridge[0]} to frame {bridge[1]} and the complete rebuilt index "
                     "both passed without assuming an offset"
                     + (f" (the bridge alone was measured inside the "
-                       f"{(len(omitted_frames) + 1) * _MAX_STEP_PX}px "
+                       f"{(len(omitted_frames) + 1) * enum_step_ceiling_px}px "
                        "multi-read window)" if len(omitted_frames) > 1 else "")))
 
     failures: list[str] = []

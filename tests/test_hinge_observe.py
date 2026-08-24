@@ -144,7 +144,13 @@ def _no_sleep(monkeypatch):
 
 
 # --- capture: humanized read + frame-repeat dedup -----------------------
-def test_capture_stops_when_scroll_repeats():
+def test_capture_stops_when_scroll_repeats(monkeypatch):
+    # Pin the read's one randomized pause (2026-08-24 dwell-shape change -- see
+    # _READ_PAUSE_COUNTS in hinge.py) to iteration 0, which this short read is guaranteed to
+    # reach, so read_dwell_s_total > 0 below is a deterministic assertion rather than one that
+    # only holds on the ~85% of unseeded draws that happen to land a pause somewhere this
+    # 2-iteration read actually gets to.
+    monkeypatch.setattr(HingeDriver, "_plan_read_pause_iterations", lambda self, _n: {0})
     adb = FakeAdb([b"a", b"b", b"b", b"c"])     # frame repeats after the scroll to "b"
     drv = _drv(adb)
     profile = drv._capture_current()
@@ -446,6 +452,16 @@ def test_auto_policy_varies_read_geometry_dwell_and_only_raises_capture_ceiling(
 
 
 def test_real_auto_session_policy_drives_capture_geometry_dwell_and_metadata(monkeypatch):
+    # 2026-08-24: the per-frame dwell this test used to pin down (one dwell + one settle per
+    # scroll, in strict alternation) no longer exists -- see _READ_PAUSE_COUNTS in hinge.py and
+    # ops/ANTI-BOT-RESEARCH.md's dated addendum. Pin the read's one randomized pause to "none
+    # drawn" so this test keeps proving what it always meant to prove -- the REAL production
+    # policy's scroll geometry (frac/lane) varies frame to frame and threads correctly into
+    # metadata -- without also having to hardcode a pause position the sleep-call bookkeeping
+    # below would otherwise have to guess at. The pause draw itself is covered by its own
+    # dedicated tests just below (test_read_pause_count_and_position_are_drawn_not_fixed and
+    # test_read_pause_duration_is_drawn_and_fully_credited_when_it_fires).
+    monkeypatch.setattr(HingeDriver, "_plan_read_pause_iterations", lambda self, _n: set())
     adb = FakeAdb([f"frame-{i}".encode() for i in range(12)])
     drv = _drv(adb, scroll_captures=8)
     policy = AutoSessionPolicy(rng=random.Random(19), local_hour=lambda: 15)
@@ -468,20 +484,81 @@ def test_real_auto_session_policy_drives_capture_geometry_dwell_and_metadata(mon
     assert len({round(frac, 4) for frac, _lane in drv._capture_scroll_ledger}) > 1
     assert len({round(lane, 4) for _frac, lane in drv._capture_scroll_ledger}) > 1
     assert len({round(seconds, 4) for seconds in slept}) > 1
-    # Each forward read has two waits in order: a policy-sampled dwell BEFORE the scroll,
-    # then the independent post-scroll UI settle.  The latter must happen, but represents
-    # animation latency rather than time spent reading and therefore must not inflate this
-    # metadata signal.
-    assert len(sleep_requests) == 2 * len(drv._capture_scroll_ledger)
-    read_dwells = sleep_requests[::2]
-    post_scroll_settles = sleep_requests[1::2]
-    assert len(read_dwells) == len(post_scroll_settles) == len(drv._capture_scroll_ledger)
-    assert all(seconds > 0 for seconds in post_scroll_settles)
+    # With no pause drawn, every _interruptible_sleep call is the post-scroll UI settle -- one
+    # per read-scroll, no read-dwell call at all. The settle represents animation latency rather
+    # than time spent reading, so it must not inflate read_dwell_s_total.
+    assert len(sleep_requests) == len(drv._capture_scroll_ledger)
+    assert all(seconds > 0 for seconds in sleep_requests)
     assert profile.meta["app"] == "hinge"
     assert profile.meta["capture_frames"] == len(profile.photos)
     assert profile.meta["read_scrolls"] == len(drv._capture_scroll_ledger)
-    assert profile.meta["read_dwell_s_total"] == pytest.approx(sum(read_dwells))
-    assert profile.meta["read_dwell_s_total"] < sum(slept)
+    # No pause was drawn for this read, so it must claim none of Signals behaviour #1's dwell
+    # credit -- same "an abandoned/undrawn read never claims dwell it didn't spend" rule the old
+    # per-frame site already enforced for a Stop landing mid-dwell.
+    assert profile.meta["read_dwell_s_total"] == 0.0
+
+
+def test_read_pause_count_and_position_are_drawn_not_fixed():
+    """`_plan_read_pause_iterations` decides, once per read, how many of its iterations (if any)
+    get the profile's one attention pause and which ones -- see `_READ_PAUSE_COUNTS` in hinge.py
+    and ops/ANTI-BOT-RESEARCH.md's 2026-08-24 addendum for why a FIXED position, or a hardcoded
+    "always exactly one" count, would just be the old per-frame metronome wearing a smaller
+    disguise. Both have to actually vary across reads, not merely be capable of it.
+    """
+    random.seed(4)
+    drv = _drv(FakeAdb([b"x"]))
+    eligible = 10
+    draws = [drv._plan_read_pause_iterations(eligible) for _ in range(500)]
+
+    # The count is not hardcoded to exactly one: over 500 draws at 15%/75%/10% weights, both a
+    # zero-pause and a one-pause read are certain to appear.
+    counts = {len(draw) for draw in draws}
+    assert counts >= {0, 1}, f"expected at least 0- and 1-pause reads among 500 draws, got {counts}"
+    # Every returned position is a real candidate iteration, and a read never plans more pauses
+    # than there are iterations to place them in.
+    assert all(0 <= i < eligible for draw in draws for i in draw)
+    assert all(len(draw) <= eligible for draw in draws)
+
+    single_pause_positions = {next(iter(draw)) for draw in draws if len(draw) == 1}
+    assert len(single_pause_positions) > 1, (
+        "the pause position must vary across reads, not settle on one constant iteration")
+
+
+def test_read_pause_duration_is_drawn_and_fully_credited_when_it_fires(monkeypatch):
+    """End-to-end analogue of the old per-frame dwell-accounting test, for the new single-pause
+    site: when the read's one pause DOES land on an iteration, its duration is a genuine draw
+    (not a hardcoded literal), `_interruptible_sleep` is actually asked to sleep that exact
+    amount, and `read_dwell_s_total` is credited with exactly what was slept -- nothing more,
+    nothing less. Position is pinned (to iteration 0) so this test is about the DURATION draw
+    specifically; position variety has its own test just above.
+    """
+    monkeypatch.setattr(HingeDriver, "_plan_read_pause_iterations", lambda self, _n: {0})
+
+    def _one_run(seed):
+        random.seed(seed)
+        adb = FakeAdb([b"a", b"b", b"c"])
+        drv = _drv(adb, scroll_captures=3, dwell_s=1.1)
+        sleep_requests = []
+        real_interruptible_sleep = drv._interruptible_sleep
+
+        def _record(seconds, should_stop=None):
+            sleep_requests.append(seconds)
+            return real_interruptible_sleep(seconds, should_stop)
+
+        monkeypatch.setattr(drv, "_interruptible_sleep", _record)
+        profile = drv._capture_current()
+        return profile, sleep_requests
+
+    profile_a, sleeps_a = _one_run(10)
+    profile_b, sleeps_b = _one_run(11)
+
+    # Iteration 0: pause then settle. Iteration 1: settle only (pause_iterations == {0}).
+    assert len(sleeps_a) == 3 and len(sleeps_b) == 3
+    pause_a, pause_b = sleeps_a[0], sleeps_b[0]
+    assert pause_a > 0 and pause_b > 0
+    assert pause_a != pause_b, "the pause duration must be drawn, not a fixed constant"
+    assert profile_a.meta["read_dwell_s_total"] == pytest.approx(pause_a)
+    assert profile_b.meta["read_dwell_s_total"] == pytest.approx(pause_b)
 
 
 def test_malformed_auto_policy_falls_back_to_existing_read_behavior():
@@ -2968,9 +3045,15 @@ def test_identity_never_manufactures_new_from_the_scroll_top_chrome_alone(monkey
 # check between one profile and the next ran AFTER current_profile() returned, so the whole
 # read (12 screencaps + 11 read-scrolls) plus the whole scroll-back-to-top ran regardless.
 
-def test_capture_abandons_the_read_as_soon_as_stop_is_requested():
-    # dwell_s=0 keeps the dwell instant while still exercising the in-dwell stop check (the
-    # dwell is where a Stop most often lands in production: 1.1s humanized, x11 per profile).
+def test_capture_abandons_the_read_as_soon_as_stop_is_requested(monkeypatch):
+    # dwell_s=0 keeps the dwell instant while still exercising the in-dwell stop check.
+    # 2026-08-24: the per-frame dwell was replaced with ONE randomized per-profile pause (see
+    # _READ_PAUSE_COUNTS in hinge.py and ops/ANTI-BOT-RESEARCH.md's dated addendum), so which
+    # iteration -- if any -- takes the pause is no longer "every one of them", it is a draw. Pin
+    # that draw to iteration 1 so the stop-during-pause check this test exists for is exercised
+    # deterministically: iteration 1's pause is where the read must notice `_should_stop` BEFORE
+    # issuing iteration 1's scroll, exactly like iteration 1's dwell always did pre-2026-08-24.
+    monkeypatch.setattr(HingeDriver, "_plan_read_pause_iterations", lambda self, _n: {1})
     adb = FakeAdb([b"a", b"b", b"c", b"d", b"e"])
     drv = _drv(adb, scroll_captures=5, dwell_s=0)
 
@@ -2993,10 +3076,13 @@ def test_capture_without_a_stop_callable_is_byte_for_byte_the_old_behaviour():
     assert adb.scrolls == 2
 
 
-def test_stop_during_capture_leaves_the_scroll_ledger_intact_for_a_later_unwind():
+def test_stop_during_capture_leaves_the_scroll_ledger_intact_for_a_later_unwind(monkeypatch):
     # The ledger is the driver's only record of how far down the card actually is. An abandoned
     # read must not clear it, or a later _scroll_to_top (from a restarted session, like(), or
     # _locate_target_heart's fallback) would think it was already at the top and tap the wrong item.
+    # Pin the read's one randomized pause to iteration 1, same reasoning as
+    # test_capture_abandons_the_read_as_soon_as_stop_is_requested just above.
+    monkeypatch.setattr(HingeDriver, "_plan_read_pause_iterations", lambda self, _n: {1})
     adb = FakeAdb([b"a", b"b", b"c", b"d"])
     drv = _drv(adb, scroll_captures=4, dwell_s=0)
 

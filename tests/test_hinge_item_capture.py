@@ -2642,12 +2642,18 @@ def test_stop_during_post_scroll_settle_abandons_without_another_screencap(monke
 
     adb = CountingAdb()
     drv = _drv(adb, auto=False, openers=False, scroll_captures=3)
-    calls = 0
 
     def _sleep(_seconds, _should_stop=None):
-        nonlocal calls
-        calls += 1
-        return calls == 1  # read dwell completes; post-scroll settle is interrupted
+        # 2026-08-24: the read no longer sleeps a dwell on EVERY iteration (see
+        # _READ_PAUSE_COUNTS in hinge.py), so "call 1 is the dwell, call 2 is the settle" is no
+        # longer a safe assumption -- this profile's one randomized pause might land on
+        # iteration 0, some other iteration, or not be drawn at all. What is still guaranteed,
+        # by the read loop's own ordering, is that the pause (if any) for an iteration always
+        # runs BEFORE that iteration's scroll, and the settle always runs AFTER it -- so the
+        # first call seen once a scroll has actually happened is unambiguously a settle.
+        # Interrupting exactly that one call reproduces "read dwell (if any) completes; the
+        # post-scroll settle is interrupted" regardless of which iteration drew the pause.
+        return adb.scrolls == 0
 
     monkeypatch.setattr(drv, "_interruptible_sleep", _sleep)
     assert drv._capture_current() is None

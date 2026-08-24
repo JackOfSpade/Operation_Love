@@ -740,7 +740,75 @@ plan records `positive_still_photo_evidence_verified` and
 clean/auto-hidden mute screen with stable, absent, or moving evidence, a mute visible on the target
 frame, a changed reviewed frame/point/identity, and the unchanged one-tap plumbing case.
 
+### Addendum 2026-08-24 — the per-frame read dwell was a metronome; replaced with one randomized per-profile pause
+
+**What prompted this.** Live instrumentation on the real device (2026-08-23/24) measured
+`_capture_current`'s read dwell — a hazard-drawn sleep (`dwell_s: 1.1` mean, humanized) taken
+after EVERY read-scroll, 11–13 times per profile at the current post-2026-08-24 cadence — at
+~20% of total read time. The owner asked to reduce or remove it, then asked to discuss first,
+correctly suspecting it was purely artificial waiting: nothing computational needs the wait
+itself, and `read_dwell_s_total` (the metric this sleep produces) is written into `Profile.meta`
+and consumed by NOTHING downstream (confirmed by grep).
+
+**Why the fix is not "just delete it".** Hinge Signals behaviour #1 ("spend time reading a
+profile before liking") is tracked, per this file's own research and
+`operation_love/drivers/android_spec.py`'s `identity_band` comment, as scroll-past-the-first-photo
+— a BEHAVIOUR, not a duration — so the per-frame dwell was never load-bearing for that credit;
+the read-scrolls `_capture_current` already issues supply it on their own. Separately, cited
+human dwell research puts a real profile read at roughly 3–7s total, while this driver's WHOLE
+read already runs 200s+ — 15–30x slower than a human on total time — so total read duration was
+never the exposure either.
+
+**The actual finding.** A fixed-mean pause repeating identically after every one of ~11–13
+frames is itself a suspicious metronome, and arguably a WORSE signature than no pause at all:
+each individual occurrence is humanized (log-normal, `human_delay`), but the repeating PATTERN
+across the whole read is not — a real person does not pause identically after every single card;
+they stop because one particular card caught their attention.
+
+**What ships now.** `operation_love/drivers/hinge.py`'s read loop no longer sleeps a dwell after
+every frame. Before the loop starts — once the profile's frame ceiling is already known, the
+same place `_capture_limit_for_profile` decides that ceiling — `_plan_read_pause_iterations`
+draws:
+- **Position** — uniformly at random over the iterations the read will actually attempt
+  (`random.sample` over the eligible range; no fixed slot, e.g. never "always the 3rd frame").
+- **Count** — usually one pause, sometimes none, rarely two (`_READ_PAUSE_COUNTS` /
+  `_READ_PAUSE_COUNT_WEIGHTS`: 75% / 15% / 10%), never hardcoded to "always exactly one": an
+  always-one-pause profile is itself a new, weaker metronome — every read would carry precisely
+  one anomaly, in an otherwise textbook-uniform position distribution.
+- **Duration** — `human_cooldown(dwell)`, where `dwell` is the SAME per-iteration draw the old
+  per-frame sleep used (still sampled every iteration, coupled to the scroll fraction/lane in one
+  policy call — see `_sample_read_step`'s docstring for why that coupling cannot be broken
+  without silently degrading `AutoSessionPolicy`'s scroll geometry to its flat legacy fallback on
+  every single read). `human_cooldown` never returns below its anchor, so the one pause a profile
+  gets reads as longer, never shorter, than an ordinary per-frame beat would have — the same "one
+  deliberate longer look instead of several short ones" shape `_still_photo_dwell_burst`'s
+  `window_s` already uses for an unrelated purpose (see this file's earlier addenda and
+  ops/STILL-PHOTO-DISCRIMINATOR.md).
+
+`should_stop` interrupts the pause exactly as it did the old per-frame dwell (routed through
+`_interruptible_sleep`, same primitive the 2026-08-10 (d) addendum above fixed for the whole read
+loop), and `read_dwell_s_total` / the `read_dwell_s` timing-ledger bucket still credit only time
+actually slept — 0 for every iteration that did not draw the pause, and 0 for the whole profile
+on the (rare, drawn) no-pause case, the same "an abandoned read never claims dwell it didn't
+spend" rule already in force for a Stop landing mid-dwell.
+
+**Accepted risk, stated plainly.** Whether a SINGLE randomly-placed pause per read reads as more
+or less natural than the old per-frame pattern is UNMEASURED — nobody has real getevent /
+behavioral timing data on either shape, human or bot. This is a reasoned bet (periodicity is a
+known, structural tell; a lone occurrence is not one in the same way) rather than a measured
+bound, and should be revisited if better data on either shape ever exists — see the §5 trigger
+below.
+
 ## 5. Re-check triggers
+- **Read-pause shape is reasoned, not measured (added 2026-08-24)** — the per-frame read dwell
+  (a metronome: fixed-mean, repeating after every one of ~11–13 frames) was replaced with ONE
+  randomized per-profile pause (§4's 2026-08-24 addendum) on the argument that periodicity, not
+  duration, was the exposure, and that Signals behaviour #1 credits the scroll BEHAVIOUR rather
+  than accumulated dwell time. No getevent/behavioral capture of either shape (old or new)
+  exists to confirm which one actually reads as more human to Hinge's side. Re-check if real
+  Hinge-side signal ever surfaces — a shadowban, a Signals-badge regression, or actual
+  behavioral-telemetry access — that could distinguish them; until then, treat this as an
+  accepted, unmeasured bet, not a settled finding.
 - **Hinge app-build drift invalidating pinned perceptions (added 2026-08-21)** — the 10.0.1 update
   broke the composer glyph, the scroll-top chips fingerprint, and chips settle timing
   simultaneously (see §4's 2026-08-21 addendum). After ANY Hinge update, expect the targeting

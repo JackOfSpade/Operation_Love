@@ -40,7 +40,10 @@ stock, physical Pixel through the host-side `Adb` transport only:
 Hinge itself lets a user like a photo or prompt with a comment. Operation Love intentionally
 targets photos only, so the opener is sent
 at like-time (Signals behavior #2). Reading the whole profile slowly before
-deciding (the dwell in `_capture_current`) is Signals behavior #1. We only ever
+deciding is Signals behavior #1 -- tracked by Hinge as scroll-past-the-first-photo, a
+BEHAVIOUR the read-scrolls in `_capture_current` supply on their own (2026-08-24: no longer a
+per-frame dwell repeated after every one of them; see `_READ_PAUSE_COUNTS`'s comment for why
+that shape was itself a signature). We only ever
 send a NORMAL like — never a Rose (Hinge's super-like) or, generically, any other paid
 upgrade a given app might interstitial-upsell; Roses/boosts/etc are manual, always
 (owner rule — see `_handle_rose_upsell`).
@@ -659,6 +662,27 @@ _UPSELL_DISMISS_MAX_ATTEMPTS = 3
 # behavior.  This is an input-free, interruptible settle before the NEXT read frame; it is not
 # dwell/read time and must never be credited as such.
 _READ_SCROLL_SETTLE_S = 0.4
+# READ PAUSE COUNT (2026-08-24, ops/ANTI-BOT-RESEARCH.md dated addendum has the full argument).
+# Before this date, `_capture_current`'s read loop slept a hazard-drawn dwell after EVERY
+# read-scroll -- ~11-13 times per profile at the current cadence, measured live at ~20% of total
+# read time. Nothing computational needs that: Hinge Signals behaviour #1 ("read the profile
+# before deciding") is tracked as scroll-past-the-first-photo, a BEHAVIOUR the read-scrolls
+# already supply, not an accumulated duration, and this driver's whole read already runs
+# 15-30x slower than the ~3-7s cited human profile-dwell norm -- total time was never the
+# exposure. The exposure was the SHAPE: a fixed-mean pause repeating identically after every
+# frame is a metronome, itself a stronger signature than no pause at all even though any one
+# occurrence looks humanized alone. What replaced it: ONE randomly-placed, randomly-sized pause
+# per read (see `_plan_read_pause_iterations`), standing in for a person who stopped scrolling
+# because ONE particular card caught their attention, not eleven identical beats.
+#
+# The COUNT is drawn too, usually-one/sometimes-none/rarely-two, rather than hardcoded to exactly
+# one: an always-exactly-one-pause profile is itself a new, weaker metronome (every read carries
+# precisely one anomaly, in an otherwise textbook-uniform position distribution). These two
+# tuples parameterise that draw the same way `_STILL_PHOTO_DWELL_FRAMES` (below) parameterises
+# the still-photo dwell burst's frame count -- they are distribution SHAPE constants, not the
+# observable output, which is redrawn fresh every read.
+_READ_PAUSE_COUNTS = (0, 1, 2)
+_READ_PAUSE_COUNT_WEIGHTS = (0.15, 0.75, 0.10)      # usually one pause, sometimes none, rarely two
 # Bounded retries for AndroidDriver._dismiss_via_zone before it gives up (PaidUpsellStuckError)
 # rather than tapping an already-detected modal again and again. See that error's docstring.
 
@@ -3252,6 +3276,30 @@ class AndroidDriver(DatingAppDriver):
                 pass
         return base + random.randint(0, 2)
 
+    def _plan_read_pause_iterations(self, eligible_count: int) -> set[int]:
+        """Decide, once per read and before the read loop starts, which iteration(s) (if any)
+        get the ONE-per-occurrence attention pause described at `_READ_PAUSE_COUNTS` above.
+
+        `eligible_count` is `self._profile_capture_limit - 1` (frame 0..limit-2 are the
+        iterations that scroll at all; the last frame in the ceiling never does) computed by the
+        caller, once, right after the ceiling itself is known -- the same "the ceiling is already
+        known, decide the rest of the plan against it" ordering `_capture_limit_for_profile`
+        already establishes for the ceiling itself. Deciding here rather than inline in the loop
+        keeps the count/position draw a single, easily-mocked seam for tests (see
+        test_hinge_observe.py's `test_capture_abandons_the_read_as_soon_as_stop_is_requested` for
+        why that matters: a stop-during-pause test needs a KNOWN iteration, not "whichever one
+        the dice happened to pick this run").
+
+        `random.sample` rather than `random.randint` per pause: two draws that could coincide on
+        the same iteration would silently collapse a "rarely two" read into an "always one" read
+        with a bigger number attached, which defeats the point of drawing the count at all.
+        """
+        if eligible_count <= 0:
+            return set()
+        count = random.choices(_READ_PAUSE_COUNTS, weights=_READ_PAUSE_COUNT_WEIGHTS)[0]
+        count = min(count, eligible_count)
+        return set(random.sample(range(eligible_count), k=count))
+
     def _observe_input_lease_key(self) -> str:
         """Stable, non-identifying lock-file path for this app/device pair."""
         serial = self.serial or "unbound"
@@ -3413,8 +3461,10 @@ class AndroidDriver(DatingAppDriver):
         threading.Event.wait: every Hinge test file neutralises real time by monkeypatching
         `hinge.time.sleep` (four separate autouse fixtures, since there is no conftest.py).
         A wait primitive those fixtures cannot see would silently turn an offline suite that
-        runs in ~100s into one that genuinely sleeps through 1.1s dwells x 11 per capture --
-        the kind of regression that shows up as "tests got slow", never as a failure.
+        runs in ~100s into one that genuinely sleeps through the read's own pauses (11-13
+        settles per capture, plus a per-profile read pause on the iteration(s) that draw one --
+        see `_READ_PAUSE_COUNTS`) -- the kind of regression that shows up as "tests got slow",
+        never as a failure.
 
         With should_stop=None this is exactly time.sleep(seconds), one call, so every
         existing caller and every existing dwell-accounting test is unaffected.
@@ -5989,6 +6039,12 @@ class AndroidDriver(DatingAppDriver):
         # only so item_index gets a consecutive sequence in which to independently omit it and
         # remeasure its direct bridge. A fifth contradiction ends enumeration as before.
         enum_segmentation_fallback_frames: list[int] = []
+        # Which iteration(s), if any, get this read's one attention pause -- decided now, in one
+        # shot, against the ceiling just set above.  See `_plan_read_pause_iterations` and the
+        # `_READ_PAUSE_COUNTS` module comment for the full reasoning (2026-08-24 dwell-shape
+        # change, ops/ANTI-BOT-RESEARCH.md dated addendum).
+        read_pause_iterations = self._plan_read_pause_iterations(
+            max(0, self._profile_capture_limit - 1))
         read_dwell_s_total = 0.0
         seen = set()
         # Consecutive pairs frameshift has MEASURED as exactly 0px since the last frame that
@@ -6323,29 +6379,52 @@ class AndroidDriver(DatingAppDriver):
                                         reason=step.reason,
                                         step_px=step.step_px,
                                         cap_px=step.cap_px)
-                    # The read dwell is the single longest stretch of this loop (dwell_s=1.1
-                    # humanized, x11), so it is where a Stop most often lands. Credit
-                    # read_dwell_s_total only with time actually spent: this counter is the
+                    # READ PAUSE (2026-08-24 — see ops/ANTI-BOT-RESEARCH.md's dated addendum for
+                    # the full argument, and _plan_read_pause_iterations/_READ_PAUSE_COUNTS for
+                    # how `read_pause_iterations` was chosen before this loop started). Until this
+                    # date every iteration slept a dwell here — a fixed-mean pause repeating
+                    # identically after every single frame is a metronome, and a repeating pattern
+                    # is a *stronger* signature than no pause at all even though any one occurrence
+                    # looks humanized in isolation. Only the iteration(s) drawn into
+                    # `read_pause_iterations` actually sleep; every other iteration discards
+                    # `dwell` (still sampled above, coupled to `frac`/`x_frac` in one policy draw —
+                    # see `_sample_read_step`) without acting on it.
+                    #
+                    # `human_cooldown(dwell)` rather than `dwell` unscaled: this single occurrence
+                    # now stands in for credit that used to accrue in ~11-13 small pieces, and an
+                    # unscaled ~1.1s-mean pause would barely clear the surrounding settle-time
+                    # noise floor — not enough to read as "stopped because this card caught my
+                    # attention". `human_cooldown` is the same log-normal family `dwell` was
+                    # already drawn from (never a new distribution), anchored on that SAME
+                    # already-random per-iteration draw so the position-independent "how long is a
+                    # normal pause" prior does not change, and it guarantees this occurrence lands
+                    # at or above that anchor — stretched longer, never shorter — the same "make it
+                    # one deliberate longer look, not several short ones" shape
+                    # `_still_photo_dwell_burst`'s `window_s` already uses. Credit
+                    # `read_dwell_s_total` only with time actually spent: this counter is the
                     # Signals behaviour-#1 "did we really read the profile" metric, and an
-                    # interrupted capture that reported the full sampled dwell would be claiming
+                    # interrupted capture that reported the full sampled pause would be claiming
                     # reading time that never happened.
-                    started = time.monotonic()
-                    completed = self._interruptible_sleep(dwell, should_stop)
-                    if completed:
-                        read_dwell_s_total += dwell
-                        if timing_enabled:
-                            stamps["read_dwell_s"] = (
-                                stamps.get("read_dwell_s", 0.0) + (time.monotonic() - started))
-                    else:
-                        dwell_elapsed = max(0.0, time.monotonic() - started)
-                        read_dwell_s_total += dwell_elapsed
-                        if timing_enabled:
-                            stamps["read_dwell_s"] = (
-                                stamps.get("read_dwell_s", 0.0) + dwell_elapsed)
-                    if not completed:
-                        exit_reason = "stopped_during_dwell"
-                        self._note_capture_aborted(len(photos))
-                        return None
+                    if i in read_pause_iterations:
+                        pause_s = human_cooldown(dwell)
+                        started = time.monotonic()
+                        completed = self._interruptible_sleep(pause_s, should_stop)
+                        if completed:
+                            read_dwell_s_total += pause_s
+                            if timing_enabled:
+                                stamps["read_dwell_s"] = (
+                                    stamps.get("read_dwell_s", 0.0)
+                                    + (time.monotonic() - started))
+                        else:
+                            dwell_elapsed = max(0.0, time.monotonic() - started)
+                            read_dwell_s_total += dwell_elapsed
+                            if timing_enabled:
+                                stamps["read_dwell_s"] = (
+                                    stamps.get("read_dwell_s", 0.0) + dwell_elapsed)
+                        if not completed:
+                            exit_reason = "stopped_during_dwell"
+                            self._note_capture_aborted(len(photos))
+                            return None
                     with _time_bucket(stamps, "gesture_s"):
                         self._scroll_down_one(frac, x_frac, _iteration=i)
                     # The dwell above intentionally happens BEFORE the read gesture: it is the

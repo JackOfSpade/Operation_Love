@@ -233,10 +233,13 @@ def test_gesture_timing_buckets_and_unattributed_sum_to_the_recorded_wall_clock(
     dbg = _FakeDebugLog()
     driver = _FakeDriver(dbg)
     monkeypatch.setattr(hinge.time, "monotonic", lambda: 9.0)
+    # No separate "uhid_cleanup_s" (2026-08-24): `hid` and `rm -f` collapsed into one remote
+    # `adb shell` round trip, so `uhid_hid_run_s` is the whole compound script's cost now --
+    # see uhid.py's `_run_gesture` docstring.
     stamps = {
         "screen_size_s": 0.001, "zone_check_s": 0.002, "foreground_reassert_s": 0.099,
         "uhid_plan_swipe_s": 0.01, "uhid_script_build_s": 0.02,
-        "uhid_write_file_s": 0.15, "uhid_hid_run_s": 2.5, "uhid_cleanup_s": 0.12,
+        "uhid_write_file_s": 0.15, "uhid_hid_run_s": 2.62,
     }
 
     hinge.AndroidDriver._emit_gesture_timing(
@@ -388,16 +391,17 @@ _SYNTHETIC_RECORDS = [
     # One gesture per frame that scrolled, plus one from OUTSIDE the read loop (re-navigation --
     # frame_index None, see _emit_gesture_timing's own docstring) that still belongs in this
     # same attribution.
+    # No "uhid_cleanup_s" (2026-08-24): `hid` and `rm -f` collapsed into one remote `adb shell`
+    # round trip, so `uhid_hid_run_s` is the whole compound script's cost -- see uhid.py's
+    # `_run_gesture` docstring for why that merge is honest rather than a fake split.
     {"ts": "t1a", "action": "capture_gesture_timing", "direction": "down", "frame_index": 0,
      "gesture_wall_s": 1.7, "unattributed_s": 0.02, "screen_size_s": 0.0005,
      "zone_check_s": 0.001, "foreground_reassert_s": 0.099, "uhid_plan_swipe_s": 0.01,
-     "uhid_script_build_s": 0.02, "uhid_write_file_s": 0.15, "uhid_hid_run_s": 1.28,
-     "uhid_cleanup_s": 0.12},
+     "uhid_script_build_s": 0.02, "uhid_write_file_s": 0.15, "uhid_hid_run_s": 1.4},
     {"ts": "t2a", "action": "capture_gesture_timing", "direction": "down", "frame_index": 1,
      "gesture_wall_s": 1.65, "unattributed_s": 0.015, "screen_size_s": 0.0005,
      "zone_check_s": 0.001, "foreground_reassert_s": 0.099, "uhid_plan_swipe_s": 0.01,
-     "uhid_script_build_s": 0.02, "uhid_write_file_s": 0.15, "uhid_hid_run_s": 1.234,
-     "uhid_cleanup_s": 0.11},
+     "uhid_script_build_s": 0.02, "uhid_write_file_s": 0.15, "uhid_hid_run_s": 1.344},
     {"ts": "t2b", "action": "capture_gesture_timing", "direction": "up", "frame_index": None,
      "gesture_wall_s": 0.9, "unattributed_s": 0.05, "foreground_reassert_s": 0.1,
      "uhid_hid_run_s": 0.75},
@@ -452,7 +456,7 @@ def test_reader_attributes_a_synthetic_actions_jsonl(tmp_path):
     # synthetic run has, real or re-navigation.
     hid_run = gesture_attr.buckets["uhid_hid_run_s"]
     assert hid_run.n == 3
-    assert hid_run.total_s == pytest.approx(1.28 + 1.234 + 0.75)
+    assert hid_run.total_s == pytest.approx(1.4 + 1.344 + 0.75)
     # screen_size_s/zone_check_s/uhid_plan_swipe_s only appear on the two read-loop gestures --
     # the re-navigation row (frame_index None) never claimed them.
     assert gesture_attr.buckets["screen_size_s"].n == 2

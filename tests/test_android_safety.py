@@ -731,8 +731,11 @@ def test_touch_supports_timing_is_true_for_the_two_real_transports_only():
 def test_scroll_threads_timing_into_a_real_uhid_transport():
     """The point of this whole ledger: `_scroll`'s own buckets (screen_size_s, zone_check_s,
     foreground_reassert_s) AND a REAL UhidTouch's own (uhid_plan_swipe_s, uhid_script_build_s,
-    uhid_write_file_s, uhid_hid_run_s, uhid_cleanup_s) land in the SAME stamps dict when the
-    transport is the genuine one -- not just when a test double happens to accept the keyword.
+    uhid_write_file_s, uhid_hid_run_s) land in the SAME stamps dict when the transport is the
+    genuine one -- not just when a test double happens to accept the keyword. No separate
+    `uhid_cleanup_s` any more (2026-08-24): `hid` and `rm -f` collapsed into one remote `adb
+    shell` round trip, so there is nothing left to time apart from `uhid_hid_run_s` -- see
+    uhid.py's `_run_gesture` docstring for why that merge is honest rather than a fake split.
     """
     import random
 
@@ -747,7 +750,7 @@ def test_scroll_threads_timing_into_a_real_uhid_transport():
     assert set(stamps) == {
         "screen_size_s", "zone_check_s", "foreground_reassert_s",
         "uhid_plan_swipe_s", "uhid_script_build_s", "uhid_write_file_s",
-        "uhid_hid_run_s", "uhid_cleanup_s",
+        "uhid_hid_run_s",
     }
     assert all(v >= 0.0 for v in stamps.values())
 

@@ -155,14 +155,40 @@ class UhidTouch:
         `_touch_supports_timing`) makes `_time_bucket` a true no-op: not one extra
         `time.monotonic()` call, exactly as before this ledger existed.
 
-        The three bucket names below are this transport's answer to "how many `adb shell`
-        round trips does one gesture cost": `uhid_write_file_s` (write the gesture's HID
-        script), `uhid_hid_run_s` (run it -- this is the one call that actually BLOCKS for the
-        gesture's duration; the module docstring's "enumerate -> report stream -> flush" all
-        happens device-side inside this single call, so it cannot be decomposed further without
-        either a second device call this ledger is not allowed to add, or an on-device timestamp
-        stream this transport was deliberately never given), and `uhid_cleanup_s` (remove the
-        script file). Exactly three, exactly as suspected."""
+        The two bucket names below are this transport's answer to "how many `adb shell` round
+        trips does one gesture cost": `uhid_write_file_s` (write the gesture's HID script) and
+        `uhid_hid_run_s` (run it -- this is the one call that actually BLOCKS for the gesture's
+        duration; the module docstring's "enumerate -> report stream -> flush" all happens
+        device-side inside this single call, so it cannot be decomposed further without either
+        a second device call this ledger is not allowed to add, or an on-device timestamp
+        stream this transport was deliberately never given).
+
+        `uhid_hid_run_s` NOW COVERS CLEANUP TOO (2026-08-24, owner-approved marginal lever,
+        ~2s/profile). Until this date `hid <file>` and `rm -f <file>` were two SEPARATE `adb
+        shell` round trips -- the second, in a `finally`, unconditionally deleting the script
+        file after the first ran (or failed). They are now one remote shell invocation:
+
+            hid <file>; ec=$?; rm -f <file>; exit $ec
+
+        `ec` captures `hid`'s OWN exit status before `rm -f` ever runs, and the compound script
+        exits with `$ec`, never `rm -f`'s -- so a `hid` failure still surfaces as a non-zero
+        remote exit (Adb.shell -> AdbError -> the same DriverClosed below, same message) no
+        matter what `rm -f` itself does, and a clean `hid` run still reports success even if
+        `rm -f` cannot remove the file (never something a caller could act on anyway -- see
+        close()'s identical best-effort swallow of that same failure). REJECTED shape: `hid
+        <file>; rm -f <file>` with no `$?` capture -- that reports `rm -f`'s exit status, not
+        `hid`'s, so a real `hid` failure followed by a successful `rm -f` would silently read as
+        success. (The POSIX semantics behind this choice are pinned with plain `sh -c` in
+        tests/test_uhid.py -- no device needed, this isn't Android-specific.)
+
+        One consequence: there is no longer a separate `uhid_cleanup_s` bucket. The two costs
+        now happen inside ONE opaque remote call with no on-device timestamp between them to
+        split on -- reporting a fake split would misattribute worse than admitting they're
+        fused, so `uhid_hid_run_s` honestly reports the WHOLE compound script's wall clock.
+        `hid`'s own device-side cost still dominates it in practice: the 2026-08-23 instrumented
+        run that motivated this ledger measured 2.706s for `hid` alone against 0.058s for the
+        separate cleanup call it used to need -- `rm -f` was always the rounding error, not the
+        thing worth its own bucket."""
         if not samples:
             return
         with _time_bucket(_timing, "uhid_script_build_s"):
@@ -171,6 +197,16 @@ class UhidTouch:
         # Serialize: each gesture is its own `hid <file>` run; a concurrent caller must not
         # truncate the file while another gesture's hid is still reading it.
         with self._lock:
+            # True once the script file is confirmed written, i.e. once the compound
+            # `hid ...; rm -f ...` command below is about to run -- that command now owns
+            # cleanup for every path that reaches it (success OR a `hid` failure; `;` sequences
+            # unconditionally, unlike `&&`). False only when BOTH write_file attempts below
+            # failed: in that one narrow path the compound command never runs at all, so a
+            # `cat` redirect that errored partway through could still have left a truncated
+            # script file on the device with nothing downstream left to remove it -- the
+            # `finally` covers exactly that one remaining case with its own best-effort
+            # `rm -f`, same as every path got before this collapse.
+            wrote_file = False
             try:
                 # Rewriting the file is safe to retry: no input delivery can begin until the
                 # separate `hid` command below starts.  Once `hid` has started, however, a
@@ -188,19 +224,22 @@ class UhidTouch:
                         time.sleep(0.3)
                         continue
                     break
+                wrote_file = True
                 try:
                     with _time_bucket(_timing, "uhid_hid_run_s"):
-                        self.adb.shell(f"hid {quoted}")   # blocks for the gesture's duration
+                        # See this method's docstring for why this is `; ec=$?; ...; exit $ec`
+                        # and not the naive (rejected) `hid ...; rm -f ...`.
+                        self.adb.shell(f"hid {quoted}; ec=$?; rm -f {quoted}; exit $ec")
                 except AdbError as exc:
                     raise DriverClosed(
                         "UHID gesture delivery became uncertain after `hid` started; refusing "
                         f"to replay the gesture: {exc}") from exc
             finally:
-                try:
-                    with _time_bucket(_timing, "uhid_cleanup_s"):
+                if not wrote_file:
+                    try:
                         self.adb.shell(f"rm -f {quoted}")
-                except Exception:  # noqa: BLE001 — best-effort cleanup
-                    pass
+                    except Exception:  # noqa: BLE001 — best-effort cleanup
+                        pass
 
     # --- public surface (matches Adb) ----------------------------------
     def tap(self, x: int, y: int) -> None:

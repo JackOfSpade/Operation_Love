@@ -137,8 +137,10 @@ def test_swipe_writes_file_then_runs_hid():
         x = r[3] | (r[4] << 8)
         y = r[5] | (r[6] << 8)
         assert 0 <= x <= 1079 and 0 <= y <= 2399
-    assert f"hid {drv.file_path}" in fa.shell_calls                             # ran hid on the file
-    assert f"rm -f {drv.file_path}" in fa.shell_calls                           # cleaned up after
+    # ONE compound remote call now runs hid AND removes the file -- see _run_gesture's
+    # docstring for why it is `hid <file>; ec=$?; rm -f <file>; exit $ec`, not two round trips.
+    expected = f"hid {drv.file_path}; ec=$?; rm -f {drv.file_path}; exit $ec"
+    assert fa.shell_calls == [expected]
 
 
 def test_scroll_up_jitters_x_column():
@@ -226,6 +228,26 @@ def test_device_loss_propagates_from_write_file():
         UhidTouch(Lost(), rng=random.Random(3)).swipe(540, 1700, 540, 700)
 
 
+def test_write_file_permanent_failure_still_attempts_a_fallback_cleanup(monkeypatch):
+    # The compound `hid ...; rm -f ...` command (see _run_gesture's docstring) only runs once
+    # write_file has succeeded -- if BOTH write attempts fail, that command never gets a chance
+    # to clean anything up. A `cat` redirect that errors partway through can still leave a
+    # truncated script file on the device, so this one narrow path keeps its own separate
+    # best-effort `rm -f`, exactly as every path got before the hid+rm collapse.
+    class AlwaysFailsWrite(FakeAdb):
+        def write_file(self, path, data):
+            raise AdbError(["adb", "shell", "cat"], "write failed")
+
+    monkeypatch.setattr(uhid.time, "sleep", lambda *a, **k: None)
+    fa = AlwaysFailsWrite()
+
+    with pytest.raises(DriverClosed, match="file write failed before delivery"):
+        UhidTouch(fa, rng=random.Random(7)).swipe(540, 1700, 540, 700)
+
+    assert not any(c.startswith("hid ") for c in fa.shell_calls)   # hid never ran
+    assert any(c.startswith("rm -f") for c in fa.shell_calls)      # but cleanup was still attempted
+
+
 def test_hid_failure_is_never_replayed_after_delivery_may_have_started():
     # A non-zero `hid` exit is ambiguous: it may have emitted every report before failing.
     # Replaying the file could duplicate an irreversible tap, so stop after one invocation.
@@ -240,27 +262,67 @@ def test_hid_failure_is_never_replayed_after_delivery_may_have_started():
     with pytest.raises(DriverClosed, match="delivery became uncertain.*refusing to replay"):
         UhidTouch(fa, rng=random.Random(4)).swipe(540, 1700, 540, 700)
     assert sum(1 for c in fa.shell_calls if c.startswith("hid ")) == 1
-    assert any(c.startswith("rm -f") for c in fa.shell_calls)                   # still cleaned up
+    # Cleanup is now PART OF the one compound command sent for `hid` (see _run_gesture's
+    # docstring) -- `rm -f` is unconditionally sequenced with `;`, not `&&`, so it is still
+    # asked for even though `hid` itself failed. FakeAdb only records the command text (it does
+    # not interpret shell syntax), so this proves we SENT the cleanup clause; the exit-code
+    # semantics that make it actually run remotely regardless of `hid`'s outcome are pinned
+    # separately below, against a real POSIX shell.
+    assert "rm -f" in fa.shell_calls[0]
 
 
-def test_cleanup_failure_cannot_mask_ambiguous_hid_delivery_failure():
-    class HidAndCleanupFail(FakeAdb):
+def test_hid_failure_cause_chain_names_hid_not_the_folded_in_cleanup():
+    # The compound command folds `rm -f` into the same string as `hid`, but the raised
+    # exception must still read -- and chain -- as a `hid` delivery failure specifically, not
+    # something that could be misread as a cleanup problem now that cleanup shares the call.
+    class Flaky(FakeAdb):
         def shell(self, cmd):
             self.shell_calls.append(cmd)
             if cmd.startswith("hid "):
-                raise AdbError(["adb", "shell", cmd], "primary hid failure")
-            if cmd.startswith("rm -f"):
-                raise AdbError(["adb", "shell", cmd], "secondary cleanup failure")
+                raise AdbError(["adb", "shell", cmd], "hid failed")
             return "yes" if "system/bin/hid" in cmd else ""
 
-    fa = HidAndCleanupFail()
+    fa = Flaky()
     with pytest.raises(DriverClosed, match="delivery became uncertain") as caught:
         UhidTouch(fa, rng=random.Random(6)).swipe(540, 1700, 540, 700)
 
-    assert "primary hid failure" in str(caught.value.__cause__)
-    assert "secondary cleanup failure" not in str(caught.value)
-    assert sum(1 for c in fa.shell_calls if c.startswith("hid ")) == 1
-    assert sum(1 for c in fa.shell_calls if c.startswith("rm -f")) == 1
+    assert isinstance(caught.value.__cause__, AdbError)
+    assert "hid failed" in str(caught.value.__cause__)
+    assert sum(1 for c in fa.shell_calls if c.startswith("hid ")) == 1          # no replay
+
+
+def test_compound_shell_command_preserves_hid_exit_code_regardless_of_rm_outcome():
+    """The subtle part of this collapse: `ec=$?` must capture `hid`'s OWN exit status BEFORE
+    `rm -f` runs, so the compound command's final exit code is always `hid`'s, never `rm -f`'s
+    -- whatever `rm -f` itself does. FakeAdb cannot prove this: its fake `shell()` only records
+    the command string, it never actually interprets it as shell syntax, and this suite has no
+    real device to run `adb shell` against either. What it CAN do without either: the compound
+    command is plain POSIX shell, and its exit-code composition is POSIX shell semantics, not
+    anything Android- or adb-specific -- so running the exact shape `_run_gesture` sends through
+    a local `sh -c`, with `hid`/`rm -f` swapped for the `true`/`false` builtins, proves the same
+    claim a real remote shell will honour on-device.
+    """
+    import subprocess
+
+    def run(cmd: str) -> int:
+        return subprocess.run(["sh", "-c", cmd], check=False).returncode
+
+    def compound(hid_cmd: str, rm_cmd: str) -> str:
+        return f"{hid_cmd}; ec=$?; {rm_cmd}; exit $ec"
+
+    # hid succeeds, rm -f fails -- caller must still see success (rm's failure is swallowed).
+    assert run(compound("true", "false")) == 0
+    # hid fails, rm -f succeeds -- caller must still see hid's failure.
+    assert run(compound("false", "true")) != 0
+    # hid fails, rm -f ALSO fails -- caller must still see hid's failure, never rm's.
+    assert run(compound("false", "false")) != 0
+
+    # Non-vacuity (required by the task this collapse was built for): the REJECTED naive shape
+    # `hid ...; rm -f ...` -- no `$?` capture -- really does leak rm -f's exit status instead of
+    # hid's, proving the assertions above actually distinguish the safe shape from the unsafe
+    # one rather than passing no matter which is used.
+    naive = "false; true"          # hid "fails", rm -f "succeeds"
+    assert run(naive) == 0   # the bug: hid's failure vanishes
 
 
 # --- per-gesture timing ledger (2026-08-23, one level down from hinge.py's own) --------
@@ -272,10 +334,13 @@ def test_swipe_records_the_named_timing_buckets_when_given_a_stamps_dict():
     drv.swipe(540, 1700, 540, 700, _timing=stamps)
 
     # Exactly the buckets this transport can name from the host side: the pure-CPU planner,
-    # building the gesture script, and the three `adb shell` round trips write/hid/rm-f --
-    # see _run_gesture's own docstring for why there are exactly three, and no more.
+    # building the gesture script, and the two `adb shell` round trips write-file / hid+rm-f --
+    # see _run_gesture's own docstring for why there are exactly two now (2026-08-24: `hid` and
+    # `rm -f` collapsed into one remote call, so there is no separate "uhid_cleanup_s" bucket
+    # to report any more -- pinned here by the exact-set equality below, not just an absence
+    # check, so a regression that reintroduces a standalone cleanup bucket fails this test).
     assert set(stamps) == {"uhid_plan_swipe_s", "uhid_script_build_s", "uhid_write_file_s",
-                          "uhid_hid_run_s", "uhid_cleanup_s"}
+                          "uhid_hid_run_s"}
     assert all(v >= 0.0 for v in stamps.values())
 
 
@@ -288,7 +353,8 @@ def test_scroll_up_adds_its_own_screen_size_bucket_on_top_of_swipes(monkeypatch)
 
     assert "screen_size_s" in stamps
     assert set(stamps) >= {"screen_size_s", "uhid_plan_swipe_s", "uhid_script_build_s",
-                          "uhid_write_file_s", "uhid_hid_run_s", "uhid_cleanup_s"}
+                          "uhid_write_file_s", "uhid_hid_run_s"}
+    assert "uhid_cleanup_s" not in stamps
 
 
 def test_swipe_with_no_timing_dict_is_a_true_noop(monkeypatch):

@@ -94,7 +94,7 @@ from .adb import (
 from .android_spec import AndroidAppSpec
 from .base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClosed,
                    ItemTargetingError, OBSERVE_ITEM_INCONCLUSIVE, OBSERVE_ITEM_MATCH,
-                   OBSERVE_ITEM_MISMATCH, ObserveItemCheck, open_debug_log,
+                   OBSERVE_ITEM_MISMATCH, ObserveItemCheck, _time_bucket, open_debug_log,
                    snapshot_failure_frame)
 from .frameshift import SHIFT_MEASURED, ShiftEstimationError, estimate_shift
 from .item_crops import (
@@ -2500,7 +2500,27 @@ class AndroidDriver(DatingAppDriver):
         except Exception:  # noqa: BLE001 -- diagnostics must never change a live action
             pass
 
-    def _swipe(self, x1, y1, x2, y2, *, duration_ms: int = 450) -> None:
+    def _touch_supports_timing(self) -> bool:
+        """UhidTouch and Adb (this driver's two REAL transports, imported above) both accept an
+        optional `_timing` keyword on `scroll_up`/`swipe` so their own internal costs (UHID's
+        write/hid/rm-f device round trips and CPU-bound gesture planning; the ADB fallback's
+        single scripted round trip and its own planning) can be folded into the SAME per-gesture
+        stamps dict `_scroll`/`_swipe` build -- see uhid.py's and adb.py's own docstrings for
+        the full bucket list.
+
+        Every OTHER object `self.touch` has ever been pointed at is a duck-typed test double
+        (tests/test_hinge_*.py's/test_android_*.py's various FakeAdb/FakeTransport classes,
+        none of which subclass the real Adb or UhidTouch) whose `scroll_up(frac, x_frac)` /
+        `swipe(x1, y1, x2, y2, ...)` predates this ledger and was never going to grow a
+        `_timing` parameter just to serve it -- passing that keyword unconditionally would
+        raise TypeError on a large share of the existing test suite. Gating the keyword on the
+        two concrete production types keeps every test double's calling convention exactly as
+        it always was, and correctly leaves an unrecognised transport's internal cost sitting
+        in `unattributed_s` rather than guessing at a shape it does not have."""
+        return isinstance(self.touch, (UhidTouch, Adb))
+
+    def _swipe(self, x1, y1, x2, y2, *, duration_ms: int = 450,
+              _timing: dict[str, float] | None = None) -> None:
         """Every explicit drag goes through here, for the same reason every tap goes
         through _tap(). Only the START point is zone-checked (margin_px=0: plan_swipe's
         first sample is pinned exactly to (x1, y1) with no jitter, so there is no drift to
@@ -2517,10 +2537,20 @@ class AndroidDriver(DatingAppDriver):
         other than plain View dispatch — this check as written would not catch it. See
         ops/RUNBOOK.md's Bumble calibration checklist: before Bumble is ever run unattended,
         deliberately drag over the SuperSwipe control on a disposable profile and confirm
-        nothing is purchased."""
+        nothing is purchased.
+
+        `_timing`, when given, is the per-gesture stamps dict `_scroll_up_one`'s reverse path
+        threads in (see that method and `_emit_gesture_timing`) -- every other caller (likes,
+        `_decide_by_card_swipe`, `_scroll_to_top`'s undo-swipes) leaves it None, so this stays
+        the exact no-op it always was for them. Reuses the SAME "zone_check_s"/"screen_size_s"
+        bucket names `_scroll` already writes when IT is the one that called here (a reverse
+        gesture zone-checks and screen-sizes in both places), accumulating rather than
+        overwriting -- see _time_bucket's own docstring for why that is deliberate."""
         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-        self._assert_tap_allowed(x1, y1)
-        _w, h = self.adb.screen_size()
+        with _time_bucket(_timing, "zone_check_s"):
+            self._assert_tap_allowed(x1, y1)
+        with _time_bucket(_timing, "screen_size_s"):
+            _w, h = self.adb.screen_size()
         if y2 > y1 and y1 <= int(h * _SYSTEM_SHADE_GUARD_Y_FRAC):
             raise HingeActionError(
                 f"{self.spec.app}: refusing a downward swipe starting at y={y1} "
@@ -2528,13 +2558,22 @@ class AndroidDriver(DatingAppDriver):
                 f"(<= {_SYSTEM_SHADE_GUARD_Y_FRAC:.3f}); this could pull down the "
                 "notification shade instead of scrolling the profile")
         source = sys._getframe(1).f_code.co_name
-        self._require_foreground_owned_for_input()
-        self.touch.swipe(x1, y1, x2, y2, duration_ms=duration_ms)
+        with _time_bucket(_timing, "foreground_reassert_s"):
+            self._require_foreground_owned_for_input()
+        # Exactly one textual call into the transport below, not two -- test_android_safety.py's
+        # test_no_driver_gesture_reaches_the_transport_ungarded structurally greps this whole
+        # class for every direct transport call and expects exactly the three choke points
+        # (tap/swipe/scroll-up); an if/else with that one call written out twice would still be
+        # THIS chokepoint logically, but would read as two to that grep. A conditionally built
+        # kwarg dict keeps it one, textually and logically.
+        timing_kwargs = {"_timing": _timing} if self._touch_supports_timing() else {}
+        self.touch.swipe(x1, y1, x2, y2, duration_ms=duration_ms, **timing_kwargs)
         self._audit_device_input(
             "swipe", source=source, start=[x1, y1], end=[x2, y2],
             duration_ms=int(duration_ms))
 
-    def _scroll(self, frac: float, x_frac: float = 0.5, *, reverse: bool = False) -> None:
+    def _scroll(self, frac: float, x_frac: float = 0.5, *, reverse: bool = False,
+               _timing: dict[str, float] | None = None) -> None:
         """touch.scroll_up() with the forbidden-zone guard every other gesture gets.
 
         scroll_up computes its geometry INSIDE the transport, so the driver cannot see
@@ -2573,18 +2612,34 @@ class AndroidDriver(DatingAppDriver):
         and the enumeration/navigation fracs are small (0.10..0.16 measured, i.e. both rows
         inside 0.42..0.58 of the screen) so nothing legal is refused by asking for both. The
         cost of the extra check is two array comparisons; the cost of getting it wrong is the
-        owner's money."""
-        w, h = self.adb.screen_size()
+        owner's money.
+
+        `_timing`, when given (the read loop's `_scroll_down_one`/`_scroll_up_one` build a
+        fresh dict per gesture -- see `_emit_gesture_timing`), collects this ONE gesture's own
+        named costs: "screen_size_s" and "zone_check_s" for the geometry/guard work right here,
+        "foreground_reassert_s" for the final ownership recheck immediately before the transport
+        is touched (the SAME probe the read loop's own "foreground_check_s" bucket measures
+        once per frame -- this is a SECOND one, per gesture, that no bucket named it before
+        this ledger), and whatever the transport itself contributes (see UhidTouch's and Adb's
+        own docstrings) when `self.touch` is one of the two real transports. None elsewhere
+        (every other call site of `_scroll`) keeps `_time_bucket` a true no-op, exactly as
+        before this paragraph existed."""
+        with _time_bucket(_timing, "screen_size_s"):
+            w, h = self.adb.screen_size()
         y_low = int(h * (0.5 + frac / 2))     # the FORWARD stroke's touch-down, low on screen
         y_high = int(h * (0.5 - frac / 2))    # ...and its release, high on screen
         nominal = int(w * x_frac)
-        for x in (nominal - SCROLL_X_JITTER_PX, nominal + SCROLL_X_JITTER_PX):
-            self._assert_tap_allowed(x, y_low)
-            if reverse:
-                self._assert_tap_allowed(x, y_high)
+        with _time_bucket(_timing, "zone_check_s"):
+            for x in (nominal - SCROLL_X_JITTER_PX, nominal + SCROLL_X_JITTER_PX):
+                self._assert_tap_allowed(x, y_low)
+                if reverse:
+                    self._assert_tap_allowed(x, y_high)
         if not reverse:
-            self._require_foreground_owned_for_input()
-            self.touch.scroll_up(frac, x_frac)
+            with _time_bucket(_timing, "foreground_reassert_s"):
+                self._require_foreground_owned_for_input()
+            # Exactly one textual call into the transport below -- see _swipe's matching comment.
+            timing_kwargs = {"_timing": _timing} if self._touch_supports_timing() else {}
+            self.touch.scroll_up(frac, x_frac, **timing_kwargs)
             self._audit_device_input(
                 "scroll", source=sys._getframe(1).f_code.co_name, direction="forward",
                 start=[nominal, y_low], end=[nominal, y_high],
@@ -2597,7 +2652,7 @@ class AndroidDriver(DatingAppDriver):
         # `self.touch.swipe`: it re-asserts the delivered start point, which is the same
         # chokepoint every other drag in this file goes through.
         x = scroll_x(w, x_frac)
-        self._swipe(x, y_high, x, y_low)
+        self._swipe(x, y_high, x, y_low, _timing=_timing)
 
     def _tap_frac(self, frac) -> None:
         w, h = self.adb.screen_size()
@@ -2743,7 +2798,8 @@ class AndroidDriver(DatingAppDriver):
         return None
 
     # --- capture (blank-frame guard) -----------------------------------
-    def _screencap(self, *, on_blank: str = "raise") -> bytes | None:
+    def _screencap(self, *, on_blank: str = "raise",
+                   _timing: dict[str, float] | None = None) -> bytes | None:
         """Every decision-making capture goes through here, never `self.adb.screencap()`.
 
         `adb exec-out screencap` on a device that is asleep or sitting on the
@@ -2774,6 +2830,15 @@ class AndroidDriver(DatingAppDriver):
         _dbg_action (best-effort debug capture, already swallows failures) and
         snapshot_failure (must record whatever is on screen — including black — and
         must never raise while handling another error).
+
+        `_timing`, passed only by `_capture_current`'s read loop when its own timing ledger is
+        active (see that method's TIMING LEDGER paragraph -- every other caller leaves this
+        `None` and gets exactly today's behaviour), splits this call's wall clock into
+        "screencap_s" for the ADB round trip(s) and, kept SEPARATE, "screencap_blank_retry_s"
+        for the settle-and-retry path below. A blank-frame retry is a deliberate half-second
+        `human_delay` sleep this method itself chose to take, not screencap latency -- folding
+        it into "screencap_s" would blame the transport for a wait that has nothing to do with
+        it.
         """
         def _validated(nonblank: bytes) -> bytes:
             calibration = self.targeting_calibration
@@ -2795,11 +2860,13 @@ class AndroidDriver(DatingAppDriver):
                         "geometry")
             return nonblank
 
-        frame = self.adb.screencap()
+        with _time_bucket(_timing, "screencap_s"):
+            frame = self.adb.screencap()
         if not _is_blank_frame(frame):
             return _validated(frame)
-        time.sleep(human_delay(0.4))
-        frame = self.adb.screencap()
+        with _time_bucket(_timing, "screencap_blank_retry_s"):
+            time.sleep(human_delay(0.4))
+            frame = self.adb.screencap()
         if not _is_blank_frame(frame):
             return _validated(frame)
         if on_blank == "none":
@@ -3254,22 +3321,45 @@ class AndroidDriver(DatingAppDriver):
                     os.close(fd)
 
     def _scroll_down_one(self, frac: float | None = None,
-                         x_frac: float | None = None) -> None:
+                         x_frac: float | None = None, *,
+                         _iteration: int | None = None) -> None:
         """One humanized forward read-scroll, ALWAYS going through here (never a bare
         `touch.scroll_up()` call) so self._capture_scrolls stays the single source of truth
         for "how far down from the last confirmed top are we right now". Both
         _capture_current's read loop and _locate_target_heart's own re-navigation scrolls use
         this — if either called touch.scroll_up() directly instead, _scroll_to_top's ceiling
-        would silently under-count again exactly the way the hardcoded-distance bug did."""
+        would silently under-count again exactly the way the hardcoded-distance bug did.
+
+        GESTURE TIMING LEDGER (2026-08-23, one level down from _capture_current's own). That
+        ledger found one read-scroll costing ~3.0s -- 53.6% of an entire profile read -- with no
+        visibility into what inside the gesture that time was going to. This method (and its
+        twin below) is the chokepoint every one of those gestures actually passes through, so it
+        is where that breakdown is measured: a fresh, gesture-scoped stamps dict is built here
+        (only when `self._dbg is not None` -- otherwise `None`, and every `_time_bucket` call
+        this drives is a true no-op, per that helper's own docstring), threaded through
+        `_scroll` into whichever transport is live, and rolled into one `capture_gesture_timing`
+        row via `_emit_gesture_timing`. `_iteration` is the read loop's own frame index (`i` in
+        `_capture_current`), passed only from that ONE call site so the row can be joined back
+        to the iteration it belongs to; every other caller of this method (re-navigation,
+        centering) leaves it None, and the resulting gesture is still measured -- it simply does
+        not belong to any one profile-read frame, which None says honestly rather than
+        misattributing it to whichever frame happened to be current."""
+        gesture_start = time.monotonic() if self._dbg is not None else None
+        gesture_stamps: dict[str, float] | None = {} if self._dbg is not None else None
         if frac is None or x_frac is None:
-            frac, x_frac = self._sample_read_scroll()
-        self._scroll(frac, x_frac)
+            with _time_bucket(gesture_stamps, "sample_read_scroll_s"):
+                frac, x_frac = self._sample_read_scroll()
+        self._scroll(frac, x_frac, _timing=gesture_stamps)
         # Append only after the transport accepted the gesture: a forbidden-zone refusal or
         # transport failure must not leave a fictional scroll for _scroll_to_top to undo.
         self._capture_scroll_ledger.append((frac, x_frac))
         self._capture_scrolls = len(self._capture_scroll_ledger)
+        if gesture_stamps is not None:
+            self._emit_gesture_timing("down", gesture_start, gesture_stamps,
+                                      frame_index=_iteration)
 
-    def _scroll_up_one(self, frac: float, x_frac: float) -> None:
+    def _scroll_up_one(self, frac: float, x_frac: float, *,
+                       _iteration: int | None = None) -> None:
         """One humanized REVERSE read-scroll: the twin of `_scroll_down_one`, going back up.
 
         Doc 5.5's bottom-up navigation is what needs it. Until 2026-08-12 every backwards
@@ -3301,11 +3391,19 @@ class AndroidDriver(DatingAppDriver):
         against the card in front of them, independently). So the safe direction is chosen and
         stated rather than a distance ledger being invented for a consumer that only wants a
         bound.
+
+        Same GESTURE TIMING LEDGER as `_scroll_down_one` (see its docstring) -- `_iteration`
+        has the same meaning and the same "None outside the read loop" default.
         """
-        self._scroll(frac, x_frac, reverse=True)
+        gesture_start = time.monotonic() if self._dbg is not None else None
+        gesture_stamps: dict[str, float] | None = {} if self._dbg is not None else None
+        self._scroll(frac, x_frac, reverse=True, _timing=gesture_stamps)
         # Same rule as _scroll_down_one: append only after the transport accepted the gesture.
         self._capture_scroll_ledger.append((frac, x_frac))
         self._capture_scrolls = len(self._capture_scroll_ledger)
+        if gesture_stamps is not None:
+            self._emit_gesture_timing("up", gesture_start, gesture_stamps,
+                                      frame_index=_iteration)
 
     def _interruptible_sleep(self, seconds: float, should_stop=None) -> bool:
         """Sleep `seconds`, but in slices, giving up early if `should_stop` fires.
@@ -4865,98 +4963,155 @@ class AndroidDriver(DatingAppDriver):
         built from, by a sha256 per frame recorded at segmentation time. That guard exists
         because an offline validation pass once drove the same capture in REVERSE order past a
         weaker one and got ten confidently wrong crops with zero failures.
+
+        TIMING LEDGER (found+fixed 2026-08-23): unlike the read loop's per-frame ledger (see
+        `_capture_current`'s own TIMING LEDGER paragraph), this method runs ONCE per capture, so
+        it gets one detailed row, `capture_fold_timing`, rather than a per-iteration series plus
+        a summary. Same discipline: every distinguishable cost this call makes (the video-mute
+        marker scan, the index build -- segmentation and `estimate_shift` chaining both happen
+        inside that one call and are not separately exposed to this caller --, the per-block
+        video-selection screen, the still-photo dwell, the crop/payload build -- crop building
+        and payload assembly, likewise bundled inside one call --, and finally the two debug
+        notes writes) is stamped, and `unattributed_s` is `fold_wall_s` minus whatever of those
+        this ONE call actually reached before returning (a refusal partway through records only
+        the buckets it got to). Gated on `self._dbg is not None`, exactly like every other
+        diagnostic in this module: nothing extra runs, is decoded, or touches the device to
+        produce this, and a run with no debug log pays nothing for it.
         """
         # Keep `index` outside the try so every refusal, including a dependency exception before
         # a result exists, can leave the best evidence we have in actions.jsonl.  The logger is
         # deliberately an observer: no failure in this diagnostic path may change the read's
         # fail-loud indexing outcome.
         index = None
+        timing_enabled = self._dbg is not None
+        fold_start = time.monotonic() if timing_enabled else None
+        stamps: dict[str, float] = {}
+        outcome = "unknown"
         try:
-            video_mute_markers = self._video_mute_marker_rows(photos)
-            animation_markers = tuple(any(marker.frame_index == frame_index
-                                          for marker in video_mute_markers)
-                                      for frame_index in range(len(photos)))
-            index = build_item_index(
-                photos, content_band=self.content_band,
-                like_template=self._template("like"), like_threshold=_LIKE_MATCH_THRESHOLD,
-                at_scroll_top=True, identity_band=self.identity_band,
-                animation_markers=animation_markers,
-                video_mute_markers=video_mute_markers)
-            if not index.usable:
-                return self._item_index_refused(
-                    photos, "the item index this capture produced contradicts itself, so its "
-                    "numbering cannot be trusted: " + "; ".join(index.failures), index)
-            if not index.identity.known:
-                # Refused HERE rather than left for navigation, and the difference is a billed
-                # call: an index that cannot say whose profile it describes is one
-                # `item_nav.navigate_to_item` will refuse at its entry gate, so producing crops
-                # from it would buy an opener for a profile that can never be targeted. The same
-                # placement argument as every other refusal in this method -- the ranker's frames
-                # are untouched, and worker.py stops before the model is asked anything.
-                return self._item_index_refused(
-                    photos, "this capture could not be fingerprinted for identity, so a navigation "
-                    "pass could never confirm the card it counts on is this profile's: "
-                    + index.identity.reason, index)
-            source_indices = tuple(getattr(index, "source_frame_indices", ()) or ())
-            if source_indices:
-                if (len(source_indices) != len(index.frames)
-                        or any(i < 0 or i >= len(photos) for i in source_indices)):
+            try:
+                with _time_bucket(stamps, "video_mute_markers_s"):
+                    video_mute_markers = self._video_mute_marker_rows(photos)
+                    animation_markers = tuple(any(marker.frame_index == frame_index
+                                                  for marker in video_mute_markers)
+                                              for frame_index in range(len(photos)))
+                with _time_bucket(stamps, "item_index_build_s"):
+                    index = build_item_index(
+                        photos, content_band=self.content_band,
+                        like_template=self._template("like"), like_threshold=_LIKE_MATCH_THRESHOLD,
+                        at_scroll_top=True, identity_band=self.identity_band,
+                        animation_markers=animation_markers,
+                        video_mute_markers=video_mute_markers)
+                if not index.usable:
+                    outcome = "refused_index"
                     return self._item_index_refused(
-                        photos, "this capture's recovered item index has invalid frame provenance "
-                        "and cannot be cropped safely", index)
-                indexed_photos = [photos[i] for i in source_indices]
-            else:
-                # Compatibility with a legacy/index test double that predates frame provenance.
-                indexed_photos = photos
-            video_exclusions = self._video_selection_exclusions(indexed_photos, index)
-            payload = build_item_payload(
-                indexed_photos, index,
-                exclude=lambda block: video_exclusions.get(block.heart_ordinal),
-                unnumber=unnumber_unless_confident_photo,
-                unnumber_without_evidence=unnumber_without_still_photo_evidence,
-                still_photo_dwell=self._still_photo_dwell(indexed_photos, index, should_stop))
-            # `payload.usable` is False the instant zero cards survive to be numbered -- see
-            # `NO_NUMBERED_ITEMS_REASON`'s docstring in item_crops.py -- and that is the RIGHT
-            # default for a generic caller, but wrong for Hinge's own auto loop: worker.py treats
-            # `items_unavailable` as a HARD STOP (doc 5.2's "sending raw frames instead would give
-            # the model a numbering nothing can act on"), and a profile whose cards are all
-            # legitimately video, or whose dwell only ever reached one of many cards, is not that
-            # -- it is a normal outcome measured live (ops/STILL-PHOTO-DISCRIMINATOR.md 5d: 15
-            # blocks indexed, 0 numbered, entirely by design). So the ONE failure this method must
-            # not translate into `items_unavailable` is Rule four's own, and ONLY when nothing
-            # ELSE is wrong with the payload -- an over-tall block or an unresolved sighting
-            # alongside it is still a real refusal, unchanged below.
-            #
-            # Short-circuited on `not payload.usable` so a USABLE payload never has `.failures`
-            # read at all -- a real `ItemPayload.usable=True` already guarantees an empty
-            # `.failures`, so there is nothing to gain, and a handful of tests double `payload`
-            # as a bare `usable=True` stand-in with no other attributes.
-            numbered_nothing = (
-                not payload.usable
-                and len(payload.failures) == 1
-                and payload.failures[0].startswith(NO_NUMBERED_ITEMS_REASON))
-            if not payload.usable and not numbered_nothing:
+                        photos, "the item index this capture produced contradicts itself, so its "
+                        "numbering cannot be trusted: " + "; ".join(index.failures), index)
+                if not index.identity.known:
+                    # Refused HERE rather than left for navigation, and the difference is a billed
+                    # call: an index that cannot say whose profile it describes is one
+                    # `item_nav.navigate_to_item` will refuse at its entry gate, so producing crops
+                    # from it would buy an opener for a profile that can never be targeted. The same
+                    # placement argument as every other refusal in this method -- the ranker's frames
+                    # are untouched, and worker.py stops before the model is asked anything.
+                    outcome = "refused_identity"
+                    return self._item_index_refused(
+                        photos, "this capture could not be fingerprinted for identity, so a navigation "
+                        "pass could never confirm the card it counts on is this profile's: "
+                        + index.identity.reason, index)
+                source_indices = tuple(getattr(index, "source_frame_indices", ()) or ())
+                if source_indices:
+                    if (len(source_indices) != len(index.frames)
+                            or any(i < 0 or i >= len(photos) for i in source_indices)):
+                        outcome = "refused_provenance"
+                        return self._item_index_refused(
+                            photos, "this capture's recovered item index has invalid frame provenance "
+                            "and cannot be cropped safely", index)
+                    indexed_photos = [photos[i] for i in source_indices]
+                else:
+                    # Compatibility with a legacy/index test double that predates frame provenance.
+                    indexed_photos = photos
+                with _time_bucket(stamps, "video_selection_exclusions_s"):
+                    video_exclusions = self._video_selection_exclusions(indexed_photos, index)
+                with _time_bucket(stamps, "still_photo_dwell_s"):
+                    still_photo_dwell = self._still_photo_dwell(indexed_photos, index, should_stop)
+                with _time_bucket(stamps, "item_payload_build_s"):
+                    payload = build_item_payload(
+                        indexed_photos, index,
+                        exclude=lambda block: video_exclusions.get(block.heart_ordinal),
+                        unnumber=unnumber_unless_confident_photo,
+                        unnumber_without_evidence=unnumber_without_still_photo_evidence,
+                        still_photo_dwell=still_photo_dwell)
+                # `payload.usable` is False the instant zero cards survive to be numbered -- see
+                # `NO_NUMBERED_ITEMS_REASON`'s docstring in item_crops.py -- and that is the RIGHT
+                # default for a generic caller, but wrong for Hinge's own auto loop: worker.py treats
+                # `items_unavailable` as a HARD STOP (doc 5.2's "sending raw frames instead would give
+                # the model a numbering nothing can act on"), and a profile whose cards are all
+                # legitimately video, or whose dwell only ever reached one of many cards, is not that
+                # -- it is a normal outcome measured live (ops/STILL-PHOTO-DISCRIMINATOR.md 5d: 15
+                # blocks indexed, 0 numbered, entirely by design). So the ONE failure this method must
+                # not translate into `items_unavailable` is Rule four's own, and ONLY when nothing
+                # ELSE is wrong with the payload -- an over-tall block or an unresolved sighting
+                # alongside it is still a real refusal, unchanged below.
+                #
+                # Short-circuited on `not payload.usable` so a USABLE payload never has `.failures`
+                # read at all -- a real `ItemPayload.usable=True` already guarantees an empty
+                # `.failures`, so there is nothing to gain, and a handful of tests double `payload`
+                # as a bare `usable=True` stand-in with no other attributes.
+                numbered_nothing = (
+                    not payload.usable
+                    and len(payload.failures) == 1
+                    and payload.failures[0].startswith(NO_NUMBERED_ITEMS_REASON))
+                if not payload.usable and not numbered_nothing:
+                    outcome = "refused_payload"
+                    return self._item_index_refused(
+                        photos, "the item crops this capture produced are not a request the model can "
+                        "be asked to answer: " + "; ".join(payload.failures), index)
+            except (ItemIndexError, ItemCropError, SegmentationError, ShiftEstimationError) as exc:
+                outcome = "exception"
                 return self._item_index_refused(
-                    photos, "the item crops this capture produced are not a request the model can "
-                    "be asked to answer: " + "; ".join(payload.failures), index)
-        except (ItemIndexError, ItemCropError, SegmentationError, ShiftEstimationError) as exc:
-            return self._item_index_refused(
-                photos, f"this capture could not be indexed into items "
-                f"({type(exc).__name__}: {exc})", index)
-        self._current_item_index = index
-        self._current_item_payload = payload
-        self._current_items_unnumbered = (
-            self._items_unnumbered_summary(payload) if numbered_nothing else "")
-        self._record_item_index_recovery(photos, index)
-        self._record_item_index_notes(photos, index)
-        # Doc 5.5's bottom-up entry anchor. `photos[-1]` is the last frame the index was folded
-        # from, so `index.offsets[-1]` is ITS page offset -- and it is also, by construction, the
-        # frame still on screen when this capture returns: `_capture_current`'s repeated-frame
-        # break happens BEFORE the repeat is appended, and its ceiling path issues no scroll on
-        # the final iteration. So the shift `navigate_to_item` measures against it is 0px in the
-        # ordinary case, and a measurement rather than an assumption in every case.
-        self._current_item_anchor = photos[-1] if photos else None
-        return ""
+                    photos, f"this capture could not be indexed into items "
+                    f"({type(exc).__name__}: {exc})", index)
+            self._current_item_index = index
+            self._current_item_payload = payload
+            self._current_items_unnumbered = (
+                self._items_unnumbered_summary(payload) if numbered_nothing else "")
+            with _time_bucket(stamps, "record_notes_s"):
+                self._record_item_index_recovery(photos, index)
+                self._record_item_index_notes(photos, index)
+            # Doc 5.5's bottom-up entry anchor. `photos[-1]` is the last frame the index was folded
+            # from, so `index.offsets[-1]` is ITS page offset -- and it is also, by construction, the
+            # frame still on screen when this capture returns: `_capture_current`'s repeated-frame
+            # break happens BEFORE the repeat is appended, and its ceiling path issues no scroll on
+            # the final iteration. So the shift `navigate_to_item` measures against it is 0px in the
+            # ordinary case, and a measurement rather than an assumption in every case.
+            self._current_item_anchor = photos[-1] if photos else None
+            outcome = "usable"
+            return ""
+        finally:
+            if timing_enabled:
+                self._emit_capture_fold_timing(fold_start, stamps, len(photos), outcome=outcome)
+
+    def _emit_capture_fold_timing(self, fold_start: float, stamps: dict[str, float],
+                                  photo_count: int, *, outcome: str) -> None:
+        """One best-effort actions.jsonl row for `_index_captured_items`' own timing ledger.
+
+        Same discipline as `_emit_capture_iteration_timing`: `unattributed_s` is computed from
+        whatever this ONE fold actually measured before returning (a refusal partway through
+        records only the buckets it reached), never assumed zero. The caller only invokes this
+        when `self._dbg is not None`; the check below is kept anyway so this method is safe on
+        its own terms rather than by relying on `self._dbg.action` raising into the `except`.
+        """
+        if self._dbg is None:
+            return
+        fold_wall_s = time.monotonic() - fold_start
+        unattributed_s = fold_wall_s - sum(stamps.values())
+        try:
+            self._dbg.action(
+                "capture_fold_timing", photos=photo_count, outcome=outcome,
+                fold_wall_s=round(fold_wall_s, 6), unattributed_s=round(unattributed_s, 6),
+                **{key: round(value, 6) for key, value in sorted(stamps.items())})
+        except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
+            pass
 
     @staticmethod
     def _items_unnumbered_summary(payload) -> str:
@@ -5590,6 +5745,103 @@ class AndroidDriver(DatingAppDriver):
         self._current_items_unavailable = reason
         self._current_items_unnumbered = ""
 
+    def _emit_gesture_timing(self, direction: str, gesture_start: float,
+                             stamps: dict[str, float], *,
+                             frame_index: int | None) -> None:
+        """One best-effort actions.jsonl row decomposing a single humanized read-scroll gesture
+        (`_scroll_down_one`/`_scroll_up_one`) into the named costs `_scroll` and the touch
+        transport it drives actually measured.
+
+        Sibling to `_emit_capture_iteration_timing`, one level down: `unattributed_s` is
+        `gesture_wall_s` minus the sum of every bucket THIS gesture actually recorded --
+        computed here, never assumed zero, for the identical reason that one is: a retried UHID
+        file write, a `DriverClosed` raised mid-gesture, or a duck-typed test transport that
+        does not know how to report its own internals (see `_touch_supports_timing`) all
+        legitimately record only a subset of the named buckets, and any work inside the gesture
+        this ledger does not yet name (or cannot name without a new device call or a behaviour
+        change -- see uhid.py's and adb.py's own docstrings on their one undecomposable device
+        round trip) belongs here, honestly, rather than being smuggled into whichever bucket
+        happened to run last.
+
+        `frame_index` is the read loop's own iteration index (`i` in `_capture_current`) when
+        the caller is that loop, or None for every other `_scroll_down_one`/`_scroll_up_one`
+        call site (re-navigation, centering, `_locate_target_heart`'s reverse walk) -- those
+        gestures are real and just as worth measuring, but forcing a frame_index on them would
+        misattribute a re-navigation swipe to whichever profile-read frame happened to be
+        current, which is worse than admitting there is none.
+
+        Callers only invoke this when `self._dbg is not None` (their own gate, mirroring
+        `_emit_capture_iteration_timing`'s); the explicit check below is kept anyway for the
+        same reason that one keeps its own -- independent safety and independent testability."""
+        if self._dbg is None:
+            return
+        gesture_wall_s = time.monotonic() - gesture_start
+        unattributed_s = gesture_wall_s - sum(stamps.values())
+        try:
+            self._dbg.action(
+                "capture_gesture_timing", direction=direction, frame_index=frame_index,
+                gesture_wall_s=round(gesture_wall_s, 6), unattributed_s=round(unattributed_s, 6),
+                **{key: round(value, 6) for key, value in sorted(stamps.items())})
+        except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
+            pass
+
+    def _emit_capture_iteration_timing(self, frame_index: int, iter_start: float,
+                                       stamps: dict[str, float], *,
+                                       exit_reason: str) -> tuple[float, float]:
+        """One best-effort actions.jsonl row for a single read-loop iteration's timing ledger.
+
+        See `_capture_current`'s TIMING LEDGER paragraph for why this exists. `unattributed_s`
+        is `iter_wall_s` minus the sum of every bucket THIS iteration actually recorded --
+        computed here, never assumed zero, because an iteration that ends early (should_stop, a
+        foreign foreground, an open comment sheet, a repeated/bottom/split frame) legitimately
+        recorded only a subset of the named buckets, and hiding that behind an assumed-zero
+        residual would defeat the one thing this ledger exists to show.
+
+        Callers only invoke this when `self._dbg is not None` (their own `timing_enabled` gate),
+        so the write below never actually reaches a missing log in production -- the explicit
+        check is kept anyway, rather than leaning on `self._dbg.action` raising `AttributeError`
+        into the `except` below, so this method is independently safe (and independently
+        testable) against a bare `self._dbg is None` rather than by accident. Returns
+        `(iter_wall_s, unattributed_s)` unconditionally -- pure Python arithmetic, free to hand
+        back -- so the caller can fold this iteration into the capture-level summary without
+        recomputing the same subtraction twice.
+        """
+        iter_wall_s = time.monotonic() - iter_start
+        unattributed_s = iter_wall_s - sum(stamps.values())
+        if self._dbg is not None:
+            try:
+                self._dbg.action(
+                    "capture_iteration_timing", frame_index=frame_index, exit_reason=exit_reason,
+                    iter_wall_s=round(iter_wall_s, 6), unattributed_s=round(unattributed_s, 6),
+                    **{key: round(value, 6) for key, value in sorted(stamps.items())})
+            except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
+                pass
+        return iter_wall_s, unattributed_s
+
+    def _emit_capture_timing_summary(self, iterations: int, totals: dict[str, float],
+                                     iter_wall_s_total: float,
+                                     unattributed_s_total: float) -> None:
+        """One best-effort actions.jsonl row rolling up every `capture_iteration_timing` row
+        this capture's read loop wrote, per `_capture_current`'s TIMING LEDGER paragraph.
+
+        `totals` and the two running sums are exactly what the loop's own per-iteration records
+        already imply -- summed here rather than by re-deriving them from the individual rows,
+        so this row is a convenience, not a second source of truth. The caller only invokes this
+        when `self._dbg is not None` and at least one iteration ran; the check below is kept
+        anyway so this method is safe on its own terms (see _emit_capture_iteration_timing's
+        docstring for why that is worth doing even though it is currently always true here).
+        """
+        if self._dbg is None:
+            return
+        try:
+            self._dbg.action(
+                "capture_timing_summary", iterations=iterations,
+                iter_wall_s_total=round(iter_wall_s_total, 6),
+                unattributed_s_total=round(unattributed_s_total, 6),
+                **{key: round(value, 6) for key, value in sorted(totals.items())})
+        except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
+            pass
+
     # --- capture (Signals #1: read the whole profile, human-paced) ------
     def _capture_current(self, should_stop=None) -> Profile | None:
         """Read the profile currently on screen, human-paced, returning its frames.
@@ -5634,6 +5886,25 @@ class AndroidDriver(DatingAppDriver):
         failure in there is a sentence on the Profile rather than an exception out of here: these
         frames have TWO consumers with independent needs, and the one that wants faces is not the
         one that wants item numbers.
+
+        TIMING LEDGER (found+fixed 2026-08-23): a live read is measured at ~6.0s gesture-to-
+        gesture, but the loop's own named primitives (screencap, dwell, gesture, settle,
+        segmentation) only add up to ~4.1-4.6s of that -- roughly 1.4-1.9s per frame was, until
+        this fix, entirely unaccounted for. Every iteration below now stamps `time.monotonic()`
+        around each distinguishable cost (screencap and, separately, any blank-frame retry; the
+        foreground/package check; the comment-sheet probe; downsample; the identity-band decode;
+        both identity-tracking blocks; the frame signature; the bottom/repeated-frame detectors;
+        the read-step sampling; the enumeration step's segmentation; the read dwell; the gesture;
+        the settle) into a per-iteration `stamps` dict, and an `unattributed_s` bucket -- COMPUTED
+        as the iteration's own wall clock minus the sum of every named bucket it recorded, never
+        assumed to be zero -- carries whatever is left. `_index_captured_items` runs the same
+        discipline over its own, much coarser, one-shot costs (see its own TIMING LEDGER
+        paragraph). Both are gated on `self._dbg is not None` (`timing_enabled` here) so a run
+        with no debug log takes not one extra `time.monotonic()` call, dict write, or
+        actions.jsonl append -- this stays permanently on for every debug-logged run, and costs
+        one small JSONL row per iteration plus one summary row per capture in exchange: no new
+        device calls, no new decodes, no behaviour change. See `tools/hinge_capture_timing.py`
+        for the reader that turns a run's actions.jsonl into a per-bucket attribution.
         """
         photos: list[bytes] = []
         self._current_sigs = []
@@ -5712,309 +5983,385 @@ class AndroidDriver(DatingAppDriver):
         # below cannot see this profile's bottom on its own.
         static_pairs = 0
         prev_ds = None                  # last APPENDED frame's downsample, for that probe's gate
+        # TIMING LEDGER (found+fixed 2026-08-23): this read loop is measured live at ~6.0s
+        # gesture-to-gesture, but its own named primitives (screencap, dwell, gesture, settle,
+        # segmentation) only account for ~4.1-4.6s of that, leaving ~1.4-1.9s per frame -- the
+        # single largest unexplained cost in the system -- completely unmeasured. `timing_enabled`
+        # gates every stamp below so a run with no debug log pays literally nothing: no
+        # `time.monotonic()` call, no dict write, nothing but this one boolean check per
+        # iteration. When a debug log IS active, each iteration gets one more small actions.jsonl
+        # row (`capture_iteration_timing`) beyond the ones this loop already writes conditionally
+        # (`identity_anchor_replaced`, `enumeration_segmentation_fallback`) -- comparable
+        # overhead, just unconditional, in exchange for finally being able to see where the
+        # unmeasured time goes instead of only being able to say that it exists.
+        # `capture_timing_*` below accumulate this read's own iterations into the one
+        # `capture_timing_summary` row emitted once the loop ends (see just past the for/else
+        # below); a capture that returns early from inside the loop (Stop, a foreign foreground,
+        # an open comment sheet, ...) skips that roll-up, but every iteration it did complete
+        # already wrote its own row, so no timing evidence is lost -- only the convenience
+        # summary is.
+        timing_enabled = self._dbg is not None
+        capture_timing_totals: dict[str, float] = {}
+        capture_timing_iter_wall_total = 0.0
+        capture_timing_unattributed_total = 0.0
+        capture_timing_iterations = 0
         for i in range(self._profile_capture_limit):
-            if should_stop is not None and should_stop():
-                # Checked BEFORE the screencap, so a stop that lands during the previous
-                # dwell/scroll costs one poll rather than another full ADB round-trip. The
-                # partial read is discarded (see the docstring); the scroll ledger is left
-                # alone so _scroll_to_top still knows how far down the card actually is.
-                self._note_capture_aborted(len(photos))
-                return None
-            frame = self._screencap()
-            # The foreground can change after capture starts: a notification shade may open
-            # while this card is being read. The first sticky-header mismatch is the point at
-            # which the old logic would call it a deck advance and then rewind the System UI.
-            # Refuse here before that recovery path can issue another gesture.
-            if self._refuse_foreground_block(frame=frame):
-                return None
-            # A comment sheet is not profile content.  In observe mode it can be left open
-            # while Hinge is still composing/sending a like; treating its changing pixels as
-            # a card and then read-scrolling would move the sheet underneath the operator.
-            # Stop before recording this frame or issuing another scroll.  In particular this
-            # makes a capture that STARTS on a sheet completely input-free.
-            if self._observe_like_sheet_visible(frame):
-                return None
-            ds = _downsample(frame)                    # None if PIL/numpy unavailable or undecodable
-            # Read ONCE per frame, not once per consumer (2026-08-23 perf pass). Both the
-            # mid-capture boundary check just below and the "lock the identity anchor inline"
-            # block near the end of this loop used to call `_band(frame, self.identity_band)`
-            # separately -- a full PNG decode each -- even though they always see the SAME frame
-            # and the SAME `self.identity_band`. That duplication is safe to collapse into one
-            # call here because `self._identity_sig` (which gates the first block) can only ever
-            # transition away from None inside the second block's own `self.identity_band is not
-            # None` guard (see where it is assigned, below) -- so `self._identity_sig is not
-            # None` already implies `self.identity_band is not None`, and computing this
-            # unconditionally under that weaker, already-true-whenever-either-block-needs-it
-            # guard costs nothing extra in any case: the second block computed it under this
-            # exact condition every time regardless.
-            identity_band_of_frame = (
-                _band(frame, self.identity_band) if self.identity_band is not None else None)
-            # A profile boundary reached MID-CAPTURE. The deck can advance while this loop is
-            # still reading -- Hinge draws no on-screen busy overlay (worker.py's WAIT cue
-            # lives on the hub, not the phone), and the human's finger and the bot's own
-            # digitizer are concurrent input streams (see touchwatch.py) -- so a tap landing
-            # here is a real possibility, not a hypothetical. Nothing else in this loop would
-            # notice: it stops only on a repeated frame or the ceiling, so the frames after
-            # the advance get appended as though they were more of the SAME person, and the
-            # returned Profile then carries two different people's photos into one mean-pooled
-            # embedding and one stored label. Once this capture has locked an identity, a
-            # frame whose header matches NEITHER that identity nor the scroll-top chrome is a
-            # different card: stop before appending it and mark the capture, so the worker
-            # discards and recaptures instead of scoring a chimera.
-            if self._identity_sig is not None:
-                band = identity_band_of_frame
-                if band is not None:
-                    identity_dist = _band_dist(band, self._identity_sig)
-                    top_dist = (None if self._identity_top_sig is None
-                                else _band_dist(band, self._identity_top_sig))
-                    if identity_dist < self.change_threshold:
-                        # A second matching observation promotes the provisional first header
-                        # to an identity anchor. Keep the later, settled pixels and OCR read:
-                        # they are better evidence than the frame captured immediately after
-                        # the first scroll animation.
-                        if not self._identity_anchor_confirmed:
-                            self._identity_anchor_confirmed = True
-                            self._identity_sig = band
-                            self._identity_name = self._ocr_band(frame, self.identity_band)
-                            self._identity_anchor_frame = frame
-                            self._identity_anchor_frame_index = len(photos)
-                    elif top_dist is None or top_dist >= self.change_threshold:
-                        # Before the first header has been reproduced, a mismatch is ambiguous:
-                        # it can be a real card boundary, or the stable header replacing a
-                        # transient strip that was captured just after scrolling. Resolve that
-                        # ambiguity with the independently measured content motion. Adjacent
-                        # frames from one scrolled profile align under a vertical shift; a new
-                        # profile does not. Once confirmed, the identity band remains the hard
-                        # boundary it was before this fix.
-                        content_match = False
-                        content_shift = None
-                        content_overlap = None
-                        if (not self._identity_anchor_confirmed and ds is not None
-                                and self._current_sigs and self._current_sigs[-1] is not None
-                                and ds.shape == self._current_sigs[-1].shape):
-                            try:
-                                content_match, content_shift, content_overlap = (
-                                    _vertical_shift_match(
-                                        ds, self._current_sigs[-1],
-                                        threshold=self.change_threshold,
-                                        rows=_content_rows(self.content_band, ds.shape[0])))
-                            except Exception:  # noqa: BLE001 -- corroboration fails closed
+            iter_start = time.monotonic() if timing_enabled else None
+            stamps: dict[str, float] = {}
+            exit_reason = "completed"
+            try:
+                if should_stop is not None and should_stop():
+                    # Checked BEFORE the screencap, so a stop that lands during the previous
+                    # dwell/scroll costs one poll rather than another full ADB round-trip. The
+                    # partial read is discarded (see the docstring); the scroll ledger is left
+                    # alone so _scroll_to_top still knows how far down the card actually is.
+                    exit_reason = "should_stop"
+                    self._note_capture_aborted(len(photos))
+                    return None
+                frame = self._screencap(_timing=stamps if timing_enabled else None)
+                # The foreground can change after capture starts: a notification shade may open
+                # while this card is being read. The first sticky-header mismatch is the point at
+                # which the old logic would call it a deck advance and then rewind the System UI.
+                # Refuse here before that recovery path can issue another gesture.
+                with _time_bucket(stamps, "foreground_check_s"):
+                    foreground_blocked = self._refuse_foreground_block(frame=frame)
+                if foreground_blocked:
+                    exit_reason = "foreground_block"
+                    return None
+                # A comment sheet is not profile content.  In observe mode it can be left open
+                # while Hinge is still composing/sending a like; treating its changing pixels as
+                # a card and then read-scrolling would move the sheet underneath the operator.
+                # Stop before recording this frame or issuing another scroll.  In particular this
+                # makes a capture that STARTS on a sheet completely input-free.
+                with _time_bucket(stamps, "sheet_probe_s"):
+                    sheet_visible = self._observe_like_sheet_visible(frame)
+                if sheet_visible:
+                    exit_reason = "sheet_visible"
+                    return None
+                with _time_bucket(stamps, "downsample_s"):
+                    ds = _downsample(frame)         # None if PIL/numpy unavailable or undecodable
+                # Read ONCE per frame, not once per consumer (2026-08-23 perf pass). Both the
+                # mid-capture boundary check just below and the "lock the identity anchor inline"
+                # block near the end of this loop used to call `_band(frame, self.identity_band)`
+                # separately -- a full PNG decode each -- even though they always see the SAME frame
+                # and the SAME `self.identity_band`. That duplication is safe to collapse into one
+                # call here because `self._identity_sig` (which gates the first block) can only ever
+                # transition away from None inside the second block's own `self.identity_band is not
+                # None` guard (see where it is assigned, below) -- so `self._identity_sig is not
+                # None` already implies `self.identity_band is not None`, and computing this
+                # unconditionally under that weaker, already-true-whenever-either-block-needs-it
+                # guard costs nothing extra in any case: the second block computed it under this
+                # exact condition every time regardless.
+                with _time_bucket(stamps, "identity_band_decode_s"):
+                    identity_band_of_frame = (
+                        _band(frame, self.identity_band) if self.identity_band is not None
+                        else None)
+                # A profile boundary reached MID-CAPTURE. The deck can advance while this loop is
+                # still reading -- Hinge draws no on-screen busy overlay (worker.py's WAIT cue
+                # lives on the hub, not the phone), and the human's finger and the bot's own
+                # digitizer are concurrent input streams (see touchwatch.py) -- so a tap landing
+                # here is a real possibility, not a hypothetical. Nothing else in this loop would
+                # notice: it stops only on a repeated frame or the ceiling, so the frames after
+                # the advance get appended as though they were more of the SAME person, and the
+                # returned Profile then carries two different people's photos into one mean-pooled
+                # embedding and one stored label. Once this capture has locked an identity, a
+                # frame whose header matches NEITHER that identity nor the scroll-top chrome is a
+                # different card: stop before appending it and mark the capture, so the worker
+                # discards and recaptures instead of scoring a chimera.
+                with _time_bucket(stamps, "identity_tracking_s"):
+                    if self._identity_sig is not None:
+                        band = identity_band_of_frame
+                        if band is not None:
+                            identity_dist = _band_dist(band, self._identity_sig)
+                            top_dist = (None if self._identity_top_sig is None
+                                        else _band_dist(band, self._identity_top_sig))
+                            if identity_dist < self.change_threshold:
+                                # A second matching observation promotes the provisional first header
+                                # to an identity anchor. Keep the later, settled pixels and OCR read:
+                                # they are better evidence than the frame captured immediately after
+                                # the first scroll animation.
+                                if not self._identity_anchor_confirmed:
+                                    self._identity_anchor_confirmed = True
+                                    self._identity_sig = band
+                                    self._identity_name = self._ocr_band(frame, self.identity_band)
+                                    self._identity_anchor_frame = frame
+                                    self._identity_anchor_frame_index = len(photos)
+                            elif top_dist is None or top_dist >= self.change_threshold:
+                                # Before the first header has been reproduced, a mismatch is ambiguous:
+                                # it can be a real card boundary, or the stable header replacing a
+                                # transient strip that was captured just after scrolling. Resolve that
+                                # ambiguity with the independently measured content motion. Adjacent
+                                # frames from one scrolled profile align under a vertical shift; a new
+                                # profile does not. Once confirmed, the identity band remains the hard
+                                # boundary it was before this fix.
                                 content_match = False
-                        if content_match:
-                            old_anchor = self._identity_anchor_frame
-                            old_index = self._identity_anchor_frame_index
-                            old_name = self._identity_name
-                            self._identity_sig = band
-                            self._identity_name = self._ocr_band(frame, self.identity_band)
-                            self._identity_anchor_frame = frame
-                            self._identity_anchor_frame_index = len(photos)
-                            if self._dbg is not None:
-                                self._dbg.action(
-                                    "identity_anchor_replaced", before=old_anchor, after=frame,
-                                    old_anchor_frame_index=old_index,
-                                    new_anchor_frame_index=len(photos),
-                                    old_profile_name=old_name,
-                                    new_profile_name=self._identity_name,
-                                    identity_dist=round(identity_dist, 3),
-                                    top_dist=(None if top_dist is None else round(top_dist, 3)),
-                                    content_shift=content_shift,
-                                    content_overlap_rows=content_overlap)
-                            # This frame is still ordinary profile content. It is appended below,
-                            # and the next matching header observation will confirm the anchor.
-                        else:
-                            # Preserve the exact rejected frame and the distances that made this
-                            # a boundary.  The old capture_split record saved only frame 0, so a
-                            # real card advance and a transient sticky-header animation were
-                            # impossible to distinguish after the fact.
-                            evidence = {
-                                "trigger_frame_index": len(photos),
-                                "captured_frames": len(photos),
-                                "read_scrolls": len(self._capture_scroll_ledger),
-                                "identity_dist": round(identity_dist, 3),
-                                "top_dist": None if top_dist is None else round(top_dist, 3),
-                                "identity_anchor_frame_index": self._identity_anchor_frame_index,
-                                "identity_anchor_confirmed": self._identity_anchor_confirmed,
-                                "identity_anchor_name": self._identity_name,
-                                "content_match": content_match,
-                                "content_shift": content_shift,
-                                "content_overlap_rows": content_overlap,
-                            }
-                            try:
-                                top_verdict = confirm_scroll_top(
-                                    frame, identity_band=self.identity_band)
-                            except ScrollTopError as exc:
-                                evidence["scroll_top_state"] = "unreadable"
-                                evidence["scroll_top_reason"] = str(exc)
-                            else:
-                                evidence["scroll_top_state"] = top_verdict.state
-                                evidence["scroll_top_distance"] = (
-                                    None if top_verdict.distance is None
-                                    else round(top_verdict.distance, 3))
-                                evidence["scroll_top_reason"] = top_verdict.reason
-                            self._capture_split_frame = frame
-                            self._capture_split_evidence = evidence
-                            self._current_capture_split = True
-                            break
-            sig = _frame_sig(frame, ds=ds)
-            if sig in seen:
-                # A repeat frame = reached the bottom (the screen stopped changing). Only treat
-                # the very FIRST scroll repeating as a static screen (Out of Profiles / Loading)
-                # when the frame actually DECODES. An undecodable repeat is a degraded/wedged
-                # capture (e.g. a dropped device returning empty/truncated screencap on exit 0) —
-                # it must fall through to the H1 guard below, not masquerade as an empty deck
-                # (which would silently livelock the observe worker instead of stopping cleanly).
-                if i == 1 and ds is not None:
-                    return None
-                break
-            # The bottom, when an ANIMATION is repainting the page. `sig` above is a whole-frame
-            # 24x24 compared for EXACT byte equality, so one autoplaying video card keeps every
-            # frame "new" forever and the bottom signal never fires. Measured live 2026-08-16
-            # (Grace): the page saturated at frame 37 and the loop still ran to its 64-frame
-            # ceiling, issuing 26 futile swipes at an already-bottomed profile and then reporting
-            # the profile as LONGER than the read could cover -- the exact opposite of the truth,
-            # into the hub banner and BigQuery's capture_truncated column.
-            #
-            # frameshift is the authority instead of a looser pixel threshold because it is the
-            # one comparator here that REFUSES when it cannot tell: a measured 0 means 3+ strips
-            # independently agreed to the pixel that nothing moved, and anything less certain
-            # returns None and simply keeps the read going. That asymmetry is the whole safety
-            # argument -- a false 0 would truncate a real profile, so only an affirmative,
-            # quorate measurement is allowed to stop the loop, and it must happen TWICE in a row
-            # so one dropped or swallowed gesture cannot end a read on its own.
-            #
-            # The count is of failed GESTURES, not of idle frames, which is why this does not
-            # short-circuit the dwell and scroll below: each static pair is measured across a
-            # read-scroll that was actually issued, so two of them mean two real swipes moved
-            # nothing. Skipping ahead to the next screencap instead would prove only that the
-            # screen was idle while nothing was asked of it.
-            if photos and _static_pair_is_the_bottom(
-                    photos[-1], frame, self.content_band,
-                    before_ds=prev_ds, after_ds=ds):
-                static_pairs += 1
-                if static_pairs >= _STATIC_PAIRS_FOR_BOTTOM:
-                    # Deliberately not appended: a measured 0px translation of the previous
-                    # frame carries no page content the index has not already seen.
+                                content_shift = None
+                                content_overlap = None
+                                if (not self._identity_anchor_confirmed and ds is not None
+                                        and self._current_sigs and self._current_sigs[-1] is not None
+                                        and ds.shape == self._current_sigs[-1].shape):
+                                    try:
+                                        content_match, content_shift, content_overlap = (
+                                            _vertical_shift_match(
+                                                ds, self._current_sigs[-1],
+                                                threshold=self.change_threshold,
+                                                rows=_content_rows(self.content_band, ds.shape[0])))
+                                    except Exception:  # noqa: BLE001 -- corroboration fails closed
+                                        content_match = False
+                                if content_match:
+                                    old_anchor = self._identity_anchor_frame
+                                    old_index = self._identity_anchor_frame_index
+                                    old_name = self._identity_name
+                                    self._identity_sig = band
+                                    self._identity_name = self._ocr_band(frame, self.identity_band)
+                                    self._identity_anchor_frame = frame
+                                    self._identity_anchor_frame_index = len(photos)
+                                    if self._dbg is not None:
+                                        self._dbg.action(
+                                            "identity_anchor_replaced", before=old_anchor, after=frame,
+                                            old_anchor_frame_index=old_index,
+                                            new_anchor_frame_index=len(photos),
+                                            old_profile_name=old_name,
+                                            new_profile_name=self._identity_name,
+                                            identity_dist=round(identity_dist, 3),
+                                            top_dist=(None if top_dist is None else round(top_dist, 3)),
+                                            content_shift=content_shift,
+                                            content_overlap_rows=content_overlap)
+                                    # This frame is still ordinary profile content. It is appended below,
+                                    # and the next matching header observation will confirm the anchor.
+                                else:
+                                    # Preserve the exact rejected frame and the distances that made this
+                                    # a boundary.  The old capture_split record saved only frame 0, so a
+                                    # real card advance and a transient sticky-header animation were
+                                    # impossible to distinguish after the fact.
+                                    evidence = {
+                                        "trigger_frame_index": len(photos),
+                                        "captured_frames": len(photos),
+                                        "read_scrolls": len(self._capture_scroll_ledger),
+                                        "identity_dist": round(identity_dist, 3),
+                                        "top_dist": None if top_dist is None else round(top_dist, 3),
+                                        "identity_anchor_frame_index": self._identity_anchor_frame_index,
+                                        "identity_anchor_confirmed": self._identity_anchor_confirmed,
+                                        "identity_anchor_name": self._identity_name,
+                                        "content_match": content_match,
+                                        "content_shift": content_shift,
+                                        "content_overlap_rows": content_overlap,
+                                    }
+                                    try:
+                                        top_verdict = confirm_scroll_top(
+                                            frame, identity_band=self.identity_band)
+                                    except ScrollTopError as exc:
+                                        evidence["scroll_top_state"] = "unreadable"
+                                        evidence["scroll_top_reason"] = str(exc)
+                                    else:
+                                        evidence["scroll_top_state"] = top_verdict.state
+                                        evidence["scroll_top_distance"] = (
+                                            None if top_verdict.distance is None
+                                            else round(top_verdict.distance, 3))
+                                        evidence["scroll_top_reason"] = top_verdict.reason
+                                    self._capture_split_frame = frame
+                                    self._capture_split_evidence = evidence
+                                    self._current_capture_split = True
+                                    exit_reason = "capture_split"
+                                    break
+                with _time_bucket(stamps, "frame_sig_s"):
+                    sig = _frame_sig(frame, ds=ds)
+                if sig in seen:
+                    # A repeat frame = reached the bottom (the screen stopped changing). Only treat
+                    # the very FIRST scroll repeating as a static screen (Out of Profiles / Loading)
+                    # when the frame actually DECODES. An undecodable repeat is a degraded/wedged
+                    # capture (e.g. a dropped device returning empty/truncated screencap on exit 0) —
+                    # it must fall through to the H1 guard below, not masquerade as an empty deck
+                    # (which would silently livelock the observe worker instead of stopping cleanly).
+                    if i == 1 and ds is not None:
+                        exit_reason = "static_screen"
+                        return None
+                    exit_reason = "repeated_frame"
                     break
-            else:
-                static_pairs = 0
-            seen.add(sig)
-            photos.append(frame)
-            prev_ds = ds
-            # Lock the identity anchor INLINE as frames arrive, not retroactively after the
-            # loop. The boundary check above can only fire once _identity_sig exists, and a
-            # post-hoc scan would establish it only after the foreign frames had already been
-            # appended -- i.e. exactly too late to keep them out.
-            if self.identity_band is not None:
-                band = identity_band_of_frame
-                if band is not None:
-                    if self._identity_top_sig is None:
-                        self._identity_top_sig = band     # frame 0: the app's scroll-top chrome
-                    elif (self._identity_sig is None
-                            and _band_dist(band, self._identity_top_sig) >= self.change_threshold):
-                        self._identity_sig = band         # first frame showing the sticky header
-                        self._identity_name = self._ocr_band(frame, self.identity_band)
-                        self._identity_anchor_frame = frame
-                        self._identity_anchor_frame_index = len(photos) - 1
-            # Keep _current_sigs index-ALIGNED with photos: append ds even when None (an
-            # undecodable frame). _locate_target_heart looks its target up here — a gap would
-            # desync the two and target the WRONG photo. Consumers below filter/guard the Nones.
-            #
-            # This list is a CAPTURE-ORDER (0-based, per scroll frame) space, and as of
-            # 2026-08-12 the opener no longer speaks it: OpenerResult.item_index is 1-based over
-            # the numbered ITEMS the model was shown (ops/OPENER-REDESIGN.md 5.1/5.7). Nothing
-            # converts between the two here, and nothing may: the crossing happens exactly once,
-            # in opener.service.OpenerPick.capture_order_index, which knows which list the
-            # model's number counted and refuses rather than guessing when it cannot say. Doc
-            # 5.3's driver-owned translation table (model item -> heart ordinal) now EXISTS
-            # alongside this list -- see _current_item_payload, built below from these same
-            # frames -- but it is a different table in a different space, and nothing converts
-            # between the two: the crop-shape index resolves to a HEART ORDINAL, never to a
-            # position in this frame list.
-            #
-            # Why this list cannot police the difference itself, since it looks like it could:
-            # its only bound is its own length, and there are always more frames than items (24
-            # frames for 9 items on the calibration capture), so every out-of-space value it
-            # could receive looks perfectly in range. That is not a missing check here, it is
-            # why the space has to be stated by the producer.
-            self._current_sigs.append(ds)
+                # The bottom, when an ANIMATION is repainting the page. `sig` above is a whole-frame
+                # 24x24 compared for EXACT byte equality, so one autoplaying video card keeps every
+                # frame "new" forever and the bottom signal never fires. Measured live 2026-08-16
+                # (Grace): the page saturated at frame 37 and the loop still ran to its 64-frame
+                # ceiling, issuing 26 futile swipes at an already-bottomed profile and then reporting
+                # the profile as LONGER than the read could cover -- the exact opposite of the truth,
+                # into the hub banner and BigQuery's capture_truncated column.
+                #
+                # frameshift is the authority instead of a looser pixel threshold because it is the
+                # one comparator here that REFUSES when it cannot tell: a measured 0 means 3+ strips
+                # independently agreed to the pixel that nothing moved, and anything less certain
+                # returns None and simply keeps the read going. That asymmetry is the whole safety
+                # argument -- a false 0 would truncate a real profile, so only an affirmative,
+                # quorate measurement is allowed to stop the loop, and it must happen TWICE in a row
+                # so one dropped or swallowed gesture cannot end a read on its own.
+                #
+                # The count is of failed GESTURES, not of idle frames, which is why this does not
+                # short-circuit the dwell and scroll below: each static pair is measured across a
+                # read-scroll that was actually issued, so two of them mean two real swipes moved
+                # nothing. Skipping ahead to the next screencap instead would prove only that the
+                # screen was idle while nothing was asked of it.
+                if photos:
+                    with _time_bucket(stamps, "bottom_detect_s"):
+                        is_bottom_pair = _static_pair_is_the_bottom(
+                            photos[-1], frame, self.content_band,
+                            before_ds=prev_ds, after_ds=ds)
+                else:
+                    is_bottom_pair = False
+                if is_bottom_pair:
+                    static_pairs += 1
+                    if static_pairs >= _STATIC_PAIRS_FOR_BOTTOM:
+                        # Deliberately not appended: a measured 0px translation of the previous
+                        # frame carries no page content the index has not already seen.
+                        exit_reason = "static_pair_bottom"
+                        break
+                else:
+                    static_pairs = 0
+                seen.add(sig)
+                photos.append(frame)
+                prev_ds = ds
+                # Lock the identity anchor INLINE as frames arrive, not retroactively after the
+                # loop. The boundary check above can only fire once _identity_sig exists, and a
+                # post-hoc scan would establish it only after the foreign frames had already been
+                # appended -- i.e. exactly too late to keep them out.
+                with _time_bucket(stamps, "identity_tracking_s"):
+                    if self.identity_band is not None:
+                        band = identity_band_of_frame
+                        if band is not None:
+                            if self._identity_top_sig is None:
+                                self._identity_top_sig = band     # frame 0: the app's scroll-top chrome
+                            elif (self._identity_sig is None
+                                    and _band_dist(band, self._identity_top_sig) >= self.change_threshold):
+                                self._identity_sig = band         # first frame showing the sticky header
+                                self._identity_name = self._ocr_band(frame, self.identity_band)
+                                self._identity_anchor_frame = frame
+                                self._identity_anchor_frame_index = len(photos) - 1
+                # Keep _current_sigs index-ALIGNED with photos: append ds even when None (an
+                # undecodable frame). _locate_target_heart looks its target up here — a gap would
+                # desync the two and target the WRONG photo. Consumers below filter/guard the Nones.
+                #
+                # This list is a CAPTURE-ORDER (0-based, per scroll frame) space, and as of
+                # 2026-08-12 the opener no longer speaks it: OpenerResult.item_index is 1-based over
+                # the numbered ITEMS the model was shown (ops/OPENER-REDESIGN.md 5.1/5.7). Nothing
+                # converts between the two here, and nothing may: the crossing happens exactly once,
+                # in opener.service.OpenerPick.capture_order_index, which knows which list the
+                # model's number counted and refuses rather than guessing when it cannot say. Doc
+                # 5.3's driver-owned translation table (model item -> heart ordinal) now EXISTS
+                # alongside this list -- see _current_item_payload, built below from these same
+                # frames -- but it is a different table in a different space, and nothing converts
+                # between the two: the crop-shape index resolves to a HEART ORDINAL, never to a
+                # position in this frame list.
+                #
+                # Why this list cannot police the difference itself, since it looks like it could:
+                # its only bound is its own length, and there are always more frames than items (24
+                # frames for 9 items on the calibration capture), so every out-of-space value it
+                # could receive looks perfectly in range. That is not a missing check here, it is
+                # why the space has to be stated by the producer.
+                self._current_sigs.append(ds)
 
-            if i < self._profile_capture_limit - 1:
-                complexity_hint = None
-                if ds is not None:
-                    try:
-                        complexity_hint = float(ds.std()) / 255.0
-                    except Exception:  # noqa: BLE001 — hint is optional, capture is not
-                        pass
-                dwell, frac, x_frac = self._sample_read_step(i, complexity_hint)
-                if enumerating:
-                    # THE CLOSED LOOP (doc 5.5 / 5.10.1). The distance stops being a screen
-                    # fraction and becomes a fraction of the card actually in front of us,
-                    # because the two must not alias: a step near the item spacing makes "the
-                    # same heart moved" and "the next heart arrived" geometrically
-                    # indistinguishable, which no better estimator can fix. The lane and the
-                    # dwell keep coming from the behaviour policy exactly as they did.
-                    #
-                    # A refusal here normally ENDS THE ENUMERATION and lets the read finish at
-                    # the ordinary cadence. The sole bounded exception is one short, contiguous
-                    # contradictory segmentation run, carried at the corpus-minimum cadence so
-                    # item_index can independently omit it and rebuild across a measured bridge. Any
-                    # other refusal builds no item payload: its reason is recorded, crops are
-                    # never produced, and nothing downstream can mistake the frames for a
-                    # numbered list.
-                    try:
-                        step = self._plan_enumeration_step(
-                            frame, x_frac, enum_min_spacing_px,
-                            allow_segmentation_failure_fallback=
-                            len(enum_segmentation_fallback_frames)
-                            < MAX_SEGMENTATION_FALLBACK_FRAMES)
-                    except (ScrollStepError, SegmentationError) as exc:
-                        enumerating = False
-                        enumeration_reason = (
-                            f"the enumeration scroll could not be sized against frame "
-                            f"{len(photos) - 1} of this profile ({type(exc).__name__}: {exc})")
+                if i < self._profile_capture_limit - 1:
+                    with _time_bucket(stamps, "read_step_plan_s"):
+                        complexity_hint = None
+                        if ds is not None:
+                            try:
+                                complexity_hint = float(ds.std()) / 255.0
+                            except Exception:  # noqa: BLE001 — hint is optional, capture is not
+                                pass
+                        dwell, frac, x_frac = self._sample_read_step(i, complexity_hint)
+                    if enumerating:
+                        # THE CLOSED LOOP (doc 5.5 / 5.10.1). The distance stops being a screen
+                        # fraction and becomes a fraction of the card actually in front of us,
+                        # because the two must not alias: a step near the item spacing makes "the
+                        # same heart moved" and "the next heart arrived" geometrically
+                        # indistinguishable, which no better estimator can fix. The lane and the
+                        # dwell keep coming from the behaviour policy exactly as they did.
+                        #
+                        # A refusal here normally ENDS THE ENUMERATION and lets the read finish at
+                        # the ordinary cadence. The sole bounded exception is one short, contiguous
+                        # contradictory segmentation run, carried at the corpus-minimum cadence so
+                        # item_index can independently omit it and rebuild across a measured bridge. Any
+                        # other refusal builds no item payload: its reason is recorded, crops are
+                        # never produced, and nothing downstream can mistake the frames for a
+                        # numbered list.
+                        try:
+                            with _time_bucket(stamps, "enumeration_step_s"):
+                                step = self._plan_enumeration_step(
+                                    frame, x_frac, enum_min_spacing_px,
+                                    allow_segmentation_failure_fallback=
+                                    len(enum_segmentation_fallback_frames)
+                                    < MAX_SEGMENTATION_FALLBACK_FRAMES)
+                        except (ScrollStepError, SegmentationError) as exc:
+                            enumerating = False
+                            enumeration_reason = (
+                                f"the enumeration scroll could not be sized against frame "
+                                f"{len(photos) - 1} of this profile ({type(exc).__name__}: {exc})")
+                        else:
+                            frac, x_frac = step.frac, step.x_frac
+                            if step.basis == STEP_SEGMENTATION_FALLBACK:
+                                # This is only reachable inside the explicitly capped bad-frame run:
+                                # the next call after the cap disables the opt-in and raises normally.
+                                # Save every raw frame permanently for the direct-bridge audit.
+                                fallback_frame = len(photos) - 1
+                                enum_segmentation_fallback_frames.append(fallback_frame)
+                                if self._dbg is not None:
+                                    self._dbg.action(
+                                        "enumeration_segmentation_fallback", before=frame,
+                                        keep_before=True,
+                                        frame_index=fallback_frame,
+                                        fallback_frame_indices=enum_segmentation_fallback_frames,
+                                        reason=step.reason,
+                                        profile_min_spacing_px=enum_min_spacing_px,
+                                        step_px=step.step_px,
+                                        sized_against_px=step.sized_against_px)
+                            if step.spacing.measured:
+                                enum_min_spacing_px = (
+                                    step.spacing.px if enum_min_spacing_px is None
+                                    else min(enum_min_spacing_px, step.spacing.px))
+                    # The read dwell is the single longest stretch of this loop (dwell_s=1.1
+                    # humanized, x11), so it is where a Stop most often lands. Credit
+                    # read_dwell_s_total only with time actually spent: this counter is the
+                    # Signals behaviour-#1 "did we really read the profile" metric, and an
+                    # interrupted capture that reported the full sampled dwell would be claiming
+                    # reading time that never happened.
+                    started = time.monotonic()
+                    completed = self._interruptible_sleep(dwell, should_stop)
+                    if completed:
+                        read_dwell_s_total += dwell
+                        if timing_enabled:
+                            stamps["read_dwell_s"] = (
+                                stamps.get("read_dwell_s", 0.0) + (time.monotonic() - started))
                     else:
-                        frac, x_frac = step.frac, step.x_frac
-                        if step.basis == STEP_SEGMENTATION_FALLBACK:
-                            # This is only reachable inside the explicitly capped bad-frame run:
-                            # the next call after the cap disables the opt-in and raises normally.
-                            # Save every raw frame permanently for the direct-bridge audit.
-                            fallback_frame = len(photos) - 1
-                            enum_segmentation_fallback_frames.append(fallback_frame)
-                            if self._dbg is not None:
-                                self._dbg.action(
-                                    "enumeration_segmentation_fallback", before=frame,
-                                    keep_before=True,
-                                    frame_index=fallback_frame,
-                                    fallback_frame_indices=enum_segmentation_fallback_frames,
-                                    reason=step.reason,
-                                    profile_min_spacing_px=enum_min_spacing_px,
-                                    step_px=step.step_px,
-                                    sized_against_px=step.sized_against_px)
-                        if step.spacing.measured:
-                            enum_min_spacing_px = (
-                                step.spacing.px if enum_min_spacing_px is None
-                                else min(enum_min_spacing_px, step.spacing.px))
-                # The read dwell is the single longest stretch of this loop (dwell_s=1.1
-                # humanized, x11), so it is where a Stop most often lands. Credit
-                # read_dwell_s_total only with time actually spent: this counter is the
-                # Signals behaviour-#1 "did we really read the profile" metric, and an
-                # interrupted capture that reported the full sampled dwell would be claiming
-                # reading time that never happened.
-                started = time.monotonic()
-                completed = self._interruptible_sleep(dwell, should_stop)
-                read_dwell_s_total += dwell if completed else max(0.0, time.monotonic() - started)
-                if not completed:
-                    self._note_capture_aborted(len(photos))
-                    return None
-                self._scroll_down_one(frac, x_frac)
-                # The dwell above intentionally happens BEFORE the read gesture: it is the
-                # time spent looking at content before moving on.  This separate wait exists
-                # solely to let Hinge finish the scroll/header animation before the next frame
-                # can become an identity anchor.  It remains stop-aware, and is deliberately
-                # not included in read_dwell_s_total.
-                if not self._interruptible_sleep(human_delay(_READ_SCROLL_SETTLE_S), should_stop):
-                    self._note_capture_aborted(len(photos))
-                    return None
+                        dwell_elapsed = max(0.0, time.monotonic() - started)
+                        read_dwell_s_total += dwell_elapsed
+                        if timing_enabled:
+                            stamps["read_dwell_s"] = (
+                                stamps.get("read_dwell_s", 0.0) + dwell_elapsed)
+                    if not completed:
+                        exit_reason = "stopped_during_dwell"
+                        self._note_capture_aborted(len(photos))
+                        return None
+                    with _time_bucket(stamps, "gesture_s"):
+                        self._scroll_down_one(frac, x_frac, _iteration=i)
+                    # The dwell above intentionally happens BEFORE the read gesture: it is the
+                    # time spent looking at content before moving on.  This separate wait exists
+                    # solely to let Hinge finish the scroll/header animation before the next frame
+                    # can become an identity anchor.  It remains stop-aware, and is deliberately
+                    # not included in read_dwell_s_total.
+                    with _time_bucket(stamps, "settle_s"):
+                        settle_completed = self._interruptible_sleep(
+                            human_delay(_READ_SCROLL_SETTLE_S), should_stop)
+                    if not settle_completed:
+                        exit_reason = "stopped_during_settle"
+                        self._note_capture_aborted(len(photos))
+                        return None
+            finally:
+                if timing_enabled:
+                    iter_wall_s, unattributed_s = self._emit_capture_iteration_timing(
+                        i, iter_start, stamps, exit_reason=exit_reason)
+                    for key, value in stamps.items():
+                        capture_timing_totals[key] = (
+                            capture_timing_totals.get(key, 0.0) + value)
+                    capture_timing_iter_wall_total += iter_wall_s
+                    capture_timing_unattributed_total += unattributed_s
+                    capture_timing_iterations += 1
         else:
             # The loop ran out its full range() without ever finding a repeated frame (the
             # signal that the profile's true bottom was reached) -- this profile has MORE
@@ -6031,6 +6378,14 @@ class AndroidDriver(DatingAppDriver):
             # _note_enumeration_truncated and _ENUMERATION_CAPTURE_LIMIT.
             if enumeration_ceiling_raised and photos:
                 self._note_enumeration_truncated(len(photos))
+        # TIMING LEDGER, the roll-up (see the paragraph just before the `for` above): reached
+        # only when the loop ended by running the whole range() clean or by BREAKing out of it
+        # (repeated/bottom/split frame) -- every early `return None` inside the loop skips this,
+        # deliberately (see that same paragraph for why that loses nothing but the summary row).
+        if timing_enabled and capture_timing_iterations:
+            self._emit_capture_timing_summary(
+                capture_timing_iterations, capture_timing_totals,
+                capture_timing_iter_wall_total, capture_timing_unattributed_total)
         # H1: in a real run (open_session validated PIL/numpy), every frame should
         # downsample. If none did, decode is broken at runtime (PIL/numpy failure OR a wedged
         # device returning empty/truncated screencap) — refuse to continue in a degraded mode

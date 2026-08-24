@@ -38,7 +38,7 @@ import time
 
 from ..human_motion import REPORT_HZ, plan_swipe, plan_tap
 from .adb import Adb, AdbError, clamp_xy, scroll_x
-from .base import DriverClosed
+from .base import DriverClosed, _time_bucket
 
 
 class UhidUnavailable(RuntimeError):
@@ -146,10 +146,27 @@ class UhidTouch:
         cmds.append({"id": 1, "command": "delay", "duration": flush_ms})   # let the last event flush
         return ("\n".join(json.dumps(c) for c in cmds) + "\n").encode()
 
-    def _run_gesture(self, samples) -> None:
+    def _run_gesture(self, samples, *, _timing: dict[str, float] | None = None) -> None:
+        """`_timing`, when given, is the SAME per-gesture stamps dict `hinge.py`'s
+        `_scroll`/`_swipe` are already accumulating into (see their own docstrings) -- this
+        method just contributes its own leaf buckets to it, never wraps a span another layer
+        already timed.  `None` (every caller before 2026-08-23, and every caller today whose
+        `self.touch` is not one of the two real transports -- see hinge.py's
+        `_touch_supports_timing`) makes `_time_bucket` a true no-op: not one extra
+        `time.monotonic()` call, exactly as before this ledger existed.
+
+        The three bucket names below are this transport's answer to "how many `adb shell`
+        round trips does one gesture cost": `uhid_write_file_s` (write the gesture's HID
+        script), `uhid_hid_run_s` (run it -- this is the one call that actually BLOCKS for the
+        gesture's duration; the module docstring's "enumerate -> report stream -> flush" all
+        happens device-side inside this single call, so it cannot be decomposed further without
+        either a second device call this ledger is not allowed to add, or an on-device timestamp
+        stream this transport was deliberately never given), and `uhid_cleanup_s` (remove the
+        script file). Exactly three, exactly as suspected."""
         if not samples:
             return
-        script = self._gesture_script(samples)
+        with _time_bucket(_timing, "uhid_script_build_s"):
+            script = self._gesture_script(samples)
         quoted = shlex.quote(self.file_path)
         # Serialize: each gesture is its own `hid <file>` run; a concurrent caller must not
         # truncate the file while another gesture's hid is still reading it.
@@ -162,7 +179,8 @@ class UhidTouch:
                 # into two, so execution failure always stops without a second `hid` invocation.
                 for attempt in (1, 2):
                     try:
-                        self.adb.write_file(self.file_path, script)
+                        with _time_bucket(_timing, "uhid_write_file_s"):
+                            self.adb.write_file(self.file_path, script)
                     except AdbError as exc:
                         if attempt == 2:
                             raise DriverClosed(
@@ -171,14 +189,16 @@ class UhidTouch:
                         continue
                     break
                 try:
-                    self.adb.shell(f"hid {quoted}")   # blocks for the gesture's duration
+                    with _time_bucket(_timing, "uhid_hid_run_s"):
+                        self.adb.shell(f"hid {quoted}")   # blocks for the gesture's duration
                 except AdbError as exc:
                     raise DriverClosed(
                         "UHID gesture delivery became uncertain after `hid` started; refusing "
                         f"to replay the gesture: {exc}") from exc
             finally:
                 try:
-                    self.adb.shell(f"rm -f {quoted}")
+                    with _time_bucket(_timing, "uhid_cleanup_s"):
+                        self.adb.shell(f"rm -f {quoted}")
                 except Exception:  # noqa: BLE001 — best-effort cleanup
                     pass
 
@@ -186,19 +206,41 @@ class UhidTouch:
     def tap(self, x: int, y: int) -> None:
         self._run_gesture(plan_tap(x, y, hz=self.hz, rng=self._rng))
 
-    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 450) -> None:
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 450, *,
+             _timing: dict[str, float] | None = None) -> None:
         # Keep interface parity with Adb.  450ms is this transport's ordinary Fitts-law
         # gesture class; a caller may explicitly request a shorter measured flick, which is
         # scaled in the pure planner without compromising curved endpoints or pressure data.
+        #
+        # `_timing` (see `_run_gesture`'s docstring): `uhid_plan_swipe_s` isolates the pure-CPU
+        # cost of synthesizing the curved path/velocity/tremor/pressure sample stream
+        # (human_motion.plan_swipe) from the device I/O `_run_gesture` goes on to do with the
+        # result -- the "is the humanized motion planner itself slow" question this ledger
+        # exists to answer, kept as its own bucket rather than folded into the device calls it
+        # has nothing to do with.
         duration_scale = max(0.20, min(2.0, float(duration_ms) / 450.0))
-        self._run_gesture(plan_swipe(x1, y1, x2, y2, hz=self.hz, jitter_px=self.jitter_px,
-                                     width_px=self.width_px, duration_scale=duration_scale,
-                                     rng=self._rng))
+        with _time_bucket(_timing, "uhid_plan_swipe_s"):
+            samples = plan_swipe(x1, y1, x2, y2, hz=self.hz, jitter_px=self.jitter_px,
+                                 width_px=self.width_px, duration_scale=duration_scale,
+                                 rng=self._rng)
+        self._run_gesture(samples, _timing=_timing)
 
-    def scroll_up(self, distance_frac: float = 0.55, x_frac: float = 0.5) -> None:
+    def scroll_up(self, distance_frac: float = 0.55, x_frac: float = 0.5, *,
+                 _timing: dict[str, float] | None = None) -> None:
         # x jitter shared with Adb.scroll_up via adb.scroll_x() (HINGE-04): UHID is the
         # genuine, proven transport, so it must not be the one emitting a pixel-identical
         # column every scroll.
-        w, h = self.adb.screen_size()
+        #
+        # `_timing`'s "screen_size_s" bucket is the SAME key hinge.py's `_scroll` already
+        # writes (accumulated, not overwritten -- see _time_bucket's own docstring): a prior
+        # analysis suspected `adb.screen_size()` is called twice per gesture, once in the
+        # driver and once here in the transport. That call count is confirmed by this second
+        # site existing at all -- but `Adb.screen_size()` caches after its first-ever call for
+        # the whole session (see adb.py), so every one of these calls after session open is a
+        # dict lookup, not a device round trip. This bucket is how that gets PROVEN rather than
+        # assumed: if it ever reads meaningfully above zero, the cache assumption broke.
+        with _time_bucket(_timing, "screen_size_s"):
+            w, h = self.adb.screen_size()
         x = scroll_x(w, x_frac)
-        self.swipe(x, int(h * (0.5 + distance_frac / 2)), x, int(h * (0.5 - distance_frac / 2)))
+        self.swipe(x, int(h * (0.5 + distance_frac / 2)), x, int(h * (0.5 - distance_frac / 2)),
+                  _timing=_timing)

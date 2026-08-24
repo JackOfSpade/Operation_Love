@@ -686,3 +686,79 @@ def test_no_driver_gesture_reaches_the_transport_ungarded():
     src = inspect.getsource(_hinge.AndroidDriver)
     direct = _re.findall(r"self\.touch\.(tap|swipe|scroll_up)\(", src)
     assert len(direct) == 3, f"expected exactly the 3 choke points, found {direct}"
+
+
+# =====================================================================================
+# Gesture timing ledger wiring (2026-08-23, one level down from the read loop's own ledger):
+# `_scroll`/`_swipe` thread an optional `_timing` stamps dict through to the two REAL transport
+# classes (UhidTouch, Adb) -- see AndroidDriver._touch_supports_timing's own docstring for why
+# a duck-typed test double (like FakeAdb above) never receives it.
+# =====================================================================================
+
+class _UhidFakeAdb:
+    """Just enough of the real Adb surface for a REAL UhidTouch to run its whole gesture path
+    against, with no subprocess/device involved: screen_size/write_file/shell only."""
+
+    def __init__(self):
+        self.files = {}
+        self.shell_calls = []
+
+    def screen_size(self):
+        return (1080, 2400)
+
+    def write_file(self, path, data):
+        self.files[path] = data
+
+    def shell(self, cmd):
+        self.shell_calls.append(cmd)
+        return "yes" if "system/bin/hid" in cmd else ""
+
+
+def test_touch_supports_timing_is_true_for_the_two_real_transports_only():
+    from operation_love.drivers.adb import Adb
+    from operation_love.drivers.uhid import UhidTouch
+
+    drv = _drv(HINGE_SPEC, FakeAdb())
+    assert drv._touch_supports_timing() is False        # this file's own duck-typed double
+
+    drv._touch = UhidTouch(_UhidFakeAdb())
+    assert drv._touch_supports_timing() is True
+
+    drv._touch = Adb(serial="pixel")
+    assert drv._touch_supports_timing() is True
+
+
+def test_scroll_threads_timing_into_a_real_uhid_transport():
+    """The point of this whole ledger: `_scroll`'s own buckets (screen_size_s, zone_check_s,
+    foreground_reassert_s) AND a REAL UhidTouch's own (uhid_plan_swipe_s, uhid_script_build_s,
+    uhid_write_file_s, uhid_hid_run_s, uhid_cleanup_s) land in the SAME stamps dict when the
+    transport is the genuine one -- not just when a test double happens to accept the keyword.
+    """
+    import random
+
+    from operation_love.drivers.uhid import UhidTouch
+
+    drv = _drv(HINGE_SPEC, FakeAdb())
+    drv._touch = UhidTouch(_UhidFakeAdb(), rng=random.Random(1))
+    stamps: dict[str, float] = {}
+
+    drv._scroll(0.15, 0.5, _timing=stamps)
+
+    assert set(stamps) == {
+        "screen_size_s", "zone_check_s", "foreground_reassert_s",
+        "uhid_plan_swipe_s", "uhid_script_build_s", "uhid_write_file_s",
+        "uhid_hid_run_s", "uhid_cleanup_s",
+    }
+    assert all(v >= 0.0 for v in stamps.values())
+
+
+def test_scroll_with_a_duck_typed_test_double_never_passes_it_timing():
+    """The other half: this file's ordinary FakeAdb double does not know `_timing` exists, and
+    must never be handed it -- only _scroll's OWN buckets appear, never a transport-level one,
+    and (the real point) nothing raises TypeError."""
+    drv = _drv(HINGE_SPEC, FakeAdb())
+    stamps: dict[str, float] = {}
+
+    drv._scroll(0.15, 0.5, _timing=stamps)
+
+    assert set(stamps) == {"screen_size_s", "zone_check_s", "foreground_reassert_s"}

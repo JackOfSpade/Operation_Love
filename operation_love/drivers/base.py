@@ -7,10 +7,48 @@ ops/HINGE-PIXEL-RUNBOOK.md §5). A generic Playwright base remains reference-onl
 """
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from ..perception.capture import Profile
+
+
+@contextmanager
+def _time_bucket(stamps: dict[str, float] | None, key: str):
+    """Add this block's wall clock to `stamps[key]`, or do nothing at all if `stamps` is None.
+
+    The shared primitive behind every timing ledger in this codebase -- originally written for
+    `hinge.py`'s per-frame read-loop ledger (see `HingeDriver._capture_current`'s and
+    `_index_captured_items`' own TIMING LEDGER paragraphs) and now reused, unchanged, one level
+    down for the per-gesture ledger inside the humanized touch transport (uhid.py, adb.py).
+    Living here rather than in hinge.py is what makes that reuse possible without a circular
+    import: hinge.py already imports from uhid.py and adb.py, so those two could not import a
+    hinge.py-defined helper back without a cycle. base.py is the one module every one of them
+    already imports from (DriverClosed), so the shared primitive lives here instead of being
+    duplicated three times -- which is exactly the kind of copy this task was told to avoid.
+
+    `stamps is None` is how a caller with no debug log active opts out: no `time.monotonic()`
+    call, no dict write, nothing but the contextmanager protocol itself -- matching every other
+    diagnostic in this codebase, which goes fully quiet the moment its own `self._dbg is None`.
+    Accumulates with `stamps.get` rather than overwriting, because a bucket can legitimately be
+    split across more than one code path in a single iteration or gesture (identity tracking
+    runs in two separate `if` blocks in the read loop; a reverse gesture's foreground recheck
+    and zone check each run in two different methods) and the ledger wants ONE number for the
+    concept, not whichever call happened to run last. A `break`/`return`/raised exception inside
+    the block still reaches the `finally` below -- the contextmanager protocol guarantees that --
+    so a boundary that cuts an iteration or a gesture short is still timed accurately up to the
+    point it left.
+    """
+    if stamps is None:
+        yield
+        return
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        stamps[key] = stamps.get(key, 0.0) + (time.monotonic() - started)
 
 
 class DriverClosed(RuntimeError):

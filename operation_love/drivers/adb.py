@@ -42,7 +42,7 @@ from ..typography import (
     undeliverable_chars,
     undeliverable_sequences,
 )
-from .base import DriverClosed
+from .base import DriverClosed, _time_bucket
 
 _DEVICE_LOST_PHRASES = (
     "device not found",
@@ -172,32 +172,58 @@ class Adb:
         jx, jy = self._clamp(self._jit(x), self._jit(y))
         self._run_device(["shell", "input", "tap", str(jx), str(jy)])
 
-    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 450) -> None:
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 450, *,
+             _timing: dict[str, float] | None = None) -> None:
         """A curved, variable-velocity drag from (x1,y1) to (x2,y2). `duration_ms`
-        is the human-anchor for total gesture time (spread log-normally)."""
+        is the human-anchor for total gesture time (spread log-normally).
+
+        `_timing` (see uhid.py's UhidTouch, this transport's genuine-kernel sibling, and
+        hinge.py's `_scroll`/`_swipe`, its only callers): `adb_plan_path_s` isolates the
+        pure-CPU Bezier-path synthesis (plan_path) from `adb_script_build_s`, which builds the
+        `input motionevent`/`sleep` script text those points are turned into, and both are kept
+        separate from `adb_run_script_s` -- the ONE blocking `adb shell` round trip that
+        actually delivers the whole gesture. UNLIKE UHID's transport, this one issues no
+        separate write-then-run-then-remove sequence: the entire scripted gesture, embedded
+        `sleep`s included, is piped to a single `adb shell` invocation and executed by the
+        device's own shell, so `adb_run_script_s` is this transport's one and only per-gesture
+        device round trip, and its internal step-by-step timing is exactly as undecomposable
+        here as UHID's `uhid_hid_run_s` is, for the same reason: decomposing it would need
+        either a second device call this ledger may not add, or a behavior change."""
         duration = max(0.12, human_delay(max(1, int(duration_ms)) / 1000.0))
         # Each motionevent step is a separate on-device `cmd input` fork (~100ms),
         # so step count, not the sleeps, dominates gesture time. ~1 step / 60px
         # keeps the path visibly curved while staying ~1.5-2s (deliberate, human).
-        dist = math.hypot(x2 - x1, y2 - y1)
-        steps = max(8, min(22, int(dist / 60)))
-        pts = [self._clamp(px, py) for px, py in
-               plan_path(x1, y1, x2, y2, steps, jitter=self.jitter_px)]
-        per = duration / max(1, len(pts) - 1)
-        lines = [f"input motionevent DOWN {pts[0][0]} {pts[0][1]}"]
-        for i in range(1, len(pts)):
-            lines.append(f"sleep {max(0.005, human_delay(per, sigma=0.3)):.3f}")
-            kind = "UP" if i == len(pts) - 1 else "MOVE"
-            lines.append(f"input motionevent {kind} {pts[i][0]} {pts[i][1]}")
-        self._run_script(lines)
+        with _time_bucket(_timing, "adb_plan_path_s"):
+            dist = math.hypot(x2 - x1, y2 - y1)
+            steps = max(8, min(22, int(dist / 60)))
+            pts = [self._clamp(px, py) for px, py in
+                   plan_path(x1, y1, x2, y2, steps, jitter=self.jitter_px)]
+        with _time_bucket(_timing, "adb_script_build_s"):
+            per = duration / max(1, len(pts) - 1)
+            lines = [f"input motionevent DOWN {pts[0][0]} {pts[0][1]}"]
+            for i in range(1, len(pts)):
+                lines.append(f"sleep {max(0.005, human_delay(per, sigma=0.3)):.3f}")
+                kind = "UP" if i == len(pts) - 1 else "MOVE"
+                lines.append(f"input motionevent {kind} {pts[i][0]} {pts[i][1]}")
+        with _time_bucket(_timing, "adb_run_script_s"):
+            self._run_script(lines)
 
-    def scroll_up(self, distance_frac: float = 0.55, x_frac: float = 0.5) -> None:
-        """Scroll content up (reveal what's below) — a humanized swipe low->high."""
-        w, h = self.screen_size()
+    def scroll_up(self, distance_frac: float = 0.55, x_frac: float = 0.5, *,
+                 _timing: dict[str, float] | None = None) -> None:
+        """Scroll content up (reveal what's below) — a humanized swipe low->high.
+
+        `_timing`'s "screen_size_s" bucket is the SAME key hinge.py's `_scroll` and this
+        transport's UHID sibling already write (accumulated across every call site in one
+        gesture -- see uhid.py's `scroll_up` for the full "is this actually a device round
+        trip" answer, which applies identically here: `Adb.screen_size()` caches after its
+        first-ever call for the session, so this is a dict lookup by the time any gesture runs).
+        """
+        with _time_bucket(_timing, "screen_size_s"):
+            w, h = self.screen_size()
         x = scroll_x(w, x_frac)
         y1 = int(h * (0.5 + distance_frac / 2))
         y2 = int(h * (0.5 - distance_frac / 2))
-        self.swipe(x, y1, x, y2)
+        self.swipe(x, y1, x, y2, _timing=_timing)
 
     def text(self, s: str) -> None:
         """Type a string via ``adb shell input text``.

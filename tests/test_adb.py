@@ -391,6 +391,52 @@ def test_swipe_clamps_to_screen_when_size_known(monkeypatch):
         assert 0 <= int(xs) <= 1079 and 0 <= int(ys) <= 2399
 
 
+# --- per-gesture timing ledger (2026-08-23, the ADB fallback's own -- see uhid.py's for the
+# genuine-transport version this mirrors, and hinge.py's _scroll/_swipe, the only callers) ----
+def test_swipe_records_the_named_timing_buckets_when_given_a_stamps_dict(monkeypatch):
+    run = FakeRun(_ok())
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+    stamps: dict[str, float] = {}
+
+    Adb(serial="pixel").swipe(540, 1800, 540, 700, duration_ms=500, _timing=stamps)
+
+    # Unlike UHID's three device round trips, this transport pipes the whole scripted gesture
+    # (embedded `sleep`s included) to ONE `adb shell` call -- see Adb.swipe's own docstring.
+    assert set(stamps) == {"adb_plan_path_s", "adb_script_build_s", "adb_run_script_s"}
+    assert all(v >= 0.0 for v in stamps.values())
+    assert run.argv == [["adb", "-s", "pixel", "shell"]]     # still exactly one device call
+
+
+def test_scroll_up_adds_its_own_screen_size_bucket_on_top_of_swipe(monkeypatch):
+    run = FakeRun(_ok())
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+    d = Adb(serial="pixel")
+    d._size = (1080, 2400)          # cached: screen_size_s should still appear (this IS the call)
+    stamps: dict[str, float] = {}
+
+    d.scroll_up(_timing=stamps)
+
+    assert set(stamps) == {"screen_size_s", "adb_plan_path_s", "adb_script_build_s",
+                          "adb_run_script_s"}
+
+
+def test_swipe_with_no_timing_dict_is_a_true_noop(monkeypatch):
+    """The default -- every caller before 2026-08-23 -- costs nothing extra: `_time_bucket`
+    (base.py, shared with uhid.py and hinge.py) makes `stamps is None` a true no-op, not even a
+    `time.monotonic()` call -- see its own docstring. `time` is a process-wide singleton module,
+    so patching it here catches a stray monotonic() call from ANY of the three modules."""
+    import time as time_mod
+    run = FakeRun(_ok())
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+    calls = []
+    monkeypatch.setattr(time_mod, "monotonic", lambda: calls.append(1) or 0.0)
+
+    Adb(serial="pixel").swipe(540, 1800, 540, 700, duration_ms=500)
+
+    assert calls == []
+    assert run.argv == [["adb", "-s", "pixel", "shell"]]     # unchanged: one device round trip
+
+
 def test_plan_path_endpoints_exact_and_count():
     pts = plan_path(100, 200, 900, 2000, steps=12)
     assert len(pts) == 13

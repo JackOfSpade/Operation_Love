@@ -263,6 +263,51 @@ def test_cleanup_failure_cannot_mask_ambiguous_hid_delivery_failure():
     assert sum(1 for c in fa.shell_calls if c.startswith("rm -f")) == 1
 
 
+# --- per-gesture timing ledger (2026-08-23, one level down from hinge.py's own) --------
+def test_swipe_records_the_named_timing_buckets_when_given_a_stamps_dict():
+    fa = FakeAdb()
+    drv = UhidTouch(fa, rng=random.Random(1))
+    stamps: dict[str, float] = {}
+
+    drv.swipe(540, 1700, 540, 700, _timing=stamps)
+
+    # Exactly the buckets this transport can name from the host side: the pure-CPU planner,
+    # building the gesture script, and the three `adb shell` round trips write/hid/rm-f --
+    # see _run_gesture's own docstring for why there are exactly three, and no more.
+    assert set(stamps) == {"uhid_plan_swipe_s", "uhid_script_build_s", "uhid_write_file_s",
+                          "uhid_hid_run_s", "uhid_cleanup_s"}
+    assert all(v >= 0.0 for v in stamps.values())
+
+
+def test_scroll_up_adds_its_own_screen_size_bucket_on_top_of_swipes(monkeypatch):
+    fa = FakeAdb()
+    drv = UhidTouch(fa, rng=random.Random(1))
+    stamps: dict[str, float] = {}
+
+    drv.scroll_up(_timing=stamps)
+
+    assert "screen_size_s" in stamps
+    assert set(stamps) >= {"screen_size_s", "uhid_plan_swipe_s", "uhid_script_build_s",
+                          "uhid_write_file_s", "uhid_hid_run_s", "uhid_cleanup_s"}
+
+
+def test_swipe_with_no_timing_dict_is_a_true_noop(monkeypatch):
+    """The default -- every caller before 2026-08-23, and every caller today whose transport
+    is not asked to report -- costs nothing extra: no dict, no `time.monotonic()` call."""
+    calls = []
+    monkeypatch.setattr(uhid.time, "monotonic", lambda: calls.append(1) or 0.0)
+    fa = FakeAdb()
+    UhidTouch(fa, rng=random.Random(1)).swipe(540, 1700, 540, 700)
+    assert calls == []
+
+
+def test_run_gesture_empty_samples_records_nothing_even_with_a_stamps_dict():
+    fa = FakeAdb()
+    stamps: dict[str, float] = {}
+    UhidTouch(fa)._run_gesture([], _timing=stamps)
+    assert stamps == {} and fa.files == {} and fa.shell_calls == []
+
+
 def test_gesture_file_write_may_retry_before_any_hid_delivery(monkeypatch):
     class WriteFlaky(FakeAdb):
         def __init__(self):

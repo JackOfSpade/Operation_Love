@@ -3531,3 +3531,149 @@ def test_return_to_entry_accounts_for_a_corrective_scroll(
         target, probe, entry_reference, correction) is True
     drift_bound = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
     assert abs(adb.scroll - 1200) < drift_bound
+
+
+# =====================================================================================
+# The capture timing ledger (found+fixed 2026-08-23), wired into a REAL read over this file's
+# synthetic world. tests/test_hinge_capture_timing.py covers the ledger's own arithmetic with a
+# fully controlled fake clock; these three prove it is actually wired into the real read loop
+# and the real fold end to end, using the exact production driver every other test in this file
+# already exercises -- not a stand-in.
+# =====================================================================================
+
+def test_capture_timing_ledger_records_one_row_per_iteration_a_summary_and_a_fold_row(tmp_path):
+    from tools import hinge_capture_timing as hct
+
+    adb = WorldAdb()
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="capture-timing")
+
+    profile = drv._capture_current()
+
+    assert profile is not None and profile.items_unavailable == ""
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    iteration_records = [r for r in records if r["action"] == "capture_iteration_timing"]
+    summary_records = [r for r in records if r["action"] == "capture_timing_summary"]
+    fold_records = [r for r in records if r["action"] == "capture_fold_timing"]
+
+    # One iteration row per loop pass: every APPENDED frame took one, plus at most one more for
+    # whichever detector (a repeated/static-bottom frame) ended the read without appending its
+    # own trigger frame -- see _capture_current's repeated-frame/bottom-detect branches, both of
+    # which `break` (and so still reach this ledger's `finally`) rather than appending. One
+    # summary row for the whole read, and exactly one fold row -- this profile enumerates
+    # cleanly, so _index_captured_items runs exactly once ("if enumerating: ... =
+    # self._index_captured_items").
+    capture_frames = profile.meta["capture_frames"]
+    assert capture_frames <= len(iteration_records) <= capture_frames + 1
+    assert len(summary_records) == 1
+    assert len(fold_records) == 1
+
+    # THE ARITHMETIC IDENTITY, over real (if tiny, since hinge.time.sleep is patched to a no-op
+    # by the autouse _no_sleep fixture) wall-clock measurements: every named bucket a record
+    # reports plus its own unattributed_s must reconstruct that record's own total exactly, per
+    # _capture_current's and _index_captured_items' TIMING LEDGER paragraphs.
+    iter_attr = hct.summarize_iteration_timing(iteration_records)
+    for record in iteration_records:
+        named = sum(v for k, v in record.items()
+                    if k not in hct._ITERATION_META_KEYS and isinstance(v, (int, float)))
+        assert named == pytest.approx(record["iter_wall_s"], abs=1e-4)
+    summary = summary_records[0]
+    assert summary["iterations"] == len(iteration_records)
+    assert summary["iter_wall_s_total"] == pytest.approx(
+        sum(r["iter_wall_s"] for r in iteration_records), abs=1e-4)
+    assert summary["unattributed_s_total"] == pytest.approx(
+        iter_attr.unattributed_s_total, abs=1e-4)
+
+    fold_attr = hct.summarize_fold_timing(fold_records)
+    assert fold_attr.records == 1
+    fold = fold_records[0]
+    assert fold["outcome"] == "usable"
+    named_fold = sum(v for k, v in fold.items()
+                     if k not in hct._FOLD_META_KEYS and isinstance(v, (int, float)))
+    assert named_fold == pytest.approx(fold["fold_wall_s"], abs=1e-4)
+    # And the reader built on the real production writer's own output agrees with it.
+    assert iter_attr.records == len(iteration_records)
+
+
+def test_capture_timing_ledger_is_silent_with_no_debug_log():
+    """`drv._dbg` defaults to None, exactly like every other test above that never sets it --
+    this one exists to say explicitly that the timing ledger is part of why that is safe: no
+    `time.monotonic()` stamp, no actions.jsonl row, and (the only thing there is to assert) no
+    exception anywhere along the way."""
+    adb = WorldAdb()
+    drv = _drv(adb)
+    assert drv._dbg is None
+
+    profile = drv._capture_current()
+
+    assert profile is not None
+    assert profile.items_unavailable == ""
+
+
+def test_gesture_timing_ledger_records_one_row_per_gesture_joined_to_its_iteration(tmp_path):
+    """One level down from the iteration ledger above (found+fixed 2026-08-23, the day the
+    iteration ledger's own "gesture_s" bucket turned out to be 53.6% of an entire read with
+    nothing inside it named): `_capture_current`'s loop now calls
+    `_scroll_down_one(frac, x_frac, _iteration=i)`, and this proves that call is actually wired
+    to emit one `capture_gesture_timing` row per gesture -- joined back to the iteration it
+    belongs to via `frame_index` -- over the SAME real read this file's other capture-timing
+    test exercises. tests/test_hinge_capture_timing.py covers `_emit_gesture_timing`'s own
+    arithmetic with a fully controlled fake clock; this is the "actually wired into the real
+    read loop" half, using the exact production driver every other test in this file already
+    exercises, not a stand-in."""
+    from tools import hinge_capture_timing as hct
+
+    adb = WorldAdb()
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="gesture-timing")
+
+    profile = drv._capture_current()
+
+    assert profile is not None and profile.items_unavailable == ""
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    iteration_records = [r for r in records if r["action"] == "capture_iteration_timing"]
+    gesture_records = [r for r in records if r["action"] == "capture_gesture_timing"]
+
+    assert gesture_records, "a multi-frame read must issue at least one read-scroll gesture"
+    assert all(r["direction"] == "down" for r in gesture_records)
+    iteration_frames = {r["frame_index"] for r in iteration_records}
+    assert {r["frame_index"] for r in gesture_records} <= iteration_frames, (
+        "every gesture this loop issues belongs to a real iteration of the SAME read -- a "
+        "frame_index pointing outside that set would mean the join key is wrong, not just "
+        "unused")
+
+    # THE ARITHMETIC IDENTITY, same as the iteration ledger's own test above: every named bucket
+    # plus this gesture's own unattributed_s must reconstruct gesture_wall_s exactly.
+    for record in gesture_records:
+        named = sum(v for k, v in record.items()
+                    if k not in hct._GESTURE_META_KEYS and isinstance(v, (int, float)))
+        assert named == pytest.approx(record["gesture_wall_s"], abs=1e-4)
+    gesture_attr = hct.summarize_gesture_timing(gesture_records)
+    assert gesture_attr.records == len(gesture_records)
+
+    # WorldAdb (this file's synthetic world) is a duck-typed test double, not the real
+    # UhidTouch/Adb transport -- AndroidDriver._touch_supports_timing() correctly recognises
+    # that and never passes it `_timing`, so only `_scroll`'s OWN buckets (the geometry guard
+    # and the per-gesture foreground recheck, both real hinge.py-level costs) are named here;
+    # the transport's own cost is honestly unattributed rather than invented for a transport
+    # that was never asked to report it.
+    assert "screen_size_s" in gesture_attr.buckets
+    assert "zone_check_s" in gesture_attr.buckets
+    assert "foreground_reassert_s" in gesture_attr.buckets
+    assert not any(key.startswith(("uhid_", "adb_")) for key in gesture_attr.buckets)
+
+
+def test_gesture_timing_ledger_is_silent_with_no_debug_log():
+    """Same guarantee as the iteration ledger's own no-debug-log test, one level down: with
+    `drv._dbg` at its default None, `_scroll_down_one` never calls `time.monotonic()` for the
+    gesture ledger and never touches `self._emit_gesture_timing` in a way that could raise."""
+    adb = WorldAdb()
+    drv = _drv(adb)
+    assert drv._dbg is None
+
+    profile = drv._capture_current()
+
+    assert profile is not None
+    assert profile.items_unavailable == ""

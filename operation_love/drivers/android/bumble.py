@@ -1,7 +1,7 @@
 """Bumble's staged, currently unlicensed Android binding.
 
 The future Auto path uses direct card-body drags, whose pure mechanics remain unit-testable.
-No real session may start while ``BUMBLE_SPEC.calibrated`` and ``observe_ready`` are false;
+No real session may start while ``BUMBLE_SPEC.calibrated`` is false;
 the paid-upsell detection template is intentionally absent until it is measured live.
 """
 from __future__ import annotations
@@ -14,12 +14,9 @@ from ...perception.capture import Profile
 BUMBLE_SPEC = AndroidAppSpec(
     app="bumble",
     package="com.bumble.app",
-    # drivers/android/__init__.py derives Auto and Observe readiness from this spec.  False
+    # drivers/android/__init__.py derives Training and Auto readiness from this spec. False
     # therefore keeps BOTH modes out of production even though card-drag logic has unit tests.
     calibrated=False,
-    # Bumble has no reviewed manual-observation path. Keep this explicit so a future Auto
-    # calibration cannot accidentally license Observe merely by changing `calibrated`.
-    observe_calibrated=False,
     coords={
         # Card-body drags avoid the lower action row, including paid SuperSwipe.
         "swipe_start": (0.50, 0.55),

@@ -16,6 +16,7 @@ import math
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Protocol
@@ -126,8 +127,10 @@ _SCHEMA = {
                            "HER. Record only what is visibly shown or explicitly stated, not "
                            "an action or backstory you inferred. Put the whole description "
                            "here, including any header, caption, or prompt printed with a photo "
-                           "and how it frames the photo, so the opener does not have to carry "
-                           "it. The opener may name "
+                           "and how it frames the photo. Describe any other visible people "
+                           "neutrally unless her profile explicitly states their relationship; "
+                           "never infer friend, partner, or family from proximity, so the "
+                           "opener does not have to carry it. The opener may name "
                            "only the visible detail needed as setup, and its final conversational "
                            "point must add something beyond that description.",
         },
@@ -161,7 +164,10 @@ _SCHEMA = {
             "description": "A short description of the item you picked: say whether it is a "
                            "photo or a written prompt, and in a few words what it shows or "
                            "says. For a photo, include any header, caption, or prompt printed "
-                           "with it. This is how we check that the item you numbered is the item "
+                           "with it. Describe any other visible people neutrally unless her "
+                           "profile explicitly states their relationship; never infer friend, "
+                           "partner, or family from proximity. This is how we check that the "
+                           "item you numbered is the item "
                            "we think it is. Never sent to her.",
         },
         "opener": {
@@ -360,7 +366,9 @@ _SYSTEM = (
     "the conversational move. If removing a descriptive clause leaves the later point or "
     "question unchanged, cut it. QUESTION COHERENCE: ask one coherent thing at a time. An 'or' "
     "is allowed only for parallel, genuinely contrasting answers to that same underlying "
-    "question, never to join unrelated dimensions. REFERENT CLARITY: every pronoun, shorthand "
+    "question, never to join unrelated dimensions. CASUAL OR PUNCTUATION: never put a comma "
+    "immediately before 'or', even where formal grammar would allow one. Write it the way a "
+    "person would text casually. REFERENT CLARITY: every pronoun, shorthand "
     "noun, and question subject must have one immediately obvious referent. Across two beats, "
     "keep the same referent unless the transition to a new one is explicit and immediately "
     "clear. Do not make the reader choose between different ordinary meanings of the same word. "
@@ -658,6 +666,7 @@ class ItemRequest:
 _COMMON_ABBREVIATION_RE = re.compile(
     r"\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|etc)\.", re.IGNORECASE)
 _SENTENCE_END_RE = re.compile(r"(?:[!?]+|\.+)(?=(?:[\"'”’)]*)?(?:\s+|$))")
+_COMMA_BEFORE_OR_RE = re.compile(r",(?=\s+or\b)", re.IGNORECASE)
 
 # Cap on how much of a malformed model-output value gets echoed into an error message --
 # long enough to be diagnostic, short enough that a huge/garbage payload can't blow up a
@@ -692,8 +701,10 @@ def _image_media_type(data: bytes) -> str:
 
 def _sanitize(text: str) -> str:
     """The single fold applied to every model-written opener before it becomes the recorded,
-    sent OpenerResult.opener -- delegates entirely to operation_love.typography.fold_to_ascii
-    so the text this function returns is BYTE-FOR-BYTE what Adb.text() will actually type
+    sent OpenerResult.opener -- delegates character folding to
+    operation_love.typography.fold_to_ascii, then removes a comma immediately before ``or``
+    so even formally correct model punctuation reads like casual texting. The text this
+    function returns is BYTE-FOR-BYTE what Adb.text() will actually type
     (fold_to_ascii is also what drivers.adb._clean_text_for_input calls; see typography.py's
     module docstring). This keeps the owner's no-dash rule intact (every dash-like codepoint
     -- em/en dash, hyphen, and their lookalikes -- folds to a comma or space via the
@@ -704,7 +715,8 @@ def _sanitize(text: str) -> str:
     to printable ASCII survives here untouched; _parse's undeliverable_chars() check right
     after this call is what turns that into a loud, retried failure instead of a silent send
     of unrenderable text."""
-    return fold_to_ascii(str(text))
+    folded = fold_to_ascii(str(text))
+    return _COMMA_BEFORE_OR_RE.sub("", folded)
 
 
 def _strip_wrapping_quotes(text: str) -> str:
@@ -1168,6 +1180,29 @@ class OpenerAborted(OpenerError):
     """
 
 
+class OpenerDeadlineExceeded(OpenerError):
+    """An advisory opener's absolute monotonic deadline elapsed.
+
+    Unlike :class:`OpenerAborted`, this is not a request to stop the run. Unlike an ordinary
+    :class:`OpenerError`, it is not evidence that the profile, provider, or request pipeline is
+    unhealthy. It is the normal outcome for an optional suggestion which is no longer useful to
+    the person holding the phone. ``OpenerService.maybe_opener`` therefore handles it only on
+    its advisory path, without consuming a failure latch or disabling future suggestions.
+
+    GeminiOpener checks the deadline before every model in a cascade and limits every provider
+    request to the time left. This is deliberately distinct from a transport timeout: expiry can
+    happen between requests, while a transport timeout is a genuine transient provider failure.
+    """
+
+    def __init__(self, message: str, *, usage: Usage | None = None, model: str | None = None):
+        super().__init__(message)
+        # A 2xx response which arrives after the advisory cutoff may still have been billed.
+        # Carry its provider-raw accounting facts to OpenerService, which records the stale draw
+        # without parsing or sending its text. Pre-request expiry and transport errors have none.
+        self.usage = usage
+        self.model = model
+
+
 class OpenerClient(Protocol):
     """What OpenerService requires of an opener client -- i.e. every argument the service
     actually passes, and nothing more.
@@ -1183,6 +1218,7 @@ class OpenerClient(Protocol):
     def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
                  items: "ItemRequest | None" = None,
                  should_stop: Callable[[], bool] | None = None,
+                 deadline: float | None = None,
                  skip_models: frozenset[str] = frozenset()) -> OpenerResult: ...
 
 
@@ -2396,7 +2432,35 @@ class GeminiOpener:
     def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
                  items: ItemRequest | None = None,
                  should_stop: Callable[[], bool] | None = None,
+                 deadline: float | None = None,
                  skip_models: frozenset[str] = frozenset()) -> OpenerResult:
+        """Generate one opener, optionally bounded by an absolute monotonic deadline.
+
+        ``deadline`` is an absolute ``time.monotonic()`` timestamp, used by Observe's optional
+        advisory path. It is checked before image work and before every model in the fallback
+        cascade; each HTTP request receives at most the remaining time. Expiry raises
+        ``OpenerDeadlineExceeded`` rather than resembling a provider timeout, so the caller can
+        omit this stale suggestion without poisoning provider-health latches.
+        """
+        if deadline is not None:
+            try:
+                normalized_deadline = float(deadline)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("deadline must be a finite monotonic timestamp") from exc
+            if isinstance(deadline, bool) or not math.isfinite(normalized_deadline):
+                raise ValueError("deadline must be a finite monotonic timestamp")
+        else:
+            normalized_deadline = None
+
+        def remaining_deadline(stage: str) -> float | None:
+            if normalized_deadline is None:
+                return None
+            remaining = normalized_deadline - time.monotonic()
+            if remaining <= 0:
+                raise OpenerDeadlineExceeded(
+                    f"opener advisory deadline reached before {stage}")
+            return remaining
+
         # items is doc 5.2/5.7's item-crop request shape and is THE shape Part B is migrating
         # to: one cropped image per profile item, numbered by position and labelled adjacent to
         # its own image, then the unnumbered context crops, plus her name as text and the
@@ -2464,10 +2528,11 @@ class GeminiOpener:
         # rather than able to interleave and both hit the same about-to-be-retired model with
         # a real, billed request (see the class docstring's THREAD SAFETY note).
         with self._lock:
+            remaining_deadline("preparing images")
             if should_stop is not None and should_stop():
                 # Image base64/recompression is the expensive part of request construction.
                 # A run already known to be stopping must not spend that CPU/memory before the
-                # first per-model stop check gets a chance to run.
+                # post-preparation per-model stop check gets a chance to run.
                 raise OpenerAborted(
                     "Opener cascade aborted before preparing images: the run is stopping "
                     "(should_stop signaled), not a provider failure")
@@ -2511,11 +2576,16 @@ class GeminiOpener:
             # shows this verbatim, and "wait until midnight Pacific" vs "retry in a minute" are
             # very different instructions to give the operator.
             scopes: dict[str, str] = {}
-            for model_index, model in enumerate(self.models):
-                # The first model's stop check already ran before image preparation above.
-                # Reusing that result avoids a second callback between encoding and the first
-                # request while retaining one check for every model (including retired ones).
-                if model_index > 0 and should_stop is not None and should_stop():
+            for model in self.models:
+                # An optional suggestion has a real end-to-end deadline, not merely a cap on
+                # service-level parse retries. Check even an about-to-be skipped/retired model:
+                # the next eligible request must never begin after the deadline either.
+                remaining_deadline(f"considering {model!r}")
+                # Check EVERY model immediately before it can issue a request, including model
+                # zero. The earlier pre-image check prevents useless encoding when Stop already
+                # won; this second check closes the race where it wins DURING image preparation.
+                # It remains before both skip paths so a stop does not walk a stale cascade.
+                if should_stop is not None and should_stop():
                     # Checked before even the "already retired" skip below, so a stop signaled
                     # right after this model's slot comes up never issues a request for it --
                     # see this method's should_stop docstring paragraph for the full rationale.
@@ -2544,12 +2614,18 @@ class GeminiOpener:
                 url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                        f"{quote(model, safe='-_.')}:generateContent")
                 try:
+                    remaining = remaining_deadline(f"requesting {model!r}")
                     code, response = self.transport(
                         url, payload,
                         {"Content-Type": "application/json", "X-goog-api-key": self.api_key},
-                        self.request_timeout_s,
+                        (self.request_timeout_s if remaining is None
+                         else min(self.request_timeout_s, remaining)),
                     )
                 except OSError as exc:
+                    # The request itself may have consumed the last available advisory time.
+                    # Give deadline expiry precedence over classifying that late exception as a
+                    # provider/network failure or advancing the cascade to another model.
+                    remaining_deadline(f"handling transport failure from {model!r}")
                     # TRANSPORT-level failure -- this is a layer BELOW the HTTP status-code
                     # cascade above: _stdlib_gemini_transport only catches urllib.error.
                     # HTTPError (a successful-at-the-socket-layer response that merely carries
@@ -2585,6 +2661,19 @@ class GeminiOpener:
                           "next configured model for this profile only (this model will be "
                           "retried first on the next profile).")
                     continue
+                # A provider can return a syntactically successful response just after its
+                # capped timeout budget. Do not parse or send that stale suggestion, and do not
+                # classify a late 5xx/429 as a provider failure: expiry wins uniformly. A late
+                # 2xx Mapping can still have been billed, so retain just its usage/model facts
+                # for OpenerService's accounting path.
+                if (normalized_deadline is not None
+                        and time.monotonic() >= normalized_deadline):
+                    late_success = 200 <= int(code) < 300
+                    late_usage = (self._usage(response)
+                                  if late_success and isinstance(response, Mapping) else None)
+                    raise OpenerDeadlineExceeded(
+                        f"opener advisory deadline reached while handling response from {model!r}",
+                        usage=late_usage, model=model if late_usage is not None else None)
                 if not 200 <= int(code) < 300:
                     error = _gemini_error(int(code), response)
                     # The HTTP 429 status CODE is the reliable capacity signal -- Gemini's own

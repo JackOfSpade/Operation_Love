@@ -1,7 +1,8 @@
-"""Optional autonomous-mode volume and like-ratio controls.
+"""Optional device-driven volume and like-ratio controls.
 
-Applies to AUTO mode only (observe mode = your own manual swipes, never capped).
-Per-app caps on swipes per run and per day, plus a per-run cap on LIKES — the
+Per-app caps on swipes per run and per day, plus a per-run cap on LIKES apply
+to both AUTO and Hub-reviewed Training.  ``target_like_ratio`` is AUTO-only:
+it shapes model decisions and must never rewrite a human Training choice.  The
 right-swipe is the action anti-bot systems weight most, so keeping likes well
 under the total swipe count holds the right-swipe ratio in a human range.
 Every field is optional; the shipped configuration leaves them unset. When configured,

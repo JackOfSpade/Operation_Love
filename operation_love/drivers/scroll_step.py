@@ -882,21 +882,22 @@ def _frac_window() -> tuple[float, float]:
 #
 # DERIVING THE COVERAGE-AIMED CEILING (BOUND 1)
 # ------------------------------------------------
-# `_ENUM_TRUST_CEILING_BAND_FRAC` = 0.40, i.e. 720px on the calibrated 1800-row band. Two
-# independent numbers put the line there, both well inside frameshift's own 900px window:
-#   * [corpus] the largest shift ANY capture in this repo has end-to-end MEASURED evidence for
-#     is 787px -- the hostile 114-pair hand-scrolled capture's own maximum step, 112 of which
-#     measured cleanly (frameshift.py's module docstring). 720 sits under that with margin, not
-#     at it.
-#   * [derived] frameshift's own eligibility arithmetic (`_STRIP_COUNT` * (usable band height -
-#     shift) / usable band height, `_STRIP_COUNT`'s comment) gives ~7 of 13 strips still eligible
-#     at a 720px shift on this band, comfortably above both `_MIN_AGREEING_STRIPS` (3) and
-#     `_MIN_SATURATION_STRIPS` (2) with room to spare, against ~6 right at the 900px edge itself.
-# 720px is meaningfully under 900 (a 20% margin) and inside the corpus's own validated range, but
-# unlike the 787px and 900px figures above it has NOT itself been replay-validated end to end --
-# see the verification notes accompanying this change for what real-corpus replay could and could
-# not check about it directly, and report the measured refusal rate this produces rather than
-# assuming the margin above holds it flat.
+# `_ENUM_TRUST_CEILING_BAND_FRAC` = 0.30, i.e. 540px on the calibrated 1800-row band. It is
+# deliberately well inside frameshift's own 900px trust window, and below the previous 720px
+# coverage ceiling. The 720px derivation counted strips whose SEARCH RANGES could contain the
+# shift. That is necessary but not sufficient: a card boundary or a late-loading/animated region
+# can leave several of those strips weak, and the three-strip measurement quorum then has no
+# dissent margin. The live Val capture on 2026-08-24 exposed exactly that gap: a planned 657px
+# step produced only three speaking strips, two at +657 and one at +356, so the index correctly
+# refused rather than guess.
+#
+# At 540px the lower visible card retains substantially more in-band overlap before the coverage
+# throttle hands it off to the next frame. This is the safe direction: it buys another frame and
+# more independently textured strips; it does NOT relax frameshift's three-witness quorum or let
+# item_index reinterpret a two-of-three vote. 540 also remains far below the 787px largest
+# end-to-end corpus measurement and the 900px architectural trust cliff. The ceiling is a
+# planning bound rather than a claimed estimator guarantee; weak/animated content can still
+# refuse, loudly, as it should.
 #
 # DERIVING THE COVERAGE MARGIN (BOUND 2's WORST CASE), AND WHY IT IS NOT THE STEP CEILING
 # -------------------------------------------------------------------------------------------
@@ -911,7 +912,7 @@ def _frac_window() -> tuple[float, float]:
 # corpus predates Hinge's optional voice/video prompt content -- see `_ENUMERATION_CAPTURE_LIMIT`
 # in hinge.py for the same corpus-vs-production gap on a different measurement). Applying the
 # formula worst-case gives a margin of only `1800 - 1467 = 333px` -- meaningfully SMALLER than the
-# 720px trust-window ceiling above, and if this were enforced as a FLAT per-step ceiling it would
+# 540px trust-window ceiling above, and if this were enforced as a FLAT per-step ceiling it would
 # put bound 2, not bound 1, in charge of the frame count and give back nearly all of the saving
 # this change exists to capture (330-ish px steps is close to `_MAX_STEP_PX`, the very ceiling
 # this rule replaces).
@@ -959,7 +960,7 @@ def _frac_window() -> tuple[float, float]:
 #
 # WHAT THIS BUYS, IN FRAMES: most steps carry no open trailing card at all, or one whose depth
 # already exceeds `trust_ceiling_px` (case 2 above, itself no smaller than the flat rule this
-# replaces), so the realised cadence is dominated by bound 1's 720px ceiling; the throttle only
+# replaces), so the realised cadence is dominated by bound 1's 540px ceiling; the throttle only
 # ever narrows a step below that, and only while a specific card is still being completed. See
 # the accompanying replay notes for the measured frames-per-profile this produces against real
 # capture sequences, and for how often the throttle actually engages.
@@ -988,7 +989,7 @@ def _frac_window() -> tuple[float, float]:
 # =====================================================================================
 
 # See "DERIVING THE COVERAGE-AIMED CEILING" above.
-_ENUM_TRUST_CEILING_BAND_FRAC = 0.40
+_ENUM_TRUST_CEILING_BAND_FRAC = 0.30
 
 # Live instrumentation, 2026-08-23 (Pixel 7a, unattributed 0.0%): the tallest card yet observed,
 # against the 1800px calibrated band. Consumed ONLY by the blind fallback below -- see "WHAT THIS

@@ -1,7 +1,7 @@
 """Local control hub — double-click to open, no terminal needed.
 
 Starts a localhost HTTP server and opens your browser to a control panel that
-shows live status for every app and starts/stops runs (observe/auto). Pure
+shows live status for every app and starts/stops runs (training/auto). Pure
 stdlib (http.server), so there's no extra dependency. The run executes in a
 background thread in THIS process; the page polls /api/status.
 

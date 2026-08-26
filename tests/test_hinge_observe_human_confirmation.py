@@ -1,9 +1,7 @@
-"""Regression coverage for Hinge's human-confirmed observe flow.
+"""Regression coverage for Hinge's passive sheet and decision detector.
 
-Observe is passive.  In particular, a Hinge heart only opens the app's compose
-sheet: it is *not* a completed LIKE until the owner manually sends it.  The
-worker may suggest an opener in the hub while that sheet is open, but must never
-touch the heart, X, text field, or Send Like control itself.
+These lower-level driver tests ensure a human-opened compose sheet is recognized
+without the detector issuing touches, text, or Send Like actions itself.
 """
 from __future__ import annotations
 
@@ -11,18 +9,11 @@ import json
 import re
 import shutil
 import subprocess
-import threading
-import time
 
 import pytest
 
 from operation_love.drivers import hinge
-from operation_love.drivers.base import DatingAppDriver
 from operation_love.drivers.hinge import HingeDriver
-from operation_love.opener.service import OpenerPick
-from operation_love.perception.capture import Profile
-from operation_love.status import RunStatus
-from operation_love.worker import Worker
 
 
 class _Cfg:
@@ -446,274 +437,6 @@ def test_hinge_observe_broken_callback_does_not_break_observation_but_failure_is
     assert "suggestion renderer exploded" in printed
 
 
-class _Store:
-    def __init__(self):
-        self.profiles = []
-        self.labels = []
-        self.decisions = []
-
-    def record_profile(self, run_id, app, profile_id, liked, **kwargs):
-        self.profiles.append((run_id, app, profile_id, liked, kwargs))
-        return True
-
-    def add_label(self, run_id, app, liked, embedding, **kwargs):
-        self.labels.append((run_id, app, liked, embedding, kwargs))
-
-    def record_decision(self, run_id, app, decision, score, **kwargs):
-        self.decisions.append((run_id, app, decision, score, kwargs))
-
-    def load_labels(self):
-        return []
-
-    def flush(self):
-        pass
-
-    def close(self):
-        pass
-
-
-class _Decider:
-    def embed(self, _profile):
-        return [0.2, 0.8]
-
-    def retrain(self, _store):
-        return True
-
-
-class _OpenerService:
-    stop_requested = False
-    # Declared, because worker.py reads it with `getattr(..., "disabled", True)` -- a service
-    # that does not say is treated as switched off, which is the safe default (never spend on a
-    # service nobody vouched for) and which a fake has to opt out of explicitly.
-    disabled = False
-    last_skip_reason = None
-
-    def __init__(self):
-        self.calls = []
-        self.advisory_seen = []   # records advisory= from every call -- see change A's tests
-        self.anchor_seen = []     # records anchor= from every call -- always None since doc 5.9
-        self.items_seen = []      # records items= -- the numbered crops BOTH modes now send
-        # worker.py's on_like_intent now forwards UNCONDITIONALLY (see its own docstring: a
-        # client/service that cannot accept this kwarg must fail LOUDLY, not have it silently
-        # dropped). A fake missing this parameter entirely used to raise a TypeError right at
-        # the call boundary -- before self.calls.append() ever ran -- so opener.calls stayed
-        # empty and the caller never learned why.
-
-    def maybe_opener(self, run_id, app, profile, *, anchor=None, items=None,
-                     should_stop=None, advisory=False):
-        self.calls.append((run_id, app, profile))
-        self.advisory_seen.append(advisory)
-        self.anchor_seen.append(anchor)
-        self.items_seen.append(items)
-        # A REAL item number (ops/OPENER-REDESIGN.md 5.9): the inversion's whole output is
-        # "like item N plus this text", and index=0 (ITEM_INDEX_ABSENT) is what observe now
-        # refuses to show, so a fake returning it would exercise the warning path by accident.
-        return OpenerPick("Your trail photo looks like a great weekend plan.", index=2,
-                          item_description="the trail photo")
-
-
-class _Pacing:
-    swipe_delay_s = 0.0
-
-
-class _HumanHingeDriver(DatingAppDriver):
-    """A passive driver with a scripted owner outcome for one captured card."""
-
-    accepts_opener = True
-    supports_observe_like_intent = True
-
-    def __init__(self, outcome, store, status):
-        self.outcome = outcome
-        self.store = store
-        self.status = status
-        # An ENUMERATED capture, because doc 5.9's observe now sends the numbered crops auto
-        # sends and refuses to suggest anything without them.
-        self.profile = Profile(photos=[b"photo"], meta={"app": "hinge"}, name="Ada",
-                               items=(b"item-1", b"item-2", b"item-3"),
-                               item_context=(b"vitals",))
-        self.done = False
-        self.closed = False
-        self.action_calls = []
-        self.before_confirmation = None
-        self.before_pass_advance = None
-        self.after_dismiss = None
-        self.intent_state = []
-        self.capture_calls = 0
-        self.wait_calls = 0
-
-    def open_session(self):
-        pass
-
-    def out_of_profiles(self):
-        if self.outcome == "dismiss":
-            # A cancellation must make the worker capture/wait on the same card
-            # again, rather than quietly turning it into a pass.
-            return self.wait_calls >= 2
-        return self.done
-
-    def current_profile(self):
-        self.capture_calls += 1
-        return self.profile
-
-    def next_profile(self):
-        return self.current_profile()
-
-    # These are deliberately tripwires: observe must never ask a driver to act,
-    # type, or send on the owner's behalf.
-    def like(self, *args, **kwargs):
-        self.action_calls.append(("like", args, kwargs))
-        raise AssertionError("observe invoked driver.like()")
-
-    def dislike(self):
-        self.action_calls.append(("dislike", (), {}))
-        raise AssertionError("observe invoked driver.dislike()")
-
-    def pass_(self):
-        self.action_calls.append(("pass_", (), {}))
-        raise AssertionError("observe invoked driver.pass_()")
-
-    def type(self, value):
-        self.action_calls.append(("type", (value,), {}))
-        raise AssertionError("observe typed an opener")
-
-    def send(self):
-        self.action_calls.append(("send", (), {}))
-        raise AssertionError("observe sent a like")
-
-    def _await_suggestion(self, timeout=10.0):
-        """The human looks at the hub before tapping.
-
-        Doc 5.9 generates on its own thread so READY can be published immediately, so a fake that
-        tapped the instant wait_for_decision was entered would be racing it. `opener_pending`
-        going False is the worker's own "this card's suggestion has settled" signal."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            app = self.status.app_view("hinge")["app"]
-            if app is not None and not app.get("opener_pending"):
-                return
-            time.sleep(0.002)
-
-    def observe_item_mismatch(self, sheet, model_item_index):
-        """The human opened the item the suggestion named. Doc 5.9's guard, satisfied."""
-        return ""
-
-    def wait_for_decision(self, timeout=None, should_stop=None, on_like_intent=None):
-        assert timeout is None
-        self.wait_calls += 1
-        self._await_suggestion()
-        if self.outcome == "like":
-            assert on_like_intent is not None, "worker must listen for Hinge's sheet-open stage"
-            on_like_intent(True, b"the-open-comment-sheet")
-            app = self.status.app_view("hinge")["app"]
-            self.before_confirmation = {
-                "profiles": list(self.store.profiles),
-                "labels": list(self.store.labels),
-                "decisions": list(self.store.decisions),
-                "opener_suggestion": app.get("opener_suggestion"),
-                "opener_item": app.get("opener_item"),
-                "state": app["state"],
-            }
-            on_like_intent(False, None)
-            self.done = True
-            return True
-        if self.outcome == "dismiss":
-            assert on_like_intent is not None
-            if self.wait_calls == 1:
-                on_like_intent(True, b"the-open-comment-sheet")
-                on_like_intent(False, None)
-                app = self.status.app_view("hinge")["app"]
-                self.after_dismiss = {
-                    "opener_suggestion": app.get("opener_suggestion"),
-                    "state": app["state"],
-                }
-            return None
-        if self.outcome == "pass":
-            self.before_pass_advance = {
-                "profiles": list(self.store.profiles),
-                "labels": list(self.store.labels),
-                "decisions": list(self.store.decisions),
-            }
-            self.done = True                 # represents the owner's X and card advance
-            return False
-        raise AssertionError(f"unknown outcome {self.outcome}")
-
-    def render_busy(self, message=None):
-        pass
-
-    def close(self):
-        self.closed = True
-
-
-def _run_one_observe(outcome):
-    store = _Store()
-    status = RunStatus("run", ["hinge"], min_labels=1, mode="observe")
-    driver = _HumanHingeDriver(outcome, store, status)
-    opener = _OpenerService()
-    Worker("hinge", driver, _Decider(), opener, store, "run", _Pacing(),
-           threading.Event(), mode="observe", status=status).run()
-    return driver, store, opener, status
-
-
-def test_observe_hinge_suggests_opener_before_human_send_then_persists_like():
-    driver, store, opener, _status = _run_one_observe("like")
-
-    assert opener.calls and len(opener.calls) == 1
-    # Doc 5.9's inversion: the suggestion is on the hub before the heart is tapped, so what is
-    # still live once the sheet is open is the SAME suggestion plus the item number it names --
-    # not one generated in response to the tap.
-    assert driver.before_confirmation == {
-        "profiles": [], "labels": [], "decisions": [],
-        "opener_suggestion": "Your trail photo looks like a great weekend plan.",
-        "opener_item": 2,
-        "state": "waiting_for_send",
-    }
-    assert [row[2] for row in store.labels] == [True]
-    assert [row[2] for row in store.decisions] == ["like"]
-    assert driver.action_calls == []
-    assert driver.closed
-    # The request shape, which is the property that makes observe a canary for auto: the
-    # numbered crops, and no anchor at all (doc 5.9 retired the anchored shape's last caller).
-    assert opener.anchor_seen == [None]
-    assert [i.items for i in opener.items_seen] == [(b"item-1", b"item-2", b"item-3")]
-
-
-def test_observe_hinge_dismissed_sheet_does_not_persist_or_call_actions():
-    driver, store, opener, _status = _run_one_observe("dismiss")
-
-    # One per CAPTURE, and a dismissal recaptures -- doc 5.9 asks before the human acts, so it
-    # has to ask again for the re-read, which the loop cannot tell from a new card. Suggestions
-    # may be prepared; none is ever sent.
-    assert len(opener.calls) == 2
-    assert store.profiles == []
-    assert store.labels == []
-    assert store.decisions == []
-    assert driver.action_calls == []
-    assert driver.capture_calls == 2            # dismissal returns to the same profile's decision loop
-    # Backing out of the sheet returns the hub to the pre-tap INSTRUCTION rather than clearing
-    # it: the card has not changed, so "like item 2, and here is the text" is still the advice,
-    # and the human may go and open item 2 next. What a dismiss drops is only the evidence about
-    # what they had opened.
-    assert driver.after_dismiss == {
-        "opener_suggestion": "Your trail photo looks like a great weekend plan.",
-        "state": "waiting",
-    }
-    assert driver.closed
-
-
-def test_observe_hinge_persists_pass_only_after_human_x_advances_profile():
-    driver, store, opener, _status = _run_one_observe("pass")
-
-    assert driver.before_pass_advance == {"profiles": [], "labels": [], "decisions": []}
-    # ONE call, for a profile the human then PASSED. Doc 5.9's inversion has to ask before it
-    # knows what the human will do, so observe now spends an opener call on every card rather
-    # than only on hearted ones -- the honest cost of generating before the tap, recorded here
-    # rather than left to be discovered as a quota surprise.
-    assert len(opener.calls) == 1
-    assert [row[2] for row in store.labels] == [False]
-    assert [row[2] for row in store.decisions] == ["dislike"]
-    assert driver.action_calls == []
-    assert driver.closed
-
 
 def _extract_js_function(source: str, name: str) -> str:
     match = re.search(rf"function\s+{re.escape(name)}\s*\([^)]*\)\s*{{", source)
@@ -731,23 +454,37 @@ def _extract_js_function(source: str, name: str) -> str:
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required to execute hub JavaScript")
-def test_hub_replaces_swipe_instruction_with_manual_hinge_send_instruction_when_opener_pending():
-    """The only operator instruction must describe the real manual next step."""
+def test_hub_training_checkpoint_shows_the_typed_opener_with_like_and_dislike():
+    """Training replaces the retired on-phone Observe cue with one Hub decision surface."""
     from operation_love.hub import _PAGE
 
     script = "\n".join((
-        "let banner = {style:{display:''}, innerHTML:''};",
-        "function $(selector){ return selector === '#swipebanner' ? banner : null; }",
+        "let panel = {style:{display:''}, innerHTML:''};",
+        "let layout = {classList:{toggle(){}}};",
+        "function $(selector){ return selector === '#trainingpanel' ? panel : null; }",
+        "const document = {querySelector(){ return layout; }};",
+        "let _trainingCheckpoint = null; let _trainingRequest = 0;",
+        "let _trainingActionBusy = false; let _trainingBusyKey = ''; let _trainingBusyRequest = 0;",
+        "const _trainingIdempotency = new Map();",
         _extract_js_function(_PAGE, "escHtml"),
-        _extract_js_function(_PAGE, "selectObserveApps"),
-        _extract_js_function(_PAGE, "renderSwipe"),
-        "renderSwipe({running:true,status:{apps:{hinge:{app:'hinge',mode:'observe',state:'waiting_for_send',opener_suggestion:'Try the taco place in your photo?'}}}});",
-        "console.log(JSON.stringify(banner));",
+        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+        _extract_js_function(_PAGE, "trainingActionBusyFor"),
+        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+        "renderTrainingCheckpoint({run_id:'r1',app:'hinge',profile_token:'p1',approval_token:'a1',"
+        "image_data_url:'data:image/png;base64,AA==',opener:'Try the taco place in your photo?',"
+        "item:2,item_description:'taco photo',pending:true,phase:'waiting_training_decision',action:'ready'});",
+        "console.log(JSON.stringify(panel));",
     ))
     run = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True,
                          timeout=10, check=True)
-    banner = json.loads(run.stdout)
+    panel = json.loads(run.stdout)
 
-    assert "Try the taco place in your photo?" in banner["innerHTML"]
-    assert "Send Like" in banner["innerHTML"]
-    assert "SWIPE hinge now" not in banner["innerHTML"]
+    assert "Try the taco place in your photo?" in panel["innerHTML"]
+    assert ">Like</button>" in panel["innerHTML"]
+    assert ">Dislike</button>" in panel["innerHTML"]
+    assert "training data" in panel["innerHTML"]
+    assert "Send Like" not in panel["innerHTML"]
+    assert "swipe" not in panel["innerHTML"].lower()

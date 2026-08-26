@@ -3,10 +3,11 @@ AndroidDriver (defined in operation_love/drivers/hinge.py — see that module's 
 why the generic driver lives there rather than here) and registers calibration with the
 platform registry.
 
-Importing this package is what makes operation_love.platforms reflect reality: a spec's
-`calibrated` and resolved `observe_ready` values are the only inputs that license Auto and
-Observe respectively (see platforms._apply_calibration's docstring). The registry imports
-this package lazily before answering readiness queries.
+Importing this package is what makes operation_love.platforms reflect driver readiness: a spec's
+`calibrated` values license the device mechanics for Training and Auto (see
+platforms._apply_calibration's docstring). Hinge AUTO's separate,
+config-bound production-OBSERVE release artifact is validated by supervisor before a run starts.
+The registry imports this package lazily before answering readiness queries.
 """
 from __future__ import annotations
 
@@ -17,19 +18,16 @@ from .bumble import BUMBLE_SPEC, BumbleAndroidDriver
 
 platforms._apply_calibration({
     "hinge": {
-        "observe": HINGE_SPEC.observe_ready,
-        # Statically False, and deliberately not derived from numbering readiness (see the
-        # "Gate split" in ops/STILL-PHOTO-DISCRIMINATOR.md section 3).  Action coordinates
-        # remain calibrated and a verified still-photo bound may well be installed, but a bound
-        # licenses NUMBERED SUGGESTIONS in Observe and calibration capture only.  Auto needs a
-        # fresh production-OBSERVE release chain on this exact device/build plus a deliberate
-        # edit here, so a weak or forged bound artifact can never turn Auto on by itself.
-        "auto": False,
+        "training": HINGE_SPEC.calibrated,
+        # HINGE_SPEC proves the mechanical input geometry. A still-photo licence is checked by
+        # the registry; the exact manual/AI release artifact is checked by config validation
+        # before a Worker or driver exists, so this cannot bypass the production release gate.
+        "auto": HINGE_SPEC.calibrated,
     },
     # Both modes derive from the spec.  In particular, the existence of testable card-drag
     # mechanics is not a licence to run a real Bumble session: BUMBLE_SPEC stays fail-closed
     # until its coordinates and required paid-upsell template have been calibrated.
-    "bumble": {"observe": BUMBLE_SPEC.observe_ready, "auto": BUMBLE_SPEC.calibrated},
+    "bumble": {"training": BUMBLE_SPEC.calibrated, "auto": BUMBLE_SPEC.calibrated},
 })
 
 __all__ = [

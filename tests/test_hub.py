@@ -330,9 +330,10 @@ def test_hub_endpoints():
         assert "mode" in cfg                             # config.yaml loads from repo root
         hinge = next(p for kind in cfg["kinds"] for p in kind["platforms"]
                      if p["app"] == "hinge")
-        assert hinge["modes"] == {"observe": True, "auto": False}
-        assert hinge["mode_reasons"]["observe"] is None
-        assert hinge["mode_reasons"]["auto"].startswith("Hinge Auto is blocked")
+        assert hinge["modes"] == {"training": True, "auto": True}
+        assert hinge["mode_reasons"]["training"] is None
+        assert hinge["mode_reasons"]["auto"] is None
+        assert set(hinge["mode_reasons"]) == {"training", "auto"}
 
         code, raw = _get(base, "/api/status")
         snap = json.loads(raw)
@@ -420,9 +421,9 @@ def test_api_status_snapshot_carries_stop_kind_alongside_stop_reason():
     from operation_love.status import RunStatus
 
     _Handler.state = HubState("config.yaml")
-    status = RunStatus("r1", ["hinge"], min_labels=1, mode="observe")
+    status = RunStatus("r1", ["hinge"], min_labels=1, mode="training")
     status.set_app(
-        "hinge", mode="observe", state="blocked",
+        "hinge", mode="training", state="blocked",
         stop_reason="Hinge is out of free likes for today — the Hinge+ upgrade screen is up",
         stop_kind="deck_blocked")
     with _Handler.state._lock:
@@ -457,8 +458,8 @@ def test_api_status_snapshot_stop_kind_defaults_to_none_for_ordinary_stops():
     from operation_love.status import RunStatus
 
     _Handler.state = HubState("config.yaml")
-    status = RunStatus("r1", ["hinge", "bumble"], min_labels=1, mode="observe")
-    status.set_app("bumble", mode="observe", state="stopped")
+    status = RunStatus("r1", ["hinge", "bumble"], min_labels=1, mode="training")
+    status.set_app("bumble", mode="training", state="stopped")
     with _Handler.state._lock:
         _Handler.state._status = status
 
@@ -602,7 +603,7 @@ def test_hubstate_snapshot_forwards_the_stopping_field_from_run_status():
     from operation_love.status import RunStatus
 
     st = HubState("config.yaml")
-    status = RunStatus("r1", ["hinge"], min_labels=1, mode="observe")
+    status = RunStatus("r1", ["hinge"], min_labels=1, mode="training")
     status.set_global(stopping=True, phase="stopping")
     with st._lock:
         st._status = status
@@ -619,7 +620,7 @@ def test_snapshot_reports_stopping_for_a_stop_pressed_during_startup():
     from operation_love.status import RunStatus
 
     st, done = _live_hubstate()
-    status = RunStatus("r1", ["hinge"], min_labels=1, mode="observe")
+    status = RunStatus("r1", ["hinge"], min_labels=1, mode="training")
     status.set_global(phase="loading ML models")     # still starting up; stopping stays False
     with st._lock:
         st._status = status
@@ -792,7 +793,32 @@ def test_hubstate_forwards_max_per_run(monkeypatch):
     assert seen["mode"] == "auto" and seen["max_per_run"] == 8
 
 
-@pytest.mark.parametrize("mode", ["observe", "auto"])
+@pytest.mark.parametrize(("requested", "effective"), [
+    ("training", "auto"),
+    ("auto", "training"),
+])
+def test_hub_explicit_mode_never_silently_yields_to_per_app_autonomy(
+        monkeypatch, requested, effective):
+    """Per-app config precedence is valid for CLI, not an explicit Hub control click."""
+    import operation_love.hub as hub
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace(
+        mode=requested, enabled_apps=["hinge"], apps={"hinge": {"mode": effective}})
+    launched = []
+    monkeypatch.setattr(hub.supervisor, "load_effective_config", lambda *args, **kwargs: cfg)
+    monkeypatch.setattr(hub.supervisor, "run", lambda *args, **kwargs: launched.append(True))
+    st = HubState("config.yaml")
+
+    ok, message = st.start(mode=requested, apps=["hinge"])
+
+    assert ok is False
+    assert f"hinge={effective}" in message
+    assert launched == []
+    assert st._thread is None
+
+
+@pytest.mark.parametrize("mode", ["training", "auto"])
 def test_hubstate_timed_stop_stops_each_run_mode_and_reports_countdown(monkeypatch, mode):
     """The hub's timer is mode-agnostic: it stops supervisor's shared Event, not a worker.
 
@@ -840,7 +866,7 @@ def test_hubstate_manual_stop_cancels_the_timed_stop(monkeypatch):
 
     monkeypatch.setattr(hub.supervisor, "run", fake_run)
     st = HubState("config.yaml")
-    ok, _ = st.start(mode="observe", apps=["hinge"], stop_after_seconds=10)
+    ok, _ = st.start(mode="training", apps=["hinge"], stop_after_seconds=10)
     assert ok is True and entered.wait(timeout=_LIVENESS_TIMEOUT_S)
     assert st.stop()[0] is True
     assert st.snapshot()["timed_stop"] is None
@@ -916,7 +942,7 @@ def test_api_start_rejects_invalid_timed_stop_before_launching_run(monkeypatch):
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
         req = urllib.request.Request(
             f"{base}/api/start",
-            data=json.dumps({"mode": "observe", "apps": ["hinge"],
+            data=json.dumps({"mode": "training", "apps": ["hinge"],
                              "stop_after_seconds": "not-a-number",
                              "_csrf_token": _csrf_token(base)}).encode(),
             method="POST", headers={"Content-Type": "application/json"})
@@ -945,7 +971,7 @@ def test_api_start_rejects_unknown_control_field_before_launching_run(monkeypatc
         request = urllib.request.Request(
             f"{base}/api/start",
             data=json.dumps({
-                "mode": "observe", "apps": ["hinge"], "max_per_ru": 8,
+                "mode": "training", "apps": ["hinge"], "max_per_ru": 8,
                 "_csrf_token": _csrf_token(base),
             }).encode(),
             method="POST", headers={"Content-Type": "application/json"})
@@ -983,7 +1009,7 @@ def test_api_start_rejects_malformed_controls_before_launching_run(
     thread.start()
     try:
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
-        payload = {"mode": "observe", "apps": ["hinge"], "max_per_run": None,
+        payload = {"mode": "training", "apps": ["hinge"], "max_per_run": None,
                    "_csrf_token": _csrf_token(base)}
         payload[field] = value
         request = urllib.request.Request(
@@ -1027,7 +1053,8 @@ def test_api_start_rejects_non_object_json_before_launching_run(monkeypatch, pay
 
 
 @pytest.mark.parametrize("path", [
-    "/api/observe/action", "/api/hub/open", "/api/hub/ping", "/api/hub/closed",
+    "/api/training/action", "/api/hub/open", "/api/hub/ping",
+    "/api/hub/closed",
 ])
 @pytest.mark.parametrize("payload", [b"not-json", b"[]", b"null"])
 def test_api_post_endpoints_reject_non_object_json_without_crashing(path, payload):
@@ -1143,7 +1170,7 @@ def test_launcher_default_extras_cover_runtime_dependencies_but_not_reference_we
 
 
 def _launcher_project(tmp_path: Path) -> Path:
-    (tmp_path / "config.yaml").write_text("mode: observe\n")
+    (tmp_path / "config.yaml").write_text("mode: training\n")
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "launcher-test"\nversion = "1"\n'
         '[project.optional-dependencies]\nhinge = []\n')
@@ -1205,24 +1232,24 @@ def test_launcher_rejects_undeclared_or_shell_syntax_extras(tmp_path, monkeypatc
 
 
 def test_hub_card_shows_label_gated_refresh_progress():
-    # The model-quality card shows observe-mode "since/every till next refresh" progress.
+    # The model-quality card shows training-mode "since/every till next refresh" progress.
     assert "till next refresh" in _PAGE
-    assert "r.mode !== 'observe'" in _PAGE          # only while a live observe run feeds labels
+    assert "r.mode !== 'training'" in _PAGE          # only while a live training run feeds labels
     assert "r.since == null" in _PAGE
     assert "${progress}/${every}" in _PAGE
 
 
 def test_attach_refresh_counts_down_to_next_recompute():
-    class LiveObserve:
+    class LiveTraining:
         running = True
-        mode = "observe"
+        mode = "training"
 
     # 2 of 5 new labels collected since the last compute -> 3 swipes remaining.
-    r = HubState._attach_refresh({"status": "ok"}, every=5, live=42, base=40, status=LiveObserve())
-    assert r["refresh"] == {"every": 5, "since": 2, "remaining": 3, "live": True, "mode": "observe"}
+    r = HubState._attach_refresh({"status": "ok"}, every=5, live=42, base=40, status=LiveTraining())
+    assert r["refresh"] == {"every": 5, "since": 2, "remaining": 3, "live": True, "mode": "training"}
 
     # Right after a recompute (since == every) it rolls to a full cycle, never shows 0/5.
-    edge = HubState._attach_refresh({"status": "ok"}, every=5, live=45, base=40, status=LiveObserve())
+    edge = HubState._attach_refresh({"status": "ok"}, every=5, live=45, base=40, status=LiveTraining())
     assert edge["refresh"]["since"] == 5 and edge["refresh"]["remaining"] == 5
 
 
@@ -1253,9 +1280,9 @@ def test_hub_model_quality_card_shows_training_record_balance():
 
 
 def test_cached_eval_uses_live_training_mix_without_waiting_for_next_cv_refresh():
-    class LiveObserve:
+    class LiveTraining:
         running = True
-        mode = "observe"
+        mode = "training"
         labels = 3
 
     class LiveStore:
@@ -1267,7 +1294,7 @@ def test_cached_eval_uses_live_training_mix_without_waiting_for_next_cv_refresh(
         st._eval = {"status": "insufficient_data", "labels": 2, "likes": 1, "passes": 1}
         st._eval_at = time.time()
         st._eval_labels = 0
-        st._status = LiveObserve()
+        st._status = LiveTraining()
         st._live_store = LiveStore()
 
     # A running thread is how HubState distinguishes a live worker from a retained status.
@@ -1293,9 +1320,9 @@ def test_eval_snapshot_holds_full_progress_until_background_refresh_finishes(mon
     import operation_love.ranker as ranker
     import operation_love.ranker.evaluate as eval_mod
 
-    class LiveObserve:
+    class LiveTraining:
         running = True
-        mode = "observe"
+        mode = "training"
         labels = 45
 
     started = threading.Event()
@@ -1326,7 +1353,7 @@ def test_eval_snapshot_holds_full_progress_until_background_refresh_finishes(mon
         st._eval = {"status": "ok", "marker": "old"}
         st._eval_at = time.time()
         st._eval_labels = 40
-        st._status = LiveObserve()
+        st._status = LiveTraining()
 
     first = st.eval_snapshot(every=5)
     assert first["marker"] == "old"
@@ -1369,9 +1396,9 @@ def test_eval_snapshot_reads_live_store_while_running(monkeypatch):
     import operation_love.ranker as ranker
     import operation_love.ranker.evaluate as eval_mod
 
-    class LiveObserve:
+    class LiveTraining:
         running = True
-        mode = "observe"
+        mode = "training"
         labels = 30
 
     live_calls = []
@@ -1400,7 +1427,7 @@ def test_eval_snapshot_reads_live_store_while_running(monkeypatch):
     st._thread = threading.Thread(target=lambda: time.sleep(0.5))   # fake a live run
     st._thread.start()
     with st._lock:
-        st._status = LiveObserve()
+        st._status = LiveTraining()
         st._live_store = LiveStore()
     res = st.eval_snapshot(every=5)
     st._thread.join()
@@ -1414,9 +1441,9 @@ def test_eval_snapshot_falls_back_when_live_store_read_fails(monkeypatch):
     import operation_love.ranker as ranker
     import operation_love.ranker.evaluate as eval_mod
 
-    class LiveObserve:
+    class LiveTraining:
         running = True
-        mode = "observe"
+        mode = "training"
         labels = 12
 
     class DeadStore:
@@ -1445,7 +1472,7 @@ def test_eval_snapshot_falls_back_when_live_store_read_fails(monkeypatch):
     st._thread = threading.Thread(target=lambda: time.sleep(0.3))
     st._thread.start()
     with st._lock:
-        st._status = LiveObserve()
+        st._status = LiveTraining()
         st._live_store = DeadStore()
     res = st.eval_snapshot(every=5)
     st._thread.join()
@@ -1474,8 +1501,8 @@ def test_eval_snapshot_returns_error_dict_when_compute_raises(monkeypatch):
 
 def test_hub_max_per_run_invalid_input_delegates_to_config():
     # Clearing/breaking the "max profiles this run" box sends null ("use config"), not
-    # the distinct explicit-unlimited override 0. The shipped config is itself uncapped,
-    # but this distinction matters if an operator later configures a standing ceiling.
+    # the distinct explicit-unlimited override 0. The shipped config is currently uncapped,
+    # but this distinction preserves any deliberate future configured ceiling.
     #
     # Evaluated for real with node (not a substring check): an earlier substring-only test
     # passed after the input handling was gutted as long as the phrase survived in a comment.
@@ -1485,7 +1512,7 @@ def test_hub_max_per_run_invalid_input_delegates_to_config():
     fn = _extract_js_function(_PAGE, "computeMaxPerRun")
     # (mode, unlimitedChecked, rawValue)
     cases = [
-        ("observe", False, "8"),    # not auto mode -> always null, regardless of the box
+        ("training", False, "8"),   # Training uses the same run-cap controls as Auto.
         ("auto", True, "8"),        # unlimited checkbox -> 0, regardless of the box
         ("auto", True, ""),
         ("auto", False, ""),        # empty box -> delegate to config
@@ -1495,7 +1522,7 @@ def test_hub_max_per_run_invalid_input_delegates_to_config():
         ("auto", False, "3.7"),     # parseInt truncates
         ("auto", False, "8"),       # a genuine positive cap is honored
     ]
-    expected = [None, 0, 0, None, None, None, None, 3, 8]
+    expected = [8, 0, 0, None, None, None, None, 3, 8]
     script = (
         fn + "\n"
         "const cases = " + json.dumps(cases) + ";\n"
@@ -1813,7 +1840,7 @@ def test_hubstate_worker_start_failure_cancels_started_timer_and_resets_state(
     assert timer.cancelled is True
 
 
-@pytest.mark.parametrize("mode", ["observe", "auto"])
+@pytest.mark.parametrize("mode", ["training", "auto"])
 def test_hubstate_start_rejects_uncalibrated_bumble_in_both_modes(mode):
     st = HubState("config.yaml")
     ok, msg = st.start(mode=mode, apps=["bumble"])
@@ -1830,13 +1857,59 @@ def test_hub_config_combines_registry_and_config_level_mode_readiness():
     reasons = {platform["app"]: platform["mode_reasons"] for platform in app_platforms}
     pending = {platform["app"]: platform for platform in defaults["pending_platforms"]}
 
-    # Hinge implements both modes, but the shipped config intentionally has no current
-    # production-Observe release artifact, so the operational picker must not offer Auto.
-    assert modes == {"hinge": {"observe": True, "auto": False}}
-    assert reasons["hinge"]["observe"] is None
-    assert reasons["hinge"]["auto"].startswith("Hinge Auto is blocked")
+    # Training and AUTO are the only modes exposed by the Hub.
+    assert modes == {"hinge": {"training": True, "auto": True}}
+    assert reasons["hinge"]["training"] is None
+    assert reasons["hinge"]["auto"] is None
+    assert set(reasons["hinge"]) == {"training", "auto"}
     assert set(pending) == {"bumble"}
     assert "not calibrated" in pending["bumble"]["reason"]
+
+
+def test_hub_config_defaults_uses_one_validating_startup_gate_per_mode(monkeypatch):
+    """The picker must not pre-probe Hinge AUTO before config installs its licence."""
+    from operation_love.hub import state as hub_state
+
+    original = hub_state.platforms.unavailable_reason
+    auto_reasons = []
+
+    def record_reason(app, mode=None):
+        reason = original(app, mode)
+        if app == "hinge" and mode == "auto":
+            auto_reasons.append(reason)
+        return reason
+
+    monkeypatch.setattr(hub_state.platforms, "unavailable_reason", record_reason)
+    defaults = HubState("config.yaml").config_defaults()
+
+    hinge = next(p for kind in defaults["kinds"] for p in kind["platforms"]
+                 if p["app"] == "hinge")
+    assert hinge["modes"]["auto"] is True
+    assert auto_reasons == [None]
+
+
+def test_hub_config_defaults_marks_per_app_mode_override_as_unavailable(monkeypatch):
+    """The picker must not advertise Auto when Start will reject an app's Training override."""
+    from types import SimpleNamespace
+    from operation_love.hub import state as hub_state
+
+    platform = SimpleNamespace(app="hinge", label="Hinge", kind="android",
+                               available=True, reason=None)
+    cfg = SimpleNamespace(enabled_apps=["hinge"], mode="auto",
+                          storage=SimpleNamespace(backend="sqlite"))
+    effective = SimpleNamespace(mode="auto", apps={"hinge": {"mode": "training"}})
+    monkeypatch.setattr(hub_state.cfg_mod, "load", lambda _path: cfg)
+    monkeypatch.setattr(hub_state.supervisor, "load_effective_config",
+                        lambda *args, **kwargs: effective)
+    monkeypatch.setattr(hub_state.platforms, "kinds", lambda: ("android",))
+    monkeypatch.setattr(hub_state.platforms, "for_kind", lambda _kind: (platform,))
+    monkeypatch.setattr(hub_state.platforms, "all_platforms", lambda: (platform,))
+    monkeypatch.setattr(hub_state.platforms, "get", lambda _app: platform)
+
+    defaults = HubState("config.yaml").config_defaults()
+    hinge = defaults["kinds"][0]["platforms"][0]
+    assert hinge["modes"] == {"training": True, "auto": False}
+    assert "per-app mode override" in hinge["mode_reasons"]["auto"]
 
 
 def test_hubstate_start_rejects_two_android_platforms_together(monkeypatch):
@@ -1849,18 +1922,22 @@ def test_hubstate_start_rejects_two_android_platforms_together(monkeypatch):
     assert st.is_running() is False
 
 
-def test_hubstate_rejects_config_blocked_hinge_auto_before_background_work(monkeypatch):
+def test_hubstate_rejects_config_blocked_hinge_auto_before_background_work(monkeypatch, tmp_path):
     """Hub and direct supervisor starts return the same release-gate message, and the Hub
     rejects before allocating any run thread or timed-stop timer."""
     import operation_love.hub as hub
 
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(re.sub(
+        r"(?m)^    observe_release_evidence:\n(?:^      [^\n]*\n)+", "",
+        Path("config.yaml").read_text(), count=1))
     with pytest.raises(ValueError) as direct:
-        hub.supervisor.run("config.yaml", mode="auto", enabled_apps=["hinge"])
+        hub.supervisor.run(str(cfg_path), mode="auto", enabled_apps=["hinge"])
 
     run_calls = []
     monkeypatch.setattr(
         hub.supervisor, "run", lambda *args, **kwargs: run_calls.append((args, kwargs)))
-    st = HubState("config.yaml")
+    st = HubState(str(cfg_path))
     ok, msg = st.start(
         mode="auto", apps=["hinge"], max_per_run=8, stop_after_seconds=60)
 
@@ -1877,14 +1954,17 @@ def test_hubstate_apps_none_validates_the_effective_file_config(tmp_path):
     """No app override means config.yaml still receives the synchronous full validation."""
     cfg_path = tmp_path / "config.yaml"
     cfg_text = re.sub(
-        r"(?m)^mode: observe\b", "mode: auto", Path("config.yaml").read_text(), count=1)
+        # Keep this line-oriented: DOTALL would let ``.*`` swallow the subsequent storage
+        # section and turn this release-gate test into an unrelated storage-config failure.
+        r"(?m)^    observe_release_evidence:\n(?:^      [^\n]*\n)+", "",
+        Path("config.yaml").read_text(), count=1)
     cfg_path.write_text(cfg_text)
 
     st = HubState(str(cfg_path))
     ok, msg = st.start(apps=None, stop_after_seconds=60)
 
     assert ok is False
-    assert msg.startswith("Hinge Auto is blocked")
+    assert msg.startswith("Config: Hinge AUTO is blocked")
     assert st._thread is None
     assert st._timed_stop_timer is None
 
@@ -2064,709 +2144,144 @@ def test_wait_for_run_honors_timeout():
     st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
 
-def test_swipe_banner_gates_on_per_app_mode_not_global_mode():
-    # X4: config.yaml documents apps.<app>.mode overriding the global run mode, and
-    # worker.py publishes that per-app mode via status.set_app(app, mode=...). The banner
-    # is the ONLY cue in Hinge observe mode (no on-phone overlay), so it must key off each
-    # app's OWN mode — not snap.status.mode (the global value), which would hide the
-    # banner for an observe-mode app running under a global auto mode (or vice versa).
-    #
-    # Evaluated for real with node: a mutation audit proved the old substring-only version of
-    # this test still passed after the gating was reverted to key off the global s.mode (the
-    # exact pre-fix bug), because the reverted code still contained "observeApps" and an
-    # "a.mode === 'observe'" comparison somewhere reachable. Extracting selectObserveApps() as
-    # a pure function lets the test build a status where the global mode and the per-app modes
-    # DISAGREE, and assert on which apps actually get selected.
-    if NODE_BIN is None:
-        pytest.skip("node is not available on this machine")
-    fn = _extract_js_function(_PAGE, "selectObserveApps")
+def _runstatus_script(snap: dict) -> str:
+    """Run the one durable run-status banner against a minimal DOM.
 
-    # Global mode says 'auto', but bumble is individually in 'observe' -> must still show for
-    # bumble only (not all-or-nothing on the global mode).
-    status_a = {
-        "mode": "auto",
-        "apps": {
-            "bumble": {"mode": "observe", "state": "waiting"},
-            "hinge": {"mode": "auto", "state": "acting"},
-        },
-    }
-    script_a = (
-        fn + "\n"
-        "const status = " + json.dumps(status_a) + ";\n"
-        "console.log(JSON.stringify(selectObserveApps(status).map(a => a.state)));\n"
-    )
-    assert _run_node(script_a) == ["waiting"]
-
-    # Inverse: global mode says 'observe', but every app is individually in 'auto' -> must
-    # select none. A global-mode-gated implementation would wrongly show the banner here.
-    status_b = {"mode": "observe", "apps": {"bumble": {"mode": "auto", "state": "waiting"}}}
-    script_b = (
-        fn + "\n"
-        "const status = " + json.dumps(status_b) + ";\n"
-        "console.log(JSON.stringify(selectObserveApps(status).map(a => a.state)));\n"
-    )
-    assert _run_node(script_b) == []
-
-
-def _observe_status_script(snap: dict) -> str:
-    """Run the real observe banner renderer with the minimal DOM it needs."""
+    The Hub must never reconstruct one app's state in two different banners: a training
+    run has its separate actionable review panel, but exactly one non-action status surface.
+    """
     fns = (_extract_js_function(_PAGE, "escHtml") + "\n"
-           + _extract_js_function(_PAGE, "selectObserveApps") + "\n"
-           + _extract_js_function(_PAGE, "renderSwipe"))
+           + _extract_js_function(_PAGE, "selectRunApps") + "\n"
+           + _extract_js_function(_PAGE, "renderRunStatus"))
     return (
         "let el = {style:{display:''}, innerHTML:''};\n"
-        "function $(sel){ return sel === '#swipebanner' ? el : null; }\n"
+        "function $(sel){ return sel === '#runbanner' ? el : null; }\n"
         + fns + "\n"
-        "renderSwipe(" + json.dumps(snap) + ");\n"
+        "renderRunStatus(" + json.dumps(snap) + ");\n"
         "console.log(JSON.stringify({display: el.style.display, html: el.innerHTML}));\n"
     )
 
 
-def test_observe_banner_uses_explicit_pass_or_like_language_and_replaces_it_with_hinge_opener():
+def test_run_status_renders_live_training_once_with_checkpoint_detail_and_swipes():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    waiting = {
-        "running": True,
-        "status": {"apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting"}}},
-    }
-    ordinary = _run_node(_observe_status_script(waiting))
-    assert ordinary["display"] == "block"
-    assert "tap X to pass, or tap a heart to like" in ordinary["html"]
-    assert "swipe" not in ordinary["html"].lower()
-
-    # Hinge uses the physically labelled X/heart controls; other platforms may not.
-    other_app = {
-        "running": True,
-        "status": {"apps": {"bumble": {"app": "bumble", "mode": "observe", "state": "waiting"}}},
-    }
-    generic = _run_node(_observe_status_script(other_app))
-    assert "use the app's pass or like control" in generic["html"]
-    assert "tap X to pass" not in generic["html"]
-    assert "swipe" not in generic["html"].lower()
-
-    # Text comes from an AI response and must remain text, never markup in the hub.
-    with_sheet = {
-        "running": True,
-        "status": {"apps": {"hinge": {
-            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
-            "opener_suggestion": 'I like <your prompt> & "this"',
-        }}},
-    }
-    suggestion = _run_node(_observe_status_script(with_sheet))
-    assert "then tap Send Like / Send Priority Like in Hinge" in suggestion["html"]
-    assert "I like &lt;your prompt&gt; &amp; &quot;this&quot;" in suggestion["html"]
-    assert "tap X to pass" not in suggestion["html"]
-    assert "<your prompt>" not in suggestion["html"]
-
-    # A malformed/legacy status without an item must still make the conditional role clear;
-    # it must never render the grammatical but misleading "if you choose to like, use, then".
-    pre_tap_without_item = {
-        "running": True,
-        "status": {"apps": {"hinge": {
-            "app": "hinge", "mode": "observe", "state": "waiting",
-            "opener_suggestion": "A safe fallback",
-        }}},
-    }
-    missing_item = _run_node(_observe_status_script(pre_tap_without_item))
-    assert "Optional:" in missing_item["html"]
-    assert "if you choose to like, type exactly this" in missing_item["html"]
-    assert "if you choose to like, use, then" not in missing_item["html"]
-
-    # An unavailable opener provider must not expose the internal waiting_for_send state
-    # or leave the person without a next action; they can write their own opener instead.
-    no_suggestion = {
-        "running": True,
-        "status": {"apps": {"hinge": {
-            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
-            "opener_suggestion": None,
-        }}},
-    }
-    fallback = _run_node(_observe_status_script(no_suggestion))
-    assert "No suggestion available" in fallback["html"]
-    assert "type your own opener, then tap Send Like / Send Priority Like" in fallback["html"]
-    assert "waiting_for_send" not in fallback["html"]
-
-    # The card uses innerHTML, so app names are escaped on non-opener branches too.
-    capturing = {
-        "running": True,
-        "status": {"apps": {"hostile": {
-            "app": '<img src=x onerror="alert(1)">', "mode": "observe", "state": "capturing",
-        }}},
-    }
-    escaped_app = _run_node(_observe_status_script(capturing))
-    assert "<img" not in escaped_app["html"] and "&lt;img" in escaped_app["html"]
+    snap = {"running": True, "status": {"mode": "auto", "apps": {
+        "hinge": {"app": "hinge", "mode": "training", "state": "scoring",
+                  "swipes_run": 2},
+    }}}
+    result = _run_node(_runstatus_script(snap))
+    assert result["display"] == "block"
+    assert "preparing the training checkpoint" in result["html"]
+    assert "2 swipes this run" in result["html"]
+    assert result["html"].count("hinge") == 1
+    assert "tap X" not in result["html"] and "Send Like" not in result["html"]
 
 
-def test_observe_banner_opener_row_is_the_auto_mode_canary():
-    """OWNER REQUIREMENT: the observe banner's suggested text must let the operator see
-    EXACTLY where the opener starts and stops, because that same OpenerResult.opener string
-    is what auto mode types verbatim (driver.like() -> adb.text(), see worker.py). If a model
-    wraps the real opener in scaffolding ("Sure! Here's a great opener: ...") that scaffolding
-    must show up in the banner too, byte for byte -- and it must be visually unmistakable from
-    the hub's own chrome, or the operator has no way to tell "the model's words" from "our
-    instructions" and the canary is defeated. This pins the opener onto its own delimited
-    block containing nothing but the escaped opener, structurally separate from the label and
-    chrome rows -- not merely present as a substring somewhere in the banner."""
+@pytest.mark.parametrize(("state", "expected"), [
+    ("scoring", "preparing the training checkpoint"),
+    ("waiting_approval", "waiting for your Hub decision"),
+    ("acting", "recording your hinge decision"),
+    ("starting", "starting hinge"),
+])
+def test_run_status_maps_live_training_producer_states_to_one_clear_cue(state, expected):
+    """These are the states the training worker actually publishes."""
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    scaffolded = 'Sure! Here\'s a great opener: "Nice antlers."'
-    snap = {
-        "running": True,
-        "status": {"apps": {"hinge": {
-            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
-            "opener_suggestion": scaffolded,
-        }}},
-    }
-    html = _run_node(_observe_status_script(snap))["html"]
-
-    escaped_opener = (
-        scaffolded.replace("&", "&amp;").replace("<", "&lt;")
-                  .replace(">", "&gt;").replace('"', "&quot;")
-    )
-    # The whole point of the canary: the scaffolding words survive into the banner
-    # byte-for-byte, exactly once, so the operator sees the same wrapper auto mode would type
-    # rather than a hub-cleaned version of it.
-    assert escaped_opener in html
-    assert html.count(escaped_opener) == 1
-
-    # Structural check, not substring-only -- a future revert to box()'s inline "title + sub
-    # flowed on one run-on line" rendering must fail this test even though the opener text
-    # would still appear somewhere in the markup. Label -> opener block -> chrome block must
-    # be three separate elements in this order, and the opener's own element must contain
-    # NOTHING else: no hub instruction text bleeding into the same row the operator is meant
-    # to read as "type exactly this."
-    m = re.search(
-        r'type exactly this</div>\s*<div[^>]*>(.*?)</div>\s*<div[^>]*>(.*?)</div>',
-        html, re.S,
-    )
-    assert m, f"expected label -> opener block -> chrome block structure, got:\n{html}"
-    opener_row, chrome_row = m.group(1), m.group(2)
-    assert opener_row == escaped_opener
-    assert "then tap Send Like / Send Priority Like in Hinge" in chrome_row
-    assert "then tap Send Like / Send Priority Like in Hinge" not in opener_row
+    snap = {"running": True, "status": {"apps": {
+        "hinge": {"app": "hinge", "mode": "training", "state": state, "swipes_run": 1},
+    }}}
+    html = _run_node(_runstatus_script(snap))["html"]
+    assert expected in html
+    assert html.count("hinge") == 1
 
 
-def test_observe_banner_opener_row_escapes_html_metacharacters_without_altering_content():
-    """The opener's delimited row still goes through innerHTML (the text comes straight from
-    an AI response), so it must stay injection-safe -- but escaping must be the ONLY thing
-    that happens to it. The canary (see test above) only holds if what's shown, once
-    unescaped by the browser, is identical to what auto mode types; if escaping ever dropped,
-    reordered, or added characters beyond turning &<>" into entities, the operator would be
-    proofreading a string auto mode never actually sends."""
+def test_run_status_escapes_live_training_app():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    raw = 'Nice <ears> & "antlers", right?'
-    snap = {
-        "running": True,
-        "status": {"apps": {"hinge": {
-            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
-            "opener_suggestion": raw,
-        }}},
-    }
-    html = _run_node(_observe_status_script(snap))["html"]
-    assert "<ears>" not in html
-    assert "Nice &lt;ears&gt; &amp; &quot;antlers&quot;, right?" in html
+    hostile_app = '<img src=x onerror="alert(1)">'
+    app_snap = {"running": True, "status": {"apps": {
+        "hostile": {"app": hostile_app, "mode": "training", "state": "scoring"},
+    }}}
+    app_html = _run_node(_runstatus_script(app_snap))["html"]
+    assert "<img" not in app_html and "&lt;img" in app_html
 
-
-def test_observe_banner_shows_the_selected_item_after_a_heart_is_open():
-    """Once the sheet is open, direct copy identifies the selected item and keeps the opener
-    in its own canary row. The conditional pre-tap wording belongs only to `waiting`.
-
-    The canary rule still binds: the instruction is hub chrome and must stay OUT of the opener's
-    own row, which is asserted structurally here rather than by looking for the text anywhere in
-    the box."""
+def test_run_status_hides_without_a_supported_app():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    snap = {
-        "running": True,
-        "status": {"apps": {"hinge": {
-            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
-            "opener_suggestion": "Based on that ridgeline I'm going to guess Norway",
-            "opener_item": 3, "opener_media_ordinal": 3,
-            "opener_item_description": "the ridgeline photo",
-            "opener_referenced": "the mountain behind her",
-        }}},
-    }
-    html = _run_node(_observe_status_script(snap))["html"]
-
-    assert "selected media item 3 — the ridgeline photo" in html
-    assert "the ridgeline photo" in html
-    m = re.search(r'type exactly this</div>\s*<div[^>]*>(.*?)</div>\s*<div[^>]*>(.*?)</div>',
-                  html, re.S)
-    assert m, f"expected heading -> opener block -> chrome block structure, got:\n{html}"
-    opener_row, chrome_row = m.group(1), m.group(2)
-    assert opener_row == "Based on that ridgeline I'm going to guess Norway"
-    assert "item 3" not in opener_row           # the instruction is chrome, never inline with it
-    assert "the mountain behind her" in chrome_row
+    snap = {"running": True, "status": {"apps": {
+        "hinge": {"app": "hinge", "mode": "unsupported", "state": "waiting"},
+    }}}
+    assert _run_node(_runstatus_script(snap))["display"] == "none"
 
 
-def test_observe_banner_keeps_the_pass_option_visible_while_a_suggestion_is_up():
-    """THE INVERSION MOVED THE SUGGESTION INTO THE DECISION WINDOW, AND THE DECISION IS STILL
-    THE HUMAN'S. Until doc 5.9 a suggestion could only be published AFTER the heart tap
-    ('waiting_for_send'), so it never competed with the 🟢 GO cue that says it is the operator's
-    turn and that PASSING is one of the two things they may do. It is published before the tap
-    now, and the opener branch runs ahead of the 'waiting' branch, so the whole decision window
-    read as "like item 3 ... then tap Send Like / Send Priority Like in Hinge": no circle (against the owner's
-    GO/WAIT convention), no X, and an instruction about a sheet that is not open yet -- in the
-    one mode whose entire output is the owner's own like/pass labels.
+def test_run_status_retains_training_terminal_reason_after_the_run_ends():
+    """A completed training run has no second banner to fall back to.
 
-    The canary rule is unaffected and is re-checked here rather than assumed: the pass cue is
-    chrome and must stay out of the opener's own row."""
-    if NODE_BIN is None:
-        pytest.skip("node is not available on this machine")
-    app = {"app": "hinge", "mode": "observe",
-           "opener_suggestion": "Based on that ridgeline I'm going to guess Norway",
-           "opener_item": 3, "opener_media_ordinal": 3,
-           "opener_item_description": "the ridgeline photo"}
-
-    deciding = {"running": True,
-                "status": {"apps": {"hinge": dict(app, state="waiting")}}}
-    html = _run_node(_observe_status_script(deciding))["html"]
-    assert "Optional:" in html   # the suggestion is not a verdict
-    assert "if you choose to like, use media item 3 — the ridgeline photo" in html
-    assert "🟢" in html                                 # ...and it is still their turn
-    assert "tap X to pass, or tap the heart on media item 3 to like" in html
-    assert "then tap Send Like / Send Priority Like in Hinge" not in html   # no sheet is open yet
-    m = re.search(r'then type exactly this</div>\s*<div[^>]*>(.*?)</div>\s*<div[^>]*>(.*?)</div>',
-                  html, re.S)
-    assert m, f"expected heading -> opener block -> chrome block structure, got:\n{html}"
-    assert m.group(1) == "Based on that ridgeline I'm going to guess Norway"
-    assert "tap X to pass, or tap the heart on media item 3 to like" in m.group(2)
-
-    # Once the sheet IS open the choice has been made, so the cue becomes the send instruction
-    # and the pass wording goes away -- offering "pass X" under an open comment sheet would be
-    # advice about a control the operator is no longer looking at.
-    sending = {"running": True,
-               "status": {"apps": {"hinge": dict(app, state="waiting_for_send")}}}
-    html2 = _run_node(_observe_status_script(sending))["html"]
-    assert "then tap Send Like / Send Priority Like in Hinge" in html2
-    assert "tap X to pass" not in html2
-
-    # Non-Hinge apps keep the generic control wording they already had in the plain GO cue.
-    other = {"running": True, "status": {"apps": {"bumble": dict(
-        app, app="bumble", state="waiting")}}}
-    html3 = _run_node(_observe_status_script(other))["html"]
-    assert "use the app's pass or like control" in html3
-    assert "tap X to pass" not in html3
-
-
-def test_observe_banner_uses_the_media_ordinal_not_the_heart_ordinal():
-    """Written prompts must not make the fifth media card appear as an eighth item."""
-    if NODE_BIN is None:
-        pytest.skip("node is not available on this machine")
-    snap = {"running": True, "status": {"apps": {"hinge": {
-        "app": "hinge", "mode": "observe", "state": "waiting",
-        "opener_suggestion": "Based on that ridgeline I'm going to guess Norway",
-        "opener_item": 5, "opener_media_ordinal": 5,
-        "opener_item_description": "the ridgeline photo",
-    }}}}
-    html = _run_node(_observe_status_script(snap))["html"]
-
-    assert "use media item 5 — the ridgeline photo" in html
-    assert "tap the heart on media item 5" in html
-    assert "item 8" not in html
-    assert "media item 8" not in html
-
-
-def test_observe_banner_replaces_the_opener_with_a_warning_on_a_mismatch():
-    """DOC 5.9's mismatch surface, and the property that makes it worth having: the opener is
-    REPLACED, not annotated. Text left on screen beside a caveat is text that gets typed anyway,
-    which is exactly the wrong-item comment the inversion would otherwise reintroduce. WAIT (🔴)
-    styling per the owner's circle-only rule, because the one thing not to do here is copy
-    something -- and there is deliberately nothing to copy."""
-    if NODE_BIN is None:
-        pytest.skip("node is not available on this machine")
-    snap = {
-        "running": True,
-        "status": {"apps": {"hinge": {
-            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
-            "opener_suggestion": None, "opener_item": 3,
-            "opener_warning": "you opened item 5, but this was written about item 3",
-        }}},
-    }
-    out = _run_node(_observe_status_script(snap))
-    assert out["display"] == "block"
-    assert "no suggestion to type" in out["html"]
-    assert "you opened item 5" in out["html"]
-    assert "🔴" in out["html"] and "🟢" not in out["html"]
-    assert "type exactly this" not in out["html"]
-    # ...and it still says what to do instead. This box replaces the OPENER BLOCK, not the
-    # banner, so it is the only thing on screen: without a next action a card whose suggestion
-    # failed states a problem and stops, and a session where they all fail (dead quota, a driver
-    # that cannot enumerate) would never show the operator a cue at all.
-    assert "type your own opener, then tap Send Like / Send Priority Like" in out["html"]
-
-    # Before the tap the cue is the DECISION, not the send -- same wording the suggestion box
-    # uses in that window, and the 🟢 that says it is their turn.
-    deciding = {"running": True, "status": {"apps": {"hinge": dict(
-        snap["status"]["apps"]["hinge"], state="waiting")}}}
-    out_deciding = _run_node(_observe_status_script(deciding))
-    assert "🟢 your call: tap X to pass, or tap a heart to like" in out_deciding["html"]
-    assert "you opened item 5" in out_deciding["html"]
-    assert "type exactly this" not in out_deciding["html"]
-
-    # A warning is a per-card WARNING, not a stop: while the run is shutting down the "do not
-    # swipe" box still takes precedence, because a decision about to be discarded is the more
-    # urgent thing to say.
-    stopping = {"running": True, "status": {"stopping": True, "apps": {"hinge": dict(
-        snap["status"]["apps"]["hinge"])}}}
-    out2 = _run_node(_observe_status_script(stopping))
-    assert "stopping — do not swipe" in out2["html"]
-    assert "you opened item 5" not in out2["html"]
-
-    # And the warning text is escaped like everything else that reaches innerHTML.
-    hostile = {"running": True, "status": {"apps": {"hinge": {
-        "app": "hinge", "mode": "observe", "state": "waiting_for_send",
-        "opener_warning": '<img src=x onerror="alert(1)">'}}}}
-    out3 = _run_node(_observe_status_script(hostile))
-    assert "<img" not in out3["html"] and "&lt;img" in out3["html"]
-
-
-def test_observe_banner_keeps_the_go_cue_when_hinge_targeting_calibration_is_absent():
-    """A missing calibration is a RUN-LEVEL, currently intentional condition — the decision
-    window must stay a 🟢 GO box, never become a warning.
-
-    2026-08-21, second bug report about this same banner in one day: rendering the condition
-    through the WAIT-styled warning box put an amber 🔴 "setup required" notice over EVERY
-    decision window of the run. In the owner's circle convention amber+🔴 means "hands off",
-    so the operator sat out a 2m24s window that was waiting on THEM, then stopped the run.
-    The cue must be byte-identical to the plain no-warning waiting state's GO box; the setup
-    situation is context and lives in the box's fine-print sub row.
+    The review panel is intentionally transient, but the durable run banner must keep a
+    terminal error/reason visible after HubState's thread has finished.
     """
     if NODE_BIN is None:
-        pytest.skip("node not available on this machine")
-    # The REAL driver string (hinge.py's items-unavailable reason), internal consequence
-    # clause included — the trim below must be proven against what production actually sends.
-    driver_warning = (
-        "apps.hinge.targeting_calibration is unavailable (not configured in config.yaml), "
-        "so a model-selected item could not be verified or targeted and no numbered item "
-        "list would have a usable consumer")
-    # The worker publishes the next step because only its process knows which still-photo
-    # licence is installed; this is the real pre-licence string (targeting_policy's
-    # TARGETING_SETUP_NEXT_STEP_BLOCKED), so the rendering is proven against what ships.
-    next_step_blocked = (
-        "per ops/RUNBOOK.md section 2, positive still-photo proof must exist before a fresh "
-        "calibration can enable suggestions")
+        pytest.skip("node is not available on this machine")
     snap = {
-        "running": True,
+        "running": False,
         "status": {"apps": {"hinge": {
-            "app": "hinge", "mode": "observe", "state": "waiting",
-            "opener_warning": driver_warning,
-            "targeting_setup_next_step": next_step_blocked,
+            "app": "hinge", "mode": "training", "state": "stopped",
+            "stop_reason": "Training requires a complete generated opener",
+            "swipes_run": 3,
         }}},
     }
-    out = _run_node(_observe_status_script(snap))
-    html = out["html"]
-    assert out["display"] == "block"
-    # The decision cue is the box's full-size title, identical to the plain waiting state,
-    # and the setup note is the fine-print <span> that follows it.
-    assert "🟢 hinge: make your choice: tap X to pass, or tap a heart to like <span" in html
-    # One circle only, and the GO box style — not the amber WAIT style the warning box uses.
-    assert "🔴" not in html
-    assert "background:#123a23" in html and "background:#3a2f12" not in html
-    # The old shape is gone: no "setup required" demand (config validation currently refuses
-    # the very setup it demanded) and no warning-box title.
-    assert "targeted opener setup required" not in html
-    assert "no suggestion to type" not in html
-    # The fine print keeps the diagnosable core of the driver's reason but drops the internal
-    # consequence clause — that sentence is for logs and bug reports, not the operator.
-    assert "no targeted suggestion this run" in html
-    assert "not configured in config.yaml" in html
-    assert "usable consumer" not in html
-    assert "manual pass/like labels still work" in html.lower()
-    # The next step is whatever the worker published, verbatim — never a sentence this page
-    # decided for itself. Hardcoding it here is what produced the 2026-08-22 report: the page
-    # kept demanding still-photo proof after the owner's acceptance had already licensed
-    # numbering, so the only remaining step (capture the calibration) was never named.
-    assert "ops/RUNBOOK.md" in html and next_step_blocked in html
-    # GO cue first, context after — the inverse of the reported screenshot.
-    assert html.index("🟢") < html.index("still-photo proof")
-
-    # Sheet open: still a GO box (type and send), with the same fine-print context. The
-    # trim also covers the driver's other phrasing (targeted_suggestion_blocker's).
-    sending = {"running": True, "status": {"apps": {"hinge": dict(
-        snap["status"]["apps"]["hinge"], state="waiting_for_send",
-        opener_warning=("targeted suggestion is unavailable because "
-                        "apps.hinge.targeting_calibration is unavailable "
-                        "(not configured in config.yaml); no opener text is offered"))}}}
-    sending_html = _run_node(_observe_status_script(sending))["html"]
-    assert "type your own opener, then tap Send Like / Send Priority Like" in sending_html
-    assert "background:#123a23" in sending_html and "🔴" not in sending_html
-    assert "targeted suggestion is unavailable because" not in sending_html
-    assert "no opener text is offered" not in sending_html
-    assert "not configured in config.yaml" in sending_html
-    assert "click pass X or heart" not in sending_html
-
-    # Any other state falls through to that state's own cue: a stale run-level note must not
-    # override "reading profile" with a GO instruction (the warning branch used to intercept
-    # every state). And the fall-through must not loosen doc 5.9's nothing-copyable pin: even
-    # with an opener_suggestion impossibly present beside the warning, no copyable text may
-    # render — the state box wins, exactly as for the warning-only shape.
-    capturing = {"running": True, "status": {"apps": {"hinge": dict(
-        snap["status"]["apps"]["hinge"], state="capturing",
-        opener_suggestion="Based on that ridgeline I'm going to guess Norway")}}}
-    capturing_html = _run_node(_observe_status_script(capturing))["html"]
-    assert "🔴 wait — reading hinge profile…" in capturing_html
-    assert "make your choice" not in capturing_html
-    assert "still-photo proof" not in capturing_html
-    assert "Norway" not in capturing_html and "type exactly this" not in capturing_html
-
-    # Shutdown still outranks the GO cue: a decision made now would be discarded.
-    stopping = {"running": True, "status": {"stopping": True, "apps": {"hinge": dict(
-        snap["status"]["apps"]["hinge"])}}}
-    stopping_html = _run_node(_observe_status_script(stopping))["html"]
-    assert "stopping — do not swipe" in stopping_html
-    assert "make your choice" not in stopping_html
-
-    # The run-level reason is operator data, not markup: it is escaped like every other
-    # dynamic value that reaches innerHTML.
-    hostile = {"running": True, "status": {"apps": {"hinge": dict(
-        snap["status"]["apps"]["hinge"],
-        opener_warning='targeting_calibration <img src=x onerror="alert(1)">')}}}
-    hostile_html = _run_node(_observe_status_script(hostile))["html"]
-    assert "<img" not in hostile_html and "&lt;img" in hostile_html
-
-    # THE BUG OF 2026-08-22. Once a still-photo licence is installed the worker publishes the
-    # OTHER next step, and the fine print must follow it there. The page must not keep naming a
-    # prerequisite the operator already satisfied, and must name the one step that would restore
-    # suggestions — otherwise a solvable run-level gate reads as an upstream block, which is
-    # exactly why the calibration went uncaptured for a day.
-    next_step_calibrate = (
-        "still-photo numbering is licensed, so the one remaining step is the per-device "
-        "targeting calibration campaign in ops/RUNBOOK.md section 2: capture both splits, "
-        "measure them, and paste the emitted apps.hinge.targeting_calibration block into "
-        "config.yaml")
-    licensed = {"running": True, "status": {"apps": {"hinge": dict(
-        snap["status"]["apps"]["hinge"],
-        targeting_setup_next_step=next_step_calibrate)}}}
-    licensed_html = _run_node(_observe_status_script(licensed))["html"]
-    # No &<>"' in the real string, so escaping is the identity here and a raw match is exact.
-    assert next_step_calibrate in licensed_html
-    assert "still-photo proof must exist" not in licensed_html
-    # Still the same single 🟢 GO cue: which next step is named never restyles the decision window.
-    assert "🟢 hinge: make your choice: tap X to pass, or tap a heart to like <span" in licensed_html
-    assert "🔴" not in licensed_html
-    assert "background:#123a23" in licensed_html and "background:#3a2f12" not in licensed_html
-
-    # With nothing published (an older worker, or a poll that raced the run's start) the note
-    # ends after "manual pass/like labels still work" rather than asserting a prerequisite this
-    # page cannot verify. Guessing is what went stale; silence cannot.
-    unpublished = {"running": True, "status": {"apps": {"hinge": {
-        "app": "hinge", "mode": "observe", "state": "waiting",
-        "opener_warning": driver_warning}}}}
-    unpublished_html = _run_node(_observe_status_script(unpublished))["html"]
-    assert "no targeted suggestion this run" in unpublished_html
-    assert "manual pass/like labels still work" in unpublished_html.lower()
-    assert "still-photo proof" not in unpublished_html
-    assert "ops/RUNBOOK.md" not in unpublished_html
-    assert "🟢 hinge: make your choice: tap X to pass, or tap a heart to like <span" in unpublished_html
+    result = _run_node(_runstatus_script(snap))
+    assert result["display"] == "block"
+    assert "Training requires a complete generated opener" in result["html"]
 
 
-def test_observe_banner_offers_no_text_to_type_when_a_warning_and_an_opener_arrive_together():
-    """THE CANARY RULE AND THE MISMATCH RULE MEET HERE, and the hub is the last place either can
-    be enforced. worker.py publishes opener_warning or opener_suggestion and never both (see
-    _ObserveSuggestion._display, which RETURNS at the mismatch), so this shape should be
-    unreachable -- which is exactly why the hub's own precedence has to be pinned rather than
-    assumed. A stale poll, a reordered publish, or a future producer that annotates instead of
-    replacing would otherwise put a wrong-item opener back on screen next to a caveat, and text
-    on screen beside a caveat is text that gets typed anyway (doc 5.9).
-
-    "Offers nothing to type" is asserted on the OPENER STRING ITSELF, not on the absence of a
-    label: the failure this guards against is the operator copying those exact words."""
+def test_run_status_suppresses_training_decision_cues_while_stopping():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     snap = {
-        "running": True,
-        "status": {"apps": {"hinge": {
-            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
-            "opener_suggestion": "Based on that ridgeline I'm going to guess Norway",
-            "opener_referenced": "the mountain behind her",
-            "opener_item": 3, "opener_item_description": "the ridgeline photo",
-            "opener_warning": "you opened item 5, but this suggestion was written about item 3",
-        }}},
-    }
-    html = _run_node(_observe_status_script(snap))["html"]
-
-    assert "you opened item 5" in html
-    assert "no suggestion to type" in html
-    # Nothing copyable survives: not the opener, not the "type exactly this" instruction that
-    # would tell the operator there is something to copy, and not the referenced caption that
-    # only makes sense under a suggestion.
-    assert "ridgeline I'm going to guess Norway" not in html
-    assert "type exactly this" not in html
-    assert "the mountain behind her" not in html
-    assert "🔴" in html and "🟢" not in html
-
-
-def test_observe_banner_keeps_the_go_cue_while_the_suggestion_is_still_being_written():
-    """DOC 5.9's timing rule at the surface: READY is published immediately and the suggestion
-    fills in behind it, so `opener_pending` is a NOTE beside a live GO cue rather than a WAIT
-    state that holds the operator up. The old blocking "suggesting" state was correct when the
-    call sat between the heart tap and the suggestion; it would be a lie now."""
-    if NODE_BIN is None:
-        pytest.skip("node is not available on this machine")
-    pending = {
-        "running": True,
-        "status": {"apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting",
-                                      "opener_pending": True}}},
-    }
-    out = _run_node(_observe_status_script(pending))
-    assert "🟢" in out["html"]                        # still GO: they may act right now
-    assert "tap X to pass, or tap a heart to like" in out["html"]
-    assert "wait a moment for a suggestion" in out["html"]
-
-    settled = {
-        "running": True,
-        "status": {"apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting",
-                                      "opener_pending": False}}},
-    }
-    out2 = _run_node(_observe_status_script(settled))
-    assert "make your choice: tap X to pass, or tap a heart to like" in out2["html"]
-    assert "wait a moment for a suggestion" not in out2["html"]
-
-    # The race doc 5.9 names: the human taps FASTER than the model answers, so the sheet is open
-    # with nothing to type yet. That must read as "still writing", not as "there is none" -- the
-    # operator's next move differs (wait a beat, versus write your own).
-    tapped_first = {
-        "running": True,
-        "status": {"apps": {"hinge": {"app": "hinge", "mode": "observe",
-                                      "state": "waiting_for_send", "opener_pending": True}}},
-    }
-    out3 = _run_node(_observe_status_script(tapped_first))
-    assert "still writing a suggestion" in out3["html"]
-    assert "No suggestion available" not in out3["html"]
-
-
-def test_observe_banner_shows_wait_cue_while_a_suggestion_is_being_generated():
-    """The legacy blocking "suggesting" state. NOTHING PUBLISHES IT since doc 5.9's inversion
-    (the suggestion is generated on its own thread while the operator is already free to act --
-    see the opener_pending test above), but it stays a legal AppStatus.state that an older
-    snapshot can carry, so the branch that renders it stays pinned rather than silently rotting.
-
-    OWNER UI RULE: GO/WAIT cues use only 🟢/🔴 circles, so this must render as the same WAIT (🔴)
-    style as capturing/acting/starting, not a new indicator."""
-    if NODE_BIN is None:
-        pytest.skip("node is not available on this machine")
-    suggesting = {
-        "running": True,
-        "status": {"apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "suggesting"}}},
-    }
-    out = _run_node(_observe_status_script(suggesting))
-    assert out["display"] == "block"
-    assert "🔴" in out["html"]                     # WAIT cue -- the owner's circle-only rule
-    assert "🟢" not in out["html"]                  # not the GO cue this state replaces
-    assert "💬" in out["html"]                      # stays visually tied to the suggestion feature
-    assert "click pass X or heart" not in out["html"]   # the stale GO instruction must be gone
-    assert "hinge" in out["html"]
-
-    # The card uses innerHTML -- the app name must still be escaped on this branch too.
-    hostile = {
-        "running": True,
-        "status": {"apps": {"hostile": {
-            "app": '<img src=x onerror="alert(1)">', "mode": "observe", "state": "suggesting",
-        }}},
-    }
-    escaped = _run_node(_observe_status_script(hostile))
-    assert "<img" not in escaped["html"] and "&lt;img" in escaped["html"]
-
-
-def test_observe_banner_replaces_every_go_cue_with_a_stop_box_while_stopping():
-    """Audit fix: worker.py discards any decision recorded once stop_event lands (see the
-    stop_event re-checks around the observe loop's decision point), so telling the operator
-    to act -- plain 'waiting', the no-suggestion 'waiting_for_send' fallback, or a live
-    opener suggestion -- would be actively misleading during the shutdown tail
-    (status.stopping, set for the whole join+save window -- see status.py's docstring).
-    Same WAIT (🔴) style as the existing suggesting/capturing cues, never 🟢, per the
-    owner's circle-only status convention."""
-    if NODE_BIN is None:
-        pytest.skip("node is not available on this machine")
-    waiting_while_stopping = {
-        "running": True,
-        "status": {"stopping": True,
-                   "apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting"}}},
-    }
-    out = _run_node(_observe_status_script(waiting_while_stopping))
-    assert out["display"] == "block"
-    assert "stopping — do not swipe" in out["html"]
-    assert "this decision will not be recorded" in out["html"]
-    assert "click pass X or heart" not in out["html"]
-    assert "🔴" in out["html"] and "🟢" not in out["html"]
-
-    # The live opener-suggestion GO box must be overridden too, and the suggestion text
-    # itself suppressed (there is nothing useful to type into a decision that gets thrown
-    # away).
-    opener_while_stopping = {
         "running": True,
         "status": {"stopping": True, "apps": {"hinge": {
-            "app": "hinge", "mode": "observe", "state": "waiting_for_send",
-            "opener_suggestion": "love the beach shot",
+            "app": "hinge", "mode": "training", "state": "waiting", "swipes_run": 1,
         }}},
     }
-    out2 = _run_node(_observe_status_script(opener_while_stopping))
-    assert "stopping — do not swipe" in out2["html"]
-    assert "love the beach shot" not in out2["html"]
-
-    # Regression guard: while NOT stopping, the ordinary GO cue is untouched.
-    not_stopping = {
-        "running": True,
-        "status": {"stopping": False,
-                   "apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting"}}},
-    }
-    out3 = _run_node(_observe_status_script(not_stopping))
-    assert "tap X to pass, or tap a heart to like" in out3["html"]
-    assert "stopping — do not swipe" not in out3["html"]
+    html = _run_node(_runstatus_script(snap))["html"]
+    assert "stopping" in html
+    assert "preparing the checkpoint" not in html
+    assert "running" not in html
 
 
-def test_select_auto_apps_filters_to_auto_mode_only():
-    # selectAutoApps is renderAutoStatus's pure gating helper (mirrors selectObserveApps
-    # above for the auto-mode banner): an app's OWN mode decides whether it's included,
-    # not the global run mode, since apps.<app>.mode can override the run's mode per app.
+def test_select_run_apps_filters_to_each_supported_mode_once():
+    # An app's OWN mode decides whether it belongs in the one run banner, not the global
+    # run mode, since apps.<app>.mode can override it.
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    fn = _extract_js_function(_PAGE, "selectAutoApps")
+    fn = _extract_js_function(_PAGE, "selectRunApps")
     status = {
-        "mode": "observe",
+        "mode": "training",
         "apps": {
             "bumble": {"mode": "auto", "state": "error", "app": "bumble"},
-            "hinge": {"mode": "observe", "state": "waiting", "app": "hinge"},
+            "training": {"mode": "training", "state": "waiting_training_decision", "app": "training"},
+            "retired": {"mode": "unsupported", "state": "waiting", "app": "retired"},
         },
     }
     script = (
         fn + "\n"
         "const status = " + json.dumps(status) + ";\n"
-        "console.log(JSON.stringify(selectAutoApps(status).map(a => a.app)));\n"
+        "console.log(JSON.stringify(selectRunApps(status).map(a => a.app)));\n"
     )
-    assert _run_node(script) == ["bumble"]
+    assert _run_node(script) == ["bumble", "training"]
 
-    # Inverse: every app individually in 'observe' -> select none, even under a global
-    # 'auto' run mode. A global-mode-gated implementation would wrongly include hinge here.
-    status_b = {"mode": "auto", "apps": {"hinge": {"mode": "observe", "state": "waiting", "app": "hinge"}}}
+    # Retired modes stay out even if the global mode would otherwise look runnable.
+    status_b = {"mode": "auto", "apps": {"hinge": {"mode": "unsupported", "state": "waiting", "app": "hinge"}}}
     script_b = (
         fn + "\n"
         "const status = " + json.dumps(status_b) + ";\n"
-        "console.log(JSON.stringify(selectAutoApps(status).map(a => a.app)));\n"
+        "console.log(JSON.stringify(selectRunApps(status).map(a => a.app)));\n"
     )
     assert _run_node(script_b) == []
 
 
-def _autostatus_script(snap: dict) -> str:
-    """renderAutoStatus (unlike the pure selector functions above) touches the DOM via
-    `$('#autobanner')` -- shim just enough of that (a single fake element keyed by
-    selector) for node to run the REAL function body, same approach the tab-wake test
-    uses for `document`."""
-    fns = (_extract_js_function(_PAGE, "escHtml") + "\n"
-           + _extract_js_function(_PAGE, "selectAutoApps") + "\n"
-           + _extract_js_function(_PAGE, "renderAutoStatus"))
-    return (
-        "let el = {style:{display:''}, innerHTML:''};\n"
-        "function $(sel){ return sel === '#autobanner' ? el : null; }\n"
-        + fns + "\n"
-        "renderAutoStatus(" + json.dumps(snap) + ");\n"
-        "console.log(JSON.stringify({display: el.style.display, html: el.innerHTML}));\n"
-    )
-
-
-def test_render_auto_status_shows_error_box_with_worker_message():
+def test_render_run_status_shows_auto_error_box_with_worker_message():
     # This is the hub-visible half of the supervisor fix: an auto-mode app that halted via
     # worker.py's HALT-on-unexpected path (unrecognized screen / any other exception) must
     # show that reason here, using the app's own `.error` message -- not just a raw log tail.
@@ -2781,13 +2296,13 @@ def test_render_auto_status_shows_error_box_with_worker_message():
             },
         },
     }
-    result = _run_node(_autostatus_script(snap))
+    result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
     assert "hinge" in result["html"]
     assert "UnlocatedControlError: unrecognized screen" in result["html"]
 
 
-def test_render_auto_status_escapes_error_and_app_before_using_inner_html():
+def test_render_run_status_escapes_auto_error_and_app_before_using_inner_html():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     snap = {
@@ -2799,12 +2314,12 @@ def test_render_auto_status_escapes_error_and_app_before_using_inner_html():
             },
         },
     }
-    result = _run_node(_autostatus_script(snap))
+    result = _run_node(_runstatus_script(snap))
     assert "<img" not in result["html"] and "<script" not in result["html"]
     assert "&lt;img" in result["html"] and "&lt;script&gt;" in result["html"]
 
 
-def test_render_auto_status_shows_cold_start_defer_message():
+def test_render_run_status_shows_auto_cold_start_defer_message():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     snap = {
@@ -2816,12 +2331,12 @@ def test_render_auto_status_shows_cold_start_defer_message():
             },
         },
     }
-    result = _run_node(_autostatus_script(snap))
+    result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
     assert "cold-start" in result["html"]
 
 
-def test_render_auto_status_shows_opener_exhaustion_stop_reason():
+def test_render_run_status_shows_auto_opener_exhaustion_stop_reason():
     # WS-opener-reason: an auto-mode app halted because OpenerService ran out of opener
     # capacity (budget/credit/provider failure) used to render IDENTICALLY to a plain
     # operator-clicked Stop -- both were just state='stopped' with no reason field. The
@@ -2847,7 +2362,7 @@ def test_render_auto_status_shows_opener_exhaustion_stop_reason():
             },
         },
     }
-    result = _run_node(_autostatus_script(snap))
+    result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
     assert "run budget reached" in result["html"]
     assert "opener capacity exhausted" in result["html"]
@@ -2855,7 +2370,7 @@ def test_render_auto_status_shows_opener_exhaustion_stop_reason():
     assert "4 swipes this run" not in result["html"]
 
 
-def test_render_auto_status_reads_a_targeting_stop_as_one_not_as_opener_capacity():
+def test_render_run_status_reads_an_auto_targeting_stop_as_one_not_as_opener_capacity():
     """ops/OPENER-REDESIGN.md 5.6's hard stop, at the surface the operator reads. The bot
     reached the like, could not put it on the item the model chose, and put it nowhere. That
     used to publish stop_kind="opener" and therefore rendered under the branch above titled
@@ -2878,7 +2393,7 @@ def test_render_auto_status_reads_a_targeting_stop_as_one_not_as_opener_capacity
                                       "stop_reason": reason, "stop_kind": "targeting",
                                       "swipes_run": 2}}},
     }
-    result = _run_node(_autostatus_script(snap))
+    result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
     html = result["html"]
 
@@ -2900,12 +2415,12 @@ def test_render_auto_status_reads_a_targeting_stop_as_one_not_as_opener_capacity
                                       "stop_reason": "run budget reached", "stop_kind": "opener",
                                       "swipes_run": 2}}},
     }
-    other = _run_node(_autostatus_script(capacity))["html"]
+    other = _run_node(_runstatus_script(capacity))["html"]
     assert "opener capacity exhausted" in other
     assert "could not like the item" not in other
 
 
-def test_render_auto_status_escapes_stop_reason_before_using_inner_html():
+def test_render_run_status_escapes_auto_stop_reason_before_using_inner_html():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     snap = {
@@ -2917,12 +2432,12 @@ def test_render_auto_status_escapes_stop_reason_before_using_inner_html():
             },
         },
     }
-    result = _run_node(_autostatus_script(snap))
+    result = _run_node(_runstatus_script(snap))
     assert "<script" not in result["html"]
     assert "&lt;script&gt;" in result["html"]
 
 
-def test_render_auto_status_bare_stop_still_shown_without_a_reason():
+def test_render_run_status_shows_a_bare_auto_stop_without_a_reason():
     # A plain operator-clicked Stop (no OpenerService involvement) must keep rendering
     # exactly as before -- stop_reason absent, not an empty string standing in for one.
     if NODE_BIN is None:
@@ -2933,22 +2448,14 @@ def test_render_auto_status_bare_stop_still_shown_without_a_reason():
             "apps": {"bumble": {"app": "bumble", "mode": "auto", "state": "stopped"}},
         },
     }
-    result = _run_node(_autostatus_script(snap))
+    result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
     assert "bumble: stopped</div>" in result["html"]
 
 
-def test_render_auto_status_hides_without_auto_apps_but_survives_run_completion():
+def test_render_run_status_survives_auto_run_completion():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    # No auto-mode apps at all (only observe) -> hide.
-    snap_no_auto = {
-        "running": True,
-        "status": {"apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting"}}},
-    }
-    result_a = _run_node(_autostatus_script(snap_no_auto))
-    assert result_a["display"] == "none"
-
     # A completed auto run must retain its terminal explanation. HubState.running follows
     # Thread.is_alive(), so this is the state a person returning after the run sees.
     snap_not_running = {
@@ -2956,12 +2463,12 @@ def test_render_auto_status_hides_without_auto_apps_but_survives_run_completion(
         "status": {"apps": {"hinge": {"app": "hinge", "mode": "auto", "state": "error",
                                            "error": "unrecognized screen"}}},
     }
-    result_b = _run_node(_autostatus_script(snap_not_running))
+    result_b = _run_node(_runstatus_script(snap_not_running))
     assert result_b["display"] == "block"
     assert "unrecognized screen" in result_b["html"]
 
 
-def test_render_auto_status_does_not_claim_running_after_the_run_ended():
+def test_render_run_status_does_not_claim_auto_running_after_the_run_ended():
     """The banner deliberately outlives the run (see the test above), which makes the
     fall-through branch's old assumption -- "not a known terminal state => the worker is
     live" -- wrong once `running` is false. A run whose shutdown never reached its final
@@ -2978,7 +2485,7 @@ def test_render_auto_status_does_not_claim_running_after_the_run_ended():
             },
         },
     }
-    result = _run_node(_autostatus_script(snap))
+    result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
     assert "running" not in result["html"]        # never claim a live worker after the run ended
     assert "ended" in result["html"]              # ...say the run ended instead
@@ -2987,10 +2494,10 @@ def test_render_auto_status_does_not_claim_running_after_the_run_ended():
 
     # Same non-terminal state while the run IS live still reads as running.
     live = {"running": True, "status": {"apps": {"hinge": dict(snap["status"]["apps"]["hinge"])}}}
-    assert "hinge: running" in _run_node(_autostatus_script(live))["html"]
+    assert "hinge: running" in _run_node(_runstatus_script(live))["html"]
 
 
-def test_render_auto_status_shows_stopping_instead_of_running_during_the_shutdown_tail():
+def test_render_run_status_shows_auto_stopping_instead_of_running_during_the_shutdown_tail():
     """Sibling of the test above: the run is STILL alive (thread not yet exited, so
     snap.running is True) but status.stopping is True -- supervisor.run()'s shutdown tail
     covers every non-terminal per-app state this fall-through renders (acting/capturing/
@@ -3005,7 +2512,7 @@ def test_render_auto_status_shows_stopping_instead_of_running_during_the_shutdow
             "hinge": {"app": "hinge", "mode": "auto", "state": "acting", "swipes_run": 5},
         }},
     }
-    result = _run_node(_autostatus_script(snap))
+    result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
     assert "stopping — finishing the current profile" in result["html"]
     assert "hinge: running" not in result["html"]
@@ -3017,31 +2524,329 @@ def test_render_auto_status_shows_stopping_instead_of_running_during_the_shutdow
             "hinge": {"app": "hinge", "mode": "auto", "state": "acting", "swipes_run": 5},
         }},
     }
-    assert "hinge: running" in _run_node(_autostatus_script(not_stopping))["html"]
+    assert "hinge: running" in _run_node(_runstatus_script(not_stopping))["html"]
 
 
-def test_tick_drives_real_auto_status_renderer_and_page_owns_banner_element():
+def test_tick_drives_one_real_run_status_banner_and_the_separate_training_checkpoint_renderer():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    assert re.search(r'<div\s+id="autobanner"(?:\s|>)', _PAGE)
+    assert len(re.findall(r'<div\s+id="runbanner"(?:\s|>)', _PAGE)) == 1
+    assert "id=\"trainingbanner\"" not in _PAGE
+    assert "id=\"autobanner\"" not in _PAGE
+    assert re.search(r'<aside\s+id="trainingpanel"(?:\s|>)', _PAGE)
     tick_fn = _extract_js_function(_PAGE, "tick")
     script = (
         "const calls = [];\n"
         "async function getJSON(){ return {running:false,status:{apps:{}}}; }\n"
         "function renderGlobal(){ calls.push('global'); }\n"
-        "function renderSwipe(){ calls.push('swipe'); }\n"
-        "function renderAutoStatus(){ calls.push('auto'); }\n"
+        "function renderRunStatus(){ calls.push('run-status'); }\n"
+        "function tickTrainingCheckpoint(){ calls.push('training'); }\n"
         + tick_fn + "\n"
         "tick().then(() => console.log(JSON.stringify(calls)));\n"
     )
-    assert _run_node(script) == ["global", "swipe", "auto"]
+    assert _run_node(script) == ["global", "run-status", "training"]
 
 
-def test_hub_auto_volume_control_defaults_to_unlimited():
+def _training_panel_script(checkpoint):
+    """Run the real renderer against the smallest DOM surface it needs."""
+    return (
+        "const panel={style:{display:''},innerHTML:''};\n"
+        "const buttons={};\n"
+        "const layout={active:false,classList:{toggle(_name,value){layout.active=!!value;}}};\n"
+        "const document={querySelector:(selector)=>selector==='.hub-layout'?layout:null};\n"
+        "function $(selector){ return selector==='#trainingpanel' ? panel : buttons[selector]; }\n"
+        "let _trainingCheckpoint=null, _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0; const _trainingIdempotency=new Map();\n"
+        + _extract_js_function(_PAGE, "escHtml") + "\n"
+        + _extract_js_function(_PAGE, "safeCheckpointImageDataUrl") + "\n"
+        + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
+        + _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged") + "\n"
+        + _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged") + "\n"
+        + _extract_js_function(_PAGE, "trainingActionBusyFor") + "\n"
+        + _extract_js_function(_PAGE, "renderTrainingCheckpoint") + "\n"
+        + "renderTrainingCheckpoint(" + json.dumps(checkpoint) + ");\n"
+        + "console.log(JSON.stringify({display:panel.style.display,html:panel.innerHTML,active:layout.active}));\n"
+    )
+
+
+def test_training_panel_is_a_separate_responsive_right_column():
+    assert 'class="hub-layout"' in _PAGE
+    assert '.hub-layout { max-width:680px; margin:0 auto; }' in _PAGE
+    assert '.hub-layout.training-active { max-width:1120px; display:grid;' in _PAGE
+    assert 'grid-template-columns:minmax(0,680px) minmax(320px,420px)' in _PAGE
+    assert '@media (max-width:900px)' in _PAGE
+    assert re.search(r'<aside\s+id="trainingpanel"[^>]*aria-live="polite"', _PAGE)
+    mode = re.search(r'<select\b[^>]*\bid="mode"[^>]*>(.*?)</select>', _PAGE, re.S)
+    assert mode and 'value="training"' in mode.group(1) and 'auto_testing' not in mode.group(1)
+
+
+def test_pending_training_checkpoint_is_only_a_live_ready_decision():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fn = _extract_js_function(_PAGE, "pendingTrainingCheckpoint")
+    checkpoints = [
+        {"run_id": "run-1", "app": "hinge", "profile_token": "done", "approval_token": "a",
+         "pending": False, "phase": "waiting_training_decision", "action": "ready"},
+        {"run_id": "run-1", "app": "hinge", "profile_token": "pass", "approval_token": "b",
+         "pending": True, "phase": "waiting_training_decision", "action": "queued"},
+        {"run_id": "run-2", "app": "hinge", "profile_token": "other", "approval_token": "c",
+         "pending": True, "phase": "waiting_training_decision", "action": "ready"},
+        {"run_id": "run-1", "app": "hinge", "profile_token": "live", "approval_token": "d",
+         "pending": True, "phase": "waiting_training_decision", "action": "ready"},
+    ]
+    script = (fn + "\nconst result=pendingTrainingCheckpoint({checkpoints:"
+              + json.dumps(checkpoints) + "},'run-1','hinge');\n"
+              + "console.log(JSON.stringify(result && result.profile_token));\n")
+    assert _run_node(script) == "live"
+
+
+def test_training_panel_shows_full_opener_target_image_and_escapes_text():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    checkpoint = {
+        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
+        "approval_token": "approval-1", "phase": "waiting_training_decision", "pending": True,
+        "action": "ready", "item": 3, "item_description": '<img src=x onerror="boom">',
+        "referenced": "your <great> travel photo", "opener": "Line one\nLine <two>",
+        "image_data_url": "data:image/png;base64,AA==",
+    }
+    result = _run_node(_training_panel_script(checkpoint))
+    assert result["display"] == "block"
+    assert result["active"] is True
+    assert 'src="data:image/png;base64,AA=="' in result["html"]
+    assert "Line one\nLine &lt;two&gt;" in result["html"]
+    assert "&lt;img" in result["html"] and '<img src=x' not in result["html"]
+    assert "your &lt;great&gt; travel photo" in result["html"]
+    assert "already written on this target" in result["html"]
+    assert '>Like</button>' in result["html"]
+    assert '>Dislike</button>' in result["html"]
+
+
+def test_training_panel_hides_and_restores_the_original_single_column_layout():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    result = _run_node(_training_panel_script(None))
+    assert result == {"display": "none", "html": "", "active": False}
+
+
+def test_training_panel_disables_both_decisions_when_review_data_is_incomplete():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    checkpoint = {
+        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
+        "approval_token": "approval-1", "phase": "waiting_training_decision", "pending": True,
+        "action": "ready", "item": None, "opener": None, "image_data_url": "",
+    }
+    result = _run_node(_training_panel_script(checkpoint))
+    assert "Review data is incomplete" in result["html"]
+    assert 'id="traininglike" class="primary" aria-label="Like — send opener" disabled' in result["html"]
+    assert 'id="trainingdislike" class="danger" aria-label="Dislike — pass this profile" disabled' in result["html"]
+
+
+def test_training_panel_keeps_queued_decision_visible_but_not_actionable():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    checkpoint = {
+        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
+        "approval_token": "approval-1", "phase": "waiting_training_decision", "pending": False,
+        "action": "queued", "command": "like", "opener": "typed opener",
+        "image_data_url": "data:image/png;base64,AA==",
+    }
+    result = _run_node(_training_panel_script(checkpoint))
+    assert "Like is queued; waiting for the worker to claim it." in result["html"]
+    assert 'id="traininglike" class="primary" aria-label="Like — send opener" disabled' in result["html"]
+    assert 'id="trainingdislike" class="danger" aria-label="Dislike — pass this profile" disabled' in result["html"]
+
+
+def test_training_feedback_surfaces_terminal_status_and_reason():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    script = (
+        "const panel={style:{display:''},innerHTML:''};\n"
+        "const layout={active:true,classList:{toggle(_name,value){layout.active=!!value;}}};\n"
+        "const document={querySelector:(selector)=>selector==='.hub-layout'?layout:null};\n"
+        "function $(selector){ return selector==='#trainingpanel' ? panel : null; }\n"
+        "let _trainingCheckpoint={run_id:'r',app:'hinge',profile_token:'p',approval_token:'a'}, _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0; const _trainingIdempotency=new Map();\n"
+        + _extract_js_function(_PAGE, "escHtml") + "\n"
+        + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
+        + _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged") + "\n"
+        + _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged") + "\n"
+        + _extract_js_function(_PAGE, "renderTrainingFeedback") + "\n"
+        + "renderTrainingFeedback({command:'dislike',status:'failed',reason:'device verification failed'});\n"
+        + "console.log(JSON.stringify({html:panel.innerHTML,display:panel.style.display,active:layout.active}));\n"
+    )
+    result = _run_node(script)
+    assert "decision failed" in result["html"]
+    assert "device verification failed" in result["html"]
+    assert result["display"] == "block" and result["active"] is False
+
+
+def test_stopping_immediately_replaces_actionable_checkpoint_with_non_actionable_feedback():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    script = (
+        "let _trainingRequest=0, seen=null;\n"
+        "function selectRunApps(status){return Object.values(status.apps).filter(a=>a.mode==='training'||a.mode==='auto');}\n"
+        "function renderTrainingFeedback(result,message){seen={result,message};}\n"
+        "function renderTrainingCheckpoint(){throw new Error('must not render an actionable card while stopping');}\n"
+        + _extract_js_function(_PAGE, "tickTrainingCheckpoint") + "\n"
+        + "tickTrainingCheckpoint({running:true,status:{run_id:'run-1',stopping:true,apps:{hinge:{app:'hinge',mode:'training'}}}}).then(()=>console.log(JSON.stringify(seen)));\n"
+    )
+    result = _run_node(script)
+    assert result["result"] is None
+    assert "no new choice is available" in result["message"]
+    assert "finishing and being recorded" in result["message"]
+
+
+def test_training_panel_accepts_only_png_image_urls():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fn = _extract_js_function(_PAGE, "safeCheckpointImageDataUrl")
+    script = (fn + "\nconsole.log(JSON.stringify(["
+              "safeCheckpointImageDataUrl('data:image/png;base64,AA=='),"
+              "safeCheckpointImageDataUrl('data:image/jpeg;base64,AA=='),"
+              "safeCheckpointImageDataUrl('data:image/svg+xml;base64,PHN2Zz4='),"
+              "safeCheckpointImageDataUrl('https://example.test/a.png')" "]));\n")
+    assert _run_node(script) == ["data:image/png;base64,AA==", "", "", ""]
+
+
+def test_training_choice_posts_the_bound_checkpoint_and_idempotency_token():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fns = (_extract_js_function(_PAGE, "safeCheckpointImageDataUrl") + "\n"
+           + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
+           + _extract_js_function(_PAGE, "trainingActionBusyFor") + "\n"
+           + _extract_js_function(_PAGE, "trainingActionToken") + "\n"
+           + _extract_js_function(_PAGE, "submitTrainingAction"))
+    script = (
+        "const hubClientId='hub-client';\n"
+        "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
+        "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0;\n"
+        "let _trainingCheckpoint={run_id:'run-1',app:'hinge',profile_token:'profile-1',approval_token:'approval-1',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
+        "let posted=null, renders=[], ticks=0;\n"
+        "function renderTrainingCheckpoint(checkpoint,message){renders.push([checkpoint,message]);}\n"
+        "async function postJSON(path,body){posted={path,body};return {ok:true};}\n"
+        "function tick(){ticks+=1;}\n"
+        + fns + "\nsubmitTrainingAction('like').then(()=>console.log(JSON.stringify({posted,renders,ticks})));\n"
+    )
+    result = _run_node(script)
+    assert result["posted"]["path"] == "/api/training/action"
+    assert result["posted"]["body"] == {
+        "command": "like", "run_id": "run-1", "app": "hinge",
+        "profile_token": "profile-1", "approval_token": "approval-1",
+        "idempotency_token": "hub-client-nonce",
+    }
+    assert result["ticks"] == 1
+
+
+def test_training_choice_does_not_post_when_the_review_data_is_missing():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fns = (_extract_js_function(_PAGE, "safeCheckpointImageDataUrl") + "\n"
+           + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
+           + _extract_js_function(_PAGE, "trainingActionBusyFor") + "\n"
+           + _extract_js_function(_PAGE, "trainingActionToken") + "\n"
+           + _extract_js_function(_PAGE, "submitTrainingAction"))
+    script = (
+        "const hubClientId='hub-client';\n"
+        "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
+        "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0;\n"
+        "let _trainingCheckpoint={run_id:'run-1',app:'hinge',profile_token:'profile-1',approval_token:'approval-1',opener:'',image_data_url:''};\n"
+        "let posted=null, renders=[], ticks=0;\n"
+        "function renderTrainingCheckpoint(checkpoint,message){renders.push([checkpoint,message]);}\n"
+        "async function postJSON(path,body){posted={path,body};return {ok:true};}\n"
+        "function tick(){ticks+=1;}\n"
+        + fns + "\nsubmitTrainingAction('like').then(()=>console.log(JSON.stringify({posted,renders,ticks})));\n"
+    )
+    assert _run_node(script) == {"posted": None, "renders": [], "ticks": 0}
+
+
+def test_training_action_failure_reenables_the_live_card_before_the_next_poll():
+    """A dropped local POST must not leave Like/Dislike disabled until a later poll succeeds."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fns = (_extract_js_function(_PAGE, "safeCheckpointImageDataUrl") + "\n"
+           + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
+           + _extract_js_function(_PAGE, "trainingActionBusyFor") + "\n"
+           + _extract_js_function(_PAGE, "trainingActionToken") + "\n"
+           + _extract_js_function(_PAGE, "submitTrainingAction"))
+    script = (
+        "const hubClientId='hub-client';\n"
+        "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
+        "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0;\n"
+        "let _trainingCheckpoint={run_id:'run-1',app:'hinge',profile_token:'profile-1',approval_token:'approval-1',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
+        "let renders=[], ticks=0;\n"
+        "function renderTrainingCheckpoint(checkpoint,message){renders.push({message,busy:_trainingActionBusy,checkpoint});}\n"
+        "async function postJSON(){return {ok:false,result:{reason:'stale approval'}};}\n"
+        "function tick(){ticks+=1;}\n"
+        + fns + "\nsubmitTrainingAction('dislike').then(()=>console.log(JSON.stringify({renders,ticks,busy:_trainingActionBusy})));\n"
+    )
+    result = _run_node(script)
+    assert result["busy"] is False
+    assert result["ticks"] == 1
+    assert result["renders"][-1]["message"] == "stale approval"
+    assert result["renders"][-1]["busy"] is False
+
+
+def test_old_hung_training_post_cannot_change_new_card_busy_state():
+    """A delayed request from a stopped run must not strand or unlock a new card."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fns = (_extract_js_function(_PAGE, "safeCheckpointImageDataUrl") + "\n"
+           + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
+           + _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged") + "\n"
+           + _extract_js_function(_PAGE, "trainingActionBusyFor") + "\n"
+           + _extract_js_function(_PAGE, "trainingActionToken") + "\n"
+           + _extract_js_function(_PAGE, "submitTrainingAction"))
+    script = (
+        "const hubClientId='hub-client';\n"
+        "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
+        "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0;\n"
+        "const oldCard={run_id:'old',app:'hinge',profile_token:'p1',approval_token:'a1',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
+        "const newCard={run_id:'new',app:'hinge',profile_token:'p2',approval_token:'a2',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
+        "let _trainingCheckpoint=oldCard, resolves=[];\n"
+        "function renderTrainingCheckpoint(){} function tick(){}\n"
+        "function postJSON(){return new Promise(resolve=>resolves.push(resolve));}\n"
+        + fns + "\n"
+        "(async()=>{const first=submitTrainingAction('like'); await Promise.resolve();\n"
+        "resetTrainingBusyIfCardChanged(oldCard,newCard); _trainingCheckpoint=newCard;\n"
+        "const second=submitTrainingAction('dislike'); await Promise.resolve();\n"
+        "resolves[0]({ok:true}); await first; const afterOld={busy:_trainingActionBusy,key:_trainingBusyKey};\n"
+        "resolves[1]({ok:true}); await second;\n"
+        "console.log(JSON.stringify({afterOld,afterNew:{busy:_trainingActionBusy,key:_trainingBusyKey}}));})();\n"
+    )
+    result = _run_node(script)
+    assert result["afterOld"]["busy"] is True
+    assert result["afterOld"]["key"] == '["new","hinge","p2","a2"]'
+    assert result["afterNew"] == {"busy": False, "key": ""}
+
+
+def test_training_idempotency_tokens_are_discarded_when_the_card_changes():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fns = (_extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
+           + _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"))
+    script = (
+        "const _trainingIdempotency=new Map([['old-action','old-token']]);\n"
+        "const oldCard={run_id:'r',app:'hinge',profile_token:'old',approval_token:'a'};\n"
+        "const sameCard={run_id:'r',app:'hinge',profile_token:'old',approval_token:'a'};\n"
+        "const newCard={run_id:'r',app:'hinge',profile_token:'new',approval_token:'b'};\n"
+        + fns + "\nresetTrainingIdempotencyIfCardChanged(oldCard,sameCard);\n"
+        "const same=_trainingIdempotency.size;\n"
+        "resetTrainingIdempotencyIfCardChanged(oldCard,newCard);\n"
+        "console.log(JSON.stringify({same,changed:_trainingIdempotency.size}));\n"
+    )
+    assert _run_node(script) == {"same": 1, "changed": 0}
+
+
+def test_hub_auto_volume_control_defaults_to_config_cap():
     tag = re.search(r'<input\b[^>]*\bid="unlimited"[^>]*>', _PAGE)
     assert tag, "unlimited control missing"
-    assert re.search(r'\bchecked(?:\s|=|>)', tag.group(0)), (
-        "the shipped config is uncapped, so a normal hub start must not silently add a cap"
+    assert not re.search(r'\bchecked(?:\s|=|>)', tag.group(0)), (
+        "a normal Hub start must delegate to config instead of explicitly clearing its cap"
+    )
+    box = re.search(r'<input\b[^>]*\bid="maxrun"[^>]*>', _PAGE)
+    assert box and re.search(r'\bvalue=""', box.group(0)), (
+        "the normal per-run input must be blank so computeMaxPerRun posts null"
     )
 
 
@@ -3052,17 +2857,17 @@ def test_hub_timed_stop_is_visible_in_both_modes_and_defaults_to_unlimited():
     assert [int(v) for v in re.findall(r'<option\s+value="(\d+)"', tag.group(1))] == [
         0, 900, 1800, 3600, 7200,
     ]
-    # The duration is a run-wide safety limit, including an Observe run waiting for the
+    # The duration is a run-wide safety limit, including a Training run waiting for the
     # operator; unlike the auto-only max-profile control, it must never be mode-gated.
     assert "$('#stopafter').disabled = !!running" in _PAGE
     assert "$('#mode').value === 'auto'" not in tag.group(0)
 
 
-def test_hub_defaults_to_observe_even_when_config_defaults_to_auto():
+def test_hub_defaults_to_training_even_when_config_defaults_to_auto():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     fn = _extract_js_function(_PAGE, "initialHubMode")
-    assert _run_node(fn + "\nconsole.log(JSON.stringify(initialHubMode()));\n") == "observe"
+    assert _run_node(fn + "\nconsole.log(JSON.stringify(initialHubMode()));\n") == "training"
     assert "$('#mode').value = initialHubMode()" in _PAGE
     assert "$('#mode').value = cfg.mode" not in _PAGE
 
@@ -3093,7 +2898,8 @@ def test_hub_start_handler_posts_explicit_unlimited_override():
     }
 
 
-def test_hub_start_posts_a_timed_stop_for_observe_runs_too():
+def test_hub_start_handler_delegates_blank_default_cap_to_config():
+    """A blank Hub cap delegates to the config (uncapped in the shipped config)."""
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     fns = (_extract_js_function(_PAGE, "escHtml") + "\n"
@@ -3101,7 +2907,32 @@ def test_hub_start_posts_a_timed_stop_for_observe_runs_too():
            + _extract_js_function(_PAGE, "stopAfterSeconds") + "\n"
            + _extract_js_function(_PAGE, "startRunFromControls"))
     script = (
-        "const els = {hint:{textContent:''}, mode:{value:'observe'}, unlimited:{checked:true}, "
+        "const els = {hint:{textContent:''}, mode:{value:'auto'}, unlimited:{checked:false}, "
+        "maxrun:{value:''}, stopafter:{value:'0'}, platnote:{innerHTML:''}};\n"
+        "function $(sel){ return els[sel.slice(1)]; }\n"
+        "function chosenApps(){ return ['hinge']; }\n"
+        "let posted = null;\n"
+        "async function postJSON(path, body){ posted={path,body}; return {ok:true,msg:'started'}; }\n"
+        "function tick(){}\n"
+        + fns + "\n"
+        "startRunFromControls().then(() => console.log(JSON.stringify(posted)));\n"
+    )
+    assert _run_node(script) == {
+        "path": "/api/start",
+        "body": {"mode": "auto", "apps": ["hinge"], "max_per_run": None,
+                 "stop_after_seconds": 0},
+    }
+
+
+def test_hub_start_posts_a_timed_stop_for_training_runs_too():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fns = (_extract_js_function(_PAGE, "escHtml") + "\n"
+           + _extract_js_function(_PAGE, "computeMaxPerRun") + "\n"
+           + _extract_js_function(_PAGE, "stopAfterSeconds") + "\n"
+           + _extract_js_function(_PAGE, "startRunFromControls"))
+    script = (
+        "const els = {hint:{textContent:''}, mode:{value:'training'}, unlimited:{checked:true}, "
         "maxrun:{value:'8'}, stopafter:{value:'1800'}, platnote:{innerHTML:''}};\n"
         "function $(sel){ return els[sel.slice(1)]; }\n"
         "function chosenApps(){ return ['hinge']; }\n"
@@ -3113,7 +2944,7 @@ def test_hub_start_posts_a_timed_stop_for_observe_runs_too():
     )
     assert _run_node(script) == {
         "path": "/api/start",
-        "body": {"mode": "observe", "apps": ["hinge"], "max_per_run": None,
+        "body": {"mode": "training", "apps": ["hinge"], "max_per_run": 0,
                  "stop_after_seconds": 1800},
     }
 
@@ -3181,9 +3012,11 @@ def test_bugreport_uses_hub_config_path_not_default():
     try:
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
         # First bug-report generation cold-imports optional ML diagnostics. Keep ordinary Hub
-        # endpoint tests on the 5s default, but do not make this integration assertion depend on
-        # whether those imports fit inside that same interactive-response budget under load.
-        code, md = _get(base, "/api/bugreport", timeout=15)
+        # endpoint tests on the 5s default.  With xdist's full worker fan-out, optional ML
+        # imports can contend for CPU/disk long enough to exceed the normal liveness allowance;
+        # this one integration check therefore allows a documented one-minute cold start while
+        # retaining the endpoint's exact success/content assertions below.
+        code, md = _get(base, "/api/bugreport", timeout=60)
         assert code == 200
         assert "definitely-not-a-real-config.yaml" in md
     finally:
@@ -3310,7 +3143,7 @@ def test_pending_platform_note_uses_and_escapes_server_reason_with_safe_fallback
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     cases = [
-        {"label": "Bumble", "reason": "Both Observe and Auto are not calibrated."},
+        {"label": "Bumble", "reason": "Both Training and Auto are not calibrated."},
         {"label": "Hostile", "reason": '<img src=x onerror="alert(1)">'},
         {"label": "No reason"},
     ]
@@ -3321,7 +3154,7 @@ def test_pending_platform_note_uses_and_escapes_server_reason_with_safe_fallback
     )
     notes = _run_node(script)
 
-    assert "Both Observe and Auto are not calibrated." in notes[0]
+    assert "Both Training and Auto are not calibrated." in notes[0]
     assert "<img" not in notes[1]
     assert "&lt;img" in notes[1] and "&quot;alert(1)&quot;" in notes[1]
     assert "This platform is not available yet." in notes[2]
@@ -3339,13 +3172,13 @@ def test_mode_picker_exposes_escaped_config_reason_through_accessible_hint():
     hostile_reason = '<img src=x onerror="alert(1)"> release gate blocked'
     platform = {
         "app": "hinge",
-        "modes": {"observe": True, "auto": False},
-        "mode_reasons": {"observe": None, "auto": hostile_reason},
+        "modes": {"training": True, "auto": False},
+        "mode_reasons": {"training": None, "auto": hostile_reason},
     }
     script = _picker_script(
         "const cfg={kinds:[{kind:'android',platforms:[" + json.dumps(platform) + "]}]};\n"
         "let sel={kind:'android',app:'hinge'};\n"
-        "const options=[{value:'observe'},{value:'auto'}];\n"
+        "const options=[{value:'training'},{value:'auto'}];\n"
         "let selected='auto';\n"
         "const select={options,selectedIndex:1,title:''};\n"
         "Object.defineProperty(select,'value',{get(){return selected;},set(v){selected=v;this.selectedIndex=options.findIndex(o=>o.value===v);}});\n"
@@ -3359,71 +3192,9 @@ def test_mode_picker_exposes_escaped_config_reason_through_accessible_hint():
     )
     result = _run_node(script)
 
-    assert result["value"] == "observe"
+    assert result["value"] == "training"
     assert result["disabled"] is True and result["hidden"] is True
     assert result["optionTitle"] == hostile_reason
     assert result["selectTitle"].startswith("Auto unavailable:")
     assert "<img" not in result["hint"]
     assert "&lt;img" in result["hint"] and "&quot;alert(1)&quot;" in result["hint"]
-
-
-def test_observe_banner_shows_an_unmeasured_licence_as_context_never_as_a_wait_cue():
-    """Owner decision 2026-08-21: numbering may ship on an UNMEASURED centered-autoplay
-    assumption, and when it does every run must SAY so.
-
-    Numbering looks identical whether a measured held-out bound or the owner's assumption
-    licensed it, so words are the only place the difference can survive to an operator. But it
-    is context about a decision already taken, not something they must stop for -- so it obeys
-    the same rule as the targeting-setup note above: the decision window keeps its 🟢 GO box,
-    its GO colours and its single circle, and the provenance is neutral fine print beneath.
-    """
-    if NODE_BIN is None:
-        pytest.skip("node not available on this machine")
-    from operation_love import targeting_policy as tp
-
-    notice = tp.STILL_PHOTO_ASSUMPTION_OPERATOR_NOTICE
-    waiting = {"running": True, "status": {"apps": {"hinge": {
-        "app": "hinge", "mode": "observe", "state": "waiting",
-        "targeting_licence_notice": notice}}}}
-    html = _run_node(_observe_status_script(waiting))["html"]
-
-    # The decision cue is byte-identical to an ordinary waiting run's.
-    assert "🟢 hinge: make your choice: tap X to pass, or tap a heart to like" in html
-    # The provenance is stated plainly, and leads with what is missing.
-    assert "UNMEASURED assumption (centered autoplay)" in html
-    assert "no video false-accept rate has been measured" in html
-    # GO styling only: no amber WAIT box, no second circle, no "hands off" cue.
-    assert "background:#123a23" in html and "background:#3a2f12" not in html
-    assert "🔴" not in html
-    assert html.count("🟢") == 1
-    # GO cue first, context after -- the inverse of the banner bug reported twice on 2026-08-21.
-    assert html.index("🟢") < html.index("UNMEASURED")
-
-    # An ordinary licensed-by-measurement run publishes no notice, so nothing is rendered:
-    # a confession printed on every run regardless is how operators learn to stop reading.
-    measured = {"running": True, "status": {"apps": {"hinge": {
-        "app": "hinge", "mode": "observe", "state": "waiting"}}}}
-    measured_html = _run_node(_observe_status_script(measured))["html"]
-    assert "UNMEASURED" not in measured_html
-    assert "false-accept" not in measured_html
-
-    # It rides along with the copyable-opener box too -- that box is the one the operator reads
-    # most, and it must not become the one run state where the provenance disappears.
-    with_opener = {"running": True, "status": {"apps": {"hinge": dict(
-        waiting["status"]["apps"]["hinge"], state="waiting_for_send",
-        opener_suggestion="That ridgeline looks like the Lofoten traverse")}}}
-    opener_html = _run_node(_observe_status_script(with_opener))["html"]
-    assert "That ridgeline looks like the Lofoten traverse" in opener_html
-    assert "no video false-accept rate has been measured" in opener_html
-    # And it must not be welded onto the opener line itself (owner rule: the string shown for
-    # typing is byte-identical to what auto would type, so hub chrome never shares its row).
-    # The provenance follows the whole opener box, in its own neutral row.
-    assert opener_html.index("Lofoten traverse") < opener_html.index("false-accept")
-    assert "color:#9a9aa2" in opener_html.split("Lofoten traverse")[1]
-
-    # Same escaping rule as every other dynamic value that reaches innerHTML.
-    hostile = {"running": True, "status": {"apps": {"hinge": dict(
-        waiting["status"]["apps"]["hinge"],
-        targeting_licence_notice='<img src=x onerror="alert(1)">')}}}
-    hostile_html = _run_node(_observe_status_script(hostile))["html"]
-    assert "<img" not in hostile_html and "&lt;img" in hostile_html

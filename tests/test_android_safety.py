@@ -427,7 +427,7 @@ def test_require_vision_raises_when_a_declared_template_cannot_load():
         drv._require_vision()
 
 
-def test_require_vision_raises_from_open_session_when_a_template_cannot_load():
+def test_require_vision_raises_from_open_session_when_a_template_cannot_load(monkeypatch):
     # open_session() must call _require_vision() and let it stop the session BEFORE any ADB
     # connection is attempted -- refusing the run before it can act blind, not merely having
     # the helper available and unused. app="hinge" is registered and available in the
@@ -441,8 +441,17 @@ def test_require_vision_raises_from_open_session_when_a_template_cannot_load():
                           templates={"like": "does_not_exist_glyph.png"})
 
     class C:
+        mode = "training"
         apps = {}
     drv = AndroidDriver(C(), spec)
+    # Direct driver construction defaults to the retired passive-observer path.  This test
+    # exercises the live Training lifecycle, which is device-driven even before the Hub has a
+    # checkpoint; None deliberately means no ranker AutoSessionPolicy is installed.
+    drv.set_auto_session_policy(None)
+    # Targeting calibration/readiness is independently tested at the platform boundary.  This
+    # test isolates the next gate: a shipped vision template must load before AndroidDriver
+    # creates an ADB transport.
+    monkeypatch.setattr("operation_love.platforms.unavailable_reason", lambda *_a, **_k: None)
     with pytest.raises(DriverClosed, match="does_not_exist_glyph.png"):
         drv.open_session()
     assert drv._adb is None        # never got as far as constructing a real ADB connection
@@ -690,8 +699,9 @@ def test_no_driver_gesture_reaches_the_transport_ungarded():
 
 # =====================================================================================
 # Gesture timing ledger wiring (2026-08-23, one level down from the read loop's own ledger):
-# `_scroll`/`_swipe` thread an optional `_timing` stamps dict through to the two REAL transport
-# classes (UhidTouch, Adb) -- see AndroidDriver._touch_supports_timing's own docstring for why
+# `_scroll`/`_swipe` thread an optional `_timing` stamps dict through to the real transport
+# classes (UhidTouch, PersistentUhidTouch, Adb) -- see AndroidDriver._touch_supports_timing's
+# own docstring for why
 # a duck-typed test double (like FakeAdb above) never receives it.
 # =====================================================================================
 
@@ -714,14 +724,20 @@ class _UhidFakeAdb:
         return "yes" if "system/bin/hid" in cmd else ""
 
 
-def test_touch_supports_timing_is_true_for_the_two_real_transports_only():
+def test_touch_supports_timing_is_true_for_the_real_transports_only():
     from operation_love.drivers.adb import Adb
-    from operation_love.drivers.uhid import UhidTouch
+    from operation_love.drivers.uhid import PersistentUhidTouch, UhidTouch
 
     drv = _drv(HINGE_SPEC, FakeAdb())
     assert drv._touch_supports_timing() is False        # this file's own duck-typed double
 
     drv._touch = UhidTouch(_UhidFakeAdb())
+    assert drv._touch_supports_timing() is True
+
+    # Persistent UHID exposes the same `_timing` keyword as its per-gesture sibling.  If this
+    # concrete production transport is omitted, every one of its measured transport costs is
+    # incorrectly classified as the driver's unattributed wall time.
+    drv._touch = PersistentUhidTouch(_UhidFakeAdb())
     assert drv._touch_supports_timing() is True
 
     drv._touch = Adb(serial="pixel")

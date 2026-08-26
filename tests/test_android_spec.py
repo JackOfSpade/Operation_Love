@@ -337,11 +337,12 @@ def test_hinge_spec_carries_the_paywall_template_and_headline_band():
     assert HINGE_SPEC.paywall_headline_band == (0.0556, 0.1958, 0.9537, 0.3000)
 
 
-def test_bumble_spec_keeps_both_modes_unlicensed():
+def test_bumble_spec_keeps_training_and_auto_unlicensed():
     assert BUMBLE_SPEC.app == "bumble"
     assert BUMBLE_SPEC.package == "com.bumble.app"
-    assert BUMBLE_SPEC.observe_calibrated is False
-    assert BUMBLE_SPEC.observe_ready is False
+    # ``calibrated`` is the spec-level source of truth from which the platform derives both
+    # Training and Auto readiness; there is no public Observe readiness contract any more.
+    assert BUMBLE_SPEC.calibrated is False
     assert BUMBLE_SPEC.calibrated is False
     assert BUMBLE_SPEC.like_flow == "direct"
     assert BUMBLE_SPEC.accepts_opener is False       # match-first-then-message: no swipe-time opener
@@ -365,11 +366,11 @@ def test_bumble_android_driver_binds_bumble_spec():
     assert drv.think_time_calibrated is False
 
 
-def test_bumble_mode_registration_derives_both_modes_and_fails_closed():
+def test_bumble_mode_registration_derives_training_and_auto_and_fails_closed():
     from operation_love import platforms
     assert platforms.unavailable_reason("hinge") is None
     assert platforms.get("bumble").available is False
-    for mode in ("observe", "auto"):
+    for mode in ("training", "auto"):
         reason = platforms.unavailable_reason("bumble", mode)
         assert reason and "not calibrated" in reason
 

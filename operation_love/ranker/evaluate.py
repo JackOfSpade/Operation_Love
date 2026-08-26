@@ -11,6 +11,8 @@ as-is over HTTP; `format_report()` renders it for the terminal.
 """
 from __future__ import annotations
 
+import math
+
 from .model import SKLEARN_LOGREG_KWARGS, new_classifier   # shared ranker hyperparameters (no drift)
 
 _FACE_DIMS = 512   # first 512 of the 1280-d vector = L2-normed ArcFace identity template
@@ -130,8 +132,21 @@ def quality_trajectory(samples, step: int = 5, n_splits: int = 5, eps: float = _
         rows = list(samples) if samples else []
     except Exception:  # noqa: BLE001
         return []
+    # This is a best-effort reporting API used by the hub. Its documented no-throw
+    # contract includes malformed report controls, not only malformed stored rows.
+    # Validate those controls before arithmetic below (``int(math.nan)`` and a
+    # string ``max_points`` previously escaped the per-prefix exception guard).
+    try:
+        step = max(1, int(step))
+        n_splits = max(2, int(n_splits))
+        min_labels = max(1, int(min_labels))
+        max_points = int(max_points)
+        eps = float(eps)
+    except (TypeError, ValueError, OverflowError):
+        return []
+    if not math.isfinite(eps):
+        return []
     n = len(rows)
-    step = max(1, int(step))
     if max_points and max_points > 0:
         step = max(step, -(-n // max_points))        # ceil(n/max_points): coarsen so points <= ~max_points
     sizes = list(range(step, n + 1, step))

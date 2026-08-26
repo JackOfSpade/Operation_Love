@@ -21,6 +21,7 @@ from operation_love.opener.opener import (
     GeminiOpener,
     ItemRequest,
     OpenerAborted,
+    OpenerDeadlineExceeded,
     OpenerError,
     OpenerParseError,
     _CONTEXT_LABEL,
@@ -324,8 +325,11 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert "opener does not have to carry it" in referenced_description
     assert "including any header, caption, or prompt printed with a photo" in referenced_description
     assert "how it frames the photo" in referenced_description
+    assert "never infer friend, partner, or family from proximity" in referenced_description
     assert "may name only the visible detail needed as setup" in referenced_description
     assert "final conversational point must add something beyond" in referenced_description
+    item_description = schema["properties"]["item_description"]["description"].lower()
+    assert "never infer friend, partner, or family from proximity" in item_description
     assert "may name a visible detail as setup" in opener_description
     assert "final point must do something conversational beyond describing" in opener_description
     # With minimal thinking, angle is the only place to plan the relationship between beats
@@ -1884,11 +1888,11 @@ def test_should_stop_aborts_the_cascade_before_the_next_models_request():
     seen = {"n": 0}
 
     def should_stop():
-        # False on the check before gemini-first's request (it must still be issued -- the
-        # "one in-flight request" worst case), True from then on (simulating a Stop click
-        # that landed while gemini-first's request was already on the wire).
+        # False before image preparation and immediately before gemini-first's request (it
+        # must still be issued -- the "one in-flight request" worst case), True from then on
+        # (simulating a Stop click that landed while gemini-first was on the wire).
         seen["n"] += 1
-        return seen["n"] > 1
+        return seen["n"] > 2
 
     with pytest.raises(OpenerAborted) as exc_info:
         opener.generate(Profile(), style="s", should_stop=should_stop)
@@ -1926,6 +1930,24 @@ def test_should_stop_true_from_start_aborts_before_expensive_image_encoding(monk
     assert encoded == []
 
 
+def test_should_stop_that_lands_during_image_preparation_issues_no_request(monkeypatch):
+    transport = _Transport([(200, _success())])
+    opener = _opener(transport)
+    stopped = {"value": False}
+
+    def image_parts(_images):
+        stopped["value"] = True
+        return []
+
+    monkeypatch.setattr(opener, "_image_parts", image_parts)
+
+    with pytest.raises(OpenerAborted, match="gemini-primary"):
+        opener.generate(Profile(photos=[b"large-image"]), style="s",
+                        should_stop=lambda: stopped["value"])
+
+    assert transport.calls == []
+
+
 def test_should_stop_is_checked_for_every_model_including_an_already_retired_one():
     """HOLE 2 (mutation audit): both the class docstring (THREAD SAFETY paragraph) and
     generate()'s own should_stop docstring promise the should_stop() check runs at the TOP
@@ -1942,12 +1964,12 @@ def test_should_stop_is_checked_for_every_model_including_an_already_retired_one
     for a model that is about to be skipped for being already-retired: the documented order
     calls it on every iteration (dead model included), while the swapped order would only
     reach the should_stop() line for a model that survives the retirement check, i.e. never
-    for gemini-dead. So should_stop here is False on its first call (gemini-dead's own
-    check) and True from its second call onward (gemini-live's check) -- under the
-    documented (and actual) order this raises OpenerAborted with ZERO transport calls, but
-    under the swapped order gemini-dead's iteration would never call should_stop() at all,
-    so gemini-live's iteration would be should_stop's FIRST call (still False), and the
-    cascade would go on to issue a real, billed request to gemini-live instead of aborting.
+    for gemini-dead. The independent pre-image check is call one; should_stop is then False
+    for gemini-dead's own check and True for gemini-live's check. Under the documented (and
+    actual) order this raises OpenerAborted with ZERO transport calls, but under the swapped
+    order gemini-dead's iteration would never call should_stop() at all, so gemini-live's
+    iteration would be only the second call (still False), and the cascade would issue a real,
+    billed request to gemini-live instead of aborting.
     """
     transport = _Transport([(200, _success())])
     opener = _opener(transport, models=("gemini-dead", "gemini-live"))
@@ -1957,13 +1979,106 @@ def test_should_stop_is_checked_for_every_model_including_an_already_retired_one
 
     def should_stop():
         seen["n"] += 1
-        return seen["n"] >= 2   # False for gemini-dead's own check, True from then on
+        # The pre-image check is first; then dead and live model checks. The dead model must
+        # still be checked before its retirement skip, while live is the one that sees Stop.
+        return seen["n"] >= 3
 
     with pytest.raises(OpenerAborted) as exc_info:
         opener.generate(Profile(), style="s", should_stop=should_stop)
 
     assert len(transport.calls) == 0
     assert "gemini-live" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------------------
+# advisory deadline -- Observe suggestions are optional but time-sensitive. The absolute
+# deadline belongs to the whole Gemini fallback cascade, rather than merely the service retry
+# loop around it, so a pair of slow/503 models cannot make the person wait through model three.
+# ---------------------------------------------------------------------------------------
+
+def test_advisory_deadline_stops_a_503_cascade_before_model_three(monkeypatch):
+    clock = {"now": 100.0}
+
+    class BusyTransport:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, url, payload, headers, timeout, *, method="POST"):
+            self.calls.append((url, timeout))
+            # Each failed request consumes exactly half the ten-second advisory budget.
+            clock["now"] += 5.0
+            return 503, {"error": {"code": 503, "status": "UNAVAILABLE", "message": "busy"}}
+
+    transport = BusyTransport()
+    opener = _opener(transport, models=("gemini-first", "gemini-second", "gemini-third"),
+                     request_timeout_s=90)
+    monkeypatch.setattr(opener_module.time, "monotonic", lambda: clock["now"])
+
+    with pytest.raises(OpenerDeadlineExceeded, match="deadline") as exc_info:
+        opener.generate(Profile(), style="s", deadline=110.0)
+
+    assert _model_calls(transport) == ["gemini-first", "gemini-second"]
+    assert [timeout for _url, timeout in transport.calls] == [10.0, 5.0]
+    assert exc_info.value.usage is None and exc_info.value.model is None
+
+
+def test_advisory_deadline_caps_the_first_provider_request_timeout(monkeypatch):
+    clock = {"now": 50.0}
+    transport = _Transport([(200, _success())])
+    opener = _opener(transport, request_timeout_s=90)
+    monkeypatch.setattr(opener_module.time, "monotonic", lambda: clock["now"])
+
+    opener.generate(Profile(), style="s", deadline=57.25)
+
+    assert transport.calls[0][3] == 7.25
+
+
+def test_advisory_deadline_rejects_a_late_successful_provider_response(monkeypatch):
+    clock = {"now": 20.0}
+
+    class LateSuccessTransport:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, url, payload, headers, timeout, *, method="POST"):
+            self.calls.append((url, timeout))
+            clock["now"] = 25.01
+            return 200, _success()
+
+    transport = LateSuccessTransport()
+    opener = _opener(transport, request_timeout_s=90)
+    monkeypatch.setattr(opener_module.time, "monotonic", lambda: clock["now"])
+
+    with pytest.raises(OpenerDeadlineExceeded, match="deadline") as exc_info:
+        opener.generate(Profile(), style="s", deadline=25.0)
+
+    assert len(transport.calls) == 1
+    assert transport.calls[0][1] == 5.0
+    assert exc_info.value.model == "gemini-primary"
+    assert exc_info.value.usage is not None
+    assert exc_info.value.usage.input_tokens == 8  # raw prompt 11 minus 3 cached input tokens
+
+
+def test_advisory_deadline_rejects_a_late_transport_error_before_cascading(monkeypatch):
+    clock = {"now": 10.0}
+
+    class LateTransportError:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, url, payload, headers, timeout, *, method="POST"):
+            self.calls.append((url, timeout))
+            clock["now"] = 15.01
+            raise OSError("timed out")
+
+    transport = LateTransportError()
+    opener = _opener(transport, models=("gemini-first", "gemini-second"), request_timeout_s=90)
+    monkeypatch.setattr(opener_module.time, "monotonic", lambda: clock["now"])
+
+    with pytest.raises(OpenerDeadlineExceeded, match="deadline"):
+        opener.generate(Profile(), style="s", deadline=15.0)
+
+    assert _model_calls(transport) == ["gemini-first"]
 
 
 # ---------------------------------------------------------------------------------------

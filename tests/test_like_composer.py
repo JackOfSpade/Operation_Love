@@ -75,6 +75,25 @@ def _keyboard_open_composer(*, color=False) -> bytes:
     return _png(canvas, color=color)
 
 
+def _scrolled_priority_like_composer() -> bytes:
+    """The fully visible post-review layout from the reported live error frame.
+
+    A human inspected the selected item during AUTO review and returned to the
+    still-open Send Priority Like sheet.  The sheet's CTA was completely
+    visible, but at these measured coordinates rather than the keyboard-open
+    geometry.  This contains only control geometry and the shipped CTA glyph.
+    """
+    comment = Rect(95, 1616, 985, 1794)
+    send = Rect(390, 1826, 985, 1935)
+    confirm = (690, 1882)
+    canvas = np.full((_H, _W), _BG, dtype=np.uint8)
+    canvas[comment.y0:comment.y0 + 2, comment.x0:comment.x1] = 222
+    canvas[comment.y1 - 2:comment.y1, comment.x0:comment.x1] = 222
+    canvas[send.y0:send.y1, send.x0:send.x1] = 228
+    _paint_glyph(canvas, center=confirm)
+    return _png(canvas, color=False)
+
+
 def _keyboard_open_composer_with_selected_photo_edge() -> bytes:
     """Synthetic keyboard layout with a wide selected-photo edge above the input.
 
@@ -269,3 +288,13 @@ def test_keyboard_open_composer_ignores_a_selected_photo_edge_above_its_input():
 
     assert surface.comment_rect == _KEYBOARD_COMMENT
     assert surface.send_rect == _KEYBOARD_SEND
+
+
+def test_fully_visible_priority_like_after_human_review_returns_its_shifted_geometry():
+    """Scroll review must not leave callers with the pre-review Send coordinates."""
+    surface = locate_inline_composer(_scrolled_priority_like_composer(), _TEMPLATE)
+
+    assert surface.comment_rect == Rect(95, 1616, 985, 1794)
+    assert surface.send_rect == Rect(390, 1826, 985, 1935)
+    assert surface.confirm_point == (690, 1882)
+    assert surface.send_rect.contains(*surface.confirm_point)

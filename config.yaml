@@ -9,10 +9,10 @@
 #   bumble     — app-based, uncalibrated; both modes fail closed
 enabled_apps: [hinge]
 
-# observe = YOU swipe manually on real profiles; the bot learns your taste live
-#           (no autonomous swiping). Start here to seed the ranker.
-# auto    = the bot swipes for you using the model it learned.
-mode: observe               # observe | auto  (override per app under apps.<app>.mode)
+# training = the Hub makes every Like/Dislike decision after the bot has prepared a
+#            targeted typed opener. Each verified choice is stored as a training label.
+# auto     = the bot swipes for you using the model it learned.
+mode: auto                  # training (Hub-only) | auto
 
 # Per-app options.
 apps:
@@ -42,12 +42,14 @@ apps:
     # events); the run fails loudly if it is unavailable rather than quietly downgrading.
     # adb = deliberately accept the degraded input transport (humanized paths, but constant
     # pressure). There is no silent fallback: choosing the weaker signature is an explicit act.
+    # Use per-gesture `uhid`, the slower transport with a fully round-trip-confirmed virtual
+    # touchscreen lifecycle for every gesture.
+    #
     # uhid_persistent = the SAME genuine UHID touches as uhid, delivered through ONE
     # virtual device held open for the whole session (operation_love/drivers/uhid.py's
     # PersistentUhidTouch) instead of re-registered per gesture — measured live on the
-    # Pixel 7a at 50s for a 9-gesture read vs ~102s on the per-gesture transport. OWNER
-    # CHOSE THIS AS THE DEFAULT 2026-08-24, after that live comparison, accepting the one
-    # known residual gap below with eyes open.
+    # Pixel 7a at 50s for a 9-gesture read vs ~102s on the per-gesture transport. It remains
+    # a candidate for later supervised review, with the known residual gap below.
     #
     # LIVE-VERIFY: what WAS validated live: the persistent `adb shell -tt
     # "hid /proc/self/fd/0"` mechanism survives across multiple gestures with no
@@ -61,15 +63,15 @@ apps:
     # blocking round-trip confirmation the per-gesture `uhid` transport gets for free — see
     # PersistentUhidTouch's own docstring for the full reasoning and the adversarial review
     # that found this. Watch real unattended runs for a gesture that silently doesn't land;
-    # `touch_backend: uhid` reverts to the fully-proven per-gesture transport instantly.
-    touch_backend: uhid_persistent
-    # 2026-08-10: raised 8 -> 12 after a bug report traced a false observe-mode PASS partly to
+    # `touch_backend: uhid` is the fully-proven per-gesture transport used by AUTO.
+    touch_backend: uhid
+    # 2026-08-10: raised 8 -> 12 after a bug report traced a false legacy-observation PASS partly to
     # this ceiling — 2 of the last 3 profiles in that run hit exactly 8 captures (the old
     # value), meaning the automated read hadn't reached the true bottom before the owner
     # started reading manually, so nothing captured could match what they scrolled into (see
     # wait_for_decision's _vertical_shift_match, which can only recognize a scroll into
     # territory the bot already captured). LIVE-VERIFY: unverified on-device at 12 — watch the
-    # first few observe runs for materially longer per-profile capture time before trusting it
+    # first few Training runs for materially longer per-profile capture time before trusting it
     # unattended, same as any other geometry/behavior value in this file.
     scroll_captures: 12     # max screencaps while reading one profile
     # How many cards the still-photo dwell proves per capture. The read itself only ever leaves
@@ -77,8 +79,11 @@ apps:
     # a video near screen centre and nowhere else), so before 2026-08-23 at most one item on a
     # profile could ever be numbered no matter how many the model was shown -- measured live at
     # 15 cards indexed, 0 numbered (ops/STILL-PHOTO-DISCRIMINATOR.md 5d). Above 1, the dwell
-    # walks that many MINUS one extra navigation hops per capture, nearest the read's end first,
-    # proving each parked card and returning to the entry before the next hop.
+    # spends the remaining budget on extra navigation hops per capture, nearest the read's end
+    # first, proving each parked card and returning to the entry before the next hop. A cheap
+    # crop/type pre-pass removes written, unknown, and already-excluded video cards from that
+    # pool before any proof gesture or dwell is spent; every retained photo still has to pass the
+    # complete still-media proof, so this saves time without weakening acceptance.
     #
     # THIS COSTS REAL GESTURES AND REAL DEVICE TIME, AND THE COST IS NOT LINEAR IN K. The walk
     # cannot chain -- navigate_to_item is ascending-only and always anchors on the read's last
@@ -104,7 +109,9 @@ apps:
     # header after every stroke and falls back to its bounded retry loop if this does not land.
     rewind_scroll_frac: 0.78
     change_threshold: 9.0   # mean grayscale delta (0..255, 24x24) to call a frame region "changed"
-    debug_log: true         # host debug log: data/hinge_debug/<run>/ = actions.jsonl + before/after screenshots
+    # Host debug log: data/hinge_debug/<run>/ = actions.jsonl + screenshots. AUTO retains an
+    # `auto_opener_pre_send` frame after typing the opener on its selected item and before Send.
+    debug_log: true
     debug_dir: ./data/hinge_debug
     halt_on_error: true     # auto mode STOPS on any unexpected error (no restart) so debug logs are preserved
     # Action points as FRACTIONS of the screen (x, y in 0..1). Calibrated live on the Pixel 7a
@@ -116,7 +123,7 @@ apps:
     coords:
       like_heart: [0.868, 0.667]  # FALLBACK only — heart is vision-located on the first photo
       pass_x: [0.116, 0.848]      # FALLBACK only — X is vision-located (floating, bottom-left)
-    # --- observe-mode decision detection (2026-08-10 redesign) ---------------------------
+    # --- legacy passive-observer/internal-calibration decision detection -------------------
     # The OLD rule ("top region changed and no captured frame matches -> PASS") recorded a
     # PASS off of nothing but a manual scroll -- reported twice by the owner. These five keys
     # are what replace it: an identity anchor (layer 1, authoritative), a tighter content-only
@@ -161,7 +168,7 @@ apps:
     # unprivileged readers on this build. Not recoverable in code; see HINGE_SPEC's comment.
     # With this extra layer unavailable, a pixel-only identity change is never enough for PASS:
     # the different card-header name must reproduce cleanly on both settled frames, otherwise
-    # Observe resyncs without a label. Flip to true only on a device where
+    # the legacy observer resyncs without a label. Flip to true only on a device where
     # `python -m tools.touch_selftest` actually prints TAP/DRAG lines while you touch.
     observe_touch_watch: false
     # OCR (via the host's `tesseract` binary, if installed) of the identity/card-header bands.
@@ -194,8 +201,8 @@ apps:
     # direction: the cap encodes the tightest distance ever observed, not the loosest tonight.
     #
     # This is an AUTOMATED CIRCULAR-RISK candidate: AI-reviewed, `human_ground_truth: false`.
-    # It licenses numbered targeted suggestions in OBSERVE. It does NOT release AUTO, which
-    # still needs its own production-OBSERVE release chain (see the note further below).
+    # It licenses numbered targeted suggestions in Training. It does NOT release AUTO, which
+    # still needs its own historical release artifact (see the note further below).
     targeting_calibration:
       schema_version: 3
       device: "33111JEHN04475"
@@ -221,36 +228,24 @@ apps:
         detectable by the byte-exactness test. Accepted residual: a video that is not playing at
         all while observed, meaning stalled, buffering, unloaded, or an ended non-looping clip.
         The re-attach probe gives such a card a second trigger before anything is called a photo.
-    # AUTO RELEASE GATES INTENTIONALLY ABSENT (2026-08-21).
-    #
-    # The 10.0.1 numeric calibration remains archived as historical evidence, but it cannot
-    # license `hinge_photos_only_v2`: photographic pixels, low drift, and a clean mute-control
-    # screen do not positively exclude a paused/static video. That mapping was measured under
-    # the retired `hinge_photos_only_v1`, which numbered on those rejectors alone; v2 also
-    # requires a byte-exact un-interacted dwell and a still-photo licence, installed from either
-    # `apps.hinge.still_photo_bound_evidence` or the acceptance block above
-    # (ops/STILL-PHOTO-DISCRIMINATOR.md sections 5 and 5b). Config validation structurally
-    # rejects reinstalling the v1 mapping; a fresh campaign under v2 is the only route back.
-    #
-    # WHAT IS ACTUALLY MISSING TODAY (2026-08-22): only `targeting_calibration`. The acceptance
-    # block above licenses still-photo numbering, so nothing upstream blocks a calibration
-    # campaign — capture, measure, and paste the emitted block (ops/RUNBOOK.md section 2) and
-    # targeted suggestions return. OBSERVE stays usable meanwhile; it reads profiles and records
-    # the owner's deck decisions but offers no numbered targeted suggestion.
-    #
-    # The previous `ai_reviewed_observe_release_evidence` block bound the 9.134.0 calibration
-    # (calibration_sha256 8df4ac29…, production run 312b80bf4b50). The archived 10.0.1 numeric
-    # calibration replaced it, so that artifact no longer validates the perception it was
-    # meant to release, and config.validate() would reject it the moment Hinge ran in AUTO.
-    # It is removed rather than edited: a release gate is earned by a production OBSERVE run on
-    # the build it releases, never by retargeting an older run's hashes at a newer calibration.
-    #
-    # Before AUTO can run again: produce a new targeting calibration, then a production OBSERVE
-    # release artifact on that exact calibration — see ops/RUNBOOK.md. The still-photo licence
-    # above satisfies AUTO's targeting-policy precondition but can never license AUTO itself;
-    # the release gate is separate and unchanged. Changing mode or pasting either stale mapping
-    # fails closed.
-
+    # MANUAL AUTO RELEASE INSTALLED (2026-08-25): this exact legacy production artifact binds
+    # the current 10.0.1 calibration to run d8547ff144b4. The still-photo assumption remains
+    # explicitly UNMEASURED and cannot by itself authorize AUTO; this separate artifact does.
+    # Normal AUTO uses the learned ranker and per-gesture UHID above.
+    # Recalibration, app/device changes, or a changed artifact fail closed and require fresh
+    # release evidence.
+    observe_release_evidence:
+      schema_version: 1
+      calibration_calibrated_at: "2026-08-22T23:50:45.216285+00:00 — measured from session(s): targeting_20260822T_calA, targeting_20260822T_heldB"
+      calibration_sha256: d6a2a3b4ccb8464f101ae074c247b5bec709462fe87bda41e237453d85dee2ac
+      device: "33111JEHN04475"
+      hinge_version_name: "10.0.1"
+      frame_size_px: [1080, 2400]
+      production_run_reference: data/hinge_debug/d8547ff144b4
+      production_run_id: d8547ff144b4
+      verification_file: ops/release/d8547ff144b4/manual-release/hinge_observe_release.json
+      verification_sha256: 95e4f6f7b079e7fbcecca86ceeb480eca129ddaac4ec174d9bc013b3d6255d8c
+      verified_at: "2026-08-25T05:57:05.701897+00:00"
 paths:
   data_dir: ./data
   db_file: ./data/operation_love.db        # used only when storage.backend = sqlite
@@ -264,7 +259,7 @@ storage:
     location: US
     photo_bucket: operation-love-2026-profile-photos
     # Buffer N rows before streaming to BigQuery (low = less seed data lost on a crash/kill).
-    # 1, not 5: an observe session produces 3-20 labels in total, so batching buys nothing
+    # 1, not 5: a Training session produces 3-20 labels in total, so batching buys nothing
     # measurable, while at 5 a whole session's labels can sit in process memory until the
     # shutdown flush. Measured on the run of 2026-08-10: 3 labels, none of them written until
     # the run ended. The photos DO go to GCS immediately inside record_profile, so a hub
@@ -282,7 +277,7 @@ storage:
 ranker:
   like_threshold: 0.5          # P(like) above which we like
   min_labels_to_engage: 40     # ranker stays "not ready" until this many labels (needs both like+pass)
-  retrain_every: 1             # observe mode: retrain live after each new label
+  retrain_every: 1             # training mode: retrain live after each new label
   min_per_class: 5             # each class (like/pass) needs at least this many examples to train
 
 quality_filter:
@@ -332,8 +327,8 @@ opener:
   # is a catalog, not an entitlement -- so do not re-add any 2.5 id on the strength of it
   # being listed.
   #
-  # gemini-3.7-flash LEADS THE CASCADE, and is the ONE entry here admitted on inference rather
-  # than on a 200. That exception is deliberate and bounded; read this before "fixing" it.
+  # gemini-3.7-flash remains in the cascade, but no longer leads it. It is the ONE entry here
+  # admitted on inference rather than on a 200; read this before removing it entirely.
   # Measured 2026-08-13: version 3.7-flash-08-2026, generateContent + image + thinking:true,
   # and a free-tier quota of exactly 20 RPD (the 429 body carries quotaValue: 20 under
   # GenerateRequestsPerDayPerProjectPerModel-FreeTier) -- the same daily capacity as the other
@@ -348,7 +343,7 @@ opener:
   # experiencing high demand" -- launch-week load on a model published 08-2026 -- across ~20
   # attempts, until the 20 RPD was spent. Not one 200 was obtained on 2026-08-13.
   #
-  # Why shipping it anyway is the right call NOW, when it would have been wrong that morning:
+  # Why retaining it as a fallback is still safe, when shipping it would have been wrong that morning:
   # generate() used to RAISE every 400, so a wrong thinkingConfig aborted the whole opener call
   # and tripped OpenerService's 3-strike bad-request latch -- an unverified entry could kill a
   # run. That is fixed: a 400 naming the thinking config is now treated like a 404, retiring
@@ -361,10 +356,11 @@ opener:
   #   * 503 high demand      -> cascades WITHOUT retiring: one wasted request per PROFILE,
   #     but 503s still count against the 20 RPD, so it self-retires within a run rather than
   #     taxing it indefinitely.
-  # In every case the profile still gets its opener from gemini-3.6-flash on the next line;
-  # nothing is lost but one request. The upside is using the best available model whenever it
-  # is healthy. If it turns out to be persistently 503, move it below gemini-3.6-flash rather
-  # than removing it.
+  # 2026-08-24 LIVE RESULT: it returned 503 on both profiles, eleven days after the ~20/20 503
+  # probe above. That satisfies the persistent-failure condition this note originally named.
+  # The verified gemini-3.6-flash now leads, avoiding one failed request and ~8-16s of latency on
+  # every ordinary profile; 3.7 remains immediately behind it as a bounded fallback if 3.6 is
+  # unavailable, rather than being removed on availability evidence alone.
   #
   # To confirm it (quota resets midnight Pacific):
   #   python tools/gemini_model_probe.py --models gemini-3.7-flash --include-configured --yes
@@ -404,7 +400,7 @@ opener:
   # of their tier so a pinned, verified id is always preferred over a moving pointer.
   # gemini-omni-flash-preview is the one reachable id deliberately EXCLUDED: it is a
   # conversational VIDEO generation model, a different modality, not a text+image opener model.
-  models: [gemini-3.7-flash, gemini-3.6-flash, gemini-3.5-flash, gemini-3-flash-preview,
+  models: [gemini-3.6-flash, gemini-3.7-flash, gemini-3.5-flash, gemini-3-flash-preview,
            gemini-3.1-pro-preview, gemini-3.1-pro-preview-customtools, gemini-pro-latest,
            gemini-flash-latest,
            gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.1-flash-lite-preview,
@@ -539,11 +535,11 @@ opener:
   # opener.max_attempts' own ceiling above by letting a single stalled call hang a profile
   # indefinitely. 180s is 2x this measured 90s worst case.
   request_timeout_s: 90
-  # The advisory (observe mode) retry budget: the SAME budget as max_attempts above, only
-  # shortened. In observe mode the opener is a SUGGESTION shown to a human who then types it,
+  # The advisory (training mode) retry budget: the SAME budget as max_attempts above, only
+  # shortened. In training mode the opener is shown to a human for Like/Dislike review,
   # so the two things that force auto to spend its full budget do not apply: nothing
-  # irreversible depends on the answer (observe can show "no suggestion" and the human writes
-  # their own sentence, whereas auto normally requires an opener), and a person is
+  # irreversible depends on the answer (training only publishes a complete typed opener,
+  # whereas auto normally requires an opener), and a person is
   # standing at the phone while the retries run, so every extra attempt is dead time in front
   # of them rather than background work. 3 is the point where a genuinely unlucky draw still
   # gets a second and third chance, without turning one profile whose photos a provider safety
@@ -771,7 +767,8 @@ opener:
     conversational move. If removing a descriptive clause leaves the later point or question
     unchanged, cut it. QUESTION COHERENCE: ask one coherent thing at a time. An 'or' is allowed
     only for parallel, genuinely contrasting answers to that same underlying question, never to
-    join unrelated dimensions.
+    join unrelated dimensions. CASUAL OR PUNCTUATION: never put a comma immediately before 'or',
+    even where formal grammar would allow one. Write it the way a person would text casually.
 
     REFERENT CLARITY: every pronoun, shorthand noun, and question subject must have one
     immediately obvious referent. Across two beats, keep the same referent unless the transition
@@ -870,15 +867,7 @@ budget:
 pacing:
   swipe_delay_s: 3.5      # typical pause between swipes (sometimes shorter/longer, organic tail)
 
-# --- Auto-mode volume (deliberately uncapped) ---
-# A fixed numeric ceiling (e.g. "30 swipes, then stop") is itself a bot signature: run
-# after run hitting the identical wall shows up as a hard step function under
-# distribution analysis, which no human session boundary produces. Volume is instead
-# governed by the ranker's own decisions, and is deliberately not replaced by another
-# fixed stopping rule. Pacing and session micro-breaks shape the
-# timing; a run continues until the profile queue runs out, a real error/deferral occurs,
-# or it's stopped manually. Per-app overrides remain available
-# under apps.<app>.limits (RateLimiter treats every field as optional; None = no cap)
-# for cases where a temporary cap is genuinely wanted (e.g. a supervised test run),
-# but none are set by default.
+# --- Ordinary auto-mode volume -----------------------------------------------------------
+# Uncapped by default: AUTO continues until Stop, deck exhaustion, or a safety halt. Optional
+# max_per_run / max_per_day / max_likes_per_run / target_like_ratio controls remain available.
 limits: {}

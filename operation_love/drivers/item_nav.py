@@ -251,9 +251,9 @@ exactly it (tests/test_item_nav.py does):
     driver._template("like")     the calibrated glyph, one home, never a default here
     driver._screencap()          the blank-frame-guarded capture, never adb.screencap()
     driver._scroll_up_one(frac, x_frac)      the counting walk's gesture, both arguments always
-    driver._scroll_down_one(frac, x_frac)    ONE bounded call, ONLY to leave a scroll-top entry
-                                             (2026-08-22, see THE FIFTH THING below); both
-                                             arguments always, never a second call
+    driver._scroll_down_one(frac, x_frac)    one bounded call per explicit entry recovery: leave a
+                                             scroll-top entry or seat a lower-edge-unresolved target
+                                             BEFORE counting; both arguments always, never a retry
     driver._sample_read_step(depth, hint)    the behaviour policy's dwell and LANE
 
 `_scroll_to_top` and `_capture_scrolls` are NO LONGER USED — that is the rewind, and its removal
@@ -445,6 +445,9 @@ NAV_ANCHOR_UNMEASURED = "entry_anchor_unmeasured"      # the screen could not be
 NAV_ENTRY_STEP_UNMEASURED = "entry_step_unmeasured"    # the ONE scroll-top recovery step's own
                                                        # displacement could not be measured
                                                        # (2026-08-22, blocker 12)
+NAV_ENTRY_POSITION_UNRESOLVED = "entry_position_unresolved"  # a one-shot forward positioning
+                                                               # recovery could not be measured or
+                                                               # did not leave the chosen card whole
 NAV_ITEM_BELOW_ENTRY = "item_below_entry"              # the target is BELOW where the read ended,
                                                        # and walking up only moves it further away
 NAV_FRAME_CONTRADICTS = "frame_contradicts_itself"     # segment.py failed on a frame
@@ -818,6 +821,7 @@ def _heart_in_frame(seg: FrameSegmentation, frame_y: int, tolerance: int
 def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                      entry_reference: bytes,
                      identity_match_max_dist: float,
+                     selected_model_item_index: int | None = None,
                      should_stop=None,
                      max_frames: int | None = None,
                      crosscheck_tolerance_px: int | None = None,
@@ -871,12 +875,28 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
     top by construction, and before this fix the entry gate refused it outright regardless of
     which item the model chose.
 
+    A second, equally bounded entry recovery handles one distinct geometry: the target heart is
+    already visible, but the frame cannot establish its card's LOWER edge (whether it runs into
+    the band or ends in an untrusted blank-background run). An ascending gesture would move that
+    uncertainty farther down and turn a recoverable landing into an inevitable refusal. Before
+    this pass has counted or issued an ascending gesture, it may therefore spend ONE planned
+    forward read-scroll only when the current frame itself proves that lower-edge shape and the
+    index says the entire card fits in the band after the planned displacement. Its delivered
+    positive shift and the newly complete target block are both measured; otherwise the run stops.
+    This is positioning before a count, never a reversal of one.
+
     `model_index` is 1-based into THIS index's selectable blocks. It is NOT a number from an
     `ItemPayload` whose exclusions renumbered the model's list — when anything selectable was
     excluded the two differ and `ItemPayload.translation` is authoritative, so convert first:
 
         ordinal = payload.item(n).heart_ordinal
         model_index = index.translation.index(ordinal) + 1
+
+    ``selected_model_item_index`` is optional audit provenance for that conversion.  It does
+    not affect navigation: callers that began with the model's dense payload number pass it so
+    the returned human-readable reason can distinguish (for example) "model item 3" from the
+    full-index position used to reach its page heart (for example, item 9).  Direct index-only
+    callers leave it unset.
 
     Returns an `ItemTarget` whose `point` is a screen coordinate in its `frame`. The card is on
     screen and fully visible at that moment, and the phone is left exactly there. `steps` may be
@@ -959,6 +979,9 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             f"{index.heart_count}; a count cannot be checked against a table that skips a "
             "number")
     target_heart = hearts[ordinal]
+    index_selection = f"full-index selectable item {model_index}"
+    if selected_model_item_index is not None:
+        index_selection += f", selected by model item {selected_model_item_index}"
 
     if not index.offsets or index.offsets[-1] is None:
         # Unreachable through `usable` (a broken correspondence chain is a failure and empties
@@ -1143,6 +1166,7 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
     budget: int | None = max_frames
     agreement = 0
     heart_was_visible = False
+    entry_position_attempted = False
 
     while True:
         i = len(segmentations)
@@ -1189,6 +1213,110 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             budget = _frame_budget(entry_offset, target_block.page_y0, band_y0,
                                    seg.frame_size[1]) if budget is None else budget
 
+        # A target already visible in a lower-edge-*unresolved* block is the one entry geometry
+        # where an ascending gesture is provably the wrong direction. The lower edge can run into
+        # the band OR be an untrusted background run inside it: the latter is the live failure --
+        # the index projected the whole card into the band, but segmentation could not prove that
+        # its blank lower tail had ended. A trustworthy TOP edge distinguishes this from a card
+        # merely entering through the band's top. This branch runs before this frame contributes
+        # observations or clusters, and before an upward gesture exists. It therefore seats a card
+        # for one clean count rather than reversing a count already spent.
+        if i == 0 and not entry_position_attempted and not steps:
+            indexed_frame_y = target_heart[1] - offsets[0]
+            target_top = target_block.page_y0 - offsets[0]
+            target_bottom = target_block.page_y1 - offsets[0]
+            found_entry = (_heart_in_frame(seg, indexed_frame_y, extent_tolerance_px)
+                           if band_y0 <= indexed_frame_y < band_y1 else None)
+            entry_block = None if found_entry is None else found_entry[1]
+            lower_edge_unresolved = (
+                entry_block is not None
+                and not entry_block.complete
+                and entry_block.top.observed
+                and not entry_block.bottom.observed
+                and target_block.page_y1 - target_block.page_y0 <= band_y1 - band_y0)
+            if lower_edge_unresolved:
+                # The scroll-top identity recovery above already spent this function's one
+                # sanctioned forward entry gesture. Do not turn a pair of independently bounded
+                # recoveries into a two-step forward walk: the latter has neither a clean entry
+                # contract nor the FakeDriver/driver ledger guarantee the former two have.
+                if identity_recovered_frame is not None:
+                    raise ItemNavigationError(
+                        NAV_ENTRY_POSITION_UNRESOLVED,
+                        "refusing to navigate: the target's lower edge remains unresolved after "
+                        "the one bounded forward entry scroll already used to reveal profile "
+                        "identity. A second forward positioning gesture is not permitted before "
+                        "the ascending count, and walking up would make this lower-edge evidence "
+                        "worse",
+                        frame=frames[0], frame_index=0, anchor=anchor)
+                dwell, _discarded_policy_frac, x_frac = driver._sample_read_step(0, None)
+                position_step = plan_scroll_step(
+                    seg, x_frac=x_frac, profile_min_spacing_px=seen_spacing, **plan_kwargs)
+                # The planned (not merely hoped-for) displacement must leave every indexed card
+                # edge inside the band. A gesture too short or too long is not a reason to probe
+                # in a second direction.
+                if not (target_top - position_step.step_px >= band_y0
+                        and target_bottom - position_step.step_px <= band_y1):
+                    raise ItemNavigationError(
+                        NAV_ITEM_NOT_FULLY_VISIBLE,
+                        f"heart {ordinal} ({index_selection}) is visible in a card with an "
+                        "unresolved lower edge, but even one sanctioned forward positioning "
+                        "step would leave an edge outside the band. Walking up would make the same "
+                        "edge worse, so no gesture can safely seat this item",
+                        frame=frames[0], frame_index=0, anchor=anchor)
+                else:
+                    entry_position_attempted = True
+                    cancelled(frame=frames[0], frame_index=0, anchor=anchor)
+                    driver._scroll_down_one(position_step.frac, position_step.x_frac)
+                    if dwell and dwell > 0:
+                        time.sleep(dwell)
+                    cancelled(frame=frames[0], frame_index=0, anchor=anchor)
+                    positioned_frame = driver._screencap()
+                    positioned_shift = estimate_shift(
+                        frames[0], positioned_frame, content_band=content_band,
+                        trust_window_px=trust_window_px)
+                    if positioned_shift.delta_px is None:
+                        raise ItemNavigationError(
+                            NAV_ENTRY_POSITION_UNRESOLVED,
+                            "refusing to navigate: one bounded forward entry-positioning scroll was "
+                            "taken to seat the lower-edge-unresolved target card, but its shift could "
+                            f"not be measured ({positioned_shift.status} — {positioned_shift.reason}). "
+                            "No count had started, but guessing the new page row could tap a "
+                            "different item",
+                            frame=positioned_frame, frame_index=0, anchor=anchor)
+                    violation = step_overshoot(position_step, positioned_shift.delta_px)
+                    if violation is not None:
+                        raise ItemNavigationError(
+                            NAV_ENTRY_POSITION_UNRESOLVED,
+                            "refusing to navigate: the one bounded forward entry-positioning scroll "
+                            f"did not respect its plan ({violation}). The target is not pursued by "
+                            "a second forward or reverse gesture",
+                            frame=positioned_frame, frame_index=0, anchor=anchor)
+                    positioned_offset = offsets[0] + positioned_shift.delta_px
+                    positioned_seg = segment_frame(
+                        positioned_frame, content_band=content_band, like_template=like_template,
+                        like_threshold=like_threshold)
+                    positioned_y = target_heart[1] - positioned_offset
+                    positioned_found = (
+                        _heart_in_frame(positioned_seg, positioned_y, extent_tolerance_px)
+                        if positioned_seg.ok and band_y0 <= positioned_y < band_y1 else None)
+                    if positioned_found is None or not positioned_found[1].complete:
+                        raise ItemNavigationError(
+                            NAV_ENTRY_POSITION_UNRESOLVED,
+                            "refusing to navigate: the one bounded forward entry-positioning scroll "
+                            f"moved page heart {ordinal} ({index_selection}), but its card still was "
+                            "not bounded end to end. No count has been reused and no second gesture "
+                            "is justified",
+                            frame=positioned_frame, frame_index=0, anchor=anchor)
+                    # Restart the normal ascending pass at this measured origin. Nothing from the
+                    # clipped frame was folded into a count, and this positioning gesture is not
+                    # one of the returned reverse-walk `steps`.
+                    entry_offset = positioned_offset
+                    frames[:] = [positioned_frame]
+                    offsets[:] = [positioned_offset]
+                    segmentations.clear()
+                    budget = max_frames
+                    continue
+
         observations = _observations(segmentations, offsets)
         clusters = _heart_clusters(observations, tolerance=extent_tolerance_px)
 
@@ -1198,10 +1326,14 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             raise ItemNavigationError(NAV_HEART_MISSED, missed, frame=frames[i], frame_index=i,
                                       anchor=anchor)
 
+        measured_anchor_residual = anchor_residual_px
+        if anchor.delta_px is not None:
+            measured_anchor_residual = max(measured_anchor_residual, abs(int(anchor.delta_px)))
+
         disagreement, worst, counted = _count_disagrees(
             clusters, hearts, heart_count=index.heart_count,
             tolerance=crosscheck_tolerance_px, ascending=True,
-            anchor_residual_px=anchor_residual_px)
+            anchor_residual_px=measured_anchor_residual)
         agreement = max(agreement, worst)
         if disagreement is not None:
             raise ItemNavigationError(NAV_COUNT_DISAGREES, disagreement, frame=frames[i],
@@ -1223,7 +1355,7 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             # over-delivered later, so the two get different codes.
             raise ItemNavigationError(
                 NAV_ITEM_BELOW_ENTRY if not steps else NAV_ITEM_NOT_FULLY_VISIBLE,
-                f"heart {ordinal} (model item {model_index}) is BELOW the analysed band — the "
+                f"heart {ordinal} ({index_selection}) is BELOW the analysed band — the "
                 f"index puts it at page row {target_heart[1]}, i.e. frame row {indexed_frame_y} "
                 f"against a band ending at {band_y1} — after {len(steps)} upward gesture(s). "
                 "Walking up moves it further down, and scrolling back down would re-run a count "
@@ -1266,7 +1398,7 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                     steps=tuple(steps), shifts=tuple(shifts), offsets=tuple(offsets),
                     reason=(f"walked {climbed}px up from where the profile read ended in "
                             f"{len(steps)} gesture(s), counting {len(clusters)} heart(s) back in "
-                            f"reverse; heart {ordinal} is model item {model_index}, its card is "
+                            f"reverse; page heart {ordinal} is {index_selection}; its card is "
                             f"bounded end to end at frame rows {block.y0}..{block.y1}, and the "
                             f"count agrees with the index to {agreement}px"))
 
@@ -1278,14 +1410,14 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             if heart_was_visible:
                 raise ItemNavigationError(
                     NAV_ITEM_NOT_FULLY_VISIBLE,
-                    f"heart {ordinal} (model item {model_index}) has been on screen but its "
+                    f"heart {ordinal} ({index_selection}) has been on screen but its "
                     f"card was never bounded end to end in any of {len(frames)} frames, so "
                     "there is no frame in which the item is fully visible to tap from",
                     frame=frames[i], frame_index=i, anchor=anchor)
             raise ItemNavigationError(
                 NAV_BUDGET_EXHAUSTED,
                 f"counted {len(clusters)} heart(s) back in {len(frames)} frames and never "
-                f"brought heart {ordinal} (model item {model_index}) into view, against a budget "
+                f"brought heart {ordinal} ({index_selection}) into view, against a budget "
                 f"of {budget} frames derived from the index's own geometry and the smallest "
                 "gesture this driver may make. Something other than slow progress is wrong",
                 frame=frames[i], frame_index=i, anchor=anchor)

@@ -769,13 +769,13 @@ def test_the_fallback_spacing_is_the_corpus_minimum_and_the_ratio_window_is_abou
 #
 # Ground truth for the two hard bounds, on this file's calibrated 1080x2400 device
 # (`_BAND0, _BAND1 = 300, 2100`, band height 1800):
-#   trust ceiling  = round(0.40 * 1800) = 720   (`_ENUM_TRUST_CEILING_BAND_FRAC`)
+#   trust ceiling  = round(0.30 * 1800) = 540   (`_ENUM_TRUST_CEILING_BAND_FRAC`)
 #   coverage margin = 1800 - 1467 = 333          (`_MAX_CARD_HEIGHT_PX`)
 #   gesture floor   = 219                        (`step_px_for_frac(_READ_SCROLL_FRAC_MIN, _H)`)
 # =====================================================================================
 
 _BAND_H = _BAND1 - _BAND0                                                          # 1800
-_TRUST_CEILING_PX = round(scroll_step._ENUM_TRUST_CEILING_BAND_FRAC * _BAND_H)     # 720
+_TRUST_CEILING_PX = round(scroll_step._ENUM_TRUST_CEILING_BAND_FRAC * _BAND_H)     # 540
 _COVERAGE_MARGIN_PX = _BAND_H - scroll_step._MAX_CARD_HEIGHT_PX                    # 333
 _GESTURE_FLOOR_PX = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)  # 219
 
@@ -788,7 +788,7 @@ def _coverage_draws(seg, n=200, **kw):
 def test_the_two_bounds_match_the_derivation():
     """Pins the two numbers this whole rule is built from, so a later "tuning" pass has to come
     back and read why, on `test_the_fallback_spacing_is_the_corpus_minimum...`'s own precedent."""
-    assert _TRUST_CEILING_PX == 720
+    assert _TRUST_CEILING_PX == 540
     assert _COVERAGE_MARGIN_PX == 333
     assert _TRUST_CEILING_PX < round(0.5 * _BAND_H)          # meaningfully under frameshift's 900
 
@@ -806,12 +806,12 @@ def test_an_open_frame_with_no_trailing_card_is_capped_at_the_trust_ceiling():
 
 
 def test_an_open_card_below_the_trust_ceiling_throttles_the_step_to_its_own_depth():
-    """A short first card puts the second (incomplete, band-cut) card's own top row only 653px
-    below the band's own top row — inside the 720px trust ceiling, so bound 2 is what actually
-    binds this step, not bound 1."""
-    seg = _stack((400, 2000), top=500).segment()
+    """A short first card puts the second (incomplete, band-cut) card's own top row 500px
+    below the band's own top row — inside the 540px trust ceiling, so bound 2 actually binds
+    this step."""
+    seg = _stack((247, 2000), top=500).segment()
     depth = scroll_step._open_trailing_block_depth(seg)
-    assert depth == 653
+    assert depth == 500
     for plan in _coverage_draws(seg, n=50):
         assert plan.basis == scroll_step.COVERAGE_STEP_THROTTLED
         assert plan.depth_px == depth
@@ -852,7 +852,7 @@ def test_the_adaptive_throttle_never_lets_a_step_scroll_past_an_open_cards_own_t
     does eventually complete. A generous step ceiling on the loop itself turns a hang into a
     reported failure instead.
 
-    Starts the open (second) card 1653px below the band's own top — past the 720px trust
+    Starts the open (second) card 1653px below the band's own top — past the 540px trust
     ceiling, so the first steps are bound-1-limited exactly as
     `test_an_open_card_beyond_the_trust_ceiling_is_capped_at_bound_one_not_its_own_depth` proved
     in isolation — and gives it a 1750px height, taller than the 1467px worst case the blind

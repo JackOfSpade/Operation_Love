@@ -10,7 +10,9 @@ from operation_love.ranker.store import SQLiteStore
 def _write_config(tmp_path, **overrides):
     cfg = {
         "enabled_apps": ["bumble"],
-        "mode": "observe",
+        # Stats only reads persisted labels/ranker state.  Keep this fixture mode-neutral:
+        # training correctly requires an enabled Hinge opener, while this Bumble config does not.
+        "mode": "auto",
         "storage": {"backend": "sqlite"},
         "opener": {"enabled": False},
         "paths": {"data_dir": str(tmp_path), "db_file": str(tmp_path / "store.db")},
@@ -44,4 +46,4 @@ def test_show_reports_labels_needed_when_not_ready(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Labels  : 0  (liked 0 / passed 0)" in out
     assert "Ranker  : ready=False" in out
-    assert "Seed ~40 more decisions in observe mode" in out
+    assert "Seed ~40 more decisions in training mode" in out

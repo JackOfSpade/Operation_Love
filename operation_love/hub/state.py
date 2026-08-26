@@ -13,7 +13,7 @@ import time
 from .. import config as cfg_mod
 from .. import platforms
 from .. import supervisor
-from ..observe_actions import ObserveActionBridge
+from ..training_actions import TrainingActionBridge
 
 # Chrome (and others) throttle setInterval in a hidden tab to ~once/minute after 5min hidden —
 # very plausible during a real run (owner watching the phone or another window, or the display
@@ -115,7 +115,7 @@ class HubState:
         self._closed_browser_clients: dict[str, float] = {}
         self._browser_shutdown_requested = False
         self._browser_stale_watch_active = False
-        self._observe_actions = ObserveActionBridge()
+        self._training_actions = TrainingActionBridge()
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -148,8 +148,29 @@ class HubState:
                 # release evidence still deliberately blocks it. This shared helper also
                 # resolves apps=None through config.yaml and honors per-app mode overrides,
                 # exactly as supervisor.run() does in its direct-caller backstop.
-                supervisor.load_effective_config(
+                effective_cfg = supervisor.load_effective_config(
                     self.config_path, mode=mode, enabled_apps=apps)
+                # A mode chosen in the Hub is an explicit operator instruction, not merely a
+                # suggestion for config.yaml.  Per-app overrides remain useful for unattended
+                # CLI/config runs, but silently changing an explicit Hub mode selection is a
+                # dangerous control-surface mismatch. Refuse before the
+                # background thread/device setup; the operator can select the shown mode or
+                # remove the per-app override deliberately.
+                if mode is not None and effective_cfg is not None:
+                    effective_modes = {
+                        app: ((effective_cfg.apps or {}).get(app, {}) or {}).get(
+                            "mode", effective_cfg.mode)
+                        for app in effective_cfg.enabled_apps
+                    }
+                    mismatched = {
+                        app: actual for app, actual in effective_modes.items() if actual != mode
+                    }
+                    if mismatched:
+                        details = ", ".join(
+                            f"{app}={actual}" for app, actual in sorted(mismatched.items()))
+                        return False, (
+                            f"Hub requested {mode!r}, but per-app mode override(s) resolve to "
+                            f"{details}; choose that mode explicitly or remove the override")
             except Exception as exc:  # noqa: BLE001 — configuration/load errors are user-facing
                 return False, str(exc)
             # Treat background allocation as a transaction. A completed run's status/error
@@ -207,7 +228,7 @@ class HubState:
                     supervisor.run(self.config_path, stop_event=stop, on_status=_capture,
                                    on_store=_capture_store,
                                    on_opener_service=_capture_opener_service,
-                                   on_worker=self._bind_observe_worker,
+                                   on_worker=self._bind_training_worker,
                                    mode=mode, enabled_apps=apps, max_per_run=max_per_run)
                 except (Exception, SystemExit) as exc:  # noqa: BLE001
                     # supervisor.run raises SystemExit (a BaseException, not Exception) for a
@@ -431,11 +452,12 @@ class HubState:
             ),
         }
 
-    def observe_action_snapshot(self, *, run_id: str | None = None, app: str | None = None) -> dict:
-        return self._observe_actions.snapshot(run_id=run_id, app=app)
+    def training_action_snapshot(self, *, run_id: str | None = None,
+                                 app: str | None = None) -> dict:
+        return self._training_actions.snapshot(run_id=run_id, app=app)
 
-    def submit_observe_action(self, body: dict) -> tuple[bool, dict, int]:
-        return self._observe_actions.submit(body)
+    def submit_training_action(self, body: dict) -> tuple[bool, dict, int]:
+        return self._training_actions.submit(body)
 
     def _training_store_mutation(self, method_name: str) -> tuple[bool, dict | str]:
         """Run an explicit training-set mutation only while no model is live.
@@ -473,18 +495,15 @@ class HubState:
         print(f"Training label removed for profile: {name}")
         return True, {"profile_name": name}
 
-    def _bind_observe_worker(self, worker) -> None:
+    def _bind_training_worker(self, worker) -> None:
         # Called by supervisor before Thread.start(), so no hub request can observe a half-bound
         # worker.  The worker subsequently registers itself at run entry as a harmless idempotent
         # backstop for direct/test construction.
-        worker.observe_action_bridge = self._observe_actions
-        worker.observe_action_supported = bool(
-            worker.mode == "observe" and worker.app == "hinge"
-            and getattr(worker, "observe_source", "manual") in {"external_ai_review", "automation"}
-            and callable(getattr(worker.driver, "observe_pass", None))
-            and callable(getattr(worker.driver, "observe_open_targeted_like", None))
-            and callable(getattr(worker.driver, "observe_send_targeted_like", None)))
-        self._observe_actions.register(worker)
+        worker.training_action_bridge = self._training_actions
+        worker.training_action_supported = bool(
+            worker.mode == "training" and worker.app == "hinge"
+            and getattr(worker.driver, "supports_training_decision", False))
+        self._training_actions.register(worker)
 
     @staticmethod
     def _service_snapshot(service, method_name: str) -> list[dict]:
@@ -545,19 +564,32 @@ class HubState:
             cfg = cfg_mod.load(self.config_path)
 
             def _mode_status(app: str, mode: str) -> tuple[bool, str | None]:
-                registry_reason = platforms.unavailable_reason(app, mode)
-                if registry_reason:
-                    return False, registry_reason
                 try:
-                    supervisor.load_effective_config(
+                    # Use the shared startup gate. A fresh process has no installed Hinge
+                    # still-photo licence until config validation reads its accepted
+                    # assumption/bound; probing the registry first would reject a valid AUTO
+                    # config merely because the picker examined Auto before a validating path.
+                    # load_effective_config validates, then invokes the registry before any
+                    # construction, so it is the authoritative readiness answer.
+                    effective = supervisor.load_effective_config(
                         self.config_path, mode=mode, enabled_apps=[app])
                 except Exception as exc:  # noqa: BLE001 — exact start reason is picker help
                     return False, str(exc)
+                # ``load_effective_config`` intentionally retains per-app precedence for
+                # unattended CLI runs.  The Hub, however, refuses an explicit mode click that
+                # would resolve to another mode in start(). Reflect that exact refusal in the
+                # picker instead of advertising an option that Start will immediately reject.
+                actual = ((getattr(effective, "apps", {}) or {}).get(app, {}) or {}).get(
+                    "mode", getattr(effective, "mode", None))
+                if actual != mode:
+                    return False, (
+                        f"Hub requested {mode!r}, but per-app mode override resolves to "
+                        f"{app}={actual}; choose that mode explicitly or remove the override")
                 return True, None
 
             def _platform_payload(p: "platforms.Platform") -> dict:
                 status = {mode: _mode_status(p.app, mode)
-                          for mode in ("observe", "auto")}
+                          for mode in ("training", "auto")}
                 return {
                     "app": p.app,
                     "label": p.label,
@@ -742,7 +774,7 @@ class HubState:
         refresh remains deliberately throttled. BigQueryStore serves this from its in-memory
         cache after startup, so polling does not issue a BigQuery query every five seconds.
         """
-        if not bool(getattr(status, "running", False)) or getattr(status, "mode", None) != "observe":
+        if not bool(getattr(status, "running", False)) or getattr(status, "mode", None) != "training":
             return None
         with self._lock:
             live_store = self._live_store

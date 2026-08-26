@@ -1,0 +1,20 @@
+{
+  "calibration_calibrated_at": "2026-08-22T23:50:45.216285+00:00 \u2014 measured from session(s): targeting_20260822T_calA, targeting_20260822T_heldB",
+  "calibration_sha256": "d6a2a3b4ccb8464f101ae074c247b5bec709462fe87bda41e237453d85dee2ac",
+  "completed": true,
+  "debug_actions_sha256": "7bf204f1db92cf0c5f7d0a09cce87c765f48350afb1743af044d3f6d62af63a6",
+  "device": "33111JEHN04475",
+  "frame_size_px": [
+    1080,
+    2400
+  ],
+  "hinge_version_name": "10.0.1",
+  "kind": "hinge_production_observe_release",
+  "observe_control_evidence_sha256": "7bf204f1db92cf0c5f7d0a09cce87c765f48350afb1743af044d3f6d62af63a6",
+  "production_run_id": "d8547ff144b4",
+  "production_run_reference": "data/hinge_debug/d8547ff144b4",
+  "provider_store_evidence_sha256": "449dc75a183f699c7ad4554644ff260e1ffd99f71f2608e1c80b2cda5a8b8938",
+  "schema_version": 1,
+  "store_persistence_evidence_sha256": "d5099845e6df3bdc61868a5661dbdf9a66f359283cddb27e270cee321823ae5b",
+  "verified_at": "2026-08-25T05:57:05.701897+00:00"
+}

@@ -25,12 +25,24 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-_TOOL_MODULES = ["tools.hinge_inspect", "tools.eval_aggregation"]
+_TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
+# Audit every committed Python tool from source, not merely the two modules that happen to have
+# dedicated behavioural tests.  Importing every tool would pull optional device dependencies;
+# the AST check below intentionally needs none of them and still catches stale first-party
+# imports wherever they occur (including lazy imports inside a CLI branch).
+_TOOL_MODULES = [
+    f"tools.{path.stem}"
+    for path in sorted(_TOOLS_DIR.glob("*.py"))
+    if path.name != "__init__.py"
+]
 
 
 def _source_path(dotted_module: str) -> Path:
-    mod = importlib.import_module(dotted_module)
-    return Path(mod.__file__)
+    name = dotted_module.removeprefix("tools.")
+    path = _TOOLS_DIR / f"{name}.py"
+    if not path.is_file():
+        raise AssertionError(f"unknown tool module: {dotted_module}")
+    return path
 
 
 def _operation_love_imports(py_file: Path):
@@ -85,12 +97,10 @@ def test_every_operation_love_import_resolves():
     # The direct regression guard for the hinge_inspect.py bug: a stale
     # `from operation_love.drivers.hinge.vision import ...` would fail here because
     # `operation_love.drivers.hinge.vision` is not an importable module.
+    saw_first_party_import = False
     for dotted in _TOOL_MODULES:
         from_pairs, plain_modules = _operation_love_imports(_source_path(dotted))
-        assert from_pairs or plain_modules, (
-            f"{dotted}: AST walk found no operation_love.* imports at all — "
-            "check the walk itself before trusting this test suite"
-        )
+        saw_first_party_import |= bool(from_pairs or plain_modules)
         for module_name, symbol in from_pairs:
             assert _from_import_resolves(module_name, symbol), (
                 f"{dotted}: `from {module_name} import {symbol}` — "
@@ -98,6 +108,7 @@ def test_every_operation_love_import_resolves():
             )
         for module_name in plain_modules:
             importlib.import_module(module_name)  # raises if the module path is stale
+    assert saw_first_party_import, "tool import audit found no operation_love imports"
 
 
 def test_hinge_inspect_help_exits_cleanly_without_touching_device(monkeypatch):

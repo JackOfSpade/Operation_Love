@@ -446,19 +446,19 @@ EXCLUSION_REATTACH_PROBE_MISSING = (
 
 # The dwell rung's refusal for a card that was NEVER OBSERVED, as opposed to one that was
 # observed and measured moving (found+fixed 2026-08-22, ops/STILL-PHOTO-DISCRIMINATOR.md 5d).
-# Production takes exactly one dwell burst, at the position the read stopped
-# (`HingeDriver._still_photo_dwell`), and `dwell_card_rects` only returns entries for cards with
-# a complete sighting in that one anchor frame -- so on a real multi-card profile most candidates
-# never had a rect to dwell over at all. That is a coverage gap, not a detection, and it must not
-# read as the same sentence a card gets when a dwell actually ran and caught it moving: an
-# operator (or an auto-derived summary, see hinge.py's `_index_captured_items`) needs to be able
-# to tell "we never looked at this card" (expected, structural, every run) from "we looked and it
-# is a video" (rung below, a real result). Exported as a constant, like rung (g)'s sibling above,
-# because the sentence is fixed regardless of which card it names.
+# Production first dwells at the position the read stopped and may then run the configured,
+# bounded candidate walk (`HingeDriver._still_photo_dwell`).  Even with that walk, most real
+# profiles contain more heart-bearing cards than the configured candidate budget can cover.
+# That is a coverage gap, not a detection, and it must not read as the same sentence a card gets
+# when a dwell actually ran and caught it moving: an operator (or an auto-derived summary, see
+# hinge.py's `_index_captured_items`) needs to be able to tell "we never looked at this card"
+# (expected and structural) from "we looked and it is a video" (rung below, a real result).
+# Exported as a constant, like rung (g)'s sibling above, because the sentence is fixed regardless
+# of which card it names.
 EXCLUSION_NEVER_DWELLED = (
-    f"{EXCLUSION_NON_PHOTO}: no dwell ever covered this card -- production takes one dwell burst, "
-    "at the position the read stopped, and this card was not in it, so it was never observed; "
-    "that is a coverage gap, not a judgement, and still cannot be excluded")
+    f"{EXCLUSION_NON_PHOTO}: no dwell ever covered this card -- the configured bounded dwell "
+    "walk did not reach it, so it was never observed; that is a coverage gap, not a judgement, "
+    "and it still cannot be selected")
 
 
 class ItemCropError(RuntimeError):
@@ -853,6 +853,57 @@ def unnumber_unless_confident_photo(image: bytes) -> str | None:
     return (f"{EXCLUSION_NON_PHOTO}: crop classified as {item_type}; only confidently "
             "photographic cards may be numbered, while ambiguous or written cards remain "
             "readable context")
+
+
+def confident_photo_heart_ordinals(
+        frames: Sequence[bytes], index: ItemIndex, *,
+        exclude: Callable[[IndexedBlock], str | None] | None = None,
+        unnumber: Callable[[bytes], str | None] = unnumber_unless_confident_photo,
+        image_format: str = _CROP_IMAGE_FORMAT) -> tuple[int, ...]:
+    """Return heart ordinals whose complete crops pass Hinge's photo-content gate.
+
+    This is the cheap, read-only pre-pass used to decide which cards are worth spending a
+    several-second still-media dwell on.  It deliberately applies the same block exclusion,
+    sighting choice, crop encoding, and ``unnumber_unless_confident_photo`` policy as
+    ``build_item_payload``; it merely omits signature drift and final numbering, which cannot
+    help decide whether a written prompt should receive a video/photo proof.
+
+    The result is a candidate pool, never an acceptance.  Every returned card must still pass
+    the independent dwell/re-attach ladder in ``build_item_payload`` before it can be numbered.
+    UNKNOWN and WRITTEN cards remain readable context there, but no longer consume one of the
+    configured dwell candidates before being discarded for content.
+    """
+    if not index.usable:
+        raise ItemCropError(
+            "refusing to classify crops from an unusable item index -- its numbering is not "
+            "trustworthy: " + "; ".join(index.failures))
+    if len(frames) != len(index.frames):
+        raise ItemCropError(
+            f"{len(frames)} frame(s) given for an index built from {len(index.frames)} -- the "
+            "index's page coordinates only mean anything against the capture they were measured "
+            "on")
+    _check_frames_are_the_indexed_frames(frames, index)
+    if not frames:
+        raise ItemCropError("no frames to classify for still-photo dwell candidates")
+
+    cv2, np = _require_vision()
+    decode = _decoder(frames, cv2, np)
+    ordinals: list[int] = []
+    for block in index.blocks:
+        if block.kind != ITEM_SELECTABLE or block.heart_ordinal is None:
+            continue
+        if exclude is not None and exclude(block) is not None:
+            continue
+        obs = _choose_sighting(block, index)
+        if obs is None:
+            continue
+        image, _signature = _crop_image(
+            decode(obs.frame_index, colour=False), decode(obs.frame_index, colour=True),
+            obs, block, image_format=image_format, signature_grid=_SIGNATURE_GRID,
+            cv2=cv2, np=np)
+        if unnumber(image) is None:
+            ordinals.append(block.heart_ordinal)
+    return tuple(ordinals)
 
 
 @dataclass(frozen=True)
@@ -1342,10 +1393,10 @@ def unnumber_without_still_photo_evidence(evidence: StillPhotoEvidence) -> str |
     # NEVER OBSERVED reads as the same sentence as OBSERVED AND REFUSED unless this rung splits
     # them (found+fixed 2026-08-22, ops/STILL-PHOTO-DISCRIMINATOR.md 5d). `dwell_exact is None`
     # WITH NO FRAMES BEHIND IT is the specific, common shape a producer emits when it never took
-    # a dwell of this card at all -- production dwells once, at the position the read stopped
-    # (`HingeDriver._still_photo_dwell`), and `dwell_card_rects` only returns entries for cards
-    # complete in that one anchor frame, so most cards on a real profile never had a rect to
-    # dwell over in the first place. That is a coverage gap this rung still has to refuse (an
+    # a dwell of this card at all -- production starts at the position the read stopped and then
+    # spends only the configured bounded candidate budget (`HingeDriver._still_photo_dwell`),
+    # so most cards on a real profile still never receive a complete parked observation. That is
+    # a coverage gap this rung still has to refuse (an
     # un-photographed card is exactly as unproven as an un-photographed video), but it is not the
     # same FINDING as a dwell that ran and caught the card moving, and an operator reading the
     # sentence needs to be able to tell them apart. `dwell_exact is None` WITH frames present

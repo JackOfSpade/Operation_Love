@@ -1,5 +1,6 @@
 """bugreport — redacted markdown diagnostic. Offline."""
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -7,6 +8,7 @@ import re
 import sys
 import threading
 import types
+from pathlib import Path
 
 import pytest
 
@@ -174,29 +176,29 @@ def test_status_section_healthy_run_has_no_diagnostics_section():
     assert "Stop reasons / errors" not in md
 
 
-class _ObserveWarningHub:
+class _TrainingWarningHub:
     """The report must preserve the hub's actual no-suggestion explanation, rather than
     reducing an intentional safety refusal to the ambiguous word ``waiting``."""
     WARNING = "item index refused | no trustworthy shift\n`do not offer text`"
 
     def snapshot(self):
         return {"running": True, "error": None, "status": {
-            "phase": "live", "mode": "observe", "running": True, "labels": 12,
+            "phase": "live", "mode": "training", "running": True, "labels": 12,
             "min_labels": 40, "ranker_ready": False, "labels_needed": 28,
             "budget_spent": 0.0, "budget_cap": 5.0, "openers": 0,
-            "apps": {"hinge": {"app": "hinge", "mode": "observe", "state": "waiting",
+            "apps": {"hinge": {"app": "hinge", "mode": "training", "state": "waiting_approval",
                                 "last_decision": None, "last_score": None, "swipes_run": 0,
                                 "opener_warning": self.WARNING, "opener_pending": False}}}}
 
 
-def test_status_section_surfaces_current_observe_no_suggestion_guidance_safely():
-    md = bugreport.build_report(_ObserveWarningHub())
+def test_status_section_surfaces_current_training_guidance_safely():
+    md = bugreport.build_report(_TrainingWarningHub())
 
     assert "Current hub guidance (snapshot, not a new phone read)" in md
-    assert "READY for a manual pass/like; no decision has been recorded" in md
+    assert "typed target opener is ready; choose Like to send it or Dislike to pass" in md
     assert "no suggestion to type" in md
     assert "item index refused | no trustworthy shift 'do not offer text'" in md
-    assert _ObserveWarningHub.WARNING not in md
+    assert _TrainingWarningHub.WARNING not in md
     assert not any(line.strip() == "`do not offer text`" for line in md.splitlines())
 
 
@@ -467,6 +469,148 @@ def test_debug_log_section_tails_actions_and_flags_error_shots(tmp_path):
     assert "like did not land" in md                              # actions.jsonl tail inlined
 
 
+def test_debug_log_links_full_auto_opener_snapshot_and_landed_outcome(tmp_path):
+    run = tmp_path / "run_auto_opener_evidence"
+    run.mkdir(parents=True)
+    frame = b"typed opener on target photo"
+    opener = ("This looks like the ideal setting for a crisp fall walk. Do you prefer "
+              "exploring quiet trails for hours or heading straight for a warm coffee?")
+    evidence_id = hashlib.sha256(frame + b"\0" + opener.encode()).hexdigest()
+    shot = "00066_auto_opener_pre_send_before.png"
+    (run / shot).write_bytes(frame)
+    records = [
+        {
+            "ts": "2026-08-25T04:06:28", "action": "auto_opener_pre_send",
+            "before": shot, "opener": opener,
+            "opener_sha256": hashlib.sha256(opener.encode()).hexdigest(),
+            "frame_sha256": hashlib.sha256(frame).hexdigest(),
+            "evidence_id": evidence_id, "model_item_index": 3,
+        },
+        {
+            "ts": "2026-08-25T04:06:37", "action": "like",
+            "pre_send_evidence_id": evidence_id,
+        },
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "latest AUTO opener pre-send evidence:" in md
+    assert "session mode: auto" in md  # pre-migration rows remain readable as AUTO
+    assert f"evidence ID: `{evidence_id}`" in md
+    assert f"snapshot: `{shot}` (verified)" in md
+    assert "target: model item `3`" in md
+    assert f"full opener: `{opener}` (verified)" in md
+    assert "linked outcome: LIKE verified as landed at `2026-08-25T04:06:37`" in md
+    assert "human-reviewed approval evidence ID" not in md
+
+
+def test_debug_log_renders_training_resumed_send_snapshot_and_preserves_approval_link(tmp_path):
+    """Training's final Send tap must be tied to its fresh, re-verified frame.
+
+    The earlier frame is still important: it is what the human approved.  The report must keep
+    its ID without mistaking it for the final pre-tap snapshot or looking for the result through
+    the ordinary AUTO linkage field.
+    """
+    run = tmp_path / "run_auto_opener_resumed_send_evidence"
+    run.mkdir(parents=True)
+    opener = "A fresh opener, checked again after the reviewer returned."
+    approval_frame = b"the snapshot shown to the reviewer"
+    resumed_frame = b"the snapshot immediately before the resumed send tap"
+    approval_id = hashlib.sha256(approval_frame + b"\0" + opener.encode()).hexdigest()
+    resumed_id = hashlib.sha256(resumed_frame + b"\0" + opener.encode()).hexdigest()
+    approval_shot = "00066_auto_opener_pre_send_before.png"
+    resumed_shot = "00067_auto_opener_resumed_send_before.png"
+    (run / approval_shot).write_bytes(approval_frame)
+    (run / resumed_shot).write_bytes(resumed_frame)
+    records = [
+        {
+            "ts": "2026-08-25T04:06:28", "action": "auto_opener_pre_send",
+            "before": approval_shot, "opener": opener,
+            "opener_sha256": hashlib.sha256(opener.encode()).hexdigest(),
+            "frame_sha256": hashlib.sha256(approval_frame).hexdigest(),
+            "evidence_id": approval_id, "model_item_index": 3, "session_mode": "training",
+        },
+        {
+            "ts": "2026-08-25T04:07:02", "action": "auto_opener_resumed_send",
+            "before": resumed_shot, "opener": opener,
+            "opener_sha256": hashlib.sha256(opener.encode()).hexdigest(),
+            "frame_sha256": hashlib.sha256(resumed_frame).hexdigest(),
+            "evidence_id": resumed_id, "approval_evidence_id": approval_id,
+            "model_item_index": 3, "session_mode": "training",
+        },
+        {
+            "ts": "2026-08-25T04:07:10", "action": "like_attempt",
+            "pre_send_evidence_id": approval_id,
+            "resumed_send_evidence_id": resumed_id,
+        },
+        {
+            "ts": "2026-08-25T04:07:13", "action": "like",
+            "pre_send_evidence_id": approval_id,
+            "resumed_send_evidence_id": resumed_id,
+        },
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    lines = (run / "actions.jsonl").read_text().splitlines()
+    evidence = bugreport._latest_auto_opener_evidence_md(lines, run)
+
+    assert f"evidence ID: `{resumed_id}`" in evidence
+    assert "session mode: training" in evidence
+    assert f"snapshot: `{resumed_shot}` (verified)" in evidence
+    assert f"human-reviewed approval evidence ID: `{approval_id}`" in evidence
+    assert "linked outcome: LIKE verified as landed at `2026-08-25T04:07:13`" in evidence
+    assert approval_shot not in evidence
+    assert bugreport._latest_auto_opener_evidence_mode(lines) == "Training"
+    report = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+    assert "latest Training opener pre-send evidence:" in report
+
+
+def test_debug_log_flags_tampered_auto_opener_evidence(tmp_path):
+    run = tmp_path / "run_tampered_auto_opener_evidence"
+    run.mkdir(parents=True)
+    shot = "00001_auto_opener_pre_send_before.png"
+    (run / shot).write_bytes(b"changed frame")
+    record = {
+        "action": "auto_opener_pre_send", "before": shot, "opener": "changed text",
+        "opener_sha256": hashlib.sha256(b"original text").hexdigest(),
+        "frame_sha256": hashlib.sha256(b"original frame").hexdigest(),
+        "evidence_id": "evidence",
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert md.count("SHA-256 mismatch") == 2
+    assert "no linked send outcome was logged" in md
+
+
+def test_debug_log_section_excludes_disabled_apps_from_active_run_diagnosis(tmp_path):
+    """An old debug folder for a configured-but-disabled app is not this run's evidence."""
+    import yaml
+
+    hinge_dir = tmp_path / "hinge_debug"
+    bumble_dir = tmp_path / "bumble_debug"
+    (hinge_dir / "run").mkdir(parents=True)
+    (bumble_dir / "old_run").mkdir(parents=True)
+    (hinge_dir / "run" / "actions.jsonl").write_text('{"action": "capture"}\n')
+    (bumble_dir / "old_run" / "actions.jsonl").write_text('{"action": "capture"}\n')
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "enabled_apps": ["hinge"],
+        "apps": {
+            "hinge": {"debug_log": True, "debug_dir": str(hinge_dir)},
+            "bumble": {"debug_log": True, "debug_dir": str(bumble_dir)},
+        },
+    }))
+
+    md = bugreport._debug_log_md(str(path))
+
+    assert "**hinge**" in md
+    assert "**bumble**" not in md
+    assert str(bumble_dir) not in md
+
+
 def test_debug_log_section_explains_latest_observe_wait_and_reproduction_context(tmp_path):
     """A vague report must say what the latest evidence actually proves: this card captured,
     then became READY, then received no observed decision -- not merely "waiting"."""
@@ -485,13 +629,216 @@ def test_debug_log_section_explains_latest_observe_wait_and_reproduction_context
     md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
 
     assert "latest observe context (logged evidence, not a new phone read):" in md
-    assert "current logged observe state: waiting (`no_change`)" in md
+    assert "final logged observe state: waiting (`no_change`)" in md
     assert "frame has not visibly changed" in md
-    assert "unresolved wait began at `2026-08-14T13:21:04` and has 2 heartbeat record(s)" in md
+    assert "final logged wait began at `2026-08-14T13:21:04` and has 2 heartbeat record(s)" in md
     assert "identity read `Anita`; 38 captured photo(s); 0 numbered item(s)" in md
     assert "numbered items unavailable: `item index could not be trusted`" in md
     assert "00002_observe_waiting_before.png` (present)" in md
-    assert "capture completed → READY/manual decision prompt → no pass/like record yet" in md
+    assert "capture completed → READY/manual decision prompt → no pass/like record before the final logged wait" in md
+
+
+def test_debug_log_section_marks_a_stop_after_ready_as_terminal_not_an_open_wait(tmp_path):
+    """A stopped run can legitimately end on a READY card.  Its earlier wait evidence must not
+    be rendered as an ongoing decision prompt after Worker has discarded that card."""
+    run = tmp_path / "run_observe_stopped"
+    run.mkdir(parents=True)
+    records = [
+        {"ts": "2026-08-24T13:11:55", "action": "capture", "profile_name": "Sandra"},
+        {"ts": "2026-08-24T13:13:35", "action": "observe_waiting", "reason": "no_change"},
+        {"ts": "2026-08-24T13:13:50", "action": "observe_stopped",
+         "reason": "stop_requested", "profile_name": "Sandra"},
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "latest logged action: `observe_stopped`" in md
+    assert "observe wait ended because Stop was requested" in md
+    assert "intentionally abandoned" in md
+    assert "current logged observe state: waiting" not in md
+
+
+def test_latest_context_keeps_stop_aborted_capture_terminal_after_trailing_timing(tmp_path):
+    """The capture loop writes its timing finally-block after the terminal abort row.
+
+    The timing row is useful diagnostics, but it must not turn a clean Stop into an ambiguous
+    ``latest logged action`` report or invent a live device state.
+    """
+    run = tmp_path / "run_stopped_capture_with_timing"
+    run.mkdir(parents=True)
+    records = [
+        {"ts": "2026-08-24T20:33:21", "action": "capture_aborted", "frames": 2,
+         "read_scrolls": 2, "profile_name": "Jenna"},
+        {"ts": "2026-08-24T20:33:21", "action": "capture_iteration_timing",
+         "frame_index": 1, "exit_reason": "stopped_during_settle"},
+        {"ts": "2026-08-24T20:33:21", "action": "capture_timing_summary",
+         "iterations": 2},
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "latest logged action: `capture_timing_summary`" in md
+    assert "terminal capture state: Stop abandoned the in-progress profile read" in md
+    assert "no profile capture or decision was recorded" in md
+    assert "profile identity `Jenna`; 2 captured frame(s); 2 read scroll(s)" in md
+    assert "final logged observe state: waiting" not in md
+    assert "current phone" not in md
+
+
+def test_debug_report_summarises_latest_completed_capture_timing_before_stop(tmp_path):
+    """A terminal aborted next read must not hide the previous completed capture's cost."""
+    run = tmp_path / "run_capture_timing_before_stop"
+    run.mkdir(parents=True)
+    records = [
+        {"ts": "2026-08-25T01:07:05", "action": "capture_timing_summary",
+         "iterations": 12, "iter_wall_s_total": 56.521766},
+        {"ts": "2026-08-25T01:10:18", "action": "capture_fold_timing", "photos": 23,
+         "fold_wall_s": 193.776865, "still_photo_dwell_s": 181.294415},
+        {"ts": "2026-08-25T01:10:18", "action": "capture", "photos": 23,
+         "profile_name": "Emma"},
+        {"ts": "2026-08-25T01:11:38", "action": "capture_aborted", "frames": 3,
+         "read_scrolls": 3, "profile_name": "Elena"},
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "latest completed capture timing:" in md
+    assert "profile `Emma`; read 56.5s; fold 193.8s" in md
+    assert "still-photo dwell 181.3s (93.6% of fold); total 250.3s" in md
+
+
+def test_capture_timing_summary_fails_closed_for_unpaired_or_optional_bad_fields():
+    """Corrupt timing rows must not be paired across captures or make reports fail."""
+    unpaired = [
+        json.dumps({"action": "capture_timing_summary", "iter_wall_s_total": 12}),
+        json.dumps({"action": "capture_fold_timing", "photos": 3, "fold_wall_s": 8}),
+        json.dumps({"action": "capture", "photos": 4}),
+    ]
+    assert bugreport._latest_completed_capture_timing_md(unpaired) == ""
+
+    optional_bad_dwell = [
+        json.dumps({"action": "capture_timing_summary", "iter_wall_s_total": 12}),
+        json.dumps({"action": "capture_fold_timing", "photos": 4, "fold_wall_s": 8,
+                    "still_photo_dwell_s": "unknown"}),
+        json.dumps({"action": "capture", "photos": 4}),
+    ]
+    summary = bugreport._latest_completed_capture_timing_md(optional_bad_dwell)
+    assert "read 12.0s; fold 8.0s; total 20.0s" in summary
+    assert "still-photo dwell" not in summary
+
+
+@pytest.mark.parametrize("bad_line", [
+    '{"action": "capture"',
+    json.dumps(["not", "an", "action", "record"]),
+])
+def test_capture_timing_summary_fails_closed_on_invalid_candidate_window_line(bad_line):
+    """Unknown raw data between timings and a capture can conceal a lifecycle boundary."""
+    lines = [
+        json.dumps({"action": "capture_timing_summary", "iter_wall_s_total": 12}),
+        json.dumps({"action": "capture_fold_timing", "photos": 4, "fold_wall_s": 8}),
+        bad_line,
+        json.dumps({"action": "capture", "photos": 4}),
+    ]
+
+    assert bugreport._latest_completed_capture_timing_md(lines) == ""
+
+
+def test_capture_timing_summary_keeps_best_effort_outside_candidate_window():
+    """A later partial append cannot change already-completed capture provenance."""
+    lines = [
+        json.dumps({"action": "capture_timing_summary", "iter_wall_s_total": 12}),
+        json.dumps({"action": "capture_fold_timing", "photos": 4, "fold_wall_s": 8}),
+        json.dumps({"action": "capture", "photos": 4}),
+        '{"action": "still-writing"',
+    ]
+
+    assert "total 20.0s" in bugreport._latest_completed_capture_timing_md(lines)
+
+
+def test_capture_timing_summary_keeps_derived_total_and_share_finite():
+    """Finite raw values must not become an infinite report value during arithmetic."""
+    share_safe = [
+        json.dumps({"action": "capture_timing_summary", "iter_wall_s_total": 1}),
+        json.dumps({"action": "capture_fold_timing", "photos": 4, "fold_wall_s": 1e308,
+                    "still_photo_dwell_s": 1e308}),
+        json.dumps({"action": "capture", "photos": 4}),
+    ]
+    summary = bugreport._latest_completed_capture_timing_md(share_safe)
+    assert "(100.0% of fold)" in summary
+    assert "inf" not in summary
+
+    overflowing_total = [
+        json.dumps({"action": "capture_timing_summary", "iter_wall_s_total": 1e308}),
+        json.dumps({"action": "capture_fold_timing", "photos": 4, "fold_wall_s": 1e308}),
+        json.dumps({"action": "capture", "photos": 4}),
+    ]
+    assert bugreport._latest_completed_capture_timing_md(overflowing_total) == ""
+
+
+def test_capture_timing_summary_omits_undefined_zero_fold_share():
+    lines = [
+        json.dumps({"action": "capture_timing_summary", "iter_wall_s_total": 0}),
+        json.dumps({"action": "capture_fold_timing", "photos": 4, "fold_wall_s": 0,
+                    "still_photo_dwell_s": 0}),
+        json.dumps({"action": "capture", "photos": 4}),
+    ]
+
+    summary = bugreport._latest_completed_capture_timing_md(lines)
+    assert "still-photo dwell 0.0s" in summary
+    assert "% of fold" not in summary
+
+
+def test_latest_context_explains_a_persistent_uhid_input_as_completed_but_post_input_unknown(tmp_path):
+    """A trace can end directly after the persistent transport returns.
+
+    `device_input` is written after delivery, so the report must preserve that limited proof
+    and name the useful scalar context without inventing an unfinished gesture or its cause.
+    """
+    run = tmp_path / "run_persistent_uhid_tail"
+    run.mkdir(parents=True)
+    final_input = {
+        "ts": "2026-08-24T20:17:58", "action": "device_input",
+        "transport": "PersistentUhidTouch", "kind": "scroll",
+        "source": "_scroll_down_one", "direction": "forward",
+    }
+    (run / "actions.jsonl").write_text(json.dumps(final_input) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "latest logged action: `device_input` at `2026-08-24T20:17:58`" in md
+    assert "final completed device input:" in md
+    assert "transport=`PersistentUhidTouch`" in md
+    assert "kind=`scroll`" in md
+    assert "source=`_scroll_down_one`" in md
+    assert "direction=`forward`" in md
+    assert "time=`2026-08-24T20:17:58`" in md
+    assert "logging ended after that completed input" in md
+    assert "cannot pinpoint what subsequently blocked progress" in md
+    assert "incomplete gesture" not in md
+
+
+def test_latest_context_keeps_final_input_metadata_to_safe_scalars(tmp_path):
+    run = tmp_path / "run_malformed_input_tail"
+    run.mkdir(parents=True)
+    final_input = {
+        "ts": ["not", "a", "time"], "action": "device_input",
+        "transport": {"transport": "do not render"}, "kind": ["scroll"],
+        "source": None, "direction": {"direction": "forward"},
+    }
+    (run / "actions.jsonl").write_text(json.dumps(final_input) + "\n")
+
+    md = bugreport._latest_observe_context_md([json.dumps(final_input)], run)
+
+    assert "transport=`not recorded`" in md
+    assert "kind=`not recorded`" in md
+    assert "source=`not recorded`" in md
+    assert "direction=`not recorded`" in md
+    assert "time=`not recorded`" in md
+    assert "do not render" not in md
+    assert "['not', 'a', 'time']" not in md
 
 
 def test_debug_log_section_distinguishes_items_unnumbered_from_items_unavailable(tmp_path):
@@ -533,7 +880,7 @@ def test_debug_log_section_explains_like_candidate_without_claiming_a_sheet(tmp_
 
     md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
 
-    assert "current logged observe state: waiting (`like_candidate`)" in md
+    assert "final logged observe state: waiting (`like_candidate`)" in md
     assert "bottom-only screen change looked like a possible like" in md
     assert "no Send Like sheet was observed" in md
     assert "sheet closed" not in md
@@ -1702,7 +2049,7 @@ def test_debug_log_section_shows_action_counts_histogram_above_the_tail(tmp_path
 # An unrecognised Hinge+ paywall can leave _await_like_resolved polling like_sheet until the
 # operator stops the run. actions.jsonl records every poll, but diagnosing the hang from the
 # raw tail requires noticing observe_waiting repeating with the same reason. These tests pin
-# _stall_summary_md's worked example from its docstring: "longest observe stall:
+# _stall_summary_md's worked example from its docstring: "most recent repeated observe wait:
 # reason=`like_sheet` for 1m37s (5 records)" for that exact run's repeats.
 def test_stall_summary_names_the_reason_and_its_duration_from_uncollapsed_records():
     """UNCOLLAPSED shape: individual, raw actions.jsonl lines -- one per poll, real ISO
@@ -1722,10 +2069,31 @@ def test_stall_summary_names_the_reason_and_its_duration_from_uncollapsed_record
 
     md = bugreport._stall_summary_md(lines)
 
-    assert "longest observe stall" in md
+    assert "most recent repeated observe wait" in md
     assert "reason=`like_sheet`" in md
     assert "1m37s" in md            # 01:42:43 -> 01:44:20
     assert "(5 records)" in md
+
+
+def test_stall_summary_labels_recency_ranking_without_claiming_duration_ranking():
+    """The final wait is the incident-priority row even when an older wait lasted longer.
+
+    The report must not call either recency-ranked row "longest"; doing so made a real report
+    say a 31s wait was longer than the older 1m03s wait displayed immediately below it.
+    """
+    lines = [
+        json.dumps({"ts": "2026-08-24T13:00:00", "action": "observe_waiting", "reason": "older"}),
+        json.dumps({"ts": "2026-08-24T13:01:03", "action": "observe_waiting", "reason": "older"}),
+        json.dumps({"ts": "2026-08-24T13:01:05", "action": "observe_decision", "decision": "pass"}),
+        json.dumps({"ts": "2026-08-24T13:13:20", "action": "observe_waiting", "reason": "newer"}),
+        json.dumps({"ts": "2026-08-24T13:13:51", "action": "observe_waiting", "reason": "newer"}),
+    ]
+
+    md = bugreport._stall_summary_md(lines)
+
+    assert "most recent repeated observe wait: reason=`newer` for 31s" in md
+    assert "2nd most recent repeated observe wait: reason=`older` for 1m03s" in md
+    assert "observe stall" not in md
 
 
 def test_stall_summary_and_the_collapsed_tail_entry_agree_on_the_same_stall(tmp_path):
@@ -1752,16 +2120,42 @@ def test_stall_summary_and_the_collapsed_tail_entry_agree_on_the_same_stall(tmp_
     md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
 
     # (1) the UNCOLLAPSED-derived stall summary, at the top of the section...
-    assert "stall summary:" in md
+    assert "repeated observe waits:" in md
     assert "reason=`no_change`" in md
     assert "2m45s" in md           # 11 * 15s between the first and last of the 12 repeats
     assert "(12 records)" in md
     # (2) ...and the SAME 12 repeats, independently collapsed for the tail further down.
     assert '"repeated": 12' in md
     assert '"reason": "no_change"' in md
-    stall_pos = md.index("stall summary:")
+    stall_pos = md.index("repeated observe waits:")
     tail_pos = md.index("actions.jsonl (tail):")
     assert stall_pos < tail_pos    # the summary sits above the raw/collapsed tail, not below it
+
+
+def test_release_publication_inside_an_observe_wait_does_not_split_the_stall_or_context(tmp_path):
+    """A suggestion publication is a same-card event, not a decision or a fresh capture."""
+    run = tmp_path / "run_release_interleaved_wait"
+    run.mkdir(parents=True)
+    records = [
+        {"ts": "2026-08-24T13:11:55", "action": "capture", "photos": 14},
+        {"ts": "2026-08-24T13:12:01", "action": "observe_waiting", "reason": "no_change"},
+        {"ts": "2026-08-24T13:12:16", "action": "observe_waiting", "reason": "no_change"},
+        {"ts": "2026-08-24T13:12:32", "action": "observe_waiting", "reason": "no_change"},
+        {"ts": "2026-08-24T13:12:48", "action": "observe_waiting", "reason": "no_change"},
+        {"ts": "2026-08-24T13:13:04", "action": "observe_waiting", "reason": "no_change"},
+        {"ts": "2026-08-24T13:13:18", "action": "observe_release_hub_pre_tap_published"},
+        {"ts": "2026-08-24T13:13:20", "action": "observe_waiting", "reason": "no_change"},
+        {"ts": "2026-08-24T13:13:35", "action": "observe_waiting", "reason": "no_change"},
+        {"ts": "2026-08-24T13:13:51", "action": "observe_waiting", "reason": "no_change"},
+    ]
+    lines = [json.dumps(record) for record in records]
+    (run / "actions.jsonl").write_text("\n".join(lines) + "\n")
+
+    summary = bugreport._stall_summary_md(lines)
+    context = bugreport._latest_observe_context_md(lines, run)
+
+    assert "most recent repeated observe wait: reason=`no_change` for 1m50s (8 records)" in summary
+    assert "final logged wait began at `2026-08-24T13:12:01` and has 8 heartbeat record(s)" in context
 
 
 def test_stall_summary_is_empty_for_a_healthy_run_with_nothing_repeated():
@@ -1890,7 +2284,7 @@ def test_recent_openers_section_handles_empty_list_gracefully():
     either way [] is not an error and must render a graceful explanatory line."""
     md = bugreport._recent_openers_md(_FakeHubOpeners([]))
     assert "no committed opener records" in md
-    assert "unacted Observe suggestion" in md
+    assert "unacted staged opener draft" in md
 
 
 def test_recent_openers_section_renders_newest_first_and_caps_at_the_shown_limit():
@@ -2031,7 +2425,7 @@ def test_recent_opener_rejections_section_handles_empty_list_gracefully():
 
 
 def test_status_separates_zero_preference_decisions_from_provider_billing_telemetry():
-    """An unacted Observe suggestion can cost a provider call without being a swipe/label.
+    """An unacted staged opener can cost a provider call without being a swipe/label.
 
     This is deliberately a report-level test: the desired fix is not to hide a real provider
     charge, but to prevent a returning operator from reading it as an unwanted profile decision.
@@ -2134,6 +2528,22 @@ def _targeting_config(tmp_path, *, licence_key=None, calibration=False):
     return str(path)
 
 
+def _valid_targeting_calibration(device="synthetic-pixel"):
+    return {
+        "schema_version": 3,
+        "device": device,
+        "hinge_version_name": "10.0.1",
+        "frame_size_px": [1080, 2400],
+        "composer_layout_id": "hinge_inline_v1",
+        "item_selection_policy_id": "hinge_photos_only_v2",
+        "identity_match_max_dist": 2.5,
+        "inline_item_max_dist": 14.9,
+        "calibrated_at": "2026-08-24T00:00:00Z",
+        "identity_band": [0.1, 0.048, 0.8, 0.094],
+        "content_band": [0.125, 0.875],
+    }
+
+
 def test_the_report_names_which_link_of_the_targeting_chain_is_missing(tmp_path):
     """BUG REPORT 2026-08-22: the cause was one absent config key and the report never said so.
 
@@ -2173,6 +2583,52 @@ def test_the_report_names_the_calibration_as_the_next_step_once_a_licence_is_ins
     assert "targeting-policy blocker: none" in md
     assert tp.TARGETING_SETUP_NEXT_STEP_CALIBRATE in md
     assert "unvalidated reporting process" not in md
+
+
+def test_targeting_readiness_does_not_recommend_calibration_that_is_already_valid(tmp_path):
+    """A ready policy + a valid per-device mapping means setup is complete, not pending."""
+    from operation_love import targeting_policy as tp
+    import yaml
+
+    tp.install_accepted_still_photo_assumption(tp.StillPhotoAssumptionAcceptance(
+        acceptance=tp.STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION, device="synthetic-pixel",
+        hinge_version_name="10.0.1", accepted_at="2026-08-21", rationale="accepted"))
+    try:
+        path = _targeting_config(tmp_path, licence_key="still_photo_assumption_acceptance")
+        raw = yaml.safe_load(Path(path).read_text())
+        raw["apps"]["hinge"]["targeting_calibration"] = _valid_targeting_calibration()
+        Path(path).write_text(yaml.safe_dump(raw))
+        md = bugreport._targeting_readiness_md(path)
+    finally:
+        tp._reset_installed_still_photo_bound_for_tests()
+
+    assert "targeting-policy blocker: none" in md
+    assert "targeting_calibration`: present and validated" in md
+    assert "targeting readiness: ready" in md
+    assert "no targeting setup action remains" in md
+    assert tp.TARGETING_SETUP_NEXT_STEP_CALIBRATE not in md
+
+
+def test_targeting_readiness_does_not_treat_an_invalid_mapping_as_ready(tmp_path):
+    from operation_love import targeting_policy as tp
+    import yaml
+
+    tp.install_accepted_still_photo_assumption(tp.StillPhotoAssumptionAcceptance(
+        acceptance=tp.STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION, device="synthetic-pixel",
+        hinge_version_name="10.0.1", accepted_at="2026-08-21", rationale="accepted"))
+    try:
+        path = _targeting_config(tmp_path, licence_key="still_photo_assumption_acceptance")
+        raw = yaml.safe_load(Path(path).read_text())
+        raw["apps"]["hinge"]["targeting_calibration"] = {"schema_version": 3}
+        Path(path).write_text(yaml.safe_dump(raw))
+        md = bugreport._targeting_readiness_md(path)
+    finally:
+        tp._reset_installed_still_photo_bound_for_tests()
+
+    assert "targeting-policy blocker: none" in md
+    assert "present but not validated" in md
+    assert "targeting readiness: ready" not in md
+    assert "repair or replace the invalid targeting calibration" in md
 
 
 def test_the_report_says_when_no_licence_key_exists_at_all(tmp_path):

@@ -499,6 +499,26 @@ def test_hinge_photo_policy_does_not_number_unknown_cards(monkeypatch):
                if crop.heart_ordinal)
 
 
+def test_confident_photo_candidate_prepass_matches_content_policy_and_exclusions(monkeypatch):
+    """Dwell candidates are the confidently photographic selectable crops only.
+
+    This pre-pass intentionally runs before the expensive still-media proof, but it must use the
+    same PHOTO/WRITTEN/UNKNOWN decision and the same video/block exclusion as the final payload.
+    It is only a cost filter: later code still requires every returned heart to pass dwell.
+    """
+    classes = iter([
+        item_type_preflight.PHOTO, item_type_preflight.WRITTEN,
+        item_type_preflight.UNKNOWN, item_type_preflight.PHOTO,
+    ])
+    monkeypatch.setattr(item_type_preflight, "classify_crop", lambda _image: next(classes))
+    index, frames = _full()
+
+    ordinals = item_crops.confident_photo_heart_ordinals(
+        frames, index, exclude=lambda block: "video" if block.heart_ordinal == 4 else None)
+
+    assert ordinals == (1,)
+
+
 def test_unknown_prompt_cannot_shift_the_last_photo_from_six_to_seven(monkeypatch):
     """Regression for the reported dog-photo ordinal, derived from classes rather than a cap."""
     classes = iter([

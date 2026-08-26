@@ -1,60 +1,11 @@
-"""Per-app worker thread, in one of two modes.
+"""Per-app worker thread with two supported modes.
 
-observe  — SHADOW LEARNING. You use the app's own controls on real profiles;
-           the worker captures each profile, watches your like/pass, embeds it,
-           stores it as a label, and retrains the ranker live. No autonomous
-           input. This is how the model learns your taste — from your real
-           usage, not stock images.
-           On Hinge it ALSO runs auto's whole opener pipeline as a canary
-           (ops/OPENER-REDESIGN.md 5.9): the capture is enumerated into numbered
-           item crops, the model is asked to CHOOSE one and write the opener, and
-           the hub conditionally suggests an item and text if YOU choose to
-           like — before you touch anything. It is not a recommendation or
-           decision; you still tap and still type, and nothing is automated for
-           you. If you then open a DIFFERENT item than the one the
-           suggestion names, the hub replaces the opener with a warning and
-           offers no text: observe honours auto's never-attach-a-comment-to-the-
-           wrong-item rule by having nothing to copy, rather than by stopping.
-           This is the only way the owner can test what auto will actually
-           send, so the two modes must issue the SAME request — see
-           _ObserveSuggestion for what is shared and the one thing that is not
-           (observe is advisory: a short, time-bounded retry budget, and its failures never
-           stop the human observation run).
-auto     — AUTONOMOUS. The worker captures, scores with the trained ranker,
-           and likes/dislikes itself (sending openers where the app allows).
-           On an opener-capable app (Hinge), a like is normally sent WITH its
-           opener or not sent at all — if OpenerService cannot produce one for
-           a profile (global exhaustion — including every retry attempt for
-           that profile failing, see OpenerService.maybe_opener — a
-           per-profile OpenerError, or a single sub-latch 400/transient
-           failure) the loop stops rather than substitute a bare like, since
-           the opener is also what drives Hinge's "commented like" behavior
-           signal. It also stops rather than send an opener whose item number
-           cannot be turned into a tap on the phone — the model gave no item
-           at all, or named one in an index space this build has no
-           driver-owned translation table for yet (ops/OPENER-REDESIGN.md
-           5.3) — since sending it anyway would mean guessing which item the
-           comment attaches to. And it stops one step earlier still when the
-           capture could not be enumerated into numbered items at all (doc
-           5.2): the request is crops precisely so that image k IS item k, and
-           falling back to the raw scroll frames would hand the model a
-           numbering nothing downstream can act on. The narrow exception is a
-           Gemini safety-policy block: the AUTO ranker already decided to like
-           the profile, so that decision proceeds without a comment. This is a
-           structured per-call outcome, not a configurable fallback for other
-           opener failures. A like whose target cannot be honoured still never
-           sends. See _auto_loop's opener guards.
-           And it stops one step LATER too, when the driver reports it could
-           not put the like on the chosen item after all — it could not reach
-           that item, or the sheet that opened was not showing it
-           (base.ItemTargetingError, doc 5.6). Never a different item, never
-           a rewritten opener: the run stops with intended and actual both
-           recorded and the screen left exactly as it is.
-           Apps that don't accept openers (Bumble) are unaffected — they
-           never call the opener service in auto mode.
+training — Hub-reviewed learning: the worker prepares a targeted, typed opener, but
+           a human chooses Like or Dislike and only that verified result is labelled.
+auto     — Autonomous scoring and actions with targeting safety checks before each like.
 
-Multiple workers run concurrently in one process, sharing the ranker, store, and
-global budget. Failures are isolated and auto-restarted with backoff.
+Multiple workers may share a ranker, store, and global budget. Unexpected errors halt
+the affected worker so its failure state and diagnostics remain visible.
 """
 from __future__ import annotations
 
@@ -68,51 +19,22 @@ from datetime import date
 
 from .config import PacingCfg, normalize_swipe_delay_s
 from .drivers.base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClosed,
-                           ItemTargetingError, OBSERVE_ITEM_INCONCLUSIVE, OBSERVE_ITEM_MATCH,
-                           OBSERVE_ITEM_MISMATCH, ObserveItemCheck)
-from .human import human_cooldown, human_delay
+                           ItemTargetingError)
+from .human import human_delay
 from .human_motion import think_time_s
 from .interaction import AutoSessionPolicy
 from .opener.opener import INDEX_SPACE_MODEL_ITEMS, ITEM_INDEX_ABSENT, ItemRequest
 from .ranker.decider import Decider, Decision
-from .status import cleared_opener_fields
 from .targeting_policy import (
-    still_photo_licence_operator_notice, still_photo_licence_provenance,
-    targeting_setup_next_step)
+    still_photo_licence_operator_notice, still_photo_licence_provenance)
 
-_OBSERVE_CAPTURE_BUSY = "Capturing profile — please wait before your next decision"
-_OBSERVE_PROCESSING_BUSY = "Processing — please wait before your next decision"
 _NO_PHOTO_RETRY_S = 0.5
-_PROFILE_LOG_WIDTH = 72
-# A reviewed action can refuse before it has touched a heart.  That is not a
-# human pass, an app decision, or a worker fault: the card must be retired from
-# the action bridge and read again, with no training record.  Keep this private
-# sentinel distinct from ``None`` (ordinary manual resync / stop) so the outer
-# Observe loop can report the correct cause rather than masking it as a card
-# change.
-_OBSERVE_PRE_TAP_TARGETING_REFUSED = object()
 # think_time_s() is calibrated to real measured Hinge dwell data around this many
 # seconds — pacing.swipe_delay_s scales it proportionally, so the config knob still
 # speeds up/slows down pacing (and a test fixture's swipe_delay_s=0.0 still paces
 # instantly) while think_time_s supplies the measured like-vs-pass asymmetry shape.
 # Derived from PacingCfg's own default so the baseline can't drift from the config.
 _THINK_TIME_BASELINE_S = PacingCfg().swipe_delay_s
-
-
-def _operator_items_unavailable_warning(reason: str) -> str:
-    """Turn a capture-only index failure into useful Observe-mode guidance.
-
-    The full reason belongs in Hinge's debug log and bug report, where frame numbers, strip
-    votes, and geometry are actionable. On the hub it only tells the person to count opaque
-    implementation details. A contradictory coordinate space can result from a changing profile
-    (commonly an active video) *or* an ambiguous card boundary, so do not present either one as
-    a fact. Neither makes the person's manual choice unsafe.
-    """
-    if "item index this capture produced contradicts itself" in reason:
-        return ("this profile's cards could not be reliably counted for an opener from this read. "
-                "You can still pass or like manually.")
-    return reason
-
 
 def _accepts_keywords(callback, *names: str) -> bool:
     """Whether a duck-typed persistence seam accepts all named keyword arguments.
@@ -169,472 +91,11 @@ def _item_type_preflight_mismatch(driver, pick) -> str:
         return str(getattr(result, "reason", "the crop and description disagree on item type"))
     return ""
 
-
-def _display_media_ordinal(driver, pick) -> int | None:
-    """Return a proved human-countable photo/video number, otherwise no number at all."""
-    if getattr(pick, "index_space", None) != INDEX_SPACE_MODEL_ITEMS:
-        return None
-    resolve = getattr(driver, "model_item_media_ordinal", None)
-    if not callable(resolve):
-        return None
-    try:
-        ordinal = resolve(pick.index)
-    except Exception:  # noqa: BLE001 -- display advice must not affect suggestion safety
-        return None
-    return ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) and ordinal > 0 else None
-
-
-class _ObserveSuggestion:
-    """Doc 5.9's INVERTED observe suggestion, for exactly one profile.
-
-    THE INVERSION, in one sentence: the system chooses an item and opener for an optional like,
-    and tells the human before they tap. Until 2026-08-12 observe generated
-    AFTER the tap, anchored on the sheet the human had already opened -- which made the
-    suggestion right by construction, and made observe a canary for nothing: auto enumerates
-    numbered crops and asks the model to CHOOSE, so the two modes issued different images, a
-    different closing instruction and a different cognitive task. Testing observe told the owner
-    nothing about auto. Now both modes send `ItemRequest` -- same crops, same schema, same prompt
-    -- and the only difference left is who moves the phone.
-
-    WHAT THE INVERSION COSTS, AND WHY IT IS PAID HERE. Generating before the tap removes the
-    guarantee that the suggestion is about the item the comment will hang under, on the one path
-    where a real message reaches a real person. The owner declined to log the human's disagreement
-    as training data and declined any added friction, so the rule this class implements is
-    narrower and harder: DETECT an affirmative mismatch and SURFACE it. On a confirmed wrong
-    item the hub gets a warning and NO text to type. A sheet that cannot yet be measured is not
-    affirmative evidence of a wrong item: Hinge reflows the selected-card preview while the
-    keyboard opens, so Observe keeps the already-generated advisory text visible and rechecks
-    later sheet frames. Never a silent wrong-item opener, never a question for the human, never
-    a stop (that is AUTO's answer to the same rule -- observe honours it by refusing to show
-    text only after proof of the mismatch).
-
-    THE RACE IS REAL, WHICH IS WHY THIS IS A STATE MACHINE AND NOT A FUNCTION. Generation can take
-    up to `opener.request_timeout_s` (90s shipped) and nothing bounds how fast a human who has
-    already read the profile may tap. So the two halves -- "the model answered" and "the human
-    opened a sheet" -- arrive in EITHER order, from two different threads, and the display is a
-    pure function of both. Every transition republishes through one method, so there is no
-    ordering a caller has to get right and no second code path for the other order.
-
-    WHY A THREAD AT ALL. Doc 5.9 asks for READY immediately with the suggestion filling in behind
-    it, and the alternative is worse than slow: blocking the loop for up to 90s between publishing
-    READY and entering `wait_for_decision` means a human who passes in that window is never
-    observed at all -- the driver's first frame after the wait starts is already the NEXT card, so
-    the decision is lost and the one after it is attributed to the wrong profile. That is a
-    corrupted training label, which is the one thing observe mode exists to avoid.
-
-    WHAT THE THREAD MAY TOUCH, stated because it is the whole safety argument. It calls
-    `OpenerService.maybe_opener` (serialised on that service's own lock, already shared by
-    concurrent app workers), `RunStatus.set_app` (lock-guarded), `print`, and -- only through
-    `_publish` under this object's own lock -- the driver's `observe_item_mismatch`, which is pure
-    vision over a frame already in hand and touches neither the transport nor the debug log. It
-    never captures, never gestures, never types, and never repaints the driver's overlay. `cancel`
-    takes the same lock, so once it returns no driver access can be in flight or can start, which
-    is what makes it safe for the loop to go on and capture the next profile.
-    """
-
-    def __init__(self, worker: "Worker", profile):
-        self._worker = worker
-        self._profile = profile
-        # RLock, not Lock: _publish is reached both directly and from the mutators below, and a
-        # re-entrant call is easier to allow than to prove impossible.
-        self._lock = threading.RLock()
-        self._pick = None          # the OpenerPick, once the model has answered
-        self._warning = None       # why there is no text to type, when there is none
-        self._sheet = None         # the like-sheet frame the human opened, once they have
-        # Three-valued check latched within one uninterrupted sheet session. A later
-        # INCONCLUSIVE typing frame preserves MATCH/MISMATCH; only affirmative evidence may
-        # change an undecided state. The item number binds the proof to the pick it licensed.
-        self._sheet_item_check: tuple[int, ObserveItemCheck] | None = None
-        self._pending = False      # a generation call is in flight
-        self._cancelled = False
-        # This is deliberately separate from `_cancelled`/`_lock`: a provider call can be
-        # waiting on OpenerService's shared budget lock while the human has already left this
-        # card.  It needs a cheap predicate the service can observe BEFORE it spends a provider
-        # slot, without waiting for this object's display lock.
-        self._cancel_event = threading.Event()
-        self._announced = None     # the last warning printed, so a republish does not repeat it
-        self._thread: threading.Thread | None = None
-        self._release_pre_tap_recorded = False
-        self._release_post_tap_recorded = False
-
-    # --- the two inputs -------------------------------------------------
-    def start(self) -> "_ObserveSuggestion":
-        """Publish the card's opener state and, when there is one to make, start the call.
-
-        Returns self so the loop reads as one statement. Every refusal below is a WARNING on the
-        hub rather than silence: "no suggestion" and "a suggestion that must not be typed" are
-        different facts, and an operator who cannot tell them apart learns to ignore both.
-
-        The ONE thing that is not a warning is an app or a run that has no opener feature at all
-        (Bumble, or `opener.enabled: false`). Nothing was expected there, so nothing is published
-        and the hub shows its ordinary GO cue -- a red "no suggestion to type" box on every card
-        of a run that was never going to have one is the kind of standing warning that teaches an
-        operator to stop reading warnings.
-        """
-        if not self._applicable():
-            return self
-        reason = self._blocker()
-        if reason:
-            with self._lock:
-                self._warning = reason
-            self._publish()
-            return self
-        with self._lock:
-            self._pending = True
-        self._publish()
-        self._thread = threading.Thread(target=self._generate, name=f"suggest-{self._worker.app}",
-                                        daemon=True)
-        self._thread.start()
-        return self
-
-    def sheet_opened(self, frame: bytes | None) -> None:
-        """The human opened the app's own comment sheet on some item. `frame` is that screen.
-
-        A None frame is not a lesser version of this: it remains an inconclusive item check, not
-        a claim that the suggestion matches. Unlike a confirmed mismatch it does not hide advice:
-        the human already has a generated optional opener and Hinge may publish a measurable
-        preview on the next sheet frame.
-        """
-        with self._lock:
-            if self._sheet is None:
-                # First frame of a newly opened sheet. Any proof belonged to the previous
-                # continuous composer session and must not cross a close/reopen boundary.
-                self._sheet_item_check = None
-            self._sheet = frame if frame else b""
-        self._publish()
-
-    def sheet_closed(self) -> None:
-        """The sheet went away without a send (dismissed, or resolved). Back to the instruction.
-
-        The PICK is deliberately kept: the card has not changed, so the optional item/text help
-        is still current if the human decides to like. Only the evidence about what they opened
-        is dropped.
-        """
-        with self._lock:
-            self._sheet = None
-            self._sheet_item_check = None
-        self._publish()
-
-    def cancel(self) -> None:
-        """Stop publishing for this card. Called on every exit from the profile's wait.
-
-        Takes the lock, so it cannot return while a `_publish` (and therefore a driver call) is
-        in flight -- which is the property the loop relies on before it captures the next profile
-        and invalidates the driver's item table underneath us. The thread itself is NOT joined: it
-        may be blocked in a provider call for up to `request_timeout_s`, and waiting for that is
-        the very stall this whole design exists to avoid. It is a daemon, it holds nothing, and
-        its only remaining act is a `_publish` that returns immediately.
-        """
-        # Set this first.  A generation blocked behind another card's serialized opener call
-        # can then return at `maybe_opener`'s before-attempt stop check instead of issuing a
-        # stale, billable request merely because it has not yet acquired our display lock.
-        self._cancel_event.set()
-        with self._lock:
-            self._cancelled = True
-
-    def commit_if_liked(self, *, profile_id: str, decision_source: str,
-                        decision_created_at: float) -> None:
-        """Commit this card's staged advisory opener only after a real Like is confirmed.
-
-        A generated suggestion is a draft.  The Worker calls this after its decision boundary,
-        so Pass, Stop, resync, and every failed/pre-tap action leave no profile-attributable
-        opener record.  Billing telemetry is handled independently by OpenerService.
-        """
-        with self._lock:
-            pick = self._pick
-        commit = getattr(self._worker.opener_service, "commit_advisory_opener", None)
-        if pick is not None and callable(commit):
-            if _accepts_keywords(commit, "profile_id", "decision", "decision_source",
-                                 "decision_created_at"):
-                commit(pick, profile_id=profile_id, decision="like",
-                       decision_source=decision_source, decision_created_at=decision_created_at)
-            else:
-                # Older advisory-service seams still receive the same confirmed-like boundary;
-                # they simply do not persist the optional action-lineage columns.
-                commit(pick)
-
-    # --- internals ------------------------------------------------------
-    def _applicable(self) -> bool:
-        """Whether opener suggestions are a THING for this run at all -- as opposed to one that
-        could not be produced for this card. Both of these are per-RUN and neither is news."""
-        worker = self._worker
-        return bool(getattr(worker.driver, "accepts_opener", False)
-                    and worker.opener_service is not None
-                    and not getattr(worker.opener_service, "disabled", True))
-
-    def _blocker(self) -> str:
-        """Why no suggestion can be made for THIS card, or "" when one can."""
-        worker = self._worker
-        unavailable = getattr(self._profile, "items_unavailable", "")
-        if unavailable:
-            return _operator_items_unavailable_warning(unavailable)
-        if not getattr(self._profile, "items", ()):
-            # `items_unnumbered` (found+fixed 2026-08-22, see perception.capture.Profile) is the
-            # driver's own derived reason for THIS capture -- enumeration finished and legitimately
-            # numbered nothing -- and is strictly more useful than the generic line below when the
-            # driver bothered to record one.  Preferring it here changes only what the operator
-            # reads: this stays a WARNING exactly as before, never the auto loop's hard stop,
-            # which reads `items_unavailable` alone and is untouched by this branch.
-            unnumbered = getattr(self._profile, "items_unnumbered", "")
-            if unnumbered:
-                return unnumbered
-            return ("this capture produced no numbered items, so there is nothing for the model "
-                    "to choose from")
-        # The canary property is the whole point of this workflow, so the check that protects it
-        # is structural rather than a comment: a suggestion whose item nobody can verify against
-        # the sheet is a suggestion doc 5.9 forbids showing, and refusing to GENERATE it is
-        # cheaper and clearer than generating one and warning about it every time.
-        if not callable(getattr(worker.driver, "observe_item_mismatch", None)):
-            return ("this driver cannot check which item you opened against the item a "
-                    "suggestion names, and doc 5.9 forbids offering text that cannot be checked")
-        # Some drivers require measured, per-device evidence before their identity and sheet
-        # checks can license targeted text.  Ask before the provider call: checking only after
-        # the human opens a sheet would let unlicensed opener text appear on the hub meanwhile.
-        readiness = getattr(worker.driver, "targeted_suggestion_blocker", None)
-        if callable(readiness):
-            try:
-                reason = readiness()
-            except Exception as exc:  # noqa: BLE001 — an optional safety gate fails closed
-                return ("this driver's targeted-suggestion readiness check failed "
-                        f"({type(exc).__name__}: {exc}), so no opener text is offered")
-            if reason:
-                return str(reason)
-        return ""
-
-    def _generate(self) -> None:
-        """The provider call. Runs on its own thread; publishes whatever it ends up with."""
-        worker = self._worker
-        pick = None
-        failure = None
-
-        def should_stop() -> bool:
-            return self._cancel_event.is_set() or worker.stop_event.is_set()
-
-        # Do not even join OpenerService's shared queue if the card left before this daemon got
-        # CPU time.  The service receives the same predicate below for the remaining race where
-        # cancellation happens while it is waiting on its own budget lock or inside a cooperative
-        # provider cascade.
-        if should_stop():
-            return
-        try:
-            pick = worker.opener_service.maybe_opener(
-                worker.run_id, worker.app, self._profile,
-                items=ItemRequest.from_profile(self._profile),
-                should_stop=should_stop,
-                advisory=True)
-        except Exception as exc:  # noqa: BLE001 — a suggestion must never break a labelling run
-            failure = f"the opener call failed ({type(exc).__name__}: {exc})"
-        if pick is not None and pick.index == ITEM_INDEX_ABSENT:
-            # An opener with no item number is exactly as unusable here as in AUTO, and for the
-            # same reason: there is nothing to tell the human to like and nothing to check their
-            # tap against. AUTO stops the run over it; observe declines to show it.
-            failure = ("the model wrote an opener but named no item for it, so there is nothing "
-                       "to tell you to like")
-            pick = None
-        index_space = getattr(pick, "index_space", None) if pick is not None else None
-        if pick is not None and index_space != INDEX_SPACE_MODEL_ITEMS:
-            # Observe's crop request has exactly one valid numbering: its own 1-based
-            # model-item list.  `observe_item_mismatch` receives that same number and compares
-            # the opened sheet with one of those crops, so accepting a legacy capture-order
-            # value here would make the hub label/check one item while the text was generated
-            # for another.  AUTO can still route a legacy response through its explicit
-            # capture-order branch; Observe has no equivalent safe interpretation and must
-            # withhold the text.
-            failure = ("the model returned an opener in the unsupported index space "
-                       f"{index_space!r}; Observe can only verify numbered model items, "
-                       "so no opener is offered")
-            pick = None
-        with self._lock:
-            # `cancel()` takes this same lock before the next capture is allowed to invalidate
-            # the driver's per-profile crops.  Run the pure crop check under it, therefore: a
-            # late model answer can never classify the NEXT person's item after this card has
-            # already left the screen.  It is safe to hold because the documented capability
-            # cannot capture, navigate, log, or otherwise touch the transport.
-            if self._cancelled:
-                return
-            if pick is not None:
-                mismatch = _item_type_preflight_mismatch(worker.driver, pick)
-                if mismatch:
-                    # Doc 5.8 is deliberately earlier than observe's sheet check: the model
-                    # chose a numbered crop whose own coarse type contradicts its description,
-                    # so this is not advice the human should receive.  Observe warns and
-                    # withholds text; AUTO makes the corresponding ItemTargetingError/stop.
-                    failure = ("the model's chosen item failed the pre-flight type check, so no "
-                               f"opener is offered: {mismatch}")
-                    pick = None
-            self._pending = False
-            self._pick = pick
-            if pick is None:
-                self._warning = failure or (
-                    getattr(worker.opener_service, "last_skip_reason", None)
-                    or getattr(worker.opener_service, "exhausted_reason", None)
-                    or "no opener was produced for this card")
-        # Announcing under `_publish`'s lock closes the cancellation race: after a cancelled
-        # generation's status update has been suppressed, it must not leave a stale "ready" line
-        # in the console/bug report.  It also prevents announcing a pick whose already-open sheet
-        # made `_display` replace the text with a mismatch warning.
-        self._publish(announce_pick=pick)
-
-    def _display(self) -> dict:
-        """The opener fields the hub should show right now, from both halves of the state.
-
-        Called with the lock held. Returns a FULL set of opener fields every time (see
-        status.cleared_opener_fields) so a transition can never leave one of them describing a
-        previous state -- the class of bug an adversarial review already found once when the set
-        was three fields long.
-        """
-        fields = cleared_opener_fields()
-        fields["opener_pending"] = self._pending
-        pick = self._pick
-        if pick is None:
-            fields["opener_warning"] = self._warning
-            return fields
-        fields["opener_item"] = pick.index
-        fields["opener_media_ordinal"] = _display_media_ordinal(self._worker.driver, pick)
-        fields["opener_item_description"] = pick.item_description or None
-        if self._sheet is not None:
-            mismatch = self._mismatch(pick)
-            if mismatch:
-                # DOC 5.9's WHOLE POINT: the opener is REPLACED by the warning, not annotated
-                # with it. Leaving the text up beside a caveat is how a wrong-item opener gets
-                # typed anyway, and the owner's rule is that observe honours auto's
-                # never-attach-a-comment-to-the-wrong-item rule by having nothing to copy.
-                fields["opener_warning"] = mismatch
-                return fields
-        fields["opener_suggestion"] = pick.text
-        fields["opener_referenced"] = pick.referenced or None
-        return fields
-
-    def _mismatch(self, pick) -> str:
-        """"" when the sheet the human opened is confirmed to be showing `pick.index`.
-
-        The check itself lives on the driver (`observe_item_mismatch`) because that is where the
-        crops, the index and this profile's identity fingerprint live. It is the same pair of
-        comparisons, in the same order, that `driver.like()` makes on the auto path; only the
-        consequence differs. An inconclusive layout/identity read remains advisory: it may be a
-        keyboard reflow rather than a different item, so it preserves the already-generated text
-        and is retried whenever the observer provides a fresher open-sheet frame.
-        """
-        if not self._sheet:
-            current = ObserveItemCheck(
-                OBSERVE_ITEM_INCONCLUSIVE,
-                "the app's comment sheet is open but this driver could not hand over a "
-                "picture of it, so there is no way to tell which item you opened")
-        else:
-            try:
-                typed_check = getattr(self._worker.driver, "observe_item_check", None)
-                if callable(typed_check):
-                    current = typed_check(self._sheet, pick.index)
-                    if not isinstance(current, ObserveItemCheck):
-                        raise TypeError("observe_item_check did not return ObserveItemCheck")
-                else:
-                    # Compatibility for existing third-party drivers/test doubles. Their old
-                    # string API cannot distinguish "wrong" from "could not look", so a reason
-                    # remains a fail-closed mismatch. Production Hinge exposes the typed method.
-                    reason = self._worker.driver.observe_item_mismatch(self._sheet, pick.index)
-                    current = ObserveItemCheck(
-                        OBSERVE_ITEM_MISMATCH if reason else OBSERVE_ITEM_MATCH,
-                        reason or "")
-            except Exception as exc:  # noqa: BLE001 — a display check never breaks the run
-                current = ObserveItemCheck(
-                    OBSERVE_ITEM_INCONCLUSIVE,
-                    f"the item you opened could not be checked against this suggestion "
-                    f"({type(exc).__name__}: {exc})")
-
-        previous = (self._sheet_item_check[1]
-                    if self._sheet_item_check is not None
-                    and self._sheet_item_check[0] == pick.index else None)
-        if previous is not None and previous.state == OBSERVE_ITEM_MISMATCH:
-            effective = previous              # an affirmative wrong-item result stays refused
-        elif current.state == OBSERVE_ITEM_INCONCLUSIVE and previous is not None:
-            effective = previous              # typing/layout noise cannot revoke real evidence
-        else:
-            effective = current
-            self._sheet_item_check = (pick.index, current)
-
-        if effective.state == OBSERVE_ITEM_MATCH:
-            if not self._release_post_tap_recorded:
-                record = getattr(self._worker.driver, "observe_release_fact", None)
-                if callable(record):
-                    try:
-                        record("post_tap_item_verified")
-                    except Exception:  # noqa: BLE001 -- debug evidence never changes observe safety
-                        pass
-                self._release_post_tap_recorded = True
-            return ""
-        return effective.reason if effective.state == OBSERVE_ITEM_MISMATCH else ""
-
-    def _publish(self, *, announce_pick=None) -> None:
-        with self._lock:
-            if self._cancelled:
-                return
-            fields = self._display()
-            state = "waiting_for_send" if self._sheet is not None else "waiting"
-            # set_app, not Worker._stat: the driver's status overlay must not be repainted from
-            # this object, which is reachable from the suggestion thread while the worker thread
-            # is inside wait_for_decision talking to the same device. On Hinge render_status is a
-            # no-op anyway (its status lives on the hub), so nothing is lost; what is bought is
-            # that no transport is touched from two threads.
-            self._worker._publish_status(state=state, **fields)
-            # This contains only the item number and is lock-safe like status publication.
-            # It lets the reviewed-action mailbox bind an approval to the one suggestion that
-            # is actually visible, without exposing a second route to the driver.
-            # ``_ObserveSuggestion`` is also a deliberately small unit-test seam.  The
-            # reviewed-action bridge is a Worker capability, not a requirement of every
-            # object that can exercise suggestion display.  Real Workers always expose this
-            # method and still publish every transition to the bridge; minimal synthetic
-            # workers may omit it without turning a harmless no-suggestion warning into an
-            # exception.
-            publish_bridge_suggestion = getattr(self._worker, "_observe_action_suggestion", None)
-            if callable(publish_bridge_suggestion):
-                publish_bridge_suggestion(
-                    getattr(self._worker, "_active_observe_action_profile_token", None),
-                    self._pick if fields["opener_suggestion"] else None)
-            if (fields["opener_suggestion"] and self._sheet is None
-                    and not self._release_pre_tap_recorded):
-                record = getattr(self._worker.driver, "observe_release_fact", None)
-                recorded = False
-                if callable(record):
-                    try:
-                        record("hub_pre_tap_published")
-                        recorded = True
-                    except Exception:  # noqa: BLE001 -- debug evidence never changes observe safety
-                        pass
-                if recorded:
-                    self._worker._observe_action_pre_tap_published(
-                        getattr(self._worker, "_active_observe_action_profile_token", None))
-                self._release_pre_tap_recorded = True
-            # EVERY warning reaches the console too, and this is the only place that can do it:
-            # a mismatch is not decided until both halves of the state are in, and which thread
-            # completes the pair is a race. Printed once per DISTINCT warning, because a dismissed
-            # sheet reopened on the same wrong item would otherwise repeat itself. The hub is the
-            # surface doc 5.9 names; stdout is what a bug report keeps, and "silent is the one
-            # thing it must not be" is a claim about both.
-            warning = fields["opener_warning"]
-            if warning and warning != self._announced:
-                self._announced = warning
-                print(f"   💬 no suggestion to type — {warning}")
-            # The text deliberately does not go to the console.  Announce only the instruction,
-            # and only while the same lock proves the suggestion is still current and visible.
-            # If the sheet check replaced it with a warning, there is intentionally nothing to
-            # announce as ready.
-            if announce_pick is not None and fields["opener_suggestion"] == announce_pick.text:
-                media_ordinal = fields["opener_media_ordinal"]
-                if media_ordinal is not None:
-                    target = (f"media item {media_ordinal} ({announce_pick.item_description})"
-                              if announce_pick.item_description else f"media item {media_ordinal}")
-                else:
-                    target = (f"the photo described as {announce_pick.item_description}"
-                              if announce_pick.item_description else "the described photo")
-                print(f"   💬 optional suggestion ready: if you choose to like, use {target}; "
-                      f"the text to type is on the hub")
-
-
 class Worker(threading.Thread):
     def __init__(self, app, driver: DatingAppDriver, decider: Decider, opener_service,
-                 store, run_id, pacing, stop_event: threading.Event, mode: str = "observe",
+                 store, run_id, pacing, stop_event: threading.Event, mode: str = "training",
                  retrain_every: int = 1, limiter=None, max_restarts: int = 5, status=None,
-                 observe_source: str = "manual", observe_action_bridge=None):
+                 training_action_bridge=None):
         super().__init__(name=f"worker-{app}", daemon=True)
         self.app = app
         self.driver = driver
@@ -644,27 +105,22 @@ class Worker(threading.Thread):
         self.run_id = run_id
         self.pacing = pacing
         self.stop_event = stop_event
+        if mode not in {"training", "auto"}:
+            if mode == "auto_testing":
+                raise ValueError("Worker mode 'auto_testing' was retired; use 'training' or 'auto'")
+            raise ValueError("Worker mode must be 'training' or 'auto'")
         self.mode = mode
         self.retrain_every = max(1, int(retrain_every))
         self.limiter = limiter
-        self.max_restarts = max_restarts
-        self.status = status              # optional RunStatus (live overlay/hub); None in tests
-        # Observe normally records manual choices.  The explicit non-manual values are for a
-        # separately reviewed external controller; their release verifier rejects manual rows,
-        # so this is provenance rather than a cosmetic label.
-        if observe_source not in {"manual", "external_ai_review", "automation"}:
-            raise ValueError("observe_source must be manual, external_ai_review, or automation")
-        self.observe_source = observe_source
-        # Hub requests are a mailbox, never a second device reader.  It is optional so the
-        # CLI/manual Observe path retains its existing behaviour byte-for-byte when no hub owns
-        # this worker.
-        self.observe_action_bridge = observe_action_bridge
-        self.observe_action_supported = bool(
-            mode == "observe" and app == "hinge"
-            and observe_source in {"external_ai_review", "automation"}
-            and callable(getattr(driver, "observe_pass", None))
-            and callable(getattr(driver, "observe_open_targeted_like", None))
-            and callable(getattr(driver, "observe_send_targeted_like", None)))
+        # Retained only for source compatibility with older AUTO callers. Active modes never
+        # restart on unexpected errors, so it intentionally has no worker state or effect.
+        _ = max_restarts
+        self.status = status
+        self.training_action_bridge = training_action_bridge
+        self.training_action_supported = bool(
+            mode == "training" and app == "hinge"
+            and getattr(driver, "supports_training_decision", False))
+        self._training_claimed_action = None
 
     # --- live status (overlay + hub); no-ops when status is unset ---------
     def _stat(self, **fields) -> None:
@@ -673,13 +129,7 @@ class Worker(threading.Thread):
         self._render()
 
     def _publish_status(self, **fields) -> None:
-        """Update the shared status WITHOUT repainting the driver's in-app overlay.
-
-        The overlay repaint (`_render`) reaches into the driver, and doc 5.9's observe suggestion
-        publishes from its own thread while this worker's thread is inside `wait_for_decision`
-        driving the same device. `RunStatus.set_app` is lock-guarded and touches nothing else, so
-        this half is safe from anywhere; `render_status` is not, and is a no-op on the one driver
-        that can produce a suggestion at all. See _ObserveSuggestion's docstring."""
+        """Update shared status without repainting the driver overlay."""
         if self.status:
             self.status.set_app(self.app, **fields)
 
@@ -688,19 +138,7 @@ class Worker(threading.Thread):
             self.driver.render_status(self.status.app_view(self.app))
 
     def _install_opener_flag(self) -> None:
-        """Tell the driver whether an opener will actually be requested this session.
-
-        Called once per session by BOTH loops, before open_session(). An optional hook (absent on
-        any fake or third-party driver that has no enumeration subsystem to gate), exactly like
-        set_auto_session_policy. `opener.enabled: false` constructs a live-but-DISABLED
-        OpenerService (client=None, not None, `disabled` from construction), which is why the
-        condition is `not disabled` rather than `is not None` -- the same condition every other
-        opener guard in this file uses.
-
-        Observe needs this as much as auto does, and as of doc 5.9's inversion needs it MORE: it
-        is now the only session-level gate on enumeration, and an observe run with openers off
-        would otherwise pay a ~40-frame read per card for a numbered list nobody would ever
-        look at."""
+        """Tell the driver whether this Training or AUTO session can request an opener."""
         install = getattr(self.driver, "set_opener_enabled", None)
         if callable(install):
             install(bool(self.opener_service is not None
@@ -717,22 +155,7 @@ class Worker(threading.Thread):
             bind(self.run_id)
 
     def _announce_targeting_licence_provenance(self) -> None:
-        """Say once per run, in both channels the operator watches, what licensed numbering.
-
-        Numbering behaves identically whether it was licensed by a measured held-out bound or by
-        the owner's accepted centered-autoplay assumption (owner decision 2026-08-21), so the
-        difference cannot be inferred from anything on screen.  If it is not printed and
-        published it does not exist for the operator, and a licence that nobody can tell apart
-        from a measurement is exactly how an accepted risk quietly becomes a believed fact.
-
-        Called from run(), OUTSIDE the restart loop, so it is exactly once per run and applies to
-        observe and auto alike.  The status field is set through RunStatus directly rather than
-        _stat(): the driver session is not open yet, and _stat() repaints the driver's overlay.
-
-        Only Hinge has this licence, and only the assumption channel produces a notice: a
-        measured bound is the state the design doc assumes, and a banner on every ordinary run is
-        how operators learn to stop reading banners.
-        """
+        """Publish the Hinge numbering licence once before the active session starts."""
         if self.app != "hinge":
             return
         notice = still_photo_licence_operator_notice()
@@ -742,42 +165,6 @@ class Worker(threading.Thread):
         print(f"{self.app.title()}: {notice} [{provenance}].")
         if self.status:
             self.status.set_app(self.app, targeting_licence_notice=notice)
-
-    def _announce_observe_targeting_setup(self) -> None:
-        """Explain a run-level targeted-opener prerequisite once, without blocking labels.
-
-        Hinge's model-item suggestions are deliberately withheld until its per-device targeting
-        calibration can prove that the item named before a manual tap is the item shown in the
-        later comment sheet.  The per-card warning remains useful evidence, but it is a poor
-        first explanation: an operator otherwise learns about this prerequisite only after a
-        full capture and may mistake it for a profile-specific failure.  This startup notice is
-        informational only -- observe remains a fully usable manual labelling session.
-
-        Do not call an optional driver's readiness hook when no live opener service could
-        consume it.  ``opener.enabled: false`` is an intentional run-wide choice, not a request
-        to configure targeting, and drivers without targeted suggestions must retain their
-        existing silent observe behaviour.
-        """
-        if not (getattr(self.driver, "accepts_opener", False)
-                and self.opener_service is not None
-                and not getattr(self.opener_service, "disabled", True)):
-            return
-        blocker = getattr(self.driver, "targeted_suggestion_blocker", None)
-        if not callable(blocker):
-            return
-        try:
-            reason = blocker()
-        except Exception:  # noqa: BLE001 -- an optional startup notice must not break Observe
-            return
-        if reason:
-            next_step = targeting_setup_next_step()
-            # The next step is printed VERBATIM, as a clause rather than a sentence, so the
-            # log and the hub carry byte-identical guidance. Re-casing it here would make the
-            # two surfaces differ on exactly the text an operator compares between them.
-            print(f"{self.app.title()} observe: targeted opener suggestions need setup "
-                  f"({reason}). Manual pass/like labels still work; {next_step}.")
-            if self.status:
-                self.status.set_app(self.app, targeting_setup_next_step=next_step)
 
     def _capture_failure(self, exc: BaseException) -> None:
         """Let the driver snapshot the on-screen failure state into its debug log. Called from
@@ -791,32 +178,13 @@ class Worker(threading.Thread):
                 pass
 
     def _capture_failure_if_unexpected(self, exc: BaseException) -> None:
-        """Shared except-clause body for _observe_loop/_auto_loop: snapshot the on-screen
-        state for any failure that isn't a clean DriverClosed stop."""
+        """Snapshot an unexpected failure while the driver transport is still live."""
         if not isinstance(exc, DriverClosed):
             self._capture_failure(exc)
 
     def _finish_session(self, state: str = "stopped", *, stop_reason: str | None = None,
                         stop_kind: str | None = None) -> None:
-        """Shared unconditional cleanup for _observe_loop/_auto_loop's finally: publish the
-        loop's TERMINAL state (rate_limited / out_of_profiles / blocked / stopped — not a
-        blanket "stopped", which would hide why the run ended) and release the driver.
-
-        stop_reason carries a human-readable explanation for a "stopped"/"blocked" outcome
-        that has no exception behind it -- state="error" already has AppStatus.error for
-        that. Optional: every other terminal path (a manual Stop click, out_of_profiles,
-        rate_limited) passes nothing, so the hub still shows a bare "stopped" for those
-        exactly as before.
-
-        stop_kind disambiguates stop_reason's SOURCE now that several different code paths
-        populate it (see AppStatus.stop_kind): "opener" for an opener-side stop (see
-        _opener_stop_reason and _auto_loop's other opener guards), "deck_blocked" for the
-        blocked-deck check added 2026-08-11 (see _observe_loop/_auto_loop's blocked_reason()
-        check), and "targeting" for doc 5.6's hard stop on a like that could not be put on the
-        item its opener was written about (see _targeting_stop_reason). Threaded through
-        the same way as stop_reason -- only included when truthy, so a terminal path that
-        never set one leaves the field at its AppStatus default (None).
-        """
+        """Publish a terminal active-mode state, close the driver, and release Training actions."""
         fields = {"state": state}
         if stop_reason:
             fields["stop_reason"] = stop_reason
@@ -826,8 +194,8 @@ class Worker(threading.Thread):
         try:
             self.driver.close()
         finally:
-            if self.observe_action_bridge:
-                self.observe_action_bridge.unregister(self)
+            if self.training_action_bridge:
+                self.training_action_bridge.unregister(self)
 
     def _opener_stop_reason(self) -> str | None:
         """Human-readable cause of an OpenerService-triggered stop, or None if the service
@@ -835,6 +203,36 @@ class Worker(threading.Thread):
         by every worker, so whichever worker reads it here always sees the SAME original
         cause -- not whichever symptom that particular worker's own opener call hit."""
         return getattr(self.opener_service, "exhausted_reason", None)
+
+    def _request_training_decision(self, profile, pick, pre_send_frame: bytes,
+                                   evidence=None) -> str:
+        """Publish one typed, verified composer and wait for its human decision.
+
+        The driver invokes this only after its keyboard-hide/re-verification boundary.  The
+        returned string is consumed by the driver, which performs the actual verified Like or
+        Dislike; the Worker records the label only after that call returns successfully.
+        """
+        bridge = self.training_action_bridge
+        if bridge is None:
+            self.stop_event.set()
+            return "stop"
+        try:
+            card = bridge.publish_checkpoint(self, pre_send_frame, pick, evidence)
+        except (RuntimeError, ValueError) as exc:
+            self._stat(state="stopped", stop_reason=(
+                "Training checkpoint could not be published; no action was issued: "
+                f"{exc}"), stop_kind="approval")
+            self.stop_event.set()
+            return "stop"
+        self._stat(state="waiting_approval")
+        action = bridge.wait_for_action(self, card["profile_token"], self.stop_event)
+        if action is None or self.stop_event.is_set():
+            bridge.cancel_checkpoint(self, card["profile_token"])
+            self.stop_event.set()
+            return "stop"
+        self._training_claimed_action = action
+        self._stat(state="acting")
+        return action["command"]
 
     @staticmethod
     def _targeting_stop_reason(exc: ItemTargetingError) -> str:
@@ -866,540 +264,46 @@ class Worker(threading.Thread):
                 f"never an option (ops/OPENER-REDESIGN.md 5.6), so the run stops with the screen "
                 f"left exactly as it is for debugging. {exc}")
 
-    def _profile_separator(self) -> None:
-        print("-" * _PROFILE_LOG_WIDTH)
 
     def _capture_profile(self, method: str):
-        """Call the driver's capture (`current_profile` for observe, `next_profile` for auto),
-        handing it this run's stop signal when — and only when — the driver says it honours one.
-
-        Capture is the longest stop-deaf stretch of a run: on Hinge it is 12 screencaps plus 11
-        humanized read-scrolls, and observe mode then scrolls the card back to the top, measured
-        at ~85s in which this worker's own stop checks (the loop condition, and the one on the
-        very next line of both loops) simply do not run. That is the reported bug — Stop pressed
-        mid-read visibly kept scrolling to the end of the profile before anything stopped.
-
-        Gated on the capability flag rather than passed unconditionally, following
-        `on_like_intent`'s precedent a few methods down (and unlike `should_stop` on
-        wait_for_decision, which IS unconditional and is exactly why every observe test double
-        in the suite had to grow that keyword). A driver or fake that never declares
-        `supports_interruptible_capture` keeps its zero-argument capture and its existing
-        between-profiles Stop behaviour, so this cannot break third-party drivers or the
-        hand-driven calibration tools that call current_profile() with no arguments at all.
-
-        Nothing here needs to distinguish "returned None because Stop fired" from any other
-        None: both loops re-check stop_event on the line right after this call, and both already
-        treat None as "recapture" — so an interrupted capture is silent, records nothing, and
-        falls straight out of the loop, which is precisely the wanted behaviour for a read that
-        was abandoned before any decision existed to save.
-        """
+        """Capture a profile, passing the stop callback only to opt-in drivers."""
         capture = getattr(self.driver, method)
         if getattr(self.driver, "supports_interruptible_capture", False):
             return capture(should_stop=self.stop_event.is_set)
         return capture()
 
-    def _observe_capture_method(self) -> str:
-        """Choose the capture contract for this Observe worker, never for a caller request.
 
-        Only an explicit, non-manual bridge can retain Hinge at its indexed bottom anchor.  The
-        dedicated driver method is capability-checked so an older driver/fake remains on the
-        manual-compatible ``current_profile`` contract rather than failing at run time.
-        """
-        if (self.observe_action_bridge is not None
-                and self.observe_action_supported
-                and callable(getattr(self.driver, "current_profile_reviewed", None))):
-            return "current_profile_reviewed"
-        return "current_profile"
 
-    def _block_observe_capture(self, **status_fields) -> None:
-        self.driver.render_busy(_OBSERVE_CAPTURE_BUSY)
-        self._stat(state="capturing", **status_fields)
-
-    def _block_observe_processing(self) -> None:
-        # Same "don't swipe yet" signal as capture, but for the embed/store window after a
-        # manual decision. Drives BOTH channels identically for every app: the in-page busy
-        # modal (Bumble, when enabled) AND the shared status state the hub banner reads —
-        # so apps with no on-screen overlay (Hinge) still show WAIT during the slow embed
-        # instead of a stale decision prompt that would mis-attribute the next action.
-        self.driver.render_busy(_OBSERVE_PROCESSING_BUSY)
-        self._stat(state="acting")
 
     def run(self) -> None:
         def leave() -> None:
-            if self.observe_action_bridge:
-                self.observe_action_bridge.unregister(self)
+            if self.training_action_bridge:
+                self.training_action_bridge.unregister(self)
 
-        backoff, restarts = 2.0, 0
-        # Publish the configured mode without touching the driver. In particular this must
-        # happen before open_session(): if opening an auto session fails, the error banner's
-        # per-app selector must not mistake the still-default AppStatus mode for "observe".
         if self.status:
             self.status.set_app(self.app, mode=self.mode)
         self._bind_debug_run()
         self._announce_targeting_licence_provenance()
-        while not self.stop_event.is_set():
-            # _finish_session unregisters after every loop attempt. Observe's explicit
-            # restart path therefore must renew the bridge binding for each new session.
-            if self.observe_action_bridge:
-                self.observe_action_bridge.register(self)
-            try:
-                self._observe_loop() if self.mode == "observe" else self._auto_loop()
-                leave()
-                return
-            except ActionCancelled:
-                # Stop is neither a failed target nor a driver fault.  The action boundary that
-                # raised this already guaranteed no further input, so end normally without a
-                # failure snapshot, invented stop reason, or decision/counter record.
-                self.stop_event.set()
-                leave()
-                return
-            except DriverClosed as exc:
-                print(f"{exc}; Stopping run so buffered data can be saved.")
-                self.stop_event.set()
-                leave()
-                return
-            except Exception:  # noqa: BLE001
-                # NOTE: the on-screen failure screenshot is captured INSIDE the loop's except
-                # (_capture_failure), BEFORE the loop's finally closes the driver — by here the
-                # transport is already closed, so a snapshot would be blank.
-                # HALT-on-unexpected: any AUTO run that hits an unexpected error must STOP, for
-                # EVERY app — an autonomous loop that restart-and-continues would keep swiping
-                # blindly (risky) and rotate the crucial failure logs away. The HALT line + the
-                # traceback go to stdout/stderr, which the hub tees into the live-log panel, so
-                # the stop is visible on the GUI terminal view (and lands in the bug report).
-                # Observe mode keeps per-driver behavior via halt_on_error — which now
-                # DEFAULTS TO TRUE on the driver ABC (see DatingAppDriver.halt_on_error).
-                # The default used to be False here, so a driver that never declared the
-                # attribute (PlaywrightDriver did not) got restart-with-backoff by omission
-                # rather than by decision: the riskier path was what you got by forgetting.
-                # Restarting is not free even in observe mode, where the bot only reads — the
-                # worker re-attaches to whatever is on screen, and a driver that was confused
-                # about which card it was on then mis-attributes the manual swipes it records,
-                # corrupting the taste model permanently. Restart is now reachable only by
-                # explicitly setting apps.<app>.halt_on_error: false, which config validation
-                # allows in observe mode only.
-                if self.mode == "auto" or getattr(self.driver, "halt_on_error", True):
-                    print(f"{self.app.title()} unexpected error in {self.mode} mode; HALTING "
-                          f"(no restart) so nothing swipes blindly and the debug logs survive:")
-                    traceback.print_exc()
-                    # Publish error to hub so the banner shows the failure (not a silent stop).
-                    self._stat(state="error", error=traceback.format_exc().strip().splitlines()[-1])
-                    self.stop_event.set()
-                    leave()
-                    return
-                restarts += 1
-                print(f"{self.app.title()} worker error (restart {restarts}/{self.max_restarts}):")
-                traceback.print_exc()
-                if restarts > self.max_restarts or self.stop_event.is_set():
-                    print(f"{self.app.title()} worker giving up.")
-                    leave()
-                    return
-                self.stop_event.wait(human_cooldown(min(backoff, 60)))
-                backoff *= 2
-        leave()
-
-    # --- shadow learning: you decide, the bot learns --------------------
-    def _observe_loop(self) -> None:
-        print(f"{self.app.title()} observe mode — use the app's pass/like controls; "
-              "I'll learn from each decision.")
-        # Same hook, same place in the sequence, as _auto_loop's -- see _install_opener_flag.
-        # Doc 5.9's inversion made observe an enumerating mode, so this is now what stands
-        # between a no-opener observe run and a ~40-frame read per card it would never use.
-        self._install_opener_flag()
-        self.driver.open_session()
-        self._stat(mode="observe")             # set mode for the hub; the loop owns per-card WAIT/SWIPE
-        self._announce_observe_targeting_setup()
-        added = 0
-        last_retrained = 0
-        pending_error = False
-        terminal_state = "stopped"            # overwritten below when the loop ends for a known reason
-        stop_reason = None                    # set for an OpenerService- or deck-blocked stop; see _finish_session
-        stop_kind = None                      # disambiguates stop_reason's source; see _finish_session/status.py
+        if self.stop_event.is_set():
+            leave()
+            return
+        if self.training_action_bridge:
+            self.training_action_bridge.register(self)
         try:
-            while not self.stop_event.is_set():
-                # Ask the driver whether something is STANDING BETWEEN us and the deck --
-                # deliberately checked BEFORE out_of_profiles() below, because it is the more
-                # specific answer (out_of_profiles just means the deck ran dry; this means
-                # there is a screen up that isn't the deck and isn't empty either). Default
-                # implementation (DatingAppDriver.blocked_reason) returns None for every
-                # driver but Hinge, so this is a no-op for Bumble/web.
-                #
-                # THIS IS A GRACEFUL STOP, NOT AN ERROR: Hinge's own "you're out of free likes
-                # for today" Hinge+ upgrade screen can refuse a like. The phone is in a
-                # perfectly normal state -- nothing is broken and
-                # nothing here should be retried -- so this must NOT go through the
-                # HALT-on-unexpected exception path (that path is for something actually
-                # wrong). Before this check existed, worker.py called
-                # wait_for_decision(timeout=None) with no bail-out at all, so this exact
-                # screen hung observe mode for 2.5 minutes polling for a decision that could
-                # never come, until the owner pressed Stop by hand. And above all: the
-                # paywall is a PURCHASE screen, observe mode is strictly passive, and it must
-                # never be tapped/dismissed automatically -- so this branch only reads the
-                # screen and stops; it does not touch it.
-                blocked = self.driver.blocked_reason()
-                if blocked is not None:
-                    record = getattr(self.driver, "observe_release_fact", None)
-                    if callable(record):
-                        try:
-                            record("refusal_or_paywall_logged")
-                        except Exception:  # noqa: BLE001 -- debug proof must not affect passive stop
-                            pass
-                    terminal_state = "blocked"
-                    stop_reason = blocked
-                    stop_kind = "deck_blocked"
-                    self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
-                    self.stop_event.set()
-                    break
-                if self.driver.out_of_profiles():
-                    terminal_state = "out_of_profiles"
-                    self._stat(state=terminal_state)
-                    break
-                self._profile_separator()
-                self._block_observe_capture()                # WAIT cue for every card (capturing state)
-                # A reviewed bridge is the sole phone controller for this card.  It can retain
-                # Hinge's completed capture at the exact scrolled entry anchor the item index
-                # was measured on; manual Observe must keep the long-standing top-unwind
-                # contract for a person inspecting the card.  Capability-check the dedicated
-                # method so older/duck-typed drivers retain their normal capture path.
-                profile = self._capture_profile(self._observe_capture_method())
-                if self.stop_event.is_set():
-                    break
-                if profile is None:
-                    continue
-                if not profile.photos:
-                    print("Captured 0 profile photos; waiting to recapture before learning.")
-                    self._stat(last_decision="no_photos")     # stays WAIT (busy still up from this iteration)
-                    self.stop_event.wait(_NO_PHOTO_RETRY_S)
-                    continue
-                self.driver.render_busy(None)                 # processing done -> OK to decide now
-                # EVERY opener field is cleared together, always. RunStatus.set_app's own
-                # auto-clear only fires when opener_suggestion is ABSENT from the update, so
-                # naming it here (as this call has always done) opts this site out of that
-                # safety net -- and clearing the text while leaving the rest behind would let the
-                # PREVIOUS card's "about: her dog" caption, or its "like item 3" instruction, sit
-                # against the next card. status.cleared_opener_fields() is the one place that
-                # list lives, so a field added there cannot be forgotten here.
-                self._stat(state="waiting", **cleared_opener_fields())
-                # READY IS PUBLISHED BEFORE THE SUGGESTION IS ASKED FOR, deliberately (doc 5.9):
-                # generation can take up to opener.request_timeout_s and the operator must not be
-                # made to wait for it. More than a courtesy -- blocking here would mean a human
-                # who acts during the wait is never observed at all, because wait_for_decision
-                # would start against a card they had already left, losing that decision and
-                # mis-attributing the next one. The suggestion fills in behind this line.
-                instruction = getattr(
-                    self.driver, "observe_decision_instruction",
-                    "use the app's pass/like controls")
-                print(f"✅ READY — {instruction} for this profile.")
-                self._warn_if_capture_truncated(profile)
-                action_card = (self.observe_action_bridge.begin_card(self)
-                               if self.observe_action_bridge and self.observe_action_supported else None)
-                self._active_observe_action_profile_token = (
-                    action_card["profile_token"] if action_card else None)
-                suggestion = _ObserveSuggestion(self, profile).start()
-                try:
-                    liked = self._wait_for_observed_decision(
-                        suggestion, action_card["profile_token"] if action_card else None)
-                finally:
-                    # Unconditional, on every exit from the wait (decision, resync, stop, raise).
-                    # After this returns, nothing can publish for this card and nothing can call
-                    # into the driver from the suggestion thread -- which is the precondition for
-                    # the next iteration capturing a new profile and invalidating the driver's
-                    # item table underneath it. See _ObserveSuggestion.cancel.
-                    suggestion.cancel()
-                    if action_card:
-                        self.observe_action_bridge.end_card(self, action_card["profile_token"])
-                    self._active_observe_action_profile_token = None
-                if liked is _OBSERVE_PRE_TAP_TARGETING_REFUSED:
-                    # The reviewed bridge refused BEFORE a heart tap.  The driver may have
-                    # scrolled while proving the advertised item unreachable, but it did not
-                    # send a pass or a like; re-capture through the normal owner path rather
-                    # than manufacturing either decision.  The ``finally`` above has already
-                    # cancelled the suggestion and ended this card's capability tokens.
-                    print("Reviewed target refused before a heart tap — recapturing, nothing recorded.")
-                    self._stat(last_decision="targeting_refused")
-                    continue
-                if liked is None:                             # card changed / deck empty / stop -> recapture
-                    # wait_for_decision's None return covers SEVERAL different situations, not
-                    # just one (see base.py's docstring): stop requested, deck emptied, timeout,
-                    # or a card that genuinely changed with nothing corroborating it as a human
-                    # decision (a RESYNC -- a drag-only touch, a tap outside the tap-radius
-                    # tolerance; see hinge.py's _observe_gesture_verdict and its observe_resync
-                    # debug record). Exactly one of those is something this worker itself
-                    # cheaply knows, rather than has to guess at: `should_stop` passed into
-                    # wait_for_decision above is self.stop_event.is_set, so if self.stop_event
-                    # is set here, THIS None is the operator's own Stop (or a supervisor
-                    # shutdown) firing mid-wait -- not anything the driver observed on screen.
-                    # That case used to be labelled "resync" along with everything else, and it
-                    # actively misled a real investigation: a bug report's run ended on a plain
-                    # manual Stop, and the last console line still read "Card changed without a
-                    # corroborated decision (resync)" -- a developer reading that log reasonably
-                    # went looking for a perception bug that had never happened at that moment.
-                    # A Stop is the operator's own action, not evidence about the screen, so it
-                    # is split out below and reported as nothing more than what it is.
-                    #
-                    # The REMAINING cases -- deck emptied, timeout, a genuine uncorroborated
-                    # advance -- are still deliberately reported together as "resync", because
-                    # telling THEM apart would need the driver to report WHY through a signature
-                    # two other drivers and two tools also call with fewer arguments. In the
-                    # deck-emptied/timeout cases this label is only momentarily stale anyway:
-                    # the loop's own out_of_profiles handling overwrites `state` on the very
-                    # next check, right above.
-                    if self.stop_event.is_set():
-                        continue                              # operator's own Stop -- not a resync; nothing to report
-                    print("Card changed without a corroborated decision (resync) — "
-                          "recapturing, nothing recorded.")
-                    self._stat(last_decision="resync")
-                    continue                                  # next iteration re-blocks + recaptures the card
-                # A bool here is a confirmed preference action.  Do NOT drop it merely because
-                # Stop arrived in the tiny interval after the driver/bridge returned that fact:
-                # a Hinge Like may already be server-side, and its staged advisory opener must
-                # cross the same decision boundary exactly once.  The ``liked is None`` path
-                # above remains the Stop-before-decision path and discards the draft.
-                #
-                # This is deliberately different from the check immediately after capture:
-                # there, no decision exists yet.  Here the card's action is already complete;
-                # finish its durable accounting, then the while condition ends the run before
-                # any new capture can begin.
-                # block the next decision while this one embeds (avoids mis-attribution)
-                decision = "LIKE" if liked else "PASS"
-                decision_source = getattr(self, "_observe_action_decision_source", self.observe_source)
-                self._observe_action_decision_source = self.observe_source
-                print(f"Got {decision} — processing, don't decide again yet…")
-                self._block_observe_processing()
-                # Persist the completed physical action BEFORE any optional archive/embedding
-                # work and before committing its staged opener.  A real Like/Pass remains a
-                # decision even when there is no usable face vector or the photo archive is
-                # unavailable.  Most importantly, this gives every committed opener a durable
-                # Like decision to join to: cleanup/reporting must never have to infer an action
-                # from a generated message alone.
-                #
-                # No broad try/except belongs around this call.  If durable decision storage is
-                # down after a real swipe, continuing to archive/label or commit an opener would
-                # manufacture a misleading partial history.  The normal worker failure path
-                # leaves the device snapshot and the storage error visible instead.
-                profile_id = uuid.uuid4().hex
-                decision_created_at = time.time()
-                _record_decision_with_lineage(
-                    self.store, self.run_id, self.app, "like" if liked else "dislike",
-                    1.0 if liked else 0.0, source=decision_source,
-                    profile_id=profile_id, created_at=decision_created_at)
-                if liked:
-                    # The advisory opener was only a draft until this exact physical-action
-                    # boundary.  It follows the decision row (rather than preceding it), so a
-                    # store failure cannot leave an opener claiming a Like that has no matching
-                    # durable decision.  Pass, Stop-before-decision, resync, and failed/pre-tap
-                    # bridge actions never reach either call.
-                    suggestion.commit_if_liked(profile_id=profile_id, decision_source=decision_source,
-                                               decision_created_at=decision_created_at)
-                if self.status:
-                    self.status.record_swipe(self.app, "like" if liked else "pass")
-                metadata = self._label_metadata(profile)
-                archived = self.store.record_profile(self.run_id, self.app, profile_id, liked,
-                                                     source=decision_source, photos=profile.photos, **metadata)
-                vec = self.decider.embed(profile)
-                if vec is None:                               # no face -> not a useful label
-                    self._stat(last_decision="no_face")
-                    continue
-                if archived is False:                         # images couldn't be saved -> no label without them
-                    self._stat(last_decision="archive_failed")
-                    continue
-                # NOTE: deliberately no stop_event check here. A manual swipe already
-                # happened and its photos + embedding are already committed above — Stop
-                # must end the loop AFTER this label is saved (the while-loop condition
-                # below does that without starting a NEW capture), not discard work in hand.
-                self.store.add_label(self.run_id, self.app, liked, vec, source=decision_source,
-                                     profile_id=profile_id, profile_name=profile.name, **metadata)
-                print(f"Training label saved for profile: {profile.name or '<name unavailable>'}")
-                if self.status:
-                    self.status.inc_labels(1)
-                self._render()
-                # A budget/credit stop can be discovered while generating the Hinge
-                # suggestion. This human decision is already durably recorded above,
-                # so honour the stop only now rather than interrupting the open sheet.
-                if getattr(self.opener_service, "stop_requested", False):
-                    stop_reason = self._opener_stop_reason()
-                    stop_kind = "opener"
-                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
-                    self.stop_event.set()
-                added += 1
-                if added % self.retrain_every == 0:
-                    self._retrain_after_observe_labels(added)
-                    last_retrained = added
-        except DeckBlockedError as exc:
-            # Reviewed Observe actions use the same guarded Android input boundaries as AUTO.
-            # If a foreign foreground or known paywall appears in that last-moment window,
-            # publish the ordinary blocked state and retain any labels completed beforehand;
-            # no decision exists for the interrupted card.
-            terminal_state = "blocked"
-            stop_reason = str(exc)
-            stop_kind = "deck_blocked"
-            self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
-            self.stop_event.set()
-        except BaseException as exc:
-            pending_error = True
-            if isinstance(exc, Exception):
-                self._capture_failure_if_unexpected(exc)      # snapshot WHILE the transport is live
-            raise
-        finally:
-            try:
-                if added and added != last_retrained:
-                    try:
-                        self._retrain_after_observe_labels(added)
-                    except Exception:  # noqa: BLE001
-                        if not pending_error:
-                            raise
-                        print(f"{self.app.title()} final retrain skipped after shutdown error:")
-                        traceback.print_exc()
-            finally:
-                # Same set-clearing rule as the per-card reset above (see status.py): naming
-                # opener_suggestion opts this call out of set_app's auto-clear, so EVERY OTHER
-                # field in the set must be named too, or a finished run leaves the hub showing
-                # what the last suggestion was supposedly about -- or, since doc 5.9's
-                # inversion, a "like item 3" instruction and its description -- with no
-                # suggestion under any of it. status.cleared_opener_fields() is the single list
-                # (the set was three fields when this comment first said "the other two"; it is
-                # seven now, which is exactly why the list lives in one place and is splatted
-                # rather than re-typed at each site).
-                self._stat(**cleared_opener_fields())
-                self.driver.render_busy(None)
-                self._finish_session(terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
-
-    def _observe_action_suggestion(self, profile_token: str | None, pick) -> None:
-        """Publish only the item binding; text stays inside the existing suggestion/status path."""
-        if profile_token and self.observe_action_bridge:
-            self.observe_action_bridge.update_suggestion(self, profile_token, pick)
-
-    def _observe_action_pre_tap_published(self, profile_token: str | None) -> None:
-        """Unlock a reviewed heart only after its hub-publication fact was written."""
-        if profile_token and self.observe_action_bridge:
-            self.observe_action_bridge.mark_pre_tap_published(self, profile_token)
-
-    def _perform_observe_action(self, action: dict, suggestion: "_ObserveSuggestion"):
-        """Run one approved action on this Worker thread at its waiting boundary."""
-        bridge = self.observe_action_bridge
-        try:
-            if self.stop_event.is_set():
-                bridge.complete(action, "aborted", "run is stopping")
-                return None
-            command = action["command"]
-            if command == "pass":
-                self.driver.observe_pass(should_stop=self.stop_event.is_set)
-                bridge.complete(action, "completed", phase="terminal")
-                self._observe_action_decision_source = self.observe_source
-                return False
-            pick = getattr(suggestion, "_pick", None)
-            if (pick is None or not getattr(pick, "text", None)
-                    or getattr(pick, "index", None) != action["item"]):
-                bridge.complete(action, "rejected", "suggestion is no longer current")
-                return "continue"
-            if command == "targeted_like_open":
-                # Hinge owns its current numbered-item index and entry anchor.  The bridge
-                # supplies only the model item number it already advertised; no screen points.
-                self.driver.observe_open_targeted_like(action["item"], should_stop=self.stop_event.is_set)
-                bridge.complete(action, "completed", phase="sheet_open")
-                return "continue"
-            if command == "send_current_suggestion":
-                # The driver re-verifies the current composer/item before typing or sending.
-                self.driver.observe_send_targeted_like(pick.text, action["item"],
-                                                       should_stop=self.stop_event.is_set)
-                bridge.complete(action, "completed", phase="terminal")
-                self._observe_action_decision_source = self.observe_source
-                return True
-            bridge.complete(action, "rejected", "unsupported command")
-            return "continue"
+            self._training_loop() if self.mode == "training" else self._auto_loop()
         except ActionCancelled:
-            bridge.complete(action, "aborted", "run stopped before device input")
-            raise
-        except ItemTargetingError as exc:
-            # A targeting refusal at preflight/navigation is the one driver-guaranteed
-            # no-tap outcome.  In AI-reviewed Observe it is recoverable: mark this exact
-            # bridge action terminal, retire its one-card capability in the caller, and
-            # recapture.  Never turn it into a synthetic Pass and never persist a label.
-            #
-            # ``verify`` is intentionally *not* included.  That happens after the heart can
-            # have been tapped and leaves a sheet open; treating it as a benign retry could
-            # conceal a partial irreversible action.  It retains the normal fail-closed worker
-            # failure behaviour below.
-            if (action.get("command") == "targeted_like_open"
-                    and getattr(exc, "stage", "") in {"preflight", "navigate"}):
-                bridge.complete(action, "failed", f"{type(exc).__name__}: {exc}")
-                return _OBSERVE_PRE_TAP_TARGETING_REFUSED
-            bridge.complete(action, "failed", f"{type(exc).__name__}: {exc}")
-            raise
-        except Exception as exc:  # driver preserves the screen for targeting failures
-            bridge.complete(action, "failed", f"{type(exc).__name__}: {exc}")
-            raise
-
-    def _wait_for_observed_decision(self, suggestion: "_ObserveSuggestion", profile_token: str | None = None):
-        """Wait for one human decision, checking their tap against the suggestion already shown.
-
-        Hinge is the only current driver that exposes its intermediate comment sheet. This
-        callback publishes shared status and runs one deterministic comparison on a frame the
-        driver already holds; it never calls a tap, swipe, or text method, and it no longer calls
-        the opener service at all. Other drivers and older fakes retain their existing
-        ``wait_for_decision`` signature.
-
-        THE CALLBACK'S JOB INVERTED WITH DOC 5.9, and this is the whole diff. It used to be
-        "generate an opener now that we know which item the human chose", with the sheet frame
-        handed to the model as an ANCHOR. The suggestion is now already on the hub before the
-        human touches anything (see _ObserveSuggestion, started by the loop right after READY),
-        so the frame is no longer an input to anything -- it is the EVIDENCE that the item the
-        human opened is the item the suggestion was written for. On a mismatch the hub replaces
-        the opener with a warning and offers no text to type: doc 5.9's rule, and the reason the
-        inversion does not quietly reintroduce the out-of-place openers it was built to fix.
-
-        The `profile` argument is gone: this method no longer builds a request, so it no longer
-        needs one. `suggestion` already holds the profile it was built from, which is what keeps
-        "the suggestion on the hub" and "the card in front of the human" the same card by
-        construction rather than by two arguments agreeing.
-
-        NOTHING IN HERE CAN END THE SESSION. The generation call that used to sit in this
-        callback is on its own thread and is advisory (short bounded retries,
-        `request_stop=False`), so an
-        opener failure remains what it always was -- cosmetic. The observe loop's own
-        `stop_requested` check stays, because a DIFFERENT worker (an auto-mode app sharing this
-        OpenerService) can still legitimately ask everyone to stop.
-        """
-        bridge = self.observe_action_bridge if profile_token else None
-        if bridge is None and not getattr(self.driver, "supports_observe_like_intent", False):
-            return self.driver.wait_for_decision(timeout=None,
-                                                 should_stop=self.stop_event.is_set)
-
-        # `anchor: bytes | None = None` keeps this callback callable by any driver that has
-        # not adopted the two-argument hook yet -- an old-style `on_like_intent(active)` call
-        # (a single positional bool) still binds fine, rather than raising a TypeError that
-        # the driver's own notifier would swallow (see _notify_observe_like_intent's
-        # best-effort contract) and thereby kill suggestions silently, with nothing on the
-        # hub to say why. An old-style caller then reaches sheet_opened(None), which is a
-        # WARNING rather than a pass: "we could not look" must never render as "we looked".
-        def on_like_intent(active: bool, anchor: bytes | None = None) -> None:
-            if active:
-                suggestion.sheet_opened(anchor)
-            else:
-                suggestion.sheet_closed()
-
-        def interrupted() -> bool:
-            return self.stop_event.is_set() or bool(bridge and bridge.has_pending(self, profile_token))
-
-        while True:
-            action = bridge.claim(self, profile_token) if bridge else None
-            if action:
-                outcome = self._perform_observe_action(action, suggestion)
-                if outcome == "continue":
-                    continue
-                return outcome
-            if not getattr(self.driver, "supports_observe_like_intent", False):
-                result = self.driver.wait_for_decision(timeout=None, should_stop=interrupted)
-            else:
-                result = self.driver.wait_for_decision(timeout=None, should_stop=interrupted,
-                                                       on_like_intent=on_like_intent)
-            if self.stop_event.is_set():
-                return None
-            # A pending command makes the driver return None through should_stop; claim it
-            # immediately instead of treating it as a manual resync/capture race.
-            if bridge and bridge.has_pending(self, profile_token):
-                continue
-            return result
+            self.stop_event.set()
+        except DriverClosed as exc:
+            print(f"{exc}; Stopping run so buffered data can be saved.")
+            self.stop_event.set()
+        except Exception:  # noqa: BLE001
+            print(f"{self.app.title()} unexpected error in {self.mode} mode; HALTING "
+                  f"(no restart) so nothing swipes blindly and the debug logs survive:")
+            traceback.print_exc()
+            self._stat(state="error", error=traceback.format_exc().strip().splitlines()[-1])
+            self.stop_event.set()
+        finally:
+            leave()
 
     @staticmethod
     def _warn_if_capture_truncated(profile) -> None:
@@ -1426,12 +330,295 @@ class Worker(threading.Thread):
         print(f"   ⚠️  only the first {frames} screencaps of this profile were read (it is "
               f"longer than the configured ceiling), so scroll detection is weaker for this card.")
 
-    def _retrain_after_observe_labels(self, added: int) -> None:
+    def _retrain_after_labels(self, added: int) -> None:
         ready = self.decider.retrain(self.store)
         if self.status:
             self.status.set_global(ranker_ready=ready)
         self._render()
         print(f"Learned {added} labels this run; ranker ready={ready}")
+
+    # --- Hub-reviewed training: prepare every profile, human decides -----------------
+    def _training_loop(self) -> None:
+        """Create manual training labels without consulting the preference model.
+
+        This intentionally does not share AUTO's decision section: even a seemingly harmless
+        call to ``decider.decide`` would make a model prediction part of a human-ground-truth
+        workflow.  Hinge owns all device input after the callback command is returned; this
+        method owns the durable decision/profile/embedding transaction afterwards.
+        """
+        if self.training_action_bridge is None:
+            self._stat(state="stopped", stop_reason=(
+                "Training requires the local Hub decision bridge; no automation was started"))
+            self.stop_event.set()
+            return
+        if (not self.training_action_supported
+                or not callable(getattr(self.driver, "set_training_decision", None))):
+            self._stat(state="stopped", stop_reason=(
+                "Training requires Hinge's verified Hub Like/Dislike decision hook; "
+                "no automation was started"), stop_kind="targeting")
+            self.stop_event.set()
+            return
+        if (self.opener_service is None or getattr(self.opener_service, "disabled", True)
+                or not getattr(self.driver, "accepts_opener", False)):
+            self._stat(state="stopped", stop_reason=(
+                "Training requires an enabled opener service and an opener-capable driver; "
+                "no automation was started"), stop_kind="opener")
+            self.stop_event.set()
+            return
+
+        self._install_opener_flag()
+        # AndroidDriver uses this hook to mark the session as device-driven before it chooses
+        # whether to attach its touch watcher.
+        # ``None`` deliberately installs no AutoSessionPolicy: training must not consult or
+        # adapt to the preference model.
+        set_policy = getattr(self.driver, "set_auto_session_policy", None)
+        if callable(set_policy):
+            set_policy(None)
+        self.driver.open_session()
+        self._stat(mode="training", state="scoring")
+        self._actions_since_break = 0
+        self._break_hazard = random.uniform(0.04, 0.14)
+        self._break_due_after = random.uniform(12, 35)
+        acted = liked = 0
+        labels_added = 0
+        last_retrained = 0
+        pending_error = False
+        has_daily_limit = self.limiter is not None and self.limiter.max_per_day is not None
+        # Training decisions carry ``source=manual``.  Do not ask the historical AUTO-only
+        # counter here: that would make a daily cap silently reset between Training runs.
+        today0 = (self.store.count_today(self.app, source="manual")
+                  if has_daily_limit else 0)
+        today_acted = 0
+        today_date = date.today()
+        terminal_state, stop_reason, stop_kind = "stopped", None, None
+        try:
+            while not self.stop_event.is_set():
+                if has_daily_limit:
+                    today = date.today()
+                    if today != today_date:
+                        today0, today_acted, today_date = (
+                            self.store.count_today(self.app, source="manual"), 0, today)
+                blocked = self.driver.blocked_reason()
+                if blocked is not None:
+                    terminal_state, stop_reason, stop_kind = "blocked", blocked, "deck_blocked"
+                    self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
+                    self.stop_event.set()
+                    break
+                if self.driver.out_of_profiles():
+                    terminal_state = "out_of_profiles"
+                    self._stat(state=terminal_state)
+                    break
+                if self.limiter and not self.limiter.allow(acted, today0 + today_acted):
+                    terminal_state = "rate_limited"
+                    self._stat(state=terminal_state)
+                    break
+
+                profile = self._capture_profile("next_profile")
+                if self.stop_event.is_set():
+                    break
+                if profile is None:
+                    blocked = self.driver.blocked_reason()
+                    if blocked is not None:
+                        terminal_state, stop_reason, stop_kind = "blocked", blocked, "deck_blocked"
+                        self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
+                        self.stop_event.set()
+                    break
+                if not profile.photos:
+                    self._stat(last_decision="no_photos", state="scoring")
+                    self.stop_event.wait(_NO_PHOTO_RETRY_S)
+                    continue
+
+                unavailable = getattr(profile, "items_unavailable", "")
+                unnumbered = getattr(profile, "items_unnumbered", "")
+                if unavailable or unnumbered:
+                    stop_reason = (
+                        "Training could not prepare a verifiable targeted opener for this profile: "
+                        f"{unavailable or unnumbered}. No action or label was recorded.")
+                    stop_kind = "opener"
+                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
+                    self.stop_event.set()
+                    break
+                items = ItemRequest.from_profile(profile) if getattr(profile, "items", ()) else None
+                opener_kwargs = {"items": items, "should_stop": self.stop_event.is_set}
+                if (callable(getattr(self.opener_service, "commit_opener", None))
+                        and _accepts_keywords(self.opener_service.maybe_opener, "stage")):
+                    opener_kwargs["stage"] = True
+                pick = self.opener_service.maybe_opener(
+                    self.run_id, self.app, profile, **opener_kwargs)
+                if self.stop_event.is_set() or getattr(self.opener_service, "stop_requested", False):
+                    stop_reason, stop_kind = self._opener_stop_reason(), "opener"
+                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
+                    self.stop_event.set()
+                    break
+                text = getattr(pick, "text", None)
+                if not isinstance(text, str) or not text.strip():
+                    stop_reason = ("Training requires a complete generated opener before a profile "
+                                   "can be reviewed; no action or label was recorded")
+                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind="opener")
+                    self.stop_event.set()
+                    break
+                targeted = {}
+                if (getattr(pick, "index", ITEM_INDEX_ABSENT) != ITEM_INDEX_ABSENT
+                        and getattr(pick, "index_space", None) == INDEX_SPACE_MODEL_ITEMS):
+                    targeted = {"item_index": None, "model_item_index": pick.index}
+                elif (getattr(self.driver, "supports_capture_order_training_target", False)
+                      and getattr(pick, "capture_order_index", None) is not None):
+                    targeted = {"item_index": pick.capture_order_index}
+                if not targeted:
+                    stop_reason = ("Training opener did not name a target the driver can verify; "
+                                   "no action or label was recorded")
+                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind="opener")
+                    self.stop_event.set()
+                    break
+                if self.limiter and not self.limiter.allow_like(liked):
+                    terminal_state = "rate_limited"
+                    self._stat(state=terminal_state)
+                    break
+
+                self._training_claimed_action = None
+                self.driver.set_training_decision(
+                    lambda frame, evidence, profile=profile, pick=pick: self._request_training_decision(
+                        profile, pick, frame, evidence))
+                try:
+                    like_kwargs = dict(targeted)
+                    if getattr(self.driver, "supports_interruptible_like_navigation", False):
+                        like_kwargs["should_stop"] = self.stop_event.is_set
+                    outcome = self.driver.like(text, **like_kwargs)
+                except ActionCancelled:
+                    action = self._training_claimed_action
+                    if action is not None:
+                        self.training_action_bridge.complete(
+                            action, status="aborted", reason="training decision was cancelled")
+                    raise
+                except Exception:
+                    action = self._training_claimed_action
+                    if action is not None:
+                        self.training_action_bridge.complete(
+                            action, status="failed", reason="the device action did not complete")
+                    raise
+                finally:
+                    self.driver.set_training_decision(None)
+                action = self._training_claimed_action
+                self._training_claimed_action = None
+                if outcome not in {"like", "dislike"} or action is None:
+                    # A stop/cancellation leaves the phone untouched by the driver contract.
+                    if action is not None:
+                        self.training_action_bridge.complete(
+                            action, status="aborted", reason="training decision was cancelled")
+                    if self.stop_event.is_set():
+                        break
+                    raise RuntimeError("training driver returned no verified Like/Dislike outcome")
+                if outcome != action.get("command"):
+                    self.training_action_bridge.complete(
+                        action, status="failed", reason="driver outcome disagreed with the Hub decision")
+                    raise RuntimeError("training driver outcome disagreed with the Hub decision")
+
+                try:
+                    profile_id, decided_at = uuid.uuid4().hex, time.time()
+                    # Validate the local, pure parts of a training datum before writing any
+                    # durable action lineage.  The phone action is already irreversible, but
+                    # an unavailable embedder must not also consume a manual daily allowance or
+                    # leave an opener/decision fragment that the Hub correctly reports failed.
+                    metadata = self._label_metadata(profile)
+                    vec = self.decider.embed(profile)
+                    if vec is None:
+                        raise RuntimeError(
+                            "the training profile could not be embedded; no label was saved")
+                    archived = self.store.record_profile(
+                        self.run_id, self.app, profile_id, outcome == "like", source="manual",
+                        photos=profile.photos, **metadata)
+                    if archived is False:
+                        raise RuntimeError(
+                            "the training profile could not be archived; no label was saved")
+                    if outcome == "like":
+                        commit = getattr(self.opener_service, "commit_opener", None)
+                        if callable(commit):
+                            landed_evidence = None
+                            evidence_hook = getattr(
+                                self.driver, "landed_auto_opener_evidence", None)
+                            if callable(evidence_hook):
+                                landed_evidence = evidence_hook()
+                            if _accepts_keywords(commit, "profile_id", "decision", "decision_source",
+                                                 "decision_created_at"):
+                                commit_kwargs = {
+                                    "profile_id": profile_id,
+                                    "decision": "like",
+                                    "decision_source": "manual",
+                                    "decision_created_at": decided_at,
+                                }
+                                if (landed_evidence is not None
+                                        and _accepts_keywords(commit, "pre_send_evidence")):
+                                    commit_kwargs["pre_send_evidence"] = landed_evidence
+                                committed = commit(pick, **commit_kwargs)
+                            else:
+                                committed = commit(pick)
+                            # OpenerService deliberately turns a post-send storage outage into
+                            # ``False`` so AUTO can keep its already-landed action.  Training's
+                            # Hub result has a stricter promise: it cannot say the reviewed Like
+                            # completed when its typed opener/evidence was not persisted.
+                            if committed is False:
+                                raise RuntimeError(
+                                    "the landed training opener could not be persisted")
+                    _record_decision_with_lineage(
+                        self.store, self.run_id, self.app, outcome,
+                        1.0 if outcome == "like" else 0.0, source="manual",
+                        profile_id=profile_id, created_at=decided_at)
+                    self.store.add_label(
+                        self.run_id, self.app, outcome == "like", vec, source="manual",
+                        profile_id=profile_id, profile_name=profile.name, **metadata)
+                    flush = getattr(self.store, "flush", None)
+                    if not callable(flush):
+                        raise RuntimeError(
+                            "Training requires a store with a durable flush operation")
+                    # BigQuery deliberately buffers each table independently.  A Hub action is
+                    # not completed until its decision, opener/evidence, archive, and label have
+                    # crossed that boundary; otherwise a process loss can turn a green Hub
+                    # result into missing training data.
+                    flush()
+                    self.training_action_bridge.complete(action, status="completed")
+                except Exception:
+                    self.training_action_bridge.complete(
+                        action, status="failed", reason="training action could not be persisted")
+                    raise
+                # Completion means durable action data exists.  Training/repainting is useful
+                # follow-up work, but a retrain/status failure must never rewrite that fact as a
+                # failed Hub action.
+                labels_added += 1
+                if self.status:
+                    self.status.record_swipe(self.app, outcome)
+                    self.status.inc_labels(1)
+                if labels_added % self.retrain_every == 0:
+                    self._retrain_after_labels(labels_added)
+                    last_retrained = labels_added
+                acted += 1
+                today_acted += 1
+                if outcome == "like":
+                    liked += 1
+                self._pace(outcome, profile=profile,
+                            score=1.0 if outcome == "like" else 0.0)
+                self._maybe_session_break()
+        except DeckBlockedError as exc:
+            terminal_state, stop_reason, stop_kind = "blocked", str(exc), "deck_blocked"
+            self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
+            self.stop_event.set()
+        except Exception as exc:
+            pending_error = True
+            self._capture_failure_if_unexpected(exc)
+            raise
+        finally:
+            try:
+                # Match the manual-label contract: normal runs retrain in bounded batches,
+                # then flush a final partial batch before the session closes.
+                if labels_added and labels_added != last_retrained:
+                    try:
+                        self._retrain_after_labels(labels_added)
+                    except Exception:
+                        if not pending_error:
+                            raise
+                        print(f"{self.app.title()} final training retrain skipped after shutdown error:")
+                        traceback.print_exc()
+            finally:
+                self._finish_session(terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
 
     # --- autonomous: the bot swipes ------------------------------------
     def _auto_loop(self) -> None:
@@ -1443,10 +630,10 @@ class Worker(threading.Thread):
         # constant 0) and removes the false positive without weakening any runtime guard.
         acted: int = 0
         liked: int = 0
-        # This state belongs to one auto session, not to the learned preference
-        # model.  It may only make a marginal model like more conservative; it
-        # never manufactures a like.  Fakes/third-party deciders need not expose
-        # the underlying model, hence the guarded configured-threshold lookup.
+        # This state belongs to one auto session, not to the learned preference model. It may
+        # only make a marginal model like more conservative; it never manufactures a like.
+        # Fakes/third-party deciders need not expose the underlying model, hence the guarded
+        # configured-threshold lookup.
         configured_threshold = getattr(getattr(self.decider, "model", None), "threshold", 0.5)
         try:
             configured_threshold = float(configured_threshold)
@@ -1455,9 +642,9 @@ class Worker(threading.Thread):
         if not 0.0 < configured_threshold < 1.0:
             configured_threshold = 0.5
         self._auto_policy = AutoSessionPolicy(base_threshold=configured_threshold)
-        # AndroidDriver exposes the policy through a deliberately optional
-        # hook.  Other drivers can ignore it, while lightweight fakes and older
-        # plugins still receive it through a harmless instance attribute.
+        # AndroidDriver uses this optional hook for both the contextual policy and the
+        # unconditional AUTO-session marker. Other drivers can ignore it, while lightweight
+        # fakes and older plugins receive the value through a harmless instance attribute.
         install_policy = getattr(self.driver, "set_auto_session_policy", None)
         if callable(install_policy):
             install_policy(self._auto_policy)
@@ -1484,12 +671,13 @@ class Worker(threading.Thread):
         # A no-op RateLimiter (all fields None, the shipped default) is still truthy.
         # Daily history is needed only for max_per_day; querying it for an uncapped run
         # adds startup latency and can turn an irrelevant store read failure into a halt.
-        has_daily_limit = self.limiter is not None and self.limiter.max_per_day is not None
+        has_daily_limit = (self.limiter is not None
+                           and self.limiter.max_per_day is not None)
         today0 = self.store.count_today(self.app) if has_daily_limit else 0
         today_acted = 0            # actions this worker made since today0 was last measured
         today_date = date.today()  # LOCAL day — matches the store's count_today() day boundary
         self.driver.open_session()
-        self._stat(mode="auto", state="scoring")
+        self._stat(mode=self.mode, state="scoring")
         terminal_state = "stopped"            # overwritten below when the loop ends for a known reason
         stop_reason = None                    # set for an OpenerService- or deck-blocked stop; see _finish_session
         stop_kind = None                      # disambiguates stop_reason's source; see _finish_session/status.py
@@ -1516,10 +704,9 @@ class Worker(threading.Thread):
                 # for today" Hinge+ upgrade screen. The phone is in a perfectly normal
                 # state -- nothing is broken and nothing here should be retried -- so this
                 # must NOT go through the HALT-on-unexpected exception path (that path is
-                # for something actually wrong). See _observe_loop's matching check for the
-                # full incident writeup; the same reasoning applies here even though AUTO
-                # mode's own actions (not a human's) are what triggered Hinge's paywall this
-                # time. blocked_reason() itself never taps/swipes/types (see its contract on
+                # for something actually wrong). The same reasoning applies here even though
+                # AUTO mode's own actions are what triggered Hinge's paywall this time.
+                # blocked_reason() itself never taps/swipes/types (see its contract on
                 # DatingAppDriver) so this check is safe even mid-auto-session.
                 blocked = self.driver.blocked_reason()
                 if blocked is not None:
@@ -1564,18 +751,18 @@ class Worker(threading.Thread):
                     break
                 if d.decision == "defer":
                     self._stat(last_decision="defer", state="stopped")
-                    print(f"{self.app.title()} ranker not ready (cold-start) — run in observe "
-                          f"mode and make decisions manually to seed it. Stopping {self.app}.")
+                    print(f"{self.app.title()} ranker not ready (cold-start) — run training "
+                          f"mode and make Hub decisions manually to seed it. Stopping {self.app}.")
                     break
 
-                # A session can decline a marginal model like according to its
-                # bounded fatigue/context state.  This happens before every
-                # limit check so a policy-demoted like neither consumes a like
-                # budget nor trips the running like-ratio guard.
+                # A session can decline a marginal model like according to its bounded
+                # fatigue/context state. This happens before every limit check so a
+                # policy-demoted like neither consumes a like budget nor trips the running
+                # like-ratio guard.
                 d = self._auto_policy.apply_decision(d, profile).decision
 
-                # Per-run like budget: stop the run rather than mislabel a wanted
-                # like as a pass (keeps the right-swipe ratio human; see limits.py).
+                # Per-run like budget: stop the run rather than mislabel a wanted like as a
+                # pass (keeps the right-swipe ratio human; see limits.py).
                 if d.decision == "like" and self.limiter and not self.limiter.allow_like(liked):
                     terminal_state = "rate_limited"
                     self._stat(state=terminal_state)
@@ -1632,9 +819,7 @@ class Worker(threading.Thread):
                     # Worker is a public class any other caller can construct directly, and an
                     # audit proved the unguarded call raises a confusing
                     # `AttributeError: 'NoneType' object has no attribute 'maybe_opener'`
-                    # instead of this codebase's usual clear, actionable message. The observe
-                    # path already guards the equivalent call the same way (see
-                    # _wait_for_observed_decision's `self.opener_service is not None` check).
+                    # instead of this codebase's usual clear, actionable message.
                     #
                     # THE REQUEST SHAPE IS DECIDED HERE, and there are only two outcomes: the
                     # numbered item crops the driver enumerated, or a hard stop. Doc 5.2 sends
@@ -1756,8 +941,7 @@ class Worker(threading.Thread):
                     # An opener call can discover that every configured provider/model is
                     # exhausted. In AUTO mode, honour its global stop BEFORE calling
                     # like(): a bare like is not an acceptable substitute for the opener
-                    # the worker decided to send. OBSERVE deliberately handles this only
-                    # after the human's already-completed action has been persisted.
+                    # the worker decided to send.
                     if getattr(self.opener_service, "stop_requested", False):
                         stop_reason = self._opener_stop_reason()
                         stop_kind = "opener"
@@ -1925,6 +1109,7 @@ class Worker(threading.Thread):
                     # only the wording was made to agree with it after the fact. Under the owner's
                     # never-substitute rule a targeting miss is a stop, so the driver now raises
                     # ItemTargetingError and the handler below turns it into one.
+                    pre_send_evidence = None
                     try:
                         # DOC 5.8: compare the model's coarse description with the exact
                         # numbered crop it selected BEFORE any navigation or tap.  A confident
@@ -1949,6 +1134,10 @@ class Worker(threading.Thread):
                         if getattr(self.driver, "supports_interruptible_like_navigation", False):
                             like_kwargs["should_stop"] = self.stop_event.is_set
                         self.driver.like(pick.text if pick else None, **like_kwargs)
+                        evidence_hook = getattr(
+                            self.driver, "landed_auto_opener_evidence", None)
+                        if pick is not None and callable(evidence_hook):
+                            pre_send_evidence = evidence_hook()
                     except ItemTargetingError as exc:
                         # DOC 5.6'S HARD STOP. The driver could not put this like on the item the
                         # opener was written about -- either it could not reach that item, or the
@@ -2012,8 +1201,15 @@ class Worker(threading.Thread):
                     if pick is not None and callable(commit):
                         if _accepts_keywords(commit, "profile_id", "decision", "decision_source",
                                              "decision_created_at"):
-                            commit(pick, profile_id=lineage_profile_id, decision="like",
-                                   decision_source="auto", decision_created_at=lineage_decision_at)
+                            commit_kwargs = {
+                                "profile_id": lineage_profile_id, "decision": "like",
+                                "decision_source": "auto",
+                                "decision_created_at": lineage_decision_at,
+                            }
+                            if (pre_send_evidence is not None
+                                    and _accepts_keywords(commit, "pre_send_evidence")):
+                                commit_kwargs["pre_send_evidence"] = pre_send_evidence
+                            commit(pick, **commit_kwargs)
                         else:
                             commit(pick)
                 if self.status:
@@ -2026,7 +1222,8 @@ class Worker(threading.Thread):
                 # worker flow, even though its audit decision stays "no_face".
                 # The policy must count the physical action only after it landed.
                 landed_action = "like" if d.decision == "like" else "dislike"
-                self._auto_policy.record_landed_action(landed_action)
+                if self._auto_policy is not None:
+                    self._auto_policy.record_landed_action(landed_action)
 
                 # getattr(..., False): runs after EVERY action, including a dislike-only run
                 # that never once called maybe_opener() above -- so, unlike that call site,
@@ -2035,8 +1232,7 @@ class Worker(threading.Thread):
                 # `self.opener_service.stop_requested` raised `AttributeError: 'NoneType' object
                 # has no attribute 'stop_requested'` on the very first dislike of a run
                 # constructed with opener_service=None -- see the maybe_opener guard above for
-                # the matching fix on the like path, and the observe loop's equivalent check
-                # (_observe_loop, after a label is saved) for the pattern this mirrors.
+                # the matching fix on the like path for the same terminal-state pattern.
                 if getattr(self.opener_service, "stop_requested", False):
                     stop_reason = self._opener_stop_reason()
                     stop_kind = "opener"
@@ -2045,7 +1241,7 @@ class Worker(threading.Thread):
                 self._pace(landed_action, profile=profile, score=d.score)
                 self._maybe_session_break()
         except ActionCancelled:
-            # This is an operator Stop observed at a driver action boundary, not an unexpected
+            # This is an operator Stop detected at a driver action boundary, not an unexpected
             # failure.  Let run() finish it normally without capturing a failure frame.
             raise
         except DeckBlockedError as exc:

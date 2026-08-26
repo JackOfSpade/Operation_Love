@@ -220,6 +220,26 @@ def test_system_ui_mid_wait_pauses_then_resyncs_without_stopping_or_input():
     assert resumed["result"] == "recapture_without_decision"
 
 
+def test_unknown_screen_watchdog_claims_only_that_operation_love_did_not_inject_input(
+        monkeypatch, capsys):
+    """A watchdog timeout cannot know whether the owner touched the phone while waiting."""
+    drv = _drv(FakeAdb([b"unknown-screen"]))
+    drv._dbg = _FakeDbg()
+    drv._observe_last_recognized = 1.0
+    drv._observe_stuck_budget_s = 1.0
+    monkeypatch.setattr(hinge.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(drv, "_deck_blocked_reason", lambda _frame: None)
+
+    reason = drv._observe_stuck_bail(b"unknown-screen")
+    output = capsys.readouterr().out
+
+    assert reason is not None
+    assert "Operation Love has not injected input" in reason
+    assert "Operation Love has not injected input" in output
+    assert "phone is untouched" not in reason
+    assert "phone has not been touched" not in output
+
+
 def test_completed_driver_inputs_are_audited_at_every_gesture_choke_point():
     adb = FakeAdb([b"frame"])
     drv = _drv(adb)
@@ -1054,7 +1074,9 @@ def test_one_negative_composer_poll_does_not_close_a_still_open_sheet(monkeypatc
 
     def should_stop():
         calls["n"] += 1
-        return calls["n"] > 1
+        # Keep one post-screencap Stop re-check false so the sheet heartbeat is emitted
+        # before the next poll sees the requested stop.
+        return calls["n"] > 2
 
     sent, seen = drv._await_like_resolved(
         b"base", None, should_stop,
@@ -1065,6 +1087,24 @@ def test_one_negative_composer_poll_does_not_close_a_still_open_sheet(monkeypatc
     assert callbacks == [(True, b"sheet")]
     waiting = [fields for name, fields in drv._dbg.calls if name == "observe_waiting"]
     assert waiting and all(fields["reason"] == "like_sheet" for fields in waiting)
+
+
+def test_like_sheet_wait_suppresses_heartbeat_when_stop_lands_after_its_screencap(monkeypatch):
+    """The composer resolver has the same post-screencap Stop race as the ordinary wait.
+    It must exit without writing a stale `like_sheet` heartbeat."""
+    drv = _drv(FakeAdb([b"sheet"], advance_on_screencap=True))
+    drv._dbg = _FakeDbg()
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: True)
+    calls = {"n": 0}
+
+    def should_stop():
+        calls["n"] += 1
+        return calls["n"] > 1                 # after the resolver's screencap
+
+    sent, seen = drv._await_like_resolved(b"base", None, should_stop, intent_notified=True)
+
+    assert sent is None and seen is True
+    assert not [name for name, _fields in drv._dbg.calls if name == "observe_waiting"]
 
 
 def test_two_negative_composer_pairs_do_not_spend_a_human_draft_as_sending(monkeypatch):
@@ -1166,7 +1206,8 @@ def test_focused_partial_only_defers_a_prior_strict_like_intent(monkeypatch):
 
     def should_stop():
         calls["n"] += 1
-        return calls["n"] > 1
+        # Focused-draft evidence also writes a heartbeat only after re-checking Stop.
+        return calls["n"] > 2
 
     sent, seen = drv._await_like_resolved(
         b"base", None, should_stop,
@@ -1209,6 +1250,7 @@ def test_focused_partial_does_not_block_the_strict_only_session_top_path(monkeyp
     """Auto/session paths must never treat the observe-only fallback as an open sheet."""
     drv = _drv(FakeAdb([b"partial"]))
     monkeypatch.setattr(drv, "_focused_draft_composer_visible", lambda _frame: True)
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
     calls = []
     monkeypatch.setattr(drv, "_scroll_to_top", lambda _stop: calls.append("scroll") or True)
 
@@ -1334,7 +1376,11 @@ def test_real_bug_is_not_masked_as_driver_closed():
 def test_open_session_raises_driver_closed_when_deps_missing(monkeypatch):
     import sys
     monkeypatch.setitem(sys.modules, "PIL", None)
-    drv = HingeDriver(_Cfg())
+    monkeypatch.setattr("operation_love.platforms.unavailable_reason", lambda *_a, **_k: None)
+    # This is an internal legacy passive-observer dependency-order test.  It intentionally
+    # avoids the autonomous/training readiness gate so the missing-PIL failure remains the
+    # first lifecycle error it exercises.
+    drv = HingeDriver(type("ObserveCfg", (), {"mode": "observe", "apps": _Cfg.apps})())
     with pytest.raises(DriverClosed) as exc:
         drv.open_session()
     assert "requires PIL and numpy" in str(exc.value)
@@ -1530,7 +1576,7 @@ def test_reviewed_capture_keeps_its_real_index_anchor_while_manual_capture_unwin
     reviewed = _drv(FakeAdb([b"unused"]))
     reviewed_top_calls = []
     monkeypatch.setattr(reviewed, "_ensure_session_top",
-                        lambda _stop=None: reviewed_top_calls.append("top"))
+                        lambda _stop=None: reviewed_top_calls.append("top") or True)
     monkeypatch.setattr(reviewed, "_capture_current", lambda _stop=None: profile)
     monkeypatch.setattr(reviewed, "_scroll_to_top",
                         lambda *_a, **_k: pytest.fail("reviewed capture must not rewind"))
@@ -2562,6 +2608,50 @@ def test_note_observe_waiting_prints_and_records_but_is_rate_limited(monkeypatch
     assert records[1]["reason"] == "not_settled"    # repeats with the CURRENT reason
 
 
+def test_note_observe_waiting_reuses_identical_before_evidence_without_recapturing(
+        monkeypatch, tmp_path):
+    """The production heartbeat records its already-held frame; it never takes another shot.
+
+    A human can deliberate on an unchanged card for minutes.  The heartbeat must retain each
+    timestamp/reason row, but byte-identical evidence must resolve to one DebugLog PNG even
+    though the real call path supplies it as ``before=`` (not the generic logger test's
+    ``after=``).  A fresh screencap here would both add device latency and break the claim that
+    the saved frame is the one the wait verdict actually used.
+    """
+    import json
+
+    class NoFreshCaptureAdb(FakeAdb):
+        def __init__(self):
+            super().__init__([b"unused"])
+            self.capture_calls = 0
+
+        def screencap(self):
+            self.capture_calls += 1
+            raise AssertionError("observe_waiting must log the supplied frame, not recapture")
+
+    from operation_love.drivers.debuglog import HingeDebugLog
+
+    clock = [1_000.0]
+    monkeypatch.setattr(hinge.time, "monotonic", lambda: clock[0])
+    adb = NoFreshCaptureAdb()
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="wait-before-dedupe")
+    drv._observe_last_notice = 0.0
+    frame = b"same-frame-from-the-poll-that-produced-no-change"
+
+    for _ in range(3):
+        assert drv._note_observe_waiting("no_change", frame) is False
+        clock[0] += hinge.AndroidDriver._OBSERVE_WAIT_NOTICE_S
+
+    run_dir = tmp_path / "wait-before-dedupe"
+    rows = [json.loads(line) for line in (run_dir / "actions.jsonl").read_text().splitlines()]
+    assert [row["action"] for row in rows] == ["observe_waiting"] * 3
+    assert [row["reason"] for row in rows] == ["no_change"] * 3
+    assert len({row["before"] for row in rows}) == 1
+    assert len(list(run_dir.glob("*.png"))) == 1
+    assert adb.capture_calls == 0
+
+
 def test_note_observe_waiting_prints_a_plain_actionable_status_line(monkeypatch, capsys):
     """The operator-facing half of the fix: plain wording naming the reason, and something
     actionable (press Stop) -- not just a debug-log line only a developer would ever read."""
@@ -2574,6 +2664,21 @@ def test_note_observe_waiting_prints_a_plain_actionable_status_line(monkeypatch,
     out = capsys.readouterr().out
     assert "not_deck_ready" in out
     assert "Stop" in out
+
+
+def test_note_observe_waiting_suppresses_a_heartbeat_after_stop(monkeypatch, capsys):
+    """A screencap can finish just after Hub Stop lands.  That stale frame must not append a
+    fresh "still watching" record, or a completed run misleadingly reads as a live wait."""
+    monkeypatch.setattr(hinge.time, "monotonic", lambda: 1_000.0)
+    stopped = True
+    drv = _drv(FakeAdb([b"x"]))
+    drv._dbg = _FakeDbg()
+    drv._observe_last_notice = 0.0
+
+    assert drv._note_observe_waiting(
+        "no_change", b"stale-frame", should_stop=lambda: stopped) is True
+    assert drv._dbg.calls == []
+    assert capsys.readouterr().out == ""
 
 
 def test_like_candidate_wait_is_truthful_and_uses_the_normal_notice_cadence(monkeypatch, capsys):
@@ -2720,7 +2825,7 @@ def test_touch_watcher_health_exception_requires_name_proof_and_warns_once(monke
     assert out.count("touch watcher has seen no events this run") == 1
 
 
-def test_open_session_raises_driver_closed_naming_config_key_when_watcher_cant_start(monkeypatch):
+def _legacy_observe_open_session_raises_when_its_touch_watcher_cant_start(monkeypatch):
     """observe_touch_watch=True (opt-in; it ships False because the target device's
     platform withholds the stream) must fail LOUDLY -- the same "explicit
     operator decision, never a silent downgrade" contract as touch_backend -- when the
@@ -2743,9 +2848,11 @@ def test_open_session_raises_driver_closed_naming_config_key_when_watcher_cant_s
 
     monkeypatch.setattr(hinge, "Adb", lambda *a, **k: _OpenAdb())
     monkeypatch.setattr(hinge, "TouchWatcher", _DeadWatcher)
-    cfg = type("C", (), {"apps": {"hinge": {"serial": "pixel", "touch_backend": "adb",
-                                            "observe_touch_watch": True}}})
+    monkeypatch.setattr("operation_love.platforms.unavailable_reason", lambda *_a, **_k: None)
+    cfg = type("C", (), {"mode": "training", "apps": {
+        "hinge": {"serial": "pixel", "touch_backend": "adb", "observe_touch_watch": True}}})
     drv = HingeDriver(cfg)
+    drv.set_auto_session_policy(None)
 
     with pytest.raises(DriverClosed) as exc:
         drv.open_session()
@@ -2826,6 +2933,115 @@ def test_scroll_to_top_still_bounded_against_a_stuck_screen(monkeypatch):
     assert adb.swipes == 3               # stops at the ceiling, doesn't spin forever
 
 
+@pytest.mark.parametrize("top_result", (
+    SimpleNamespace(confirmed=False, state="confirmed_not_top", reason="sticky header visible"),
+    hinge.ScrollTopError("identity band unreadable"),
+), ids=("refuted", "unreadable"))
+def test_hinge_rewind_does_not_accept_no_motion_without_an_affirmative_top_verdict(
+        monkeypatch, top_result):
+    """A swallowed reverse swipe mid-card is not proof that the card reached its top."""
+    adb = FakeAdb([b"mid-card"])
+    drv = _drv(adb, scroll_captures=2)
+    drv._capture_scroll_ledger = [(0.55, 0.5)] * 2
+    drv._capture_scrolls = 2
+    monkeypatch.setattr(drv, "_changed", lambda *_a: False)
+
+    def top_verdict(*_a, **_k):
+        if isinstance(top_result, Exception):
+            raise top_result
+        return top_result
+
+    monkeypatch.setattr(hinge, "confirm_scroll_top", top_verdict)
+
+    assert drv._scroll_to_top() is False
+    assert adb.swipes == 2                    # bounded retries still happen
+    assert drv._capture_scrolls == 2          # failure cannot erase recovery evidence
+    assert drv._capture_scroll_ledger == [(0.55, 0.5)] * 2
+
+
+def test_failed_hinge_rewind_records_its_final_filter_chip_verdict(monkeypatch):
+    """A bounded failure must say what the top detector saw, not imply ongoing motion."""
+    adb = FakeAdb([b"settled-top-with-new-chrome"])
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+    drv._capture_scrolls = 1
+    verdict = SimpleNamespace(
+        confirmed=False,
+        state="cannot_tell",
+        distance=8.859375,
+        alignment_offset_px=1,
+    )
+    monkeypatch.setattr(hinge, "confirm_scroll_top", lambda *_a, **_k: verdict)
+
+    assert drv._scroll_to_top() is False
+
+    recovery = next(fields for name, fields in drv._dbg.calls
+                    if name == "capture_entry_recovery_spent")
+    assert recovery["scroll_top_state"] == "cannot_tell"
+    assert recovery["scroll_top_distance"] == pytest.approx(8.859375)
+    assert recovery["scroll_top_alignment_offset_px"] == 1
+    assert "scroll_top_error" not in recovery
+
+
+def test_session_top_failure_prints_filter_chip_detector_fact_not_motion(monkeypatch, capsys):
+    """A settled but uncalibrated top must not be reported as a screen that kept moving."""
+    drv = _drv(FakeAdb([b"settled-top-with-new-chrome"]))
+    drv._dbg = _FakeDbg()
+    verdict = SimpleNamespace(
+        confirmed=False,
+        state="cannot_tell",
+        distance=8.859375,
+        alignment_offset_px=1,
+    )
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(hinge, "confirm_scroll_top", lambda *_a, **_k: verdict)
+
+    assert drv._ensure_session_top() is False
+
+    out = capsys.readouterr().out
+    assert "final filter-chip verdict was `cannot_tell`" in out
+    assert "distance 8.859" in out and "alignment offset +1px" in out
+    assert "never stopped moving" not in out
+    session = next(fields for name, fields in drv._dbg.calls if name == "session_top_unconfirmed")
+    assert session["scroll_top_state"] == "cannot_tell"
+    assert session["scroll_top_distance"] == pytest.approx(8.859375)
+    assert session["scroll_top_alignment_offset_px"] == 1
+
+
+def test_failed_hinge_rewind_records_filter_chip_decode_error(monkeypatch):
+    """An undecodable final band is retained as the alternative detector diagnostic."""
+    drv = _drv(FakeAdb([b"unreadable-band"]))
+    drv._dbg = _FakeDbg()
+    drv._capture_scrolls = 1
+
+    def unreadable(*_args, **_kwargs):
+        raise hinge.ScrollTopError("identity band unreadable")
+
+    monkeypatch.setattr(hinge, "confirm_scroll_top", unreadable)
+    assert drv._scroll_to_top() is False
+
+    recovery = next(fields for name, fields in drv._dbg.calls
+                    if name == "capture_entry_recovery_spent")
+    assert recovery["scroll_top_error"] == "identity band unreadable"
+    assert "scroll_top_state" not in recovery
+
+
+def test_generic_rewind_keeps_legacy_no_motion_top_confirmation(monkeypatch):
+    """No-band drivers retain the old fallback because they have no affirmative top signal."""
+    adb = FakeAdb([b"generic-card"])
+    drv = _drv(adb)
+    drv.identity_band = None
+    drv._capture_scroll_ledger = [(0.55, 0.5)] * 2
+    drv._capture_scrolls = 2
+    monkeypatch.setattr(drv, "_changed", lambda *_a: False)
+    monkeypatch.setattr(hinge, "confirm_scroll_top",
+                        lambda *_a, **_k: pytest.fail("generic rewind must not request a band"))
+
+    assert drv._scroll_to_top() is True
+    assert adb.swipes == 1
+    assert drv._capture_scrolls == 0 and drv._capture_scroll_ledger == []
+
+
 class PositionTrackingAdb(FakeAdb):
     """FakeAdb that also tracks cumulative scroll DISPLACEMENT as a scalar profile position
     (0 == top, growing as the profile is read further down) instead of just counting
@@ -2900,6 +3116,9 @@ def test_auto_policy_undo_uses_ledger_but_not_a_one_for_one_reverse_replay(monke
         hinge.random, "uniform", lambda low, _high: 1.20 if low >= 1.0 else 0.44)
     adb = PositionTrackingAdb([b"x"])
     drv = _drv(adb, scroll_captures=8, read_scroll_frac=0.55)
+    # This is a transport-distance test rather than a Hinge identity-band test.  Generic
+    # no-band callers retain no-motion as their only available top proof.
+    drv.identity_band = None
     drv._auto_policy = Policy()
     drv._capture_scroll_ledger = [
         (0.46, 0.41), (0.50, 0.57), (0.54, 0.45),
@@ -2967,6 +3186,275 @@ def test_current_profile_returns_to_top_after_observe_capture(monkeypatch):
     assert adb.swipes == 2               # _scroll_to_top swiped all the way back up before returning
 
 
+def test_manual_capture_is_not_published_when_trailing_rewind_fails(monkeypatch):
+    """READY must never describe a card that the driver could not restore to its top."""
+    drv = _drv(FakeAdb([b"card"]))
+    drv._session_top_done = True
+    marker = object()
+    monkeypatch.setattr(drv, "_capture_current", lambda *_a, **_k: marker)
+    monkeypatch.setattr(drv, "_scroll_to_top", lambda *_a, **_k: False)
+
+    assert drv.current_profile() is None
+    assert "could not be returned to a confirmed scroll top" in drv._current_items_unavailable
+    # This is Observe (the default _auto_session is False): the terminal refusal must still be
+    # visible to Worker rather than being retried as an unexplained capture None.
+    assert "could not be returned to a confirmed scroll top" in (drv.blocked_reason() or "")
+
+
+def test_manual_capture_keeps_completed_profile_at_a_stop_boundary(monkeypatch):
+    """Worker observes Stop before READY; direct callers retain the completed stop boundary."""
+    drv = _drv(FakeAdb([b"card"]))
+    drv._session_top_done = True
+    marker = object()
+    monkeypatch.setattr(drv, "_capture_current", lambda *_a, **_k: marker)
+    monkeypatch.setattr(drv, "_scroll_to_top", lambda *_a, **_k: False)
+
+    assert drv.current_profile(should_stop=lambda: True) is marker
+
+
+def test_actionable_manual_capture_rewinds_and_reproves_before_any_profile_read(monkeypatch):
+    """A user-scrolled READY card must not first be read as an unnumbered profile."""
+    drv = _drv(FakeAdb([b"card"]))
+    drv._session_top_done = True
+    events = []
+    profile = object()
+    top_answers = iter(["confirmed_not_top", ""])
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_confirm_enumeration_top",
+                        lambda: events.append("top") or next(top_answers))
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(drv, "_scroll_to_top",
+                        lambda *_a, **_k: events.append("rewind") or True)
+    monkeypatch.setattr(drv, "_capture_current",
+                        lambda *_a, **_k: events.append("capture") or profile)
+
+    assert drv.current_profile() is profile
+    assert events == ["top", "rewind", "top", "capture", "rewind"]
+
+
+def test_actionable_capture_refuses_to_publish_when_rewind_cannot_reprove_top(monkeypatch):
+    """No ranker/identity Profile escapes when the post-rewind entry proof is still absent."""
+    drv = _drv(FakeAdb([b"card"]))
+    drv._session_top_done = True
+    captured = []
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_confirm_enumeration_top",
+                        lambda: "the card is not confirmed to be at its scroll top")
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(drv, "_scroll_to_top", lambda *_a, **_k: False)
+    monkeypatch.setattr(drv, "_capture_current",
+                        lambda *_a, **_k: captured.append(True) or object())
+
+    assert drv.current_profile() is None
+    assert captured == []
+    assert "capture entry could not be proven" in drv._current_items_unavailable
+
+
+def test_unchanged_refused_observe_entry_spends_only_one_bounded_rewind(monkeypatch):
+    """Repeated worker recaptures must not turn one stuck card into endless autonomous input."""
+    drv = _drv(FakeAdb([b"same-scrolled-card"]))
+    drv._session_top_done = True
+    rewinds = []
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(drv, "_confirm_enumeration_top",
+                        lambda: "confirmed_not_top: sticky profile header")
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
+    monkeypatch.setattr(drv, "_scroll_to_top",
+                        lambda *_a, **_k: rewinds.append("rewind") or False)
+
+    assert drv.current_profile() is None
+    assert drv.current_profile() is None
+    assert rewinds == ["rewind"]
+
+
+def test_animated_refused_observe_entry_still_spends_only_one_bounded_rewind(monkeypatch):
+    """Frame churn is diagnostic noise, never permission for a second autonomous recovery."""
+    class AnimatedAdb(FakeAdb):
+        def __init__(self):
+            super().__init__([b"seed"])
+            self.n = 0
+
+        def screencap(self):
+            self.n += 1
+            return f"animated-{self.n}".encode()
+
+    drv = _drv(AnimatedAdb())
+    drv._session_top_done = True
+    rewinds = []
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(drv, "_confirm_enumeration_top",
+                        lambda: "confirmed_not_top: animated sticky header")
+    monkeypatch.setattr(drv, "_scroll_to_top",
+                        lambda *_a, **_k: rewinds.append("rewind") or False)
+
+    assert drv.current_profile() is None
+    assert drv.current_profile() is None
+    assert rewinds == ["rewind"]
+
+
+def test_ambiguous_in_package_surface_never_rewinds_even_when_top_would_be_refuted(monkeypatch):
+    """Hinge ownership alone cannot turn an unknown in-app page into a scroll target."""
+    drv = _drv(FakeAdb([b"hinge-settings-or-modal"]))
+    drv._session_top_done = True
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: None)
+    monkeypatch.setattr(drv, "_confirm_enumeration_top",
+                        lambda: "confirmed_not_top: unrelated identity band")
+    monkeypatch.setattr(drv, "_scroll_to_top",
+                        lambda *_a, **_k: pytest.fail("ambiguous in-package surface must be no-input"))
+
+    assert drv.current_profile() is None
+
+
+def test_session_start_ambiguous_in_package_surface_never_spends_its_first_rewind(monkeypatch):
+    """The session helper is guarded too; prep must not be the first no-input boundary."""
+    drv = _drv(FakeAdb([b"hinge-settings-or-modal"]))
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: None)
+    monkeypatch.setattr(drv, "_scroll_to_top",
+                        lambda *_a, **_k: pytest.fail("session rewind must require profile evidence"))
+
+    assert drv.current_profile() is None
+    assert drv._session_top_done is False
+
+
+def test_failed_session_rewind_does_not_trigger_a_second_capture_entry_rewind(monkeypatch):
+    """One public capture call gets one bounded session recovery attempt, never two ceilings."""
+    drv = _drv(FakeAdb([b"deck"]))
+    calls = []
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(drv, "_scroll_to_top",
+                        lambda *_a, **_k: calls.append("session-rewind") or False)
+    monkeypatch.setattr(drv, "_prepare_actionable_capture_entry",
+                        lambda *_a, **_k: pytest.fail("must not immediately retry a failed session rewind"))
+
+    assert drv.current_profile() is None
+    assert calls == ["session-rewind"]
+
+
+def test_reviewed_capture_does_not_retry_a_failed_session_rewind(monkeypatch):
+    """Reviewed's unconditional session helper must respect the same spent recovery latch."""
+    drv = _drv(FakeAdb([b"deck"]))
+    rewinds = []
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(drv, "_scroll_to_top",
+                        lambda *_a, **_k: rewinds.append("rewind") or False)
+    monkeypatch.setattr(drv, "_capture_current",
+                        lambda *_a, **_k: pytest.fail("failed recovery must not capture"))
+
+    assert drv.current_profile_reviewed() is None
+    assert drv.current_profile_reviewed() is None
+    assert rewinds == ["rewind"]
+
+
+def test_failed_manual_trailing_rewind_blocks_the_next_recapture(monkeypatch):
+    """A READY rejection is also a spent recovery attempt, not a new swipe budget."""
+    drv = _drv(FakeAdb([b"card"]))
+    drv._session_top_done = True
+    calls = []
+    profile = SimpleNamespace(photos=[b"captured"])
+    monkeypatch.setattr(drv, "_capture_current",
+                        lambda *_a, **_k: calls.append("capture") or profile)
+    monkeypatch.setattr(drv, "_scroll_to_top",
+                        lambda *_a, **_k: calls.append("trailing-rewind") or False)
+
+    assert drv.current_profile() is None
+    assert drv.current_profile() is None
+    assert calls == ["capture", "trailing-rewind"]
+
+
+def test_failed_split_recovery_blocks_an_immediate_second_rewind(monkeypatch):
+    """A split's recovery failure cannot hand the next capture another autonomous budget."""
+    drv = _drv(FakeAdb([b"advanced-card"]))
+    drv._session_top_done = True
+    drv._current_capture_split = True
+    rewinds = []
+    monkeypatch.setattr(drv, "_scroll_to_top",
+                        lambda *_a, **_k: rewinds.append("split-rewind") or False)
+    monkeypatch.setattr(drv, "_capture_current",
+                        lambda *_a, **_k: pytest.fail("spent split recovery must block recapture"))
+
+    drv._recover_capture_split()
+    assert drv.next_profile() is None
+    assert rewinds == ["split-rewind"]
+
+
+def test_actionable_capture_does_not_rewind_under_an_open_like_sheet(monkeypatch):
+    """The repeated per-card entry gate keeps the existing compose-sheet no-input promise."""
+    drv = _drv(FakeAdb([b"sheet"]))
+    drv._session_top_done = True
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_confirm_enumeration_top", lambda: "top is unreadable")
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: True)
+    monkeypatch.setattr(drv, "_scroll_to_top",
+                        lambda *_a, **_k: pytest.fail("must not rewind under a like sheet"))
+
+    assert drv.current_profile() is None
+
+
+def test_actionable_auto_capture_uses_the_same_pre_read_top_gate(monkeypatch):
+    """The absolute item-index contract is mode-independent, not an Observe-only patch."""
+    drv = _drv(FakeAdb([b"card"]))
+    drv._session_top_done = True
+    drv._current_capture_split = False
+    events = []
+    top_answers = iter(["confirmed_not_top", ""])
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_confirm_enumeration_top",
+                        lambda: events.append("top") or next(top_answers))
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(drv, "_scroll_to_top",
+                        lambda *_a, **_k: events.append("rewind") or True)
+    marker = object()
+    monkeypatch.setattr(drv, "_capture_current",
+                        lambda *_a, **_k: events.append("capture") or marker)
+
+    assert drv.next_profile() is marker
+    assert events == ["top", "rewind", "top", "capture"]
+
+
+def test_auto_capture_entry_refusal_latches_a_worker_visible_block_reason(monkeypatch):
+    """AUTO's `None` is a specific graceful block, not an unexplained end of the deck."""
+    drv = _drv(FakeAdb([b"scrolled-card"]))
+    drv._session_top_done = True
+    drv._auto_session = True
+    drv._current_capture_split = False
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(drv, "_confirm_enumeration_top",
+                        lambda: "confirmed_not_top: sticky profile header")
+    monkeypatch.setattr(drv, "_scroll_to_top", lambda *_a, **_k: False)
+
+    assert drv.next_profile() is None
+    assert "capture entry could not be proven" in (drv.blocked_reason() or "")
+
+
+def test_reviewed_actionable_capture_rewinds_before_building_its_item_anchor(monkeypatch):
+    """The reviewed bridge retains only an index anchored after the fresh top proof."""
+    drv = _drv(FakeAdb([b"card"]))
+    events = []
+    top_answers = iter(["confirmed_not_top", ""])
+    monkeypatch.setattr(drv, "_ensure_session_top",
+                        lambda *_a, **_k: events.append("session-rewind") or True)
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_confirm_enumeration_top",
+                        lambda: events.append("top") or next(top_answers))
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(drv, "_scroll_to_top",
+                        lambda *_a, **_k: events.append("rewind") or True)
+    marker = object()
+    monkeypatch.setattr(drv, "_capture_current",
+                        lambda *_a, **_k: events.append("capture") or marker)
+
+    assert drv.current_profile_reviewed() is marker
+    assert events == ["session-rewind", "top", "rewind", "top", "capture"]
+
+
 def test_next_profile_does_not_scroll_to_top_itself():
     # auto path: like() already calls _scroll_to_top() before acting, so next_profile() must
     # NOT also scroll back up -- that would be a redundant extra scroll (bug 2 fix note).
@@ -2975,6 +3463,9 @@ def test_next_profile_does_not_scroll_to_top_itself():
     # its docstring), not once per profile.
     adb = FakeAdb([b"a", b"b", b"c"])
     drv = _drv(adb, scroll_captures=3)
+    # Fake bytes have no Hinge filter-chip band; isolate the legacy generic contract this test
+    # is asserting rather than asking the Hinge-specific affirmative-top path to decode them.
+    drv.identity_band = None
 
     drv.next_profile()
     assert adb.swipes == 1               # the one-shot session-top pass, settled immediately
@@ -2993,6 +3484,7 @@ def test_next_profile_does_not_scroll_to_top_itself():
 def test_first_capture_of_a_session_confirms_the_card_is_at_the_top():
     adb = FakeAdb([b"a", b"b", b"c"])
     drv = _drv(adb, scroll_captures=3)
+    drv.identity_band = None
     assert drv._session_top_done is False
 
     drv.current_profile()
@@ -3017,6 +3509,7 @@ def test_session_top_pass_never_touches_an_open_like_sheet():
 def test_session_top_pass_says_so_when_it_cannot_confirm_the_top(monkeypatch, capsys):
     monkeypatch.setattr(HingeDriver, "_changed", lambda self, a, b: True)   # never settles
     drv = _drv(FakeAdb([b"a"]), scroll_captures=3)
+    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
 
     drv._ensure_session_top()
 
@@ -3112,6 +3605,7 @@ def test_current_profile_still_unwinds_fully_when_no_stop_is_requested():
     # to behave exactly like the no-argument call.
     adb = FakeAdb([b"a", b"b", b"c"])
     drv = _drv(adb, scroll_captures=3)
+    drv.identity_band = None
     drv.current_profile(should_stop=lambda: False)
     assert adb.scrolls == 2
     assert adb.swipes >= 1                                  # scroll_to_top still ran
@@ -3662,12 +4156,30 @@ def test_like_no_longer_accepts_an_anchored_opener_callback():
 
     with pytest.raises(TypeError):
         _drv(adb).like(opener="x", item_index=0, anchored_opener=lambda anchor: "repaired")
-def test_verify_like_landed_raises_when_sheet_or_modal_open(monkeypatch):
+@pytest.mark.parametrize(
+    ("sheet_visible", "modal_visible", "message"),
+    [
+        (True, False, "like did not complete — the like composer is still open"),
+        (False, True, "like did not complete — the like upsell modal is still open"),
+        (True, True,
+         "like did not complete — the like composer and upsell modal are still open"),
+    ],
+)
+def test_verify_like_landed_names_the_open_blocker(
+        monkeypatch, sheet_visible, modal_visible, message):
+    """The terminal diagnostic names the concrete post-send UI still blocking progress."""
     from operation_love.drivers.hinge import HingeActionError
     drv = _drv(FakeAdb([b"f"]), halt_on_error=True)
-    monkeypatch.setattr(hinge, "_match_glyph", lambda *a, **k: [(1, 1)])   # sheet/modal still up
-    with pytest.raises(HingeActionError):
+    monkeypatch.setattr(drv, "_deck_blocked_reason", lambda _frame: None)
+    monkeypatch.setattr(drv, "_observe_like_sheet_visible",
+                        lambda _frame: sheet_visible)
+    monkeypatch.setattr(hinge, "_match_glyph",
+                        lambda *a, **k: [(1, 1)] if modal_visible else [])
+
+    with pytest.raises(HingeActionError) as exc:
         drv._verify_like_landed(b"before")
+
+    assert str(exc.value) == message
 
 
 def test_verify_like_landed_ok_when_closed_and_advanced(monkeypatch):

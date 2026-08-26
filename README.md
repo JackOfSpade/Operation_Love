@@ -24,7 +24,7 @@ ranker/       logistic-regression on YOUR swipe labels (BigQuery/SQLite)  [Phase
 opener/       Gemini writes the opener, enforced JSON output         [Phase 4]
 costing.py    client-side spend tracking + per-run budget guard
 supervisor    one worker per enabled app; owns shutdown + flush
-worker.py     the per-app loop, observe or auto (replaces main.ahk)
+worker.py     the per-app loop, training or auto (replaces main.ahk)
 hub/          local control panel (state, server, page, launchers)
 ```
 
@@ -139,46 +139,29 @@ your taste with cold-start gating (`defer` until enough labels). All pure logic
 is covered by offline tests; model *inference* runs on a machine with the `ml`
 extra installed.
 
-**Two modes** (`mode: observe | auto`):
-- **observe** — shadow learning: you make each decision manually on real
-  profiles, while the bot captures the card, watches for your final like/pass,
-  stores it as a label, and **retrains the ranker live** (transitions itself
-  from `defer` → ready mid-session). No autonomous actions. On Hinge, click the
-  pass **X** or a **heart**. Targeted opener suggestions are currently blocked:
-  the still-photo discriminator (`hinge_photos_only_v2`, see
-  `ops/STILL-PHOTO-DISCRIMINATOR.md`) is implemented fail-closed and stays off
-  until an owner-labeled held-out video false-accept bound is measured on the
-  device and installed as `apps.hinge.still_photo_bound_evidence`. The archived
-  numeric calibration used the superseded `hinge_photos_only_v1` policy and
-  config validation rejects reinstalling it. Observe therefore withholds
-  numbered suggestion text, while manual pass/like labels still work normally.
-  Do not add guessed bounds or restore a historical calibration. Once the bound
-  is measured and a fresh calibration passes, the hub may again show optional
-  help for a like; that help is **not a recommendation or decision**. You can
-  tap **X** to pass or choose a like yourself.
-  Written prompts are readable context but are never selectable targets. Then tap
-  **Send Like / Send Priority Like** yourself. A Hinge like is persisted only after that final send
-  advances the profile. The composer remains inline beneath the selected item;
-  hearting another item moves it, and advancing the profile clears it. This is
-  how you seed your taste — from real usage, not stock images.
-- **auto** — the bot swipes for you with the learned model. Decisions are recorded
+**Two modes** (`mode: training | auto`):
+- **training** — Hub-only human-in-the-loop learning. The worker assumes each
+  profile is a provisional Like, generates an opener, reaches its exact target,
+  types it, hides the keyboard, and pauses with the verified composer visible.
+  Choose **Like** to send it or **Dislike** to pass the profile. The worker never
+  consults the preference model for this choice; each verified human outcome is
+  stored as a manual training label and retrains the ranker live. A failed,
+  cancelled, or stale checkpoint records neither decision nor label.
+- **auto** — normally, the bot swipes for you with the learned model. Decisions are recorded
   for stats and optional limits, but are not fed back as training labels. Hinge Auto is
-  structurally fail-closed and stays that way under every still-photo licence: an accepted
-  assumption can never license Auto, and a release artifact alone cannot bypass the targeting
-  policy. Enabling it requires a licensed still-photo discriminator (the shipped config carries
-  the owner's accepted centered-autoplay assumption), a build/device-bound
-  `targeting_calibration`, and then a verified manual `observe_release_evidence` artifact or a
-  separately accepted AI-reviewed one. The shipped config intentionally contains neither the
-  calibration nor a release-licensing mapping.
+  structurally fail-closed: an accepted still-photo assumption cannot license Auto, and a
+  release artifact cannot bypass the targeting policy. The shipped configuration now contains
+  the device/build-bound `targeting_calibration` and its verified, legacy-named manual
+  `observe_release_evidence` artifact for run `d8547ff144b4`. AUTO uses the learned ranker on every card,
+  with per-gesture UHID, normal opener generation, exact-item targeting, Send verification, and
+  all action safety gates. Configuration alone does not start a run.
 
 **Hinge is code-complete** (host-side ADB + vision-located taps — no on-device
 helper, no emulator; see ops/HINGE-PIXEL-RUNBOOK.md) and is the only currently
-runnable platform, with autonomous-mode volume deliberately **uncapped by
-default** (a fixed swipe quota is itself a bot signature; human-like pacing
-shapes the timing, while the profile queue, real stop conditions, or a manual
-stop end the run; optional `max_per_run` / `max_per_day` overrides are
-available under `limits:` if you ever want a temporary ceiling), a **stats**
-readout (`python -m operation_love stats`), and human-like pacing. Bumble is
+runnable platform. AUTO uses the learned ranker and is uncapped by default, continuing until
+Stop, deck exhaustion, or a safety halt. Every LIKE retains a private pre-send snapshot after
+the opener is typed and archives its durable evidence. A **stats** readout
+(`python -m operation_love stats`) and human-like pacing remain available. Bumble is
 ported to the same Android + vision approach on the same physical phone, but
 still needs live calibration before it can run (see "Concurrency &
 deployment" above). The generic Playwright driver base remains available through the
@@ -190,7 +173,7 @@ current suite/test count; it runs across processes by default and takes about th
 add `-n0` for a serial run when you want `--pdb`, `-s`, or a readable traceback). The only
 remaining work needs your machine + a real account, and it's all batched in
 **[ops/RUNBOOK.md](ops/RUNBOOK.md)**: install, connect the physical phone,
-verify Observe-mode behavior, and seed your taste.
+verify Training-mode behavior, and seed your taste.
 
 Numbered targeted suggestions are licensed and unblocked: `apps.hinge.targeting_calibration` was
 measured and installed on 2026-08-22, and the still-photo discriminator runs under the owner's
@@ -199,4 +182,6 @@ readiness -- production takes its one dwell burst at the position the read stops
 profile of fifteen cards only the card the read parked on can be numbered, and a live run has
 already produced zero. The routes out of that, and what each one costs, are the open owner
 decision in [ops/STILL-PHOTO-DISCRIMINATOR.md](ops/STILL-PHOTO-DISCRIMINATOR.md) section 5d.
-Hinge Auto stays blocked behind its own production-OBSERVE release gate on top of all of this.
+The corresponding historical manual release artifact is installed for this exact calibration.
+AUTO uses the learned ranker over per-gesture UHID and retains each opener's
+pre-send snapshot and verified outcome.

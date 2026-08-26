@@ -23,7 +23,7 @@ def show(config_path: str = "config.yaml") -> None:
               f"threshold {cfg.ranker.like_threshold})")
         if not ready:
             need = max(0, cfg.ranker.min_labels_to_engage - len(labels))
-            print(f"          Seed ~{need} more decisions in observe mode to engage auto mode.")
+            print(f"          Seed ~{need} more decisions in training mode to engage auto mode.")
         for app in cfg.enabled_apps:
             print(f"Today (auto): {app}: {store.count_today(app)} swipes")
     finally:

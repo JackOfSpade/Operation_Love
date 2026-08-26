@@ -63,6 +63,27 @@ def test_text_builds_expected_argv(monkeypatch):
     assert all(c[4] is False for c in run.calls)    # return code is inspected by Adb._run
 
 
+def test_keyevent_uses_a_closed_integer_android_input_argv(monkeypatch):
+    run = FakeRun(_ok())
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    Adb(serial="pixel-7a", adb_path="/opt/android/adb").keyevent(4)
+
+    assert run.argv == [["/opt/android/adb", "-s", "pixel-7a", "shell", "input",
+                        "keyevent", "4"]]
+
+
+@pytest.mark.parametrize("keycode", [None, True, -1, 65536, "4"])
+def test_keyevent_rejects_non_android_keycodes_without_starting_adb(monkeypatch, keycode):
+    run = FakeRun()
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    with pytest.raises(ValueError, match="Android keycode"):
+        Adb(serial="pixel-7a").keyevent(keycode)
+
+    assert run.calls == []
+
+
 @pytest.mark.parametrize(("dump", "expected"), [
     ("mCurrentFocus=Window{123 u0 com.android.systemui/.shade.NotificationShadeWindowView}\n",
      "com.android.systemui"),
@@ -464,6 +485,16 @@ def test_screen_size_parses_and_caches(monkeypatch):
     assert d.screen_size() == (1080, 2160)      # an Override size, if present, wins
     assert d.screen_size() == (1080, 2160)      # cached
     assert len(run.calls) == 1
+
+
+def test_screen_size_parses_case_and_spacing_variants(monkeypatch):
+    # `wm` output is a shell-facing diagnostic, not a stable serialization.  The previous
+    # parser noticed case-insensitively, then split the original line case-sensitively and
+    # rejected a valid `Physical Size` spelling.
+    run = FakeRun(_ok(stdout=b"Physical Size : 1080 x 2400\nOVERRIDE SIZE: 1080 x 2160\n"))
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    assert Adb(serial="pixel").screen_size() == (1080, 2160)
 
 
 def test_devices_parses_only_ready_devices(monkeypatch):

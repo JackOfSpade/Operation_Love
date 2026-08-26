@@ -120,6 +120,20 @@ def test_sanitize_folds_accented_names_to_readable_ascii():
     assert _sanitize("that jalapeño had a kick") == "that jalapeno had a kick"
 
 
+def test_sanitize_removes_comma_immediately_before_or_for_casual_texting():
+    assert _sanitize(
+        "Were you reading a handwritten note, or just scanning the dessert menu?"
+    ) == "Were you reading a handwritten note or just scanning the dessert menu?"
+    assert _sanitize("Dessert, OR the handwritten note?") == "Dessert OR the handwritten note?"
+
+
+def test_sanitize_keeps_other_commas_and_does_not_touch_words_starting_with_or():
+    assert _sanitize("Honestly, that looks fun or slightly chaotic") == (
+        "Honestly, that looks fun or slightly chaotic"
+    )
+    assert _sanitize("That orange, obviously") == "That orange, obviously"
+
+
 # --- _strip_wrapping_quotes: a pure formatting repair (the model quoting its own message
 # back), applied silently in _parse rather than routed through _scaffolding_markers -- see
 # that function's and _parse's docstrings for why this doesn't burn a retry.
@@ -526,6 +540,9 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "ask one coherent thing at a time" in lowered
     assert "parallel, genuinely contrasting answers to that same underlying question" in lowered
     assert "never to join unrelated dimensions" in lowered
+    assert "casual or punctuation" in lowered
+    assert "never put a comma immediately before 'or'" in lowered
+    assert "write it the way a person would text casually" in lowered
     assert "referent clarity" in lowered
     assert "every pronoun, shorthand noun, and question subject" in lowered
     assert "must have one immediately obvious referent" in lowered

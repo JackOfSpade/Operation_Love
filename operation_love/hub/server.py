@@ -31,9 +31,8 @@ _CSRF_TOKEN_PLACEHOLDER = "__OPERATION_LOVE_CSRF_TOKEN__"
 _POST_FIELDS = {
     "/api/start": {"mode", "apps", "max_per_run", "stop_after_seconds"},
     "/api/stop": set(),
-    "/api/observe/action": {
-        "command", "run_id", "app", "profile_token", "suggestion_token", "item",
-        "idempotency_token",
+    "/api/training/action": {
+        "command", "run_id", "app", "profile_token", "approval_token", "idempotency_token",
     },
     "/api/training/remove-latest": set(),
     "/api/hub/open": {"id"},
@@ -159,10 +158,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
         elif path == "/api/status":
             self._json(self.state.snapshot())
-        elif path == "/api/observe/checkpoint":
+        elif path == "/api/training/checkpoint":
             from urllib.parse import parse_qs, urlparse
             query = parse_qs(urlparse(self.path).query)
-            self._json(self.state.observe_action_snapshot(
+            self._json(self.state.training_action_snapshot(
                 run_id=query.get("run_id", [None])[0], app=query.get("app", [None])[0]))
         elif path == "/api/config":
             self._json(self.state.config_defaults())
@@ -289,8 +288,8 @@ class _Handler(BaseHTTPRequestHandler):
             # a stop it never performed had "worked".
             ok, msg = self.state.stop()
             self._json({"ok": ok, "msg": msg}, 200 if ok else 409)
-        elif self.path == "/api/observe/action":
-            ok, result, code = self.state.submit_observe_action(body)
+        elif self.path == "/api/training/action":
+            ok, result, code = self.state.submit_training_action(body)
             self._json({"ok": ok, "result": result}, code)
         elif self.path == "/api/training/remove-latest":
             ok, result = self.state.remove_latest_training_label()

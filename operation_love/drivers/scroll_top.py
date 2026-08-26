@@ -318,6 +318,24 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_0_1 = (
     247, 247, 214, 220, 245, 241, 231, 218, 242, 234, 240, 223, 216, 240, 237, 236,
 )
 
+# Variant 12: `Signals  Age v  Height v  Dating Intentions` (current unselected-Signals
+# strip).
+#
+# Measured from the visibly top-of-card Pixel 7a debug capture on 2026-08-24
+# (`b55de0b40e1b/00001_capture_entry_refused_before.png`).  The filter chips appear above the
+# profile name and first photo, with no sticky per-profile header.  Before this discrete chrome
+# variant was registered, its closest existing candidate was Variant 9 at 8.859 after the
+# bounded alignment sweep -- inside the deliberate 3..9 dead zone -- so a session-start rewind
+# exhausted all twelve bounded strokes even though it had already reached the top.  Registering
+# this chrome-only fingerprint keeps the 3.0 confirmation bound instead of weakening it for an
+# unknown rendering.  No profile pixels or text are stored here.
+_SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_CURRENT = (
+    254, 254, 254, 254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    251, 251, 250, 252, 236, 232, 232, 245, 244, 232, 233, 232, 238, 249, 233, 233,
+    234, 239, 245, 242, 235, 237, 242, 233, 234, 233, 233, 239, 237, 232, 233, 231,
+    190, 187, 224, 245, 230, 186, 224, 234, 237, 205, 182, 217, 234, 234, 220, 190,
+)
+
 _SCROLL_TOP_BAND_FINGERPRINTS: tuple[tuple[int, ...], ...] = (
     _SCROLL_TOP_BAND_FINGERPRINT_COMPATIBLE,
     _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT,
@@ -330,6 +348,7 @@ _SCROLL_TOP_BAND_FINGERPRINTS: tuple[tuple[int, ...], ...] = (
     _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_CURRENT,
     _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_PURPLE_BANNER,
     _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_0_1,
+    _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_CURRENT,
 )
 
 # Maintained for backwards compatibility:

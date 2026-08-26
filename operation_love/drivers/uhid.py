@@ -532,16 +532,16 @@ class PersistentUhidTouch:
             # stdin (the PTY's slave side) by path, which a plain reopened pipe could not do.
             argv += ["shell", "-tt", "hid /proc/self/fd/0"]
             try:
-                # text=True, not bytes: every payload this transport ever sends or reads is a
-                # JSON command line or PTY status text -- never a binary blob (unlike
-                # Adb.screencap's PNG, which stays bytes for exactly that reason). Staying in
-                # `str` end to end means `json.dumps(...)` writes straight to stdin with no
-                # per-call `.encode()`, matching touchwatch.py's own persistent-Popen
-                # precedent (also `text=True`, for the identical reason: its stream is text,
-                # not binary).
+                # text=True, not bytes: every payload this transport sends is a JSON command
+                # line, so `json.dumps(...)` writes straight to stdin with no per-call
+                # `.encode()`.  stdout/stderr are deliberately DEVNULL: this is a write-only
+                # protocol, and `adb shell -tt` may echo PTY input.  Keeping either output on
+                # an unread PIPE lets that echo fill the host pipe and block a later stdin
+                # write forever, making Stop unable to reach the worker.  There is no output
+                # contract to preserve or parse here, so DEVNULL is safer than reader threads.
                 self._proc = subprocess.Popen(
-                    argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, text=True, bufsize=1,
+                    argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, text=True, bufsize=1,
                 )
             except OSError as exc:
                 raise UhidUnavailable(

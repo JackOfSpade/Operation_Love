@@ -2967,12 +2967,12 @@ def test_enum_step_ceiling_is_the_coverage_rules_own_flat_bound_not_the_pitch():
     """`_enum_step_ceiling` answers a different question from `_pitch_relative_max_step` (how far
     could N ordinary GESTURES have moved the content, not how close two landmarks may be) and
     must not accidentally collapse onto it. On this file's calibrated 1800-row band it is
-    `scroll_step._ENUM_TRUST_CEILING_BAND_FRAC` (0.40) of the band height — 720px — regardless of
+    `scroll_step._ENUM_TRUST_CEILING_BAND_FRAC` (0.30) of the band height — 540px — regardless of
     what any particular profile's card pitch happens to be."""
     segmentations = [item_index.segment_frame(
         _frame(0), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
         like_threshold=hinge._LIKE_MATCH_THRESHOLD)]
-    assert item_index._enum_step_ceiling(segmentations) == 720
+    assert item_index._enum_step_ceiling(segmentations) == 540
     assert item_index._enum_step_ceiling(segmentations) != item_index._pitch_relative_max_step(
         segmentations)
 

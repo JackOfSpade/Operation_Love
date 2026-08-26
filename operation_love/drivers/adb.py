@@ -55,6 +55,7 @@ _DEVICE_LOST_PHRASES = (
 _TEXT_SHELL_SPECIALS = frozenset("\\'\"`$&|;<>(){}[]*?!#~")
 _ANDROID_PACKAGE_RE = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
+_WM_SIZE_RE = re.compile(r"\b(?:physical|override)\s+size\s*:\s*(\d+)\s*x\s*(\d+)\b", re.IGNORECASE)
 
 
 def validate_android_package_id(value: object, *, context: str = "Android package") -> str:
@@ -270,6 +271,18 @@ class Adb:
         if cleaned:
             self._run_device(["shell", "input", "text", _escape_input_text(cleaned)])
 
+    def keyevent(self, keycode: int) -> None:
+        """Deliver one Android key event through the device-owned input transport.
+
+        This deliberately exposes no arbitrary shell fragment to callers.  The Hinge training
+        checkpoint uses ``KEYCODE_BACK`` (4) to dismiss the IME after its opener is typed; the
+        driver, not a call site, remains responsible for foreground ownership and audit logging
+        around that input.
+        """
+        if type(keycode) is not int or keycode < 0 or keycode > 0xffff:
+            raise ValueError("Android keycode must be an integer in 0..65535")
+        self._run_device(["shell", "input", "keyevent", str(keycode)])
+
     # --- screen --------------------------------------------------------
     def screencap(self) -> bytes:
         return self._run_device(["exec-out", "screencap", "-p"])
@@ -279,13 +292,11 @@ class Adb:
             out = _decode(self._run_device(["shell", "wm", "size"]))
             w = h = 0
             for line in out.splitlines():
-                low = line.lower()
-                if "size:" in low and "x" in low:
-                    try:
-                        ws, hs = line.split("size:")[1].strip().lower().split("x")
-                        w, h = int(ws), int(hs)        # Override size, if present, wins (parsed last)
-                    except (ValueError, IndexError):
-                        continue
+                match = _WM_SIZE_RE.search(line)
+                if match is not None:
+                    w, h = (int(value) for value in match.groups())
+                    # Android lists the optional override after the physical size, so the
+                    # last matching line is the actual coordinate space for input.
             if not (w and h):
                 raise AdbError(["wm", "size"], f"could not parse screen size from {out!r}")
             self._size = (w, h)

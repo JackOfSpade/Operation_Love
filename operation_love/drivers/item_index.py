@@ -328,8 +328,8 @@ _MIN_ITEM_GAP_PX = min(_GUTTER_PX) - _GUTTER_TOLERANCE_PX
 # module docstring -- so simply reusing 363 here would make `_structural_landmarks` reject most of
 # the profile's real landmark pairings (false negatives: fewer proposed repairs, not wrong ones),
 # while bumping the SCALAR to match the new cadence is exactly the trap above: whatever fixed
-# number covers a ~720px step is not guaranteed to stay under every profile's own pitch, and the
-# corpus's own minimum (737px) is barely above 720 in the first place.
+# number covers a large coverage-planned step is not guaranteed to stay under every profile's own
+# pitch; even the prior 720px ceiling sat close to the corpus's 737px minimum.
 #
 # THE FIX is what the trap's own escape hatch says it has to be: derive the bound from THIS
 # profile's own measured card spacing, using `scroll_step.measure_local_spacing` -- the exact

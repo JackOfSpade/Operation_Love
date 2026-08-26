@@ -21,9 +21,14 @@ uhid.py/adb.py were built to avoid (see adb.py's module docstring).
 
 Two touch streams can exist on this phone at once: the human's real finger on
 `goodix_ts0`, and -- while a bot swipe is in flight -- our OWN virtual digitizer
-(uhid.py's UhidTouch), which registers as `og_touch_<8 hex>` (`secrets.token_hex(4)`).
-`exclude_name_prefixes` exists so a TouchWatcher never mistakes our own synthetic
-gesture for the human's; the default excludes exactly that prefix.
+(uhid.py's UhidTouch), which normally registers as `og_touch_<8 hex>`
+(`secrets.token_hex(4)`). `exclude_name_prefixes` rejects that normal name. A name is
+operator-configurable, however (the persistent transport can outlive a failed run), so
+selection also rejects this project's exact minimal HID capability profile regardless of
+its name. `getevent -p` on the Pixel does not expose bus/vendor/product metadata, so that
+observable profile -- one BTN_TOUCH key and this driver's eight descriptor axes -- is the
+reliable discriminator. A watcher must never mistake a synthetic gesture stream for the
+human's.
 
 `Adb` (adb.py) is a one-shot `subprocess.run` transport BY DESIGN -- it must not grow a
 streaming API just for this one caller. This module owns its own `subprocess.Popen`
@@ -107,6 +112,7 @@ _LT_LINE_RE = re.compile(
 #       INPUT_PROP_DIRECT
 _ADD_DEVICE_RE = re.compile(r"^add device \d+:\s*(/dev/input/event\d+)\s*$", re.MULTILINE)
 _NAME_RE = re.compile(r'^\s*name:\s*"([^"]*)"', re.MULTILINE)
+_KEY_CODES_RE = re.compile(r"^\s*KEY\s+\(0001\):\s*((?:[0-9a-fA-F]{4}\*?\s*)+)$", re.MULTILINE)
 # Matches every "<4-hex-code>  : value V, min N, max M, ..." axis line inside an ABS
 # block, regardless of exactly how the surrounding "ABS (0003):" header wraps around the
 # first axis -- that header never itself matches this pattern (its own trailing "):" is
@@ -120,6 +126,19 @@ EV_KEY = "0001"
 BTN_TOUCH = "014a"
 ABS_MT_TRACKING_ID = "0039"
 
+# These are the event-capability surfaces produced by this project's UHID descriptors: the
+# current descriptor in uhid.py's `_build_descriptor` maps to the first set on the live Pixel;
+# the earlier project descriptor maps to the second set, retained because a renamed persistent
+# device can survive a process crash across an upgrade. Both have only BTN_TOUCH. A physical
+# device indistinguishable from either minimal virtual descriptor is not safe evidence of a
+# human gesture, so fail closed rather than attaching to it. Unlike a name prefix, this survives
+# a custom PersistentUhidTouch name.
+_OUR_VIRTUAL_TOUCH_KEYS = frozenset({BTN_TOUCH})
+_OUR_VIRTUAL_TOUCH_AXIS_PROFILES = frozenset({
+    frozenset({"0000", "0001", "0018", "002f", "0035", "0036", "0039", "003a"}),
+    frozenset({"0030", "0035", "0036", "0039"}),
+})
+
 
 def _iter_device_blocks(getevent_p_output: str):
     """Yield (dev_path, block_text) for each `add device N: /dev/input/eventX` section of
@@ -131,6 +150,15 @@ def _iter_device_blocks(getevent_p_output: str):
         yield m.group(1), getevent_p_output[start:end]
 
 
+def _is_our_virtual_touch_profile(block: str, axes: dict[str, str]) -> bool:
+    """Whether `block` exposes Operation Love's UHID descriptor under any device name."""
+    key_match = _KEY_CODES_RE.search(block)
+    keys = (frozenset(code.lower() for code in re.findall(r"[0-9a-fA-F]{4}", key_match.group(1)))
+            if key_match else frozenset())
+    return (keys == _OUR_VIRTUAL_TOUCH_KEYS
+            and frozenset(axes) in _OUR_VIRTUAL_TOUCH_AXIS_PROFILES)
+
+
 def select_touch_device(
     getevent_p_output: str,
     exclude_name_prefixes: tuple[str, ...] = ("og_touch_",),
@@ -139,23 +167,30 @@ def select_touch_device(
 
     Returns the first device (in getevent's own print order) that declares BOTH
     ABS_MT_POSITION_X (0035) and ABS_MT_POSITION_Y (0036) among its ABS axes, skipping
-    any whose `name:` starts with one of `exclude_name_prefixes` -- our own UHID virtual
-    touchscreen (uhid.py's UhidTouch) registers as `og_touch_<8 hex>` and must never be
-    mistaken for the human's real finger. Returns (dev_path, name, x_max, y_max), the
-    axis maxima TouchWatcher.start() uses to scale raw device coordinates onto the live
-    screen. Raises TouchWatchUnavailable if nothing qualifies.
+    any whose `name:` starts with one of `exclude_name_prefixes`, or whose key+axis capability
+    profile is this project's UHID digitizer. The latter is essential: UhidTouch's name is
+    configurable, and this Pixel's `getevent -p` omits bus/vendor/product metadata, while an
+    old `persist-scroll-test` virtual device has the same x/y axes as glass. Returns
+    (dev_path, name, x_max, y_max), the axis maxima TouchWatcher.start() uses to scale raw
+    device coordinates onto the live screen. Raises TouchWatchUnavailable if nothing qualifies.
     """
     for dev_path, block in _iter_device_blocks(getevent_p_output):
         name_m = _NAME_RE.search(block)
         name = name_m.group(1) if name_m else ""
-        if any(name.startswith(prefix) for prefix in exclude_name_prefixes):
+        axes = {code.lower(): maximum for code, maximum in _ABS_AXIS_RE.findall(block)}
+        if (any(name.startswith(prefix) for prefix in exclude_name_prefixes)
+                or _is_our_virtual_touch_profile(block, axes)):
             continue
-        axes = dict(_ABS_AXIS_RE.findall(block))
         if ABS_MT_POSITION_X in axes and ABS_MT_POSITION_Y in axes:
-            return dev_path, name, int(axes[ABS_MT_POSITION_X]), int(axes[ABS_MT_POSITION_Y])
+            x_max, y_max = int(axes[ABS_MT_POSITION_X]), int(axes[ABS_MT_POSITION_Y])
+            # A non-positive axis range cannot represent a screen position.  In particular,
+            # ``-1`` would make start() divide by zero while calculating its scale and leak an
+            # implementation exception instead of the documented unavailable result.
+            if x_max > 0 and y_max > 0:
+                return dev_path, name, x_max, y_max
     raise TouchWatchUnavailable(
-        "no ABS_MT_POSITION_X/Y touch device found in `adb shell getevent -p` output "
-        f"(excluded name prefixes: {exclude_name_prefixes!r})"
+        "no ABS_MT_POSITION_X/Y physical touch device found in `adb shell getevent -p` output "
+        f"(excluded name prefixes: {exclude_name_prefixes!r} and this project's UHID profile)"
     )
 
 

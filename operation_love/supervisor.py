@@ -11,6 +11,7 @@ import errno
 import math
 import os
 import signal
+import sys
 import threading
 import uuid
 from contextlib import contextmanager
@@ -75,6 +76,7 @@ _ANDROID_LOCK_ROOT = Path.home() / ".operation-love" / "locks"
 # instead, keeping those runs exactly as responsive to a genuinely wedged worker as before.
 _WORKER_JOIN_TIMEOUT_FLOOR_S = 30.0
 _WORKER_JOIN_TIMEOUT_MARGIN_S = 15.0
+_WEDGED_WORKER_STACK_MAX_FRAMES = 12
 
 
 def _worker_join_timeout_s(cfg) -> float:
@@ -85,6 +87,44 @@ def _worker_join_timeout_s(cfg) -> float:
     if cfg.opener.enabled:
         return cfg.opener.request_timeout_s + _WORKER_JOIN_TIMEOUT_MARGIN_S
     return _WORKER_JOIN_TIMEOUT_FLOOR_S
+
+
+def _wedged_worker_stack_lines(worker) -> list[str]:
+    """Return a compact, locals-free snapshot of a live worker's Python stack.
+
+    ``sys._current_frames()`` is an in-process memory lookup: it neither talks to the
+    device nor asks the worker to cooperate, which matters precisely when the worker
+    is stuck. Deliberately record only code metadata (basename, line number, function),
+    never source text, arguments, or locals: a shutdown diagnostic must not leak profile
+    data, API credentials, or an in-flight request body into stdout/bug reports.
+    """
+    app = getattr(worker, "app", "unknown")
+    ident = getattr(worker, "ident", None)
+    if ident is None:
+        return [f"Supervisor: worker '{app}' stack unavailable (no thread identity)."]
+    try:
+        frame = sys._current_frames().get(ident)
+    except BaseException:  # noqa: BLE001 -- diagnostics must never disrupt shutdown
+        return [f"Supervisor: worker '{app}' stack unavailable."]
+    if frame is None:
+        return [f"Supervisor: worker '{app}' stack unavailable (thread frame not found)."]
+
+    frames: list[tuple[str, int, str]] = []
+    while frame is not None and len(frames) < _WEDGED_WORKER_STACK_MAX_FRAMES:
+        code = frame.f_code
+        # A basename preserves the useful file signal while avoiding an absolute local path.
+        filename = os.path.basename(code.co_filename).replace("\n", "\\n").replace("\r", "\\r")
+        function = code.co_name.replace("\n", "\\n").replace("\r", "\\r")
+        frames.append((filename, frame.f_lineno, function))
+        frame = frame.f_back
+
+    omitted = " (older frames omitted)" if frame is not None else ""
+    lines = [
+        f"Supervisor: worker '{app}' Python stack at wedge "
+        f"({len(frames)} frame(s), newest first{omitted}):"
+    ]
+    lines.extend(f"  {filename}:{lineno} in {function}" for filename, lineno, function in frames)
+    return lines
 
 
 def _android_app(enabled_apps: list[str]) -> str | None:
@@ -408,15 +448,38 @@ def load_effective_config(config_path: str = "config.yaml", *, mode: str | None 
     # reaching set/dict membership in the availability gate as an unhashable TypeError.
     cfg_mod._validate_config_shape(cfg)
 
+    # Training is a mode with a mandatory Hub decision boundary, not an advisory spelling
+    # of AUTO. Per-app overrides normally win, but allowing one to turn this explicit request
+    # back into ``auto`` would silently use ranker decisions without the promised checkpoint. This is
+    # intentionally after the shape check: malformed caller input must retain Config's clean
+    # ValueError rather than leaking a mapping/list TypeError from this special-case scan.
+    if cfg.mode == "training":
+        overridden = [
+            app for app in cfg.enabled_apps
+            if ((cfg.apps or {}).get(app, {}) or {}).get("mode") not in (None, "training")
+        ]
+        if overridden:
+            raise ValueError(
+                "Training cannot run while apps override its mode for "
+                f"{sorted(overridden)}; remove the per-app mode override or set it to "
+                "training")
+
+    # Validate before consulting dynamic platform readiness. Config validation installs the
+    # still-photo licence and verifies Hinge AUTO's exact release artifact; checking the
+    # registry first in a fresh process would see neither installed and reject a valid AUTO
+    # config before its gate had a chance to prove itself. This remains before any Worker,
+    # driver, touch transport, or external store is constructed.
+    cfg_mod.validate(cfg)
+
     requested_modes = {
         app: (((cfg.apps or {}).get(app, {}) or {}).get("mode", cfg.mode))
         for app in cfg.enabled_apps
     }
+    # Registry readiness is intentionally after full config validation but still before all
+    # construction: an uncalibrated target such as Bumble is refused with no driver/touch.
     unrunnable = platforms.check_runnable(cfg.enabled_apps, modes=requested_modes)
     if unrunnable:
         raise ValueError(unrunnable)
-
-    cfg_mod.validate(cfg)
     return cfg
 
 
@@ -446,6 +509,35 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     # Shared with HubState.start(): the Hub rejects a bad effective config before it creates
     # background state, and this remains the backstop for direct CLI/test callers.
     cfg = load_effective_config(config_path, mode=mode, enabled_apps=enabled_apps)
+    effective_modes = {
+        app: ((cfg.apps or {}).get(app, {}) or {}).get("mode", cfg.mode)
+        for app in cfg.enabled_apps
+    }
+    if "training" in effective_modes.values() and on_worker is None:
+        raise ValueError(
+            "Training requires the local Hub decision bridge; start it from the Hub rather "
+            "than a direct CLI/supervisor run")
+
+    # Publish a cancellable startup state before any credential, provider, capability, or
+    # device preflight.  A Stop can arrive immediately after the Hub starts this background
+    # thread; doing a Gemini ListModels request or invoking adb after that point is needless
+    # latency at best and can keep the shutdown UI stuck in "starting" for a network timeout.
+    # Config validation above still runs first so malformed input remains a clear refusal rather
+    # than looking like a successful cancelled run.
+    run_id = uuid.uuid4().hex[:12]
+    status = RunStatus(run_id, cfg.enabled_apps, min_labels=cfg.ranker.min_labels_to_engage,
+                       mode=cfg.mode, budget_cap=cfg.budget.run_budget_usd)
+    # AppStatus defaults to training so legacy/direct callers have a safe shape, but the Hub
+    # reads this snapshot before any Worker exists. Publish the already-resolved per-app mode
+    # first: otherwise an AUTO app briefly renders as Training until its worker thread starts.
+    for app, app_mode in effective_modes.items():
+        status.set_app(app, mode=app_mode)
+    if on_status:
+        on_status(status)
+    if _stop_requested(stop_event):
+        _abort_startup(run_id, status, cfg)
+        return
+
     # Gemini uses the stdlib REST transport, so there is no SDK capability gate. Check
     # credentials here, before status/store/model setup, to avoid an expensive startup
     # followed by an inevitable provider failure.
@@ -475,15 +567,6 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             print("Gemini opener: opener.preflight is false -- configured model ids are "
                   "UNVALIDATED; a typo or an invalid key will only surface as a failure "
                   "once a real profile is processed.")
-
-    run_id = uuid.uuid4().hex[:12]
-
-    # Create + publish status up front (before the slow store/model setup) so the
-    # hub shows a live "phase" immediately rather than appearing to hang on Start.
-    status = RunStatus(run_id, cfg.enabled_apps, min_labels=cfg.ranker.min_labels_to_engage,
-                       mode=cfg.mode, budget_cap=cfg.budget.run_budget_usd)
-    if on_status:
-        on_status(status)
 
     # At most one enabled app is Android-kind (check_runnable guarantees it above).
     android_app = _android_app(cfg.enabled_apps)
@@ -661,33 +744,34 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             driver = make_driver(app, cfg)
             w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing,
                        stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every,
-                       limiter=limiter, status=status,
-                       observe_source=app_cfg.get("observe_evidence_source", "manual"))
-            if on_worker:
-                on_worker(w)  # hub-only binding; must happen before this Worker thread starts
-            print(f"{app.title()} worker mode={mode} limits={limiter.describe()}")
+                       limiter=limiter, status=status)
             try:
+                # Hub binding is part of launching a worker, not a precondition outside its
+                # cleanup boundary.  A bridge may reject a replacement while registering; the
+                # driver already exists then and must be released exactly like a failed
+                # Thread.start().
+                if on_worker:
+                    on_worker(w)  # hub-only binding; must happen before this Worker thread starts
+                print(f"{app.title()} worker mode={mode} limits={limiter.describe()}")
                 w.start()
             except BaseException:
-                # A Thread cannot be joined until start() succeeds.  Keeping a failed-start
-                # Worker in ``workers`` made the shutdown finally call join() on it, masking
-                # the real thread-start failure and skipping the store flush/close below.
-                # The driver has already been constructed, so release any transport/session
-                # resources best-effort while the original start exception still owns
-                # propagation.
-                bridge = getattr(w, "observe_action_bridge", None)
+                # A Thread cannot be joined until start() succeeds, and a Hub binding can fail
+                # after the driver was constructed but before start().  In either case keeping
+                # this worker in ``workers`` would make shutdown join an unstarted thread,
+                # masking the actual launch error and skipping the store cleanup below.
+                bridge = getattr(w, "training_action_bridge", None)
                 if bridge is not None:
                     try:
                         bridge.unregister(w)
                     except BaseException as bridge_exc:  # noqa: BLE001 — preserve start error
                         print(
-                            f"Run {run_id}: warning unregistering {app} worker after start "
+                            f"Run {run_id}: warning unregistering {app} worker after launch "
                             f"failed: {type(bridge_exc).__name__}: {bridge_exc}")
                 try:
                     driver.close()
                 except BaseException as close_exc:  # noqa: BLE001 — never mask start failure
                     print(
-                        f"Run {run_id}: warning closing {app} driver after worker start "
+                        f"Run {run_id}: warning closing {app} driver after worker launch "
                         f"failed: {type(close_exc).__name__}: {close_exc}")
                 raise
             workers.append(w)
@@ -707,10 +791,9 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         # fix: this used to stamp phase="saving data" here, ~40 lines before the actual
         # store.flush() call below, so the hub showed "saving data…" for the ENTIRE
         # worker-join window (up to join_timeout_s -- 105s with the shipped opener config)
-        # while a worker could still be mid-profile-read -- and kept rendering its green
-        # observe-mode GO cue that whole time even though a decision made after stop_event
-        # is set gets discarded, never recorded (worker.py's observe loop re-checks
-        # stop_event and drops the in-flight card). See status.py's `stopping` docstring.
+        # while a worker could still be mid-profile-read -- and kept rendering a live run cue
+        # even though no new decision should begin after stop_event is set. See status.py's
+        # `stopping` docstring.
         status.set_global(stopping=True, phase="stopping",
                           budget_spent=tracker.run_spend_usd, openers=tracker.calls)
         stop_event.set()
@@ -741,6 +824,10 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                 print(f"Supervisor: worker '{w.app}' did not stop within "
                       f"{join_timeout_s:.0f}s; proceeding to save without it "
                       "(it may still be running in the background).")
+                # Capture its precise Python location while it is still known alive. These
+                # lines flow through the hub's stdout tee into bugreport's Recent logs.
+                for line in _wedged_worker_stack_lines(w):
+                    print(line)
         wedged = [w for w in workers if w.is_alive()]
         if device_lock is not None:
             wedged_android = next(
@@ -802,11 +889,11 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             else:
                 prior = terminal_states.get(app)
                 app_state = prior if prior in {
-                    "error", "out_of_profiles", "rate_limited", "stopped"
+                    "error", "out_of_profiles", "rate_limited", "stopped", "blocked"
                 } else "stopped"
             status.set_app(app, state=app_state)
-        # ``tracker.calls`` counts provider/API calls, including an Observe draft that may be
-        # passed or abandoned.  Do not present it as a sent or persisted opener in shutdown
+        # ``tracker.calls`` counts provider/API calls, including a Training draft that may be
+        # passed or abandoned. Do not present it as a sent or persisted opener in shutdown
         # output; RunStatus retains its existing compatibility field separately.
         tail = (f"provider_calls={tracker.calls} "
                 f"provider_spend=${tracker.run_spend_usd:.4f}")

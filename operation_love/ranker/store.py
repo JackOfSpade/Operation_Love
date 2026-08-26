@@ -618,13 +618,15 @@ class SQLiteStore:
             )
             self._commit()
 
-    def count_today(self, app: str) -> int:
-        """Auto-mode swipes recorded today (LOCAL day, i.e. since local midnight)."""
+    def count_today(self, app: str, *, source: str = "auto") -> int:
+        """Decisions from one validated source since local midnight."""
+        if source not in {"auto", "manual"}:
+            raise ValueError("count_today source must be 'auto' or 'manual'")
         start = local_midnight_epoch()
         with self._lock:
             return self.con.execute(
-                "SELECT COUNT(*) FROM decisions WHERE app=? AND created_at>=? AND source='auto'",
-                (app, start),
+                "SELECT COUNT(*) FROM decisions WHERE app=? AND created_at>=? AND source=?",
+                (app, start, source),
             ).fetchone()[0]
 
     def spend_today(self) -> float:

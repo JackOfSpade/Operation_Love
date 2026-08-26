@@ -7,8 +7,8 @@ opencv, and which /dev/input/event* device the touch watcher would attach
 to — see _capabilities_md), the config (secrets stripped — presence only,
 never a value or even a derived prefix), the live run status (phase, labels,
 ranker, per-app decisions, budget, last error), a STALL SUMMARY distilled from
-each app's on-disk actions.jsonl (the longest same-reason observe_waiting
-repeats, worst first — see _stall_summary_md), item-index refusal pair evidence
+each app's on-disk actions.jsonl (the most recent same-reason observe_waiting
+repeats, most recent first — see _stall_summary_md), item-index refusal pair evidence
 and realised-step ranges, and recent log lines. Output
 is markdown the owner can paste to a developer to debug. The report includes
 an explicit reporter-follow-up section when its human description is too brief
@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import math
 import os
 import platform
 import re
@@ -348,10 +349,30 @@ def _targeting_readiness_md(config_path: str) -> str:
     lines.append("- licence installed in THIS process: "
                  + (provenance if provenance else
                     "no (expected when the report is generated outside a validated run)"))
-    lines.append("- `apps.hinge.targeting_calibration`: "
-                 + ("present" if isinstance(app.get("targeting_calibration"), dict)
-                    else "ABSENT — no numbered item list, so no targeted opener is generated "
-                         "or offered"))
+    calibration = app.get("targeting_calibration")
+    calibration_valid = False
+    calibration_problem = ""
+    if isinstance(calibration, dict) and tp.hinge_targeting_unavailable_reason() is None:
+        # The report must not mistake a mapping's mere presence for a calibration licence.  This
+        # narrow validator reads no device and changes no process-global readiness state; it
+        # verifies exactly the mapping that a live driver would rely on.  Full
+        # config.validate() is intentionally not called here because it clears/reinstalls the
+        # live process's still-photo licence.
+        try:
+            from . import config as cfg_mod
+            cfg_mod._validate_targeting_calibration(cfg_mod.load(config_path))
+            calibration_valid = True
+        except Exception as exc:  # noqa: BLE001 -- a malformed report config remains reportable
+            calibration_problem = _sanitize_inline(str(exc))
+    if calibration_valid:
+        calibration_line = "present and validated"
+    elif isinstance(calibration, dict):
+        calibration_line = ("present but not validated"
+                            + (f": {calibration_problem}" if calibration_problem else ""))
+    else:
+        calibration_line = ("ABSENT — no numbered item list, so no targeted opener is generated "
+                            "or offered")
+    lines.append("- `apps.hinge.targeting_calibration`: " + calibration_line)
     blocker = tp.hinge_targeting_unavailable_reason()
     lines.append("- targeting-policy blocker: " + (blocker if blocker else "none"))
     if blocker is not None and licence_keys:
@@ -363,6 +384,13 @@ def _targeting_readiness_md(config_path: str) -> str:
         lines.append("- ⚠️ the blocker above reflects this unvalidated reporting process, not a "
                      "run: the config key above would install a licence when a run validates "
                      "it. Re-check inside the run, or with `config.validate(config.load(...))`")
+    elif calibration_valid and blocker is None:
+        lines.append("- targeting readiness: ready — the still-photo licence and this device's "
+                     "validated targeting calibration are both active; no targeting setup action "
+                     "remains")
+    elif calibration is not None and blocker is None:
+        lines.append("- next step: repair or replace the invalid targeting calibration before "
+                     "treating numbered targeted suggestions as ready")
     else:
         lines.append("- next step: " + tp.targeting_setup_next_step())
     return "\n".join(lines)
@@ -522,12 +550,10 @@ def _hub_guidance_md(apps: dict) -> str:
         state = str(app.get("state") or "unknown")
         mode = str(app.get("mode") or "")
         prefix = f"- **{_sanitize_inline(str(name))}**"
-        if mode == "observe" and state == "waiting":
-            lines.append(f"{prefix}: hub says READY for a manual pass/like; no decision has "
-                         "been recorded for the current card.")
-        elif mode == "observe" and state == "waiting_for_send":
-            lines.append(f"{prefix}: hub says a like/comment sheet is open; waiting for Send "
-                         "Like or dismissal, with no decision recorded yet.")
+        if mode == "training" and state == "waiting_approval":
+            lines.append(f"{prefix}: hub says a typed target opener is ready; choose Like to "
+                         "send it or Dislike to pass this profile. No decision has been "
+                         "recorded yet.")
 
         warning = app.get("opener_warning")
         if warning:
@@ -535,7 +561,7 @@ def _hub_guidance_md(apps: dict) -> str:
                          f"`{_compact_item_index_refusal_text(warning)}`")
         elif app.get("opener_pending"):
             lines.append(f"{prefix}: advisory suggestion generation is still pending; this does "
-                         "not block a manual pass/like.")
+                         "not block the current training decision.")
         elif app.get("opener_suggestion"):
             item = app.get("opener_item")
             item_note = f" for item {item}" if item is not None else ""
@@ -564,8 +590,8 @@ def _status_md(hub_state) -> str:
     cap = f" / ${st['budget_cap']:.2f}" if st.get("budget_cap") is not None else ""
     # These are intentionally separate ledgers.  ``labels`` is the whole ranker's loaded
     # dataset, while AppStatus.swipes_run is the count of actual preference decisions made in
-    # THIS run.  CostTracker.calls/spend are provider/billing telemetry: an Observe suggestion
-    # can legitimately incur those without the owner sending a like or recording a label.
+    # THIS run.  CostTracker.calls/spend are provider/billing telemetry: a staged opener draft
+    # or a Training checkpoint can legitimately incur those without a landed decision or label.
     apps = st.get("apps") or {}
     decisions = sum(
         int(a.get("swipes_run", 0))
@@ -581,9 +607,9 @@ def _status_md(hub_state) -> str:
         f"tracked spend: ${st['budget_spent']:.2f}{cap}",
     ]
     if decisions == 0:
-        lines.append("- No pass/like preference decision was recorded. A generated Observe "
-                     "suggestion or its provider cost is not a profile, photo, label, or "
-                     "decision record.")
+        lines.append("- No pass/like preference decision was recorded. A generated but unacted "
+                     "opener draft (including a Training checkpoint) or its provider cost is "
+                     "not a profile, photo, label, or decision record.")
     # `stopping` (RunStatus.snapshot(), status.py) marks a stop that's been requested but hasn't
     # unwound yet -- distinct from `phase == "stopped"`, which only appears once it actually has.
     # Read with .get() rather than st["stopping"]: this field is landing in a concurrent change,
@@ -652,8 +678,8 @@ def _recent_openers_md(hub_state) -> str:
         return "- (no hub — run via `python -m operation_love hub` for live run status)"
     entries = hub_state.recent_openers()
     if not entries:
-        return ("- (no committed opener records in the active/last run; an unacted Observe "
-                "suggestion is intentionally absent)")
+        return ("- (no committed opener records in the active/last run; an unacted staged "
+                "opener draft is intentionally absent)")
     newest_first = list(reversed(entries))[:_RECENT_OPENERS_SHOWN]   # ring buffer is newest-LAST
     lines = []
     for e in newest_first:
@@ -690,8 +716,8 @@ def _recent_openers_md(hub_state) -> str:
             f"  > {_sanitize_inline(opener)}"
         )
     if not lines:
-        return ("- (no committed opener records in the active/last run; an unacted Observe "
-                "suggestion is intentionally absent)")
+        return ("- (no committed opener records in the active/last run; an unacted staged "
+                "opener draft is intentionally absent)")
     return "\n".join(lines)
 
 
@@ -1394,15 +1420,51 @@ def _parse_action_ts(raw_ts: object) -> datetime | None:
         return None
 
 
+_OBSERVE_WAITING_TELEMETRY_ACTIONS = frozenset({
+    # These rows are emitted by the suggestion/verification thread while the driver's existing
+    # wait_for_decision call keeps polling the SAME card. They are not decision boundaries.
+    "observe_release_hub_pre_tap_published",
+    "observe_release_post_tap_item_verified",
+})
+
+
+def _is_capture_abort_timing(rec: dict) -> bool:
+    """Whether this is an end-of-capture timing row that can follow a Stop abort.
+
+    `_capture_current` writes `capture_aborted` before its ``finally`` block emits the
+    iteration timing row.  Timing is diagnostic bookkeeping, not a new capture lifecycle
+    event, so it must not hide the terminal abort from the report.  Keep this deliberately
+    narrow: ordinary inputs and any future non-timing capture action still break the suffix.
+    """
+    action = rec.get("action")
+    return (isinstance(action, str) and action.startswith("capture_")
+            and "timing" in action)
+
+
+def _terminal_capture_abort(records: list[dict]) -> dict | None:
+    """Return a final Stop-aborted capture obscured only by trailing timing diagnostics."""
+    for rec in reversed(records):
+        if _is_capture_abort_timing(rec):
+            continue
+        return rec if rec.get("action") == "capture_aborted" else None
+    return None
+
+
+def _is_observe_waiting_telemetry(rec: dict) -> bool:
+    """Whether `rec` is a known in-wait fact rather than a card/lifecycle boundary."""
+    return rec.get("action") in _OBSERVE_WAITING_TELEMETRY_ACTIONS
+
+
 def _observe_waiting_stretches(lines: list[str]) -> list[list[dict]]:
-    """Split a run's actions.jsonl into maximal stretches of consecutive records whose
-    "action" is "observe_waiting" — i.e. one profile's entire wait for a decision, bounded by
-    whatever resolves it (observe_decision, capture, observe_like_anchor, ...) on either side.
-    A line that fails to parse, or parses to something with no "observe_waiting" action, closes
-    whatever stretch is currently open rather than silently vanishing into it — a malformed
-    line must never let two unrelated waits (different profiles, potentially minutes apart)
-    merge into one bogus stall. Returns parsed record dicts, not raw strings, since every
-    caller needs both "reason" and "ts" out of each one."""
+    """Split a run's actions.jsonl into observed-decision waits.
+
+    `observe_waiting` rows form a stretch, with the two known release facts allowed between
+    them because they are generated on a sibling thread during the same wait. Every other
+    action -- including capture, decision, resync, a like anchor, malformed JSON, or a future
+    unclassified action -- closes the stretch rather than risking a merge across cards.
+    Returns parsed waiting rows only, since callers need their reason/timestamps rather than
+    the interleaved telemetry itself.
+    """
     stretches: list[list[dict]] = []
     current: list[dict] = []
     for raw in lines:
@@ -1416,12 +1478,36 @@ def _observe_waiting_stretches(lines: list[str]) -> list[list[dict]]:
         if rec is not None and rec.get("action") == "observe_waiting":
             current.append(rec)
             continue
+        if current and rec is not None and _is_observe_waiting_telemetry(rec):
+            continue
         if current:
             stretches.append(current)
             current = []
     if current:
         stretches.append(current)
     return stretches
+
+
+def _final_observe_wait(records: list[dict]) -> tuple[list[dict], int | None]:
+    """The final logged wait and its first record index, allowing in-wait telemetry.
+
+    This mirrors `_observe_waiting_stretches`; otherwise the stall summary could correctly
+    count one wait while the latest-context narrative reports only its suffix.
+    """
+    wait_reversed: list[dict] = []
+    first_index: int | None = None
+    started = False
+    for index in range(len(records) - 1, -1, -1):
+        rec = records[index]
+        if rec.get("action") == "observe_waiting":
+            wait_reversed.append(rec)
+            first_index = index
+            started = True
+            continue
+        if started and _is_observe_waiting_telemetry(rec):
+            continue
+        break
+    return list(reversed(wait_reversed)), first_index
 
 
 def _stall_candidates(lines: list[str]) -> list[tuple[int, str, int, float | None]]:
@@ -1488,13 +1574,12 @@ def _stall_candidates(lines: list[str]) -> list[tuple[int, str, int, float | Non
 # format_duration's own docstring for why that direction breaks.
 _format_stall_duration = format_duration
 
-
-_STALL_ORDINALS = ["longest", "2nd-longest", "3rd-longest"]   # matches _STALL_STRETCHES_SHOWN
+_STALL_RECENCY_LABELS = ("most recent", "2nd most recent", "3rd most recent")
 
 
 def _stall_summary_md(lines: list[str]) -> str:
-    """STALL SUMMARY: the top `_STALL_STRETCHES_SHOWN` same-reason observe_waiting repeats in a
-    run's actions.jsonl, worst first — see _stall_candidates for exactly what counts as one.
+    """Repeated observe waits: the top `_STALL_STRETCHES_SHOWN` same-reason waits in a
+    run's actions.jsonl, most recent first — see _stall_candidates for exactly what counts as one.
     This is the bug-report's own self-improvement (_diagnostic_improvement_md), added after an
     unrecognised Hinge paywall produced repeated observe_waiting/like_sheet records. It turns
     an eyeball pattern-match over a log tail into one line at the top of the debug-log section.
@@ -1528,10 +1613,15 @@ def _stall_summary_md(lines: list[str]) -> str:
     candidates.sort(key=lambda c: (-c[0], c[3] is None, -(c[3] or 0.0), -c[2]))
     out = []
     for i, (_stretch_index, reason, count, duration) in enumerate(candidates[:_STALL_STRETCHES_SHOWN]):
-        label = _STALL_ORDINALS[i] if i < len(_STALL_ORDINALS) else f"{i + 1}th-longest"
+        # Candidates are intentionally sorted by stretch recency, not global duration.  Do not
+        # call this row "longest": a newer 31s wait can correctly precede an older 63s one.
+        # The ordinal describes that actual order and remains meaningful if a report shows
+        # several resolved waits alongside its still-open final wait.
+        label = (_STALL_RECENCY_LABELS[i] if i < len(_STALL_RECENCY_LABELS)
+                 else f"#{i + 1} most recent")
         record_word = "record" if count == 1 else "records"
         out.append(
-            f"- {label} observe stall: reason=`{_sanitize_inline(reason)}` for "
+            f"- {label} repeated observe wait: reason=`{_sanitize_inline(reason)}` for "
             f"{_format_stall_duration(duration)} ({count} {record_word})"
         )
     return "\n".join(out)
@@ -1691,8 +1781,239 @@ def _action_records(lines: list[str]) -> list[dict]:
     return records
 
 
+def _finite_nonnegative_action_seconds(rec: dict, key: str) -> float | None:
+    """Return a trustworthy non-negative duration from an untrusted JSONL row."""
+    value = rec.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _nonnegative_action_int(rec: dict, key: str) -> int | None:
+    """Return a JSON integer only when it is safe to use as capture provenance."""
+    value = rec.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _format_capture_timing_seconds(seconds: float) -> str:
+    """Keep the report concise while preserving a useful sub-minute comparison."""
+    return f"{seconds:.1f}s"
+
+
+def _latest_completed_capture_timing_md(lines: list[str]) -> str:
+    """Summarise the newest completed capture only when its timing rows can be paired safely.
+
+    A capture's read roll-up precedes its fold row, which precedes its ``capture`` record.  The
+    log is append-only and may contain partial/corrupt rows, so never borrow a duration across a
+    completed/aborted capture boundary or infer absent values from per-iteration diagnostics.
+    """
+    # Keep invalid/non-object raw rows as explicit sentinels here.  Elsewhere the report can
+    # still make best-effort use of the records around a partial append, but timing provenance
+    # cannot safely cross unknown data between this capture and its own timing rows.
+    records: list[dict | None] = []
+    for raw in lines:
+        try:
+            rec = json.loads(raw)
+        except Exception:  # noqa: BLE001 -- partial JSONL is a timing-pairing boundary
+            records.append(None)
+        else:
+            records.append(rec if isinstance(rec, dict) else None)
+    capture_index = next((
+        index for index in range(len(records) - 1, -1, -1)
+        if records[index] is not None and records[index].get("action") == "capture"
+    ), None)
+    if capture_index is None:
+        return ""
+
+    capture = records[capture_index]
+    assert capture is not None  # narrowed by the capture-index predicate above
+    capture_photos = _nonnegative_action_int(capture, "photos")
+    read_record: dict | None = None
+    fold_record: dict | None = None
+    read_index: int | None = None
+    fold_index: int | None = None
+    for index in range(capture_index - 1, -1, -1):
+        rec = records[index]
+        if rec is None:
+            return ""
+        action = rec.get("action")
+        if action in {"capture", "capture_aborted"}:
+            break
+        if action == "capture_fold_timing" and fold_record is None:
+            fold_record, fold_index = rec, index
+        elif action == "capture_timing_summary" and read_record is None:
+            read_record, read_index = rec, index
+
+    # Matching the fold's photo count to the completed capture prevents a malformed/interleaved
+    # diagnostic row from being attributed to the wrong profile.  The roll-up itself has no
+    # photo count, so its documented position before that paired fold is the remaining evidence.
+    if (read_record is None or fold_record is None or read_index is None or fold_index is None
+            or not read_index < fold_index < capture_index
+            or capture_photos is None
+            or _nonnegative_action_int(fold_record, "photos") != capture_photos):
+        return ""
+    read_s = _finite_nonnegative_action_seconds(read_record, "iter_wall_s_total")
+    fold_s = _finite_nonnegative_action_seconds(fold_record, "fold_wall_s")
+    if read_s is None or fold_s is None:
+        return ""
+    total_s = read_s + fold_s
+    if not math.isfinite(total_s):
+        return ""
+
+    details: list[str] = []
+    profile_name = capture.get("profile_name")
+    if isinstance(profile_name, str) and profile_name.strip():
+        details.append(f"profile `{_sanitize_inline(profile_name)}`")
+    details.extend((
+        f"read {_format_capture_timing_seconds(read_s)}",
+        f"fold {_format_capture_timing_seconds(fold_s)}",
+    ))
+    dwell_s = _finite_nonnegative_action_seconds(fold_record, "still_photo_dwell_s")
+    if dwell_s is not None and dwell_s <= fold_s:
+        dwell_detail = "still-photo dwell " + _format_capture_timing_seconds(dwell_s)
+        if fold_s > 0:
+            # Divide before scaling: valid large finite durations must not overflow merely
+            # because the derived percentage is being rendered.
+            share = (dwell_s / fold_s) * 100
+            if math.isfinite(share):
+                dwell_detail += f" ({share:.1f}% of fold)"
+        details.append(dwell_detail)
+    details.append(f"total {_format_capture_timing_seconds(total_s)}")
+    return "- " + "; ".join(details) + "."
+
+
 def _record_time(rec: dict) -> str:
     return _sanitize_inline(str(rec.get("ts") or "unknown time"))
+
+
+def _latest_auto_opener_evidence_md(lines: list[str], run: Path) -> str:
+    """Render the latest AUTO or Training opener's private evidence and outcome.
+
+    The screenshot proves which selected card was on screen but Hinge's composer may show only
+    the tail of a long opener. ``auto_opener_pre_send`` therefore binds the full text and review
+    PNG by content hash; when Training resumes after human review,
+    ``auto_opener_resumed_send`` records the freshly verified tap-time frame and links it back to
+    that approval. Later like rows repeat the applicable evidence ID. Keep this parser defensive:
+    actions.jsonl can be partially appended and a debug directory is still untrusted input.
+    """
+    records = _action_records(lines)
+    # In Training, the reviewer can move the profile while the checkpoint is open.
+    # The original pre-send record remains the immutable human-reviewed checkpoint, but it is
+    # not necessarily the frame that the eventual Send Like tap used.  Prefer that later,
+    # re-verified ``auto_opener_resumed_send`` record whenever it is the latest opener-evidence
+    # event. Old/ordinary AUTO logs contain only ``auto_opener_pre_send`` and therefore retain
+    # their established rendering and linkage semantics. ``session_mode`` was introduced after
+    # these records, so omitted/unknown values intentionally render as AUTO for compatibility.
+    candidates = [
+        (index, rec) for index, rec in enumerate(records)
+        if rec.get("action") in {"auto_opener_pre_send", "auto_opener_resumed_send"}
+    ]
+    if not candidates:
+        return ""
+    record_index, record = candidates[-1]
+    session_mode = record.get("session_mode")
+    session_mode = "training" if session_mode == "training" else "auto"
+
+    opener = record.get("opener")
+    opener = opener if isinstance(opener, str) else None
+    evidence_id = record.get("evidence_id")
+    evidence_id = evidence_id if isinstance(evidence_id, str) else None
+    expected_opener_hash = record.get("opener_sha256")
+    expected_frame_hash = record.get("frame_sha256")
+
+    opener_integrity = "not verifiable (full opener or SHA-256 was not recorded)"
+    if opener is not None and isinstance(expected_opener_hash, str):
+        actual = hashlib.sha256(opener.encode("utf-8")).hexdigest()
+        opener_integrity = "verified" if actual == expected_opener_hash else "⚠️ SHA-256 mismatch"
+
+    shot_name = record.get("before")
+    shot_path = None
+    if (isinstance(shot_name, str) and Path(shot_name).name == shot_name
+            and shot_name not in {"", ".", ".."}):
+        candidate = run / shot_name
+        if not candidate.is_symlink() and candidate.is_file():
+            shot_path = candidate
+    if shot_path is None:
+        shot_display = _sanitize_inline(str(shot_name)) if isinstance(shot_name, str) else "not recorded"
+        frame_integrity = "⚠️ screenshot missing or unsafe"
+    else:
+        shot_display = shot_path.name
+        if isinstance(expected_frame_hash, str):
+            try:
+                actual = hashlib.sha256(shot_path.read_bytes()).hexdigest()
+                frame_integrity = ("verified" if actual == expected_frame_hash
+                                   else "⚠️ SHA-256 mismatch")
+            except Exception:  # noqa: BLE001 -- debug reporting remains best-effort
+                frame_integrity = "⚠️ screenshot unreadable"
+        else:
+            frame_integrity = "not verifiable (SHA-256 was not recorded)"
+
+    resumed = record.get("action") == "auto_opener_resumed_send"
+    outcome_evidence_key = "resumed_send_evidence_id" if resumed else "pre_send_evidence_id"
+    outcome = "no linked send outcome was logged"
+    if evidence_id:
+        linked = [
+            rec for rec in records[record_index + 1:]
+            if rec.get(outcome_evidence_key) == evidence_id
+            and rec.get("action") in {"like_attempt", "like_rejected", "like"}
+        ]
+        if linked:
+            result = linked[-1]
+            labels = {
+                "like": "LIKE verified as landed",
+                "like_rejected": "LIKE rejected",
+                "like_attempt": "Send Like attempted; final result not logged",
+            }
+            outcome = f"{labels[result['action']]} at `{_record_time(result)}`"
+
+    target = record.get("model_item_index")
+    target_display = str(target) if isinstance(target, int) and not isinstance(target, bool) else "not recorded"
+    evidence_display = _sanitize_inline(evidence_id) if evidence_id else "not recorded"
+    opener_display = (_sanitize_inline(opener) if opener is not None
+                      else "not recorded (legacy evidence row)")
+    out = [
+        f"- session mode: {session_mode}",
+        f"- evidence ID: `{evidence_display}`",
+        f"- snapshot: `{shot_display}` ({frame_integrity})",
+        f"- target: model item `{target_display}`",
+        f"- full opener: `{opener_display}` ({opener_integrity})",
+    ]
+    if resumed:
+        approval_evidence_id = record.get("approval_evidence_id")
+        approval_display = (_sanitize_inline(approval_evidence_id)
+                            if isinstance(approval_evidence_id, str) and approval_evidence_id
+                            else "not recorded")
+        out.append(f"- human-reviewed approval evidence ID: `{approval_display}`")
+    out.append(f"- linked outcome: {outcome}")
+    return "\n".join(out)
+
+
+def _latest_auto_opener_evidence_mode(lines: list[str]) -> str:
+    """Return the current diagnostic label, treating pre-migration rows as AUTO."""
+    records = _action_records(lines)
+    for record in reversed(records):
+        if record.get("action") in {"auto_opener_pre_send", "auto_opener_resumed_send"}:
+            return "Training" if record.get("session_mode") == "training" else "AUTO"
+    return "AUTO"
+
+
+def _safe_action_scalar(rec: dict, key: str) -> str:
+    """Return a JSON-scalar action field fit for an inline diagnostic.
+
+    The action log is useful forensic input, not trusted report markup.  In particular, do
+    not stringify a list or mapping from a partially written/corrupt row: apart from making
+    the concise end-of-log diagnosis noisy, its nested contents might be misleading or
+    sensitive.  Scalars are enough for the transport metadata this summary needs.
+    """
+    value = rec.get(key)
+    if isinstance(value, (str, int, float, bool)):
+        text = _sanitize_inline(str(value))
+        if text:
+            return text
+    return "not recorded"
 
 
 def _latest_observe_context_md(lines: list[str], run: Path) -> str:
@@ -1709,35 +2030,88 @@ def _latest_observe_context_md(lines: list[str], run: Path) -> str:
         return ""
     latest = records[-1]
     action = _sanitize_inline(str(latest.get("action") or "unknown action"))
-    out = [f"- latest logged action: `{action}` at `{_record_time(latest)}`"]
+    latest_time = (_safe_action_scalar(latest, "ts")
+                   if latest.get("action") == "device_input" else _record_time(latest))
+    out = [f"- latest logged action: `{action}` at `{latest_time}`"]
 
-    if latest.get("action") != "observe_waiting":
+    # A Stop during `_capture_current` logs `capture_aborted` before the loop's finally-block
+    # timing record.  Do not infer a phone state from either record; this only restores the
+    # terminal lifecycle fact and the scalar progress the abort itself logged.
+    aborted_capture = _terminal_capture_abort(records)
+    if aborted_capture is not None:
+        out.append("- terminal capture state: Stop abandoned the in-progress profile read; "
+                   "no profile capture or decision was recorded for it.")
+        details: list[str] = []
+        profile_name = aborted_capture.get("profile_name")
+        if isinstance(profile_name, str) and profile_name.strip():
+            details.append(f"profile identity `{_sanitize_inline(profile_name)}`")
+        for label, key in (("captured frame(s)", "frames"),
+                           ("read scroll(s)", "read_scrolls")):
+            value = aborted_capture.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                details.append(f"{value} {label}")
+        if details:
+            out.append("- abandoned-capture details from the log: " + "; ".join(details) + ".")
+        else:
+            out.append("- the abort row did not record profile identity, frames, or read-scrolls.")
         return "\n".join(out)
 
-    # Only the final contiguous observe_waiting records are a still-open wait.  An earlier
-    # stretch followed by a decision/capture was resolved and must not be presented as current.
-    wait: list[dict] = []
-    for rec in reversed(records):
-        if rec.get("action") != "observe_waiting":
-            break
-        wait.append(rec)
-    wait.reverse()
-    reason = latest.get("reason")
+    # `observe_stopped` is a terminal marker written by Hinge after Worker has noticed a Stop
+    # during the manual-decision wait.  The preceding observe_waiting record is still valuable
+    # historical evidence, but it must not be called a *current* unresolved wait in a report
+    # produced after the run has stopped.  It was exactly that wording mismatch which made a
+    # clean Stop on a READY second card look like an observe hang.
+    if latest.get("action") == "observe_stopped":
+        out.append("- observe wait ended because Stop was requested; the READY card was "
+                   "intentionally abandoned and no pass/like decision was recorded for it.")
+        profile_name = latest.get("profile_name")
+        if profile_name:
+            out.append("- the stopped wait belonged to the captured profile identity `"
+                       f"{_sanitize_inline(str(profile_name))}`.")
+        return "\n".join(out)
+
+    # `device_input` is deliberately emitted only after the synchronous transport call
+    # returns.  A trace ending here can prove its final input completed, but it has no evidence
+    # for the code/device state which prevented the next log write; never recast that gap as an
+    # interrupted gesture.  Include only scalar metadata so an arbitrary action row cannot
+    # turn this compact diagnostic into a dump of untrusted nested data.
+    if latest.get("action") == "device_input":
+        details = "; ".join(
+            f"{label}=`{_safe_action_scalar(latest, key)}`"
+            for label, key in (("transport", "transport"), ("kind", "kind"),
+                               ("source", "source"), ("direction", "direction"),
+                               ("time", "ts"))
+        )
+        out.append(f"- final completed device input: {details}.")
+        out.append("- logging ended after that completed input; the trace cannot pinpoint "
+                   "what subsequently blocked progress.")
+        return "\n".join(out)
+
+    # Only the final logged wait is relevant. A decision/capture/resync before it resolved an
+    # older wait; known release telemetry is deliberately transparent (see helper). The action
+    # log has no lifecycle authority after its final write: a manual Stop can end the worker
+    # immediately after a waiting heartbeat, so do not call this state "current" or imply the
+    # driver remains alive when a report is generated later.
+    wait, first_wait_index = _final_observe_wait(records)
+    if not wait:
+        return "\n".join(out)
+    final_wait = wait[-1]
+    reason = final_wait.get("reason")
     reason_text = _sanitize_inline(str(reason or "not recorded"))
     explanation = _OBSERVE_WAIT_EXPLANATIONS.get(
         reason if isinstance(reason, str) else "",
-        "the driver is still observing and has not logged a proven manual decision",
+        "the driver had not logged a proven manual decision before logging ended",
     )
-    out.append(f"- current logged observe state: waiting (`{reason_text}`) — {explanation}.")
+    out.append(f"- final logged observe state: waiting (`{reason_text}`) — {explanation}.")
     if len(wait) > 1:
-        out.append(f"- this unresolved wait began at `{_record_time(wait[0])}` and has "
-                   f"{len(wait)} heartbeat record(s), latest at `{_record_time(latest)}`.")
+        out.append(f"- this final logged wait began at `{_record_time(wait[0])}` and has "
+                   f"{len(wait)} heartbeat record(s), latest at `{_record_time(final_wait)}`.")
     else:
-        out.append("- this is the first logged waiting heartbeat for the unresolved wait.")
+        out.append("- this is the first logged waiting heartbeat before logging ended.")
 
     # The immediately preceding capture is the most useful reproduction context: it says what
     # was successfully read before the app entered READY, without inventing a current screen.
-    before_wait = records[:len(records) - len(wait)]
+    before_wait = records[:first_wait_index] if first_wait_index is not None else []
     capture = next((rec for rec in reversed(before_wait) if rec.get("action") == "capture"), None)
     if capture is not None:
         bits: list[str] = []
@@ -1764,8 +2138,8 @@ def _latest_observe_context_md(lines: list[str], run: Path) -> str:
         detail = "; ".join(bits) if bits else "no capture detail was logged"
         out.append(f"- last capture before this wait (`{_record_time(capture)}`): {detail}.")
 
-    shot = next((latest.get(key) for key in ("before", "after", "screenshot")
-                 if latest.get(key)), None)
+    shot = next((final_wait.get(key) for key in ("before", "after", "screenshot")
+                 if final_wait.get(key)), None)
     if shot:
         shot_text = _sanitize_inline(str(shot))
         availability = "present" if (run / str(shot)).is_file() else "not present (possibly rotated)"
@@ -1773,7 +2147,7 @@ def _latest_observe_context_md(lines: list[str], run: Path) -> str:
     else:
         out.append("- no screenshot filename was recorded with the latest waiting verdict.")
     out.append("- reproduction sequence from the log: capture completed → READY/manual decision "
-               "prompt → no pass/like record yet → current observe wait above.")
+               "prompt → no pass/like record before the final logged wait above.")
     return "\n".join(out)
 
 
@@ -1976,14 +2350,17 @@ def _debug_log_md(config_path: str) -> str:
     so we list their paths rather than inline them. Best-effort; never raises."""
     try:
         from . import config as cfg_mod
-        apps = cfg_mod.load(config_path).apps
+        cfg = cfg_mod.load(config_path)
+        apps = cfg.apps
+        enabled_apps = set(cfg.enabled_apps)
     except Exception as exc:  # noqa: BLE001
         return f"- (could not load config to locate debug logs: {exc})"
     apps = apps if isinstance(apps, dict) else {}
     sections = [_one_debug_dir_md(app, (opts or {}))
-                for app, opts in apps.items() if (opts or {}).get("debug_log")]
+                for app, opts in apps.items()
+                if app in enabled_apps and (opts or {}).get("debug_log")]
     if not sections:
-        return "- (no app has `debug_log` enabled — nothing on-disk to include)"
+        return "- (no enabled app has `debug_log` enabled — nothing on-disk to include)"
     return "\n".join(sections)
 
 
@@ -2008,14 +2385,14 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
                 raw_lines = log.read_text().splitlines()
             except Exception:  # noqa: BLE001
                 raw_lines = []
-            # Stall summary goes FIRST, ahead of the action-counts histogram and the tail --
+            # Repeated waits go FIRST, ahead of the action-counts histogram and the tail --
             # it is the one line a developer needs before anything else if this run hung (see
             # _stall_summary_md's docstring for the incident this is filed against). Rendered
             # as its own nested bullet block only when there's something to say; a healthy run
             # (nothing repeated on the same reason) adds nothing here.
             stall = _stall_summary_md(raw_lines)
             if stall:
-                out.append("  - stall summary:")
+                out.append("  - repeated observe waits:")
                 out.extend(f"    {line}" for line in stall.splitlines())
             # Names the specific event the 2026-08-15 "it moved on again without waiting for my
             # like or dislike" report needed but never got: the resync record was in the log,
@@ -2038,6 +2415,15 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
             if anomalies:
                 out.append("  - evidence anomalies:")
                 out.extend(f"    {line}" for line in anomalies.splitlines())
+            capture_timing = _latest_completed_capture_timing_md(raw_lines)
+            if capture_timing:
+                out.append("  - latest completed capture timing:")
+                out.extend(f"    {line}" for line in capture_timing.splitlines())
+            opener_evidence = _latest_auto_opener_evidence_md(raw_lines, run)
+            if opener_evidence:
+                evidence_mode = _latest_auto_opener_evidence_mode(raw_lines)
+                out.append(f"  - latest {evidence_mode} opener pre-send evidence:")
+                out.extend(f"    {line}" for line in opener_evidence.splitlines())
             observe_context = _latest_observe_context_md(raw_lines, run)
             if observe_context:
                 out.append("  - latest observe context (logged evidence, not a new phone read):")

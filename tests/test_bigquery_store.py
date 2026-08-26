@@ -1,4 +1,5 @@
 """BigQueryStore tests with a fake client — no google SDK or network required."""
+import hashlib
 import inspect
 import math
 import re
@@ -621,6 +622,49 @@ def test_record_opener_writes_exactly_the_columns_the_openers_table_declares():
     assert set(client.inserted["proj.ds.openers"][0]) == set(_declared_columns("openers"))
 
 
+def test_auto_opener_evidence_uploads_private_png_and_buffers_queryable_linkage():
+    client = _FakeBQ()
+    storage = _FakeStorage()
+    store = BigQueryStore(
+        "proj", "ds", photo_bucket="photos", flush_every=1,
+        client=client, storage_client=storage, ensure=True)
+    frame = b"\x89PNG\r\n\x1a\npre-send"
+    opener = "Quiet trail first, then coffee?"
+    evidence_id = hashlib.sha256(frame + b"\0" + opener.encode()).hexdigest()
+
+    assert store.record_opener_send_evidence(
+        "r", "hinge", opener, profile_id="profile-1", decision_source="auto",
+        decision_created_at=123.0, model_item_index=3,
+        evidence={"frame": frame, "evidence_id": evidence_id}) is True
+
+    row = client.inserted["proj.ds.opener_send_evidence"][0]
+    assert row["opener"] == opener
+    assert row["evidence_id"] == evidence_id
+    assert row["profile_id"] == "profile-1"
+    assert row["model_item_index"] == 3
+    assert row["outcome"] == "like_landed"
+    assert row["decision_created_at"] == "1970-01-01T00:02:03+00:00"
+    assert row["gcs_uri"].startswith(
+        "gs://photos/opener-evidence/hinge/r/profile-1/")
+    object_name = row["gcs_uri"].removeprefix("gs://photos/")
+    blob = storage.buckets["photos"].blobs[object_name]
+    assert blob.data == frame and blob.content_type == "image/png"
+    assert set(row) == set(_declared_columns("opener_send_evidence"))
+
+
+def test_auto_opener_evidence_upload_failure_does_not_create_a_dangling_bq_row():
+    client = _FakeBQ()
+    storage = _FakeStorage(fail_uploads=True)
+    store = BigQueryStore(
+        "proj", "ds", photo_bucket="photos", flush_every=1,
+        client=client, storage_client=storage, ensure=True)
+
+    assert store.record_opener_send_evidence(
+        "r", "hinge", "opener", profile_id="p",
+        evidence={"frame": b"\x89PNG\r\n\x1a\nframe"}) is False
+    assert "proj.ds.opener_send_evidence" not in client.inserted
+
+
 def test_record_opener_signature_stays_positional_compatible_with_the_store_protocol():
     """`angle` and `item_description` are TRAILING with "" defaults in both the Store Protocol
     and this backend, so every existing five-positional-argument caller (and every test double
@@ -747,12 +791,17 @@ def test_record_opener_rejection_accepts_none_raw_opener_and_reason_code():
     assert row["reason_code"] is None and row["raw_opener"] is None
 
 
-def test_count_today_counts_only_auto_decisions():
+def test_count_today_counts_the_requested_decision_source():
     client = _FakeBQ(label_rows=[{"c": 7}])
     s = _store(client)
 
     assert s.count_today("bumble") == 7
-    assert "AND source='auto'" in client.queries[-1]
+    assert "AND source=@source" in client.queries[-1]
+    assert {p.name: p.value for p in client.job_configs[-1].query_parameters}["source"] == "auto"
+    assert s.count_today("bumble", source="manual") == 7
+    assert {p.name: p.value for p in client.job_configs[-1].query_parameters}["source"] == "manual"
+    with pytest.raises(ValueError, match="source"):
+        s.count_today("bumble", source="automation")
 
 
 def test_record_profile_uploads_photos_and_manifest_rows():

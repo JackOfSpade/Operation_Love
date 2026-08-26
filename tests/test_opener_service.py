@@ -19,6 +19,7 @@ from operation_love.opener.opener import (
     GeminiCapacityExhausted,
     ItemRequest,
     OpenerAborted,
+    OpenerDeadlineExceeded,
     OpenerError,
     OpenerParseError,
     REASON_PROMPT_BLOCKED,
@@ -1159,7 +1160,14 @@ def test_advisory_deadline_stops_retries_without_disabling_future_profiles(monke
     assert "deadline" in s.last_skip_reason
 
 
-def test_advisory_deadline_never_prevents_the_first_attempt(monkeypatch):
+def test_advisory_deadline_still_enters_first_attempt_for_legacy_client(monkeypatch):
+    """A legacy client without ``deadline`` keeps its historical first-call behavior.
+
+    Deadline-aware GeminiOpener is intentionally stricter: after lock wait or image prep has
+    consumed the same absolute cutoff, it raises before issuing even model one. This fake cannot
+    make that guarantee because it does not declare the keyword, so the service preserves its
+    compatible call shape rather than sending an unexpected argument.
+    """
     c = _Client()
     ticks = iter((100.0, 10_000.0))
     monkeypatch.setattr(service_mod.time, "monotonic", lambda: next(ticks))
@@ -1168,6 +1176,54 @@ def test_advisory_deadline_never_prevents_the_first_attempt(monkeypatch):
 
     assert s.maybe_opener("r", "hinge", object(), advisory=True).text == _Res.opener
     assert c.calls == 1
+
+
+def test_cascade_deadline_expiry_is_a_clean_advisory_only_outcome(monkeypatch):
+    class DeadlineClient:
+        def __init__(self):
+            self.deadlines = []
+
+        def generate(self, profile, style, retry_hint="", *, items=None, should_stop=None,
+                     deadline=None, skip_models=frozenset()):
+            self.deadlines.append(deadline)
+            raise OpenerDeadlineExceeded("opener advisory deadline reached before model three")
+
+    client = DeadlineClient()
+    monkeypatch.setattr(service_mod.time, "monotonic", lambda: 100.0)
+    service = OpenerService(client, _Tracker(), _Store(), "casual", advisory_deadline_s=60)
+
+    assert service.maybe_opener("r", "hinge", object(), advisory=True) is None
+
+    assert client.deadlines == [160.0]
+    assert service.disabled is False and service.stop_requested is False
+    assert service._consecutive_transient_failures == 0
+    assert "deadline" in service.last_skip_reason
+
+
+def test_late_primary_response_usage_is_recorded_once_before_advisory_expiry(monkeypatch):
+    stale_usage = object()
+
+    class LatePrimaryClient:
+        def generate(self, profile, style, retry_hint="", *, items=None, should_stop=None,
+                     deadline=None, skip_models=frozenset()):
+            raise OpenerDeadlineExceeded("late response", usage=stale_usage, model="gemini-x")
+
+    tracker, store = _Tracker(), _Store()
+    monkeypatch.setattr(service_mod.time, "monotonic", lambda: 100.0)
+    service = OpenerService(LatePrimaryClient(), tracker, store, "casual")
+
+    assert service.maybe_opener("r", "hinge", object(), advisory=True) is None
+
+    assert tracker.recorded == [("gemini-x", stale_usage)]
+    assert len(store.spend) == 1
+    assert store.spend[0][1:3] == ("gemini-x", stale_usage)
+
+
+def test_opaque_legacy_client_is_not_assumed_to_accept_the_deadline_keyword():
+    class OpaqueLegacyClient:
+        generate = object()
+
+    assert service_mod._accepts_generate_deadline(OpaqueLegacyClient()) is False
 
 
 def test_advisory_exhaustion_disables_but_never_requests_stop(capsys):
@@ -1288,6 +1344,33 @@ def test_committed_opener_carries_exact_landed_action_lineage():
         "profile_id": "profile-opaque", "decision": "like", "decision_source": "manual",
         "decision_created_at": 123.0, "model_item_index": 2,
     }]
+
+
+def test_committed_auto_opener_passes_presend_evidence_to_a_capable_store():
+    class EvidenceStore(_Store):
+        def __init__(self):
+            super().__init__()
+            self.evidence = []
+
+        def record_opener_send_evidence(self, *args, **kwargs):
+            self.evidence.append((args, kwargs))
+
+    store = EvidenceStore()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
+    evidence = {"frame": b"pre-send", "evidence_id": "id"}
+
+    assert service.commit_opener(
+        pick, profile_id="profile-opaque", decision="like", decision_source="auto",
+        decision_created_at=123.0, pre_send_evidence=evidence) is True
+
+    args, kwargs = store.evidence[0]
+    assert args == ("run", "hinge", _Res.opener)
+    assert kwargs == {
+        "profile_id": "profile-opaque", "decision_source": "auto",
+        "decision_created_at": 123.0, "model_item_index": 2,
+        "evidence": evidence,
+    }
 
 
 def test_staged_auto_opener_is_not_committed_until_the_landed_like_boundary():
@@ -1818,6 +1901,66 @@ def test_a_failed_call_records_nothing_in_the_ring_buffer():
 _NGRAM_A = "based on that ridgeline i would guess norway"
 _NGRAM_A_LEADING = "based on that ridgeline"
 _NGRAM_B = "you look like you were freezing out there"
+
+
+def test_advisory_entropy_regeneration_uses_the_same_deadline_and_keeps_first_draft(monkeypatch):
+    class EntropyDeadlineClient:
+        def __init__(self):
+            self.deadlines = []
+
+        def generate(self, profile, style, retry_hint="", *, items=None, should_stop=None,
+                     deadline=None, skip_models=frozenset()):
+            self.deadlines.append(deadline)
+            raise OpenerDeadlineExceeded("opener advisory deadline reached before regeneration")
+
+    client = EntropyDeadlineClient()
+    service = OpenerService(client, _Tracker(), _Store(), "casual")
+    service._recent_opening_ngrams.append(_NGRAM_A_LEADING)
+    first = _Res()
+    first.opener = _NGRAM_A
+    monkeypatch.setattr(service_mod.time, "monotonic", lambda: 100.0)
+
+    result, collision, regenerated = service._apply_entropy_guard(
+        "run", object(), first, items=None, should_stop=None, skip_models=frozenset(),
+        deadline=101.0, client_accepts_deadline=True)
+
+    assert result is first
+    assert collision == _NGRAM_A_LEADING and regenerated is False
+    assert client.deadlines == [101.0]
+    assert service.disabled is False and service.stop_requested is False
+    assert service._consecutive_transient_failures == 0
+
+
+def test_late_entropy_response_usage_is_recorded_once_while_first_draft_is_sent(monkeypatch):
+    stale_usage = object()
+
+    class LateEntropyClient:
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, profile, style, retry_hint="", *, items=None, should_stop=None,
+                     deadline=None, skip_models=frozenset()):
+            self.calls += 1
+            if self.calls == 1:
+                first = _Res()
+                first.opener = _NGRAM_A
+                return first
+            raise OpenerDeadlineExceeded("late entropy response", usage=stale_usage,
+                                         model="gemini-x")
+
+    client = LateEntropyClient()
+    tracker, store = _Tracker(), _Store()
+    service = OpenerService(client, tracker, store, "casual")
+    service._recent_opening_ngrams.append(_NGRAM_A_LEADING)
+    monkeypatch.setattr(service_mod.time, "monotonic", lambda: 100.0)
+
+    pick = service.maybe_opener("run", "hinge", object(), advisory=True)
+
+    assert pick.text == _NGRAM_A
+    assert client.calls == 2
+    assert tracker.recorded == [("gemini-x", stale_usage), ("gemini-x", "usage")]
+    assert [row[1:3] for row in store.spend] == [
+        ("gemini-x", stale_usage), ("gemini-x", "usage")]
 
 
 def test_advisory_collision_regenerates_exactly_once_and_sends_the_new_opener(capsys):

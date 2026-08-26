@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 
 import pytest
 
@@ -148,6 +149,21 @@ def test_plan_refuses_non_mapping_snapshot_with_documented_error():
         make_plan(
             rows=None, run_id="run", app="hinge", source="external_ai_review",
             profile_id="Malaika", reason="false pass", evidence_ref="debug#225")
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_plan_refuses_noncanonical_json_in_snapshot_or_evidence_metadata(value):
+    rows = _rows()
+    rows["decisions"][0]["score"] = value
+    with pytest.raises(RetractionRefused, match="canonical JSON"):
+        _plan(rows)
+
+    with pytest.raises(RetractionRefused, match="canonical JSON"):
+        make_plan(
+            rows=_rows(), run_id="run", app="hinge", source="external_ai_review",
+            profile_id="Malaika", reason="false pass", evidence_ref="debug#225",
+            evidence_metadata={"score": value},
+        )
 
 
 def test_apply_requires_exact_confirmation_and_unchanged_rows_and_is_idempotent():

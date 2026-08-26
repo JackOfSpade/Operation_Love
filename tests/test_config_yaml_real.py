@@ -58,8 +58,15 @@ def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
     assert list(cal["content_band"]) == list(cfg.apps["hinge"]["content_band"])
 
 
-def test_shipped_config_defaults_to_hinge_observe_with_bumble_card_drag_coordinates_staged(cfg):
-    assert cfg.enabled_apps == ["hinge"] and cfg.mode == "observe"
+def test_shipped_config_uses_normal_learned_model_auto(cfg):
+    assert cfg.enabled_apps == ["hinge"] and cfg.mode == "auto"
+    assert cfg.limits == {}
+    assert cfg.apps["hinge"]["touch_backend"] == "uhid"
+    assert "auto_trial" not in cfg.apps["hinge"]
+    evidence = cfg.apps["hinge"]["observe_release_evidence"]
+    assert evidence["production_run_id"] == "d8547ff144b4"
+    assert evidence["verification_file"] == (
+        "ops/release/d8547ff144b4/manual-release/hinge_observe_release.json")
     coords = cfg.apps["bumble"].get("coords", {})
     assert set(coords) == {"swipe_start", "swipe_like_end", "swipe_pass_end"}
     assert "like_heart" not in coords and "pass_x" not in coords
@@ -158,6 +165,9 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "ask one coherent thing at a time" in style
     assert "parallel, genuinely contrasting answers to that same underlying question" in style
     assert "never to join unrelated dimensions" in style
+    assert "casual or punctuation" in style
+    assert "never put a comma immediately before 'or'" in style
+    assert "write it the way a person would text casually" in style
     assert "referent clarity" in style
     assert "every pronoun, shorthand noun, and question subject" in style
     assert "must have one immediately obvious referent" in style
@@ -314,12 +324,8 @@ def test_hinge_identity_top_name_band_matches_the_measured_ocr_band(cfg):
     assert tuple(band) == (0.03, 0.130, 0.75, 0.250)
 
 
-def test_limits_are_uncapped_by_default(cfg):
-    """Auto-mode volume is deliberately uncapped by default (see config.yaml's `limits:`
-    block): a fixed numeric ceiling is itself a bot signature (an identical hard step
-    every run), so the shipped config must not set any of these by default. Timing remains
-    paced; the profile queue, real stop conditions, or a manual stop end the run.
-    """
+def test_normal_auto_is_uncapped_by_default(cfg):
+    """Normal AUTO runs until Stop, deck exhaustion, or a safety halt."""
     lim = cfg.limits
     assert lim.get("max_per_run") is None
     assert lim.get("max_per_day") is None

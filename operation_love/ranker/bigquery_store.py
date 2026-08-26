@@ -79,6 +79,16 @@ _TABLES = {
                 "referenced STRING, angle STRING, item_description STRING, profile_id STRING, "
                 "decision STRING, decision_source STRING, decision_created_at TIMESTAMP, "
                 "model_item_index INT64"),
+    # One queryable row per verified-landed AUTO opener. The PNG itself belongs in the same
+    # private Cloud Storage bucket as profile images; BigQuery holds its URI, exact opener,
+    # target, hashes, and outcome. Keeping this separate from ``openers`` preserves that table's
+    # long-lived analytics contract while making pre-send evidence independently inspectable.
+    "opener_send_evidence": (
+        "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, "
+        "decision_source STRING, decision_created_at TIMESTAMP, outcome STRING, "
+        "model_item_index INT64, opener STRING, evidence_id STRING, opener_sha256 STRING, "
+        "frame_sha256 STRING, gcs_uri STRING, byte_size INT64, content_type STRING"
+    ),
     # Every REJECTED opener attempt (OpenerParseError), not just the successes `openers`
     # above holds -- see opener/service.py's OpenerParseError handling and opener.py's
     # OpenerParseError docstring for reason_code/raw_opener semantics. `attempt` is the
@@ -158,15 +168,18 @@ def _row_id(row: dict) -> str:
     return hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
 
 
-def _day_start_job_config(start_dt: datetime, *, app: str | None = None):
+def _day_start_job_config(start_dt: datetime, *, app: str | None = None,
+                          source: str | None = None):
     """QueryJobConfig binding `start_dt` as the `day_start` TIMESTAMP parameter shared by
-    count_today/spend_today (see local_midnight_epoch), and optionally the application name.
+    count_today/spend_today (see local_midnight_epoch), plus optional application/source filters.
     Falls back to a minimal duck-typed stand-in when the SDK isn't installed: the ``client`` is
     injectable (see module docstring) so tests run against a fake client and never touch the
     real BigQuery API."""
     parameters = [("day_start", "TIMESTAMP", start_dt)]
     if app is not None:
         parameters.append(("app", "STRING", app))
+    if source is not None:
+        parameters.append(("source", "STRING", source))
     try:
         from google.cloud import bigquery
     except ImportError:
@@ -426,14 +439,15 @@ class BigQueryStore:
         ).result()
         return [(bool(r["liked"]), list(r["embedding"])) for r in rows]
 
-    def count_today(self, app: str) -> int:
-        """Auto-mode swipes recorded today (LOCAL day — same boundary as
-        SQLiteStore.count_today, via local_midnight_epoch(), NOT a UTC reporting day)."""
+    def count_today(self, app: str, *, source: str = "auto") -> int:
+        """One validated decision source's local-day count."""
+        if source not in {"auto", "manual"}:
+            raise ValueError("count_today source must be 'auto' or 'manual'")
         start_dt = datetime.fromtimestamp(local_midnight_epoch(), tz=timezone.utc)
         rows = self.client.query(
             f"SELECT COUNT(*) AS c FROM `{self._tid('decisions')}` "
-            "WHERE app=@app AND created_at >= @day_start AND source='auto'",
-            job_config=_day_start_job_config(start_dt, app=app),
+            "WHERE app=@app AND created_at >= @day_start AND source=@source",
+            job_config=_day_start_job_config(start_dt, app=app, source=source),
         ).result()
         for r in rows:
             return int(r["c"])
@@ -979,6 +993,67 @@ class BigQueryStore:
                 "model_item_index": model_item_index,
             })
             self._maybe_flush("openers")
+
+    def record_opener_send_evidence(self, run_id, app, opener, *, profile_id="",
+                                    decision_source="auto", decision_created_at=None,
+                                    model_item_index=None, evidence=None) -> bool:
+        """Archive one verified-landed AUTO opener's pre-send PNG and queryable linkage.
+
+        Raw images stay in the private GCS bucket; BigQuery stores only scalar metadata and the
+        ``gs://`` reference. Evidence failure is deliberately non-fatal after a real Like: the
+        ordinary opener/decision rows remain truthful, while a loud warning names the missing
+        diagnostic artifact.
+        """
+        evidence = evidence if isinstance(evidence, dict) else {}
+        frame = evidence.get("frame")
+        if not isinstance(frame, bytes) or not frame:
+            print("BigQuery store warning: AUTO opener evidence had no pre-send frame; "
+                  "skipping its evidence row.")
+            return False
+        if not self._photo_bucket_private_verified:
+            print("BigQuery store warning: refusing AUTO opener evidence upload because this "
+                  "store has not verified the bucket privacy policy.")
+            return False
+
+        opener_bytes = str(opener).encode("utf-8")
+        opener_sha256 = hashlib.sha256(opener_bytes).hexdigest()
+        frame_sha256 = hashlib.sha256(frame).hexdigest()
+        evidence_id = hashlib.sha256(frame + b"\0" + opener_bytes).hexdigest()
+        content_type, ext = _image_type(frame)
+        object_name = (
+            f"opener-evidence/{app}/{run_id}/{profile_id or 'unknown-profile'}/"
+            f"{evidence_id}.{ext}"
+        )
+        blob = self._photo_bucket.blob(object_name)
+        if not self._upload_blob(blob, frame, content_type):
+            print("BigQuery store warning: pre-send AUTO opener screenshot was not archived; "
+                  "skipping its evidence row.")
+            return False
+
+        expected_id = evidence.get("evidence_id")
+        expected_frame_hash = evidence.get("frame_sha256")
+        expected_opener_hash = evidence.get("opener_sha256")
+        if any((expected_id is not None and expected_id != evidence_id,
+                expected_frame_hash is not None and expected_frame_hash != frame_sha256,
+                expected_opener_hash is not None and expected_opener_hash != opener_sha256)):
+            print("BigQuery store warning: driver-supplied AUTO opener evidence hashes did not "
+                  "match the content; persisted authoritative hashes computed at storage.")
+
+        row = {
+            "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": _now(),
+            "decision_source": decision_source,
+            "decision_created_at": (None if decision_created_at is None
+                                    else _timestamp(decision_created_at)),
+            "outcome": "like_landed", "model_item_index": model_item_index,
+            "opener": str(opener), "evidence_id": evidence_id,
+            "opener_sha256": opener_sha256, "frame_sha256": frame_sha256,
+            "gcs_uri": f"gs://{self.photo_bucket_name}/{object_name}",
+            "byte_size": len(frame), "content_type": content_type,
+        }
+        with self._lock:
+            self._buf["opener_send_evidence"].append(row)
+            self._maybe_flush("opener_send_evidence")
+        return True
 
     def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener):
         with self._lock:

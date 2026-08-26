@@ -159,16 +159,13 @@ python -m tools.hinge_inspect            # screencaps your phone; reports vision
   `apps.hinge.coords`). A FALLBACK on a fully-loaded profile screen means the
   glyph templates need recapturing for your device, or `apps.hinge.coords` needs
   a live tweak.
-- **Observe tap detection** (`wait_for_decision()`) is implemented and unit-tested:
-  the hub may show optional help before you choose. It is not a recommendation or
-  decision: click the pass **X** to reject a profile, or, if you choose to like,
-  click the suggested item's **heart** to open the inline comment / "Send Like"
-  composer. Type the suggested opener manually and tap **Send Like / Send Priority Like**
-  yourself. A like
-  is persisted only after that final send advances the profile; a pass is
-  persisted only after the card advances. The composer stays embedded under the selected item;
-  hearting another item moves it, and advancing the profile clears it. Dry-run
-  `mode: observe` and check it logs your manual decisions correctly.
+- **Training decision boundary** is implemented and unit-tested: start the local Hub in
+  `mode: training`. For each profile the worker generates a targeted opener, opens the exact
+  item, types it, hides the keyboard, and publishes one verified snapshot. Choose **Like** in
+  the Hub to send that exact typed opener, or **Dislike** to tap Hinge's visible pass **X**.
+  The worker re-verifies the live profile/item/control surface after your choice; it records a
+  manual label only after the selected device action is verified as landed. Do not make the
+  decision manually on the phone while a Training checkpoint is open.
 
 ### Hinge targeted-opener calibration — BLOCKING before targeted text or targeted AUTO likes
 
@@ -223,9 +220,9 @@ print('numbering readiness installed:', tp.hinge_targeting_unavailable_reason() 
 ```
 
 While NO licence is installed, every photographic-looking crop remains readable unnumbered
-context and no targeted suggestion is offered. Observe can continue reading profiles; AUTO
-remains separately blocked behind production-OBSERVE release evidence under every licence
-channel, and an assumption can never license it.
+context and no targeted Training opener can be prepared. Training therefore stops before a
+checkpoint instead of substituting a target. AUTO remains separately blocked behind the legacy
+production release artifact under every licence channel, and an assumption can never license it.
 Confirmed videos remain fully excluded, while WRITTEN and UNKNOWN crops remain readable
 unnumbered context because neither aspect ratio nor a presumed item count is item-type evidence. Both distance fields must be finite positive numbers. `device` must exactly equal the nonempty
 `apps.hinge.serial` ADB serial; it is a machine-checked binding, not free-form device evidence.
@@ -322,9 +319,9 @@ print('numbering readiness installed:', tp.hinge_targeting_unavailable_reason() 
 truth channel, and re-checks the section 4 thresholds before installing anything. A mapping
 whose numbers disagree with the artifact is fatal, never a warning.
 
-**These numbers install NUMBERING readiness only.** They unblock numbered suggestions in OBSERVE
+**These numbers install NUMBERING readiness only.** They unblock numbered suggestions in Training
 and in calibration capture, and nothing else. AUTO stays separately blocked behind its own
-production OBSERVE release chain (`observe_release_evidence` or the AI-reviewed equivalent), so
+historical release artifact (the legacy-named `observe_release_evidence` or the AI-reviewed equivalent), so
 a weak or fraudulent bound artifact can never enable AUTO by itself. The calibration and
 held-out splits still have to be recaptured afterwards; a bound artifact is a prerequisite for
 those protocols, not a substitute for them.
@@ -428,7 +425,7 @@ runner-agnostic reviewer ID/model/version/process,
 checkpoint and frame hash, and `human_ground_truth: false`. A reviewer approval is independent review of a stated
 frame/action plan, not independent human ground truth. Hybrid evidence stays distinct from both
 supervised/manual capture and fully unattended diagnostic capture, and all three remain blocked
-from AUTO until the production OBSERVE release artifact validates the exact measured calibration.
+from AUTO until the historical release artifact validates the exact measured calibration.
 
 #### Opt-in real sends: `--send-like`
 
@@ -438,7 +435,8 @@ its own `--send-like-confirmation I_ACCEPT_REAL_PRIORITY_LIKE_SEND_RISK`, a phra
 `--confirmation`) is an owner-directed exception to that default, requested specifically because
 this account runs unlimited HingeX likes: every profile's terminal action becomes a REAL,
 PERMANENT Send Priority Like instead of Pass, using the exact same
-tap/upsell-dismiss/landed-verification transport as an ordinary AUTO/OBSERVE like (never the paid
+tap/upsell-dismiss/landed-verification transport as an ordinary AUTO or legacy
+manual-observation like (never the paid
 Rose/upsell control). It requires **`--hybrid-review`** — a real Priority Like is permanent and
 cannot be retracted, so every one of them must clear a reviewer checkpoint first, and `--unattended`
 has no reviewer in the loop. Passing it alone, with `--unattended`, or with the wrong (or missing)
@@ -585,7 +583,12 @@ substituting an operator assertion.
    foreign accept invalidates the bound. Do not widen either bound to recover a refusal without a
    new calibration and fresh held-out evidence.
 
-The release requires staged supervised operational evidence. Before numeric calibration, confirm
+The release material in the next block is a **historical calibration/release record**, retained
+to explain the installed AUTO release artifact. Observe mode and its external-controller API are
+retired; do not use this material as a procedure for a new run. New manual collection uses the
+Training workflow in section 3.
+
+The historical release required staged supervised operational evidence. Before numeric calibration, confirm
 the first three device checks. A preliminary passive-cycle/quota probe may be recorded at this
 stage, but it is deliberately not a production OBSERVE release check: it does not construct the
 Worker/hub/store or make a real profile request. After installing the measured candidate in
@@ -595,15 +598,19 @@ Worker/hub/store or make a real profile request. After installing the measured c
    Give its completed, self-hashed `observe_check.json` path to the capture tool's preliminary
    operational-check prompt. `measure` accepts that artifact so it can emit a **numeric candidate
    for OBSERVE**; it is intentionally not AUTO authorization.
-2. Paste the candidate calibration, keep Hinge in `mode: observe`, and complete a real production
-   OBSERVE validation with Hinge debug logging enabled. Then run
+2. Paste the candidate calibration. The following production-OBSERVE validation command and
+   artifact name describe the retired release workflow; do **not** configure `mode: observe`.
+   Then run
    `python -m tools.hinge_observe_release --debug-run … --run-id … --out …`. Hinge's debug
    folder is named with the Worker run ID and its first record binds that ID, so the verifier
    rejects a timestamp-named or unrelated `actions.jsonl` paired with another run's store rows.
    The verifier derives
-   the pre-tap hub publication, post-tap item verification, composer anchor, and `like_sending`
-   control facts from the application's `actions.jsonl`; it accepts no hand-authored status/API
-   booleans. It queries the configured active store by Worker run ID through its read-only
+   the pre-tap hub publication, post-tap item verification, and composer anchor control facts
+   from the application's `actions.jsonl`; it accepts no hand-authored status/API booleans. The
+   terminal LIKE must either include Hinge's observed `like_sending` transition or be a direct,
+   frame-backed, non-truncated LIKE resolution after those ordered facts -- current Hinge can
+   land directly on the next stable card before the optional heartbeat is emitted. It queries the
+   configured active store by Worker run ID through its read-only
    aggregate release API (BigQuery when configured, SQLite otherwise) for a persisted manual
    **pass and like**, each as both a label and a decision, plus a successful Hinge opener row —
    never profile rows, embeddings, opener text, or images. A rejected opener or provider spend
@@ -612,8 +619,8 @@ Worker/hub/store or make a real profile request. After installing the measured c
    `observe_release_evidence` mapping beside `targeting_calibration`. Config validation blocks
    Hinge AUTO until this exact artifact is present and bound to the calibration/device/build.
 
-   If the owner has explicitly chosen the AI-driven hybrid workflow instead of a manual cycle,
-   use the **separate** non-manual release path. While Hinge remains in `mode: observe`, add
+   If the owner had explicitly chosen the AI-driven hybrid workflow instead of a manual cycle,
+   the **separate** non-manual release path below was used. It required
    `observe_evidence_source: external_ai_review` (or `automation`) and an exact
    `ai_reviewed_observe_controller` mapping with schema version, the same source, the acceptance
    token, and executor model/id/version/process. This makes the Worker persist that declared
@@ -720,19 +727,21 @@ Worker/hub/store or make a real profile request. After installing the measured c
   an entry ledger rather than rewriting its audit trail. The entry-anchor check itself must name
   that session's ledger (the capture directory is accepted only as a shorthand for that fixed
   file); a run ID or prose assertion is rejected.
-- **Post-calibration production OBSERVE validation (required release policy before AUTO):** run the actual
+- **Historical post-calibration production OBSERVE validation (required release policy before AUTO):** run the actual
   production Worker/hub through a complete manual pass/heart/send cycle using the measured
   calibration. Verify hub pre-tap publication, post-tap item verification, a real profile
   provider/quota result, a persisted manual **pass and like** as both labels and decisions in the
   configured store, and a successful persisted Hinge opener. A rejection/spend row and naturally
   logged refusal/paywall event are diagnostic evidence only; neither can replace that successful
   opener. `python -m tools.hinge_calibrate observe-check` is only preliminary passive device +
-  synthetic-quota evidence; it cannot substitute for this validation or authorize AUTO.
+  synthetic-quota evidence; it cannot substitute for this validation or authorize AUTO. The
+  current 10.0.1 calibration completed this procedure in manual run `d8547ff144b4`; its exact
+  artifact is installed for normal learned-model AUTO described in section 4.
 
-Until all of this is recorded, absence of `targeting_calibration` is expected safety behaviour:
-**AUTO stops before any targeted gesture**, and **OBSERVE withholds targeted opener text while
-manual labels continue**. It is not permission to use a legacy anchored opener or a fixed first
-item fallback.
+For a new calibration without its own release evidence, absence of `targeting_calibration` is
+expected safety behaviour: **AUTO stops before any targeted gesture**, and **Training stops before
+it can prepare a targeted opener**. It is not permission to use a legacy
+anchored opener or a fixed first-item fallback.
 
 > These are the items deferred to "do live, at the end." Everything they plug
 > into (capture, embed, store, ranker, openers, supervisor) already works and is
@@ -740,50 +749,57 @@ item fallback.
 
 ---
 
-## 3. Seed your taste — observe mode (you decide, it learns)
+## 3. Train your taste — Training mode (you decide, it learns)
 
 ```yaml
 # config.yaml
 enabled_apps: [hinge]      # the only platform the registry accepts today —
                             # Bumble isn't calibrated yet and can never run
                             # alongside Hinge anyway (one physical Android phone)
-mode: observe
+mode: training
 ```
 ```bash
-python -m operation_love            # make decisions manually on real profiles
+python -m operation_love hub        # use the local Hub's Like / Dislike controls
 python -m operation_love stats      # watch labels climb; "ranker ready" flips at ~min_labels
 ```
-Make decisions on ~50–100 profiles (research sweet spot). For Hinge likes,
-click the heart, manually type the opener shown in the hub, and tap
-**Send Like / Send Priority Like**;
-only that final send/advance persists the like. The ranker retrains live and goes
-from `defer` → ready mid-session.
+Make decisions on ~50–100 profiles (research sweet spot). For each Hinge profile, Training
+generates and types an opener for its exact target item, then hides the keyboard so both Hinge
+actions are visible in the snapshot. Choose **Like** in the Hub to send the typed opener or
+**Dislike** to pass. Only a verified landed choice persists; the ranker retrains live and goes
+from `defer` → ready mid-session. Training never calls the ranker to make the current choice.
 
 ---
 
 ## 4. Go autonomous — auto mode (it swipes for you)
 
-**BLOCKED until the current calibration has production OBSERVE release evidence.**
-The shipped config intentionally has neither release mapping after its latest app-build
-recalibration, so changing only `mode` will (correctly) fail `config.validate()`. Complete
-step 2 of the staged operational-evidence procedure above and paste exactly one emitted
-mapping beside `targeting_calibration`: manual `observe_release_evidence` **or** explicitly
-accepted `ai_reviewed_observe_release_evidence`, never both. Do not bypass this gate.
+**Current release state: installed for normal learned-model AUTO.** The legacy-named manual
+`observe_release_evidence` artifact for production run `d8547ff144b4` is installed beside the
+current 10.0.1 calibration. It satisfies the separate historical release gate without weakening the
+still-photo policy: the accepted centered-autoplay assumption remains unmeasured, and the
+artifact is bound to this device, build, calibration, debug run, and store evidence. AUTO asks
+the learned ranker for every decision and applies any ordinary configured volume/ratio limits.
+It does not bypass opener generation, exact-item targeting, foreground ownership, paid-upsell
+refusal, post-action verification, `halt_on_error`, or Stop. A failed/untargetable opener stops
+the run; it never degrades to a bare like. The driver retains a private
+`auto_opener_pre_send` screenshot after the opener is typed on the selected item and immediately
+before the Send tap, and successful AUTO evidence is archived to private Cloud Storage with a
+queryable BigQuery row. The per-gesture `uhid` transport has a round-trip-confirmed virtual-touch
+lifecycle for every action. Editing config does not start a run.
 
 ```yaml
 mode: auto
+apps:
+  hinge:
+    touch_backend: uhid
+limits: {}                                      # optional caps may be added deliberately
 budget: { run_budget_usd: 5.00 }                # global opener cap
 ```
 ```bash
 python -m operation_love
 ```
-- Volume is deliberately uncapped by default (`limits: {}` in config.yaml) — a fixed
-  swipe quota is itself a bot signature (identical hard stop, run after run). The
-  human-timing model (`pacing:`, session micro-breaks) shapes when actions happen; the
-  run ends when the profile queue runs out, a real stop condition occurs, or you stop it
-  manually. If you genuinely want a temporary ceiling (e.g. a supervised first auto
-  run), add it back under `limits: { max_per_run: 60, max_per_day: 100 }` or per-app
-  under `apps.<app>.limits`.
+- The current config uses normal learned-model AUTO. It retains and durably archives pre-send
+  opener evidence for every verified landed LIKE and continues until Stop, deck exhaustion,
+  or a safety halt.
 - Bumble (once calibrated): card drags only, with no per-swipe opener. It cannot be
   selected in either mode today.
 - Hinge: likes with a Gemini-written, profile-specific opener. `opener.models`
@@ -802,7 +818,7 @@ python -m operation_love
   SAME project whose quota you intend to use (see step 1) or it draws from an
   unrelated pool.
 - Every autonomous swipe is recorded for stats and optional daily limits, but is not fed
-  back as a training label; learning remains grounded in your manual observe-mode decisions.
+  back as a training label; learning remains grounded in your manual Training-mode decisions.
 
 ---
 
@@ -826,43 +842,31 @@ nohup python -m operation_love >> oplove.log 2>&1 &
 
 ## Quick reference
 
-## Reviewed Observe actions (localhost API)
+## Training actions (localhost API)
 
-Ordinary `observe` remains manual.  A separately reviewed controller can request a Hinge
-action only through the hub's checkpoint protocol; the hub queues it and the existing Hinge
-Worker performs it at its own waiting boundary.  Nothing else may read the device or issue a
-gesture.  This is deliberately stepwise: pass, open the exact suggested item, then send the
-still-current suggested text.
+The local Hub owns the only Training decision capability. The worker—not an API caller—opens the
+targeted composer, types the opener, hides the keyboard, and performs the chosen Hinge action.
+Treat each checkpoint as a one-card capability: use the current tokens, never coordinates or
+arbitrary text, and do not submit another action until this card has a terminal result.
 
-The bridge is enabled only when Hinge Observe is explicitly configured with
-`observe_evidence_source: external_ai_review` or `automation` and its reviewed-controller
-metadata; ordinary manual Observe cannot be driven through this endpoint.  Treat each checkpoint
-as a one-card capability: it exposes a `phase`, never use coordinates or cached tokens, and do
-not submit the next action until the previous result is `completed`.  `targeted_like_open` is
-accepted only after the Worker has durably recorded its pre-tap publication fact; only its
-successful, independently verified completion moves the checkpoint to `sheet_open`, the sole
-phase that accepts `send_current_suggestion`.  A Pass is accepted only before a reviewed-like
-action begins.  Any failed/aborted reviewed action is terminal for that card: obtain a fresh
-card rather than retrying around an uncertain on-screen state.
-
-1. `GET /api/observe/checkpoint?run_id=<run>&app=hinge` and retain the returned
-   `profile_token`, `suggestion_token`, and `item` exactly.
-2. `POST /api/observe/action` with JSON containing `command`, `run_id`, `app`, both tokens, and
-   a unique `idempotency_token`. `pass` has no `item`; `targeted_like_open` and
-   `send_current_suggestion` require the checkpoint's exact `item`.
+1. `GET /api/training/checkpoint?run_id=<run>&app=hinge` and retain the returned
+   `profile_token` and `approval_token` exactly. A checkpoint includes the immutable snapshot
+   and typed opener the operator is deciding on.
+2. `POST /api/training/action` with JSON containing `command` (`like` or `dislike`), `run_id`,
+   `app`, both tokens, and a unique `idempotency_token`.
 3. Poll the checkpoint endpoint until the matching result is `completed`, `failed`, `rejected`,
-   or `aborted`; retry only a failed/aborted review with a fresh checkpoint and token.
+   or `aborted`. A completed result means the physical Hinge action and its durable manual
+   training record both succeeded. Obtain a fresh checkpoint after every terminal result.
 
-Coordinates, arbitrary text, and generic tap/type commands are rejected. A changed card, stop,
-run mismatch, stale token, wrong item, missing suggestion, or concurrent action is rejected or
-aborted before input. Hinge reuses its current numbered-item index/anchor and re-verifies the
-composer/item immediately before typing or sending. Completed reviewed decisions are stored as
-`external_ai_review`; manual Observe decisions remain `manual`.
+A changed card, Stop, run mismatch, stale token, malformed command, or concurrent action is
+rejected or aborted before device input. After Like or Dislike is selected, Hinge recaptures and
+strictly re-verifies the live profile/item/composer controls before tapping. A failed, cancelled,
+or stale action records no label.
 
 | Want | Do |
 |---|---|
 | See progress | `python -m operation_love stats` |
-| Learn from your decisions | `mode: observe`, then make decisions manually |
+| Learn from your decisions | `mode: training`, then use the Hub's Like / Dislike controls |
 | Let it swipe | `mode: auto` |
 | Cap volume (optional; uncapped by default) | `limits.max_per_run / max_per_day` |
 | Cap spend | `budget.run_budget_usd` |

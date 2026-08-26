@@ -122,6 +122,40 @@ add device 1: /dev/input/event0
     <none>
 """
 
+# A persistent UHID session may be given an operator-friendly name instead of uhid.py's
+# default og_touch_<hex>. The real Pixel's `getevent -p` output does not include the virtual
+# device's bus/vendor/product fields, so selection must recognise its exact descriptor
+# capability profile and not rely on missing metadata, device order, or the default name.
+_PERSISTENT_UHID_TRANSCRIPT = """\
+add device 1: /dev/input/event1
+  name:     "persist-scroll-test"
+  events:
+    KEY (0001): 014a*
+    ABS (0003): 0000  : value 0, min 0, max 1079, fuzz 0, flat 0, resolution 0
+                0001  : value 0, min 0, max 2399, fuzz 0, flat 0, resolution 0
+                0018  : value 0, min 0, max 255, fuzz 0, flat 0, resolution 0
+                002f  : value 0, min 0, max 9, fuzz 0, flat 0, resolution 0
+                0035  : value 0, min 0, max 1079, fuzz 0, flat 0, resolution 0
+                0036  : value 0, min 0, max 2399, fuzz 0, flat 0, resolution 0
+                0039  : value 0, min 0, max 65535, fuzz 0, flat 0, resolution 0
+                003a  : value 0, min 0, max 255, fuzz 0, flat 0, resolution 0
+  input props:
+    INPUT_PROP_DIRECT
+""" + _GETEVENT_P_TRANSCRIPT[_GETEVENT_P_TRANSCRIPT.index("add device 3:"):]
+
+# The first project UHID descriptor exposed the smaller four-axis profile that remains in
+# `_GETEVENT_P_TRANSCRIPT`'s event1 block. Its name must not become a bypass after an upgrade.
+_RENAMED_LEGACY_UHID_TRANSCRIPT = _GETEVENT_P_TRANSCRIPT.replace(
+    'name:     "og_touch_a1b2c3d4"', 'name:     "old-persistent-gesture"', 1)
+
+# Android builds differ in whether getevent uses lowercase or uppercase hex in capability rows.
+# Uppercasing only codes keeps the transcript syntax/name labels realistic while exercising
+# normalized selection for both the virtual and physical candidates.
+_UPPERCASE_CAPABILITY_TRANSCRIPT = (_PERSISTENT_UHID_TRANSCRIPT
+    .replace("014a*", "014A*")
+    .replace("014a", "014A")
+    .replace("003a", "003A"))
+
 
 def _tap_lines(x: int, y: int, t: float, tracking_id: int) -> list[str]:
     """A minimal synthetic DOWN/UP tap block on event3, same line shape as _LT_TRANSCRIPT,
@@ -297,19 +331,53 @@ def test_select_touch_device_picks_pixel7a_touchscreen_and_skips_uhid():
 
 
 def test_select_touch_device_uhid_exclusion_is_load_bearing():
-    # Without the og_touch_ exclusion, the SAME transcript would pick the UHID device
-    # instead -- it's printed first and declares the identical axes. Proves the skip
-    # actually changes the outcome rather than being coincidentally irrelevant.
+    # The legacy project descriptor is printed first. Even after disabling the ordinary
+    # default-name prefix, its capability profile must keep it out of observation.
     dev_path, name, _, _ = touchwatch.select_touch_device(
         _GETEVENT_P_TRANSCRIPT, exclude_name_prefixes=(),
     )
-    assert dev_path == "/dev/input/event1"
-    assert name == "og_touch_a1b2c3d4"
+    assert dev_path == "/dev/input/event3"
+    assert name == "goodix_ts0"
+
+
+def test_select_touch_device_skips_renamed_persistent_uhid_by_device_identity():
+    """The virtual HID name is configurable and live getevent output omits its USB metadata.
+    Its exact descriptor profile, rather than an overfitted `persist-*` blacklist, keeps it
+    out of observation."""
+    dev_path, name, x_max, y_max = touchwatch.select_touch_device(
+        _PERSISTENT_UHID_TRANSCRIPT, exclude_name_prefixes=())
+
+    assert (dev_path, name, x_max, y_max) == ("/dev/input/event3", "goodix_ts0", 1079, 2399)
+
+
+def test_select_touch_device_skips_renamed_legacy_uhid_by_capability_profile():
+    """The older four-axis project descriptor is equally synthetic under an arbitrary name."""
+    dev_path, name, _, _ = touchwatch.select_touch_device(
+        _RENAMED_LEGACY_UHID_TRANSCRIPT, exclude_name_prefixes=())
+
+    assert (dev_path, name) == ("/dev/input/event3", "goodix_ts0")
+
+
+def test_select_touch_device_normalizes_uppercase_capability_codes():
+    """A formatting-only casing change must not turn either UHID profile into human input."""
+    dev_path, name, x_max, y_max = touchwatch.select_touch_device(
+        _UPPERCASE_CAPABILITY_TRANSCRIPT, exclude_name_prefixes=())
+
+    assert (dev_path, name, x_max, y_max) == ("/dev/input/event3", "goodix_ts0", 1079, 2399)
 
 
 def test_select_touch_device_raises_when_nothing_qualifies():
     with pytest.raises(touchwatch.TouchWatchUnavailable):
         touchwatch.select_touch_device(_NO_TOUCH_TRANSCRIPT)
+
+
+def test_select_touch_device_rejects_nonpositive_axis_ranges():
+    # A malformed `max -1` transcript used to be selected, then caused a ZeroDivisionError
+    # in TouchWatcher.start() while calculating `w / (x_max + 1)`.
+    malformed = _GETEVENT_P_TRANSCRIPT.replace("max 1079", "max -1")
+
+    with pytest.raises(touchwatch.TouchWatchUnavailable):
+        touchwatch.select_touch_device(malformed)
 
 
 # --- Gesture.is_tap --------------------------------------------------------------------

@@ -606,6 +606,43 @@ def test_observed_hinge_10_0_1_signals_unselected_top_is_not_refused_in_dead_zon
     assert verdict.distance == 0.0
 
 
+def test_observed_current_unselected_signals_top_confirms_after_registration(monkeypatch):
+    """The 2026-08-24 top chrome was formerly an alignment-sweep dead-zone refusal.
+
+    The recorded screen visibly shows Hinge's filter-chip row above the card, but its best
+    pre-registration match was 8.859375 from Variant 9 at a +1px crop offset.  Keep only those
+    16x4 chrome values here: the test neither reads nor stores the profile screenshot.
+    """
+    observed = scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_CURRENT
+    observed_plus_one_px = (
+        254, 254, 254, 254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        251, 251, 250, 251, 235, 232, 231, 244, 243, 232, 233, 232, 237, 248, 233, 233,
+        231, 237, 244, 242, 235, 236, 241, 233, 234, 232, 232, 238, 237, 232, 233, 230,
+        191, 189, 225, 245, 231, 187, 225, 234, 237, 207, 184, 218, 234, 234, 221, 192,
+    )
+    observed_arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    shifted_arr = np.array(observed_plus_one_px, dtype="uint8").reshape(_GRID[1], _GRID[0])
+
+    def observed_crop(_image, rect, _size):
+        dy_px = round((rect[1] - _IB[1]) * _H)
+        return shifted_arr if dy_px == 1 else observed_arr
+
+    monkeypatch.setattr(hinge, "_band_of_image", observed_crop)
+    old_candidates = scroll_top._SCROLL_TOP_BAND_FINGERPRINTS[:-1]
+    before = scroll_top.confirm_scroll_top(
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+
+    assert before.unknown is True
+    assert before.distance == pytest.approx(8.859375)
+    assert before.alignment_offset_px == 1
+    assert observed in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS
+
+    after = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
+
+    assert after.confirmed is True
+    assert after.distance == 0.0
+
+
 def test_hinge_10_0_1_variant_does_not_pull_a_scrolled_frame_into_the_dead_zone(monkeypatch):
     """The new variant must not narrow the gap for frames that are genuinely scrolled.
 

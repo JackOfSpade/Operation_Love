@@ -14,7 +14,7 @@ class RetractionRefused(RuntimeError):
 
 def canonical_sha(value: object) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
-                                      ensure_ascii=True).encode()).hexdigest()
+                                      ensure_ascii=True, allow_nan=False).encode()).hexdigest()
 
 
 def _timestamp(value: object) -> float:
@@ -164,6 +164,15 @@ def make_plan(*, rows: dict, run_id: str, app: str, source: str, profile_id: str
         raise RetractionRefused("store snapshot is malformed")
     if rows.get("run_id") != run_id or rows.get("app") != app or rows.get("source") != source:
         raise RetractionRefused("store snapshot is not bound to the requested run/app/source")
+    # The plan is a durable JSON document.  Reject NaN/Infinity (and other
+    # non-JSON objects) before binding individual rows so a malformed snapshot
+    # cannot leak a raw json encoder exception out of this fail-closed API.
+    try:
+        snapshot_sha = canonical_sha(rows)
+        if evidence_metadata is not None:
+            canonical_sha(evidence_metadata)
+    except (TypeError, ValueError) as exc:
+        raise RetractionRefused("store snapshot or evidence metadata is not canonical JSON data") from exc
     labels = _snapshot_rows(rows, "labels", "label")
     decisions = _snapshot_rows(rows, "decisions", "decision")
     profiles = _snapshot_rows(rows, "profiles", "profile")
@@ -200,7 +209,7 @@ def make_plan(*, rows: dict, run_id: str, app: str, source: str, profile_id: str
         "label_created_at": label["created_at"], "decision_created_at": decision["created_at"],
         "decision_fingerprint": decision_fingerprint, "label_ordinal": ordinal,
         "reason": reason, "evidence_ref": evidence_ref,
-        "snapshot_sha256": canonical_sha(rows),
+        "snapshot_sha256": snapshot_sha,
     }
     if evidence_metadata is not None:
         body["evidence_metadata"] = evidence_metadata
@@ -225,7 +234,10 @@ def verify_plan(plan: dict) -> dict:
     if not isinstance(plan, dict) or plan.get("kind") != "operation_love_label_retraction_plan":
         raise RetractionRefused("invalid correction plan")
     supplied = plan.get("plan_sha256")
-    actual = canonical_sha({key: value for key, value in plan.items() if key != "plan_sha256"})
+    try:
+        actual = canonical_sha({key: value for key, value in plan.items() if key != "plan_sha256"})
+    except (TypeError, ValueError) as exc:
+        raise RetractionRefused("correction plan is not canonical JSON data") from exc
     if not isinstance(supplied, str) or supplied != actual:
         raise RetractionRefused("correction plan self-hash does not verify")
     return plan

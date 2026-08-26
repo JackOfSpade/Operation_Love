@@ -44,6 +44,103 @@ def _canonical_sha256(value) -> str:
                              ensure_ascii=True).encode("utf-8"))
 
 
+def _debug_frame_path(run_dir: Path, name) -> Path | None:
+    """Return one retained debug frame only when it is a direct child of ``run_dir``."""
+    if not isinstance(name, str) or not name:
+        return None
+    relative = Path(name)
+    if relative.name != name or name in {".", ".."}:
+        return None
+    try:
+        candidate = run_dir / relative
+        if not candidate.is_file() or candidate.resolve().parent != run_dir.resolve():
+            return None
+    except OSError:
+        return None
+    return candidate
+
+
+def _direct_like_resolution(row: dict, run_dir: Path) -> bool:
+    """Whether one manual LIKE row proves a direct, settled resolution.
+
+    ``like_sending`` is a useful observation when Hinge exposes its transient
+    processing UI, but it is not a success condition: a quick Send can land on
+    the next stable card before that heartbeat is due.  In that case the
+    passive driver's LIKE row is the durable proof -- it is emitted only after
+    a strictly observed composer and a two-frame, identity-proven new-card
+    resolution.  Require the fields and retained frames that make that claim
+    auditable; do not attempt to re-classify private screenshot pixels here.
+    """
+    if (row.get("action") != "observe_decision" or row.get("decision") != "like"
+            or row.get("sheet_seen") is not True
+            or row.get("capture_truncated") is not False):
+        return False
+    before, after = row.get("before"), row.get("after")
+    if (not isinstance(before, str) or not before
+            or not isinstance(after, str) or not after or before == after):
+        return False
+    return (_debug_frame_path(run_dir, before) is not None
+            and _debug_frame_path(run_dir, after) is not None)
+
+
+def _has_like_control_chain(rows: list[dict], run_dir: Path) -> bool:
+    """Require one causal manual Hinge LIKE chain, never loose action membership.
+
+    A logged ``like_sending`` heartbeat remains accepted as the transitional
+    path.  A direct, frame-backed success is equally valid when Hinge skips
+    that optional transient.  In either case the hub publication, composer
+    anchor, post-tap item check, and terminal LIKE must describe one ordered
+    control flow within one completed profile capture.  This prevents facts from
+    an earlier profile being mixed with a later terminal decision.
+    """
+    capture_seen = hub_seen = anchor_seen = post_tap_seen = sending_seen = False
+    for row in rows:
+        action = row.get("action")
+        if action == "capture":
+            capture_seen, hub_seen, anchor_seen, post_tap_seen, sending_seen = (
+                True, False, False, False, False)
+            continue
+        if action in {"capture_aborted", "observe_resync", "observe_stopped"}:
+            capture_seen = hub_seen = anchor_seen = post_tap_seen = sending_seen = False
+            continue
+        if action == "observe_decision":
+            if (capture_seen and post_tap_seen and row.get("decision") == "like"
+                    and (sending_seen or _direct_like_resolution(row, run_dir))):
+                return True
+            # A pass, dismissed/ambiguous decision row, or a LIKE without this
+            # cycle's complete control trail ends the current profile lifecycle.
+            capture_seen = hub_seen = anchor_seen = post_tap_seen = sending_seen = False
+            continue
+        if action == "observe_release_hub_pre_tap_published":
+            if not capture_seen:
+                continue
+            hub_seen, anchor_seen, post_tap_seen, sending_seen = True, False, False, False
+            continue
+        if not capture_seen or not hub_seen:
+            continue
+        if action == "observe_like_anchor":
+            # A second anchor means the sheet was reopened on this same card.
+            # Its item selection may differ from the earlier one, so old
+            # post-tap/send evidence must never license the new attempt.
+            anchor = row.get("before")
+            anchor_seen = _debug_frame_path(run_dir, anchor) is not None
+            post_tap_seen = sending_seen = False
+            continue
+        if action == "observe_like_dismissed":
+            # Dismissing the sheet leaves the card active, but invalidates the
+            # selected item and every control fact derived from that sheet.
+            anchor_seen = post_tap_seen = sending_seen = False
+            continue
+        if action == "observe_release_post_tap_item_verified" and anchor_seen:
+            post_tap_seen = True
+            continue
+        if (action == "observe_waiting" and post_tap_seen
+                and row.get("reason") == "like_sending"):
+            sending_seen = True
+            continue
+    return False
+
+
 def _verify_debug_run(run_dir: Path, run_id: str) -> str:
     actions = run_dir / "actions.jsonl"
     try:
@@ -64,27 +161,21 @@ def _verify_debug_run(run_dir: Path, run_id: str) -> str:
             "debug run lacks the required first production Worker run binding; it may be a "
             "legacy timestamp-named or unrelated actions.jsonl")
     decisions = {row.get("decision") for row in rows if row.get("action") == "observe_decision"}
-    actions_seen = {row.get("action") for row in rows}
-    waiting = {row.get("reason") for row in rows if row.get("action") == "observe_waiting"}
     if not {"pass", "like"} <= decisions:
         raise ReleaseEvidenceRefused("debug run lacks both observed manual pass and like decisions")
     # A refusal/paywall fact is retained when production naturally sees one, but no safe release
     # workflow may manufacture a paywall merely to produce evidence. It is therefore informative,
     # not an AUTO prerequisite.
-    required_facts = {
-        "observe_release_hub_pre_tap_published",
-        "observe_release_post_tap_item_verified",
-    }
-    if ("observe_like_anchor" not in actions_seen or "like_sending" not in waiting
-            or not required_facts <= actions_seen):
-        raise ReleaseEvidenceRefused(
-            "debug run lacks a required production fact (pre-tap hub publish, post-tap item "
-            "verification, inline-composer anchor, or like_sending state)")
     for row in rows:
         for key in ("before", "after", "anchor"):
             name = row.get(key)
-            if name is not None and (not isinstance(name, str) or not (run_dir / name).is_file()):
+            if name is not None and _debug_frame_path(run_dir, name) is None:
                 raise ReleaseEvidenceRefused(f"debug action references missing frame {name!r}")
+    if not _has_like_control_chain(rows, run_dir):
+        raise ReleaseEvidenceRefused(
+            "debug run lacks an ordered per-capture production LIKE control chain (pre-tap hub publish, "
+            "inline-composer anchor, post-tap item verification, then either like_sending or "
+            "a direct frame-backed verified LIKE resolution)")
     return _sha256(raw)
 
 

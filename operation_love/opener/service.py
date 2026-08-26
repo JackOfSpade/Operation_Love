@@ -97,6 +97,7 @@ from .opener import (
     ItemRequest,
     OpenerAborted,
     OpenerClient,
+    OpenerDeadlineExceeded,
     OpenerError,
     OpenerParseError,
     REASON_PROMPT_BLOCKED,
@@ -304,9 +305,28 @@ def _safe_repr(value: object) -> str:
         return f"<{type(value).__name__}>"
 
 
+def _accepts_generate_deadline(client: object) -> bool:
+    """Whether a duck-typed opener client accepts the advisory deadline keyword.
+
+    GeminiOpener does, and that is the production path this deadline protects. Small legacy
+    fakes and third-party client seams may predate the optional keyword; preserving their
+    existing call shape keeps them usable. An opaque signature does not opt in: passing a new
+    keyword to a legacy opaque callable is more likely to break its call than to enforce a
+    deadline it never declared. The service's first-class OpenerClient protocol declares
+    ``deadline``.
+    """
+    try:
+        parameters = inspect.signature(client.generate).parameters.values()
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return any(parameter.kind is inspect.Parameter.VAR_KEYWORD
+               or parameter.name == "deadline" for parameter in parameters)
+
+
 def _record_staged_opener(store, record: "_StagedOpenerRecord", pick: OpenerPick, *,
                           profile_id: str, decision: str, decision_source: str,
-                          decision_created_at: object | None) -> None:
+                          decision_created_at: object | None,
+                          pre_send_evidence: dict[str, object] | None = None) -> None:
     """Persist a committed draft with modern lineage when the store declares support for it.
 
     OpenerService has long accepted small duck-typed stores.  The action-lineage columns are a
@@ -334,6 +354,15 @@ def _record_staged_opener(store, record: "_StagedOpenerRecord", pick: OpenerPick
     else:
         sink(record.run_id, record.app, record.model, record.opener,
              record.referenced, record.angle, record.item_description)
+
+    evidence_sink = getattr(store, "record_opener_send_evidence", None)
+    if pre_send_evidence is not None and callable(evidence_sink):
+        evidence_sink(
+            record.run_id, record.app, record.opener, profile_id=profile_id,
+            decision_source=decision_source, decision_created_at=decision_created_at,
+            model_item_index=(pick.index if pick.index != ITEM_INDEX_ABSENT else None),
+            evidence=pre_send_evidence,
+        )
 
 
 def _is_invalid_gemini_api_key(exc: Exception) -> bool:
@@ -674,7 +703,9 @@ class OpenerService:
     def _apply_entropy_guard(self, run_id: str, profile: Profile, result, *,
                              items: ItemRequest | None,
                              should_stop: Callable[[], bool] | None,
-                             skip_models: frozenset[str]) -> tuple[object, str, bool]:
+                             skip_models: frozenset[str],
+                             deadline: float | None = None,
+                             client_accepts_deadline: bool = False) -> tuple[object, str, bool]:
         """THE ENTROPY GUARD (ops/OPENER-REDESIGN.md 3.6). Given a parsed, usable opener, return
         `(result_to_send, colliding_ngram, regenerated)`: either the result handed in, or a
         second draw taken because the first one opened with words already sent this run.
@@ -767,6 +798,11 @@ class OpenerService:
                   f"(\"{collision}\"), but the run budget is reached -- sending it as is "
                   "rather than spending on another draw.")
             return result, collision, False
+        if deadline is not None and time.monotonic() >= deadline:
+            print(f"Opener: this draft repeats an earlier opening this run "
+                  f"(\"{collision}\"), but the advisory deadline has passed -- sending it "
+                  "as is rather than starting a stale regeneration.")
+            return result, collision, False
 
         print(f"Opener: this draft opens with words already sent this run (\"{collision}\"); "
               "asking once for a different opening. This extra call is deliberately EXEMPT "
@@ -788,9 +824,23 @@ class OpenerService:
             # different set of images, in a different index space, and whichever draw survived
             # would carry the other one's numbering. The entropy guard is about the opening
             # WORDS and must change nothing else about the request.
+            generate_kwargs = dict(items=items, should_stop=should_stop,
+                                   skip_models=skip_models)
+            if client_accepts_deadline:
+                generate_kwargs["deadline"] = deadline
             second = self.client.generate(profile, self.style, retry_hint=retry_hint,
-                                          items=items, should_stop=should_stop,
-                                          skip_models=skip_models)
+                                          **generate_kwargs)
+        except OpenerDeadlineExceeded as e:
+            # The first draw is valid and this second one is a cosmetic refinement. An expiry
+            # is therefore a normal reason to retain that first draft, never a provider failure.
+            # A late 2xx can nevertheless have consumed provider quota, so record its usage
+            # exactly once before retaining the first draft.
+            if e.usage is not None and e.model:
+                self._record_billed_draw(run_id, e.model, e.usage,
+                                         note="stale entropy regeneration response")
+            print("Opener: the entropy regeneration reached the advisory deadline; keeping the "
+                  "original opener, which was already good enough to send.")
+            return result, collision, False
         except OpenerParseError as e:
             # Billed but unusable. Record the spend (real money, see _record_billed_draw) and
             # keep the original opener. Deliberately NOT written to the opener_rejections
@@ -861,8 +911,13 @@ class OpenerService:
         may send that exact current draft only after its own sheet checks. Two consequences
         follow directly from its advisory role:
           1. It uses the shorter advisory_max_attempts budget and advisory_deadline_s. The
-             first attempt always runs; later attempts start only while the deadline remains.
-             In-flight provider calls are not interrupted, so their billed work is preserved.
+             service still enters its first attempt for legacy-client compatibility, but a
+             deadline-aware Gemini client receives the same absolute cutoff before any request.
+             If waiting for the shared lock or preparing images has already consumed it, Gemini
+             issues no stale first request. Every later fallback model and the optional
+             entropy-regeneration draw share that cutoff; each request is capped to the
+             remaining time, and a response arriving after it is discarded as a stale advisory
+             result rather than counted as a provider failure.
           2. Every exhaustion path below routes through _exhaust(..., request_stop=False)
              instead of the default request_stop=True. disabled/exhausted_reason are still
              set exactly as for an AUTO exhaustion (so a systematically broken model/prompt
@@ -976,6 +1031,11 @@ class OpenerService:
         pipeline itself is healthy, so it must not be reported or counted like one.
         """
         advisory_started_at = time.monotonic() if advisory else None
+        advisory_deadline_at = (
+            advisory_started_at + self.advisory_deadline_s
+            if advisory_started_at is not None else None
+        )
+        client_accepts_deadline = advisory and _accepts_generate_deadline(self.client)
         with self._lock:
             # Per-call permission, never sticky. A successful call or any unrelated failure
             # after a safety-blocked profile must restore the ordinary no-bare-like rule.
@@ -1000,8 +1060,8 @@ class OpenerService:
 
             retry_hint = ""   # "" means first attempt; a retry fills this in below
             for attempt in range(1, effective_max_attempts + 1):
-                if (advisory and attempt > 1 and advisory_started_at is not None and
-                        time.monotonic() - advisory_started_at >= self.advisory_deadline_s):
+                if (advisory and attempt > 1 and advisory_deadline_at is not None and
+                        time.monotonic() >= advisory_deadline_at):
                     self.last_skip_reason = (
                         "opener advisory retry deadline reached after "
                         f"{attempt - 1}/{effective_max_attempts} attempt(s); no further "
@@ -1032,10 +1092,32 @@ class OpenerService:
                     # send profile.photos instead, and the model's item_index would then count
                     # scroll frames while every consumer downstream reads it as an item number
                     # (doc 5.2/5.7). Loud TypeError over silent renumbering.
+                    generate_kwargs = dict(
+                        items=items,
+                        should_stop=should_stop,
+                        skip_models=frozenset(failed_models),
+                    )
+                    if client_accepts_deadline:
+                        # GeminiOpener receives the absolute deadline, not another relative
+                        # budget. It checks it between every fallback model and limits an
+                        # already-starting request to the remaining time.
+                        generate_kwargs["deadline"] = advisory_deadline_at
                     result = self.client.generate(profile, self.style, retry_hint=retry_hint,
-                                                  items=items,
-                                                  should_stop=should_stop,
-                                                  skip_models=frozenset(failed_models))
+                                                  **generate_kwargs)
+                except OpenerDeadlineExceeded as e:
+                    # A stale advisory suggestion is deliberately cosmetic. This is neither a
+                    # provider timeout nor a profile/request failure: do not retry, latch,
+                    # disable the service, or ask the observation run to stop. A late 2xx can
+                    # still be billed, however, so retain its accounting facts exactly once.
+                    if not advisory:
+                        raise
+                    if e.usage is not None and e.model:
+                        self._record_billed_draw(run_id, e.model, e.usage,
+                                                 note="stale advisory opener response")
+                    self.last_skip_reason = str(e)
+                    print("Opener: advisory deadline reached during the model cascade; showing "
+                          "no suggestion for this profile, while future profiles remain eligible.")
+                    return None
                 except OpenerAborted as e:
                     # The client itself aborted mid-call (e.g. GeminiOpener's cascade caught a
                     # stop signal BETWEEN models, after already issuing at least one request
@@ -1328,7 +1410,9 @@ class OpenerService:
                 result, entropy_collision, entropy_regenerated = self._apply_entropy_guard(
                     run_id, profile, result,
                     items=items, should_stop=should_stop,
-                    skip_models=frozenset(failed_models))
+                    skip_models=frozenset(failed_models),
+                    deadline=(advisory_deadline_at if client_accepts_deadline else None),
+                    client_accepts_deadline=client_accepts_deadline)
 
                 try:
                     cost = self.tracker.record(result.model, result.usage)
@@ -1503,7 +1587,8 @@ class OpenerService:
             return None  # pragma: no cover
 
     def commit_opener(self, pick: OpenerPick, *, profile_id: str = "", decision: str = "like",
-                      decision_source: str = "", decision_created_at: object | None = None) -> bool:
+                      decision_source: str = "", decision_created_at: object | None = None,
+                      pre_send_evidence: dict[str, object] | None = None) -> bool:
         """Persist one staged AUTO/Observe opener after a landed Like, exactly once.
 
         This is intentionally a separate, explicit commit from generation: neither opening a
@@ -1517,7 +1602,8 @@ class OpenerService:
             try:
                 _record_staged_opener(
                     self.store, record, pick, profile_id=profile_id, decision=decision,
-                    decision_source=decision_source, decision_created_at=decision_created_at)
+                    decision_source=decision_source, decision_created_at=decision_created_at,
+                    pre_send_evidence=pre_send_evidence)
             except Exception as exc:  # noqa: BLE001 -- a store outage must not erase a real Like
                 print(f"Warning: failed to persist committed opener after landed like: {exc}")
                 return False

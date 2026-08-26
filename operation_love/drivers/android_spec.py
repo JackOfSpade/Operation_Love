@@ -8,7 +8,7 @@ driver (`AndroidDriver`, defined in hinge.py — see that module's docstring for
 not forking the perception/action code.
 
 Pure data: no adb/cv2/touch imports here, so importing a spec can never fire a touch or open
-a device. `calibrated` licenses Auto and `observe_ready` resolves Observe readiness — see
+a device. `calibrated` licenses both Training and Auto readiness — see
 operation_love/platforms.py's `_apply_calibration` and
 operation_love/drivers/android/__init__.py, which wire both values into the registry.
 """
@@ -48,17 +48,6 @@ class AndroidAppSpec:
     # constructed — see that module's docstring. Never flip this by hand for an app whose
     # numbers are still guesses; it is the one thing standing between a placeholder
     # coordinate and a real touch on a real account.
-
-    observe_calibrated: bool | None = None
-    # Whether the app's manual Observe path is safe to run. ``None`` follows
-    # ``calibrated`` for existing apps; an explicit value lets a future target license the
-    # modes independently. Platform start-up and AndroidDriver.open_session enforce the
-    # resolved mode independently, so readiness for one mode never implies readiness for the
-    # other. Bumble currently licenses neither mode.
-
-    @property
-    def observe_ready(self) -> bool:
-        return self.calibrated if self.observe_calibrated is None else self.observe_calibrated
 
     coords: dict[str, tuple[float, float]] = field(default_factory=dict)
     # Action points as FRACTIONS of the screen (x, y in 0..1). Some are fixed taps (e.g.

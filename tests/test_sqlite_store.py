@@ -132,7 +132,7 @@ def test_sqlite_initialization_failure_closes_connection_without_masking_cause(m
     assert connection.closed is True
 
 
-def test_sqlite_count_today_counts_only_auto_decisions(tmp_path):
+def test_sqlite_count_today_counts_the_requested_decision_source(tmp_path):
     db = tmp_path / "store.db"
     con = sqlite3.connect(db)
     con.execute(
@@ -154,6 +154,9 @@ def test_sqlite_count_today_counts_only_auto_decisions(tmp_path):
         store.record_decision("r", "hinge", "like", 0.8, source="auto")
 
         assert store.count_today("bumble") == 1
+        assert store.count_today("bumble", source="manual") == 1
+        with pytest.raises(ValueError, match="source"):
+            store.count_today("bumble", source="automation")
         rows = store.con.execute(
             "SELECT decision, source FROM decisions WHERE app='bumble' ORDER BY id"
         ).fetchall()
@@ -690,7 +693,7 @@ def test_stats_show_uses_read_only_store(tmp_path, monkeypatch):
     from operation_love import stats
 
     cfg = cfg_mod.Config(
-        enabled_apps=["bumble"], mode="observe", apps={}, limits={},
+        enabled_apps=["bumble"], mode="auto", apps={}, limits={},
         data_dir=tmp_path, db_file=tmp_path / "s.db",
         ranker=cfg_mod.RankerCfg(), quality_filter=cfg_mod.QualityCfg(),
         opener=cfg_mod.OpenerCfg(enabled=False),

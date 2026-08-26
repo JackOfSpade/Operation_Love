@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 
 import pytest
 
@@ -72,6 +73,15 @@ def test_plan_refuses_missing_count_keys_and_non_mapping_snapshot():
         make_plan(
             rows=None, run_id="run", app="hinge", reason="bad snapshot",
             evidence_ref="debug#1", evidence_metadata={},
+        )
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_plan_refuses_nonfinite_evidence_metadata(value):
+    with pytest.raises(RetractionRefused, match="canonical JSON"):
+        make_plan(
+            rows=_snapshot(), run_id="run", app="hinge", reason="bad evidence",
+            evidence_ref="debug#1", evidence_metadata={"score": value},
         )
 
 

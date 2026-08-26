@@ -23,17 +23,6 @@ KIND_LABELS = {KIND_ANDROID: "App-based"}
 # can never run at once -- see _EXCLUSIVE below and supervisor's device lock.
 RESOURCE_ANDROID_DEVICE = "android-device"
 
-# Why Hinge Auto stays blocked once numbered targeting IS licensed. The two gates are separate
-# on purpose: a verified still-photo bound is a perception licence (numbers may be suggested in
-# Observe and calibration capture), while Auto is the licence to act unattended on those numbers
-# and is earned by a production-OBSERVE run on the same device/build, never by an artifact.
-HINGE_AUTO_RELEASE_BLOCKER = (
-    "numbered still-photo targeting is licensed, but Auto additionally requires a fresh "
-    "production-OBSERVE release chain (apps.hinge.observe_release_evidence, or its explicitly "
-    "accepted AI-reviewed equivalent) and a deliberate registry release"
-)
-
-
 @dataclass(frozen=True)
 class Platform:
     """One thing we can (or cannot yet) drive."""
@@ -71,7 +60,7 @@ _PLATFORMS: tuple[Platform, ...] = (
         reason=(
             "Bumble on Android is not calibrated yet. Its card-drag coordinates are not "
             "release-licensed and the required paid-upsell detection template is absent, "
-            "so both Observe and Auto fail closed. Calibrate against the Pixel first."
+            "so both Training and Auto fail closed. Calibrate against the Pixel first."
         ),
     ),
 )
@@ -90,7 +79,7 @@ _BY_APP = {p.app: p for p in _PLATFORMS}
 # requested run mode is licensed. Production registration derives both bits from each
 # Android spec; implementation code or unit coverage alone never makes a mode runnable.
 _AVAILABLE_MODES: dict[str, frozenset[str]] = {
-    "hinge": frozenset({"observe", "auto"}),
+    "hinge": frozenset({"training", "auto"}),
     "bumble": frozenset(),
 }
 
@@ -136,22 +125,24 @@ def unavailable_reason(app: str, mode: str | None = None) -> str | None:
     """
     p = get(app)
     if mode is not None:
-        if mode not in {"observe", "auto"}:
-            return f"Unsupported mode {mode!r}; choose 'observe' or 'auto'."
-        if app == "hinge" and mode == "auto":
+        if mode not in {"training", "auto"}:
+            if mode in {"observe", "auto_testing"}:
+                return (f"Mode {mode!r} was retired; choose 'training' for Hub-reviewed "
+                        "Like/Dislike labels or 'auto' for ranker decisions.")
+            return f"Unsupported mode {mode!r}; choose 'training' or 'auto'."
+        if app == "hinge" and mode in {"auto", "training"}:
             blocker = hinge_targeting_unavailable_reason()
             if blocker is not None:
-                return f"Hinge Auto is blocked: {blocker}."
-            # Readiness answered "numbering is licensed", which is a different question from
-            # "Auto is released" (ops/STILL-PHOTO-DISCRIMINATOR.md section 3, gate split). Fall
-            # through to a static blocker rather than to None: if this returned None, a bound
-            # artifact alone would make Auto read as available in the hub.
-            return f"Hinge Auto is blocked: {HINGE_AUTO_RELEASE_BLOCKER}."
+                return f"Hinge {mode.title()} is blocked: {blocker}."
+            # This registry can assess driver geometry and still-photo readiness, but release
+            # evidence is config-bound (artifact path/hash, device/build, calibration, and
+            # production run). `supervisor.load_effective_config()` validates that exact gate
+            # synchronously before a Hub thread or any device driver is created.
         available_modes = _AVAILABLE_MODES.get(app, frozenset())
         if mode in available_modes:
             return None
         if p.available:
-            supported = " and ".join(m.title() for m in ("observe", "auto")
+            supported = " and ".join(m.replace("_", " ").title() for m in ("training", "auto")
                                      if m in available_modes)
             if supported:
                 return f"{p.label} supports {supported} only; {mode.title()} is not available."
@@ -278,6 +269,7 @@ def _apply_calibration(calibrated: Mapping[str, bool | Mapping[str, bool]]) -> N
 
     Keeping those values on the spec (next to the coordinates they describe) rather than
     duplicating them here means registry literals cannot bypass an uncalibrated binding.
+    Config-bound Hinge AUTO release evidence is validated separately at run start.
     Invoked via _ensure_calibration() above.
 
     Rebuilds each entry from `_ORIGINAL`, never from the current (possibly already-mutated)
@@ -286,7 +278,7 @@ def _apply_calibration(calibrated: Mapping[str, bool | Mapping[str, bool]]) -> N
     calibrating cleared it to None, and de-calibrating then copied that None forward, so the
     hub degraded to a generic "Bumble is not available."
     """
-    global _PLATFORMS, _BY_APP
+    global _PLATFORMS, _BY_APP, _calibration_loaded
     if not isinstance(calibrated, Mapping):
         raise ValueError("Calibration must be a mapping of app id to readiness")
     unknown = set(calibrated) - set(_ORIGINAL)
@@ -301,7 +293,7 @@ def _apply_calibration(calibrated: Mapping[str, bool | Mapping[str, bool]]) -> N
     # later app must not leave an earlier app's modes half-applied.
     for app, state in calibrated.items():
         if isinstance(state, Mapping):
-            unexpected_modes = set(state) - {"observe", "auto"}
+            unexpected_modes = set(state) - {"training", "auto"}
             if unexpected_modes:
                 raise ValueError(
                     f"Calibration for {app!r} named unsupported mode(s): "
@@ -314,16 +306,23 @@ def _apply_calibration(calibrated: Mapping[str, bool | Mapping[str, bool]]) -> N
                 raise ValueError(
                     f"Calibration readiness for {app!r} must use exact booleans; "
                     f"got {malformed!r}")
+            # Training opens a targeted composer, types an opener, then performs a verified
+            # Like or Dislike.  It therefore needs the same mechanical calibration as AUTO.
+            # Existing specs predate this key, so it inherits explicit AUTO readiness.
+            effective = dict(state)
+            if "training" not in effective:
+                effective["training"] = effective.get("auto", False)
             modes = frozenset(
-                mode for mode in ("observe", "auto") if state.get(mode) is True)
+                mode for mode in ("training", "auto")
+                if effective.get(mode) is True)
         elif type(state) is bool:
             # Backwards-compatible test/tool API: the historic single flag licensed both
             # modes. Production Android registration now supplies the explicit mapping.
-            modes = frozenset({"observe", "auto"}) if state else frozenset()
+            modes = frozenset({"training", "auto"}) if state else frozenset()
         else:
             raise ValueError(
                 f"Calibration for {app!r} must be an exact boolean or a mapping of "
-                f"observe/auto to exact booleans (got {state!r})")
+                f"training/auto to exact booleans (got {state!r})")
         mode_updates[app] = modes
 
     updated = []
@@ -344,6 +343,10 @@ def _apply_calibration(calibrated: Mapping[str, bool | Mapping[str, bool]]) -> N
     _AVAILABLE_MODES.update(mode_updates)
     _PLATFORMS = tuple(updated)
     _BY_APP = {p.app: p for p in _PLATFORMS}
+    # Direct calibration callers (the supported test/tool seam) have supplied the live
+    # readiness table, so a subsequent availability read must not lazy-import and overwrite
+    # it with the packaged defaults before it can be observed.
+    _calibration_loaded = True
     # KNOWN_APPS is intentionally NOT reassigned -- see its definition above.
     if set(_BY_APP) != set(KNOWN_APPS):     # not an assert: must survive `python -O`
         raise AssertionError("calibration must not change the platform set")

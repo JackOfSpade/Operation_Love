@@ -80,45 +80,40 @@ def test_unknown_platform_is_rejected():
 
 def test_bumble_fails_closed_in_both_modes():
     assert platforms.get("bumble").available is False
-    for mode in ("observe", "auto"):
+    for mode in ("training", "auto"):
         reason = platforms.unavailable_reason("bumble", mode)
         assert reason and "not calibrated" in reason
 
 
-def test_hinge_observe_stays_available_while_auto_targeting_policy_fails_closed():
-    assert platforms.mode_available("hinge", "observe") is True
+def test_hinge_training_stays_targeting_gated_like_auto():
+    assert platforms.mode_available("hinge", "training") is False
+    training_reason = platforms.unavailable_reason("hinge", "training")
+    assert training_reason and "Hinge Training is blocked" in training_reason
     reason = platforms.unavailable_reason("hinge", "auto")
     assert reason and "Hinge Auto is blocked" in reason
     assert "positive still-photo discriminator unavailable" in reason
 
 
-def test_a_verified_still_photo_bound_licenses_numbering_but_never_auto(installed_bound):
-    """The gate split (ops/STILL-PHOTO-DISCRIMINATOR.md section 3): a bound is a perception
-    licence for Observe suggestions, and can never make Auto read as available on its own."""
+def test_a_verified_still_photo_bound_licenses_hinge_driver_readiness(installed_bound):
+    """The registry owns mechanical/policy readiness; config owns release-artifact validation."""
     assert tp.hinge_targeting_unavailable_reason() is None
-    assert platforms.mode_available("hinge", "observe") is True
+    assert platforms.mode_available("hinge", "training") is True
 
-    reason = platforms.unavailable_reason("hinge", "auto")
-
-    assert reason and reason.startswith("Hinge Auto is blocked")
-    assert "production-OBSERVE release chain" in reason
-    assert "positive still-photo discriminator unavailable" not in reason
-    assert platforms.mode_available("hinge", "auto") is False
+    assert platforms.unavailable_reason("hinge", "auto") is None
+    assert platforms.mode_available("hinge", "auto") is True
 
 
-def test_an_accepted_circular_bound_reaches_the_same_gate_split(installed_circular_bound):
-    """The second channel changes what the licence is worth, never which gates it opens."""
+def test_an_accepted_circular_bound_reaches_the_same_driver_readiness(installed_circular_bound):
+    """The second channel changes the evidence provenance, not driver geometry."""
     assert tp.hinge_targeting_unavailable_reason() is None
-    assert platforms.mode_available("hinge", "observe") is True
+    assert platforms.mode_available("hinge", "training") is True
 
-    reason = platforms.unavailable_reason("hinge", "auto")
-
-    assert reason and "production-OBSERVE release chain" in reason
-    assert platforms.mode_available("hinge", "auto") is False
+    assert platforms.unavailable_reason("hinge", "auto") is None
+    assert platforms.mode_available("hinge", "auto") is True
 
 
-def test_the_android_registry_registers_hinge_auto_as_statically_false(installed_bound):
-    """The driver package's own entry, not just the refusal layer above it.
+def test_the_android_registry_registers_hinge_auto_from_calibrated_mechanics(installed_bound):
+    """The driver package registers mechanical readiness, not config release evidence.
 
     Re-executing the package body is the only way to observe what it registers: the module is
     already imported by the time any test runs, so a lazy _ensure_calibration() would find it
@@ -126,16 +121,18 @@ def test_the_android_registry_registers_hinge_auto_as_statically_false(installed
     """
     importlib.reload(importlib.import_module("operation_love.drivers.android"))
 
-    assert platforms._AVAILABLE_MODES["hinge"] == frozenset({"observe"})
-    assert platforms.unavailable_reason("hinge", "auto") is not None
+    assert platforms._AVAILABLE_MODES["hinge"] == frozenset(
+        {"training", "auto"})
+    assert platforms.unavailable_reason("hinge", "auto") is None
+    assert platforms.unavailable_reason("hinge", "training") is None
 
 
-def test_mode_unavailable_reason_is_directional_for_observe_only_platform():
-    platforms._apply_calibration({"bumble": {"observe": True, "auto": False}})
+def test_mode_unavailable_reason_is_directional_for_training_only_platform():
+    platforms._apply_calibration({"bumble": {"training": True, "auto": False}})
 
-    assert platforms.unavailable_reason("bumble", "observe") is None
+    assert platforms.unavailable_reason("bumble", "training") is None
     assert platforms.unavailable_reason("bumble", "auto") == (
-        "Bumble supports Observe only; Auto is not available.")
+        "Bumble supports Training only; Auto is not available.")
 
 
 def test_calibration_changes_availability_without_changing_registered_apps():
@@ -147,7 +144,7 @@ def test_calibration_changes_availability_without_changing_registered_apps():
 
 def test_config_may_name_bumble_but_cannot_start_until_calibrated():
     assert platforms.check_selection(["bumble"]) is None
-    for mode in ("observe", "auto"):
+    for mode in ("training", "auto"):
         reason = platforms.check_runnable(["bumble"], modes=mode)
         assert reason and "not calibrated" in reason
 
@@ -161,7 +158,7 @@ def test_historic_scalar_calibration_accepts_exact_booleans_only(state):
 @pytest.mark.parametrize("value", [1, 0, "true", None, []])
 def test_mode_calibration_values_accept_exact_booleans_only(value):
     with pytest.raises(ValueError, match="exact booleans"):
-        platforms._apply_calibration({"hinge": {"observe": value, "auto": False}})
+        platforms._apply_calibration({"hinge": {"training": value, "auto": False}})
 
 
 def test_lazy_calibration_serializes_concurrent_readers(monkeypatch):
@@ -176,8 +173,8 @@ def test_lazy_calibration_serializes_concurrent_readers(monkeypatch):
         entered.set()
         assert release.wait(_LIVENESS_TIMEOUT_S)
         platforms._apply_calibration({
-            "hinge": {"observe": True, "auto": False},
-            "bumble": {"observe": False, "auto": False},
+            "hinge": {"training": True, "auto": False},
+            "bumble": {"training": False, "auto": False},
         })
 
     monkeypatch.setattr(platforms, "_load_android_calibration", load)
@@ -204,7 +201,7 @@ def test_lazy_calibration_serializes_concurrent_readers(monkeypatch):
     assert not first.is_alive() and not second.is_alive()
     assert len(calls) == 1
     assert platforms._calibration_loaded is True
-    assert platforms.mode_available("hinge", "observe") is True
+    assert platforms.mode_available("hinge", "training") is False
     assert platforms.mode_available("hinge", "auto") is False
 
 

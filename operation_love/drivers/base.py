@@ -186,9 +186,8 @@ class DatingAppDriver(ABC):
     # just wastes spend. Bumble is False (you match first, then message).
     accepts_opener: bool = True
 
-    # Hinge can observe the intermediate "Send Like" sheet. It is opt-in so
-    # existing drivers and lightweight test doubles retain their current
-    # two-outcome observe API.
+    # Legacy manual-observation integrations can report the intermediate "Send Like" sheet.
+    # Keep the opt-in capability for their compatibility surface; it is not a runnable mode.
     supports_observe_like_intent: bool = False
 
     # Whether next_profile()/current_profile() honour a `should_stop` callable, i.e.
@@ -197,7 +196,7 @@ class DatingAppDriver(ABC):
     #
     # This matters because capture is by far the longest uninterruptible stretch in a
     # run. On Hinge, reading one profile is 12 screencaps + 11 humanized read-scrolls,
-    # and observe mode then scrolls the whole card back to the top again — measured at
+    # and the legacy manual-observation path then scrolls the whole card back to the top again — measured at
     # ~85s end to end, during which the worker's only stop check (the one right after
     # current_profile() returns) cannot run. The operator's report was exactly that:
     # "when I hit stop, it doesn't stop while it's reading a profile, it completes the
@@ -232,7 +231,8 @@ class DatingAppDriver(ABC):
     # the attribute (PlaywrightDriver did not) silently received restart-with-backoff. That
     # is fail-open: the riskier behaviour was the one you got by forgetting.
     #
-    # Restarting is not free even in observe mode, where the bot only reads. The worker
+    # Restarting is not free even in a manual-observation compatibility session, where the bot
+    # only reads. The worker
     # re-attaches to whatever is on screen; if the driver was confused about which card it
     # was looking at, the manual swipes it records afterwards are attributed to the wrong
     # profile — which corrupts the taste model permanently, long after the session that
@@ -269,7 +269,7 @@ class DatingAppDriver(ABC):
 
     @abstractmethod
     def like(self, opener: str | None = None, item_index: int | None = None, *,
-             model_item_index: int | None = None, should_stop=None) -> None:
+             model_item_index: int | None = None, should_stop=None) -> str | None:
         """Like the current profile, optionally sending an opener message. item_index is the
         0-based index (capture order) of the photo/prompt the opener is about, so drivers that
         comment per-item (Hinge) can target it; drivers without that notion ignore it.
@@ -307,6 +307,12 @@ class DatingAppDriver(ABC):
         polled before every capture and gesture in its pre-tap item navigation. A stop is a
         distinct navigation cancellation: no further device input is issued and nothing is
         tapped. Workers pass it only to opt-in drivers, preserving existing driver/fake APIs.
+
+        Most drivers return ``None`` after a completed like. A driver that supports the
+        Hub-reviewed Training boundary returns the verified human outcome instead: ``"like"``
+        after Send Like lands or ``"dislike"`` after the verified pass. The worker relies on
+        that closed result to record the manual label only after the corresponding device action
+        has actually completed.
 
         A driver that holds per-item crops for the profile on screen MUST, when given one, verify
         the like/comment screen against that item's stored crop BEFORE typing anything, and stop
@@ -349,22 +355,22 @@ class DatingAppDriver(ABC):
         None is that honest answer — not a guess dressed up as one.
 
         MUST NEVER raise and MUST NEVER touch the screen: worker.py calls this on every
-        loop iteration of both the auto and observe loops, and observe mode is strictly
-        passive — a driver that taps, swipes, or types from inside this method would
+        loop iteration of every worker loop. A driver that taps, swipes, or types from inside
+        this method would
         violate that on every single iteration, not just the blocked ones.
         """
         return None
 
-    # --- observe mode (shadow learning); only needed when mode="observe" ---
+    # --- legacy manual-observation compatibility API ---
     def current_profile(self, *, should_stop=None) -> Profile | None:
         """Capture the card currently shown WITHOUT acting (you swipe manually).
 
         `should_stop` behaves exactly as documented on next_profile above, including the
         rule that a driver only receives it if it declares supports_interruptible_capture.
         `should_stop=None` must reproduce the pre-existing behaviour exactly — tools that
-        drive observe-mode perception by hand (tools/hinge_inspect.py) call this with no
+        drive profile perception by hand (tools/hinge_inspect.py) call this with no
         arguments at all."""
-        raise NotImplementedError("observe mode is not supported by this driver")
+        raise NotImplementedError("manual profile observation is not supported by this driver")
 
     def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None,
                           on_like_intent=None) -> bool | None:
@@ -385,7 +391,7 @@ class DatingAppDriver(ABC):
         there is nothing left on screen to show a picture of once the sheet has closed).
         This is only a UI-notification hook; it must not cause device input.
         """
-        raise NotImplementedError("observe mode is not supported by this driver")
+        raise NotImplementedError("manual profile observation is not supported by this driver")
 
     def render_status(self, status: dict) -> None:
         """Optionally paint a live status overlay in the app's own UI.
@@ -399,7 +405,7 @@ class DatingAppDriver(ABC):
     def render_busy(self, message: str | None = None) -> None:
         """Show/hide a blocking 'processing, please wait' overlay in the app UI.
 
-        Called in observe mode while a swipe is being embedded/stored so you don't
+        Called while a training decision is being embedded/stored so you don't
         like/dislike the NEXT card mid-processing (which would mis-attribute it).
         `message` shows the overlay; None hides it. No-op by default (e.g. Hinge).
         Must never raise.

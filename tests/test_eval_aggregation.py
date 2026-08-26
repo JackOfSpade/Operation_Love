@@ -1,5 +1,6 @@
 """Identity grouping + result shape for leakage-free evaluation. Needs sklearn."""
 import importlib
+import math
 
 import pytest
 
@@ -120,6 +121,14 @@ def test_quality_trajectory_walks_prefixes_every_step(monkeypatch):
 def test_quality_trajectory_never_raises_on_edge_inputs():
     for samples in (None, [], ["junk"] * 8):
         assert eval_mod.quality_trajectory(samples, step=5) == []   # too small / malformed -> empty
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"step": math.nan}, {"n_splits": "many"}, {"eps": math.inf},
+    {"min_labels": None}, {"max_points": "forty"},
+])
+def test_quality_trajectory_never_raises_on_malformed_report_controls(kwargs):
+    assert eval_mod.quality_trajectory(_identity_samples(12), **kwargs) == []
 
 
 def test_quality_trajectory_caps_point_count_as_labels_grow(monkeypatch):

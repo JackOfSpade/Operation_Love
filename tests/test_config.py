@@ -18,7 +18,7 @@ BASE = {
     # the check_runnable() guard validate() now applies -- see test_unavailable_app_* below
     # for coverage of that rejection path.
     "enabled_apps": ["hinge"],
-    "mode": "observe",
+    "mode": "training",
     "storage": {"backend": "sqlite"},
     # Model id deliberately matches OpenerCfg's own class default (see config.py) so that
     # a test overriding "opener" to None -- which falls back to those class defaults --
@@ -146,7 +146,7 @@ def test_known_disabled_app_block_remains_supported():
 
 def test_bad_mode():
     d = {**BASE, "mode": "yolo"}
-    _expect_error(d, "observe")
+    _expect_error(d, "training")
 
 
 def test_bigquery_requires_project_id():
@@ -355,8 +355,8 @@ def test_opener_models_must_be_a_yaml_list():
 
 
 def test_bad_app_mode_override():
-    d = {**BASE, "mode": "observe", "apps": {"hinge": {"mode": "yolo"}}}
-    _expect_error(d, "observe")
+    d = {**BASE, "apps": {"hinge": {"mode": "yolo"}}}
+    _expect_error(d, "training")
 
 
 def test_disabled_known_app_mode_is_still_validated():
@@ -379,23 +379,24 @@ def test_disabled_known_app_cannot_stage_unverified_auto_halt_policy():
     _expect_error(d, "halt_on_error=false")
 
 
+@pytest.mark.parametrize("app", ["hinge", "bumble"])
+def test_auto_trial_is_retired_and_cannot_reenable_the_model_bypass(app):
+    d = {**BASE, "apps": {app: {"auto_trial": {
+        "schema_version": 1, "forced_actions": ["like"]}}}}
+    _expect_error(d, "auto_trial is retired")
+
+
 def test_hinge_auto_app_mode_override_reports_structural_targeting_blocker_first():
-    d = {**BASE, "mode": "observe", "apps": {"hinge": {"mode": "auto"}}}
+    d = {**BASE, "mode": "training", "apps": {"hinge": {"mode": "auto"}}}
     _expect_error(d, "positive still-photo discriminator unavailable")
 
 
-def test_nonmanual_hinge_observe_source_requires_explicit_controller_metadata():
+def test_retired_hinge_observe_source_is_rejected():
     d = {**BASE, "apps": {"hinge": {"observe_evidence_source": "automation"}}}
-    _expect_error(d, "ai_reviewed_observe_controller")
-    d["apps"]["hinge"]["ai_reviewed_observe_controller"] = {
-        "schema_version": 1, "source": "automation",
-        "acceptance": "I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK",
-        "executor": {"model": "gpt", "id": "controller", "version": "v1", "process": "driver"},
-    }
-    c.validate(_load(d))
+    _expect_error(d, "retired")
 
 
-def test_nonmanual_hinge_observe_source_cannot_be_enabled_for_auto_mode():
+def test_retired_hinge_observe_source_is_rejected_for_auto_mode():
     d = {**BASE, "mode": "auto", "apps": {"hinge": {
         "observe_evidence_source": "external_ai_review",
         "ai_reviewed_observe_controller": {
@@ -404,7 +405,7 @@ def test_nonmanual_hinge_observe_source_cannot_be_enabled_for_auto_mode():
             "executor": {"model": "gpt", "id": "controller", "version": "v1", "process": "driver"},
         },
     }}}
-    _expect_error(d, "only in mode observe")
+    _expect_error(d, "retired")
 
 
 # --- budget.on_exhausted: removed 2026-08-10 (owner ruled out commentless likes) -----------
@@ -468,7 +469,8 @@ def test_budget_caps_require_finite_nonnegative_numbers_or_null(field, value):
 
 @pytest.mark.parametrize("budget", [None, {}, {"pricing": {}}])
 def test_omitted_run_budget_preserves_safe_five_dollar_default(budget):
-    d = {**BASE, "opener": {"enabled": False}, "budget": budget}
+    d = {**BASE, "enabled_apps": ["bumble"], "mode": "auto",
+         "opener": {"enabled": False}, "budget": budget}
     cfg = _load(d)
     assert cfg.budget.run_budget_usd == 5.00
     c.validate(cfg)
@@ -476,7 +478,8 @@ def test_omitted_run_budget_preserves_safe_five_dollar_default(budget):
 
 @pytest.mark.parametrize(("value", "expected"), [(None, None), (0, 0)])
 def test_explicit_null_or_zero_run_budget_remains_distinct_from_omission(value, expected):
-    d = {**BASE, "opener": {"enabled": False}, "budget": {"run_budget_usd": value}}
+    d = {**BASE, "enabled_apps": ["bumble"], "mode": "auto",
+         "opener": {"enabled": False}, "budget": {"run_budget_usd": value}}
     cfg = _load(d)
     assert cfg.budget.run_budget_usd is expected or cfg.budget.run_budget_usd == expected
     c.validate(cfg)
@@ -864,7 +867,7 @@ def test_empty_config_file_loads_with_defaults():
     cfg = c.load(f.name)
     # hinge, not bumble: bumble is now an Android target that starts out uncalibrated
     # (platforms.py), so a from-scratch config defaulting to it would fail check_runnable().
-    assert cfg.mode == "observe" and cfg.enabled_apps == ["hinge"]
+    assert cfg.mode == "training" and cfg.enabled_apps == ["hinge"]
 
 
 def test_non_mapping_config_file_raises_clear_error():
@@ -902,7 +905,7 @@ def test_unknown_key_in_section_raises_clear_error():
 def test_uncalibrated_android_app_loads_fine_at_config_time():
     # bumble is uncalibrated (unavailable) today, but that must not stop a config file that
     # merely enables it from loading -- see module docstring above.
-    d = {**BASE, "enabled_apps": ["bumble"]}
+    d = {**BASE, "mode": "auto", "enabled_apps": ["bumble"]}
     c.validate(_load(d))   # no raise
 
 
@@ -939,17 +942,15 @@ def test_halt_on_error_false_is_rejected_in_auto_mode():
 
 
 def test_halt_on_error_false_is_rejected_via_a_per_app_auto_override():
-    # The global mode is observe, but this app overrides itself into auto -- the guard must
+    # The global mode is Training, but this app overrides itself into auto -- the guard must
     # read the EFFECTIVE mode, not just the top-level one.
-    d = dict(BASE, mode="observe", apps={"hinge": {"mode": "auto", "halt_on_error": False}})
+    d = dict(BASE, mode="training", apps={"hinge": {"mode": "auto", "halt_on_error": False}})
     _expect_error(d, "halt_on_error=false is not allowed with mode='auto'")
 
 
-def test_halt_on_error_false_is_allowed_in_observe_mode():
-    # Observe is human-driven: the checks mostly guard against the bot's own missed taps,
-    # and there is a person watching. Tolerable there, so don't over-restrict it.
-    d = dict(BASE, mode="observe", apps={"hinge": {"halt_on_error": False}})
-    c.validate(_load(d))   # no raise
+def test_halt_on_error_false_is_rejected_in_training_mode():
+    d = dict(BASE, mode="training", apps={"hinge": {"halt_on_error": False}})
+    _expect_error(d, "halt_on_error=false is not allowed with mode='training'")
 
 
 def test_halt_on_error_must_be_a_boolean():
@@ -1040,7 +1041,7 @@ def test_enabled_apps_present_and_non_empty_is_unaffected():
 # exactly the population most likely to typo one.
 
 def test_android_app_coords_entry_out_of_range_is_rejected():
-    d = {**BASE, "enabled_apps": ["bumble"],
+    d = {**BASE, "mode": "auto", "enabled_apps": ["bumble"],
          "apps": {"bumble": {"coords": {"like_heart": [1.05, 0.5]}}}}
     _expect_error(d, "apps.bumble.coords.like_heart")
 
@@ -1111,13 +1112,13 @@ def test_still_photo_dwell_candidates_huge_integer_reported_as_config_error():
 
 
 def test_android_app_coords_entry_negative_is_rejected():
-    d = {**BASE, "enabled_apps": ["bumble"],
+    d = {**BASE, "mode": "auto", "enabled_apps": ["bumble"],
          "apps": {"bumble": {"coords": {"pass_x": [0.5, -0.2]}}}}
     _expect_error(d, "apps.bumble.coords.pass_x")
 
 
 def test_android_app_coords_entry_must_be_an_xy_pair():
-    d = {**BASE, "enabled_apps": ["bumble"],
+    d = {**BASE, "mode": "auto", "enabled_apps": ["bumble"],
          "apps": {"bumble": {"coords": {"like_heart": [0.5, 0.5, 0.5]}}}}
     _expect_error(d, "apps.bumble.coords.like_heart")
 
@@ -1146,19 +1147,19 @@ def test_bounded_android_numbers_report_huge_integers_as_config_errors():
 def test_android_app_frac_setting_out_of_range_is_rejected():
     # The other demonstrated exploit path: apps.bumble.read_scroll_frac=1.30 alone (no
     # coords entry at all) pushes an ordinary read-scroll's touch-down off-screen.
-    d = {**BASE, "enabled_apps": ["bumble"], "apps": {"bumble": {"read_scroll_frac": 1.30}}}
+    d = {**BASE, "mode": "auto", "enabled_apps": ["bumble"], "apps": {"bumble": {"read_scroll_frac": 1.30}}}
     _expect_error(d, "apps.bumble.read_scroll_frac")
 
 
 def test_android_app_frac_setting_rejects_a_bool():
     # bool is an int subclass in Python -- the same trap this file already guards against
     # for opener.max_attempts / opener.thinking[...].thinkingBudget.
-    d = {**BASE, "enabled_apps": ["bumble"], "apps": {"bumble": {"read_scroll_frac": True}}}
+    d = {**BASE, "mode": "auto", "enabled_apps": ["bumble"], "apps": {"bumble": {"read_scroll_frac": True}}}
     _expect_error(d, "apps.bumble.read_scroll_frac")
 
 
 def test_android_app_frac_and_coords_within_range_pass():
-    d = {**BASE, "enabled_apps": ["bumble"],
+    d = {**BASE, "mode": "auto", "enabled_apps": ["bumble"],
          "apps": {"bumble": {"read_scroll_frac": 0.6,
                              "coords": {"like_heart": [0.85, 0.9]}}}}
     c.validate(_load(d))   # no raise
@@ -1190,8 +1191,8 @@ def test_stale_targeting_calibration_cannot_license_unavailable_still_photo_poli
     _expect_error(d, "positive still-photo discriminator unavailable")
 
 
-def test_hinge_observe_without_optional_targeting_calibration_remains_valid():
-    d = {**BASE, "mode": "observe", "apps": {"hinge": {"serial": "synthetic-pixel"}}}
+def test_hinge_training_without_optional_targeting_calibration_loads_for_later_start_gate():
+    d = {**BASE, "mode": "training", "apps": {"hinge": {"serial": "synthetic-pixel"}}}
 
     c.validate(_load(d))
 

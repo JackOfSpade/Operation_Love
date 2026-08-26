@@ -418,17 +418,6 @@ def _popen_must_not_be_called(*_a, **_k):
         "otherwise be spawned by this test)")
 
 
-class _FakePersistentStream:
-    """Stands in for Popen.stdout/stderr: PersistentUhidTouch never reads from either, they
-    only need to exist and be closeable (see close()'s stream-closing loop)."""
-
-    def __init__(self):
-        self.closed = False
-
-    def close(self):
-        self.closed = True
-
-
 class _FakePersistentStdin:
     """Stands in for Popen.stdin: captures every write() call's argument verbatim, and can
     be told to raise (simulating a broken pipe, or a stream already closed out from under
@@ -470,8 +459,10 @@ class _FakePersistentPopen:
         self.argv = list(argv)
         self.kwargs = kwargs
         self.stdin = _FakePersistentStdin(fail_after=stdin_fail_after, raise_type=stdin_raise_type)
-        self.stdout = _FakePersistentStream()
-        self.stderr = _FakePersistentStream()
+        # The real persistent PTY command deliberately discards its unused output.  Mirroring
+        # Popen's `None` stream attributes here makes close() exercise that production shape.
+        self.stdout = None
+        self.stderr = None
         self._alive = start_alive
         self._die_after_polls = die_after_polls
         self._poll_calls = 0
@@ -520,6 +511,9 @@ def test_persistent_open_registers_once_and_gestures_never_reregister(monkeypatc
 
     assert len(_FakePersistentPopen.instances) == 1
     proc = _FakePersistentPopen.instances[0]
+    assert proc.kwargs["stdin"] is uhid.subprocess.PIPE
+    assert proc.kwargs["stdout"] is uhid.subprocess.DEVNULL
+    assert proc.kwargs["stderr"] is uhid.subprocess.DEVNULL
     open_cmds = _cmds_from_strings(proc.stdin.written)
     assert [c["command"] for c in open_cmds] == ["register", "delay"]
     assert open_cmds[0]["descriptor"] and open_cmds[0]["name"] == drv.name
@@ -698,7 +692,8 @@ def test_persistent_close_kills_and_waits_on_the_process_and_closes_its_pipes(mo
     drv.close()
 
     assert proc.kill_called and proc.wait_calls == 1
-    assert proc.stdin.closed and proc.stdout.closed and proc.stderr.closed
+    assert proc.stdin.closed
+    assert proc.stdout is None and proc.stderr is None
 
     drv.close()     # idempotent: second close is a pure no-op, not a second kill/wait
     assert proc.wait_calls == 1

@@ -221,6 +221,36 @@ def _inline_surface_for(frame: bytes) -> ComposerSurface:
     return ComposerSurface("hinge_inline_v1", comment, send, (695, send.y0 + 50))
 
 
+def _review_scrolled_inline_frame(*, selected: int, upper: int):
+    """Put an unrelated profile card above a still-open, lower inline composer.
+
+    This is the synthetic geometry of the 2026-08-25 Training refusal: during the review wait,
+    scrolling exposed an x=53 profile card above the selected x=95 preview.  The composer itself
+    remained open and actionable below the selected photo.
+    """
+    selected_y0 = 800
+    frame = paint_sheet(
+        _payload().item(selected).image, y0=selected_y0, max_h=700)
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    source = cv2.imdecode(
+        np.frombuffer(_payload().item(upper).image, np.uint8), cv2.IMREAD_COLOR)
+    upper_y0, upper_height = 236, 328
+    image[upper_y0:upper_y0 + upper_height, _CARD_X0:_CARD_X1] = cv2.resize(
+        source, (_CARD_X1 - _CARD_X0, upper_height), interpolation=cv2.INTER_AREA)
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    selected_height = min(
+        700, round(_payload().item(selected).signature.height
+                   * _SHEET_PREVIEW_W / _payload().item(selected).signature.width))
+    comment = Rect(
+        _SHEET_PREVIEW_X0, selected_y0 + selected_height + 20,
+        _SHEET_PREVIEW_X0 + _SHEET_PREVIEW_W,
+        selected_y0 + selected_height + 198)
+    send = Rect(390, comment.y1 + 15, 985, comment.y1 + 124)
+    return encoded.tobytes(), ComposerSurface(
+        "hinge_inline_v1", comment, send, (695, send.y0 + 50))
+
+
 def _fragment_legacy_wide_runs(frame: bytes) -> bytes:
     """Make sparse bright source rows invisible to the strict 870px row-span probe.
 
@@ -401,6 +431,33 @@ def test_tega_style_bright_photo_uses_compact_locator_only_when_composer_binds_i
     prompt_only = dataclasses.replace(_lookalike_payload(), crops=(prompt,))
     assert not item_verify.verify_sheet_item(
         frame, prompt_only, 1, composer_surface=surface).matched
+
+
+def test_scrolled_training_review_uses_the_preview_bound_to_the_live_composer():
+    """An upper profile card must neither mask nor impersonate the selected preview."""
+    payload = _payload()
+    frame, surface = _review_scrolled_inline_frame(selected=2, upper=1)
+
+    # The unchanged legacy locator sees only the upper profile card and refuses it.  Supplying
+    # the independently detected composer selects the lower, adjacent preview instead.
+    with pytest.raises(item_verify.SheetVerificationError, match="profile screen"):
+        item_verify.locate_sheet_preview(frame)
+    verdict = item_verify.verify_sheet_item(
+        frame, payload, 2, composer_surface=surface)
+    assert verdict.matched, verdict.reason
+    assert verdict.nearest_index == 2
+    assert verdict.preview.y0 >= 800
+    assert "composer-bound" in verdict.preview.reason
+
+    # Adversarial control: the upper card is now the requested item, while the preview actually
+    # attached to the composer is item 3.  A global scan would confirm the wrong upper content;
+    # the bound scan must inspect the lower preview and refuse item 2.
+    wrong_frame, wrong_surface = _review_scrolled_inline_frame(selected=3, upper=2)
+    wrong = item_verify.verify_sheet_item(
+        wrong_frame, payload, 2, composer_surface=wrong_surface)
+    assert not wrong.matched
+    assert wrong.nearest_index == 3
+    assert wrong.preview.y0 >= 800
 
 
 def test_hinge_10_0_1_bright_photo_edge_does_not_truncate_the_selected_preview_above_the_composer():
@@ -689,7 +746,7 @@ def test_a_mismatch_names_the_intended_item_and_the_actual_one():
     assert verdict.nearest_index == 2
     assert "showing model item 2" in verdict.reason
     assert "item 3 the opener was written about" in verdict.reason
-    assert "Nothing was typed" in verdict.reason
+    assert "Nothing is sent" in verdict.reason
 
 
 def test_a_tall_card_is_matched_against_the_bottom_of_its_crop_and_not_the_top():

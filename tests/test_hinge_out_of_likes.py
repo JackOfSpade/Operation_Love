@@ -604,7 +604,12 @@ def test_like_sending_wait_times_out_and_returns_none_not_a_fabricated_like(monk
     sent, _notified = drv._await_like_resolved(b"base", None, should_stop)
     assert sent is None
     elapsed = clock[0] - 40_000.0
-    assert elapsed <= stuck_budget + hinge._OBSERVE_POLL_S, (
+    # `_note_observe_waiting` deliberately re-checks should_stop after its screencap and
+    # before appending a heartbeat. This synthetic predicate advances the clock on every
+    # call, so the normal one-poll watchdog fencepost can now include one additional poll
+    # stride. The bound remains a watchdog bound (under 56s for a 55s budget), not a relaxed
+    # route to the 3x-budget Stop ceiling.
+    assert elapsed <= stuck_budget + 2 * hinge._OBSERVE_POLL_S, (
         f"like_sending must time out at ~{stuck_budget}s via the watchdog, not run "
         f"to the 3x-budget should_stop ceiling (elapsed {elapsed}s)"
     )

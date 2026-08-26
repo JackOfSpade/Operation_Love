@@ -535,29 +535,76 @@ def locate_sheet_preview(frame: bytes, *,
                 f"indented to column {x0}"))
 
 
-def _locate_inline_compact_preview(frame: bytes, composer_surface, *, cv2, np) -> SheetPreview:
-    """Recover an inline selected photo whose bright pixels defeat the legacy row-span locator.
+def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) -> SheetPreview:
+    """Locate the selected photo that belongs to an independently proven inline composer.
 
-    This is deliberately private and is called only by ``verify_sheet_item(...,
-    composer_surface=...)`` after the ordinary locator has refused.  It is not a lower threshold
-    for a generic screen: the independently detected comment field and CTA bind its horizontal
-    placement, and it retains the legacy 300px height requirement.  A profile screen cannot
-    manufacture that evidence without first passing the composer detector and topology check.
+    A Training reviewer may scroll Hinge's still-open inline surface while deciding.  In that
+    state an ordinary profile card can be visible above the selected photo.  The legacy locator
+    intentionally inspects the *topmost* wide block and rejects that card's x=53 margin, but a
+    composer-bound lookup must instead find the nearest eligible x=95 photo above its own comment
+    field.  Looking at every eligible run also recovers bright photos at the narrower measured
+    inline width floor.
+
+    This is not a looser generic-screen locator.  It is reachable only with an independently
+    detected comment field and CTA, requires the preview to align with that field and sit within
+    the existing card-to-field gap bound, and leaves the content/signature verification below
+    unchanged.  An upper card can therefore neither hide the real preview nor license a match.
     """
     comment = getattr(composer_surface, "comment_rect", None)
     if comment is None:
         raise SheetVerificationError(
-            "the supplied inline-composer surface has no comment rectangle for compact preview lookup")
+            "the supplied inline-composer surface has no comment rectangle for preview lookup")
     slack = max(8, round(comment.width * 0.03))
     minimum_width = round(comment.width * _INLINE_COMPACT_MIN_WIDTH_FRACTION)
-    try:
-        preview = locate_sheet_preview(
-            frame, min_width_px=minimum_width, min_height_px=_PREVIEW_MIN_HEIGHT_PX,
-            margin_px=comment.x0, margin_tolerance_px=slack)
-    except SheetVerificationError as exc:
+    gray = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+    if gray is None:
         raise SheetVerificationError(
-            "no compact inline selected-photo preview after the normal preview locator refused: "
-            f"the composer-bound {minimum_width}px probe also refused ({exc})") from exc
+            f"the like-sheet frame did not decode as an image ({len(frame)} bytes), so there is "
+            "nothing to verify the chosen item against")
+    height, width = gray.shape
+    lo, hi = _MARGIN_PROBE
+    if width < 2 * hi + 1 or hi <= lo:
+        raise SheetVerificationError(
+            f"a {width}px-wide frame leaves no margin strip at columns {lo}..{hi} to read a "
+            "background reference from, so the inline preview cannot be bounded")
+    spans = _row_spans(
+        gray, np, tolerance=_ROW_BACKGROUND_TOLERANCE, probe=_MARGIN_PROBE)
+    runs: list[tuple[int, int]] = []
+    start = None
+    for y in range(_PREVIEW_SEARCH_TOP_PX, min(height, comment.y0)):
+        span = spans[y]
+        wide = span is not None and span[1] - span[0] >= minimum_width
+        if wide and start is None:
+            start = y
+        elif not wide and start is not None:
+            runs.append((start, y))
+            start = None
+    if start is not None:
+        runs.append((start, min(height, comment.y0)))
+
+    candidates: list[tuple[int, SheetPreview]] = []
+    for y0, y1 in runs:
+        if y1 - y0 < _PREVIEW_MIN_HEIGHT_PX:
+            continue
+        band = [spans[y] for y in range(y0, y1) if spans[y] is not None]
+        x0 = int(np.median([span[0] for span in band]))
+        x1 = int(np.median([span[1] for span in band]))
+        gap = comment.y0 - y1
+        max_gap = max(40, round((y1 - y0) * 0.25))
+        if (abs(x0 - comment.x0) <= slack
+                and abs(x1 - comment.x1) <= slack
+                and 0 <= gap <= max_gap):
+            candidates.append((gap, SheetPreview(
+                y0=y0, y1=y1, x0=x0, x1=x1,
+                reason=(f"inline-composer-bound run of rows at least {minimum_width}px wide, "
+                        f"{y1 - y0} rows tall, aligned to comment field "
+                        f"x={comment.x0}..{comment.x1}, with a {gap}px field gap"))))
+    if not candidates:
+        raise SheetVerificationError(
+            "the selected-card preview is not immediately above the independently detected "
+            f"inline comment field: no candidate at least {minimum_width}px wide and "
+            f"{_PREVIEW_MIN_HEIGHT_PX}px tall is aligned with it")
+    _gap, preview = min(candidates, key=lambda candidate: candidate[0])
     return SheetPreview(
         y0=preview.y0, y1=preview.y1, x0=preview.x0, x1=preview.x1,
         reason=(f"inline-composer compact fallback: {preview.reason}; minimum width "
@@ -906,13 +953,15 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
     try:
         preview = locate_sheet_preview(frame, **locate_kwargs)
     except SheetVerificationError:
-        # Do not lower the public/legacy locator's evidence threshold.  Hinge's compact inline
-        # selected photo can contain enough near-white pixels to make a real image look like a
-        # sequence of short row runs; only a separately proven composer may bind the stricter
-        # compact inference below to its actual controls.
+        # Do not lower the public/legacy locator's evidence threshold.  An independently proven
+        # inline composer supplies a stronger local boundary: reviewers may scroll an unrelated
+        # x=53 card above the still-open selected preview, and bright photos can fall under the
+        # public width floor. Bind the fallback to the fresh composer instead of letting either
+        # condition mask the target.
         if composer_surface is None:
             raise
-        preview = _locate_inline_compact_preview(frame, composer_surface, cv2=cv2, np=np)
+        preview = _locate_inline_composer_preview(
+            frame, composer_surface, cv2=cv2, np=np)
     if composer_surface is not None:
         # The located run is where the preview STARTS; under a proven composer its bottom edge is
         # the end of the image block, not the first row a legacy width floor stumbles on. See
@@ -1047,7 +1096,7 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
             f"the like sheet is showing model item {nearest_index}, not the item {model_index} "
             f"the opener was written about: the sheet sits {other.distance:.3f} grey levels from "
             f"item {nearest_index}'s crop and {mine.distance:.3f} from item {model_index}'s. "
-            f"Nothing was typed and the sheet is left open"))
+            f"Nothing is sent and the sheet is left open"))
     # How the bound was arrived at, spelled out in both the accept and the reject message: with a
     # neighbour it is half the distance to it, and with none (a one-item list, or a list where
     # every other item is too short to be what the sheet is rendering) there is no neighbour to
@@ -1065,7 +1114,7 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
             f"the like sheet does not show model item {model_index}: item {model_index} is the "
             f"nearest stored crop but at {mine.distance:.3f} grey levels, against a "
             f"{mine.bound:.3f} bound ({derivation}). Whatever is on the sheet is not any item "
-            f"this profile was indexed with. Nothing was typed and the sheet is left open"))
+            f"this profile was indexed with. Nothing is sent and the sheet is left open"))
     if absolute_max_dist is not None and mine.distance >= absolute_max_dist:
         return _verdict(VERIFY_MISMATCH, (
             f"the like sheet is too far from model item {model_index} to confirm: "

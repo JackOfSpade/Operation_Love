@@ -948,6 +948,30 @@ pinned by a regression test rather than papered over.
 thing could not have been inside the region I searched". This one could not, for 2.5 days, in a
 system whose entire premise is that silence is never mistaken for absence.
 
+## 5i. Addendum 2026-08-24: the first K=3 live run spent one proof per profile on a prompt
+
+The first production run with the bounded walk proved three heart-bearing cards on each profile,
+but exposed only two numbered photos. The third proved card was a written prompt in both cases.
+This was not a still-media refusal: navigation, centring, both dwell bursts, and the re-attach
+probe all succeeded, consuming about 50 seconds before `build_item_payload` applied its existing
+content gate and discarded the prompt. Meanwhile, earlier cards already classified as PHOTO had
+no dwell coverage and could not be numbered.
+
+The content prefilter considered in 5g therefore pays at the shipped K=3, contrary to the earlier
+modelled estimate that it mattered only at high K. It now runs as a read-only crop/type pre-pass
+before C2/C3. WRITTEN, UNKNOWN, and already-excluded video cards never enter the expensive walk;
+the K budget is spent on the nearest confidently photographic cards instead. This is
+output-neutral with respect to safety: the same content predicate already demoted those cards
+before the dwell result was consulted, and every retained candidate must still pass the complete
+dwell/re-attach ladder before numbering.
+
+The same run exposed two diagnostic defects fixed with the pre-pass. `EXCLUSION_NEVER_DWELLED`
+still claimed production took “one dwell burst,” a sentence left over from K=1; it now says the
+configured bounded walk did not reach the card. Walked candidates also returned finalized dwell
+evidence without calling `_record_still_photo_dwell`, so only the base candidate's raw proof was
+preserved. Every base and walked burst/probe action now carries its page-heart ordinal(s), and
+each walked candidate writes the same per-frame digests and summary as the base path.
+
 ## 6. Plan B (documented, not chosen)
 
 If held-out video accepts never reach zero, the honest fallback is to change the

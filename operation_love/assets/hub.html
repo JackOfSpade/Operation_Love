@@ -7,7 +7,23 @@
   * { box-sizing: border-box; }
   body { margin:0; background:#0f0f14; color:#e8e8ea;
          font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; }
-  .wrap { max-width:680px; margin:0 auto; padding:22px 18px 60px; }
+  /* The existing hub remains its own, unchanged column.  Training's deliberately
+     separate review surface lives beside it on wider screens, never in the control flow. */
+  .hub-layout { max-width:680px; margin:0 auto; }
+  .hub-layout.training-active { max-width:1120px; display:grid;
+                                     grid-template-columns:minmax(0,680px) minmax(320px,420px);
+                                     gap:22px; align-items:start; }
+  .wrap { max-width:680px; padding:22px 18px 60px; }
+  .training-panel { display:none; margin-top:22px; position:sticky; top:18px; }
+  .training-panel .target-image { display:block; width:100%; max-height:440px; object-fit:contain;
+                                      background:#0c0c10; border:1px solid rgba(255,255,255,.09); border-radius:9px; }
+  .training-panel .opener-text { margin:8px 0 0; padding:10px; white-space:pre-wrap;
+                                     overflow-wrap:anywhere; background:#0c0c10;
+                                     border:1px solid rgba(255,255,255,.09); border-radius:9px; }
+  @media (max-width:900px) {
+    .hub-layout.training-active { display:block; }
+    .training-panel { margin:0 18px 60px; position:static; }
+  }
   h1 { font-size:18px; margin:0 0 2px; letter-spacing:.3px; }
   .sub { opacity:.55; font-size:12px; margin-bottom:18px; }
   .card { background:#17171d; border:1px solid rgba(255,255,255,.09);
@@ -41,11 +57,10 @@
                  border:1px solid #2f6df0; border-radius:9px; font-weight:600; }
   .dot { width:6px; height:6px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle; }
 </style></head>
-<body><div class="wrap">
+<body><div class="hub-layout"><div class="wrap">
   <div class="row"><h1>Operation&nbsp;Love</h1><span id="runpill" class="pill stop">stopped</span></div>
   <div class="sub" id="sub">control hub · live status</div>
-  <div id="swipebanner" style="display:none"></div>
-  <div id="autobanner" style="display:none"></div>
+  <div id="runbanner" style="display:none"></div>
 
   <div class="card">
     <div class="row"><span class="muted">budget</span><span id="budget" class="b">—</span></div>
@@ -81,7 +96,7 @@
     <div class="meta" id="platnote" style="margin-top:8px"></div>
     <div class="controls" style="margin-top:12px">
       <span class="muted">mode</span>
-      <select id="mode" aria-describedby="modehint"><option value="observe">observe (you decide)</option>
+      <select id="mode" aria-describedby="modehint"><option value="training">training (you decide)</option>
         <option value="auto">auto (bot decides)</option></select>
       <span class="meta" id="modehint" role="status" aria-live="polite"></span>
     </div>
@@ -98,10 +113,10 @@
     </div>
     <div class="controls" id="maxrow" style="margin-top:10px;display:none">
       <span class="muted">max profiles this run</span>
-      <input type="text" inputmode="numeric" id="maxrun" value="8"
+      <input type="text" inputmode="numeric" id="maxrun" value="" placeholder="config"
         style="width:72px;text-align:center;background:#22222b;color:#e8e8ea;border:1px solid rgba(255,255,255,.14);border-radius:7px;padding:5px 7px;font:inherit">
-      <label class="chk"><input type="checkbox" id="unlimited" checked> unlimited</label>
-      <span class="meta">(uncheck to set a temporary ceiling)</span>
+      <label class="chk"><input type="checkbox" id="unlimited"> unlimited</label>
+      <span class="meta">(leave blank to use config)</span>
     </div>
     <div class="controls" style="margin-top:12px">
       <button id="start" class="primary">▶ Start</button>
@@ -122,6 +137,8 @@
     <pre id="bugout" style="display:none;max-height:260px;overflow:auto;background:#0c0c10;border:1px solid rgba(255,255,255,.09);border-radius:9px;padding:10px;margin-top:10px;font-size:11px;white-space:pre-wrap"></pre>
   </div>
 </div>
+  <aside id="trainingpanel" class="training-panel" aria-live="polite" aria-label="training decision"></aside>
+</div>
 <script>
 const $ = s => document.querySelector(s);
 const hubCsrfToken = document.querySelector('meta[name="operation-love-csrf"]').content;
@@ -130,12 +147,12 @@ async function postJSON(u,b){ const r = await fetch(u,{method:'POST',headers:{'C
 
 // Empty until /api/config answers -- the platform registry is server-side, so the page
 // must not carry a hardcoded app list that could drift out of sync with it.
-let cfg = {kinds:[], all_apps:[], enabled_apps:[], mode:'observe', selected:null};
+let cfg = {kinds:[], all_apps:[], enabled_apps:[], mode:'training', selected:null};
 let sel = {kind:null, app:null};
-// The hub is an operator-facing safety boundary: opening it starts in Observe even when
+// The hub is an operator-facing safety boundary: opening it starts in Training even when
 // config.yaml is set to auto for non-hub/CLI runs. Auto remains available as an explicit
 // selection, but a page load or refresh must never pre-select autonomous decisions.
-function initialHubMode(){ return 'observe'; }
+function initialHubMode(){ return 'training'; }
 // Previous tick's `running` (see renderGlobal/shouldClearHint below) -- tracked across
 // polls so #hint clears only on the TRANSITION into !running, never merely because the
 // page happens to load, or re-render, while no run is active.
@@ -184,7 +201,7 @@ function stopButtonState(running, stopping){
 function shouldClearHint(running, wasRunning){ return !!wasRunning && !running; }
 
 // A timed stop is a run-wide safety control, unlike max-per-run (which only applies to
-// automatic decisions), so it is rendered for both Observe and Auto.  The server owns the
+// automatic decisions), so it is rendered for both Training and Auto. The server owns the
 // clock and sends whole seconds remaining; round up so "stops in 1m" never says zero while
 // the run is still live.
 function formatTimedStopRemaining(seconds){
@@ -229,380 +246,325 @@ function renderGlobal(snap){
   $('#err').textContent = (snap && snap.error) ? ('error: '+snap.error) : '';
 }
 
-// Observe mode has NO on-phone cue (an overlay would corrupt the screencaps), so this big
-// banner tells you when to make a decision vs wait per app, driven by the worker's per-app state.
-// Mode is gated PER APP (not the global run mode): apps.<app>.mode can override the run's
-// mode, so a global auto run with one app on observe (or vice versa) must still show the
-// banner only for the apps actually in observe — not all-or-nothing on snap.status.mode.
-// Pure + named (not inlined) so the hub test suite can eval the real gating logic with node
-// instead of asserting a substring a comment-only revert could dodge.
-function selectObserveApps(status){
+// Only supported Hub run modes belong in this status surface.
+function selectRunApps(status){
   if (!status || !status.apps) return [];
-  return Object.values(status.apps).filter(a => a.mode === 'observe');
-}
-function renderSwipe(snap){
-  const el = $('#swipebanner'); if(!el) return;
-  const s = snap && snap.status;
-  if(!snap || !snap.running || !s){ el.style.display='none'; return; }
-  const observeApps = selectObserveApps(s);
-  if(!observeApps.length){ el.style.display='none'; return; }
-  // supervisor.run()'s shutdown tail (status.stopping -- set the instant stop_event.set()
-  // runs, cleared only once the run reaches its terminal phase; see status.py's docstring):
-  // worker.py re-checks stop_event and DISCARDS any card decided in this window rather than
-  // recording it, so every GO-style cue below would be actively lying if shown here --
-  // telling the operator to act on something that gets thrown away.
-  const stopping = !!s.stopping;
-  const css = {go:'background:#123a23;border:1px solid #39d98a;color:#39d98a',
-               wait:'background:#3a2f12;border:1px solid #f0b429;color:#f0b429',
-               idle:'background:#22222b;border:1px solid rgba(255,255,255,.14);color:#9a9aa2'};
-  const box = (k,t,sub) => `<div style="${css[k]};border-radius:10px;padding:12px 14px;margin-top:8px;font-weight:700;font-size:18px">${t}${sub?` <span style="font-weight:400;font-size:12px;opacity:.8">${sub}</span>`:''}</div>`;
-  // Auto mode types OpenerResult.opener into Hinge's comment sheet byte-for-byte (see
-  // worker.py: the exact same string reaches driver.like() -> adb.text() unmodified), so this
-  // box is the operator's only chance to catch scaffolding words ("Sure! Here's an opener:
-  // ...") the model wrapped around the real text -- because that same wrapped string is what
-  // ships untouched in automation. That canary only works if the opener's exact start and end
-  // are unmistakable, so unlike box() above (title + sub flowed inline on one line) this
-  // stacks three block rows -- a label, the opener alone in a delimited inset block, then
-  // chrome -- so a run-on line can never again hide where the opener stops and our own copy
-  // begins.
-  const openerBox = (opener, heading, chrome) => `<div style="${css.go};border-radius:10px;padding:12px 14px;margin-top:8px">
-<div style="font-weight:700;font-size:11px;letter-spacing:.05em;text-transform:uppercase;opacity:.85">${heading}</div>
-<div style="margin-top:6px;padding:8px 10px;background:rgba(0,0,0,.25);border-left:3px solid #39d98a;border-radius:4px;font-weight:600;font-size:16px;white-space:pre-wrap">${escHtml(opener)}</div>
-<div style="margin-top:6px;font-weight:400;font-size:12px;opacity:.8">${chrome}</div>
-</div>`;
-  // ops/OPENER-REDESIGN.md 5.9's mismatch surface. The opener is REPLACED by this, never shown
-  // beside it: leaving text on screen next to a caveat is how a wrong-item opener gets typed
-  // anyway. WAIT-coloured (🔴, per the owner's circle-only convention) because the one thing the
-  // operator must not do is copy something -- there is deliberately nothing here to copy.
-  // The operator's next action is part of this warning, not fine print.  A warning replaces the
-  // opener block, so render its title, reason, and manual-choice cue as one full-size notice.
-  const openerWarnBox = (title, warning, next) =>
-    box('wait', `${title}: ${escHtml(warning.replace(/\.+$/, ''))}. ${next}`);
-  // RUN-LEVEL PROVENANCE, NOT A CUE (owner decision 2026-08-21). When Hinge numbering was
-  // licensed by the owner's UNMEASURED centered-autoplay assumption instead of a measured
-  // held-out bound, the operator must be told every run -- numbering looks identical either way,
-  // so words are the only place the difference can survive. It renders as a neutral fine-print
-  // row UNDER whatever box the state produced, never as its own amber box and never with a
-  // circle of its own: the decision window keeps its single 🟢 GO cue and its GO styling, exactly
-  // as the targeting-setup note above is fine print rather than a warning. Same rule, same
-  // reason: a run-level, already-decided condition must never restyle the decision window.
-  const licenceRow = a => {
-    const note = typeof a.targeting_licence_notice === 'string'
-      ? a.targeting_licence_notice.trim() : '';
-    if(!note) return '';
-    return `<div style="margin-top:4px;font-size:12px;line-height:1.4;color:#9a9aa2">${escHtml(note)}</div>`;
-  };
-  // The worker may publish an opener while Hinge's comment sheet is open.  The suggested text
-  // replaces the ordinary instruction in this same banner; it never goes to terminal output.
-  // Every dynamic value is escaped before it enters innerHTML.
-  const appBox = a => {
-    const st = a.state || '';
-    const last = a.last_decision ? ('last '+a.last_decision) : '';
-    const app = escHtml(a.app || 'app');
-    const opener = typeof a.opener_suggestion === 'string' ? a.opener_suggestion.trim() : '';
-    // ops/OPENER-REDESIGN.md 5.9. opener_warning is set whenever there is deliberately no text
-    // to type -- the human opened a different item than the suggestion names, the sheet is not
-    // on this profile at all, the sheet could not be checked, or no suggestion was produced in
-    // the first place. The worker publishes opener_warning or opener_suggestion, never both, so
-    // the branch below is a belt on top of that rather than a precedence rule.
-    const warning = typeof a.opener_warning === 'string' ? a.opener_warning.trim() : '';
-    // Missing Hinge targeting calibration is a RUN-LEVEL condition, unlike an ordinary
-    // per-card mismatch or an unavailable provider: it holds for every card of the run, and it
-    // is a setup step the operator can complete rather than a per-card failure. Detecting it
-    // here routes it AWAY from the per-card warning box below.
-    const needsTargetingSetup = a.app === 'hinge' && warning.includes('targeting_calibration');
-    // Hoisted out of the 'waiting' branch below because the opener branch needs it too now:
-    // since doc 5.9's inversion a suggestion is published BEFORE the human taps, i.e. during
-    // the very window this sentence describes. Hinge has physically labelled X/heart controls;
-    // other platforms may not.
-    const controls = a.app === 'hinge' ? 'tap X to pass, or tap a heart to like'
-                                       : "use the app's pass or like control";
-    // Intercepts every GO-producing branch below (opener suggestion, waiting_for_send,
-    // plain waiting) with one honest stop-coloured box instead -- see `stopping` above for
-    // why acting on any of them right now would be pointless at best.  Same WAIT (🔴) style
-    // as the capturing/acting cues just below, per the owner's circle-only rule. A pending
-    // WARNING is intercepted too: it is still per-card advice about a decision that is about
-    // to be thrown away, and "do not swipe" is the more urgent thing to say.
-    if(stopping && (opener || warning || st==='waiting_for_send' || st==='waiting')) {
-      return box('wait', `🔴 ${app}: stopping — do not swipe, this decision will not be recorded`);
-    }
-    // 2026-08-21 re-report of the same banner: a run-level, intentional condition must NEVER
-    // restyle the decision window as a warning. Routing it through openerWarnBox turned every
-    // card of the run into an amber box led by 🔴 "setup required" — in the owner's circle
-    // convention (and everywhere else in this function) amber+🔴 means "hands off", so the
-    // operator obediently sat out a 2m24s decision window that was waiting on THEM, then
-    // stopped the run. The decision cue must be the SAME 🟢 GO box the plain waiting state
-    // renders — one circle, green — with the setup situation demoted to the box's fine-print
-    // sub row. The driver's internal consequence clauses are for logs/bug reports, not the
-    // operator: strip the exact known tails (hinge.py composes them verbatim), harmlessly
-    // showing the full sentence if the driver's wording drifts.
-    // In every other state (capturing, acting, …) the ordinary state boxes below are already
-    // the correct cue, so fall through rather than letting a stale warning override them.
-    //
-    // THE NEXT STEP IS PUBLISHED, NOT WRITTEN HERE (bug report 2026-08-22). This sub used to
-    // hardcode "positive still-photo proof must exist before a fresh calibration can enable
-    // suggestions". That was true only until the owner's centered-autoplay acceptance licensed
-    // numbering; afterwards it named a prerequisite already satisfied and never named the step
-    // that would actually restore suggestions, so the operator read a solvable run-level gate as
-    // an upstream block and left the calibration uncaptured. Which step is correct depends on
-    // the installed licence, which only the worker's process knows — so it publishes
-    // targeting_setup_next_step and the hub renders it. With no field published (an older
-    // worker, or a poll that raced the run's start) the note simply ends after the reason
-    // rather than asserting a prerequisite this page cannot verify.
-    if(warning && needsTargetingSetup){
-      const reason = warning
-        .replace('targeted suggestion is unavailable because ', '')
-        .replace(', so a model-selected item could not be verified or targeted and no numbered item list would have a usable consumer', '')
-        .replace('; no opener text is offered', '');
-      const nextStep = typeof a.targeting_setup_next_step === 'string'
-        ? a.targeting_setup_next_step.trim() : '';
-      const setupNote = `no targeted suggestion this run — ${escHtml(reason)}. Manual pass/like labels still work`
-        + (nextStep ? `; ${escHtml(nextStep)}.` : '.');
-      if(st==='waiting') return box('go', `🟢 ${app}: make your choice: ${controls}`, setupNote);
-      if(st==='waiting_for_send') return box('go', '💬 no suggestion to type — type your own opener, then tap Send Like / Send Priority Like', setupNote);
-    } else if(warning) return openerWarnBox(
-      '🔴 no suggestion to type',
-      warning,
-      st === 'waiting_for_send'
-        ? 'type your own opener, then tap Send Like / Send Priority Like'
-        : `🟢 your call: ${controls}`);
-    // `&& !warning` keeps doc 5.9's nothing-copyable pin state-UNCONDITIONAL: without it, a
-    // setup warning arriving beside a suggestion in a non-decision state would fall through
-    // the setup branch above and render the copyable opener box. Unreachable through today's
-    // producer (worker publishes one field or the other, and every other state transition
-    // clears the set), but this precedence is pinned rather than assumed — same reasoning as
-    // the warning-plus-opener test.
-    if(opener && !warning) {
-      // TWO ROWS OF CHROME, AND NEITHER MAY TOUCH THE OPENER ITSELF (owner rule: the string
-      // shown here must be byte-identical to what auto would type, so our own words never share
-      // a line with it -- see openerBox). Before a heart, the HEADING makes the item conditional
-      // help rather than a decision; after the sheet opens it directly identifies the selected
-      // item. Either way opener_item_description is the model's own words for that item, so it
-      // can be found on the card without counting hearts.
-      //
-      // opener_referenced (the model's one-line statement of which DETAIL the opener reacts to)
-      // stays in the lower row: since the inversion it is no longer the operator's only defence
-      // against an out-of-place opener -- opener_item is, and the mismatch check above enforces
-      // it -- but it is still the cheapest way to see at a glance what the message is claiming.
-      const referenced = typeof a.opener_referenced === 'string' ? a.opener_referenced.trim() : '';
-      const aboutSub = referenced ? `about: ${escHtml(referenced)} · ` : '';
-      const item = Number.isInteger(a.opener_item) ? a.opener_item : null;
-      const mediaOrdinal = Number.isInteger(a.opener_media_ordinal)
-        ? a.opener_media_ordinal : null;
-      const desc = typeof a.opener_item_description === 'string' ? a.opener_item_description.trim() : '';
-      // Before a heart is tapped this is conditional help, not a verdict on the profile. Once
-      // the inline sheet is open, the human has already chosen to like, so use direct send copy.
-      // Do not show the model index or heart ordinal. The driver supplies mediaOrdinal only
-      // when every earlier heart-bearing block was classified, so it is countable on screen.
-      // Otherwise a description is safer than a confident but wrong number.
-      const targetLabel = mediaOrdinal === null
-        ? `this photo${desc ? ` — ${escHtml(desc)}` : ''}`
-        : `media item ${mediaOrdinal}${desc ? ` — ${escHtml(desc)}` : ''}`;
-      const heading = st === 'waiting_for_send'
-        ? (item === null ? '💬 selected photo — type exactly this'
-                         : `💬 selected ${targetLabel} — type exactly this`)
-        : (item === null ? '💬 Optional: if you choose to like, type exactly this'
-                         : `💬 Optional: if you choose to like, use ${targetLabel}, then type exactly this`);
-      // THE DECISION IS STILL THE HUMAN'S, AND THE PRE-TAP WINDOW IS WHERE THAT HAS TO BE SAID.
-      // Before the inversion a suggestion could only appear AFTER the heart tap (state
-      // 'waiting_for_send'), so it never competed with the 🟢 GO cue that tells the operator it
-      // is their turn and that PASSING is one of the two things they may do. It is published
-      // before the tap now, and this branch runs ahead of the 'waiting' branch below, so
-      // without this the whole decision window rendered as an order to like and send -- no
-      // circle, no X, and an instruction about a sheet that is not open yet -- in the one mode
-      // whose entire output is the owner's own like/pass labels. The suggestion says which item
-      // to comment on IF they like her; it is not the decision, and a hub that reads like an
-      // order to like would bias the labels the ranker is trained on.
-      const likeThisItem = a.app === 'hinge' && item !== null
-        ? (mediaOrdinal === null ? 'tap X to pass, or tap the heart on that photo to like'
-                                 : `tap X to pass, or tap the heart on media item ${mediaOrdinal} to like`)
-        : controls;
-      const chrome = st === 'waiting_for_send'
-        ? `${aboutSub}then tap Send Like / Send Priority Like in Hinge`
-        : `${aboutSub}🟢 your call: ${likeThisItem}`;
-      return openerBox(opener, heading, chrome);
-    }
-    // The sheet is open and there is nothing to type. Two reasons, and the operator's next move
-    // differs: the suggestion is still being written (they tapped faster than the model answered
-    // -- doc 5.9's race, which is why this state is reachable at all), or there simply is not one.
-    if(st==='waiting_for_send') return a.opener_pending
-      ? box('go', '💬 still writing a suggestion…', 'type your own opener if you would rather not wait')
-      : box('go', '💬 No suggestion available', 'type your own opener, then tap Send Like / Send Priority Like');
-    if(st==='waiting') {
-      // The suggestion is generated while this cue is up (doc 5.9: READY is published
-      // immediately and the suggestion fills in behind it), so this says so instead of leaving
-      // the operator to wonder -- but it stays a GO cue, because nothing here asks them to wait.
-      const notice = a.opener_pending
-        ? `choose now: ${controls}, or wait a moment for a suggestion`
-        : `make your choice: ${controls}`;
-      // Keep this whole instruction at the banner's normal size.  The pending-suggestion
-      // reminder is part of the decision cue, not fine-print beside it.
-      return box('go', `🟢 ${app}: ${notice}`);
-    }
-    // "suggesting" USED TO BE A BLOCKING STATE and is deliberately not one any more (doc 5.9):
-    // the suggestion is generated on its own thread while the operator is already free to act,
-    // so it is a note beside the GO cue above (opener_pending) rather than a WAIT state that
-    // holds them up. Kept as a branch because it is still a legal AppStatus.state and an older
-    // status snapshot can carry it; nothing in this build publishes it.
-    if(st==='suggesting') return box('wait', `🔴 wait — 💬 writing a suggestion for ${app}…`);
-    if(st==='capturing') return box('wait', `🔴 wait — reading ${app} profile…`);
-    if(st==='acting')    return box('wait', `🔴 wait — recording your ${app} decision…`);
-    if(st==='starting')  return box('wait', `🔴 wait — starting ${app}…`);
-    if(st==='out_of_profiles') return box('idle', `${app}: no more profiles`, escHtml(last));
-    return box('idle', `${app}: ${escHtml(st||'…')}`, escHtml(last));
-  };
-  el.innerHTML = observeApps.map(a => appBox(a) + licenceRow(a)).join('');
-  el.style.display = 'block';
+  return Object.values(status.apps).filter(a => a.mode === 'auto' || a.mode === 'training');
 }
 
-function selectAutoApps(status){
-  if (!status || !status.apps) return [];
-  return Object.values(status.apps).filter(a => a.mode === 'auto');
+// Only a current, explicitly ready training checkpoint can produce Like/Dislike controls.
+// Completed and executing results are history, never newly actionable after a refresh.
+function pendingTrainingCheckpoint(payload, runId, app){
+  const checkpoints = (payload && Array.isArray(payload.checkpoints)) ? payload.checkpoints : [];
+  return checkpoints.find(c => c && c.pending === true && c.phase === 'waiting_training_decision'
+    && c.run_id === runId && c.app === app && c.action === 'ready') || null;
 }
-// Keep autonomous progress and every terminal outcome visible here instead of forcing the
-// operator to reconstruct them from the raw log tail -- AUTO apps at every stage, OBSERVE
-// apps once they've stopped (see the terminalObserveApps comment below for why). Per-app
-// states distinguish unexpected errors, deck exhaustion/blocking, rate limits, cold-start
-// deferral, manual stops, and a live worker.
-function renderAutoStatus(snap){
-  const el = $('#autobanner'); if(!el) return;
+
+// A queued/executing card is still useful review evidence, but it is no longer actionable.
+// Keep it on screen so a click never appears to vanish during the device/storage boundary.
+function activeTrainingCheckpoint(payload, runId, app){
+  const checkpoints = (payload && Array.isArray(payload.checkpoints)) ? payload.checkpoints : [];
+  return checkpoints.find(c => c && c.run_id === runId && c.app === app
+    && ((c.phase === 'waiting_training_decision' && c.action === 'ready')
+      || (c.phase === 'executing_training_decision' && c.action === 'executing')
+      || (c.phase === 'waiting_training_decision' && c.action === 'queued'))) || null;
+}
+
+function latestTrainingResult(payload, runId, app){
+  const results = (payload && Array.isArray(payload.results)) ? payload.results : [];
+  const matching = results.filter(r => r && r.run_id === runId && r.app === app
+    && ['completed', 'failed', 'aborted'].includes(r.status));
+  return matching.length ? matching[matching.length - 1] : null;
+}
+
+// The API promises a data URL, but do not let a malformed server response turn an operator
+// review page into a URL/navigation surface.  The screenshot is a raster image; SVG and all
+// external schemes are intentionally out of scope.
+function safeCheckpointImageDataUrl(value){
+  const image = typeof value === 'string' ? value.trim() : '';
+  return /^data:image\/png;base64,[A-Za-z0-9+/=]+$/i.test(image) ? image : '';
+}
+
+let _trainingCheckpoint = null;
+let _trainingRequest = 0;
+let _trainingActionBusy = false;
+let _trainingBusyKey = '';
+let _trainingBusyRequest = 0;
+const _trainingIdempotency = new Map();
+
+// A retry token is useful only while this exact approval is the live card.  Keeping every
+// old token for an unlimited testing run would make the local Hub grow without bound, while
+// carrying one to a different card would wrongly couple two irreversible actions.
+function trainingCheckpointKey(checkpoint){
+  if (!checkpoint || typeof checkpoint !== 'object') return '';
+  const values = [checkpoint.run_id, checkpoint.app, checkpoint.profile_token,
+                  checkpoint.approval_token];
+  // JSON preserves field boundaries even if a future run id contains a separator character.
+  return values.every(value => typeof value === 'string' && value) ? JSON.stringify(values) : '';
+}
+
+function resetTrainingIdempotencyIfCardChanged(previous, next){
+  if (trainingCheckpointKey(previous) !== trainingCheckpointKey(next)) {
+    _trainingIdempotency.clear();
+  }
+}
+
+function resetTrainingBusyIfCardChanged(previous, next){
+  const nextKey = trainingCheckpointKey(next);
+  if (_trainingBusyKey && _trainingBusyKey !== nextKey) {
+    _trainingActionBusy = false;
+    _trainingBusyKey = '';
+    _trainingBusyRequest += 1;
+  }
+}
+
+function trainingActionBusyFor(checkpoint){
+  return _trainingActionBusy && _trainingBusyKey === trainingCheckpointKey(checkpoint);
+}
+
+function trainingActionToken(checkpoint, command){
+  const key = JSON.stringify([command, checkpoint.run_id, checkpoint.app,
+                              checkpoint.profile_token, checkpoint.approval_token]);
+  let token = _trainingIdempotency.get(key);
+  if (!token) {
+    const nonce = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random()}`;
+    token = `${hubClientId}-${nonce}`;
+    _trainingIdempotency.set(key, token);
+  }
+  return token;
+}
+
+function renderTrainingCheckpoint(checkpoint, message=''){
+  const panel = $('#trainingpanel'); if (!panel) return;
+  const layout = document.querySelector('.hub-layout');
+  if (layout) layout.classList.toggle('training-active', !!checkpoint);
+  resetTrainingIdempotencyIfCardChanged(_trainingCheckpoint, checkpoint);
+  resetTrainingBusyIfCardChanged(_trainingCheckpoint, checkpoint);
+  _trainingCheckpoint = checkpoint || null;
+  if (!checkpoint) { panel.style.display = 'none'; panel.innerHTML = ''; return; }
+  const image = safeCheckpointImageDataUrl(checkpoint.image_data_url);
+  const item = Number.isInteger(checkpoint.item) ? `item ${checkpoint.item}` : 'selected item';
+  const description = typeof checkpoint.item_description === 'string'
+    ? checkpoint.item_description.trim() : '';
+  const referenced = typeof checkpoint.referenced === 'string' ? checkpoint.referenced.trim() : '';
+  const hasOpener = typeof checkpoint.opener === 'string' && checkpoint.opener.trim().length > 0;
+  const opener = hasOpener ? checkpoint.opener : '';
+  const ready = checkpoint.pending === true && checkpoint.phase === 'waiting_training_decision'
+    && checkpoint.action === 'ready';
+  // A malformed local response or a card that has crossed the action boundary must never
+  // turn into either decision.
+  const canDecide = Boolean(ready && image && hasOpener);
+  const command = checkpoint.command === 'like' ? 'Like'
+    : checkpoint.command === 'dislike' ? 'Dislike' : 'decision';
+  const lifecycle = checkpoint.action === 'queued'
+    ? `${command} is queued; waiting for the worker to claim it.`
+    : checkpoint.action === 'executing'
+      ? `${command} is being applied and recorded. Do not make another choice.`
+      : '';
+  const target = `${item}${description ? ` — ${description}` : ''}`;
+  panel.innerHTML = `<div class="card">
+    <div class="row"><span class="b">training · choose this profile</span><span class="pill run">${ready ? 'decision required' : 'decision in progress'}</span></div>
+    <div class="meta" style="margin-top:6px">${canDecide
+      ? 'The opener is already written on this target. Like sends it; Dislike passes this same profile. Your choice becomes training data.'
+      : (lifecycle || 'Review data is incomplete, so both decisions are disabled.')}</div>
+    <div class="meta" style="margin-top:12px">target · ${escHtml(target)}</div>`
+    + (image ? `<img class="target-image" src="${image}" alt="Target image for ${escHtml(target)}" style="margin-top:6px">`
+             : `<div class="meta" style="margin-top:6px">Target image was unavailable.</div>`)
+    + `<div class="meta" style="margin-top:12px">${hasOpener ? 'full opener' : 'opener unavailable'}</div>
+       <div class="opener-text">${hasOpener ? escHtml(opener) : 'No complete opener was supplied. This Like cannot be sent.'}</div>`
+    + (referenced ? `<div class="meta" style="margin-top:8px">about · ${escHtml(referenced)}</div>` : '')
+    + `<div class="controls" style="margin-top:14px">
+         <button id="traininglike" class="primary" aria-label="Like — send opener"${(trainingActionBusyFor(checkpoint) || !canDecide) ? ' disabled' : ''}>Like</button>
+         <button id="trainingdislike" class="danger" aria-label="Dislike — pass this profile"${(trainingActionBusyFor(checkpoint) || !canDecide) ? ' disabled' : ''}>Dislike</button>
+       </div>
+       <div class="meta" id="trainingactionhint" style="margin-top:8px">${escHtml(message)}</div>
+  </div>`;
+  panel.style.display = 'block';
+  const likeButton = $('#traininglike');
+  const dislikeButton = $('#trainingdislike');
+  if (likeButton) likeButton.onclick = () => submitTrainingAction('like');
+  if (dislikeButton) dislikeButton.onclick = () => submitTrainingAction('dislike');
+}
+
+function renderTrainingFeedback(result, message=''){
+  const panel = $('#trainingpanel'); if (!panel) return;
+  const layout = document.querySelector('.hub-layout');
+  if (layout) layout.classList.toggle('training-active', false);
+  resetTrainingIdempotencyIfCardChanged(_trainingCheckpoint, null);
+  resetTrainingBusyIfCardChanged(_trainingCheckpoint, null);
+  _trainingCheckpoint = null;
+  if (!result && !message) { panel.style.display = 'none'; panel.innerHTML = ''; return; }
+  const command = result && result.command === 'like' ? 'Like'
+    : result && result.command === 'dislike' ? 'Dislike' : 'training decision';
+  const status = result && typeof result.status === 'string' ? result.status : '';
+  const reason = result && typeof result.reason === 'string' ? result.reason : '';
+  const detail = message || reason || (status === 'completed'
+    ? `${command} was sent and saved as training data.`
+    : `${command} did not complete.`);
+  const heading = status === 'completed' ? 'decision recorded'
+    : status === 'failed' ? 'decision failed'
+      : status === 'aborted' ? 'decision cancelled' : 'training decision';
+  panel.innerHTML = `<div class="card"><div class="row"><span class="b">training · ${escHtml(heading)}</span></div>
+    <div class="meta" style="margin-top:8px">${escHtml(detail)}</div></div>`;
+  panel.style.display = 'block';
+}
+
+async function submitTrainingAction(command){
+  const checkpoint = _trainingCheckpoint;
+  const checkpointKey = trainingCheckpointKey(checkpoint);
+  if (!checkpoint || !checkpointKey || trainingActionBusyFor(checkpoint)) return;
+  if (!['like', 'dislike'].includes(command) || (!safeCheckpointImageDataUrl(checkpoint.image_data_url)
+      || typeof checkpoint.opener !== 'string' || !checkpoint.opener.trim())) return;
+  _trainingActionBusy = true;
+  _trainingBusyKey = checkpointKey;
+  const requestId = ++_trainingBusyRequest;
+  renderTrainingCheckpoint(checkpoint, command === 'like' ? 'sending Like…' : 'sending Dislike…');
+  let retryMessage = '';
+  try {
+    const result = await postJSON('/api/training/action', {
+      command,
+      run_id: checkpoint.run_id,
+      app: checkpoint.app,
+      profile_token: checkpoint.profile_token,
+      approval_token: checkpoint.approval_token,
+      idempotency_token: trainingActionToken(checkpoint, command),
+    });
+    const actionResult = result && result.result && typeof result.result === 'object'
+      ? result.result : null;
+    const stillCurrent = _trainingBusyKey === checkpointKey
+      && _trainingBusyRequest === requestId
+      && trainingCheckpointKey(_trainingCheckpoint) === checkpointKey;
+    if (stillCurrent && actionResult && ['completed', 'failed', 'aborted'].includes(actionResult.status)) {
+      renderTrainingFeedback(actionResult);
+    } else if (stillCurrent && actionResult && ['queued', 'executing'].includes(actionResult.status)) {
+      renderTrainingCheckpoint({...checkpoint, command: actionResult.command, action: actionResult.status,
+        pending: false, phase: actionResult.status === 'executing'
+          ? 'executing_training_decision' : 'waiting_training_decision'});
+    } else if (!result.ok) {
+      const detail = typeof result.result === 'string' ? result.result
+        : (result.result && typeof result.result.reason === 'string' ? result.result.reason : '');
+      retryMessage = detail || 'Could not apply that action.';
+    }
+  } catch (_error) {
+    retryMessage = 'Could not contact the approval service.';
+  } finally {
+    const ownsBusy = _trainingBusyKey === checkpointKey && _trainingBusyRequest === requestId;
+    if (ownsBusy) {
+      _trainingActionBusy = false;
+      _trainingBusyKey = '';
+    }
+    // Do not leave both buttons disabled if the POST fails and the next status fetch is slow.
+    // or unavailable.  Re-render only the same live approval: a polling response may already
+    // have retired/replaced this card while the request was in flight.
+    if (retryMessage && ownsBusy && trainingCheckpointKey(_trainingCheckpoint)
+        === trainingCheckpointKey(checkpoint)) {
+      renderTrainingCheckpoint(checkpoint, retryMessage);
+    }
+    tick();
+  }
+}
+
+async function tickTrainingCheckpoint(snap){
+  const status = snap && snap.status;
+  const appStatus = selectRunApps(status).find(a => a && a.mode === 'training') || null;
+  const runId = status && status.run_id;
+  if (!snap || !appStatus || !runId) {
+    _trainingRequest += 1; // discard a late response for a completed/replaced run
+    renderTrainingCheckpoint(null);
+    return;
+  }
+  if (status.stopping) {
+    _trainingRequest += 1;
+    renderTrainingFeedback(null,
+      'Run is stopping; no new choice is available. Any already-started decision is finishing and being recorded.');
+    return;
+  }
+  const request = ++_trainingRequest;
+  try {
+    const payload = await getJSON('/api/training/checkpoint?run_id=' + encodeURIComponent(runId)
+      + '&app=' + encodeURIComponent(appStatus.app || ''));
+    if (request !== _trainingRequest) return;
+    const checkpoint = activeTrainingCheckpoint(payload, runId, appStatus.app);
+    const result = latestTrainingResult(payload, runId, appStatus.app);
+    if (snap.running && checkpoint) renderTrainingCheckpoint(checkpoint);
+    else if (result) renderTrainingFeedback(result);
+    else renderTrainingCheckpoint(null);
+  } catch (_error) {
+    if (request === _trainingRequest) {
+      renderTrainingCheckpoint(_trainingCheckpoint,
+        _trainingCheckpoint ? 'Could not refresh decision status. Retry your choice or Stop the run.' : '');
+    }
+  }
+}
+
+// One durable banner owns app run state. Training's actionable controls remain in the separate
+// checkpoint panel; this surface reports its progress and never duplicates the app row.
+function renderRunStatus(snap){
+  const el = $('#runbanner'); if(!el) return;
   const s = snap && snap.status;
-  // Unlike the live-only observe cue, this is also the durable result of a completed
-  // autonomous run. HubState.running follows Thread.is_alive(), so gating on it would
-  // hide the stop reason at exactly the moment a returning operator needs to see it.
   if(!snap || !s){ el.style.display='none'; return; }
-  // This banner covers AUTO apps unconditionally, via selectAutoApps (unchanged -- it is
-  // their ONLY on-screen cue at every stage of a run, live or stopped), PLUS OBSERVE apps
-  // that have already reached one of the per-app TERMINAL states this function's own
-  // branches below recognise. `mode === 'observe'` (rather than `!== 'auto'`) keeps this
-  // from ever double-adding an app selectAutoApps(s) already covers.
-  //
-  // A live observe app's per-card GO/WAIT cue stays entirely owned by renderSwipe /
-  // selectObserveApps above and is UNTOUCHED by this addition: none of waiting / capturing /
-  // suggesting / waiting_for_send / acting / scoring / saving / starting are terminal, so a
-  // live observe app never matches the filter below. What DID need fixing: renderSwipe bails
-  // out the instant snap.running goes false (see its own early return, above), so an observe
-  // run that stopped on its own -- a cold-start defer, an unrecognized-screen halt, or the
-  // 2026-08-11 Hinge "out of free likes" paywall hang this whole mechanism fixes (see
-  // AndroidDriver.blocked_reason) -- left the operator staring at a bare 'stopped' pill with
-  // NOTHING anywhere on the page saying why. Kept inline (not hoisted into a third top-level
-  // selectXApps sibling) because, unlike selectObserveApps/selectAutoApps (which classify an
-  // app by its stable MODE), the terminal-state list here belongs with the per-state branches
-  // below that actually define what "terminal" means -- a second copy of that list living
-  // somewhere else could silently drift from the branches it's supposed to describe.
-  const terminalObserveApps = Object.values(s.apps || {}).filter(a =>
-    a.mode === 'observe'
-    && ['blocked', 'out_of_profiles', 'rate_limited', 'error', 'wedged', 'stopped'].includes(a.state));
-  const autoApps = selectAutoApps(s).concat(terminalObserveApps);
-  if(!autoApps.length){ el.style.display='none'; return; }
-  // supervisor.run()'s shutdown tail (status.stopping -- see status.py's docstring and
-  // renderSwipe's identical use above): covers every non-terminal per-app state this
-  // banner's fall-through renders (acting/capturing/scoring/saving), so it must intercept
-  // that fall-through BEFORE the bare "running" box below claims the worker is still live.
+  const apps = selectRunApps(s);
+  if(!apps.length){ el.style.display='none'; return; }
   const stopping = !!s.stopping;
   const css = {err:'background:#3a1414;border:1px solid #ff6b6b;color:#ff8585',
                idle:'background:#22222b;border:1px solid rgba(255,255,255,.14);color:#9a9aa2',
-               go:'background:#123a23;border:1px solid #39d98a;color:#39d98a'};
-  // Error messages may contain traceback text such as "<...>". Every dynamic field is
-  // escaped before it enters innerHTML; escHtml is a hoisted function declaration below.
-  const box = (k,t,sub) => `<div style="${css[k]};border-radius:10px;padding:12px 14px;margin-top:8px;font-weight:700;font-size:15px">${escHtml(t)}${sub?`<div style="font-weight:400;font-size:12px;opacity:.85;margin-top:3px">${escHtml(sub)}</div>`:''}</div>`;
-  el.innerHTML = autoApps.map(a => {
-    const st = a.state || '';
-    const swipes = a.swipes_run != null ? `${a.swipes_run} swipes this run` : '';
-    if(st==='error')    return box('err', `🔴 ${a.app} stopped — error`, a.error || 'unexpected error (see logs)');
-    if(st==='wedged')   return box('err', `🔴 ${a.app} stopped — worker did not exit cleanly`, a.error || swipes);
-    if(st==='out_of_profiles') return box('idle', `${a.app}: no more profiles`, swipes);
-    if(st==='rate_limited')    return box('idle', `${a.app}: stopped — rate limit reached`, swipes);
-    // NEW terminal state (AndroidDriver.blocked_reason -> Worker._finish_session's
-    // stop_kind="deck_blocked" path): the driver found the deck itself unavailable rather
-    // than the operator or OpenerService stopping the run -- today, exclusively Hinge's
-    // "out of free likes for today" Hinge+ paywall (the 2026-08-11 observe-mode hang this
-    // whole mechanism fixes). Deliberately idle here -- the SAME styling as out_of_profiles /
-    // rate_limited just above -- and NOT 'err' like error/wedged above them: this is
-    // NOT an error box. Running out of the app's own daily free-like allowance is a normal,
-    // expected outcome of using the app, not a bug or a crash; coloring it red would train
-    // the operator to treat a benign daily limit as something that needs investigating. The
-    // specific reason (OCR'd headline text, or a generic "upgrade screen is up" message if
-    // OCR was unavailable/inconclusive -- see _deck_blocked_reason) is the box's SUBTITLE,
-    // not folded into the title, so the title stays a stable, scannable label regardless of
-    // which reason produced it.
-    if(st==='blocked') return box('idle', `${a.app}: stopped — deck blocked`, a.stop_reason);
-    if(st==='stopped' && a.last_decision==='defer')
-      return box('idle', `${a.app}: stopped — ranker not ready (cold-start)`, 'run observe mode first');
-    // ops/OPENER-REDESIGN.md 5.6's hard stop, and it is NOT the opener-capacity stop below.
-    // The bot got as far as the like, could not put it on the item the model chose, and
-    // therefore put it NOWHERE: nothing typed, nothing sent, the deck not advanced, and the
-    // screen deliberately left exactly as it stopped so it can be read back. Until this branch
-    // existed it published stop_kind="opener" and rendered under that branch's title, "opener
-    // capacity exhausted" -- a confidently wrong label on the one stop whose whole point is
-    // that we refused to attach a real message to the wrong person's card. It gets its OWN
-    // stop_kind (worker.py's ItemTargetingError handler) rather than a reason-string sniff for
-    // the reason stated two branches down: branch on the field that NAMES the cause, never on
-    // prose. The operator's next move is different too -- walk to the phone and read what is on
-    // it (possibly an open comment sheet with nothing typed in it), not check a quota.
-    //
-    // 'idle', NOT 'err', deliberately, and for exactly the reason worker.py catches the
-    // exception instead of letting it reach the generic handler: this is a standing rule being
-    // obeyed, not a crash, and an operator who cannot tell those apart soon stops reading red
-    // banners. The subtitle is the reason, which leads with the INTENDED and ACTUAL item
-    // numbers (Worker._targeting_stop_reason) -- the two things doc 5.6 asks a stop to record.
-    if(st==='stopped' && a.stop_kind==='targeting')
-      return box('idle', `${a.app}: stopped — could not like the item the opener was written about`,
-                 a.stop_reason);
-    // stop_reason no longer has exactly one cause, so its mere presence can no longer be
-    // trusted to mean "OpenerService exhaustion" the way it used to -- Worker._opener_stop_
-    // reason was, until 2026-08-11, the ONLY thing that ever set it. The Hinge paywall fix
-    // above gave a "stopped" outcome a second possible cause with its own reason string (and
-    // its own stop_kind), and a future cause could add a third. Branch on stop_kind -- the
-    // field that actually NAMES which cause produced stop_reason -- rather than inferring the
-    // cause from stop_reason merely being non-null. An unrecognized stop_kind (older data, an
-    // unlisted future cause, or simply none at all) falls through to the neutral
-    // "stopped — <reason>" wording below rather than being mislabeled with today's one
-    // specific cause: a future cause can never render as a wrong, confidently-labelled one.
-    //
-    // RESIDUAL, STATED RATHER THAN HIDDEN: "opener" is still a family, not a single cause.
-    // Besides genuine capacity exhaustion it carries a per-profile opener failure, a capture
-    // that could not be enumerated into numbered items, and an opener whose item number names
-    // nothing this build can act on (worker.py's _auto_loop). The title is exact only for the
-    // first; for the others the truth is in the reason on the sub-line. Only the TARGETING stop
-    // was split out into its own kind above, because it is the only one of them whose operator
-    // action differs (go and look at the phone) and the only one where the wrong title is
-    // actively misleading about what the bot did. Splitting the rest means a kind each at their
-    // own worker.py sites, and is not worth a new vocabulary until one of them needs a
-    // different action from the others.
-    if(st==='stopped' && a.stop_kind==='opener')
+               go:'background:#123a23;border:1px solid #39d98a;color:#39d98a',
+               wait:'background:#3a2f12;border:1px solid #f0b429;color:#f0b429'};
+  const box = (kind, title, sub='') => `<div style="${css[kind]};border-radius:10px;padding:12px 14px;margin-top:8px;font-weight:700;font-size:15px">${escHtml(title)}${sub ? `<div style="font-weight:400;font-size:12px;opacity:.85;margin-top:3px">${escHtml(sub)}</div>` : ''}</div>`;
+  const swipes = a => a.swipes_run != null ? `${a.swipes_run} swipes this run` : '';
+  const trainingProgress = a => {
+    const count = swipes(a);
+    return count ? `<div style="margin-top:4px;font-size:12px;color:#9a9aa2">${escHtml(count)}</div>` : '';
+  };
+  const licenceRow = a => {
+    const note = typeof a.targeting_licence_notice === 'string' ? a.targeting_licence_notice.trim() : '';
+    return note ? `<div style="margin-top:4px;font-size:12px;line-height:1.4;color:#9a9aa2">${escHtml(note)}</div>` : '';
+  };
+  const terminalOrShutdown = (a, includeSwipeSubline=true) => {
+    const state = a.state || '';
+    const count = includeSwipeSubline ? swipes(a) : '';
+    if(state === 'error') return box('err', `🔴 ${a.app} stopped — error`, a.error || 'unexpected error (see logs)');
+    if(state === 'wedged') return box('err', `🔴 ${a.app} stopped — worker did not exit cleanly`, a.error || count);
+    if(state === 'out_of_profiles') return box('idle', `${a.app}: no more profiles`, count);
+    if(state === 'rate_limited') return box('idle', `${a.app}: stopped — rate limit reached`, count);
+    if(state === 'blocked') return box('idle', `${a.app}: stopped — deck blocked`, a.stop_reason);
+    if(state === 'stopped' && a.last_decision === 'defer')
+      return box('idle', `${a.app}: stopped — ranker not ready (cold-start)`, 'run training mode first');
+    if(state === 'stopped' && a.stop_kind === 'targeting')
+      return box('idle', `${a.app}: stopped — could not like the item the opener was written about`, a.stop_reason);
+    if(state === 'stopped' && a.stop_kind === 'opener')
       return box('idle', `${a.app}: stopped — opener capacity exhausted`, a.stop_reason);
-    if(st==='stopped' && a.stop_kind==='deck_blocked')
-      return box('idle', `${a.app}: stopped — ${a.stop_reason}`, swipes);
-    if(st==='stopped' && a.stop_reason)
-      // Every OTHER stop_kind, including none at all -- same neutral wording as the
-      // deck_blocked case just above, deliberately: the honest thing to do with an
-      // unrecognized cause is show its own reason plainly, never guess which of the NAMED
-      // causes above it might actually be.
-      return box('idle', `${a.app}: stopped — ${a.stop_reason}`, swipes);
-    if(st==='stopped') return box('idle', `${a.app}: stopped`, swipes);
-    // Fall-through = a non-terminal state (saving/capturing/scoring/acting). That only means
-    // "the worker is live" while the run actually IS live; since this banner now persists
-    // past the end of a run, a run that ended without reaching its final status.set_app would
-    // otherwise render a green "running" box next to a `stopped` run pill.
-    if(!snap.running) return box('idle', `${a.app}: ended — last state ${st||'unknown'}`, swipes);
-    // Checked BEFORE the stopping fall-through: the supervisor stamps every app 'saving' just
-    // before store.flush(), while `stopping` is still true — so without this, the whole flush
-    // (unbounded on BigQuery) rendered as "finishing the current profile", which by then is
-    // over and done with.
-    if(st==='saving') return box('idle', `${a.app}: saving data…`, swipes);
-    // The run is still alive but shutting down. Deliberately does NOT claim the current
-    // decision is discarded: in AUTO mode the worker's last stop check happens BEFORE it hands
-    // the action to the driver, so a like/dislike already in flight still lands and is still
-    // recorded. Only work not yet started is dropped. (Observe mode is the stricter case — see
-    // renderSwipe, where the operator is being told not to swipe at all.)
-    if(stopping) return box('idle', `${a.app}: stopping — finishing the current profile`, swipes);
-    return box('go', `${a.app}: running`, swipes);
+    if(state === 'stopped' && a.stop_reason) return box('idle', `${a.app}: stopped — ${a.stop_reason}`, count);
+    if(state === 'stopped') return box('idle', `${a.app}: stopped`, count);
+    // A persisted status may end while still carrying a nonterminal app state. Never call it live.
+    if(!snap.running) return box('idle', `${a.app}: ended — last state ${state || 'unknown'}`, count);
+    // Saving is more specific than shutdown and must win while the store flushes.
+    if(state === 'saving') return box('idle', `${a.app}: saving data…`, count);
+    // A Training decision cannot be accepted once shutdown begins, so this common branch also
+    // suppresses every Training cue below.
+    if(stopping) return box('idle', `${a.app}: stopping — finishing the current profile`, count);
+    return '';
+  };
+  const trainingLive = a => {
+    const state = a.state || '';
+    const app = typeof a.app === 'string' && a.app.trim() ? a.app.trim() : 'app';
+    if(state === 'scoring') return box('wait', `🔴 ${app}: preparing the training checkpoint`);
+    if(state === 'waiting_approval') return box('wait', `🔴 ${app}: waiting for your Hub decision`);
+    if(state === 'acting') return box('wait', `🔴 wait — recording your ${app} decision…`);
+    if(state === 'starting') return box('wait', `🔴 wait — starting ${app}…`);
+    return box('idle', `${app}: ${state || '…'}`, a.last_decision ? `last ${a.last_decision}` : '');
+  };
+  el.innerHTML = apps.map(a => {
+    const common = terminalOrShutdown(a, a.mode !== 'training');
+    if(a.mode !== 'training') return common || box('go', `${a.app}: running`, swipes(a));
+    // Each Training app retains both run progress and its single detailed cue in this one banner.
+    return (common || trainingLive(a)) + trainingProgress(a) + licenceRow(a);
   }).join('');
   el.style.display = 'block';
 }
 
-async function tick(){ try { const snap = await getJSON('/api/status'); renderGlobal(snap); renderSwipe(snap); renderAutoStatus(snap); } catch(e){} }
+async function tick(){ try { const snap = await getJSON('/api/status'); renderGlobal(snap); renderRunStatus(snap); tickTrainingCheckpoint(snap); } catch(e){} }
 
 function renderEval(e){
   if(!e) return;
@@ -638,11 +600,11 @@ function renderEval(e){
       + svg + `</div>`;
   };
   // Mini-goal: refresh is gated on new labels (every N), not the clock — so show progress
-  // toward the next recompute. Only while a live observe run is feeding labels (auto mode
+  // toward the next recompute. Only while a live training run is feeding labels (auto mode
   // never adds training labels).
   const refreshHtml = () => {
     const r = e.refresh;
-    if(!r || !r.live || r.mode !== 'observe' || r.since == null) return '';
+    if(!r || !r.live || r.mode !== 'training' || r.since == null) return '';
     const every = Math.max(1, Math.floor(Number(r.every) || 1));
     const progress = Math.min(every, Math.max(0, Math.floor(Number(r.since) || 0)));
     return `<div class="muted" style="margin-top:4px">↻ ${progress}/${every} till next refresh</div>`;
@@ -753,7 +715,7 @@ function renderPlatforms(){
   if (expand) {
     $('#apppicks').innerHTML = plats.map(p =>
       `<button data-app="${escHtml(p.app)}" class="${p.app === sel.app ? 'on' : ''}${p.available ? '' : ' na'}">`
-      + `${escHtml(p.label)}${p.modes && p.modes.auto && !p.modes.observe ? ' · Auto only' : ''}</button>`
+      + `${escHtml(p.label)}${p.modes && p.modes.auto && !p.modes.training ? ' · Auto only' : ''}</button>`
     ).join('');
     plats.forEach(p => {
       const b = document.querySelector(`#apppicks button[data-app="${p.app}"]`);
@@ -800,7 +762,8 @@ function syncModeAvailability(){
     : Array.from(select.options).find(option => option.disabled);
   const hint = $('#modehint');
   if (unavailable) {
-    const message = `${unavailable.value === 'auto' ? 'Auto' : 'Observe'} unavailable: ${modeUnavailableReason(platform, unavailable.value)}`;
+    const label = unavailable.value === 'training' ? 'Training' : 'Auto';
+    const message = `${label} unavailable: ${modeUnavailableReason(platform, unavailable.value)}`;
     hint.innerHTML = escHtml(message);
     select.title = message;
   } else {
@@ -808,15 +771,15 @@ function syncModeAvailability(){
     select.title = '';
   }
 }
-function syncModeUI(){                         // the cap only applies in auto mode
-  $('#maxrow').style.display = $('#mode').value === 'auto' ? '' : 'none';
+function syncModeUI(){                         // the cap applies to both bounded run modes
+  $('#maxrow').style.display = ['auto', 'training'].includes($('#mode').value) ? '' : 'none';
   const off = $('#unlimited').checked;         // unlimited on -> show ∞, grey out + disable the number box
   const box = $('#maxrun');
   if (off) {
     if (box.value !== '∞') box.dataset.prev = box.value;   // remember the number to restore later
     box.value = '∞';
   } else if (box.value === '∞') {
-    box.value = box.dataset.prev || '8';
+    box.value = box.dataset.prev || '';         // blank deliberately delegates to config
   }
   box.disabled = off;
   box.style.opacity = off ? '.45' : '1';
@@ -826,11 +789,12 @@ $('#mode').onchange = syncModeUI;
 $('#unlimited').onchange = syncModeUI;
 // Pure + named (not inlined into the click handler) so the hub test suite can eval the real
 // input handling with node instead of asserting a substring a comment-only revert could
-// dodge. null = use config; 0 = unlimited; N = cap. The shipped UI defaults the explicit
-// checkbox to unlimited, matching config.yaml; if a configured cap is later restored, an
-// empty/non-numeric number box falls back to that config rather than overriding it.
+// dodge. null = use config; 0 = explicitly unlimited; N = a temporary cap. The shipped UI
+// deliberately defaults to null, so an operator's normal Start preserves config.yaml --
+// including any deliberately configured future cap. The checkbox is the sole explicit unlimited
+// override; an empty/non-numeric number box delegates to config.
 function computeMaxPerRun(mode, unlimitedChecked, rawValue){
-  if (mode !== 'auto') return null;
+  if (mode !== 'auto' && mode !== 'training') return null;
   if (unlimitedChecked) return 0;
   const n = parseInt(rawValue, 10);
   return (Number.isFinite(n) && n > 0) ? n : null;

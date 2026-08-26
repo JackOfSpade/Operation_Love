@@ -128,7 +128,7 @@ class StorageCfg:
 @dataclass
 class Config:
     enabled_apps: list[str]          # requested targets; registry enforces coexistence/readiness
-    mode: str                        # "observe" (learn from your swipes) | "auto"
+    mode: str                        # training | auto
     apps: dict                       # per-app device, perception, and action options
     limits: dict                     # auto-mode caps: {max_per_run, max_per_day}
     data_dir: Path
@@ -344,7 +344,7 @@ def load(path: str | Path = "config.yaml") -> Config:
     limits_raw = {} if raw.get("limits") is None else raw.get("limits")
     return Config(
         enabled_apps=list(enabled_apps),
-        mode=raw.get("mode", "observe"),
+        mode=raw.get("mode", "training"),
         apps=apps_raw,
         limits=limits_raw,
         data_dir=_path_from_raw(paths, "data_dir", "./data"),
@@ -595,7 +595,11 @@ def _validate_targeting_calibration(cfg: Config) -> None:
                 f"Config: apps.{app}.targeting_calibration.content_band must exactly equal "
                 f"the effective apps.{app}.content_band ({calibrated_content!r} != "
                 f"{effective_content!r})")
-        if app == "hinge":
+        # An unselected Hinge mapping must remain intrinsically well-formed, but its runtime
+        # still-photo policy is only relevant when Hinge is selected for this run. Otherwise a
+        # Bumble-only start deliberately clears Hinge's process-global readiness then rejects
+        # before Bumble's own calibrated/unavailable gate can explain the actual refusal.
+        if app == "hinge" and app in cfg.enabled_apps:
             policy_blocker = hinge_targeting_unavailable_reason()
             if policy_blocker is not None:
                 raise ValueError(
@@ -867,17 +871,21 @@ def _validate_hinge_still_photo_readiness(cfg: Config) -> None:
     carrying both keys must leave readiness OFF, not install one of them and then reject the run.
     """
     clear_installed_still_photo_bound()
-    if "hinge" in cfg.enabled_apps:
-        app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
-        if ("still_photo_bound_evidence" in app_cfg
-                and "still_photo_assumption_acceptance" in app_cfg):
-            raise ValueError(
-                "Config: apps.hinge.still_photo_bound_evidence and "
-                "apps.hinge.still_photo_assumption_acceptance are mutually exclusive; numbering "
-                "accepts exactly one licence. A measured held-out bound must not be shadowed by "
-                "an unmeasured assumption, and an assumption must not be dressed up as a "
-                "measurement: keep the evidence and delete the acceptance, or delete the "
-                "evidence to ship on the assumption alone")
+    # Targeting calibration is validated for every configured app, not only the app selected
+    # for this invocation. Install Hinge's configured readiness on the same scope: otherwise a
+    # Bumble-only start clears the process-global licence, then rejects the valid *unselected*
+    # Hinge calibration as if it had no still-photo evidence before Bumble's own availability
+    # gate can run. This is still config-bound and is reset above on every validation.
+    app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
+    if ("still_photo_bound_evidence" in app_cfg
+            and "still_photo_assumption_acceptance" in app_cfg):
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence and "
+            "apps.hinge.still_photo_assumption_acceptance are mutually exclusive; numbering "
+            "accepts exactly one licence. A measured held-out bound must not be shadowed by "
+            "an unmeasured assumption, and an assumption must not be dressed up as a "
+            "measurement: keep the evidence and delete the acceptance, or delete the "
+            "evidence to ship on the assumption alone")
     # Order matters only in that the measured pass also performs the reset for a direct caller
     # (the measurement tool's own tests call it standalone); it is idempotent here.
     _validate_hinge_still_photo_bound_evidence(cfg)
@@ -1081,29 +1089,21 @@ def _validate_hinge_auto_release_gate(cfg: Config) -> None:
 
 
 def _validate_hinge_ai_observe_controller(cfg: Config) -> None:
-    """Require an explicit controller declaration before OBSERVE stores non-manual labels."""
+    """Reject the retired non-manual Observe controller configuration.
+
+    Training labels are now always the Hub user's manual Like/Dislike choices.  Keeping this
+    historic controller knob live would make an apparently human-ground-truth training run
+    accept an external decision source, so require an explicit config migration instead.
+    """
     if "hinge" not in cfg.enabled_apps:
         return
     app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
     source = app_cfg.get("observe_evidence_source", "manual")
     if source == "manual":
         return
-    if source not in {"external_ai_review", "automation"}:
-        raise ValueError("Config: apps.hinge.observe_evidence_source must be manual, external_ai_review, or automation")
-    if app_cfg.get("mode", cfg.mode) != "observe":
-        raise ValueError("Config: non-manual Hinge OBSERVE evidence source is allowed only in mode observe")
-    controller = app_cfg.get("ai_reviewed_observe_controller")
-    if not isinstance(controller, dict) or set(controller) != _AI_OBSERVE_CONTROLLER_KEYS:
-        raise ValueError("Config: non-manual Hinge OBSERVE requires an exact ai_reviewed_observe_controller mapping")
-    if controller.get("schema_version") != 1 or controller.get("source") != source:
-        raise ValueError("Config: ai_reviewed_observe_controller must bind schema version and evidence source")
-    if controller.get("acceptance") != _AI_OBSERVE_RELEASE_ACCEPTANCE:
-        raise ValueError("Config: non-manual Hinge OBSERVE requires the exact explicit acceptance token")
-    executor = controller.get("executor")
-    if not isinstance(executor, dict) or set(executor) != {"model", "id", "version", "process"}:
-        raise ValueError("Config: ai_reviewed_observe_controller.executor must carry exact model/id/version/process")
-    if any(not isinstance(executor.get(k), str) or not executor[k].strip() for k in executor):
-        raise ValueError("Config: ai_reviewed_observe_controller.executor values must be nonempty text")
+    raise ValueError(
+        "Config: apps.hinge.observe_evidence_source is retired with observe mode; remove it. "
+        "Training records only the Hub user's manual Like/Dislike decision.")
 
 # worker.py's _pace() scales human_motion.think_time_s()'s WHOLE draw (including its
 # shifted-lognormal floor: shift=1.2s for "like"/1.8s for "pass", means ~3.2s/~6.9s) by
@@ -1193,10 +1193,15 @@ def _validate_config_shape(cfg: Config) -> None:
         if "mode" in app_cfg and not isinstance(app_cfg["mode"], str):
             raise ValueError(f"Config: apps.{app}.mode must be a string "
                              f"(got {app_cfg['mode']!r})")
-        if "mode" in app_cfg and app_cfg["mode"] not in {"observe", "auto"}:
+        if "mode" in app_cfg and app_cfg["mode"] not in {"training", "auto"}:
+            legacy = app_cfg["mode"]
+            if legacy in {"observe", "auto_testing"}:
+                raise ValueError(
+                    f"Config: apps.{app}.mode={legacy!r} was retired; use 'training' "
+                    "for Hub-reviewed Like/Dislike training or 'auto' for ranker decisions")
             raise ValueError(
-                f"Config: apps.{app}.mode must be 'observe' or 'auto' "
-                f"(got {app_cfg['mode']!r})")
+                f"Config: apps.{app}.mode must be 'training' or 'auto' "
+                f"(got {legacy!r})")
 
 
 def _validate_core_scalars(cfg: Config) -> None:
@@ -1234,6 +1239,20 @@ def _validate_opener_scalars(opener: OpenerCfg) -> None:
             "Config: opener.models model ids must not contain surrounding whitespace")
     if len(set(opener.models)) != len(opener.models):
         raise ValueError("Config: opener.models must not contain duplicate model ids")
+
+
+def _validate_training_checkpoint_requirements(cfg: Config) -> None:
+    """Reject Training configurations that can never reach the Hub checkpoint."""
+    training_apps = [
+        app for app in cfg.enabled_apps
+        if ((cfg.apps.get(app, {}) or {}).get("mode", cfg.mode) == "training")
+    ]
+    if not training_apps:
+        return
+    if not cfg.opener.enabled:
+        raise ValueError(
+            "Config: Training requires opener.enabled=true because every Hub checkpoint "
+            "must contain a typed opener")
 
 
 def _validate_budget(cfg: Config) -> None:
@@ -1307,6 +1326,16 @@ def _validate_limits(label: str, lim: Mapping) -> None:
         if not 0 < ratio < 1:
             raise ValueError(
                 f"Config: {label}.target_like_ratio must be in (0, 1) (got {ratio})")
+
+
+def _reject_retired_auto_trial(cfg: Config) -> None:
+    """Prevent the removed model-bypass trial from being silently staged again."""
+    for app, raw_app_cfg in (cfg.apps or {}).items():
+        app_cfg = raw_app_cfg or {}
+        if "auto_trial" in app_cfg:
+            raise ValueError(
+                f"Config: apps.{app}.auto_trial is retired; AUTO must use the learned model "
+                "and ordinary limits")
 
 
 # Gemini's generationConfig.thinkingConfig recognizes exactly these two keys -- the field
@@ -1417,12 +1446,12 @@ def _validate_verification(cfg: Config) -> None:
             raise ValueError(
                 f"Config: apps.{app}.halt_on_error must be true or false (got {value!r})")
         mode = app_cfg.get("mode", cfg.mode)
-        if value is False and mode == "auto":
+        if value is False and mode in {"auto", "training"}:
             raise ValueError(
-                f"Config: apps.{app}.halt_on_error=false is not allowed with mode='auto'. "
+                f"Config: apps.{app}.halt_on_error=false is not allowed with mode={mode!r}. "
                 f"It disables the post-action checks that confirm a like or pass actually "
                 f"landed, so unsent actions would be recorded as sent and the run would "
-                f"keep swiping. Set it true, or run this app in observe mode.")
+                f"keep swiping. Set it true.")
 
 
 # Every Android app's config block (apps.<app>) may set a `coords` mapping (each entry an
@@ -1639,15 +1668,23 @@ def validate(cfg: Config) -> None:
     modes = [cfg.mode]
     modes.extend((cfg.apps.get(a, {}) or {}).get("mode", cfg.mode)
                  for a in cfg.enabled_apps)
-    bad_modes = [mode for mode in modes if mode not in {"observe", "auto"}]
+    bad_modes = [mode for mode in modes if mode not in {"training", "auto"}]
     if bad_modes:
-        raise ValueError(f"Config: mode must be 'observe' or 'auto' (got {bad_modes})")
+        legacy = [mode for mode in bad_modes if mode in {"observe", "auto_testing"}]
+        if legacy:
+            raise ValueError(
+                "Config: modes 'observe' and 'auto_testing' were retired; use 'training' "
+                "for Hub-reviewed Like/Dislike training or 'auto' for ranker decisions")
+        raise ValueError(
+            "Config: mode must be 'training' or 'auto' "
+            f"(got {bad_modes})")
     _validate_core_scalars(cfg)
     _validate_opener_scalars(cfg.opener)
     _validate_budget(cfg)
     _validate_storage(cfg)
     _validate_verification(cfg)
     _validate_android_fractions(cfg)
+    _validate_training_checkpoint_requirements(cfg)
     # Must run BEFORE the calibration and release gates: those read
     # hinge_targeting_unavailable_reason(), which this call is what answers.  It covers BOTH
     # readiness channels (measured bound, accepted assumption) and refuses a config that
@@ -1655,6 +1692,7 @@ def validate(cfg: Config) -> None:
     _validate_hinge_still_photo_readiness(cfg)
     _validate_targeting_calibration(cfg)
     _validate_hinge_ai_observe_controller(cfg)
+    _reject_retired_auto_trial(cfg)
     _validate_hinge_auto_release_gate(cfg)
     if cfg.opener.provider != "gemini":
         # Not merely "unsupported" -- the Anthropic/Claude opener path was deleted from the

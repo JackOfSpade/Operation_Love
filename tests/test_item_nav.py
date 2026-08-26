@@ -1425,6 +1425,156 @@ def test_an_item_that_never_becomes_fully_visible_is_refused():
     assert _navigate(FakeDriver(), 3).heart_ordinal == 3
 
 
+def test_a_lower_edge_background_run_is_seated_before_the_ascending_count(monkeypatch):
+    """The live failure: the index projects the whole target card into the band, but the frame
+    cannot prove its LOWER edge because a 90px background run could be a blank card tail. A
+    reverse gesture makes that uncertainty worse; one measured forward seating step gets a fresh
+    lower-edge observation before any count is committed.
+
+    The world normally draws a trustworthy gutter here, so mutate only the FIRST real
+    segmentation into the exact ``background_run`` evidence the production screenshot supplied.
+    The post-step segmentation is deliberately real and must bound the target before it can land.
+    """
+    index = _reference_index()
+    target_block = index.block_for(3)
+    # Project card 3 to frame rows 1010..2010: fully inside the 300..2100 band, as in the live
+    # report. Its heart is consequently visible, and a planned legal forward step still leaves
+    # both indexed edges in-band.
+    entry_scroll = target_block.page_y1 - 2010
+    positioned = dataclasses.replace(index, offsets=(entry_scroll,))
+    driver = FakeDriver(start_scroll=entry_scroll, allow_entry_scroll=True)
+
+    real_segment = item_nav.segment_frame
+    calls = 0
+
+    def unresolved_lower_edge(frame, **kwargs):
+        nonlocal calls
+        seg = real_segment(frame, **kwargs)
+        calls += 1
+        if calls != 1:
+            return seg
+        blocks = []
+        for block in seg.blocks:
+            if not any(abs(heart[1] - (target_block.heart[1] - entry_scroll))
+                       <= item_index._EXTENT_TOLERANCE_PX for heart in block.hearts):
+                blocks.append(block)
+                continue
+            bottom = dataclasses.replace(block.bottom, observed=False, kind="background_run",
+                                         run_px=90)
+            blocks.append(dataclasses.replace(
+                block, bottom=bottom,
+                reason="top edge observed; 90px lower background run is not a trusted card end"))
+        return dataclasses.replace(seg, blocks=tuple(blocks))
+
+    monkeypatch.setattr(item_nav, "segment_frame", unresolved_lower_edge)
+
+    target = _navigate(driver, 3, index=positioned, reference=_frame(entry_scroll))
+
+    assert len(driver.entry_scrolls) == 1
+    assert driver.entry_scrolls[0][0] != _POLICY_FRAC  # the closed loop, not policy, sized it
+    assert driver.gestures == []                       # no reverse count was spent before seating
+    assert target.steps == ()
+    assert target.heart_ordinal == 3
+    assert target.block_frame_rows[0] >= _BAND0
+    assert target.block_frame_rows[1] <= _BAND1
+    assert target.entry_offset > entry_scroll          # the positioning displacement was measured
+    assert calls >= 2                                  # the fresh frame supplied the trusted edge
+
+
+def test_an_unmeasurable_lower_edge_positioning_step_is_a_named_hard_stop():
+    index = _reference_index()
+    target_block = index.block_for(3)
+    entry_scroll = target_block.page_y1 - (_BAND1 + 50)
+    positioned = dataclasses.replace(index, offsets=(entry_scroll,))
+    driver = FakeDriver(start_scroll=entry_scroll, allow_entry_scroll=True,
+                        entry_scroll_unmeasurable=True)
+
+    with pytest.raises(item_nav.ItemNavigationError) as exc:
+        _navigate(driver, 3, index=positioned, reference=_frame(entry_scroll))
+
+    assert exc.value.code == item_nav.NAV_ENTRY_POSITION_UNRESOLVED
+    assert "could not be measured" in str(exc.value)
+    assert len(driver.entry_scrolls) == 1
+    assert driver.gestures == []
+
+
+def test_scroll_top_identity_recovery_never_spends_a_second_forward_positioning_step(monkeypatch):
+    """The two entry recoveries share one forward-gesture budget. A short-profile scroll-top
+    recovery has already spent it before the post-scroll frame can reveal a lower-edge uncertainty;
+    that uncertainty must stop rather than turn into an unbounded two-step forward walk."""
+    index = _short_profile_index()
+    driver = FakeDriver(start_scroll=0, allow_entry_scroll=True)
+    target_block = index.block_for(2)
+    floor_px = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
+    real_segment = item_nav.segment_frame
+    calls = 0
+
+    def unresolved_lower_edge_after_identity_recovery(frame, **kwargs):
+        nonlocal calls
+        seg = real_segment(frame, **kwargs)
+        calls += 1
+        if calls != 1:
+            return seg
+        target_y = target_block.heart[1] - floor_px
+        blocks = []
+        for block in seg.blocks:
+            if not any(abs(heart[1] - target_y) <= item_index._EXTENT_TOLERANCE_PX
+                       for heart in block.hearts):
+                blocks.append(block)
+                continue
+            bottom = dataclasses.replace(block.bottom, observed=False, kind="background_run",
+                                         run_px=90)
+            blocks.append(dataclasses.replace(block, bottom=bottom))
+        return dataclasses.replace(seg, blocks=tuple(blocks))
+
+    monkeypatch.setattr(item_nav, "segment_frame", unresolved_lower_edge_after_identity_recovery)
+
+    with pytest.raises(item_nav.ItemNavigationError) as exc:
+        _navigate(driver, 2, index=index, reference=_frame(0))
+
+    assert exc.value.code == item_nav.NAV_ENTRY_POSITION_UNRESOLVED
+    assert "second forward" in str(exc.value)
+    assert len(driver.entry_scrolls) == 1
+    assert driver.gestures == []
+
+
+def test_a_top_edge_partial_never_uses_lower_edge_forward_positioning():
+    """The direction guard is asymmetric. A card entering through the TOP needs the ordinary
+    upward walk (content down) to reveal that edge; a forward positioning step would hide it
+    farther above the band. The FakeDriver's default forward-scroll tripwire makes the distinction
+    executable rather than documentary."""
+    index = _reference_index()
+    target_block = index.block_for(3)
+    # Card 3 spans frame rows 250..1250: its heart is visible, top is outside the band, and one
+    # ordinary ascending gesture exposes the top without ever calling `_scroll_down_one`.
+    entry_scroll = target_block.page_y0 - 250
+    positioned = dataclasses.replace(index, offsets=(entry_scroll,))
+    driver = FakeDriver(start_scroll=entry_scroll)
+
+    target = _navigate(driver, 3, index=positioned, reference=_frame(entry_scroll))
+
+    assert driver.entry_scrolls == []
+    assert len(driver.gestures) == 1
+    assert target.heart_ordinal == 3
+
+
+def test_a_lower_edge_clipped_card_taller_than_the_band_never_gets_a_forward_recovery():
+    index = _reference_index()
+    target_block = index.block_for(3)
+    narrow_band = (0.20, 0.60)  # 960px, deliberately shorter than target card 3's 1000px extent
+    narrow_y1 = round(narrow_band[1] * _H)
+    entry_scroll = target_block.page_y1 - (narrow_y1 + 50)
+    positioned = dataclasses.replace(index, offsets=(entry_scroll,))
+    driver = FakeDriver(content_band=narrow_band, start_scroll=entry_scroll,
+                        allow_entry_scroll=True)
+
+    with pytest.raises(item_nav.ItemNavigationError) as exc:
+        _navigate(driver, 3, index=positioned, reference=_frame(entry_scroll))
+
+    assert exc.value.code == item_nav.NAV_ITEM_NOT_FULLY_VISIBLE
+    assert driver.entry_scrolls == []                  # never forward-scroll a card that cannot fit
+
+
 def test_an_item_below_where_the_read_ended_is_refused_and_named_as_such():
     """The ascending mirror of "it scrolled off the top", and it gets its OWN code because the
     diagnosis differs. Walking up can only move the target further down, so a target already
@@ -1442,10 +1592,11 @@ def test_an_item_below_where_the_read_ended_is_refused_and_named_as_such():
     # Rows 300..1320, so the entry frame's band ends at page row 4120 — 97px above heart 4.
     narrow = FakeDriver(content_band=(0.125, 0.55))
     with pytest.raises(item_nav.ItemNavigationError) as exc:
-        _navigate(narrow, 4, index=index)
+        _navigate(narrow, 4, index=index, selected_model_item_index=3)
 
     assert exc.value.code == item_nav.NAV_ITEM_BELOW_ENTRY
     assert "BELOW the analysed band" in str(exc.value)
+    assert "full-index selectable item 4, selected by model item 3" in str(exc.value)
     assert narrow.gestures == []                  # named on the entry frame, before any gesture
 
     # The control: the shipped band, same index, same driver position — item 4 is on screen and
@@ -1512,6 +1663,15 @@ def test_the_target_carries_the_case_for_itself():
     painted = _world()[target.block_page_rows[0]:target.block_page_rows[1],
                        _CARD_X0:_CARD_X1]
     assert np.array_equal(decoded[y0:y1, _CARD_X0:_CARD_X1], painted)
+
+
+def test_target_reason_distinguishes_model_payload_item_from_full_index_position():
+    """Payload exclusions can make the model's item number differ from the navigation index."""
+    target = _navigate(FakeDriver(), 4, selected_model_item_index=3)
+
+    assert ("page heart 4 is full-index selectable item 4, selected by model item 3"
+            in target.reason)
+    assert "heart 4 is model item 4" not in target.reason
 
 
 def test_stop_cancels_before_the_entry_capture_or_any_gesture():

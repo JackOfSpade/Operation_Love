@@ -391,7 +391,7 @@ def test_navigation_translates_model_item_through_the_payload_heart_ordinal():
         driver._current_item_index.translation = (1, 2)
 
         def navigate(_driver, _index, navigation_index, *, entry_reference, **_kw):
-            seen.append((navigation_index, entry_reference))
+            seen.append((navigation_index, entry_reference, _kw.get("selected_model_item_index")))
             return type("Target", (), {
                 "point": (540, 1200), "heart_ordinal": 2, "scrolls": 0,
                 "climbed_px": 0, "agreement_px": 0, "hearts_counted": 2,
@@ -400,7 +400,7 @@ def test_navigation_translates_model_item_through_the_payload_heart_ordinal():
 
         mp.setattr(hinge, "navigate_to_item", navigate)
         assert driver._navigate_to_model_item(1) == (540, 1200)
-    assert seen == [(2, b"entry")]
+    assert seen == [(2, b"entry", 1)]
 
 
 def test_shannon_style_photo_and_video_policy_translation_targets_heart_seven():
@@ -444,7 +444,7 @@ def test_shannon_style_photo_and_video_policy_translation_targets_heart_seven():
         driver._current_item_index.translation = tuple(range(1, 10))
 
         def navigate(_driver, _index, navigation_index, *, entry_reference, **_kw):
-            seen.append((navigation_index, entry_reference))
+            seen.append((navigation_index, entry_reference, _kw.get("selected_model_item_index")))
             return type("Target", (), {
                 "point": (540, 1200), "heart_ordinal": 7, "scrolls": 0,
                 "climbed_px": 0, "agreement_px": 0, "hearts_counted": 7,
@@ -453,8 +453,9 @@ def test_shannon_style_photo_and_video_policy_translation_targets_heart_seven():
 
         mp.setattr(hinge, "navigate_to_item", navigate)
         assert driver._navigate_to_model_item(2) == (540, 1200)
+        assert driver._navigate_to_model_item(3) == (540, 1200)
 
-    assert seen == [(7, b"entry")]
+    assert seen == [(7, b"entry", 2), (9, b"entry", 3)]
     assert seen[0][0] not in {2, 3, 4, 5, 6, 8}
 
 

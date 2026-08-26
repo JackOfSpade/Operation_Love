@@ -3275,6 +3275,45 @@ Aliasing does not care which way the finger went, so `plan_scroll_step` sizes ev
 gesture against the card in front of it exactly as the enumeration read sizes a forward one, and
 `step_overshoot` is handed the climb magnitude so its two tests keep their meanings unchanged.
 
+**Addendum 2026-08-26: one pre-count lower-edge positioning recovery, not a reversal.** A live
+Lara navigation exposed the one geometry the ascending rule alone cannot repair. Page heart 9 was
+still the correct translated target, and the index projected its whole card inside the analysed
+band (frame rows 901..2010 against 300..2100), but the fresh segmentation could not establish the
+card's LOWER edge: it ended in a 90px `background_run`, whose blank pixels can be page background
+or an unobserved blank tail of the card. The heart was visible, but no complete target block could
+be returned. An upward gesture moves that unresolved lower edge DOWN; the old loop issued one and
+then correctly refused only after the target had fallen below the band. The refusal was safe, but
+the direction was needlessly terminal.
+
+`navigate_to_item` now has exactly one narrow exception **before a frame contributes an
+observation or a heart cluster, and before any ascending gesture**. It may make one planned,
+humanized `_scroll_down_one(frac, x_frac)` only when all of these are true:
+
+- this frame's own matched target heart is inside the analysed band;
+- the target block has a trustworthy TOP edge and an unobserved LOWER edge (either a band edge or
+  an untrusted `background_run`); this deliberately excludes a top-edge partial, for which a
+  forward movement would hide the missing edge farther above the band;
+- the indexed card's measured full height fits in the band, and the **planned** legal step leaves
+  both indexed card edges in it. A too-tall card, or a step that would move either edge out, is a
+  refusal without a forward gesture.
+
+The lane still comes from the behaviour sampler, the distance from `plan_scroll_step`, and both
+arguments are passed to the normal guarded driver primitive. The resulting forward displacement
+must be a positive `estimate_shift` and must respect that plan's `step_overshoot` bound. The next
+frame is segmented independently; the same indexed heart must now belong to a complete block. Any
+unmeasurable shift, stalled/wrong-direction/oversize step, or still-incomplete target is
+`NAV_ENTRY_POSITION_UNRESOLVED`; no second positioning stroke, reverse stroke, nearest-heart
+fallback, or tap is permitted.
+
+On success the new page offset is measured and the loop restarts from that frame with empty
+observations, clusters, and reverse-step history. Thus the normal ascending count is one clean
+count from a measured origin; the forward movement did not reverse or reuse a count that had
+already been spent. The existing scroll-top identity recovery also consumes the single sanctioned
+forward entry gesture. If it has already run, a later lower-edge uncertainty raises
+`NAV_ENTRY_POSITION_UNRESOLVED` immediately rather than attempting a second forward scroll.
+`tests/test_item_nav.py` pins the live-style 90px-background-run case, a top-edge control, an
+unmeasurable positioning step, a too-tall-card refusal, and the combined scroll-top/low-edge path.
+
 **THE HANDOVER IS TAKEN.** `hinge._like_comment_sheet`'s `model_item_index is not None and
 item_index is None` branch — which the code itself named as the handover point — is now
 `_navigate_to_model_item`, and there is no `_scroll_to_top` on that path at all.

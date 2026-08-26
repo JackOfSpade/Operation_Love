@@ -1,4 +1,4 @@
-"""Worker seams for doc 5.8: no gesture on AUTO, no text in observe."""
+"""Worker seams for doc 5.8: no gesture on AUTO before a type mismatch stops it."""
 import threading
 
 from operation_love.config import PacingCfg
@@ -13,7 +13,7 @@ from operation_love.opener.opener import INDEX_SPACE_PROFILE_PHOTOS
 from operation_love.opener.service import OpenerPick
 from operation_love.perception.capture import Profile
 from operation_love.ranker.decider import Decision
-from operation_love.worker import Worker, _ObserveSuggestion
+from operation_love.worker import Worker
 
 
 class _PreflightDriver(DatingAppDriver):
@@ -132,29 +132,3 @@ def test_auto_legacy_profile_photo_pick_skips_model_crop_preflight():
     assert driver.like_args == [("hello", 0, None)]
     assert len(store.decisions) == 1
     assert not worker.stop_event.is_set() and driver.closed
-
-
-class _ObserveWorker:
-    app = "test"
-    run_id = "run"
-
-    def __init__(self):
-        self.driver = _PreflightDriver()
-        self.opener_service = _OnePickService()
-        self.stop_event = threading.Event()
-        self.published = []
-
-    def _publish_status(self, **fields):
-        self.published.append(fields)
-
-
-def test_observe_preflight_mismatch_publishes_warning_without_suggestion():
-    worker = _ObserveWorker()
-    suggestion = _ObserveSuggestion(worker, worker.driver.profile)
-    # Exercise the thread body directly so the assertion has no scheduling race.
-    suggestion._generate()
-
-    shown = worker.published[-1]
-    assert worker.driver.preflight_calls == 1
-    assert "pre-flight type check" in shown["opener_warning"]
-    assert shown["opener_suggestion"] is None

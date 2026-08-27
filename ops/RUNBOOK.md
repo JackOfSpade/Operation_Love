@@ -687,10 +687,12 @@ Worker/hub/store or make a real profile request. After installing the measured c
   authorizing a gesture. This is offline evidence only; it does not prove a live gesture was
   transported.
 - **Item 1 inline composer identity:** heart item 1 without an intervening scroll. Hinge's
-  inline composer (introduced in 9.134 and still present in the live 10.0.1 build; no targeting
-  calibration is installed in config.yaml, deliberately, and config validation would reject one
-  while the still-photo policy blocker stands)
-  auto-focuses immediately, so collect an initial and a settled auto-focused
+  inline composer was introduced in 9.134 and was measured on the historical 10.0.1 build. The
+  live build is now 10.1.0; the 10.0.1 calibration remains immutable audit evidence, while the
+  separately measured 10.1.0 schema-v3 calibration is installed for Training. Its matching
+  still-photo assumption clears the separate numbering-policy gate. Do not relabel either
+  calibration across builds; collect a new campaign after any later app/frame drift.
+  The inline composer auto-focuses immediately, so collect an initial and a settled auto-focused
   reading rather than inventing an unfocused-to-focused transition. Confirm the selected card
   through the full calibration capture's item proof; the small operational recorder can prove
   composer topology and corroborated profile-header identity, not a card ordinal by itself.
@@ -735,13 +737,18 @@ Worker/hub/store or make a real profile request. After installing the measured c
   logged refusal/paywall event are diagnostic evidence only; neither can replace that successful
   opener. `python -m tools.hinge_calibrate observe-check` is only preliminary passive device +
   synthetic-quota evidence; it cannot substitute for this validation or authorize AUTO. The
-  current 10.0.1 calibration completed this procedure in manual run `d8547ff144b4`; its exact
-  artifact is installed for normal learned-model AUTO described in section 4.
+  historical 10.0.1 calibration completed this procedure in manual run `d8547ff144b4`; that
+  artifact remains evidence for that build only. It does not authorize the live 10.1.0 build.
 
-For a new calibration without its own release evidence, absence of `targeting_calibration` is
-expected safety behaviour: **AUTO stops before any targeted gesture**, and **Training stops before
-it can prepare a targeted opener**. It is not permission to use a legacy
-anchored opener or a fixed first-item fallback.
+For a missing, stale, or runtime-rejected calibration, `stop_kind=targeting_calibration` is
+expected safety behaviour: the Hub renders **"targeting calibration must be renewed"**, **AUTO
+stops before any opener request or targeted gesture**, and **Training stops before it can prepare
+a targeted opener**. No action or label is recorded. Recapture and validate schema-v3 calibration
+and still-photo evidence (or explicitly re-accept the assumption) for the live app build/device;
+before enabling AUTO, also collect that calibration's production release evidence. This is not
+permission to use a legacy anchored opener or a fixed first-item fallback. `stop_kind=targeting`
+is different: it is reserved for a failure to attach an opener that already exists to its selected
+item.
 
 > These are the items deferred to "do live, at the end." Everything they plug
 > into (capture, embed, store, ranker, openers, supervisor) already works and is
@@ -772,12 +779,13 @@ from `defer` → ready mid-session. Training never calls the ranker to make the 
 
 ## 4. Go autonomous — auto mode (it swipes for you)
 
-**Current release state: installed for normal learned-model AUTO.** The legacy-named manual
-`observe_release_evidence` artifact for production run `d8547ff144b4` is installed beside the
-current 10.0.1 calibration. It satisfies the separate historical release gate without weakening the
-still-photo policy: the accepted centered-autoplay assumption remains unmeasured, and the
-artifact is bound to this device, build, calibration, debug run, and store evidence. AUTO asks
-the learned ranker for every decision and applies any ordinary configured volume/ratio limits.
+**Current release state: AUTO is blocked pending fresh production-observe evidence.** The
+legacy-named manual `observe_release_evidence` artifact for production run `d8547ff144b4`
+remains installed beside the historical 10.0.1 calibration, but the live app is 10.1.0. The
+separately measured 10.1.0 schema-v3 calibration and matching still-photo-assumption acceptance
+already enable Training; they do not release AUTO. Perform a new production OBSERVE validation
+for the 10.1.0 calibration and install its release evidence before AUTO. The still-photo licence
+cannot substitute for release evidence.
 It does not bypass opener generation, exact-item targeting, foreground ownership, paid-upsell
 refusal, post-action verification, `halt_on_error`, or Stop. A failed/untargetable opener stops
 the run; it never degrades to a bare like. The driver retains a private

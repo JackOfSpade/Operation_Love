@@ -150,9 +150,12 @@ extra installed.
 - **auto** — normally, the bot swipes for you with the learned model. Decisions are recorded
   for stats and optional limits, but are not fed back as training labels. Hinge Auto is
   structurally fail-closed: an accepted still-photo assumption cannot license Auto, and a
-  release artifact cannot bypass the targeting policy. The shipped configuration now contains
-  the device/build-bound `targeting_calibration` and its verified, legacy-named manual
-  `observe_release_evidence` artifact for run `d8547ff144b4`. AUTO uses the learned ranker on every card,
+  release artifact cannot bypass the targeting policy. The shipped configuration now carries a
+  schema-v3 `targeting_calibration` renewed on the exact live Hinge 10.1.0 / 1080x2400 build, so
+  Training is available. Its `observe_release_evidence` artifact for run `d8547ff144b4` remains
+  historical 10.0.1 evidence and cannot release AUTO; AUTO still requires fresh production-observe
+  validation on 10.1.0. Once released,
+  AUTO uses the learned ranker on every card,
   with per-gesture UHID, normal opener generation, exact-item targeting, Send verification, and
   all action safety gates. Configuration alone does not start a run.
 
@@ -175,13 +178,12 @@ remaining work needs your machine + a real account, and it's all batched in
 **[ops/RUNBOOK.md](ops/RUNBOOK.md)**: install, connect the physical phone,
 verify Training-mode behavior, and seed your taste.
 
-Numbered targeted suggestions are licensed and unblocked: `apps.hinge.targeting_calibration` was
-measured and installed on 2026-08-22, and the still-photo discriminator runs under the owner's
-accepted (UNMEASURED) centered-autoplay assumption. What limits them now is COVERAGE, not
-readiness -- production takes its one dwell burst at the position the read stops, so on a
-profile of fifteen cards only the card the read parked on can be numbered, and a live run has
-already produced zero. The routes out of that, and what each one costs, are the open owner
-decision in [ops/STILL-PHOTO-DISCRIMINATOR.md](ops/STILL-PHOTO-DISCRIMINATOR.md) section 5d.
-The corresponding historical manual release artifact is installed for this exact calibration.
-AUTO uses the learned ranker over per-gesture UHID and retains each opener's
-pre-send snapshot and verified outcome.
+The 2026-08-22 10.0.1 calibration and its release artifact remain historical evidence, not a
+license for the live 10.1.0 build. The shipped 10.1.0 schema-v3 calibration and matching
+still-photo-assumption acceptance now license Training; AUTO additionally needs fresh
+production-observe release evidence. If a future build/frame mismatch is detected, it publishes
+`stop_kind=targeting_calibration`: no opener is requested, no action is sent, and no label is
+recorded. Recapture the schema-v3 calibration and measured still-photo evidence (or explicitly
+re-accept the assumption) for that exact build/device. Coverage remains the separate limitation
+described in
+[ops/STILL-PHOTO-DISCRIMINATOR.md](ops/STILL-PHOTO-DISCRIMINATOR.md) section 5d.

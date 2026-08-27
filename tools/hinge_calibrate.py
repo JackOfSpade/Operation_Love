@@ -99,7 +99,7 @@ import yaml
 from operation_love import config as cfg_mod
 from operation_love.drivers import hinge as hinge_mod
 from operation_love.drivers.adb import parse_devices_output, quote_android_package_id
-from operation_love.drivers.frameshift import ShiftEstimationError
+from operation_love.drivers.frameshift import ShiftEstimationError, estimate_shift
 from operation_love.drivers.hinge import HingeDriver
 from operation_love.drivers.item_crops import (
     EXCLUSION_REATTACH_PROBE_MISSING, PHOTO_ONLY_POLICY_ID,
@@ -110,7 +110,8 @@ from operation_love.drivers.item_crops import (
 from operation_love.drivers.item_identity import (
     IdentityError, ProfileIdentity, capture_profile_identity, compare_profile_identity)
 from operation_love.drivers.item_index import ItemIndexError, build_item_index
-from operation_love.drivers.item_nav import ItemNavigationError, navigate_to_item
+from operation_love.drivers.item_nav import (
+    NAV_ANCHOR_UNMEASURED, ItemNavigationError, navigate_to_item)
 from operation_love.drivers.item_verify import (
     SheetVerificationError, verification_blocker, verify_sheet_item)
 from operation_love.drivers.base import ActionCancelled
@@ -223,6 +224,15 @@ _MAX_AUTOMATED_TOP_REWIND_STEPS = _MAX_CARD_SCROLLS
 # "cannot tell" still never becomes "at top" -- it just stops treating one transient frame as a
 # final answer.
 _MAX_UNSETTLED_TOP_REPROBES = 3
+# A read-scroll frame becomes the navigator's exact zero-drift anchor. The first held-out
+# Hinge 10.1.0 run still moved 556px after TWO quiet comparisons, so the app can pause before a
+# delayed card snap. Require FOUR quiet comparisons and allow a bounded eight probes: this gives
+# a genuinely parked screen more time to prove itself while an app that keeps moving still fails
+# closed. Up to 3px is ordinary segmentation/raster jitter and far below the 219px minimum
+# gesture measured by the navigator's own entry gate.
+_MAX_READ_SCROLL_SETTLE_PROBES = 8
+_READ_SCROLL_SETTLE_MAX_SHIFT_PX = 3
+_READ_SCROLL_SETTLE_QUIET_COMPARISONS = 4
 
 _ROUND_NDIGITS = 4
 
@@ -278,6 +288,9 @@ _HYBRID_REVIEW_TOKEN_KIND = "hinge_external_reviewer_decision"
 _HYBRID_MAX_ADJUSTMENTS_PER_ACTION = 3
 _HYBRID_CAPTURE_MODE = "hybrid_ai_reviewed_automation"
 _HYBRID_REVIEW_SOURCE = "external_ai_review"
+_CARET_BLINK_RECHECK_S = 0.2
+_CARET_BLINK_RECHECK_ATTEMPTS = 16
+_SYSTEM_STATUS_BAR_HEIGHT_FRAC = 0.04
 # Automated calibration deliberately proves only the prefix through the one photo it will
 # touch.  This is NOT a replacement for production's closed-set profile payload: it exists so
 # a changed/long Hinge tail cannot prevent a safe, already-visible calibration target from being
@@ -289,6 +302,10 @@ _TARGET_SCOPED_PREFIX_PROOF_ID = "photo_only_confirmed_prefix_v1"
 # real Passes.
 _MAX_PREACTION_PROFILE_SKIPS_PER_ORDINAL = 3
 _MAX_PREACTION_PROFILE_SKIPS_PER_SESSION = 12
+# A measured large entry translation invalidates the whole enumeration/index relationship. One
+# fresh driver-owned rewind and re-enumeration can clear a delayed Hinge snap; a second refusal
+# advances by the normal bounded pre-action skip rather than looping on one live profile.
+_MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE = 1
 
 # A left-edge Android back gesture delivered through the driver's normal guarded, humanized
 # swipe transport.  These are relative geometry, not fixed phone pixels.  It is calibration
@@ -497,6 +514,10 @@ def _validate_v3_calibration_block(block: dict) -> None:
     if (not isinstance(block["hinge_version_name"], str)
             or not block["hinge_version_name"].strip()):
         raise _MeasureRefused("emitted calibration has no exact Hinge versionName")
+    if not isinstance(block["device"], str) or not block["device"].strip():
+        raise _MeasureRefused("emitted calibration has no exact device serial")
+    if not isinstance(block["calibrated_at"], str) or not block["calibrated_at"].strip():
+        raise _MeasureRefused("emitted calibration has no calibration provenance")
     size = block["frame_size_px"]
     if (not isinstance(size, list) or len(size) != 2
             or any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in size)):
@@ -508,6 +529,13 @@ def _validate_v3_calibration_block(block: dict) -> None:
                 or not math.isfinite(value) or not 0 < value < ceiling):
             raise _MeasureRefused(
                 f"emitted calibration {key} is not finite, positive, and strictly below {ceiling}")
+    for key, size in (("identity_band", 4), ("content_band", 2)):
+        values = block[key]
+        if (not isinstance(values, list) or len(values) != size
+                or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                       or not math.isfinite(value) for value in values)):
+            raise _MeasureRefused(
+                f"emitted calibration {key} must contain {size} finite numeric values")
 
 
 class _CaptureAbort(RuntimeError):
@@ -762,6 +790,50 @@ def _plan_card_scroll(frame: bytes, *, content_band, like_template, like_thresho
         profile_min_spacing_px = (step.spacing_px if profile_min_spacing_px is None
                                   else min(profile_min_spacing_px, step.spacing_px))
     return step, profile_min_spacing_px
+
+
+def _settled_read_scroll_frame(driver: HingeDriver) -> bytes:
+    """Capture the parked result of a card-enumeration gesture, not its in-flight repaint.
+
+    ``adb shell input swipe`` returns when the finger path ends, while Hinge can continue its
+    inertial/card-snap animation. The 2026-08-26 Pixel 7a held-out run measured two immediate
+    post-gesture frames moving another 554px and 559px before navigation began. That correctly
+    tripped ``navigate_to_item``'s unaccounted-drift gate and spent two otherwise usable profiles.
+
+    The pre-gesture dwell controls cadence; it cannot settle a gesture that has not happened
+    yet. Keep the same bounded humanized dwell on the other side, then require four consecutive
+    frame comparisons to measure no more than 3px of residual page motion. The last proven frame
+    becomes both the recorded read position and the exact navigation entry reference.
+    """
+    time.sleep(human_delay(driver.dwell_s))
+    prior = driver.adb.screencap()
+    refusals: list[str] = []
+    quiet_comparisons = 0
+    for _probe in range(_MAX_READ_SCROLL_SETTLE_PROBES):
+        time.sleep(human_delay(driver.dwell_s))
+        current = driver.adb.screencap()
+        if current == prior:
+            quiet_comparisons += 1
+        else:
+            try:
+                shift = estimate_shift(
+                    prior, current, content_band=driver.content_band)
+            except ShiftEstimationError as exc:
+                quiet_comparisons = 0
+                refusals.append(f"{type(exc).__name__}: {exc}")
+            else:
+                if shift.ok and abs(shift.delta_px) <= _READ_SCROLL_SETTLE_MAX_SHIFT_PX:
+                    quiet_comparisons += 1
+                else:
+                    quiet_comparisons = 0
+                    refusals.append(shift.reason)
+        if quiet_comparisons >= _READ_SCROLL_SETTLE_QUIET_COMPARISONS:
+            return current
+        prior = current
+    detail = refusals[-1] if refusals else "frames never became byte-stable"
+    raise _CaptureAbort(
+        "card-enumeration scroll did not park within the bounded "
+        f"{_MAX_READ_SCROLL_SETTLE_PROBES}-comparison settle window: {detail}")
 
 
 @dataclass(frozen=True)
@@ -1483,9 +1555,13 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
 
     The closed loop owns no raw input transport: each reverse stroke is planned from the exact
     current frame and issued through the driver's guarded, humanized ``_scroll_up_one`` path.
-    It continues only while the Hinge top detector *positively refutes* top.  An unknown frame,
-    an unreadable detector, an unchanged post-gesture frame, a planning refusal, or exhaustion
-    of the explicit cap all stop the run without another speculative gesture.
+    It ordinarily continues only while the Hinge top detector *positively refutes* top.  One
+    narrowly bounded exception covers a known post-like failure mode: an UNKNOWN filter-chip
+    band may receive one recovery stroke only when the current frame independently proves an
+    ordinary Hinge swipe deck through its visible Like and Pass controls.  That proof excludes
+    compose sheets, dialogs, paywalls and arbitrary in-app surfaces; a persistent UNKNOWN still
+    stops without a second speculative gesture.  An unreadable detector, an unchanged
+    post-gesture frame, a planning refusal, or exhaustion of the explicit cap also stop the run.
     """
     def settled_verdict(frame: bytes, *, stage: str) -> tuple[bytes, object]:
         """Re-read an unsettled scroll-top gate without touching the screen (see the constant)."""
@@ -1504,16 +1580,39 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
             frame = driver.adb.screencap()
         raise _CaptureAbort(f"automated profile {ordinal}: unreachable settle probe exhaustion")
 
+    def unknown_deck_recovery_allowed(candidate: bytes) -> bool:
+        """Return the positive, non-actionable deck fact needed for one UNKNOWN recovery.
+
+        `_observe_deck_ready` is deliberately perception-only and requires both floating deck
+        controls.  Do not substitute package foreground, a refuted top band, or a remembered
+        profile here: all can describe a dialog/paywall/other Hinge surface on which an upward
+        swipe would be speculative.
+        """
+        detector = getattr(driver, "_observe_deck_ready", None)
+        if not callable(detector):
+            return False
+        try:
+            return detector(candidate) is True
+        except Exception:  # noqa: BLE001 -- an unproven deck never licenses input
+            return False
+
     frame = driver.adb.screencap()
     min_spacing_px = None
+    unknown_deck_recovery_spent = False
     for attempt in range(_MAX_AUTOMATED_TOP_REWIND_STEPS + 1):
         frame, verdict = settled_verdict(frame, stage="during")
         if verdict.confirmed:
             return frame
         if not verdict.refuted:
-            raise _CaptureAbort(
-                f"automated profile {ordinal}: hybrid rewind refused an unconfirmed "
-                f"scroll-top state ({verdict.state}): {verdict.reason}")
+            if unknown_deck_recovery_spent or not unknown_deck_recovery_allowed(frame):
+                raise _CaptureAbort(
+                    f"automated profile {ordinal}: hybrid rewind refused an unconfirmed "
+                    f"scroll-top state ({verdict.state}): {verdict.reason}")
+            # An UNKNOWN band cannot establish that this is merely a scrolled profile.  Spend
+            # exactly one guarded upward stroke only after the independent, current-frame deck
+            # proof above; a second UNKNOWN is an unresolved layout/state change, never a reason
+            # to keep swiping.
+            unknown_deck_recovery_spent = True
         if attempt >= _MAX_AUTOMATED_TOP_REWIND_STEPS:
             raise _CaptureAbort(
                 f"automated profile {ordinal}: hybrid rewind exceeded its bounded "
@@ -1552,15 +1651,16 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
 def _skip_automated_profile_before_heart(
         driver: HingeDriver, *, ordinal: int, reason: _PreActionProfileRetry,
         identity: ProfileIdentity, identity_band, content_band, like_template, like_threshold,
-        review_gate: _HybridReviewGate | None = None) -> dict:
-    """Pass one unusable profile without pretending it was calibration evidence.
+        review_gate: _HybridReviewGate | None = None, send_like: bool = False) -> dict:
+    """Advance one unusable profile without pretending it was calibration evidence.
 
-    This is intentionally narrower than the composer-specific calibration Pass: no heart has
-    landed, the profile is rewound to a confirmed ordinary deck top, and the *public*
-    ``HingeDriver.dislike`` guard owns the decision transport.  A failed guard or any missing
-    post-condition stops the campaign; it never falls back to a private button tap.  The caller
-    records the returned trace in ``skipped_attempts`` rather than ``profiles`` so measurement
-    cannot silently count a bad target as evidence.
+    The default remains the historical public ``HingeDriver.dislike`` transport. An explicitly
+    accepted ``--send-like`` run instead uses public ``HingeDriver.like()`` with no opener and no
+    target index: the owner's rule is that every encountered profile advances by a real Like,
+    even when the profile is unusable as calibration evidence. It never invents a target,
+    opener, or measurement. Both branches start from a confirmed ordinary deck top, retain the
+    driver's production action guard/landed proof, and record the result only in
+    ``skipped_attempts`` so measurement cannot count a bad target as evidence.
     """
     if (not identity.known or identity.fingerprint is None):
         raise _CaptureAbort(
@@ -1579,38 +1679,51 @@ def _skip_automated_profile_before_heart(
             "is structurally present")
 
     review = None
+    action_name = ("advance_unusable_profile_with_priority_like" if send_like
+                   else "skip_profile_without_heart")
+    public_transport = ("HingeDriver.like" if send_like else "HingeDriver.dislike")
+    pre_action_predicates = {
+        "confirmed_profile_top": True,
+        "inline_composer_absent": True,
+        "skip_reason_code": reason.code,
+        "skip_reason_detail": reason.detail,
+        "forbidden_zone_guarded_transport": public_transport,
+    }
+    if send_like:
+        pre_action_predicates.update({
+            "no_profile_action_sent_yet": True,
+            "send_like_requested_for_unusable_profile": True,
+        })
+    else:
+        # Preserve the established default-Pass manifest/checkpoint shape byte-for-byte in
+        # semantics; the new owner rule is opt-in only through --send-like.
+        pre_action_predicates["no_photo_heart_or_send_like_on_current_profile"] = True
     if review_gate is not None:
         review = review_gate.checkpoint(
             top_frame, claimed_state="pre_action_profile_skip_ready",
             action_plan={
-                "action": "skip_profile_without_heart", "photo_model_item": None,
-                "point": None, "point_source": "public HingeDriver.dislike",
-                "predicates": {
-                    "no_photo_heart_or_send_like_on_current_profile": True,
-                    "confirmed_profile_top": True,
-                    "inline_composer_absent": True,
-                    "skip_reason_code": reason.code,
-                    # The reviewer is approving a real Pass on a real person.  The code alone
-                    # ("target_verification_blocked") says a class of failure happened, never
-                    # which one, so show the same diagnosis the record keeps.  Added before the
-                    # checkpoint is hashed, so it is covered by `evidence_sha256` like the rest.
-                    "skip_reason_detail": reason.detail,
-                    "forbidden_zone_guarded_transport": "HingeDriver.dislike",
-                },
+                "action": action_name, "photo_model_item": None,
+                "point": None, "point_source": f"public {public_transport}",
+                # The reviewer is approving a real action on a real person. The diagnosis and
+                # exact transport are inside the checkpoint hash, never inferred afterward.
+                "predicates": pre_action_predicates,
             })
         if review["decision"] != "approved":
             raise _CaptureAbort(
                 "hybrid reviewer did not approve the pre-action profile skip; refusing to "
                 "advance this profile")
 
-    # This is deliberately the public API, rather than `_await_button`/`_tap`: it retains the
-    # ordinary deck preflight that production Pass uses and therefore makes a composer, paywall,
-    # or other unexpected surface a refusal before another decision gesture.
+    # These are deliberately public APIs, rather than `_await_button`/`_tap`: they retain the
+    # ordinary deck/action preflights and landed verification, so a composer, paywall, or other
+    # unexpected surface refuses instead of licensing a private-coordinate fallback.
     try:
-        driver.dislike()
+        if send_like:
+            driver.like()
+        else:
+            driver.dislike()
     except Exception as exc:  # noqa: BLE001 -- preserve the public guard's fail-closed refusal
         raise _CaptureAbort(
-            f"automated profile {ordinal}: public HingeDriver.dislike refused pre-action skip: "
+            f"automated profile {ordinal}: public {public_transport} refused pre-action advance: "
             f"{type(exc).__name__}: {exc}") from exc
     time.sleep(human_delay(driver.dwell_s))
     raw_advanced_top = driver.adb.screencap()
@@ -1633,7 +1746,10 @@ def _skip_automated_profile_before_heart(
             f"automated profile {ordinal}: cannot plan guarded identity proof after public "
             f"skip: {type(exc).__name__}: {exc}") from exc
     driver._scroll_down_one(step.frac, step.x_frac)
-    advanced_identity = driver.adb.screencap()
+    # This is another read-scroll whose result feeds an identity assertion.  Reading its first
+    # post-gesture frame can still show filter chips while Hinge is snapping the new profile,
+    # which would turn a real advance into a false "no sticky identity" refusal.
+    advanced_identity = _settled_read_scroll_frame(driver)
     try:
         sticky = confirm_scroll_top(advanced_identity, identity_band=identity_band)
         if not sticky.refuted:
@@ -1659,12 +1775,12 @@ def _skip_automated_profile_before_heart(
     # code was readable, leaving nothing to act on.
     reason_digest = _sha256(f"{reason.code}\n{reason.detail}".encode("utf-8"))
     return {
-        "action": "skip_profile_without_heart",
+        "action": action_name,
         "ordinal": ordinal,
         "reason_code": reason.code,
         "reason_detail": reason.detail,
         "reason_sha256": reason_digest,
-        "transport": "HingeDriver.dislike",
+        "transport": public_transport,
         "pre_frame_sha256": _sha256(top_frame),
         "post_frame_sha256": _sha256(advanced_top),
         "post_identity_frame_sha256": _sha256(advanced_identity),
@@ -1672,10 +1788,16 @@ def _skip_automated_profile_before_heart(
         "post_pass_settle": settle_trace,
         "review_checkpoints": ({"before": review} if review_gate is not None else None),
         "predicates": {
-            "no_photo_heart_or_send_like_on_current_profile": True,
             "pre_action_confirmed_top": True,
             "pre_action_composer_absent": True,
-            "public_dislike_guard_used": True,
+            **({
+                "send_like_requested_for_unusable_profile": True,
+                "send_like_tapped": True,
+                "public_action_guard_used": True,
+            } if send_like else {
+                "no_photo_heart_or_send_like_on_current_profile": True,
+                "public_dislike_guard_used": True,
+            }),
             "deck_frame_changed": True,
             "new_profile_top_confirmed": True,
             "new_profile_composer_absent": True,
@@ -1707,6 +1829,86 @@ def _verified_automated_composer(frame: bytes, *, confirm_template, payload: Ite
             f"automated Pass refused: current frame does not structurally prove the prior "
             f"inline composer for photo item {item_number}: {exc}") from exc
     return surface
+
+
+def _only_transient_empty_comment_caret_change(reviewed_frame: bytes, fresh_frame: bytes, *,
+                                                surface) -> bool:
+    """Allow the one harmless framebuffer race a focused, empty composer creates.
+
+    A Hinge screencap taken after a human hybrid-review approval can differ only because the
+    Android text caret blinked.  This is not a general frame-diff tolerance: the fresh frame has
+    already independently re-proved the selected item and every composer control.  Here we
+    merely ensure its *remaining* changed pixels are one narrow, left-inset vertical strip within
+    the comment input.  In particular, changes to Gboard, the profile card, header, CTA, or
+    input border always return False.
+    """
+    try:
+        import cv2
+        import numpy as np
+    except Exception:  # pragma: no cover - capture preflight normally establishes this dependency
+        return False
+    reviewed = cv2.imdecode(np.frombuffer(reviewed_frame, dtype=np.uint8), cv2.IMREAD_COLOR)
+    fresh = cv2.imdecode(np.frombuffer(fresh_frame, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if reviewed is None or fresh is None or reviewed.shape != fresh.shape:
+        return False
+    changed = np.any(reviewed != fresh, axis=2)
+    # Android's read-only status bar clock/battery/network glyphs are outside Hinge's app
+    # surface and can legitimately tick during hybrid review.  Ignore only that fixed top strip;
+    # every Hinge, composer, keyboard, and navigation pixel remains in the comparison.
+    status_bar_bottom = round(changed.shape[0] * _SYSTEM_STATUS_BAR_HEIGHT_FRAC)
+    changed[:status_bar_bottom, :] = False
+    ys, xs = np.nonzero(changed)
+    if not len(xs):
+        # PNG encoding metadata may differ although the pixels and the re-proven controls do not.
+        return True
+
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    comment = surface.comment_rect
+    # Measured on the exact schema-v3 Pixel 7a composer: the caret is a 5x49px connected stroke
+    # at (+42,+32) from the comment rectangle.  Keep only small rasterisation/layout tolerance;
+    # the earlier whole-left-inset allowance could also admit a second narrow mark beside it.
+    width, height = x1 - x0, y1 - y0
+    component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        changed.astype(np.uint8), connectivity=8)
+    if component_count != 2:  # background + exactly one changed component
+        return False
+    component_area = int(stats[1, cv2.CC_STAT_AREA])
+    location_and_shape_match = (
+        comment.x0 + 39 <= x0 <= comment.x0 + 45
+        and comment.x0 + 44 <= x1 <= comment.x0 + 51
+        and comment.y0 + 28 <= y0 <= comment.y0 + 60
+        and 3 <= width <= 8
+        and 45 <= height <= 60
+        and component_area >= round(width * height * 0.75)
+    )
+    if not location_and_shape_match:
+        return False
+
+    # A blink toggles between Hinge's dark caret and the light empty-input background.  Requiring
+    # that polarity rejects small same-tone animations even at the measured location.
+    reviewed_gray = cv2.cvtColor(reviewed[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+    fresh_gray = cv2.cvtColor(fresh[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+    dark_to_light = (
+        np.mean(reviewed_gray <= 90) >= 0.75 and np.mean(fresh_gray >= 110) >= 0.75)
+    light_to_dark = (
+        np.mean(fresh_gray <= 90) >= 0.75 and np.mean(reviewed_gray >= 110) >= 0.75)
+    return bool(dark_to_light or light_to_dark)
+
+
+def _same_actionable_pixels(first_frame: bytes, second_frame: bytes) -> bool:
+    """Compare every non-status-bar pixel, ignoring harmless PNG encoding metadata."""
+    try:
+        import cv2
+        import numpy as np
+    except Exception:  # pragma: no cover - capture preflight normally establishes this dependency
+        return False
+    first = cv2.imdecode(np.frombuffer(first_frame, dtype=np.uint8), cv2.IMREAD_COLOR)
+    second = cv2.imdecode(np.frombuffer(second_frame, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if first is None or second is None or first.shape != second.shape:
+        return False
+    status_bar_bottom = round(first.shape[0] * _SYSTEM_STATUS_BAR_HEIGHT_FRAC)
+    return bool(np.array_equal(first[status_bar_bottom:], second[status_bar_bottom:]))
 
 
 def _require_same_profile_header_after_edge_back(frame: bytes, *, identity: ProfileIdentity,
@@ -1873,32 +2075,53 @@ def _automated_send_from_verified_composer(driver: HingeDriver, *, frame: bytes,
     # video controls or the composer itself to move; never replay the approved coordinate on a
     # different framebuffer, even when a fresh detector could find some other plausible Send.
     fresh_frame = driver.adb.screencap()
-    if fresh_frame != frame:
-        raise _CaptureAbort(
-            "automated Send refused: the composer framebuffer changed after review; no stale "
-            "confirmation coordinate was tapped")
-    fresh_surface = _verified_automated_composer(
-        fresh_frame, confirm_template=confirm_template, payload=payload,
-        item_number=item_number)
-    if fresh_surface.confirm_point != reviewed_confirm_point:
-        raise _CaptureAbort(
-            "automated Send refused: fresh composer detection moved the confirmation point; "
-            "the reviewed action is no longer exact")
+    for blink_attempt in range(_CARET_BLINK_RECHECK_ATTEMPTS):
+        fresh_surface = _verified_automated_composer(
+            fresh_frame, confirm_template=confirm_template, payload=payload,
+            item_number=item_number)
+        if fresh_surface != reviewed_surface:
+            raise _CaptureAbort(
+                "automated Send refused: fresh composer geometry changed after review; the "
+                "reviewed action is no longer exact")
+        if fresh_surface.confirm_point != reviewed_confirm_point:
+            # Keep this separately named even though full-surface equality above also implies it.
+            # It is the invariant that licenses the actual tap and protects against future
+            # surface fields becoming intentionally tolerant.
+            raise _CaptureAbort(
+                "automated Send refused: fresh composer detection moved the confirmation point; "
+                "the reviewed action is no longer exact")
+        if fresh_frame == frame or _same_actionable_pixels(frame, fresh_frame):
+            break
+        if not _only_transient_empty_comment_caret_change(
+                frame, fresh_frame, surface=reviewed_surface):
+            raise _CaptureAbort(
+                "automated Send refused: the composer framebuffer changed outside the "
+                "empty-comment caret blink; no stale confirmation coordinate was tapped")
+        if blink_attempt == _CARET_BLINK_RECHECK_ATTEMPTS - 1:
+            raise _CaptureAbort(
+                "automated Send refused: the empty-comment caret did not return to the exact "
+                "reviewed blink phase; no confirmation coordinate was tapped")
+        # A real caret alternates back to the exact reviewed pixels.  A typed vertical mark or
+        # other persistent glyph does not, so it can never license Send merely by fitting a box.
+        time.sleep(_CARET_BLINK_RECHECK_S)
+        fresh_frame = driver.adb.screencap()
     driver._tap(*fresh_surface.confirm_point)
     time.sleep(human_cooldown(0.6))
     driver._handle_rose_upsell()
-    driver._verify_like_landed(frame)
+    driver._verify_like_landed(fresh_frame)
     advance_frame = driver.adb.screencap()
     return advance_frame, {
         "action": "automated_send_priority_like",
         "transport": ["HingeDriver._tap(confirm_point)", "HingeDriver._handle_rose_upsell",
                       "HingeDriver._verify_like_landed"],
         "pre_frame_sha256": _sha256(frame),
+        "pre_tap_frame_sha256": _sha256(fresh_frame),
         "post_frame_sha256": _sha256(advance_frame),
         "send_like_tapped": True,
         "confirm_point": list(fresh_surface.confirm_point),
         "predicates": {
             "inline_composer_and_selected_photo_verified_before_action": True,
+            "fresh_composer_and_selected_photo_reverified_before_action": True,
             "send_like_tapped": True,
             "like_landed_verified": True,
         },
@@ -2530,7 +2753,7 @@ def _capture_one_profile(driver: HingeDriver, out_dir: Path, *, ordinal: int,
             # driver re-sample its ordinary read cadence, which can exceed this plan's aliasing
             # bound before the next recorded frame exists.
             driver._scroll_down_one(step.frac, step.x_frac)
-            frame = driver.adb.screencap()
+            frame = _settled_read_scroll_frame(driver)
             card_frames.append(frame)
             staged_frames.append((frame, "card_scroll", None,
                                   datetime.now(timezone.utc).isoformat()))
@@ -2648,6 +2871,7 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                                     skipped_attempts: list[dict] | None = None,
                                     abort_recoveries: list[dict] | None = None,
                                     send_like: bool = False,
+                                    entry_drift_restart_attempts: int = 0,
                                     target_strategy_id: str = _AUTOMATED_TARGET_STRATEGY_ID
                                     ) -> tuple[dict, int]:
     """Capture one profile with explicitly-authorized device actions.
@@ -2665,6 +2889,10 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
     like_template = driver._template("like")
     confirm_template = driver._template("confirm")
     like_threshold = hinge_mod._LIKE_MATCH_THRESHOLD
+    if (type(entry_drift_restart_attempts) is not int
+            or not 0 <= entry_drift_restart_attempts
+            <= _MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE):
+        raise _CaptureAbort("invalid bounded entry-drift re-enumeration restart count")
     target_items = _automated_composer_items_for_ordinal(ordinal, strategy_id=target_strategy_id)
 
     def recover_unsent_composer(*, frame: bytes, item_number: int, failure_stage: str) -> dict:
@@ -2695,7 +2923,7 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
         return _ProfileSkipped(_skip_automated_profile_before_heart(
             driver, ordinal=ordinal, reason=reason, identity=identity,
             identity_band=identity_band, content_band=content_band, like_template=like_template,
-            like_threshold=like_threshold, review_gate=review_gate))
+            like_threshold=like_threshold, review_gate=review_gate, send_like=send_like))
 
     # Every automated/hybrid profile begins with a visually-driven rewind, including profiles
     # reached after a reviewer-directed restart.  It is intentionally independent of the
@@ -2758,7 +2986,7 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
             raise _CaptureAbort(f"automated profile {ordinal}: no alias-safe read scroll: {exc}") from exc
         time.sleep(human_delay(driver.dwell_s))
         driver._scroll_down_one(step.frac, step.x_frac)
-        frame = driver.adb.screencap()
+        frame = _settled_read_scroll_frame(driver)
         card_frames.append(frame)
         staged_frames.append((frame, "card_scroll", None, datetime.now(timezone.utc).isoformat()))
     else:
@@ -2852,6 +3080,70 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                     identity_match_max_dist=_UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST)
             except (ItemCropError, ValueError, ItemNavigationError, ShiftEstimationError,
                     SegmentationError, ScrollStepError) as exc:
+                # A navigation entry refusal is decided from two exact frames: the last indexed
+                # read position and the navigator's fresh entry capture.  Persist both privately
+                # before the skip rewinds/advances the phone; without the pair, a real -500px
+                # anchor can never be distinguished offline from a false shift caused by moving
+                # media.  These are forensic diagnostics only and are never listed in the
+                # evidence manifest.  Keep them beneath a private child directory rather than
+                # at the session root: `_load_session` deliberately requires the root PNG set
+                # to be exactly the manifest's evidence frames, so a best-effort diagnostic
+                # must not turn an otherwise complete future session into an unloadable one.
+                if isinstance(exc, ItemNavigationError) and exc.frame is not None:
+                    # The one bounded fresh enumeration may itself reach the same refusal.  Its
+                    # pair is independent evidence about a different scan, so never overwrite
+                    # scan 1 with scan 2 just because both target the same profile/item.
+                    scan_attempt = entry_drift_restart_attempts + 1
+                    stem = (f"refused_navigation_p{ordinal}_item{item_number}"
+                            f"_scan{scan_attempt}")
+                    try:
+                        forensics_dir = ensure_private_dir(out_dir / "forensics")
+                        atomic_write_private_bytes(
+                            forensics_dir / f"{stem}_read_reference.png", card_frames[-1],
+                            parent=forensics_dir)
+                        atomic_write_private_bytes(
+                            forensics_dir / f"{stem}_entry.png", exc.frame,
+                            parent=forensics_dir)
+                        anchor = exc.anchor
+                        atomic_write_private_text(
+                            forensics_dir / f"{stem}.json",
+                            json.dumps({
+                                "kind": "navigation_refusal_forensic_v1",
+                                "ordinal": ordinal,
+                                "item_number": item_number,
+                                "error_code": exc.code,
+                                "error": str(exc),
+                                "read_reference_sha256": _sha256(card_frames[-1]),
+                                "entry_sha256": _sha256(exc.frame),
+                                "anchor_delta_px": getattr(anchor, "delta_px", None),
+                                "anchor_status": getattr(anchor, "status", None),
+                                "anchor_confidence": getattr(anchor, "confidence", None),
+                                "anchor_reason": getattr(anchor, "reason", None),
+                                "calibration_evidence": False,
+                            }, indent=2, sort_keys=True) + "\n",
+                            parent=forensics_dir)
+                        print("Wrote forensic (non-evidence) navigation pair: "
+                              f"{forensics_dir / stem}")
+                    except Exception as diagnostic_exc:  # noqa: BLE001 -- never mask refusal
+                        print(f"Could not write navigation-refusal diagnostic: {diagnostic_exc}")
+                # Do not rebase a large entry delta onto this index.  Even a unanimous
+                # translation only proves two rendered frames correspond; it does not make the
+                # old enumeration's frame sequence the current scan.  Before ANY action or
+                # reviewer checkpoint, throw the entire local index/payload/staged-frame set
+                # away and give this same profile one fresh top-to-bottom read.  A recurrence is
+                # then routed through the existing bounded public-Like skip, never an unbounded
+                # retry loop or a nearest-item fallback.
+                large_measured_entry_drift = (
+                    isinstance(exc, ItemNavigationError)
+                    and exc.code == NAV_ANCHOR_UNMEASURED
+                    and isinstance(getattr(exc.anchor, "delta_px", None), int))
+                if large_measured_entry_drift and not action_trace:
+                    if entry_drift_restart_attempts < (
+                            _MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE):
+                        raise _RestartProfile(
+                            "measured pre-action navigation entry drift "
+                            f"{exc.anchor.delta_px:+d}px; discarding the scan and taking the "
+                            "one bounded fresh re-enumeration") from exc
                 retry = _PreActionProfileRetry(
                     "pre_heart_navigation_refused",
                     f"item {item_number}: {type(exc).__name__}: {exc}")
@@ -3222,22 +3514,38 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                                     f"outcome={recovery['outcome']}")
             if pass_adjustments > _HYBRID_MAX_ADJUSTMENTS_PER_ACTION:
                 raise _CaptureAbort("reviewer exceeded bounded hybrid adjustment budget before Pass")
-    if send_like:
-        plan = pass_review.get("action_plan") if isinstance(pass_review, dict) else None
-        reviewed_point = plan.get("point") if isinstance(plan, dict) else None
-        if (not isinstance(reviewed_point, list) or len(reviewed_point) != 2
-                or any(isinstance(value, bool) or not isinstance(value, int)
-                       for value in reviewed_point)):
-            raise _CaptureAbort(
-                "automated Send refused: no exact reviewer-approved confirmation point is bound "
-                "to the terminal checkpoint")
-        advance_frame, pass_trace = _automated_send_from_verified_composer(
-            driver, frame=pass_frame, confirm_template=confirm_template, payload=payload,
-            item_number=pass_item_number, reviewed_confirm_point=tuple(reviewed_point))
-    else:
-        advance_frame, pass_trace = _automated_pass_from_verified_composer(
-            driver, frame=pass_frame, confirm_template=confirm_template, payload=payload,
-            item_number=pass_item_number, identity=identity, identity_band=identity_band)
+    try:
+        if send_like:
+            plan = pass_review.get("action_plan") if isinstance(pass_review, dict) else None
+            reviewed_point = plan.get("point") if isinstance(plan, dict) else None
+            if (not isinstance(reviewed_point, list) or len(reviewed_point) != 2
+                    or any(isinstance(value, bool) or not isinstance(value, int)
+                           for value in reviewed_point)):
+                raise _CaptureAbort(
+                    "automated Send refused: no exact reviewer-approved confirmation point is "
+                    "bound to the terminal checkpoint")
+            advance_frame, pass_trace = _automated_send_from_verified_composer(
+                driver, frame=pass_frame, confirm_template=confirm_template, payload=payload,
+                item_number=pass_item_number, reviewed_confirm_point=tuple(reviewed_point))
+        else:
+            advance_frame, pass_trace = _automated_pass_from_verified_composer(
+                driver, frame=pass_frame, confirm_template=confirm_template, payload=payload,
+                item_number=pass_item_number, identity=identity, identity_band=identity_band)
+    except _CaptureAbort as exc:
+        # The terminal helper can still refuse after the hybrid reviewer approves: most notably
+        # its final, fresh-frame proof runs immediately before a real Send.  A pre-tap refusal
+        # leaves the already-hearted profile's composer open and used to strand the next capture.
+        # Re-read the *current* state (the terminal helper may already have acted) and delegate
+        # only to the existing Pass-only abort recovery.  If Send/Pass already advanced, the
+        # absence of a structurally proven composer makes recovery a no-input `not_cleared`.
+        recovery_frame = driver.adb.screencap()
+        recovery = recover_unsent_composer(
+            frame=recovery_frame, item_number=pass_item_number,
+            failure_stage=("terminal_send_refused" if send_like else "terminal_pass_refused"))
+        raise _CaptureAbort(
+            f"automated profile {ordinal}: terminal "
+            f"{'Send' if send_like else 'Pass'} refused after a real heart: {exc}; "
+            f"abort cleanup outcome={recovery['outcome']}") from exc
     staged_frames.append((advance_frame, "profile_advance_clear", None,
                           datetime.now(timezone.utc).isoformat()))
     pass_trace["review_checkpoints"] = ({"before": pass_review}
@@ -3765,6 +4073,17 @@ def _cmd_capture(args: argparse.Namespace) -> None:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
     driver = HingeDriver(cfg)
+    # Calibration capture drives its own guarded scroll/heart/Pass lifecycle; it is neither
+    # the retired passive Observe loop nor a Worker ranker run.  Mark its session as
+    # device-driven before `open_session()` so the driver's final platform preflight uses a
+    # supported live mode.  The policy is deliberately `None`: this harness supplies no
+    # ranker decision and keeps its separate, checkpoint-bound calibration protocol.
+    #
+    # Keep the capability check soft for the deliberately small fake drivers used by offline
+    # capture-manifest tests.  Real `HingeDriver` instances always provide the method.
+    session_policy = getattr(driver, "set_auto_session_policy", None)
+    if callable(session_policy):
+        session_policy(None)
     if driver.identity_band is None or driver.content_band is None:
         print("ERROR: this app's effective identity_band/content_band is None (no band "
               "declared, or an override disabled it). Targeting calibration is meaningless "
@@ -3823,6 +4142,10 @@ def _cmd_capture(args: argparse.Namespace) -> None:
         try:
             ordinal = 0
             used_profile_ids: set[str] = set()
+            # Kept per currently-read real profile attempt, not per requested output ordinal:
+            # after a normal pre-action skip the next deck profile may use the same ordinal and
+            # is entitled to its own one fresh re-enumeration.
+            entry_drift_restarts: dict[int, int] = {}
             while ordinal < args.profiles:
                 ordinal += 1
                 print(f"\n=== Profile {ordinal}/{args.profiles} ({args.split}) ===")
@@ -3830,21 +4153,39 @@ def _cmd_capture(args: argparse.Namespace) -> None:
                               else _capture_one_profile)
                 try:
                     if automated:
+                        automated_kwargs = {
+                            "review_gate": review_gate,
+                            "skipped_attempts": skipped_attempts,
+                            "abort_recoveries": abort_recoveries,
+                            "send_like": send_like,
+                            "target_strategy_id": target_strategy_id,
+                        }
+                        restart_attempts = entry_drift_restarts.get(ordinal, 0)
+                        # Keep pre-existing alternate capture callables compatible on the
+                        # ordinary first attempt; the real recorder's default is also zero.
+                        if restart_attempts:
+                            automated_kwargs["entry_drift_restart_attempts"] = restart_attempts
                         profile_meta, frame_counter = capture_fn(
                             driver, out_dir, ordinal=ordinal, frame_counter=frame_counter,
                             frames_meta=frames_meta, used_profile_ids=used_profile_ids,
-                            review_gate=review_gate, skipped_attempts=skipped_attempts,
-                            abort_recoveries=abort_recoveries, send_like=send_like,
-                            target_strategy_id=target_strategy_id)
+                            **automated_kwargs)
                     else:
                         profile_meta, frame_counter = capture_fn(
                             driver, out_dir, ordinal=ordinal, frame_counter=frame_counter,
                             frames_meta=frames_meta, used_profile_ids=used_profile_ids)
                 except _RestartProfile as exc:
+                    restart_attempts = entry_drift_restarts.get(ordinal, 0) + 1
+                    if restart_attempts > _MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE:
+                        raise _CaptureAbort(
+                            f"automated profile {ordinal}: exceeded the bounded "
+                            f"{_MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE}-restart "
+                            "entry-drift re-enumeration limit") from exc
+                    entry_drift_restarts[ordinal] = restart_attempts
                     print(f"Restarting profile {ordinal} from a driver-owned top: {exc}")
                     ordinal -= 1
                     continue
                 except _ProfileSkipped as exc:
+                    entry_drift_restarts.pop(ordinal, None)
                     prior_for_ordinal = sum(
                         1 for attempt in skipped_attempts if attempt.get("ordinal") == ordinal)
                     record = dict(exc.record)
@@ -3855,13 +4196,19 @@ def _cmd_capture(args: argparse.Namespace) -> None:
                     # the person who has to decide whether the deck, the target depth, or the
                     # app itself is the problem, and the code is the same string for every
                     # cause in its class.
+                    advance_description = (
+                        "after advancing it with a verified public Like"
+                        if record.get("action") == "advance_unusable_profile_with_priority_like"
+                        else "before any heart")
                     print(
-                        f"Skipped unsuitable profile before any heart for ordinal {ordinal} "
-                        f"({record['reason_code']}: {record['reason_detail']}); retrying this "
-                        "ordinal on the distinct next profile.")
+                        f"Skipped unsuitable calibration evidence {advance_description} for "
+                        f"ordinal {ordinal} ({record['reason_code']}: "
+                        f"{record['reason_detail']}); retrying this ordinal on the distinct "
+                        "next profile.")
                     ordinal -= 1
                     continue
                 profiles_meta.append(profile_meta)
+                entry_drift_restarts.pop(ordinal, None)
             # The closed-set replay is intentionally not generated for automated target-scoped
             # evidence.  It proves every photo in a complete profile, a stronger claim that a
             # prefix run expressly does not make.  Each actual target was instead navigated by

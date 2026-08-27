@@ -161,7 +161,7 @@ class _TrainingDriver:
         if self._profile_returned:
             return None
         self._profile_returned = True
-        return Profile(photos=[b"photo"], name="Ari", items=(b"item one", b"item two"))
+        return Profile(photos=[_FRAME], name="Ari", items=(b"item one", b"item two"))
 
     def like(self, opener, item_index=None, *, model_item_index=None, should_stop=None):
         self.like_calls.append((opener, item_index, model_item_index))

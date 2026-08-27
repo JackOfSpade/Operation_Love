@@ -628,7 +628,9 @@ def test_observed_current_unselected_signals_top_confirms_after_registration(mon
         return shifted_arr if dy_px == 1 else observed_arr
 
     monkeypatch.setattr(hinge, "_band_of_image", observed_crop)
-    old_candidates = scroll_top._SCROLL_TOP_BAND_FINGERPRINTS[:-1]
+    # Variants 13 and 14 were added after this 2026-08-24 incident. Exclude all later entries
+    # to replay the candidate set that actually existed before Variant 12 was registered.
+    old_candidates = scroll_top._SCROLL_TOP_BAND_FINGERPRINTS[:11]
     before = scroll_top.confirm_scroll_top(
         _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
 
@@ -643,8 +645,133 @@ def test_observed_current_unselected_signals_top_confirms_after_registration(mon
     assert after.distance == 0.0
 
 
+def test_observed_hinge_10_1_0_unselected_signals_top_confirms_after_registration(monkeypatch):
+    """A read-only 10.1.0 top is a discrete chrome variant, not threshold evidence.
+
+    The visibly confirmed Pixel 7a frame has chips above the profile name and first photo; its
+    nominal crop was 7.09375 from the old 10.0.1 candidate and the alignment sweep's best old
+    match was 4.625.  Both readings belong in the existing dead zone.  Re-registering this
+    chrome-only fingerprint preserves the 3.0/9.0 safety bounds rather than relaxing either.
+    """
+    observed = scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_1_0
+    old_candidates = scroll_top._SCROLL_TOP_BAND_FINGERPRINTS[:12]
+    arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
+
+    before = scroll_top.confirm_scroll_top(
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+    assert before.unknown is True
+    assert before.distance == pytest.approx(7.09375)
+    assert scroll_top._CONFIRM_MAX_DIST < before.distance < scroll_top._REFUTE_MIN_DIST
+
+    after = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
+    assert observed in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS
+    assert after.confirmed is True
+    assert after.distance == 0.0
+
+
+def test_observed_hinge_10_1_0_selected_filter_top_confirms_after_registration(monkeypatch):
+    """The selected-filter Age/Height strip is a discrete 10.1.0 top-chrome state.
+
+    On the live Pixel 7a its bounded alignment sweep was 6.765625 from every older candidate,
+    in the deliberate dead zone.  The fixed-array seam pins the profile-independent 16x4
+    chrome measurement and proves the new candidate participates in default matching.
+    """
+    observed = scroll_top._SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_10_1_0
+    old_candidates = scroll_top._SCROLL_TOP_BAND_FINGERPRINTS[:13]
+    arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
+
+    before = scroll_top.confirm_scroll_top(
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+    assert before.refuted is True
+    assert before.distance == pytest.approx(9.375)
+
+    after = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
+    assert observed in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS
+    assert after.confirmed is True
+    assert after.distance == 0.0
+
+
+def test_hinge_10_1_0_selected_filter_variant_keeps_synthetic_scrolled_band_refuted(monkeypatch):
+    """Variant 14 does not confirm a band a full 16 grey levels away."""
+    scrolled = _offset(scroll_top._SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_10_1_0, -16)
+    arr = np.array(scrolled, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
+
+    verdict = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
+    assert verdict.refuted is True
+    assert verdict.distance >= scroll_top._REFUTE_MIN_DIST
+
+
+def test_observed_hinge_10_1_0_settled_selected_filter_top_confirms(monkeypatch):
+    """The fully settled 10.1.0 Age/Height chrome must not remain in the dead zone."""
+    observed = scroll_top._SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_SETTLED_10_1_0
+    old_candidates = scroll_top._SCROLL_TOP_BAND_FINGERPRINTS[:14]
+    arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
+
+    before = scroll_top.confirm_scroll_top(
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+    assert before.unknown is True
+    assert before.distance == pytest.approx(4.53125)
+
+    after = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
+    assert observed in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS
+    assert after.confirmed is True
+    assert after.distance == 0.0
+
+
+def test_observed_hinge_10_1_0_alternate_settled_filter_top_confirms(monkeypatch):
+    """The alternate settled Age/Height raster is registered without threshold widening."""
+    observed = scroll_top._SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_ALT_10_1_0
+    old_candidates = scroll_top._SCROLL_TOP_BAND_FINGERPRINTS[:15]
+    arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
+
+    before = scroll_top.confirm_scroll_top(
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+    assert before.unknown is True
+    assert before.distance == pytest.approx(6.328125)
+
+    after = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
+    assert observed in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS
+    assert after.confirmed is True
+    assert after.distance == 0.0
+
+
+def test_observed_hinge_10_1_0_alternate_unselected_signals_top_confirms(monkeypatch):
+    """The alternate Signals/Age/Height chrome is distinct even under a wider alignment sweep."""
+    observed = scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_ALT_10_1_0
+    old_candidates = scroll_top._SCROLL_TOP_BAND_FINGERPRINTS[:16]
+    arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
+
+    before = scroll_top.confirm_scroll_top(
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+    assert before.unknown is True
+    assert before.distance == pytest.approx(6.484375)
+
+    after = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
+    assert observed in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS
+    assert after.confirmed is True
+    assert after.distance == 0.0
+
+
+def test_hinge_10_1_0_variant_keeps_a_synthetic_scrolled_band_refuted(monkeypatch):
+    """Adding Variant 13 must not turn a previously refuted band into an unknown one."""
+    scrolled = _offset(
+        scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_1_0, -16)
+    arr = np.array(scrolled, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
+
+    verdict = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
+    assert verdict.refuted is True
+    assert verdict.distance >= scroll_top._REFUTE_MIN_DIST
+
+
 def test_hinge_10_0_1_variant_does_not_pull_a_scrolled_frame_into_the_dead_zone(monkeypatch):
-    """The new variant must not narrow the gap for frames that are genuinely scrolled.
+    """Registered variants must not pull a genuinely scrolled control into the dead zone.
 
     Regression built from the real negative check: on the physical Pixel 7a, composer-open
     (keyboard visible) frames from the same 2026-08-21 session measured 15.1--16.7 from every
@@ -667,7 +794,9 @@ def test_hinge_10_0_1_variant_does_not_pull_a_scrolled_frame_into_the_dead_zone(
 
     assert verdict.refuted is True
     assert verdict.confirmed is False
-    assert verdict.distance == pytest.approx(16.0, abs=1e-9)
+    # Later discrete top variants may be nearer than the original candidate, but the safety
+    # invariant is classification: this control must remain beyond the refute floor.
+    assert verdict.distance == pytest.approx(13.046875, abs=1e-9)
 
 
 # =====================================================================================

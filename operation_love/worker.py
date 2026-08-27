@@ -204,6 +204,26 @@ class Worker(threading.Thread):
         cause -- not whichever symptom that particular worker's own opener call hit."""
         return getattr(self.opener_service, "exhausted_reason", None)
 
+    def _live_targeting_calibration_blocker(self) -> str:
+        """Ask an opener-capable driver to re-check its live targeting licence."""
+        if not getattr(self.driver, "accepts_opener", False):
+            return ""
+        blocker = getattr(self.driver, "targeted_suggestion_blocker", None)
+        if not callable(blocker):
+            return ""
+        reason = blocker()
+        return reason if isinstance(reason, str) else ""
+
+    def _targeting_calibration_stop_reason(self, details: str) -> str:
+        mode = "Training" if self.mode == "training" else "AUTO"
+        outcome = ("No opener, action, or label was produced."
+                   if self.mode == "training" else "No opener or like was sent.")
+        return (
+            f"{mode} cannot prepare a verifiable targeted opener because the live Hinge "
+            "session has no valid schema-v3 targeting calibration. Capture and validate a "
+            f"fresh targeting calibration for the live Hinge build/frame before resuming "
+            f"{mode}. Details: {details}. {outcome}")
+
     def _request_training_decision(self, profile, pick, pre_send_frame: bytes,
                                    evidence=None) -> str:
         """Publish one typed, verified composer and wait for its human decision.
@@ -217,7 +237,12 @@ class Worker(threading.Thread):
             self.stop_event.set()
             return "stop"
         try:
-            card = bridge.publish_checkpoint(self, pre_send_frame, pick, evidence)
+            # Profile.photos is the capture's existing top-to-bottom phone-scroll sequence.
+            # The verified post-type frame remains the approval image; these additional frames
+            # let the reviewer inspect the rest of the same profile without touching the phone.
+            card = bridge.publish_checkpoint(
+                self, pre_send_frame, pick, evidence,
+                profile_frames=getattr(profile, "photos", ()) or ())
         except (RuntimeError, ValueError) as exc:
             self._stat(state="stopped", stop_reason=(
                 "Training checkpoint could not be published; no action was issued: "
@@ -375,6 +400,13 @@ class Worker(threading.Thread):
         if callable(set_policy):
             set_policy(None)
         self.driver.open_session()
+        targeting_blocker = self._live_targeting_calibration_blocker()
+        if targeting_blocker:
+            stop_reason = self._targeting_calibration_stop_reason(targeting_blocker)
+            self.stop_event.set()
+            self._finish_session(
+                "stopped", stop_reason=stop_reason, stop_kind="targeting_calibration")
+            return
         self._stat(mode="training", state="scoring")
         self._actions_since_break = 0
         self._break_hazard = random.uniform(0.04, 0.14)
@@ -393,6 +425,15 @@ class Worker(threading.Thread):
         terminal_state, stop_reason, stop_kind = "stopped", None, None
         try:
             while not self.stop_event.is_set():
+                targeting_blocker = self._live_targeting_calibration_blocker()
+                if targeting_blocker:
+                    terminal_state = "stopped"
+                    stop_reason = self._targeting_calibration_stop_reason(targeting_blocker)
+                    stop_kind = "targeting_calibration"
+                    self._stat(state=terminal_state, stop_reason=stop_reason,
+                               stop_kind=stop_kind)
+                    self.stop_event.set()
+                    break
                 if has_daily_limit:
                     today = date.today()
                     if today != today_date:
@@ -430,6 +471,13 @@ class Worker(threading.Thread):
 
                 unavailable = getattr(profile, "items_unavailable", "")
                 unnumbered = getattr(profile, "items_unnumbered", "")
+                unavailable_kind = getattr(profile, "items_unavailable_kind", "")
+                if unavailable_kind == "targeting_calibration":
+                    stop_reason = self._targeting_calibration_stop_reason(unavailable)
+                    stop_kind = "targeting_calibration"
+                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
+                    self.stop_event.set()
+                    break
                 if unavailable or unnumbered:
                     stop_reason = (
                         "Training could not prepare a verifiable targeted opener for this profile: "
@@ -439,6 +487,17 @@ class Worker(threading.Thread):
                     self.stop_event.set()
                     break
                 items = ItemRequest.from_profile(profile) if getattr(profile, "items", ()) else None
+                # The loop-top probe protects the whole capture. Recheck at the provider
+                # boundary too: Hinge can update or the display mode can change while the
+                # profile is being read, and an opener must never be requested from crops whose
+                # calibration became invalid during that read.
+                targeting_blocker = self._live_targeting_calibration_blocker()
+                if targeting_blocker:
+                    stop_reason = self._targeting_calibration_stop_reason(targeting_blocker)
+                    stop_kind = "targeting_calibration"
+                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
+                    self.stop_event.set()
+                    break
                 opener_kwargs = {"items": items, "should_stop": self.stop_event.is_set}
                 if (callable(getattr(self.opener_service, "commit_opener", None))
                         and _accepts_keywords(self.opener_service.maybe_opener, "stage")):
@@ -677,12 +736,28 @@ class Worker(threading.Thread):
         today_acted = 0            # actions this worker made since today0 was last measured
         today_date = date.today()  # LOCAL day — matches the store's count_today() day boundary
         self.driver.open_session()
+        targeting_blocker = self._live_targeting_calibration_blocker()
+        if targeting_blocker:
+            stop_reason = self._targeting_calibration_stop_reason(targeting_blocker)
+            self.stop_event.set()
+            self._finish_session(
+                "stopped", stop_reason=stop_reason, stop_kind="targeting_calibration")
+            return
         self._stat(mode=self.mode, state="scoring")
         terminal_state = "stopped"            # overwritten below when the loop ends for a known reason
         stop_reason = None                    # set for an OpenerService- or deck-blocked stop; see _finish_session
         stop_kind = None                      # disambiguates stop_reason's source; see _finish_session/status.py
         try:
             while not self.stop_event.is_set():
+                targeting_blocker = self._live_targeting_calibration_blocker()
+                if targeting_blocker:
+                    terminal_state = "stopped"
+                    stop_reason = self._targeting_calibration_stop_reason(targeting_blocker)
+                    stop_kind = "targeting_calibration"
+                    self._stat(state=terminal_state, stop_reason=stop_reason,
+                               stop_kind=stop_kind)
+                    self.stop_event.set()
+                    break
                 if has_daily_limit:
                     today = date.today()
                     if today != today_date:
@@ -878,20 +953,30 @@ class Worker(threading.Thread):
                     items = None
                     if accepts_opener and self.opener_service is not None \
                             and not getattr(self.opener_service, "disabled", True):
+                        targeting_blocker = self._live_targeting_calibration_blocker()
+                        if targeting_blocker:
+                            stop_reason = self._targeting_calibration_stop_reason(
+                                targeting_blocker)
+                            stop_kind = "targeting_calibration"
+                            self._stat(state="stopped", stop_reason=stop_reason,
+                                       stop_kind=stop_kind)
+                            self.stop_event.set()
+                            break
                         unavailable = getattr(profile, "items_unavailable", "")
                         if unavailable:
-                            stop_reason = (
-                                f"this profile could not be enumerated into numbered items, so "
-                                f"there is no honest opener request to make and the like is not "
-                                f"sent: {unavailable}. (ops/OPENER-REDESIGN.md 5.2 -- sending "
-                                f"the raw scroll frames instead would give the model a numbering "
-                                f"nothing can act on, so this stops rather than degrades.)"
-                            )
-                            # stop_kind="opener" rather than a new kind: the hub branches on it
-                            # (assets/hub.html) and this IS the opener path refusing to send --
-                            # the like is withheld because no opener request can be built, which
-                            # is the same operator-facing situation as every other opener stop.
-                            stop_kind = "opener"
+                            unavailable_kind = getattr(profile, "items_unavailable_kind", "")
+                            if unavailable_kind == "targeting_calibration":
+                                stop_reason = self._targeting_calibration_stop_reason(unavailable)
+                                stop_kind = "targeting_calibration"
+                            else:
+                                stop_reason = (
+                                    f"this profile could not be enumerated into numbered items, so "
+                                    f"there is no honest opener request to make and the like is not "
+                                    f"sent: {unavailable}. (ops/OPENER-REDESIGN.md 5.2 -- sending "
+                                    f"the raw scroll frames instead would give the model a numbering "
+                                    f"nothing can act on, so this stops rather than degrades.)"
+                                )
+                                stop_kind = "opener"
                             self._stat(state="stopped", stop_reason=stop_reason,
                                        stop_kind=stop_kind)
                             self.stop_event.set()
@@ -1152,18 +1237,14 @@ class Worker(threading.Thread):
                         # The failure screenshot is still taken (the generic handler's own first
                         # act), because the screen is the whole diagnosis here.
                         #
-                        # stop_kind="targeting", NOT the "opener" the stops above publish, and
-                        # that is the whole of the fix this line used to carry a note about. It
-                        # was "opener" because that was the channel the hub already branched on;
-                        # the hub titles that branch "opener capacity exhausted", so the one stop
-                        # whose entire point is that we refused to attach a real message to the
-                        # wrong item rendered as a quota problem, with the truth demoted to the
-                        # sub-line. Two things make this its own kind rather than better wording
-                        # there: the CAUSE is not OpenerService at all (nothing was exhausted --
+                        # stop_kind="targeting", NOT the "opener" or "targeting_calibration"
+                        # kinds the pre-opener stops above publish. The hub gives this failure
+                        # its own title because its CAUSE is not OpenerService or stale setup --
+                        # nothing was exhausted and calibration was usable:
                         # the opener exists and is fine, the driver could not reach the item it
-                        # is about), and the operator's next move is different (walk to the phone
+                        # is about. The operator's next move is different too: walk to the phone
                         # and read what is on it, possibly an open comment sheet with nothing
-                        # typed in it, rather than check a quota). assets/hub.html renders it
+                        # typed in it, rather than renew calibration. assets/hub.html renders it
                         # 'idle' rather than as an error box, for the same reason this handler
                         # exists at all -- see the paragraph above.
                         self._capture_failure(exc)

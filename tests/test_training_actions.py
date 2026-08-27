@@ -55,6 +55,41 @@ def test_training_checkpoint_has_only_valid_like_dislike_capability():
     assert bridge.submit(_body(card, "continue"))[2] == 400
 
 
+def test_training_checkpoint_exposes_ordered_profile_images_only_through_bound_endpoint():
+    bridge, worker = TrainingActionBridge(), _Worker()
+    bridge.register(worker)
+    card = bridge.publish_checkpoint(
+        worker, _FRAME, _Pick(), profile_frames=(_FRAME, _FRAME))
+
+    checkpoint = bridge.snapshot()["checkpoints"][0]
+    assert checkpoint["profile_image_count"] == 2
+    assert "_profile_frames" not in checkpoint
+    assert "_profile_frames" not in card
+    assert bridge.profile_review_image(
+        run_id=card["run_id"], app=card["app"],
+        profile_token=card["profile_token"], index=0) == _FRAME
+    assert bridge.profile_review_image(
+        run_id=card["run_id"], app=card["app"],
+        profile_token=card["profile_token"], index=1) == _FRAME
+    assert bridge.profile_review_image(
+        run_id=card["run_id"], app=card["app"],
+        profile_token="stale", index=0) is None
+    assert bridge.profile_review_image(
+        run_id=card["run_id"], app=card["app"],
+        profile_token=card["profile_token"], index=2) is None
+
+
+def test_training_checkpoint_rejects_malformed_supplementary_profile_frame():
+    bridge, worker = TrainingActionBridge(), _Worker()
+    bridge.register(worker)
+
+    with pytest.raises(ValueError, match="complete PNG frames"):
+        bridge.publish_checkpoint(
+            worker, _FRAME, _Pick(), profile_frames=(_FRAME, b"not png"))
+
+    assert bridge.snapshot()["checkpoints"] == []
+
+
 def test_training_checkpoint_rejects_oversized_frame_without_publishing_card():
     bridge, worker = TrainingActionBridge(), _Worker()
     bridge.register(worker)

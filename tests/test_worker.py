@@ -997,6 +997,113 @@ def test_training_stops_before_a_commentless_safety_block_like():
     assert driver.closed
 
 
+def test_training_stale_hinge_calibration_stops_with_recalibration_action():
+    """A runtime calibration mismatch is a targeting setup problem, not opener exhaustion."""
+    from operation_love.status import RunStatus
+    from operation_love.training_actions import TrainingActionBridge
+
+    class _TestingDriver(FakeDriver):
+        accepts_opener = True
+        supports_training_decision = True
+
+        def targeted_suggestion_blocker(self):
+            return mismatch
+
+        def next_profile(self):
+            pytest.fail("a stale live calibration must stop before the first profile capture")
+
+        def set_training_decision(self, _approval):
+            pass
+
+    class _UnreachableOpenerService:
+        disabled = False
+        stop_requested = False
+        calls = 0
+
+        def maybe_opener(self, *_args, **_kwargs):
+            self.calls += 1
+            pytest.fail("a stale targeting calibration must stop before opener generation")
+
+    mismatch = ("apps.hinge.targeting_calibration is unavailable (the live app build/frame "
+                "geometry does not exactly match schema-v3 calibration "
+                "('10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)))")
+    driver = _TestingDriver(1)
+    service, store, stop = _UnreachableOpenerService(), FakeStore(), threading.Event()
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="training")
+
+    Worker("hinge", driver, FakeDecider("like"), service, store, "run1", _Pacing(), stop,
+           mode="training", status=status,
+           training_action_bridge=TrainingActionBridge()).run()
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "stopped"
+    assert app["stop_kind"] == "targeting_calibration"
+    assert "Capture and validate a fresh targeting calibration" in app["stop_reason"]
+    assert mismatch in app["stop_reason"]
+    assert service.calls == 0
+    assert driver.i == 0
+    assert driver.likes == []
+    assert store.decisions == []
+    assert stop.is_set() and driver.closed
+
+
+def test_training_rechecks_calibration_before_requesting_an_opener():
+    """A build change during capture must not spend a provider request on stale crops."""
+    from operation_love.status import RunStatus
+    from operation_love.training_actions import TrainingActionBridge
+
+    mismatch = ("apps.hinge.targeting_calibration is unavailable (the live app build/frame "
+                "geometry does not exactly match schema-v3 calibration "
+                "('10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)))")
+
+    class _TestingDriver(FakeDriver):
+        accepts_opener = True
+        supports_training_decision = True
+
+        def __init__(self):
+            super().__init__(1)
+            self.blocker = ""
+
+        def targeted_suggestion_blocker(self):
+            return self.blocker
+
+        def next_profile(self):
+            self.blocker = mismatch
+            return super().next_profile()
+
+        def set_training_decision(self, _approval):
+            pass
+
+    class _UnreachableOpenerService:
+        disabled = False
+        stop_requested = False
+
+        def __init__(self):
+            self.calls = 0
+
+        def maybe_opener(self, *_args, **_kwargs):
+            self.calls += 1
+            pytest.fail("a calibration invalidated during capture must stop before opener generation")
+
+    driver, service, store, stop = (
+        _TestingDriver(), _UnreachableOpenerService(), FakeStore(), threading.Event())
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="training")
+
+    Worker("hinge", driver, FakeDecider("like"), service, store, "run1", _Pacing(), stop,
+           mode="training", status=status,
+           training_action_bridge=TrainingActionBridge()).run()
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "stopped"
+    assert app["stop_kind"] == "targeting_calibration"
+    assert mismatch in app["stop_reason"]
+    assert driver.i == 1, "the profile was captured before its runtime calibration changed"
+    assert service.calls == 0
+    assert driver.likes == []
+    assert store.decisions == []
+    assert stop.is_set() and driver.closed
+
+
 @pytest.mark.parametrize("text", ["", " \n\t ", None, 17])
 def test_training_stops_before_navigation_for_an_empty_opener_object(text):
     """A malformed opener object is not a reviewable typed draft."""
@@ -2040,6 +2147,68 @@ def test_auto_stops_when_the_capture_could_not_produce_numbered_items():
     assert "numbered items" in app["stop_reason"]
     assert client.calls == 0, "nothing may be billed for a request that cannot be built"
     assert driver.likes == []
+
+
+def test_auto_stale_hinge_calibration_stops_before_opener_or_like():
+    from operation_love.status import RunStatus
+
+    mismatch = ("apps.hinge.targeting_calibration is unavailable (the live app build/frame "
+                "geometry does not exactly match schema-v3 calibration "
+                "('10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)))")
+    client = FakeOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), FakeStore(), "s")
+    driver = FakeDriver(1)
+    driver.cards[0] = Profile(
+        photos=[b"frame-0"], items_unavailable=mismatch,
+        items_unavailable_kind="targeting_calibration")
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="auto")
+
+    Worker("hinge", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "stopped"
+    assert app["stop_kind"] == "targeting_calibration"
+    assert "fresh targeting calibration" in app["stop_reason"]
+    assert mismatch in app["stop_reason"]
+    assert client.items == []
+    assert driver.likes == []
+
+
+def test_auto_stale_live_calibration_stops_before_profile_capture_or_action():
+    """AUTO must not pass profiles while its live targeting licence is stale."""
+    from operation_love.status import RunStatus
+
+    mismatch = ("apps.hinge.targeting_calibration is unavailable (the live app build/frame "
+                "geometry does not exactly match schema-v3 calibration "
+                "('10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)))")
+
+    class _TestingDriver(FakeDriver):
+        accepts_opener = True
+
+        def targeted_suggestion_blocker(self):
+            return mismatch
+
+        def next_profile(self):
+            pytest.fail("a stale live calibration must stop AUTO before the first capture")
+
+    client, store = FakeOpenerClient(), FakeStore()
+    service = OpenerService(client, CostTracker(PRICING, None), store, "s")
+    driver = _TestingDriver(1)
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="auto")
+
+    Worker("hinge", driver, FakeDecider("dislike"), service, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "stopped"
+    assert app["stop_kind"] == "targeting_calibration"
+    assert mismatch in app["stop_reason"]
+    assert driver.i == 0
+    assert driver.likes == [] and driver.dislikes == 0
+    assert client.calls == 0
+    assert store.decisions == []
+    assert driver.closed
 
 
 def test_auto_does_not_stop_on_items_unavailable_when_openers_are_disabled():

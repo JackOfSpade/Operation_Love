@@ -456,6 +456,11 @@ class HubState:
                                  app: str | None = None) -> dict:
         return self._training_actions.snapshot(run_id=run_id, app=app)
 
+    def training_profile_review_image(self, *, run_id: str, app: str,
+                                      profile_token: str, index: int) -> bytes | None:
+        return self._training_actions.profile_review_image(
+            run_id=run_id, app=app, profile_token=profile_token, index=index)
+
     def submit_training_action(self, body: dict) -> tuple[bool, dict, int]:
         return self._training_actions.submit(body)
 

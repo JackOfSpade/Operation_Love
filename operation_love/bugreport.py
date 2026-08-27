@@ -308,7 +308,38 @@ def _secrets_md() -> str:
     return f"- GEMINI_API_KEY: {shown('GEMINI_API_KEY')}"
 
 
-def _targeting_readiness_md(config_path: str) -> str:
+_TARGETING_CALIBRATION_UNAVAILABLE = "apps.hinge.targeting_calibration is unavailable"
+
+
+def _runtime_targeting_calibration_rejection(hub_state) -> str | None:
+    """Return the latest recorded live-calibration refusal, without reading the device.
+
+    Config validation can establish that a calibration mapping is internally sound, but only the
+    running driver knows whether that mapping is bound to the Hinge build and frame currently on
+    the phone.  Keep this narrowly keyed to the driver's explicit refusal so unrelated opener
+    failures do not turn into misleading calibration guidance.
+    """
+    if hub_state is None:
+        return None
+    try:
+        snapshot = hub_state.snapshot()
+        status = snapshot.get("status") if isinstance(snapshot, dict) else None
+        apps = status.get("apps") if isinstance(status, dict) else None
+        hinge = apps.get("hinge") if isinstance(apps, dict) else None
+        reason = hinge.get("stop_reason") if isinstance(hinge, dict) else None
+        kind = hinge.get("stop_kind") if isinstance(hinge, dict) else None
+    except Exception:  # noqa: BLE001 -- diagnostics must not depend on a stable hub snapshot
+        return None
+    if not isinstance(reason, str):
+        return None
+    # The typed kind is the current contract. Keep the driver sentence as a fallback so reports
+    # generated from status snapshots written before the kind existed remain actionable.
+    if kind != "targeting_calibration" and _TARGETING_CALIBRATION_UNAVAILABLE not in reason:
+        return None
+    return _sanitize_inline(reason)
+
+
+def _targeting_readiness_md(config_path: str, hub_state=None) -> str:
     """Why Hinge is or is not offering numbered targeted openers, as three separable facts.
 
     ADDED 2026-08-22 with the fix for the bug this section exists to have caught. The report
@@ -319,9 +350,9 @@ def _targeting_readiness_md(config_path: str) -> str:
     suggestions were ENABLED under an accepted assumption, while the hub banner said still-photo
     proof was still required.
 
-    So report the whole chain, in the order it gates: the still-photo licence, then the
-    calibration, then the resulting blocker and the one step that would clear it. Any of the
-    three can be the answer, and which one it is has never been visible here.
+    So report the whole chain, in the order it gates: the still-photo licence, config-calibration
+    validity, then the runtime binding and the one step that would clear a refusal. Any of those
+    can be the answer, and which one it is has never been visible here.
 
     Deliberately side-effect free: it reads the config file and the process-local licence slot
     but never calls ``config.validate()``, which would clear and reinstall that slot underneath
@@ -365,7 +396,7 @@ def _targeting_readiness_md(config_path: str) -> str:
         except Exception as exc:  # noqa: BLE001 -- a malformed report config remains reportable
             calibration_problem = _sanitize_inline(str(exc))
     if calibration_valid:
-        calibration_line = "present and validated"
+        calibration_line = "present and validated (static config check)"
     elif isinstance(calibration, dict):
         calibration_line = ("present but not validated"
                             + (f": {calibration_problem}" if calibration_problem else ""))
@@ -375,7 +406,15 @@ def _targeting_readiness_md(config_path: str) -> str:
     lines.append("- `apps.hinge.targeting_calibration`: " + calibration_line)
     blocker = tp.hinge_targeting_unavailable_reason()
     lines.append("- targeting-policy blocker: " + (blocker if blocker else "none"))
-    if blocker is not None and licence_keys:
+    runtime_rejection = _runtime_targeting_calibration_rejection(hub_state)
+    if runtime_rejection:
+        lines.append("- runtime calibration: REJECTED in the latest hub snapshot: `"
+                     + runtime_rejection + "`")
+        lines.append("- next step: recapture and validate a schema-v3 targeting calibration for "
+                     "the live Hinge build/frame geometry; also recapture measured still-photo "
+                     "evidence or explicitly re-accept the unmeasured still-photo assumption "
+                     "for that exact build/device, then resume training")
+    elif blocker is not None and licence_keys:
         # Do not let an unvalidated reporting process contradict the config two lines above.
         # The blocker and next step are read from THIS process's slot; a config that carries a
         # licence key would install one the moment a run validated it, and printing the
@@ -385,9 +424,9 @@ def _targeting_readiness_md(config_path: str) -> str:
                      "run: the config key above would install a licence when a run validates "
                      "it. Re-check inside the run, or with `config.validate(config.load(...))`")
     elif calibration_valid and blocker is None:
-        lines.append("- targeting readiness: ready — the still-photo licence and this device's "
-                     "validated targeting calibration are both active; no targeting setup action "
-                     "remains")
+        lines.append("- targeting config readiness: ready — the still-photo licence and the "
+                     "calibration mapping are valid in config. A live session still requires an "
+                     "exact Hinge app-version/frame match.")
     elif calibration is not None and blocker is None:
         lines.append("- next step: repair or replace the invalid targeting calibration before "
                      "treating numbered targeted suggestions as ready")
@@ -466,6 +505,43 @@ def _sanitize_inline(text: str) -> str:
     _app_diagnostics_md), which is exactly why that section exists instead of a wide table
     column."""
     return " ".join(text.split()).replace("`", "'")
+
+
+_SECRET_ENV_NAME_RE = re.compile(
+    r"(?:^|_)(?:api[_-]?key|access[_-]?token|auth(?:orization)?|bearer|credential|password|"
+    r"secret|token)(?:$|_)",
+    re.IGNORECASE,
+)
+_AUTH_HEADER_RE = re.compile(
+    r"(?i)(\b(?:proxy-)?authorization\s*[:=]\s*)(?:bearer|token|basic)\s+[^\s,;`]+",
+)
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s,;`]+")
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)(\b(?:api[_-]?key|access[_-]?token|auth(?:orization)?|token|secret|password|"
+    r"credential)\b\s*[=:]\s*)(?:[\"']?)([^\s&#,\"'`]+)",
+)
+
+
+def _redact_report_output(text: str) -> str:
+    """Remove credentials from the COMPLETE rendered report, not just its secrets section.
+
+    Diagnostics collect third-party errors, JSONL rows and stdout/stderr.  Any of those can echo a
+    credential even when ``_secrets_md`` correctly reports presence only.  Redacting at the final
+    rendering boundary makes every existing and future section safe by default, while the section
+    builders may still retain their useful, typed presentation logic.  Literal values are taken
+    only from plausibly-secret environment-variable names; redacting all environment values would
+    turn ordinary paths and configuration into misleading ``[REDACTED]`` text.
+    """
+    values = sorted({value for name, value in os.environ.items()
+                     if value and _SECRET_ENV_NAME_RE.search(name)}, key=len, reverse=True)
+    for value in values:
+        # Do not derive or display any part of the credential.  The length guard avoids replacing
+        # incidental one-character values such as a test flag throughout normal prose.
+        if len(value) >= 4:
+            text = text.replace(value, "[REDACTED]")
+    text = _AUTH_HEADER_RE.sub(r"\1[REDACTED]", text)
+    text = _BEARER_RE.sub("Bearer [REDACTED]", text)
+    return _SECRET_ASSIGNMENT_RE.sub(r"\1[REDACTED]", text)
 
 
 def _compact_item_index_refusal_text(value: object) -> str:
@@ -644,7 +720,8 @@ def _recent_openers_md(hub_state) -> str:
 
     The second half of that sentence used to read "whether it was ANCHORED to the like screen",
     and doc 5.9's observe inversion retired that framing along with the anchor's last caller:
-    both modes now send numbered item crops and the model CHOOSES the item, so the useful fact
+    AUTO, Training, and advisory modes now send numbered item crops and the model CHOOSES the
+    item, so the useful fact
     is the request shape (`index_space`) rather than an anchor flag. Older entries still carry
     the flag and still render by it -- see the anchor_note branch below.
 
@@ -681,12 +758,26 @@ def _recent_openers_md(hub_state) -> str:
         return ("- (no committed opener records in the active/last run; an unacted staged "
                 "opener draft is intentionally absent)")
     newest_first = list(reversed(entries))[:_RECENT_OPENERS_SHOWN]   # ring buffer is newest-LAST
+    # Entries committed before session_mode was added can still be present in the Hub's frozen
+    # last-run snapshot after a code reload.  The status snapshot belongs to the same active or
+    # last run as the opener ring, so its per-app mode is a safe compatibility fallback.
+    legacy_app_modes: dict[str, str] = {}
+    snapshot = getattr(hub_state, "snapshot", None)
+    if callable(snapshot):
+        try:
+            status = snapshot().get("status") or {}
+            for app_name, app_status in (status.get("apps") or {}).items():
+                if isinstance(app_status, dict) and app_status.get("mode") in {"training", "auto"}:
+                    legacy_app_modes[str(app_name)] = str(app_status["mode"])
+        except Exception:  # noqa: BLE001 -- optional compatibility context only
+            pass
     lines = []
     for e in newest_first:
         if not isinstance(e, dict):
             continue
         ts = _sanitize_inline(str(e.get("ts") or "unknown time"))
-        app = _sanitize_inline(str(e.get("app") or "?"))
+        app_name = str(e.get("app") or "?")
+        app = _sanitize_inline(app_name)
         model = _sanitize_inline(str(e.get("model") or "?"))
         advisory = bool(e.get("advisory"))
         index = e.get("index")
@@ -702,7 +793,10 @@ def _recent_openers_md(hub_state) -> str:
         opener = str(e.get("opener") or "")
         if len(opener) > _RECENT_OPENER_TEXT_CHARS:
             opener = opener[:_RECENT_OPENER_TEXT_CHARS] + "…"
-        mode_note = "advisory" if advisory else "auto"
+        explicit_mode = e.get("session_mode")
+        if explicit_mode not in {"advisory", "training", "auto"}:
+            explicit_mode = "advisory" if advisory else legacy_app_modes.get(app_name, "auto")
+        mode_note = explicit_mode
         # WHAT THE MODEL WAS LOOKING AT: request shape, not a retired live-sheet flag.
         if index_space == "model_items":
             anchor_note = "🟢 chose from numbered item crops"
@@ -1155,6 +1249,92 @@ def _item_index_refusal_summary_md(lines: list[str]) -> str:
         # pointer so an incident's repeated prose cannot dominate the whole report.
         out.append(f"- {pair_text}: {compact_geometry}; {step_text}; {evidence_text}. "
                    f"Full refusal: `{reason}`")
+    return "\n".join(out)
+
+
+def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
+    """Render a failed still-photo candidate walk separately from index construction.
+
+    An ``item_index_refused`` record is also the terminal envelope used when the dwell walk loses
+    its measured return anchor.  That does *not* imply a frame pair in the original enumeration
+    index failed: the index may be complete and every one of its deltas measured.  New candidate
+    rows carry ``navigation_refusal`` with the closed-loop plan and measurement; older rows retain
+    only a code.  Both shapes are useful, but only the new shape lets a report distinguish an
+    over-delivered gesture from an unmeasurable chain or unverified return.
+    """
+    records: list[dict] = []
+    for raw in lines:
+        try:
+            rec = json.loads(raw)
+        except Exception:  # noqa: BLE001 -- a partial action row must not hide a later one
+            continue
+        if (isinstance(rec, dict)
+                and rec.get("action") == "still_photo_dwell_walk_candidate"
+                and rec.get("outcome") in {
+                    "navigation_refused", "navigation_refused_returned",
+                    "navigation_refused_return_unverified", "return_unverified",
+                }):
+            records.append(rec)
+    if not records:
+        return ""
+
+    def number(value: object) -> int | float | None:
+        return (value if isinstance(value, (int, float)) and not isinstance(value, bool)
+                else None)
+
+    out: list[str] = []
+    for rec in records[-_CAPTURE_SPLITS_SHOWN:]:
+        heart = number(rec.get("heart_ordinal"))
+        candidate = f"page heart {heart:g}" if heart is not None else "unknown page heart"
+        telemetry = rec.get("navigation_refusal")
+        if not isinstance(telemetry, dict):
+            code = _sanitize_inline(str(rec.get("reason") or "not recorded"))
+            outcome = _sanitize_inline(str(rec.get("outcome") or "unknown"))
+            out.append(f"- {candidate}: dwell-navigation {outcome} (`{code}`); legacy/incomplete "
+                       "trace has no structured plan, measured climb, or anchor-return telemetry")
+            continue
+
+        code = _sanitize_inline(str(telemetry.get("code") or rec.get("reason") or "not recorded"))
+        frame_index = number(telemetry.get("frame_index"))
+        frame_note = f" at navigation frame {frame_index:g}" if frame_index is not None else ""
+        planned = telemetry.get("planned") if isinstance(telemetry.get("planned"), dict) else {}
+        achieved = telemetry.get("achieved") if isinstance(telemetry.get("achieved"), dict) else {}
+        plan_bits: list[str] = []
+        for key, label in (("step_px", "step"), ("bound_px", "bound"),
+                           ("spacing_px", "spacing"), ("sized_against_px", "sized against")):
+            value = number(planned.get(key))
+            if value is not None:
+                plan_bits.append(f"{label} {value:g}px")
+        window = planned.get("window_px")
+        if (isinstance(window, (list, tuple)) and len(window) == 2
+                and number(window[0]) is not None and number(window[1]) is not None):
+            plan_bits.append(f"window {number(window[0]):g}..{number(window[1]):g}px")
+        basis = planned.get("basis")
+        if isinstance(basis, str) and basis:
+            plan_bits.append(f"basis `{_sanitize_inline(basis)}`")
+        plan_text = "; ".join(plan_bits) if plan_bits else "planned step telemetry unavailable"
+
+        achieved_bits: list[str] = []
+        delta = number(achieved.get("delta_px", achieved.get("measurement_delta_px")))
+        climb = number(achieved.get("climb_px"))
+        overshoot = number(achieved.get("overshoot_px"))
+        if delta is not None:
+            achieved_bits.append(f"shift {delta:+g}px")
+        if climb is not None:
+            achieved_bits.append(f"climb {climb:g}px")
+        if overshoot is not None:
+            achieved_bits.append(f"overshoot {overshoot:g}px")
+        status = achieved.get("status", achieved.get("measurement_status"))
+        if isinstance(status, str) and status:
+            achieved_bits.append(f"estimator `{_sanitize_inline(status)}`")
+        achieved_text = "; ".join(achieved_bits) if achieved_bits else "achieved-climb telemetry unavailable"
+
+        return_outcome = _sanitize_inline(str(telemetry.get("return_outcome") or "not recorded"))
+        restored = number(telemetry.get("restored_page_shift_px"))
+        anchor_text = (f"anchor return `{return_outcome}`"
+                       + (f" at {restored:+g}px" if restored is not None else ""))
+        out.append(f"- {candidate}{frame_note}: dwell-navigation refusal `{code}`; {plan_text}; "
+                   f"{achieved_text}; {anchor_text}")
     return "\n".join(out)
 
 
@@ -1873,13 +2053,31 @@ def _latest_completed_capture_timing_md(lines: list[str]) -> str:
     ))
     dwell_s = _finite_nonnegative_action_seconds(fold_record, "still_photo_dwell_s")
     if dwell_s is not None and dwell_s <= fold_s:
-        dwell_detail = "still-photo dwell " + _format_capture_timing_seconds(dwell_s)
+        dwell_detail = "still-photo safety checks " + _format_capture_timing_seconds(dwell_s)
+        share_detail = ""
         if fold_s > 0:
             # Divide before scaling: valid large finite durations must not overflow merely
             # because the derived percentage is being rendered.
             share = (dwell_s / fold_s) * 100
             if math.isfinite(share):
-                dwell_detail += f" ({share:.1f}% of fold)"
+                share_detail = f"{share:.1f}% of fold"
+        breakdown = fold_record.get("still_photo_dwell_breakdown")
+        passive_s = (_finite_nonnegative_action_seconds(breakdown, "passive_observation_s")
+                     if isinstance(breakdown, dict) else None)
+        remainder_s = (
+            _finite_nonnegative_action_seconds(breakdown, "navigation_and_overhead_s")
+            if isinstance(breakdown, dict) else None)
+        # The split is optional, diagnostic detail.  Accept it only when it reconstructs the
+        # compatibility total closely enough for the row's six-decimal JSON rounding; a torn or
+        # hand-edited object must not make the report confidently misattribute time.
+        if (passive_s is not None and remainder_s is not None
+                and math.isclose(passive_s + remainder_s, dwell_s, abs_tol=0.000002)):
+            split_detail = (
+                "passive observation " + _format_capture_timing_seconds(passive_s)
+                + "; navigation/overhead " + _format_capture_timing_seconds(remainder_s))
+            share_detail = f"{share_detail}; {split_detail}" if share_detail else split_detail
+        if share_detail:
+            dwell_detail += f" ({share_detail})"
         details.append(dwell_detail)
     details.append(f"total {_format_capture_timing_seconds(total_s)}")
     return "- " + "; ".join(details) + "."
@@ -1954,20 +2152,46 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path) -> str:
     resumed = record.get("action") == "auto_opener_resumed_send"
     outcome_evidence_key = "resumed_send_evidence_id" if resumed else "pre_send_evidence_id"
     outcome = "no linked send outcome was logged"
+    legacy_training_dislike = False
     if evidence_id:
         linked = [
             rec for rec in records[record_index + 1:]
             if rec.get(outcome_evidence_key) == evidence_id
-            and rec.get("action") in {"like_attempt", "like_rejected", "like"}
+            and rec.get("action") in {
+                "like_attempt", "like_rejected", "like", "training_dislike"
+            }
         ]
+        if not linked and session_mode == "training" and not resumed:
+            # Rows written before training_dislike carried pre_send_evidence_id can still be
+            # joined safely inside one checkpoint: stop at the next capture/opener boundary
+            # and require the same model item.  This repairs the exact misleading wording in
+            # the 2026-08-26 report without treating an arbitrary later Dislike as this draft's
+            # outcome.  New rows use the explicit evidence-ID branch above.
+            checkpoint_tail = []
+            for candidate in records[record_index + 1:]:
+                if candidate.get("action") in {
+                        "capture", "auto_opener_pre_send", "auto_opener_resumed_send"}:
+                    break
+                checkpoint_tail.append(candidate)
+            linked = [
+                rec for rec in checkpoint_tail
+                if rec.get("action") == "training_dislike"
+                and rec.get("model_item_index") == record.get("model_item_index")
+            ]
+            legacy_training_dislike = bool(linked)
         if linked:
             result = linked[-1]
             labels = {
                 "like": "LIKE verified as landed",
                 "like_rejected": "LIKE rejected",
                 "like_attempt": "Send Like attempted; final result not logged",
+                "training_dislike": (
+                    "DISLIKE verified as landed; typed opener was not sent or committed"
+                ),
             }
             outcome = f"{labels[result['action']]} at `{_record_time(result)}`"
+            if legacy_training_dislike:
+                outcome += " (legacy sequence; the outcome row predates evidence-ID linkage)"
 
     target = record.get("model_item_index")
     target_display = str(target) if isinstance(target, int) and not isinstance(target, bool) else "not recorded"
@@ -2436,6 +2660,10 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
             if refusals:
                 out.append("  - item-index refusals and realised-step stats:")
                 out.extend(f"    {line}" for line in refusals.splitlines())
+            dwell_navigation = _dwell_navigation_refusal_summary_md(raw_lines)
+            if dwell_navigation:
+                out.append("  - dwell-navigation refusals (separate from item-index correspondence):")
+                out.extend(f"    {line}" for line in dwell_navigation.splitlines())
             repairs = _item_index_repair_summary_md(raw_lines)
             if repairs:
                 out.append("  - item-index conservative repairs:")
@@ -2531,7 +2759,7 @@ def build_report(hub_state=None, description: str = "", config_path: str = "conf
         f"## Dependencies\n{_safe_section(_deps_md)}\n\n"
         f"## Capabilities\n{_safe_section(_capabilities_md, config_path)}\n\n"
         f"## Config (config.yaml)\n{_safe_section(_config_md, config_path)}\n\n"
-        f"## Hinge targeting readiness\n{_safe_section(_targeting_readiness_md, config_path)}\n\n"
+        f"## Hinge targeting readiness\n{_safe_section(_targeting_readiness_md, config_path, hub_state)}\n\n"
         f"## Secrets (presence only — never raw values)\n{_safe_section(_secrets_md)}\n\n"
         f"## Diagnostic improvement\n{_safe_section(_diagnostic_improvement_md)}\n\n"
         f"## Run status\n{_safe_section(_status_md, hub_state)}\n\n"
@@ -2540,4 +2768,5 @@ def build_report(hub_state=None, description: str = "", config_path: str = "conf
         f"## Debug log (on-disk actions + screenshots)\n{_safe_section(_debug_log_md, config_path)}\n\n"
         f"## Recent logs\n"
     )
-    return _cap_report_lines(head + _safe_section(_logs_md, _MAX_REPORT_LINES - _line_count(head)))
+    report = head + _safe_section(_logs_md, _MAX_REPORT_LINES - _line_count(head))
+    return _cap_report_lines(_redact_report_output(report))

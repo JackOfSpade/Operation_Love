@@ -71,6 +71,46 @@ def test_gemini_key_is_redacted():
         del os.environ["GEMINI_API_KEY"]
 
 
+def test_final_report_redacts_secrets_from_debug_rows_logs_and_hub_free_text(monkeypatch):
+    """The secrets section was already presence-only, but arbitrary diagnostic inputs can echo
+    a provider credential.  The final report boundary must protect every section at once."""
+    secret = "AIzaGeminiSecretValueForRegression"
+    monkeypatch.setenv("GEMINI_API_KEY", secret)
+    bugreport._LOG_RING.clear()
+    bugreport._LOG_RING.extend([
+        f"provider said Authorization: Bearer {secret}",
+        f"request failed at https://example.test/?access_token={secret}",
+        f"debug row api_key={secret}",
+    ])
+
+    class _SensitiveHub:
+        def snapshot(self):
+            return {"running": False, "error": None, "status": {
+                "phase": "stopped", "mode": "auto", "running": False,
+                "labels": 0, "min_labels": 40, "ranker_ready": False,
+                "budget_spent": 0.0, "budget_cap": 5.0, "openers": 0,
+                "apps": {"hinge": {"app": "hinge", "mode": "auto", "state": "error",
+                                     "last_decision": None, "last_score": None, "swipes_run": 0,
+                                     "stop_reason": f"provider api_key={secret}",
+                                     "error": f"Authorization: Bearer {secret}"}}}}
+
+    monkeypatch.setattr(
+        bugreport, "_debug_log_md",
+        lambda _config: f"debug JSONL row: {{\"token\": \"{secret}\"}}",
+    )
+    try:
+        md = bugreport.build_report(_SensitiveHub(), description=f"my key was {secret}")
+    finally:
+        bugreport._LOG_RING.clear()
+
+    assert secret not in md
+    assert "GEMINI_API_KEY: present" in md
+    assert "Authorization: [REDACTED]" in md
+    assert "api_key=[REDACTED]" in md
+    assert "access_token=[REDACTED]" in md
+    assert '"token": "[REDACTED]"' in md
+
+
 def test_log_capture_roundtrip():
     bugreport.install_log_capture()
     print("OPLOVE_TEST_LOGLINE_marker")
@@ -566,6 +606,40 @@ def test_debug_log_renders_training_resumed_send_snapshot_and_preserves_approval
     assert "latest Training opener pre-send evidence:" in report
 
 
+def test_debug_log_links_training_dislike_without_calling_it_a_missing_send(tmp_path):
+    run = tmp_path / "run_training_dislike_evidence"
+    run.mkdir(parents=True)
+    frame = b"typed opener shown at the training checkpoint"
+    opener = "A draft the reviewer chose not to send."
+    evidence_id = hashlib.sha256(frame + b"\0" + opener.encode()).hexdigest()
+    shot = "00016_auto_opener_pre_send_before.png"
+    (run / shot).write_bytes(frame)
+    records = [
+        {
+            "ts": "2026-08-26T21:01:11", "action": "auto_opener_pre_send",
+            "before": shot, "opener": opener,
+            "opener_sha256": hashlib.sha256(opener.encode()).hexdigest(),
+            "frame_sha256": hashlib.sha256(frame).hexdigest(),
+            "evidence_id": evidence_id, "model_item_index": 3,
+            "session_mode": "training",
+        },
+        {
+            "ts": "2026-08-26T21:02:29", "action": "training_dislike",
+            "model_item_index": 3, "advance_proof": "name",
+        },
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    evidence = bugreport._latest_auto_opener_evidence_md(
+        (run / "actions.jsonl").read_text().splitlines(), run)
+
+    assert "session mode: training" in evidence
+    assert "DISLIKE verified as landed" in evidence
+    assert "typed opener was not sent or committed" in evidence
+    assert "legacy sequence" in evidence
+    assert "no linked send outcome was logged" not in evidence
+
+
 def test_debug_log_flags_tampered_auto_opener_evidence(tmp_path):
     run = tmp_path / "run_tampered_auto_opener_evidence"
     run.mkdir(parents=True)
@@ -707,7 +781,25 @@ def test_debug_report_summarises_latest_completed_capture_timing_before_stop(tmp
 
     assert "latest completed capture timing:" in md
     assert "profile `Emma`; read 56.5s; fold 193.8s" in md
-    assert "still-photo dwell 181.3s (93.6% of fold); total 250.3s" in md
+    assert "still-photo safety checks 181.3s (93.6% of fold); total 250.3s" in md
+
+
+def test_capture_timing_summary_splits_passive_observation_from_navigation_overhead():
+    lines = [
+        json.dumps({"action": "capture_timing_summary", "iter_wall_s_total": 76.121569}),
+        json.dumps({"action": "capture_fold_timing", "photos": 17,
+                    "fold_wall_s": 196.794552, "still_photo_dwell_s": 186.624577,
+                    "still_photo_dwell_breakdown": {
+                        "passive_observation_s": 51.866999,
+                        "navigation_and_overhead_s": 134.757578}}),
+        json.dumps({"action": "capture", "photos": 17, "profile_name": "Manon"}),
+    ]
+
+    summary = bugreport._latest_completed_capture_timing_md(lines)
+
+    assert "still-photo safety checks 186.6s (94.8% of fold" in summary
+    assert "passive observation 51.9s" in summary
+    assert "navigation/overhead 134.8s" in summary
 
 
 def test_capture_timing_summary_fails_closed_for_unpaired_or_optional_bad_fields():
@@ -727,7 +819,7 @@ def test_capture_timing_summary_fails_closed_for_unpaired_or_optional_bad_fields
     ]
     summary = bugreport._latest_completed_capture_timing_md(optional_bad_dwell)
     assert "read 12.0s; fold 8.0s; total 20.0s" in summary
-    assert "still-photo dwell" not in summary
+    assert "still-photo safety checks" not in summary
 
 
 @pytest.mark.parametrize("bad_line", [
@@ -787,7 +879,7 @@ def test_capture_timing_summary_omits_undefined_zero_fold_share():
     ]
 
     summary = bugreport._latest_completed_capture_timing_md(lines)
-    assert "still-photo dwell 0.0s" in summary
+    assert "still-photo safety checks 0.0s" in summary
     assert "% of fold" not in summary
 
 
@@ -1095,6 +1187,67 @@ def test_debug_log_section_summarises_item_index_refusals_and_realised_steps(tmp
     assert "loaded module `/repo/operation_love/drivers/item_index.py`" in md
     assert "in-memory indexer `bbbbbbbbbbbb`" in md
     assert "in-memory splitter `aaaaaaaaaaaa`" in md
+
+
+def test_debug_log_separates_dwell_navigation_overshoot_from_index_refusal(tmp_path):
+    """A complete item index can later lose its dwell-walk anchor.  The report must name the
+    navigation loop (and its actual plan/measurement), not invent a broken index frame pair."""
+    run = tmp_path / "run_dwell_navigation_refusal"
+    run.mkdir(parents=True)
+    records = [
+        {"action": "still_photo_dwell_walk_candidate", "heart_ordinal": 6,
+         "outcome": "navigation_refused_return_unverified", "reason": "scroll_overshot",
+         "navigation_refusal": {
+             "schema_version": 1, "code": "scroll_overshot", "frame_index": 1,
+             "return_outcome": "unverified", "restored_page_shift_px": None,
+             "planned": {"step_px": 292, "bound_px": 292, "spacing_px": 812,
+                         "sized_against_px": 812, "frac": 0.13, "window_px": [219, 292],
+                         "basis": "card_extent"},
+             "achieved": {"measurement_status": "measured", "measurement_delta_px": -500,
+                          "climb_px": 500, "overshoot_px": 208,
+                          "measurement_confidence": 0.98, "measurement_agreeing": 6,
+                          "measurement_dissenting": 0, "measurement_eligible": 6},
+         }},
+        # The normal terminal envelope is deliberately present too: this must not cause the
+        # renderer to call it an item-index correspondence failure.
+        {"action": "item_index_refused", "reason": "the dwell return is unsafe",
+         "steps_px": [257, 455, 540], "refused_pairs": []},
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "dwell-navigation refusals (separate from item-index correspondence):" in md
+    assert "page heart 6 at navigation frame 1" in md
+    assert "dwell-navigation refusal `scroll_overshot`" in md
+    assert "step 292px; bound 292px; spacing 812px; sized against 812px" in md
+    assert "window 219..292px; basis `card_extent`" in md
+    assert "shift -500px; climb 500px; overshoot 208px; estimator `measured`" in md
+    assert "anchor return `unverified`" in md
+    assert "no specific failing pair recorded" in md  # honest index summary, not a false pair
+
+
+def test_dwell_navigation_refusal_summary_tolerates_legacy_and_malformed_rows(tmp_path):
+    run = tmp_path / "run_dwell_navigation_legacy"
+    run.mkdir(parents=True)
+    records = [
+        {"action": "still_photo_dwell_walk_candidate", "heart_ordinal": 2,
+         "outcome": "navigation_refused", "reason": "scroll_overshot"},
+        {"action": "still_photo_dwell_walk_candidate", "heart_ordinal": True,
+         "outcome": "return_unverified", "navigation_refusal": {
+             "code": "bad`\n# fake heading", "frame_index": True,
+             "planned": {"step_px": True, "window_px": ["bad", None]},
+             "achieved": {"climb_px": "bad"}, "return_outcome": ["bad"]}},
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "page heart 2: dwell-navigation navigation_refused (`scroll_overshot`)" in md
+    assert "legacy/incomplete trace has no structured plan" in md
+    assert "unknown page heart: dwell-navigation refusal `bad' # fake heading`" in md
+    assert "planned step telemetry unavailable" in md
+    assert not any(line.strip().startswith("# fake heading") for line in md.splitlines())
 
 
 def test_compact_debug_tail_line_truncates_long_items_unnumbered_like_items_unavailable():
@@ -2261,14 +2414,21 @@ def _opener_entry(ts="2026-08-10T12:00:00", app="hinge", model="gemini-2.5-flash
 
 
 class _FakeHubOpeners:
-    """Stands in for HubState: build_report/_recent_openers_md only ever call
-    .recent_openers() on it, never .snapshot() -- this section no longer reads the live
-    per-app status fields at all."""
+    """Minimal HubState stand-in without optional last-run mode compatibility context."""
     def __init__(self, entries):
         self._entries = entries
 
     def recent_openers(self):
         return self._entries
+
+
+class _FakeHubOpenersWithStatus(_FakeHubOpeners):
+    def __init__(self, entries, mode):
+        super().__init__(entries)
+        self._mode = mode
+
+    def snapshot(self):
+        return {"status": {"apps": {"hinge": {"mode": self._mode}}}}
 
 
 def test_recent_openers_section_handles_no_hub_gracefully():
@@ -2285,6 +2445,24 @@ def test_recent_openers_section_handles_empty_list_gracefully():
     md = bugreport._recent_openers_md(_FakeHubOpeners([]))
     assert "no committed opener records" in md
     assert "unacted staged opener draft" in md
+
+
+def test_recent_openers_section_reports_explicit_training_mode():
+    entry = _opener_entry(advisory=False)
+    entry["session_mode"] = "training"
+
+    md = bugreport._recent_openers_md(_FakeHubOpeners([entry]))
+
+    assert " · training · " in md
+    assert " · auto · " not in md
+
+
+def test_recent_openers_section_uses_last_run_mode_for_legacy_training_entry():
+    md = bugreport._recent_openers_md(
+        _FakeHubOpenersWithStatus([_opener_entry(advisory=False)], "training"))
+
+    assert " · training · " in md
+    assert " · auto · " not in md
 
 
 def test_recent_openers_section_renders_newest_first_and_caps_at_the_shown_limit():
@@ -2586,7 +2764,7 @@ def test_the_report_names_the_calibration_as_the_next_step_once_a_licence_is_ins
 
 
 def test_targeting_readiness_does_not_recommend_calibration_that_is_already_valid(tmp_path):
-    """A ready policy + a valid per-device mapping means setup is complete, not pending."""
+    """A valid mapping is config-ready, while a live session still binds it exactly."""
     from operation_love import targeting_policy as tp
     import yaml
 
@@ -2603,10 +2781,54 @@ def test_targeting_readiness_does_not_recommend_calibration_that_is_already_vali
         tp._reset_installed_still_photo_bound_for_tests()
 
     assert "targeting-policy blocker: none" in md
-    assert "targeting_calibration`: present and validated" in md
-    assert "targeting readiness: ready" in md
-    assert "no targeting setup action remains" in md
+    assert "targeting_calibration`: present and validated (static config check)" in md
+    assert "targeting config readiness: ready" in md
+    assert "exact Hinge app-version/frame match" in md
     assert tp.TARGETING_SETUP_NEXT_STEP_CALIBRATE not in md
+
+
+def test_targeting_readiness_overrides_config_ready_when_live_calibration_is_rejected(tmp_path):
+    """A stale version-bound mapping must point to recapture, never claim setup is complete."""
+    from operation_love import targeting_policy as tp
+    import yaml
+
+    class _RuntimeCalibrationRejectedHub:
+        REASON = ("Training could not prepare a verifiable targeted opener for this profile: "
+                  "apps.hinge.targeting_calibration is unavailable "
+                  "(the live app build/frame geometry does not exactly match schema-v3 "
+                  "calibration ('10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400))), so a "
+                  "model-selected item could not be verified or targeted")
+
+        def snapshot(self):
+            return {"running": False, "error": None, "status": {
+                "phase": "stopped", "mode": "training", "running": False,
+                "labels": 59, "min_labels": 40, "ranker_ready": True,
+                "budget_spent": 0.0, "budget_cap": 5.0, "openers": 0,
+                "apps": {"hinge": {"app": "hinge", "mode": "training", "state": "stopped",
+                                    "last_decision": None, "last_score": None, "swipes_run": 0,
+                                    "error": None, "stop_reason": self.REASON,
+                                    "stop_kind": "targeting_calibration"}}}}
+
+    tp.install_accepted_still_photo_assumption(tp.StillPhotoAssumptionAcceptance(
+        acceptance=tp.STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION, device="synthetic-pixel",
+        hinge_version_name="10.0.1", accepted_at="2026-08-21", rationale="accepted"))
+    try:
+        path = _targeting_config(tmp_path, licence_key="still_photo_assumption_acceptance")
+        raw = yaml.safe_load(Path(path).read_text())
+        raw["apps"]["hinge"]["targeting_calibration"] = _valid_targeting_calibration()
+        Path(path).write_text(yaml.safe_dump(raw))
+        md = bugreport.build_report(_RuntimeCalibrationRejectedHub(), config_path=path)
+    finally:
+        tp._reset_installed_still_photo_bound_for_tests()
+
+    assert "targeting config readiness: ready" not in md
+    assert "runtime calibration: REJECTED in the latest hub snapshot" in md
+    assert "targeting_calibration" in md
+    assert "'10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)" in md
+    assert "next step: recapture and validate a schema-v3 targeting calibration" in md
+    assert "explicitly re-accept the unmeasured still-photo assumption" in md
+    assert "for that exact build/device" in md
+    assert "no targeting setup action remains" not in md
 
 
 def test_targeting_readiness_does_not_treat_an_invalid_mapping_as_ready(tmp_path):

@@ -465,6 +465,7 @@ def test_hub_training_checkpoint_shows_the_typed_opener_with_like_and_dislike():
         "const document = {querySelector(){ return layout; }};",
         "let _trainingCheckpoint = null; let _trainingRequest = 0;",
         "let _trainingActionBusy = false; let _trainingBusyKey = ''; let _trainingBusyRequest = 0;",
+        "let _trainingImageKey = ''; let _trainingImageIndex = 0;",
         "const _trainingIdempotency = new Map();",
         _extract_js_function(_PAGE, "escHtml"),
         _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
@@ -472,6 +473,8 @@ def test_hub_training_checkpoint_shows_the_typed_opener_with_like_and_dislike():
         _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
         _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
         _extract_js_function(_PAGE, "trainingActionBusyFor"),
+        _extract_js_function(_PAGE, "checkpointReviewImages"),
+        _extract_js_function(_PAGE, "syncTrainingImageState"),
         _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
         "renderTrainingCheckpoint({run_id:'r1',app:'hinge',profile_token:'p1',approval_token:'a1',"
         "image_data_url:'data:image/png;base64,AA==',opener:'Try the taco place in your photo?',"

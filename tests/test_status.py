@@ -193,6 +193,15 @@ def test_stop_reason_defaults_to_none_and_survives_serialization():
     assert view["app"]["stop_reason"] == "run budget reached"
 
 
+def test_targeting_calibration_stop_kind_is_valid_and_serialized():
+    s = _mk()
+    s.set_app("hinge", state="stopped", stop_reason="fresh calibration required",
+              stop_kind="targeting_calibration")
+    app = s.app_view("hinge")["app"]
+    assert app["stop_kind"] == "targeting_calibration"
+    assert app["stop_reason"] == "fresh calibration required"
+
+
 def test_app_view_includes_app_slice_and_global():
     s = _mk(labels=7)
     s.record_swipe("bumble", "like", 0.91)

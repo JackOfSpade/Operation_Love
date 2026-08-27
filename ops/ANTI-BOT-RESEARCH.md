@@ -720,6 +720,24 @@ forging a release: that artifact was earned by a production OBSERVE run on a bui
 longer installed. It is deleted with a comment saying so. OBSERVE runs today on the new
 calibration; AUTO fails closed until a production OBSERVE validation is performed on 10.0.1.
 
+### Addendum 2026-08-26 — 10.1.0 reconfirmed that calibration is build evidence, not configuration
+
+The live Hinge app advanced from the calibrated 10.0.1 build to 10.1.0 while retaining the same
+1080x2400 framebuffer. The exact app-version/frame gate refused the 10.0.1 calibration, as
+intended. The matching frame size is not evidence that the measured perceptions above remain
+valid: the prior 9.134.0-to-10.0.1 update changed three independent perceptions without changing
+that device geometry.
+
+This refusal is carried as `Profile.items_unavailable_kind=targeting_calibration` and published
+as `stop_kind=targeting_calibration`, before an opener request, gesture, or label. The
+operator-facing state is **"targeting calibration must be renewed"**. It prompted the separately
+recorded 10.1.0 schema-v3 renewal now installed in `config.yaml`, which enables Training on that
+exact build/device under its matching still-photo-assumption acceptance. AUTO remains closed
+until new production OBSERVE release evidence is earned for that calibration. The historical
+10.0.1 calibration and its release artifact remain an audit record and must not be edited or
+retargeted. `targeting` retains its separate meaning: an opener exists but cannot be attached to
+its selected item.
+
 **Fixed 2026-08-21 — a real video was one approval away from being hearted.** During the held-out capture the tool
 planned an `automated_photo_heart` on a card whose Hinge mute control matched at **1.0000** — a
 video, which `hinge_photos_only_v1` must never number. Only the reviewer's `RESTART_PROFILE`

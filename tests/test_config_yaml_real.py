@@ -25,7 +25,7 @@ def cfg():
 def test_config_yaml_loads_without_error(cfg):
     """The shipped file parses and passes every offline startup validation."""
     assert cfg.enabled_apps                        # at least one app
-    assert cfg.mode in {"observe", "auto"}
+    assert cfg.mode in {"training", "auto"}
     assert cfg.budget.run_budget_usd is not None   # a run budget is set
     validate(cfg)
 
@@ -49,6 +49,8 @@ def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
     cal = cfg.apps["hinge"]["targeting_calibration"]
     assert cal["schema_version"] == 3
     assert cal["device"] == cfg.apps["hinge"]["serial"], "calibration must bind the exact serial"
+    assert cal["hinge_version_name"] == "10.1.0"
+    assert list(cal["frame_size_px"]) == [1080, 2400]
     assert cal["item_selection_policy_id"] == "hinge_photos_only_v2"
     assert cal["composer_layout_id"] == "hinge_inline_v1"
     assert 0 < cal["identity_match_max_dist"] < 2.565, "hard different-profile ceiling"
@@ -58,8 +60,8 @@ def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
     assert list(cal["content_band"]) == list(cfg.apps["hinge"]["content_band"])
 
 
-def test_shipped_config_uses_normal_learned_model_auto(cfg):
-    assert cfg.enabled_apps == ["hinge"] and cfg.mode == "auto"
+def test_shipped_config_uses_training_until_live_auto_release_is_renewed(cfg):
+    assert cfg.enabled_apps == ["hinge"] and cfg.mode == "training"
     assert cfg.limits == {}
     assert cfg.apps["hinge"]["touch_backend"] == "uhid"
     assert "auto_trial" not in cfg.apps["hinge"]

@@ -12,7 +12,7 @@ enabled_apps: [hinge]
 # training = the Hub makes every Like/Dislike decision after the bot has prepared a
 #            targeted typed opener. Each verified choice is stored as a training label.
 # auto     = the bot swipes for you using the model it learned.
-mode: auto                  # training (Hub-only) | auto
+mode: training              # training (Hub-only) | auto
 
 # Per-app options.
 apps:
@@ -185,41 +185,39 @@ apps:
     # To replace it with real evidence later, collect a corpus with tools/hinge_video_bound
     # (owner labeled) or tools/hinge_video_bound_auto (circular), then swap this block for
     # `still_photo_bound_evidence`. The two keys are mutually exclusive by design.
-    # TARGETING CALIBRATION — installed 2026-08-22 from the hybrid AI-reviewed campaign.
+    # TARGETING CALIBRATION — renewed 2026-08-26 on the live Hinge 10.1.0 build.
     #
-    # Emitted by `tools.hinge_calibrate measure` from two SEPARATELY COLLECTED sessions
-    # (targeting_20260822T_calA, targeting_20260822T_heldB), each 2 profiles with zero skips,
-    # every heart and Pass approved at a hash-bound reviewer checkpoint. Strategy
-    # `photo_1_only_v1` — item 1 on every ordinal — so this calibration does NOT exercise
-    # deep-item navigation; the manifests record that and `measure` refuses to mix strategies.
+    # Emitted by `tools.hinge_calibrate measure` from two separately collected calibration
+    # profiles and three held-out profiles, with every permanent action approved at a hash-bound
+    # reviewer checkpoint. Strategy `photo_1_only_v1` — item 1 on every ordinal — so this
+    # calibration does NOT exercise deep-item navigation; the manifests record that and
+    # `measure` refuses to mix strategies.
     #
-    # Measured separations (ops/calibration/targeting_20260822T_heldB/measurement_ledger.json):
-    #   identity  same-profile 0.0    vs different-profile 7.188
-    #   inline    intended     2.365  vs foreign           85.439
-    # Both frozen bounds are CAPPED by prior-corpus limits (2.565 cross-profile, 14.91 foreign
-    # false-match) rather than by this campaign's own wider gaps, which is the conservative
-    # direction: the cap encodes the tightest distance ever observed, not the loosest tonight.
+    # Exact bounds and replay results are in
+    # ops/calibration/targeting_20260826T_terra_calibration_v3/measurement_ledger.json. Both
+    # numeric gates passed with zero foreign accepts and zero false refusals. The inline bound
+    # remains capped by the tighter prior-corpus foreign-match limit.
     #
-    # This is an AUTOMATED CIRCULAR-RISK candidate: AI-reviewed, `human_ground_truth: false`.
-    # It licenses numbered targeted suggestions in Training. It does NOT release AUTO, which
-    # still needs its own historical release artifact (see the note further below).
+    # This is AUTOMATED CIRCULAR-RISK evidence: AI-reviewed, `human_ground_truth: false`. It
+    # licenses numbered targeted suggestions for Training on the exact 10.1.0 build. It does NOT
+    # release AUTO; the production-observe artifact below remains historical 10.0.1 evidence.
     targeting_calibration:
       schema_version: 3
       device: "33111JEHN04475"
-      hinge_version_name: "10.0.1"
+      hinge_version_name: "10.1.0"
       frame_size_px: [1080, 2400]
       composer_layout_id: hinge_inline_v1
       item_selection_policy_id: hinge_photos_only_v2
-      identity_match_max_dist: 2.5649
+      identity_match_max_dist: 0.8852
       inline_item_max_dist: 14.9099
-      calibrated_at: "2026-08-22T23:50:45.216285+00:00 — measured from session(s): targeting_20260822T_calA, targeting_20260822T_heldB"
+      calibrated_at: "2026-08-26T20:17:22.600335+00:00 — measured from session(s): targeting_20260826T_terra_calibration_v2, targeting_20260826T_terra_calibration_v3, targeting_20260826T_terra_heldout, targeting_20260826T_terra_heldout_b, targeting_20260826T_terra_heldout_c"
       identity_band: [0.1, 0.048, 0.8, 0.094]
       content_band: [0.125, 0.875]
     still_photo_assumption_acceptance:
       acceptance: I_ACCEPT_UNMEASURED_CENTERED_AUTOPLAY_ASSUMPTION
-      accepted_at: "2026-08-21 owner decision, recorded in ops/STILL-PHOTO-DISCRIMINATOR.md section 5b"
+      accepted_at: "2026-08-26 owner-directed live calibration renewal for Hinge 10.1.0"
       device: "33111JEHN04475"
-      hinge_version_name: "10.0.1"
+      hinge_version_name: "10.1.0"
       rationale: >-
         Measuring the held-out video false-accept rate needs roughly 420 profiles and 420 real
         passes at the observed rate of one video per seven profiles, which the owner judged
@@ -228,12 +226,12 @@ apps:
         detectable by the byte-exactness test. Accepted residual: a video that is not playing at
         all while observed, meaning stalled, buffering, unloaded, or an ended non-looping clip.
         The re-attach probe gives such a card a second trigger before anything is called a photo.
-    # MANUAL AUTO RELEASE INSTALLED (2026-08-25): this exact legacy production artifact binds
-    # the current 10.0.1 calibration to run d8547ff144b4. The still-photo assumption remains
-    # explicitly UNMEASURED and cannot by itself authorize AUTO; this separate artifact does.
-    # Normal AUTO uses the learned ranker and per-gesture UHID above.
-    # Recalibration, app/device changes, or a changed artifact fail closed and require fresh
-    # release evidence.
+    # HISTORICAL MANUAL AUTO RELEASE (2026-08-25): this exact legacy production artifact binds
+    # the historical 10.0.1 calibration to run d8547ff144b4. The phone is now on 10.1.0, so
+    # neither this mapping nor the calibration above licenses the live build. Keep both as an
+    # immutable audit record; recapture schema-v3 calibration for 10.1.0 and earn fresh release
+    # evidence before AUTO. The still-photo assumption remains explicitly UNMEASURED and cannot
+    # by itself authorize AUTO.
     observe_release_evidence:
       schema_version: 1
       calibration_calibrated_at: "2026-08-22T23:50:45.216285+00:00 — measured from session(s): targeting_20260822T_calA, targeting_20260822T_heldB"

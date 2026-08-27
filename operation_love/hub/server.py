@@ -80,6 +80,15 @@ class _Handler(BaseHTTPRequestHandler):
     def _json(self, obj, code: int = 200) -> None:
         self._send(code, json.dumps(obj), "application/json")
 
+    def _training_image(self, data: bytes) -> None:
+        """Serve one immutable, capability-bound review PNG without repeating it in JSON."""
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "private, max-age=3600, immutable")
+        self.end_headers()
+        self.wfile.write(data)
+
     def _request_authority(self) -> tuple[str, int] | None:
         """Return the normalized loopback Host authority, or ``None`` if invalid.
 
@@ -163,6 +172,21 @@ class _Handler(BaseHTTPRequestHandler):
             query = parse_qs(urlparse(self.path).query)
             self._json(self.state.training_action_snapshot(
                 run_id=query.get("run_id", [None])[0], app=query.get("app", [None])[0]))
+        elif path == "/api/training/image":
+            from urllib.parse import parse_qs, urlparse
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                index = int(query.get("index", [""])[0])
+            except (TypeError, ValueError):
+                index = -1
+            data = self.state.training_profile_review_image(
+                run_id=query.get("run_id", [""])[0],
+                app=query.get("app", [""])[0],
+                profile_token=query.get("profile_token", [""])[0], index=index)
+            if data is None:
+                self._json({"error": "training profile image not found"}, 404)
+            else:
+                self._training_image(data)
         elif path == "/api/config":
             self._json(self.state.config_defaults())
         elif path == "/api/eval":

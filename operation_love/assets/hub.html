@@ -17,6 +17,30 @@
   .training-panel { display:none; margin-top:22px; position:sticky; top:18px; }
   .training-panel .target-image { display:block; width:100%; max-height:440px; object-fit:contain;
                                       background:#0c0c10; border:1px solid rgba(255,255,255,.09); border-radius:9px; }
+  .training-image-wrap { position:relative; margin-top:6px; overflow:hidden; border-radius:9px; }
+  .training-image-zoom-trigger { display:block; width:100%; padding:0; border:0; border-radius:9px;
+                                 background:transparent; cursor:zoom-in; }
+  .training-image-wrap .target-image { margin:0; }
+  .training-image-nav { position:absolute; right:10px; bottom:10px; display:flex;
+                        flex-direction:column; gap:6px; z-index:1; }
+  .training-image-nav button { width:40px; height:40px; padding:0; display:grid; place-items:center;
+                               border-radius:999px; border-color:rgba(255,255,255,.35);
+                               background:rgba(12,12,16,.88); font-size:20px; line-height:1;
+                               box-shadow:0 2px 8px rgba(0,0,0,.45); }
+  .training-image-position { position:absolute; left:10px; bottom:10px; padding:4px 8px;
+                             border-radius:999px; background:rgba(12,12,16,.82);
+                             color:#e8e8ea; font-size:11px; z-index:1; }
+  .training-image-zoom-overlay { position:fixed; inset:0; z-index:1000; display:grid;
+                                  place-items:center; min-height:100dvh; height:100dvh;
+                                  padding:max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left)); overflow:hidden;
+                                  background:rgba(6,6,9,.94); }
+  .training-image-zoom-overlay[hidden] { display:none; }
+  .training-image-zoomed-image { display:block; max-width:100%; max-height:100%;
+                                 object-fit:contain; background:#0c0c10; border:1px solid rgba(255,255,255,.09); border-radius:9px; }
+  .training-image-zoom-overlay .training-image-nav { right:max(24px, env(safe-area-inset-right)); bottom:max(24px, env(safe-area-inset-bottom)); }
+  .training-image-zoom-overlay .training-image-position { left:max(24px, env(safe-area-inset-left)); bottom:max(24px, env(safe-area-inset-bottom)); }
+  .training-image-zoom-close { position:absolute; top:max(24px, env(safe-area-inset-top)); right:max(24px, env(safe-area-inset-right)); z-index:1; }
+  body.training-image-zoom-open { overflow:hidden; }
   .training-panel .opener-text { margin:8px 0 0; padding:10px; white-space:pre-wrap;
                                      overflow-wrap:anywhere; background:#0c0c10;
                                      border:1px solid rgba(255,255,255,.09); border-radius:9px; }
@@ -138,6 +162,15 @@
   </div>
 </div>
   <aside id="trainingpanel" class="training-panel" aria-live="polite" aria-label="training decision"></aside>
+</div>
+<div id="trainingimagezoomoverlay" class="training-image-zoom-overlay" role="dialog" aria-modal="true" aria-label="Zoomed training review" hidden>
+  <button id="trainingimagezoomclose" class="training-image-zoom-close" type="button" aria-label="Close zoomed image">Close</button>
+  <img id="trainingimagezoomed" class="training-image-zoomed-image" alt="">
+  <span id="trainingimagezoomposition" class="training-image-position"></span>
+  <div class="training-image-nav" aria-label="Profile snapshots">
+    <button id="trainingimagezoomup" type="button" aria-label="Previous profile snapshot — scroll up" title="Previous snapshot">&#8593;</button>
+    <button id="trainingimagezoomdown" type="button" aria-label="Next profile snapshot — scroll down" title="Next snapshot">&#8595;</button>
+  </div>
 </div>
 <script>
 const $ = s => document.querySelector(s);
@@ -290,6 +323,10 @@ let _trainingRequest = 0;
 let _trainingActionBusy = false;
 let _trainingBusyKey = '';
 let _trainingBusyRequest = 0;
+let _trainingImageKey = '';
+let _trainingImageIndex = 0;
+let _trainingImageZoomed = false;
+let _trainingImageZoomRestoreFocus = null;
 const _trainingIdempotency = new Map();
 
 // A retry token is useful only while this exact approval is the live card.  Keeping every
@@ -322,6 +359,163 @@ function trainingActionBusyFor(checkpoint){
   return _trainingActionBusy && _trainingBusyKey === trainingCheckpointKey(checkpoint);
 }
 
+// The phone capture is already ordered from scroll top to bottom. The separately verified
+// post-type target frame is last and is the default view, so Up moves toward earlier/top
+// snapshots and Down follows the same direction as scrolling down on the phone.
+function checkpointReviewImages(checkpoint){
+  if (!checkpoint || typeof checkpoint !== 'object') return [];
+  const key = trainingCheckpointKey(checkpoint);
+  const count = Number.isInteger(checkpoint.profile_image_count)
+    ? Math.max(0, Math.min(16, checkpoint.profile_image_count)) : 0;
+  const images = [];
+  if (key) {
+    for (let index=0; index<count; index+=1) {
+      const query = 'run_id=' + encodeURIComponent(checkpoint.run_id)
+        + '&app=' + encodeURIComponent(checkpoint.app)
+        + '&profile_token=' + encodeURIComponent(checkpoint.profile_token)
+        + '&index=' + index;
+      images.push({src:'/api/training/image?' + query,
+                   label:`profile snapshot ${index + 1} of ${count}`});
+    }
+  }
+  const target = safeCheckpointImageDataUrl(checkpoint.image_data_url);
+  if (target) images.push({src:target, label:'target view'});
+  return images;
+}
+
+function syncTrainingImageState(checkpoint, images){
+  const key = trainingCheckpointKey(checkpoint);
+  if (_trainingImageKey !== key) {
+    // A full-screen review belongs only to the profile that opened it.  A polling update for a
+    // different approval must never leave that new profile covered by the old lightbox state.
+    if (typeof setTrainingImageZoom === 'function') setTrainingImageZoom(false);
+    _trainingImageKey = key;
+    _trainingImageIndex = Math.max(0, images.length - 1);
+  } else {
+    _trainingImageIndex = Math.max(0, Math.min(_trainingImageIndex, images.length - 1));
+  }
+}
+
+function setTrainingImageZoom(zoomed){
+  const next = Boolean(zoomed);
+  const previous = _trainingImageZoomed;
+  _trainingImageZoomed = next;
+  if (typeof document !== 'undefined') {
+    if (next && !previous) _trainingImageZoomRestoreFocus = document.activeElement || null;
+    if (document.body && document.body.classList)
+      document.body.classList.toggle('training-image-zoom-open', next);
+    const layout = typeof document.querySelector === 'function'
+      ? document.querySelector('.hub-layout') : null;
+    if (layout) layout.inert = next;
+  }
+  const overlay = $('#trainingimagezoomoverlay');
+  if (overlay) overlay.hidden = !next;
+  const trigger = $('#trainingimagezoom');
+  if (trigger) {
+    trigger.setAttribute('aria-pressed', String(next));
+    const label = typeof trigger.getAttribute === 'function' ? trigger.getAttribute('aria-label') : '';
+    trigger.setAttribute('aria-label', label
+      ? label.replace(/^Zoom (?:in|out)/, next ? 'Zoom out' : 'Zoom in')
+      : (next ? 'Zoom out training image' : 'Zoom in training image'));
+    trigger.title = next ? 'Zoom out' : 'Zoom in';
+  }
+  if (next && !previous) {
+    const close = $('#trainingimagezoomclose');
+    if (close && typeof close.focus === 'function') close.focus();
+  } else if (!next && previous) {
+    const restore = _trainingImageZoomRestoreFocus;
+    _trainingImageZoomRestoreFocus = null;
+    if (restore && typeof restore.focus === 'function'
+        && (typeof document === 'undefined' || !document.contains || document.contains(restore))) {
+      restore.focus();
+    } else {
+      // A status poll rebuilds the preview button every second.  If that happened while zoomed,
+      // restore to its current replacement rather than abandoning keyboard focus in the page.
+      const currentTrigger = $('#trainingimagezoom');
+      if (currentTrigger && typeof currentTrigger.focus === 'function') currentTrigger.focus();
+    }
+  }
+  return next;
+}
+
+function toggleTrainingImageZoom(){
+  return setTrainingImageZoom(!_trainingImageZoomed);
+}
+
+function onTrainingImageZoomKeydown(event){
+  if (!_trainingImageZoomed) return;
+  if (event.key === 'Tab') {
+    const controls = ['#trainingimagezoomclose', '#trainingimagezoomup', '#trainingimagezoomdown']
+      .map(selector => $(selector)).filter(control => control && !control.disabled && !control.hidden);
+    if (!controls.length) return;
+    event.preventDefault();
+    const current = typeof document !== 'undefined' ? document.activeElement : null;
+    let index = controls.indexOf(current);
+    if (index < 0) index = event.shiftKey ? 0 : -1;
+    const next = controls[(index + (event.shiftKey ? -1 : 1) + controls.length) % controls.length];
+    if (typeof next.focus === 'function') next.focus();
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    setTrainingImageZoom(false);
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    moveTrainingImage(-1);
+  } else if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    moveTrainingImage(1);
+  }
+}
+document.addEventListener('keydown', onTrainingImageZoomKeydown);
+const trainingImageZoomClose = $('#trainingimagezoomclose');
+const trainingImageZoomUp = $('#trainingimagezoomup');
+const trainingImageZoomDown = $('#trainingimagezoomdown');
+if (trainingImageZoomClose) trainingImageZoomClose.onclick = () => setTrainingImageZoom(false);
+if (trainingImageZoomUp) trainingImageZoomUp.onclick = () => moveTrainingImage(-1);
+if (trainingImageZoomDown) trainingImageZoomDown.onclick = () => moveTrainingImage(1);
+const trainingImageZoomOverlay = $('#trainingimagezoomoverlay');
+if (trainingImageZoomOverlay) trainingImageZoomOverlay.onclick = (event) => {
+  if (event.target === trainingImageZoomOverlay) setTrainingImageZoom(false);
+};
+
+function showTrainingImage(index){
+  const images = checkpointReviewImages(_trainingCheckpoint);
+  if (!images.length) return;
+  _trainingImageIndex = Math.max(0, Math.min(index, images.length - 1));
+  const current = images[_trainingImageIndex];
+  const image = $('#trainingimage');
+  const position = $('#trainingimageposition');
+  const up = $('#trainingimageup');
+  const down = $('#trainingimagedown');
+  const zoom = $('#trainingimagezoom');
+  const zoomedImage = $('#trainingimagezoomed');
+  const zoomedPosition = $('#trainingimagezoomposition');
+  const zoomedUp = $('#trainingimagezoomup');
+  const zoomedDown = $('#trainingimagezoomdown');
+  if (image) {
+    image.src = current.src;
+    image.alt = `Training review — ${current.label}`;
+  }
+  if (position) position.textContent = `${current.label} · ${_trainingImageIndex + 1}/${images.length}`;
+  if (zoomedImage) {
+    zoomedImage.src = current.src;
+    zoomedImage.alt = `Zoomed training review — ${current.label}`;
+  }
+  if (zoomedPosition) zoomedPosition.textContent = `${current.label} · ${_trainingImageIndex + 1}/${images.length}`;
+  if (up) up.disabled = _trainingImageIndex === 0;
+  if (down) down.disabled = _trainingImageIndex === images.length - 1;
+  if (zoomedUp) zoomedUp.disabled = _trainingImageIndex === 0;
+  if (zoomedDown) zoomedDown.disabled = _trainingImageIndex === images.length - 1;
+  if (zoom) {
+    const isZoomed = typeof _trainingImageZoomed !== 'undefined' && _trainingImageZoomed;
+    zoom.setAttribute('aria-label', `${isZoomed ? 'Zoom out' : 'Zoom in'} ${current.label}`);
+  }
+}
+
+function moveTrainingImage(delta){
+  if (delta !== -1 && delta !== 1) return;
+  showTrainingImage(_trainingImageIndex + delta);
+}
+
 function trainingActionToken(checkpoint, command){
   const key = JSON.stringify([command, checkpoint.run_id, checkpoint.app,
                               checkpoint.profile_token, checkpoint.approval_token]);
@@ -342,8 +536,23 @@ function renderTrainingCheckpoint(checkpoint, message=''){
   resetTrainingIdempotencyIfCardChanged(_trainingCheckpoint, checkpoint);
   resetTrainingBusyIfCardChanged(_trainingCheckpoint, checkpoint);
   _trainingCheckpoint = checkpoint || null;
-  if (!checkpoint) { panel.style.display = 'none'; panel.innerHTML = ''; return; }
+  if (!checkpoint) {
+    if (typeof setTrainingImageZoom === 'function') setTrainingImageZoom(false);
+    _trainingImageKey = '';
+    _trainingImageIndex = 0;
+    panel.style.display = 'none'; panel.innerHTML = ''; return;
+  }
   const image = safeCheckpointImageDataUrl(checkpoint.image_data_url);
+  // syncTrainingImageState closes an open modal before replacing a different profile. Its
+  // normal restoration target is the *old* preview button, which this render will remove, so
+  // carry focus forward to the replacement button after the new card is in the DOM.
+  const nextImageKey = trainingCheckpointKey(checkpoint);
+  const restorePreviewFocus = typeof _trainingImageZoomed !== 'undefined' && _trainingImageZoomed
+    && (typeof _trainingImageKey === 'undefined' || _trainingImageKey !== nextImageKey);
+  const reviewImages = checkpointReviewImages(checkpoint);
+  syncTrainingImageState(checkpoint, reviewImages);
+  const reviewImage = reviewImages[_trainingImageIndex] || null;
+  const imageZoomed = typeof _trainingImageZoomed !== 'undefined' && _trainingImageZoomed;
   const item = Number.isInteger(checkpoint.item) ? `item ${checkpoint.item}` : 'selected item';
   const description = typeof checkpoint.item_description === 'string'
     ? checkpoint.item_description.trim() : '';
@@ -369,7 +578,16 @@ function renderTrainingCheckpoint(checkpoint, message=''){
       ? 'The opener is already written on this target. Like sends it; Dislike passes this same profile. Your choice becomes training data.'
       : (lifecycle || 'Review data is incomplete, so both decisions are disabled.')}</div>
     <div class="meta" style="margin-top:12px">target · ${escHtml(target)}</div>`
-    + (image ? `<img class="target-image" src="${image}" alt="Target image for ${escHtml(target)}" style="margin-top:6px">`
+    + (image ? `<div id="trainingimagewrap" class="training-image-wrap">
+         <button id="trainingimagezoom" class="training-image-zoom-trigger" type="button" aria-pressed="${imageZoomed}" aria-label="${imageZoomed ? 'Zoom out' : 'Zoom in'} ${escHtml(reviewImage.label)}" title="${imageZoomed ? 'Zoom out' : 'Zoom in'}">
+           <img id="trainingimage" class="target-image" src="${reviewImage.src}" alt="Training review — ${escHtml(reviewImage.label)}">
+         </button>
+         ${reviewImages.length > 1 ? `<span id="trainingimageposition" class="training-image-position">${escHtml(reviewImage.label)} · ${_trainingImageIndex + 1}/${reviewImages.length}</span>
+         <div class="training-image-nav" aria-label="Profile snapshots">
+           <button id="trainingimageup" type="button" aria-label="Previous profile snapshot — scroll up" title="Previous snapshot"${_trainingImageIndex === 0 ? ' disabled' : ''}>&#8593;</button>
+           <button id="trainingimagedown" type="button" aria-label="Next profile snapshot — scroll down" title="Next snapshot"${_trainingImageIndex === reviewImages.length - 1 ? ' disabled' : ''}>&#8595;</button>
+         </div>` : ''}
+       </div>`
              : `<div class="meta" style="margin-top:6px">Target image was unavailable.</div>`)
     + `<div class="meta" style="margin-top:12px">${hasOpener ? 'full opener' : 'opener unavailable'}</div>
        <div class="opener-text">${hasOpener ? escHtml(opener) : 'No complete opener was supplied. This Like cannot be sent.'}</div>`
@@ -381,19 +599,43 @@ function renderTrainingCheckpoint(checkpoint, message=''){
        <div class="meta" id="trainingactionhint" style="margin-top:8px">${escHtml(message)}</div>
   </div>`;
   panel.style.display = 'block';
+  // The overlay is intentionally outside this poll-rebuilt panel, so seed it here and retain it
+  // (and its focus) while later status refreshes replace only the review card.
+  const zoomedImage = $('#trainingimagezoomed');
+  const zoomedPosition = $('#trainingimagezoomposition');
+  const zoomedUp = $('#trainingimagezoomup');
+  const zoomedDown = $('#trainingimagezoomdown');
+  if (zoomedImage) {
+    zoomedImage.src = reviewImage.src;
+    zoomedImage.alt = `Zoomed training review — ${reviewImage.label}`;
+  }
+  if (zoomedPosition) zoomedPosition.textContent = `${reviewImage.label} · ${_trainingImageIndex + 1}/${reviewImages.length}`;
+  if (zoomedUp) zoomedUp.disabled = _trainingImageIndex === 0;
+  if (zoomedDown) zoomedDown.disabled = _trainingImageIndex === reviewImages.length - 1;
   const likeButton = $('#traininglike');
   const dislikeButton = $('#trainingdislike');
+  const imageUpButton = $('#trainingimageup');
+  const imageDownButton = $('#trainingimagedown');
+  const imageZoomButton = $('#trainingimagezoom');
   if (likeButton) likeButton.onclick = () => submitTrainingAction('like');
   if (dislikeButton) dislikeButton.onclick = () => submitTrainingAction('dislike');
+  if (imageUpButton) imageUpButton.onclick = () => moveTrainingImage(-1);
+  if (imageDownButton) imageDownButton.onclick = () => moveTrainingImage(1);
+  if (imageZoomButton) imageZoomButton.onclick = () => toggleTrainingImageZoom();
+  if (restorePreviewFocus && imageZoomButton && typeof imageZoomButton.focus === 'function')
+    imageZoomButton.focus();
 }
 
 function renderTrainingFeedback(result, message=''){
   const panel = $('#trainingpanel'); if (!panel) return;
   const layout = document.querySelector('.hub-layout');
   if (layout) layout.classList.toggle('training-active', false);
+  if (typeof setTrainingImageZoom === 'function') setTrainingImageZoom(false);
   resetTrainingIdempotencyIfCardChanged(_trainingCheckpoint, null);
   resetTrainingBusyIfCardChanged(_trainingCheckpoint, null);
   _trainingCheckpoint = null;
+  _trainingImageKey = '';
+  _trainingImageIndex = 0;
   if (!result && !message) { panel.style.display = 'none'; panel.innerHTML = ''; return; }
   const command = result && result.command === 'like' ? 'Like'
     : result && result.command === 'dislike' ? 'Dislike' : 'training decision';
@@ -418,6 +660,7 @@ async function submitTrainingAction(command){
       || typeof checkpoint.opener !== 'string' || !checkpoint.opener.trim())) return;
   _trainingActionBusy = true;
   _trainingBusyKey = checkpointKey;
+  if (typeof setTrainingImageZoom === 'function') setTrainingImageZoom(false);
   const requestId = ++_trainingBusyRequest;
   renderTrainingCheckpoint(checkpoint, command === 'like' ? 'sending Like…' : 'sending Dislike…');
   let retryMessage = '';
@@ -531,10 +774,12 @@ function renderRunStatus(snap){
     if(state === 'blocked') return box('idle', `${a.app}: stopped — deck blocked`, a.stop_reason);
     if(state === 'stopped' && a.last_decision === 'defer')
       return box('idle', `${a.app}: stopped — ranker not ready (cold-start)`, 'run training mode first');
+    if(state === 'stopped' && a.stop_kind === 'targeting_calibration')
+      return box('idle', `${a.app}: stopped — targeting calibration must be renewed`, a.stop_reason);
     if(state === 'stopped' && a.stop_kind === 'targeting')
-      return box('idle', `${a.app}: stopped — could not like the item the opener was written about`, a.stop_reason);
+      return box('idle', `${a.app}: stopped — could not attach the generated opener to its selected item`, a.stop_reason);
     if(state === 'stopped' && a.stop_kind === 'opener')
-      return box('idle', `${a.app}: stopped — opener capacity exhausted`, a.stop_reason);
+      return box('idle', `${a.app}: stopped — could not prepare a safe opener`, a.stop_reason);
     if(state === 'stopped' && a.stop_reason) return box('idle', `${a.app}: stopped — ${a.stop_reason}`, count);
     if(state === 'stopped') return box('idle', `${a.app}: stopped`, count);
     // A persisted status may end while still carrying a nonterminal app state. Never call it live.
@@ -551,7 +796,8 @@ function renderRunStatus(snap){
     const app = typeof a.app === 'string' && a.app.trim() ? a.app.trim() : 'app';
     if(state === 'scoring') return box('wait', `🔴 ${app}: preparing the training checkpoint`);
     if(state === 'waiting_approval') return box('wait', `🔴 ${app}: waiting for your Hub decision`);
-    if(state === 'acting') return box('wait', `🔴 wait — recording your ${app} decision…`);
+    if(state === 'acting') return box('wait', `🔴 wait — carrying out your ${app} decision…`,
+      'The completed-swipe count updates after the action is confirmed and saved.');
     if(state === 'starting') return box('wait', `🔴 wait — starting ${app}…`);
     return box('idle', `${app}: ${state || '…'}`, a.last_decision ? `last ${a.last_decision}` : '');
   };

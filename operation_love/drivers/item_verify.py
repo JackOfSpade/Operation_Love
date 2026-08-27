@@ -286,6 +286,19 @@ _INLINE_COMPOSER_ONE_ITEM_MAX_DIST = 7.00
 # available only after an independently detected composer supplies the field/CTA geometry.  It
 # still requires a substantial image run bound to the independently detected comment field.
 _INLINE_COMPACT_MIN_WIDTH_FRACTION = 0.78
+# Lauren's Hinge 10.1.0 selected photo kept its right edge exactly on the composer's x=985
+# boundary while 73 rows of pale sky at the LEFT edge blended into the page.  The ordinary
+# two-edge probe therefore saw only 661px of the 890px photo (74.27%) at the narrowest row and
+# split one continuous preview at row 628.  A verified composer may use that measured one-edge
+# continuation, but only while the opposite edge stays aligned and at least this much visible
+# photo structure remains.  The public/legacy locator never uses this lower floor.
+_INLINE_PREVIEW_ONE_EDGE_MIN_WIDTH_FRACTION = 0.74
+# A selected photo can contain a page-coloured horizontal feature that makes the row-span probe
+# briefly indistinguishable from background.  The Hinge 10.1.0 held-out composer measured one
+# such 3-row interruption at rows 942..945 inside an otherwise continuous 236..1092 preview.
+# Bridge exactly that measured maximum only after the composer has independently established the
+# surrounding topology.  Four consecutive unsupported rows remain a hard boundary.
+_INLINE_PREVIEW_MAX_INTERNAL_GAP_PX = 3
 
 # --- the preview locator's geometry ---------------------------------------------------
 # All [corpus, 6 real sheets]; see the module docstring's layout section for the full table.
@@ -644,13 +657,16 @@ def _extend_inline_preview_to_block_bottom(
     left-aligned with the located preview. Stop at the first background row, or at the comment
     field itself.
 
-    THE TOP EDGE NEVER MOVES, NO BACKGROUND ROW IS EVER CROSSED, AND THE WALK CANNOT REACH PAST
-    THE COMMENT FIELD, so this cannot wander onto a different element to manufacture adjacency:
-    it can only finish the block the strict locator had already started inside. A preview that
-    genuinely stops short of the composer -- a partially rendered view, a different sheet -- has
-    background between it and the field, the walk halts there, and the topology check still
+    THE TOP EDGE NEVER MOVES, AT MOST THE MEASURED THREE-ROW INTERNAL INTERRUPTION IS BRIDGED,
+    EVERY NON-BACKGROUND ROW KEEPS EITHER THE LEFT EDGE OR THE RIGHT EDGE AND AT LEAST THE
+    MEASURED 74% OF PHOTO STRUCTURE, AND THE WALK CANNOT REACH PAST THE COMMENT FIELD, so this
+    cannot wander onto a different element to manufacture adjacency: it can only finish the
+    block the strict locator had already started inside. A preview that genuinely stops short
+    of the composer -- a partially rendered view, a different sheet -- has more than three
+    background rows between it and the field, the walk halts there, and the topology check still
     refuses. Columns are left as located: they are the median of the strict band, which is the
-    higher-confidence evidence, and the added rows had to agree with them to be walked at all.
+    higher-confidence evidence, and the added rows had to retain one of those edges to be walked
+    at all.
 
     A no-op after `_locate_inline_compact_preview`, which already scans at this same width floor
     and therefore already ends at a background row.
@@ -668,21 +684,58 @@ def _extend_inline_preview_to_block_bottom(
         return preview
     spans = _row_spans(gray, np, tolerance=background_tolerance, probe=margin_probe)
     minimum_width = round(comment.width * _INLINE_COMPACT_MIN_WIDTH_FRACTION)
+    one_edge_minimum_width = round(
+        comment.width * _INLINE_PREVIEW_ONE_EDGE_MIN_WIDTH_FRACTION)
     slack = max(8, round(comment.width * 0.03))
     y1 = preview.y1
-    while y1 < limit:
-        span = spans[y1]
-        if (span is None or span[1] - span[0] < minimum_width
-                or abs(span[0] - preview.x0) > slack):
-            break
-        y1 += 1
+    scan_y = y1
+    last_supported_y1 = y1
+    unsupported_run = 0
+    bridged_rows = 0
+    bridged_runs = 0
+    one_edge_rows = 0
+    while scan_y < limit:
+        span = spans[scan_y]
+        span_width = 0 if span is None else span[1] - span[0]
+        left_aligned = span is not None and abs(span[0] - preview.x0) <= slack
+        right_aligned = span is not None and abs(span[1] - preview.x1) <= slack
+        fully_supported = span_width >= minimum_width and left_aligned
+        # Pale content may erase either visible edge against the page, but it cannot erase both:
+        # this lower, composer-only floor requires the other edge to remain exactly attached to
+        # the strict preview we already found.  It does not bridge blank page rows (span=None).
+        one_edge_supported = (
+            span_width >= one_edge_minimum_width and (left_aligned or right_aligned))
+        supported = fully_supported or one_edge_supported
+        if supported:
+            if one_edge_supported and not fully_supported:
+                one_edge_rows += 1
+            if unsupported_run:
+                bridged_runs += 1
+                bridged_rows += unsupported_run
+            unsupported_run = 0
+            last_supported_y1 = scan_y + 1
+        else:
+            unsupported_run += 1
+            if unsupported_run > _INLINE_PREVIEW_MAX_INTERNAL_GAP_PX:
+                break
+        scan_y += 1
+    y1 = last_supported_y1
     if y1 == preview.y1:
+        return preview
+    # `bridged_rows` counts only interruptions followed by more supported image rows; terminal
+    # page background is never included in the preview.
+    if (bridged_runs > 1
+            or bridged_rows > _INLINE_PREVIEW_MAX_INTERNAL_GAP_PX):
+        # Each individual run is bounded above, but only one measured interruption is
+        # calibrated.  Failing closed here also prevents a future loop change from silently
+        # widening the seam by accepting several individually-small gaps.
         return preview
     return SheetPreview(
         y0=preview.y0, y1=y1, x0=preview.x0, x1=preview.x1,
         reason=(f"{preview.reason}; bottom edge carried from row {preview.y1} to {y1}, the end "
-                f"of the contiguous >={minimum_width}px image block above the composer's comment "
-                f"field at row {comment.y0}"))
+                f"of the >={minimum_width}px image block above the composer's comment field at "
+                f"row {comment.y0}, retaining one aligned edge across {one_edge_rows} rows and "
+                f"bridging {bridged_rows} measured internal background rows"))
 
 
 def _decode_crop(crop_bytes: bytes, number: int, cv2, np):
@@ -991,7 +1044,12 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
                 or not 0 <= controls_gap <= max(60, round(comment.height * 0.40))):
             raise SheetVerificationError(
                 "the selected-card preview is not immediately above the independently detected "
-                "inline comment field and Send Like CTA")
+                "inline comment field and Send Like CTA "
+                f"(preview=({preview.x0},{preview.y0})-({preview.x1},{preview.y1}), "
+                f"comment=({comment.x0},{comment.y0})-({comment.x1},{comment.y1}), "
+                f"send=({send.x0},{send.y0})-({send.x1},{send.y1}), "
+                f"photo-to-field gap={gap}px with allowed 0..{max_gap}px, "
+                f"field-to-CTA gap={controls_gap}px)")
     try:
         sheet = signature_of(frame, y0=preview.y0, y1=preview.y1, x0=preview.x0, x1=preview.x1,
                              grid=grid)

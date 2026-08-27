@@ -786,6 +786,11 @@ def test_a_scroll_that_moves_nothing_is_a_stalled_loop_and_stops():
     assert exc.value.code == item_nav.NAV_SCROLL_STALLED
     assert len(driver.gestures) == 1              # stopped at the first one, not after a sweep
     assert exc.value.frame is not None            # ...and kept the frame for the operator
+    recovery = exc.value.recovery
+    assert recovery is not None
+    assert recovery.achieved_step_px == 0
+    assert recovery.page_shift_px == 0
+    assert recovery.planned_step_px > 0 and recovery.bound_px > 0
 
 
 def test_a_gesture_that_goes_the_WRONG_WAY_is_the_same_stall_and_not_progress():
@@ -817,6 +822,13 @@ def test_a_scroll_past_the_plans_own_aliasing_bound_stops():
     assert exc.value.code == item_nav.NAV_SCROLL_OVERSHOT
     assert "aliasing bound" in str(exc.value)
     assert len(driver.gestures) == 1
+    recovery = exc.value.recovery
+    assert recovery is not None
+    assert recovery.frame is exc.value.frame
+    assert recovery.achieved_step_px == 500
+    assert recovery.page_shift_px == -500
+    assert recovery.achieved_step_px > recovery.bound_px
+    assert "aliasing bound" in recovery.violation
 
 
 def test_frames_that_cannot_be_put_in_one_coordinate_space_stop_the_count():

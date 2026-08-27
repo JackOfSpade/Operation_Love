@@ -266,6 +266,55 @@ def test_hybrid_rewind_refuses_unknown_before_a_gesture(monkeypatch):
     assert driver.reverse_steps == []
 
 
+def test_hybrid_rewind_allows_one_unknown_recovery_only_for_a_proven_live_deck(monkeypatch):
+    """An ambiguous chip band needs current Like+Pass deck proof before one recovery swipe."""
+    driver = _HybridRewindDriver([b"unknown-live-deck", b"top"])
+    driver._observe_deck_ready = lambda frame: frame == b"unknown-live-deck"
+    calls, planned = _rewind_driver_plan(monkeypatch)
+    monkeypatch.setattr(
+        cal, "confirm_scroll_top",
+        lambda frame, **_kw: _top_verdict(
+            "confirmed_top" if frame == b"top" else "cannot_tell", "ambiguous chips"))
+
+    assert cal._rewind_automated_profile_to_confirmed_top(
+        driver, ordinal=1, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=0.8) == b"top"
+    assert driver.reverse_steps == [(planned.frac, planned.x_frac)]
+    assert len(calls) == 1
+
+
+def test_hybrid_rewind_unknown_dialog_or_paywall_proof_failure_never_swipes(monkeypatch):
+    """Foreground Hinge alone is insufficient: without both deck controls UNKNOWN stays no-input."""
+    driver = _HybridRewindDriver([b"unknown-modal"])
+    driver._observe_deck_ready = lambda _frame: False
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_args, **_kw: _top_verdict("cannot_tell", "ambiguous strip"))
+    monkeypatch.setattr(cal, "_plan_card_scroll",
+                        lambda *_args, **_kw: pytest.fail("a modal/paywall must not plan a swipe"))
+
+    with pytest.raises(cal._CaptureAbort, match="refused an unconfirmed scroll-top state"):
+        cal._rewind_automated_profile_to_confirmed_top(
+            driver, ordinal=1, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+    assert driver.reverse_steps == []
+
+
+def test_hybrid_rewind_never_spends_a_second_unknown_deck_recovery_gesture(monkeypatch):
+    """A persistent UNKNOWN is not promoted into a scrolling loop, even on a proven deck."""
+    driver = _HybridRewindDriver([b"unknown-1", b"unknown-2", b"top"])
+    driver._observe_deck_ready = lambda frame: frame.startswith(b"unknown")
+    calls, _planned = _rewind_driver_plan(monkeypatch)
+    monkeypatch.setattr(cal, "_MAX_UNSETTLED_TOP_REPROBES", 0)
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_args, **_kw: _top_verdict("cannot_tell", "still ambiguous"))
+
+    with pytest.raises(cal._CaptureAbort, match="reached an unconfirmed scroll-top state"):
+        cal._rewind_automated_profile_to_confirmed_top(
+            driver, ordinal=1, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+    assert len(calls) == len(driver.reverse_steps) == 1
+
+
 def test_hybrid_rewind_refuses_an_unplannable_or_stalled_refuted_frame(monkeypatch):
     driver = _HybridRewindDriver([b"mid"])
     monkeypatch.setattr(cal, "confirm_scroll_top",
@@ -358,6 +407,91 @@ def test_every_automated_profile_enters_through_the_visual_rewind(monkeypatch, t
     assert calls[0]["identity_band"] == _IDENTITY_BAND
     assert calls[0]["content_band"] == _CONTENT_BAND
     assert calls[0]["like_threshold"] == cal.hinge_mod._LIKE_MATCH_THRESHOLD
+
+
+def test_read_scroll_capture_requires_four_consecutive_quiet_post_gesture_frames(monkeypatch):
+    """The navigation anchor is not trusted until four adjacent probes are quiet."""
+    events = []
+    frames = iter((b"moving", b"quiet-once", b"quiet-twice", b"quiet-thrice", b"settled"))
+    driver = SimpleNamespace(
+        dwell_s=1.25,
+        content_band=_CONTENT_BAND,
+        adb=SimpleNamespace(screencap=lambda: events.append("capture") or next(frames)),
+    )
+    monkeypatch.setattr(cal, "human_delay",
+                        lambda dwell: events.append(("delay", dwell)) or 0.75)
+    monkeypatch.setattr(cal, "time", SimpleNamespace(
+        sleep=lambda delay: events.append(("sleep", delay))))
+    quiet_deltas = iter((0, 0, 0, 0))
+    monkeypatch.setattr(cal, "estimate_shift", lambda *_a, **_kw: SimpleNamespace(
+        ok=True, delta_px=next(quiet_deltas), reason="parked"))
+
+    assert cal._settled_read_scroll_frame(driver) == b"settled"
+    assert events == [
+        ("delay", 1.25), ("sleep", 0.75), "capture",
+        ("delay", 1.25), ("sleep", 0.75), "capture",
+        ("delay", 1.25), ("sleep", 0.75), "capture",
+        ("delay", 1.25), ("sleep", 0.75), "capture",
+        ("delay", 1.25), ("sleep", 0.75), "capture",
+    ]
+
+    # Both enumeration loops must use the same seam; otherwise one mode can keep recording
+    # in-flight card positions after the other is fixed.
+    assert "_settled_read_scroll_frame(driver)" in inspect.getsource(cal._capture_one_profile)
+    assert "_settled_read_scroll_frame(driver)" in inspect.getsource(
+        cal._capture_one_profile_unattended)
+
+
+def test_read_scroll_settle_ignores_two_quiet_probes_before_late_motion(monkeypatch):
+    """A transient quiet run must not become the anchor when Hinge resumes moving.
+
+    Held-out 10.1.0 actually paused for two quiet comparisons, then made a 556px card advance.
+    Only four quiet comparisons *after* that motion form a safe enumeration/navigation
+    reference.
+    """
+    frames = iter((b"initial", b"quiet-before-drift-1", b"quiet-before-drift-2",
+                   b"late-motion", b"quiet-after-drift-1", b"quiet-after-drift-2",
+                   b"quiet-after-drift-3", b"final"))
+    comparisons = []
+    deltas = iter((0, 0, -556, 0, 0, 0, 0))
+    driver = SimpleNamespace(
+        dwell_s=0.0, content_band=_CONTENT_BAND,
+        adb=SimpleNamespace(screencap=lambda: next(frames)),
+    )
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda _delay: None))
+
+    def measured_shift(prior, current, **_kwargs):
+        comparisons.append((prior, current))
+        delta = next(deltas)
+        return SimpleNamespace(ok=True, delta_px=delta, reason=f"shift {delta}px")
+
+    monkeypatch.setattr(cal, "estimate_shift", measured_shift)
+
+    assert cal._settled_read_scroll_frame(driver) == b"final"
+    assert comparisons == [
+        (b"initial", b"quiet-before-drift-1"),
+        (b"quiet-before-drift-1", b"quiet-before-drift-2"),
+        (b"quiet-before-drift-2", b"late-motion"),
+        (b"late-motion", b"quiet-after-drift-1"),
+        (b"quiet-after-drift-1", b"quiet-after-drift-2"),
+        (b"quiet-after-drift-2", b"quiet-after-drift-3"),
+        (b"quiet-after-drift-3", b"final"),
+    ]
+
+
+def test_read_scroll_settle_refuses_motion_past_the_bounded_probe_budget(monkeypatch):
+    driver = SimpleNamespace(
+        dwell_s=0.0, content_band=_CONTENT_BAND,
+        adb=SimpleNamespace(screencap=lambda: object()),
+    )
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda _delay: None))
+    monkeypatch.setattr(cal, "estimate_shift", lambda *_a, **_kw: SimpleNamespace(
+        ok=True, delta_px=571, reason="still moving 571px"))
+
+    with pytest.raises(cal._CaptureAbort, match="did not park.*8-comparison"):
+        cal._settled_read_scroll_frame(driver)
 
 
 def _unattended_single_item_fixtures(monkeypatch, *, extra_screencaps: int = 0):
@@ -630,6 +764,40 @@ def test_hybrid_pre_action_checkpoint_action_matches_the_accepted_terminal_trans
     assert pre_action_plan["predicates"]["send_like_tapped"] is False
 
 
+def test_terminal_send_refusal_cleans_the_current_unsent_composer(monkeypatch, tmp_path):
+    """A fresh-frame Send refusal happens after the real heart opened a composer.
+
+    It must invoke the Pass-only abort recovery on a newly captured current frame; otherwise the
+    next calibration session starts stranded in that composer.  The refusing Send is not retried
+    and the profile remains excluded from evidence.
+    """
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    recoveries = []
+
+    def refuse_send(*_args, **_kwargs):
+        raise cal._CaptureAbort("fresh composer proof changed before tap")
+
+    def recover(_driver, **kwargs):
+        recoveries.append(kwargs)
+        return {"outcome": "cleared", "send_like_tapped": False}
+
+    monkeypatch.setattr(cal, "_automated_send_from_verified_composer", refuse_send)
+    monkeypatch.setattr(cal, "_recover_automated_abort_from_open_composer", recover)
+
+    class _Gate:
+        def checkpoint(self, _frame, *, claimed_state, action_plan):
+            return {"decision": "approved", "action_plan": action_plan}
+
+    with pytest.raises(cal._CaptureAbort, match=r"terminal Send refused.*cleanup outcome=cleared"):
+        cal._capture_one_profile_unattended(
+            driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[],
+            used_profile_ids=set(), review_gate=_Gate(), abort_recoveries=[], send_like=True)
+
+    assert len(recoveries) == 1
+    assert recoveries[0]["frame"] == b"advance-identity"
+    assert recoveries[0]["failure_stage"] == "terminal_send_refused"
+
+
 class _RecordingGate:
     """A hybrid gate that approves everything and remembers exactly what it was shown."""
 
@@ -801,6 +969,86 @@ def test_a_blocked_item_is_skipped_by_the_screen_itself_not_by_a_restated_litera
 
     assert gate.checkpoints == []
     assert driver.taps == []
+
+
+def test_navigation_refusal_forensics_do_not_pollute_the_manifest_root(monkeypatch, tmp_path):
+    """A diagnostic pair is useful after a refusal but cannot be an unmanifested root PNG.
+
+    `_load_session` intentionally authenticates every root image against `manifest.frames`.
+    Keep navigation-refusal diagnostics under `forensics/`, where they remain private and useful
+    without making a later completed capture fail its exact root-frame inventory.
+    """
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    anchor = SimpleNamespace(delta_px=-556, status="measured", confidence=1.0,
+                             reason="late card snap")
+
+    def refuse_navigation(*_args, **_kwargs):
+        raise cal.ItemNavigationError("entry_anchor_unmeasured", "late card snap",
+                                      frame=b"entry-frame", anchor=anchor)
+
+    monkeypatch.setattr(cal, "navigate_to_item", refuse_navigation)
+    monkeypatch.setattr(
+        cal, "_skip_automated_profile_before_heart",
+        lambda _driver, **kwargs: {"reason_code": kwargs["reason"].code})
+
+    with pytest.raises(cal._ProfileSkipped, match="pre_heart_navigation_refused"):
+        cal._capture_one_profile_unattended(
+            driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+            review_gate=None, send_like=False, entry_drift_restart_attempts=1)
+
+    forensics = tmp_path / "forensics"
+    stem = "refused_navigation_p1_item1_scan2"
+    assert (forensics / f"{stem}_read_reference.png").read_bytes() == b"top"
+    assert (forensics / f"{stem}_entry.png").read_bytes() == b"entry-frame"
+    body = json.loads((forensics / f"{stem}.json").read_text())
+    assert body["calibration_evidence"] is False
+    assert body["anchor_delta_px"] == -556
+    assert list(tmp_path.glob("*.png")) == []
+
+
+def test_large_measured_entry_drift_restarts_once_then_uses_the_normal_preaction_skip(
+        monkeypatch, tmp_path):
+    """Never rebase a changed entry frame onto an old enumeration/index.
+
+    The first measured large drift discards the local scan before a heart, reviewer label, or
+    public Like.  The outer capture loop will re-enumerate the same profile.  If it recurs on
+    that fresh scan, the established bounded pre-action skip remains the only advance path.
+    """
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    anchor = SimpleNamespace(delta_px=-547, status="measured", confidence=1.0,
+                             reason="late Hinge snap")
+
+    def refuse_navigation(*_args, **_kwargs):
+        raise cal.ItemNavigationError(cal.NAV_ANCHOR_UNMEASURED, "large entry drift",
+                                      frame=b"entry-frame", anchor=anchor)
+
+    skip_calls = []
+    monkeypatch.setattr(cal, "navigate_to_item", refuse_navigation)
+    monkeypatch.setattr(
+        cal, "_skip_automated_profile_before_heart",
+        lambda _driver, **kwargs: skip_calls.append(kwargs) or {
+            "reason_code": kwargs["reason"].code})
+
+    with pytest.raises(cal._RestartProfile, match="discarding the scan"):
+        cal._capture_one_profile_unattended(
+            driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+            review_gate=None, send_like=False, entry_drift_restart_attempts=0)
+    assert skip_calls == []
+    assert driver.taps == []
+
+    with pytest.raises(cal._ProfileSkipped, match="pre_heart_navigation_refused"):
+        cal._capture_one_profile_unattended(
+            driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=[], used_profile_ids=set(),
+            review_gate=None, send_like=False, entry_drift_restart_attempts=1)
+    assert len(skip_calls) == 1
+    assert skip_calls[0]["reason"].code == "pre_heart_navigation_refused"
+    assert driver.taps == []
+    # Both exact frame pairs survive: the second recurrent refusal must not overwrite the first
+    # discarded scan's diagnostic merely because profile ordinal/item number are unchanged.
+    for scan in (1, 2):
+        stem = f"refused_navigation_p1_item1_scan{scan}"
+        assert (tmp_path / "forensics" / f"{stem}_read_reference.png").read_bytes() == b"top"
+        assert (tmp_path / "forensics" / f"{stem}_entry.png").read_bytes() == b"entry-frame"
 
 
 _REFUSED_COMPOSER_ABORT_MESSAGE = (
@@ -2226,9 +2474,11 @@ def test_automated_send_from_verified_composer_uses_fresh_review_binding_and_pro
     assert trace["send_like_tapped"] is True
     assert trace["confirm_point"] == list(surface.confirm_point)
     assert trace["pre_frame_sha256"] == hashlib.sha256(b"composer").hexdigest()
+    assert trace["pre_tap_frame_sha256"] == hashlib.sha256(b"composer").hexdigest()
     assert trace["post_frame_sha256"] == hashlib.sha256(b"advance-frame").hexdigest()
     assert trace["predicates"] == {
         "inline_composer_and_selected_photo_verified_before_action": True,
+        "fresh_composer_and_selected_photo_reverified_before_action": True,
         "send_like_tapped": True,
         "like_landed_verified": True,
     }
@@ -2271,6 +2521,165 @@ def test_automated_send_refuses_stale_or_unverifiable_review_with_zero_taps(
         cal._automated_send_from_verified_composer(
             driver, frame=b"composer", confirm_template=object(), payload=SimpleNamespace(),
             item_number=3, reviewed_confirm_point=reviewed_surface.confirm_point)
+
+    assert driver.taps == []
+
+
+def test_automated_send_allows_only_a_reverified_empty_comment_caret_blink(monkeypatch):
+    """A focused composer may blink its caret after approval without moving any action surface."""
+    size = (1080, 2400)
+    reviewed_image = np.full((size[1], size[0], 3), 245, np.uint8)
+    fresh_image = reviewed_image.copy()
+    # The Android clock/network strip may also tick while the reviewer is deciding. It is not
+    # an app surface and cannot move or relabel the Hinge action below it.
+    fresh_image[30:70, 100:190] = 25
+    # Exactly the thin vertical empty-field caret.  Any change outside this box is refused below.
+    fresh_image[990:1042, 139:142] = 25
+    ok, reviewed_buf = cv2.imencode(".png", reviewed_image)
+    assert ok
+    ok, fresh_buf = cv2.imencode(".png", fresh_image)
+    assert ok
+    reviewed_frame, fresh_frame = reviewed_buf.tobytes(), fresh_buf.tobytes()
+    surface = ComposerSurface(cal._COMPOSER_LAYOUT_ID, Rect(95, 935, 985, 1108),
+                              Rect(390, 1140, 985, 1260), (690, 1190))
+
+    class _Adb:
+        def __init__(self):
+            # The first fresh read sees the opposite caret phase; the bounded second read proves
+            # that exact reviewed pixels return before Send, then the final read is post-action.
+            self.frames = iter((fresh_frame, reviewed_frame, b"advance-frame"))
+
+        def screencap(self):
+            return next(self.frames)
+
+    class _Driver:
+        halt_on_error = True
+
+        def __init__(self):
+            self.adb = _Adb()
+            self.taps = []
+            self.landed_before = None
+
+        def _tap(self, *point):
+            self.taps.append(point)
+
+        def _handle_rose_upsell(self):
+            return None
+
+        def _verify_like_landed(self, before):
+            self.landed_before = before
+
+    driver = _Driver()
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_cooldown", lambda _s: 0.0)
+    monkeypatch.setattr(cal, "locate_inline_composer", lambda *_a, **_kw: surface)
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_a, **_kw: SimpleNamespace(matched=True, reason="matched"))
+
+    _advance, trace = cal._automated_send_from_verified_composer(
+        driver, frame=reviewed_frame, confirm_template=object(), payload=SimpleNamespace(),
+        item_number=1, reviewed_confirm_point=surface.confirm_point)
+
+    assert driver.taps == [surface.confirm_point]
+    assert driver.landed_before == reviewed_frame
+    assert trace["pre_tap_frame_sha256"] == hashlib.sha256(reviewed_frame).hexdigest()
+
+
+def test_automated_send_refuses_a_persistent_caret_shaped_mark(monkeypatch):
+    """A narrow glyph can resemble a caret geometrically but cannot alternate like one."""
+    reviewed_image = np.full((2400, 1080, 3), 245, np.uint8)
+    marked_image = reviewed_image.copy()
+    marked_image[990:1042, 139:142] = 25
+    ok, reviewed_buf = cv2.imencode(".png", reviewed_image)
+    assert ok
+    ok, marked_buf = cv2.imencode(".png", marked_image)
+    assert ok
+    reviewed_frame, marked_frame = reviewed_buf.tobytes(), marked_buf.tobytes()
+    surface = ComposerSurface(cal._COMPOSER_LAYOUT_ID, Rect(95, 935, 985, 1108),
+                              Rect(390, 1140, 985, 1260), (690, 1190))
+
+    class _Driver:
+        halt_on_error = True
+
+        def __init__(self):
+            self.adb = SimpleNamespace(screencap=lambda: marked_frame)
+            self.taps = []
+
+        def _tap(self, *point):
+            self.taps.append(point)
+
+    driver = _Driver()
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "locate_inline_composer", lambda *_a, **_kw: surface)
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_a, **_kw: SimpleNamespace(matched=True, reason="matched"))
+
+    with pytest.raises(cal._CaptureAbort, match="did not return to the exact reviewed blink phase"):
+        cal._automated_send_from_verified_composer(
+            driver, frame=reviewed_frame, confirm_template=object(), payload=SimpleNamespace(),
+            item_number=1, reviewed_confirm_point=surface.confirm_point)
+
+    assert driver.taps == []
+
+
+def test_caret_screen_rejects_an_adjacent_narrow_mark():
+    reviewed = np.full((2400, 1080, 3), 245, np.uint8)
+    adjacent = reviewed.copy()
+    # The previous +16..+72 x-window accepted this second vertical mark beside the live caret.
+    adjacent[990:1039, 144:149] = 25
+    ok, reviewed_buf = cv2.imencode(".png", reviewed)
+    assert ok
+    ok, adjacent_buf = cv2.imencode(".png", adjacent)
+    assert ok
+    surface = ComposerSurface(cal._COMPOSER_LAYOUT_ID, Rect(95, 935, 985, 1108),
+                              Rect(390, 1140, 985, 1260), (690, 1190))
+
+    assert cal._only_transient_empty_comment_caret_change(
+        reviewed_buf.tobytes(), adjacent_buf.tobytes(), surface=surface) is False
+
+
+@pytest.mark.parametrize(
+    ("rows", "cols"),
+    [
+        ((1530, 1542), (30, 60)),  # Gboard changed
+        ((990, 1042), (180, 183)),  # text beyond the sole caret position
+        ((930, 938), (95, 985)),  # comment-outline/layout change
+    ],
+    ids=["keyboard", "typed-text-position", "comment-border"],
+)
+def test_automated_send_refuses_non_caret_frame_changes_after_fresh_reverification(
+        monkeypatch, rows, cols):
+    size = (1080, 2400)
+    reviewed_image = np.full((size[1], size[0], 3), 245, np.uint8)
+    fresh_image = reviewed_image.copy()
+    fresh_image[rows[0]:rows[1], cols[0]:cols[1]] = 25
+    ok, reviewed_buf = cv2.imencode(".png", reviewed_image)
+    assert ok
+    ok, fresh_buf = cv2.imencode(".png", fresh_image)
+    assert ok
+    reviewed_frame, fresh_frame = reviewed_buf.tobytes(), fresh_buf.tobytes()
+    surface = ComposerSurface(cal._COMPOSER_LAYOUT_ID, Rect(95, 935, 985, 1108),
+                              Rect(390, 1140, 985, 1260), (690, 1190))
+
+    class _Driver:
+        halt_on_error = True
+
+        def __init__(self):
+            self.adb = SimpleNamespace(screencap=lambda: fresh_frame)
+            self.taps = []
+
+        def _tap(self, *point):
+            self.taps.append(point)
+
+    driver = _Driver()
+    monkeypatch.setattr(cal, "locate_inline_composer", lambda *_a, **_kw: surface)
+    monkeypatch.setattr(cal, "verify_sheet_item",
+                        lambda *_a, **_kw: SimpleNamespace(matched=True, reason="matched"))
+
+    with pytest.raises(cal._CaptureAbort, match="outside the empty-comment caret blink"):
+        cal._automated_send_from_verified_composer(
+            driver, frame=reviewed_frame, confirm_template=object(), payload=SimpleNamespace(),
+            item_number=1, reviewed_confirm_point=surface.confirm_point)
 
     assert driver.taps == []
 
@@ -2517,10 +2926,13 @@ def _preaction_skip_fixtures(monkeypatch):
 
     class _Driver:
         dwell_s = 0.0
-        def __init__(self): self.adb, self.dislikes, self.taps = _Adb(), 0, 0
+        def __init__(self): self.adb, self.dislikes, self.likes, self.taps = _Adb(), 0, 0, 0
         def _template(self, _name): return object()
         def dislike(self):
             self.dislikes += 1
+            self.adb.state = b"advanced-top"
+        def like(self):
+            self.likes += 1
             self.adb.state = b"advanced-top"
         def _scroll_down_one(self, *_args): self.adb.state = b"next-sticky"
         def _tap(self, *_args): self.taps += 1
@@ -2557,6 +2969,28 @@ def test_preaction_skip_uses_public_dislike_and_records_distinct_retry(monkeypat
     assert driver.taps == 0
     assert record["transport"] == "HingeDriver.dislike"
     assert record["predicates"]["new_profile_identity_distinct"] is True
+
+
+def test_send_like_run_advances_unusable_profile_with_public_like_not_dislike(monkeypatch):
+    """Owner rule: even a profile excluded from calibration evidence advances by Like."""
+    driver, identity = _preaction_skip_fixtures(monkeypatch)
+    gate = _RecordingGate()
+
+    record = cal._skip_automated_profile_before_heart(
+        driver, ordinal=2,
+        reason=cal._PreActionProfileRetry("pre_heart_navigation_refused", "navigation refused"),
+        identity=identity, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=.8, review_gate=gate, send_like=True)
+
+    assert driver.likes == 1
+    assert driver.dislikes == 0
+    assert record["action"] == "advance_unusable_profile_with_priority_like"
+    assert record["transport"] == "HingeDriver.like"
+    assert record["predicates"]["send_like_tapped"] is True
+    (_state, plan), = gate.checkpoints
+    assert plan["action"] == "advance_unusable_profile_with_priority_like"
+    assert plan["point_source"] == "public HingeDriver.like"
+    assert plan["predicates"]["send_like_requested_for_unusable_profile"] is True
 
 
 def test_preaction_skip_record_carries_the_plaintext_diagnosis_its_own_digest_binds(monkeypatch):
@@ -2634,6 +3068,48 @@ def _wire_inert_skip_capture(monkeypatch, tmp_path):
     monkeypatch.setattr(cal, "HingeDriver", _Driver)
     monkeypatch.setattr(cal, "_preflight_serial", lambda _cfg: ("PIXEL-TEST", "adb"))
     monkeypatch.setattr(cal, "_capture_out_dir", lambda *_a, **_kw: tmp_path)
+
+
+def test_capture_reenumerates_one_large_entry_drift_then_skips_on_recurrence(
+        monkeypatch, tmp_path):
+    """The outer loop grants one fresh scan for the same ordinal, never an unbounded loop."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("apps:\n  hinge:\n    serial: PIXEL-TEST\n")
+    _wire_inert_skip_capture(monkeypatch, tmp_path)
+    restart_counts = []
+
+    def capture_once_per_state(_driver, _out_dir, *, ordinal, frame_counter, frames_meta,
+                               used_profile_ids, **kwargs):
+        restart_counts.append(kwargs.get("entry_drift_restart_attempts", 0))
+        if restart_counts == [0]:
+            raise cal._RestartProfile("first measured entry drift")
+        if restart_counts == [0, 1]:
+            raise cal._ProfileSkipped({
+                "action": "skip_profile_without_heart", "ordinal": ordinal,
+                "reason_code": "pre_heart_navigation_refused",
+                "reason_detail": "large entry drift recurred after fresh scan",
+                "reason_sha256": hashlib.sha256(
+                    b"pre_heart_navigation_refused\nlarge entry drift recurred after fresh scan"
+                ).hexdigest(),
+            })
+        used_profile_ids.add("fresh-profile")
+        return ({"ordinal": ordinal, "profile_id": "fresh-profile", "composer_items": [1],
+                 "target_strategy_id": kwargs["target_strategy_id"]}, frame_counter)
+
+    monkeypatch.setattr(cal, "_capture_one_profile_unattended", capture_once_per_state)
+    args = argparse.Namespace(
+        profiles=1, split="calibration", config=str(config_path), out=str(tmp_path),
+        unattended=True, hybrid_review=False, confirmation=cal._UNATTENDED_CONFIRMATION,
+        record_operational_checks=False, send_like=False, send_like_confirmation="")
+
+    cal._cmd_capture(args)
+
+    assert restart_counts == [0, 1, 0]
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert len(manifest["skipped_attempts"]) == 1
+    assert manifest["profiles"] == [{"ordinal": 1, "profile_id": "fresh-profile",
+                                      "composer_items": [1],
+                                      "target_strategy_id": cal._AUTOMATED_TARGET_STRATEGY_ID}]
 
 
 def test_capture_console_names_the_skip_diagnosis_not_only_its_generic_code(
@@ -3011,6 +3487,36 @@ def test_entry_anchor_operational_reference_must_name_this_session_ledger(tmp_pa
 
     assert cal._entry_anchor_reference_reason(session, str(session_dir)) is None
     assert cal._entry_anchor_reference_reason(session, "operator-says-entry-is-good") is not None
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("device", "", "device serial"),
+        ("calibrated_at", "", "calibration provenance"),
+        ("identity_band", [0.1, 0.2, 0.3], "identity_band"),
+        ("content_band", [0.1, float("nan")], "content_band"),
+    ],
+)
+def test_v3_calibration_output_validation_rejects_incomplete_binding_fields(key, value, message):
+    """The local emit guard must validate every persisted binding, not only numeric bounds."""
+    block = {
+        "schema_version": cal._CALIBRATION_SCHEMA_VERSION,
+        "device": "PIXEL-TEST",
+        "hinge_version_name": "10.1.0",
+        "frame_size_px": [1080, 2400],
+        "composer_layout_id": cal._COMPOSER_LAYOUT_ID,
+        "item_selection_policy_id": cal.PHOTO_ONLY_POLICY_ID,
+        "identity_match_max_dist": 1.0,
+        "inline_item_max_dist": 5.0,
+        "calibrated_at": "2026-08-26T20:17:22+00:00",
+        "identity_band": list(_IDENTITY_BAND),
+        "content_band": list(_CONTENT_BAND),
+    }
+    block[key] = value
+
+    with pytest.raises(cal._MeasureRefused, match=message):
+        cal._validate_v3_calibration_block(block)
 
 
 def test_measure_success_prints_exact_calibration_mapping_and_full_ledger(monkeypatch, tmp_path, capsys):
@@ -3728,6 +4234,8 @@ def test_capture_card_scan_passes_only_the_prior_exact_index_prefix(monkeypatch,
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
     monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
     monkeypatch.setattr(cal, "human_delay", lambda *_args: 0.0)
+    monkeypatch.setattr(cal, "_settled_read_scroll_frame",
+                        lambda driver: driver.adb.screencap())
     monkeypatch.setattr(cal, "confirm_scroll_top",
                         lambda frame, **_kw: SimpleNamespace(
                             confirmed=frame in {b"top", b"advanced"},
@@ -3891,6 +4399,47 @@ def test_capture_validates_the_config_so_the_licence_its_proof_consults_is_insta
         "capture must call config.validate() (which installs the still-photo licence) "
         "before constructing the driver")
     assert cfg_mod_real is cal.cfg_mod  # the monkeypatched module is the real config module
+
+
+def test_capture_marks_the_driver_device_driven_before_opening_the_phone_session(
+        tmp_path, monkeypatch):
+    """Calibration cannot fall through to the retired passive-Observe preflight.
+
+    Capture has its own guarded heart/Pass protocol, not a Worker ranker policy, so it installs
+    the explicit device-driven session marker with ``None`` before the driver's final live-phone
+    gate runs.  The test stops at that gate: no ADB or card action is possible here.
+    """
+    events = []
+
+    class _Driver:
+        def __init__(self, _cfg):
+            self.identity_band = _IDENTITY_BAND
+            self.content_band = _CONTENT_BAND
+
+        def set_auto_session_policy(self, policy):
+            events.append(("session_policy", policy))
+
+        def open_session(self):
+            events.append(("open_session", None))
+            raise RuntimeError("stop before device setup")
+
+    monkeypatch.setattr(cal.cfg_mod, "load", lambda _path: SimpleNamespace(apps={}))
+    monkeypatch.setattr(cal.cfg_mod, "validate", lambda _cfg: None)
+    monkeypatch.setattr(cal, "HingeDriver", _Driver)
+    monkeypatch.setattr(cal, "_preflight_serial", lambda _cfg: ("PIXEL-TEST", "adb"))
+    monkeypatch.setattr(cal, "_capture_out_dir", lambda *_a, **_kw: tmp_path / "out")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("apps:\n  hinge:\n    serial: PIXEL-TEST\n")
+    args = argparse.Namespace(
+        split="calibration", profiles=1, config=str(config_path), out=str(tmp_path / "out"),
+        record_operational_checks=False, unattended=False, hybrid_review=False,
+        confirmation="", send_like=False, send_like_confirmation="",
+        reviewer_model="m", reviewer_process="p", reviewer_id="", reviewer_version="")
+
+    with pytest.raises(SystemExit):
+        cal._cmd_capture(args)
+
+    assert events == [("session_policy", None), ("open_session", None)]
 
 
 # =====================================================================================

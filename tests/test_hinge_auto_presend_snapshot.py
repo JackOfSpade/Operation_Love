@@ -398,10 +398,11 @@ def test_training_like_rejects_reflowed_same_profile_after_send(monkeypatch):
     assert driver.landed_auto_opener_evidence() is None
 
 
-def test_training_freshly_locates_pass_from_keyboard_hidden_composer(monkeypatch):
+def test_training_freshly_locates_pass_from_keyboard_hidden_composer(tmp_path, monkeypatch):
     """Dislike is a verified pass of the composer profile, not a stale deck tap."""
     events = []
     driver, _adb = _driver(events)
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-dislike-evidence")
     driver.set_auto_session_policy(object())
     initial = SimpleNamespace(comment_rect=SimpleNamespace(center=(20, 20)),
                               confirm_point=(30, 30))
@@ -432,6 +433,14 @@ def test_training_freshly_locates_pass_from_keyboard_hidden_composer(monkeypatch
     assert ("tap", composer.confirm_point) not in events
     assert verified[-1] == b"FRESH_FOR_PASS"
     assert ("training_advance", 1) in events
+    records = [
+        json.loads(line)
+        for line in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()
+    ]
+    approval = next(record for record in records if record["action"] == "auto_opener_pre_send")
+    dislike = next(record for record in records if record["action"] == "training_dislike")
+    assert dislike["pre_send_evidence_id"] == approval["evidence_id"]
+    assert not any(record["action"] in {"like_attempt", "like"} for record in records)
 
 
 def test_training_dislike_rejects_reflowed_same_profile_without_deck_advance(monkeypatch):
@@ -492,11 +501,51 @@ def test_training_action_accepts_only_two_stable_semantically_new_deck_frames(
     monkeypatch.setattr(driver, "_observe_deck_ready", lambda _frame: True)
     monkeypatch.setattr(
         driver, "_training_profile_advance_proof",
-        lambda _frame, _item: ("identity", None))
+        lambda _frame, _item, **_kw: ("identity", None))
     monkeypatch.setattr(driver, "_changed", lambda _before, _after: False)
     monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
 
     assert getattr(driver, verifier_name)(1) == "identity"
+
+
+def test_training_like_accepts_two_stable_confirmed_top_new_name_frames(tmp_path, monkeypatch):
+    """Training records a real Like once two ready frames repeat the new card's name."""
+    import numpy as np
+
+    events = []
+    driver, _adb = _driver(events)
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-advance", keep_shots=10)
+    driver._identity_name = "Mackinley MJ"
+    driver._identity_sig = np.zeros((16, 64), dtype="int16")
+    driver._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    frames = iter((b"KATE_TOP_FIRST", b"KATE_TOP_SECOND"))
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_deck_blocked_reason", lambda _frame: None)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: None)
+    monkeypatch.setattr(driver, "_observe_deck_ready", lambda _frame: True)
+    monkeypatch.setattr(driver, "_changed", lambda _before, _after: False)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: np.full((16, 64), 99, dtype="int16"))
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top",
+        lambda frame, **_kw: SimpleNamespace(confirmed=True))
+    monkeypatch.setattr(
+        driver, "_ocr_band",
+        lambda frame, rect, psm="7": "Kate\nshe her" if psm == "6" else None)
+
+    assert driver._verify_training_like_landed(2) == "name"
+    records = [
+        json.loads(line)
+        for line in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()
+    ]
+    probe = next(record for record in records if record["action"] == "training_advance_probe")
+    assert probe["outcome"] == "accepted"
+    assert probe["first"]["name_candidate"] == "Kate"
+    assert probe["second"]["proof"] == "name"
+    assert probe["stable"] is True
+    assert probe["names_agree"] is True
 
 
 def test_durable_presend_evidence_does_not_depend_on_local_debug_logging():

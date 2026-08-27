@@ -87,6 +87,12 @@ class Profile:
     # never a fixed sentence, per this repo's standing rule that guidance must derive from the
     # condition it describes rather than outlive it.
     items_unnumbered: str = ""
+    # Machine-readable subtype for `items_unavailable`. Empty preserves the generic refusal
+    # contract; `targeting_calibration` means the capture deliberately skipped enumeration
+    # because the installed targeting calibration was absent or rejected for this live app.
+    # It remains separate from the human-readable reason so downstream status can act on a
+    # stable value without parsing diagnostics.
+    items_unavailable_kind: str = ""
 
     def text_blob(self) -> str:
         parts = [self.bio.strip()] if self.bio else []

@@ -566,8 +566,8 @@ class OpenerService:
         # and _TRANSIENT_LATCH_THRESHOLD for why); reset on any outcome that proves the
         # opener pipeline actually works.
         self._consecutive_transient_failures = 0
-        # Ring buffer of the most recent COMMITTED opener records (AUTO generations, plus
-        # Observe suggestions only after a confirmed Like; see recent_openers_snapshot),
+        # Ring buffer of the most recent COMMITTED opener records (AUTO/Training generations,
+        # plus Observe suggestions only after a confirmed Like; see recent_openers_snapshot),
         # mirroring self.store.record_opener's permanent per-run record. WHY THIS EXISTS: a
         # bug report that says only "provider_calls=1" cannot
         # tell you whether that opener was about the right photo. Recording the model's own
@@ -1544,9 +1544,15 @@ class OpenerService:
                     "app": app,
                     "model": result.model,
                     # This remains an advisory-generation record even though it is appended
-                    # only after a confirmed Like.  The flag describes how the opener was
-                    # produced (Observe vs AUTO), not whether the staged row was committed.
+                    # only after a confirmed Like.  The flag distinguishes Observe's shorter
+                    # generation policy from AUTO/Training; session_mode below records the
+                    # eventual action provenance.
                     "advisory": bool(advisory),
+                    # Training shares AUTO's provider budget and stages its opener through the
+                    # same landed-action envelope.  ``advisory`` alone therefore cannot name
+                    # the eventual session mode; commit_opener refines this to ``training``
+                    # when the landed decision source is manual.
+                    "session_mode": "advisory" if advisory else "auto",
                     "index": item_index,
                     "index_space": index_space,
                     "referenced": referenced,
@@ -1589,7 +1595,7 @@ class OpenerService:
     def commit_opener(self, pick: OpenerPick, *, profile_id: str = "", decision: str = "like",
                       decision_source: str = "", decision_created_at: object | None = None,
                       pre_send_evidence: dict[str, object] | None = None) -> bool:
-        """Persist one staged AUTO/Observe opener after a landed Like, exactly once.
+        """Persist one staged AUTO/Training/Observe opener after a landed Like, exactly once.
 
         This is intentionally a separate, explicit commit from generation: neither opening a
         profile nor generating a suggestion says that the account acted.  Pass, Stop, resync,
@@ -1607,7 +1613,14 @@ class OpenerService:
             except Exception as exc:  # noqa: BLE001 -- a store outage must not erase a real Like
                 print(f"Warning: failed to persist committed opener after landed like: {exc}")
                 return False
-            self.recent_openers.append(dict(record.recent_entry))
+            recent_entry = dict(record.recent_entry)
+            if recent_entry.get("advisory"):
+                recent_entry["session_mode"] = "advisory"
+            elif decision_source == "manual":
+                recent_entry["session_mode"] = "training"
+            else:
+                recent_entry["session_mode"] = "auto"
+            self.recent_openers.append(recent_entry)
             pick._staged_record = None
             return True
 

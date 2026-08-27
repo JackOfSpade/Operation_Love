@@ -222,6 +222,34 @@ def test_no_debug_log_fold_emit_writes_nothing_and_raises_nothing():
     hinge.AndroidDriver._emit_capture_fold_timing(driver, 1.0, {}, 0, outcome="usable")
 
 
+def test_fold_timing_keeps_legacy_dwell_total_and_emits_an_exact_passive_remainder_split(
+        monkeypatch):
+    """The C2/C3 fold bucket includes real navigation; its detail must say how much was passive.
+
+    The legacy numeric bucket stays in the row for existing consumers.  The split is nested so
+    it cannot be double-counted as two extra fold buckets by generic timing readers, and the
+    rounded values reconstruct that legacy total exactly in the JSON-ready record.
+    """
+    dbg = _FakeDebugLog()
+    driver = _FakeDriver(dbg)
+    driver._still_photo_dwell_timing_breakdown = {
+        "passive_observation_s": 51.8669997,
+        "navigation_and_overhead_s": 134.7570003,
+    }
+    monkeypatch.setattr(hinge.time, "monotonic", lambda: 200.0)
+
+    hinge.AndroidDriver._emit_capture_fold_timing(
+        driver, 0.0, {"still_photo_dwell_s": 186.624}, 17, outcome="usable")
+
+    record = dbg.records[0]
+    assert record["still_photo_dwell_s"] == pytest.approx(186.624)
+    breakdown = record["still_photo_dwell_breakdown"]
+    assert breakdown["passive_observation_s"] == pytest.approx(51.867)
+    assert breakdown["navigation_and_overhead_s"] == pytest.approx(134.757)
+    assert (breakdown["passive_observation_s"] + breakdown["navigation_and_overhead_s"]
+            == record["still_photo_dwell_s"])
+
+
 # =====================================================================================
 # _emit_gesture_timing (one level down from _emit_capture_iteration_timing -- see
 # _scroll_down_one's GESTURE TIMING LEDGER paragraph for why this exists: the read loop's own

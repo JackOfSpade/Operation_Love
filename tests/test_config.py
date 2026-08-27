@@ -64,6 +64,13 @@ def test_valid_config_passes():
     c.validate(_load(BASE))   # no raise
 
 
+def test_training_hinge_capture_budget_must_fit_the_hub_review_checkpoint():
+    d = copy.deepcopy(BASE)
+    d["apps"] = {"hinge": {"scroll_captures": 17}}
+
+    _expect_error(d, "scroll_captures must not exceed 16 in Training")
+
+
 @pytest.mark.parametrize(("key", "value", "needle"), [
     ("limts", {}, "top level"),
     ("budegt", {}, "top level"),
@@ -1333,7 +1340,8 @@ def _calibration(**overrides):
     return {
         "identity_match_max_dist": 2.0, "inline_item_max_dist": 4.0,
         "device": "synthetic-pixel", "calibrated_at": "2026-08-12",
-        **_TARGETING_SCHEMA_V2, **_TARGETING_GEOMETRY, **overrides,
+        **_TARGETING_SCHEMA_V2, "hinge_version_name": "10.0.1",
+        **_TARGETING_GEOMETRY, **overrides,
     }
 
 
@@ -1368,6 +1376,16 @@ def test_verified_bound_evidence_installs_readiness_and_licenses_the_calibration
         max_video_exact_run_s=1.5, artifact_sha256=summary.artifact_sha256,
         device="synthetic-pixel", hinge_version_name="10.0.1")
     assert tp.hinge_targeting_unavailable_reason() is None
+
+
+def test_a_stale_bound_cannot_license_a_newer_targeting_calibration(tmp_path, monkeypatch):
+    d = _bound_config(
+        tmp_path, monkeypatch,
+        targeting_calibration=_calibration(hinge_version_name="10.1.0"))
+
+    _expect_error(d, "must exactly match on hinge_version_name")
+    _expect_error(d, "'10.0.1' != '10.1.0'")
+    _expect_error(d, "do not relabel old evidence")
 
 
 def test_a_later_validate_without_the_key_turns_readiness_back_off(tmp_path, monkeypatch):
@@ -2044,6 +2062,15 @@ def test_configured_assumption_installs_readiness_and_licenses_the_calibration()
     assert licence.record == _acceptance_record()
     assert tp.hinge_targeting_unavailable_reason() is None
     assert tp.still_photo_licence_provenance().startswith("UNMEASURED")
+
+
+def test_a_stale_assumption_cannot_license_a_newer_targeting_calibration():
+    d = _assumption_config(
+        targeting_calibration=_calibration(hinge_version_name="10.1.0"))
+
+    _expect_error(d, "must exactly match on hinge_version_name")
+    _expect_error(d, "'10.0.1' != '10.1.0'")
+    _expect_error(d, "explicitly re-accept the unmeasured assumption")
 
 
 def test_a_later_validate_without_the_assumption_key_turns_readiness_back_off():

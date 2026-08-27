@@ -1383,6 +1383,16 @@ def test_staged_auto_opener_is_not_committed_until_the_landed_like_boundary():
     assert store.openers == [] and service.recent_openers_snapshot() == []
     assert service.commit_opener(pick) is True
     assert len(store.openers) == 1 and len(service.recent_openers_snapshot()) == 1
+    assert service.recent_openers_snapshot()[0]["session_mode"] == "auto"
+
+
+def test_staged_manual_training_opener_records_training_session_mode():
+    store = _Store()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
+
+    assert service.commit_opener(pick, decision_source="manual") is True
+    assert service.recent_openers_snapshot()[0]["session_mode"] == "training"
 
 
 def test_advisory_default_is_false_so_every_existing_call_site_is_unaffected():

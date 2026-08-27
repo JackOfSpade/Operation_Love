@@ -449,10 +449,15 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
         by_ordinal[ordinal] = by_ordinal.get(ordinal, 0) + 1
         if by_ordinal[ordinal] > _MAX_PREACTION_PROFILE_SKIPS_PER_ORDINAL:
             raise ReviewRefused(f"{session}: skipped attempts exceed the per-ordinal cap")
+        expected_skip_action = ("advance_unusable_profile_with_priority_like"
+                                if send_like_accepted else "skip_profile_without_heart")
+        expected_skip_transport = ("HingeDriver.like" if send_like_accepted
+                                   else "HingeDriver.dislike")
         if (skipped.get("attempt_number_for_ordinal") != by_ordinal[ordinal]
                 or skipped.get("session_skip_number") != sequence
                 or skipped.get("reason_code") not in skip_codes
-                or skipped.get("transport") != "HingeDriver.dislike"):
+                or skipped.get("action") != expected_skip_action
+                or skipped.get("transport") != expected_skip_transport):
             raise ReviewRefused(f"{session}: skipped attempt {sequence} has an unsupported trace")
         for key in ("reason_sha256", "pre_frame_sha256", "post_frame_sha256",
                     "post_identity_frame_sha256"):
@@ -460,9 +465,15 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
             if not isinstance(value, str) or len(value) != 64:
                 raise ReviewRefused(f"{session}: skipped attempt {sequence} has invalid {key}")
         predicates = skipped.get("predicates")
+        public_action_proved = isinstance(predicates, dict) and (
+            (predicates.get("send_like_requested_for_unusable_profile") is True
+             and predicates.get("send_like_tapped") is True
+             and predicates.get("public_action_guard_used") is True)
+            if send_like_accepted else
+            (predicates.get("no_photo_heart_or_send_like_on_current_profile") is True
+             and predicates.get("public_dislike_guard_used") is True))
         if (not isinstance(predicates, dict)
-                or predicates.get("no_photo_heart_or_send_like_on_current_profile") is not True
-                or predicates.get("public_dislike_guard_used") is not True
+                or not public_action_proved
                 or predicates.get("new_profile_top_confirmed") is not True
                 or predicates.get("new_profile_composer_absent") is not True
                 or predicates.get("new_profile_identity_distinct") is not True):
@@ -486,7 +497,8 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
             checks = skipped.get("review_checkpoints")
             if not isinstance(checks, dict):
                 raise ReviewRefused(f"{session}: hybrid skipped attempt has no review checkpoint")
-            require_hybrid_decision(checks.get("before"), action="skip_profile_without_heart", item=None)
+            require_hybrid_decision(
+                checks.get("before"), action=expected_skip_action, item=None)
 
     profile_ordinals: set[int] = set()
     for profile in profiles:

@@ -460,6 +460,39 @@ NAV_ITEM_NOT_FULLY_VISIBLE = "item_never_fully_visible"  # scrolled past it, or 
 NAV_BUDGET_EXHAUSTED = "budget_exhausted"              # never reached the target ordinal
 
 
+@dataclass(frozen=True)
+class NavigationRecovery:
+    """A measured terminal position from a navigation that correctly refused to land.
+
+    This is deliberately *not* a target and cannot authorize a tap or a retry.  It exists for
+    the still-photo candidate walk, whose navigation is optional but whose real gestures still
+    owe the profile a measured return to its entry anchor.  ``page_shift_px`` is the complete
+    signed displacement from this navigation's entry frame to ``frame`` in frameshift's
+    convention (positive is content up).  It is present only when every leg, including the
+    refusing one, was measured.
+    """
+
+    frame: bytes
+    page_shift_px: int
+    step_index: int
+    frame_index: int
+    planned_step_px: int
+    achieved_step_px: int
+    bound_px: int
+    frac: float
+    window_px: tuple[int, int]
+    basis: str
+    spacing_px: int | None
+    sized_against_px: int
+    measurement_delta_px: int
+    measurement_status: str
+    measurement_confidence: float
+    measurement_agreeing: int
+    measurement_dissenting: int
+    measurement_eligible: int
+    violation: str
+
+
 class ItemNavigationError(RuntimeError):
     """Navigation refused, and nothing was tapped.
 
@@ -476,12 +509,14 @@ class ItemNavigationError(RuntimeError):
     """
 
     def __init__(self, code: str, message: str, *, frame: bytes | None = None,
-                 frame_index: int | None = None, anchor: "ShiftEstimate | None" = None):
+                 frame_index: int | None = None, anchor: "ShiftEstimate | None" = None,
+                 recovery: NavigationRecovery | None = None):
         super().__init__(message)
         self.code = code
         self.frame = frame
         self.frame_index = frame_index
         self.anchor = anchor
+        self.recovery = recovery
 
 
 @dataclass(frozen=True)
@@ -1466,13 +1501,40 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
         climb_px = -est.delta_px
         violation = step_overshoot(step, climb_px)
         if violation is not None:
+            # The count must stop -- this step is too large to safely use for ordinal
+            # navigation -- but unlike an unmeasurable chain its terminal page position is known.
+            # Carry that strictly-cleanup-only fact to the optional still-photo walk so it can
+            # return to its entry anchor instead of converting a rejected candidate into a
+            # poisoned capture.  `offsets` does not yet contain this frame because the count must
+            # not consume it; spelling the prospective offset here keeps the recovery arithmetic
+            # tied to the same measured chain the normal recurrence would have used.
+            recovery = NavigationRecovery(
+                frame=nxt,
+                page_shift_px=(offsets[-1] + int(est.delta_px)) - entry_offset,
+                step_index=i,
+                frame_index=i + 1,
+                planned_step_px=step.step_px,
+                achieved_step_px=climb_px,
+                bound_px=step.bound_px,
+                frac=step.frac,
+                window_px=step.window_px,
+                basis=step.basis,
+                spacing_px=step.spacing_px,
+                sized_against_px=step.sized_against_px,
+                measurement_delta_px=int(est.delta_px),
+                measurement_status=est.status,
+                measurement_confidence=est.confidence,
+                measurement_agreeing=est.agreeing,
+                measurement_dissenting=est.dissenting,
+                measurement_eligible=est.eligible,
+                violation=violation)
             raise ItemNavigationError(
                 NAV_SCROLL_STALLED if climb_px <= 0 else NAV_SCROLL_OVERSHOT,
                 f"the upward gesture at frame {i} did not respect the step it was planned as: "
                 f"{violation} (measured {est.delta_px:+d}px, i.e. {climb_px}px of climb). A "
                 "stalled loop would re-count the same frame forever and an over-large one "
                 "aliases the count against the card spacing; neither is a step to take again",
-                frame=nxt, frame_index=i + 1, anchor=anchor)
+                frame=nxt, frame_index=i + 1, anchor=anchor, recovery=recovery)
         # UNCHANGED, deliberately: the page-space recurrence needs no flip because the sign is in
         # the measurement. An upward gesture produces a negative delta, so the offset decreases.
         offsets.append(offsets[-1] + est.delta_px)

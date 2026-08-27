@@ -3761,3 +3761,20 @@ Pinned in `tests/test_hub.py::test_observe_banner_keeps_the_go_cue_when_hinge_ta
 `test_the_targeting_setup_notice_names_the_calibration_once_numbering_is_licensed`,
 `…_names_the_still_photo_proof_while_nothing_licenses_numbering`, and
 `test_a_calibrated_run_publishes_no_targeting_setup_step`.
+
+#### Addendum — 2026-08-26: stale live calibration is a typed pre-opener stop
+
+The installed 10.0.1 schema-v3 calibration became historical evidence when the live Hinge build
+advanced to 10.1.0. Exact app-version/frame binding remains fail-closed: equal frame dimensions
+do not prove that composer, scroll-top, or item geometry is unchanged. The driver therefore marks
+the capture `Profile.items_unavailable_kind` as `targeting_calibration` when calibration is absent
+or rejected at runtime.
+
+The worker publishes `stop_kind=targeting_calibration` before any opener request, gesture, or
+label. The Hub renders **"targeting calibration must be renewed"** and retains the precise
+runtime diagnostic. Its next step is to capture and validate schema-v3 calibration for the live
+build/frame; that 10.1.0 renewal is now installed and enables Training. AUTO still requires fresh
+release evidence for the renewed calibration. This is not the `targeting` state: `targeting` is
+reserved for the later case where an opener already exists but cannot be attached to its selected
+item. The generic `opener` state now means **"could not prepare a safe opener"** rather than
+incorrectly implying capacity exhaustion.

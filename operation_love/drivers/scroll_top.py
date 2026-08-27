@@ -336,6 +336,107 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_CURRENT = (
     190, 187, 224, 245, 230, 186, 224, 234, 237, 205, 182, 217, 234, 234, 220, 190,
 )
 
+# Variant 13: `Signals  Age v  Height v  Dating Intentions` (Hinge 10.1.0 current
+# unselected-Signals strip).
+#
+# Measured from a read-only, visibly confirmed Pixel 7a top on 2026-08-26
+# (`/tmp/hinge_10_1_top.png` at capture time): the Signals/Age/Height chips are above the
+# profile name and first photo, with no sticky per-profile header.  Its nominal crop was 7.094
+# from the prior 10.0.1 Variant 11; the bounded alignment sweep found 4.625 at -12px.  Both are
+# inside the deliberate 3..9 dead zone, so widening either threshold would be the wrong fix.
+#
+# Replaying this added candidate against all 148 hand/bot-scroll corpus frames left every prior
+# classification unchanged (5 tops, 143 refuted); the closest previously-refuted frame stayed
+# 10.531 above the 9.0 refute floor.  This records only the 16x4 greyscale chrome fingerprint,
+# never profile pixels or text.
+_SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_1_0 = (
+    254, 251, 251, 251, 252, 250, 236, 235, 235, 249, 241, 236, 236, 235, 244, 247,
+    249, 246, 239, 241, 249, 242, 240, 242, 244, 237, 240, 237, 237, 243, 239, 238,
+    248, 244, 208, 211, 244, 244, 228, 214, 238, 237, 241, 214, 210, 234, 239, 239,
+    253, 251, 250, 252, 251, 246, 235, 237, 237, 244, 237, 239, 238, 238, 240, 242,
+)
+
+# Variant 14: `Age  Height  Dating Intentions` (Hinge 10.1.0 selected-Signals/filter-selected
+# strip).
+#
+# Measured from a read-only, visibly confirmed Pixel 7a top on 2026-08-26
+# (`/tmp/hinge_10_1_signals_selected_top.png` at capture time): the filter chips are above the
+# profile name and first card, with no sticky per-profile header.  The selected Signals chip is
+# omitted from this rendering, leaving Age/Height/Dating Intentions as the first visible chips.
+# Its nominal crop was 9.375 from Variant 13; the bounded alignment sweep found 6.766 at -12px,
+# inside the deliberate 3..9 dead zone.  This is therefore another discrete chrome state, not
+# evidence for relaxing either safety threshold.
+#
+# Replaying the candidate against the canonical 148-frame hand/bot-scroll corpus produced zero
+# false confirmations: the five known tops still confirm, 142 frames refute, and one prior
+# refutation becomes a conservative UNKNOWN (5.781), which merely requests another bounded
+# scroll/recheck.  This records only the 16x4 greyscale chrome fingerprint, never profile pixels
+# or text.
+_SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_10_1_0 = (
+    247, 245, 252, 252, 243, 242, 249, 250, 251, 246, 241, 246, 249, 252, 250, 251,
+    244, 242, 217, 236, 242, 244, 227, 215, 232, 242, 242, 236, 218, 223, 222, 221,
+    250, 241, 238, 242, 243, 243, 241, 238, 242, 241, 244, 240, 241, 238, 241, 241,
+    254, 250, 247, 246, 252, 253, 247, 247, 246, 250, 254, 248, 247, 247, 247, 247,
+)
+
+# Variant 15: `Age  Height  Dating Intentions` (Hinge 10.1.0 selected-filter strip after the
+# profile deck has fully settled).
+#
+# Measured from a second read-only capture of the same visibly confirmed Pixel 7a card top on
+# 2026-08-26 (`/tmp/hinge_current_top.png` at capture time), several minutes after Variant 14.
+# Hinge had repainted the same profile-independent chips to this lighter settled rendering.  Its
+# closest nominal registered match was the historical Age/Height Variant 2 at 4.531; the bounded
+# alignment sweep still stopped at 4.375 (-11px), inside the deliberate dead zone.  Recording
+# the exact settled chrome state avoids broadening the 3.0 confirmation threshold.
+# Replaying it against the canonical 148-frame corpus changed no historical state (5 confirmed,
+# 142 refuted, 1 already-conservative UNKNOWN) and produced zero false confirmations; the closest
+# historical non-top remained 15.547 away.
+# This is only the 16x4 greyscale filter-strip fingerprint, never profile pixels or text.
+_SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_SETTLED_10_1_0 = (
+    254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    253, 237, 232, 231, 244, 246, 232, 233, 232, 237, 249, 234, 233, 233, 233, 233,
+    240, 236, 237, 242, 234, 234, 233, 233, 238, 237, 232, 233, 232, 239, 234, 235,
+    237, 233, 185, 222, 234, 237, 208, 182, 215, 233, 234, 223, 191, 196, 199, 197,
+)
+
+# Variant 16: `Age  Height  Dating Intentions` (Hinge 10.1.0 alternate settled filter chrome).
+#
+# Measured from another read-only, visibly confirmed Pixel 7a card top on 2026-08-26
+# (`/tmp/hinge_top_variant16.png` at capture time).  The chips sit above the profile name and
+# first card, with no sticky header.  Its bounded alignment sweep reached 3.438 at -10px against
+# the prior candidates: only 0.438 beyond the deliberately strict confirmation ceiling, but
+# still UNKNOWN rather than permission to count.  Registering the exact chrome state preserves
+# that ceiling instead of relaxing it for all unknown bands.  The canonical 148-frame replay
+# changed no state (5 confirmed, 142 refuted, 1 conservative UNKNOWN), produced zero false
+# confirmations, and left the closest historical non-top 13.953 away.  This is only the 16x4
+# greyscale filter-strip fingerprint, never profile pixels or text.
+_SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_ALT_10_1_0 = (
+    255, 252, 251, 252, 255, 253, 251, 251, 251, 255, 254, 251, 251, 251, 251, 251,
+    242, 234, 235, 233, 243, 234, 236, 236, 234, 240, 238, 234, 236, 235, 236, 236,
+    240, 226, 226, 237, 233, 235, 215, 218, 234, 235, 237, 218, 218, 224, 217, 218,
+    240, 226, 220, 242, 233, 240, 217, 218, 240, 236, 238, 226, 218, 222, 222, 224,
+)
+
+# Variant 17: `Signals  Age  Height  Dating Intentions` (Hinge 10.1.0 unselected-Signals
+# alternate chrome).
+#
+# Measured from a read-only, visibly confirmed Pixel 7a top on 2026-08-26
+# (`/tmp/hinge_top_alignment.png` at capture time).  The complete chips row sits above the
+# profile name and first card, with no sticky header.  Its best existing match was 5.375 at the
+# -12px alignment boundary; extending the diagnostic sweep to -60..+60 still bottomed out at
+# 4.688 (-26px), proving this is a different raster/layout state rather than merely an undersized
+# alignment search.  Registering the exact state retains the 3.0/9.0 safety bounds.  This stores
+# only the 16x4 app-chrome fingerprint, never profile pixels or text.  The canonical 148-frame
+# replay changed no state (5 confirmed, 142 refuted, 1 UNKNOWN) and produced zero false
+# confirmations, but its existing UNKNOWN now sits only 3.3125 away; therefore neither the 3.0
+# threshold nor the +/-12px search may be widened alongside this candidate.
+_SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_ALT_10_1_0 = (
+    253, 242, 242, 244, 250, 245, 242, 247, 246, 243, 243, 240, 242, 247, 242, 245,
+    253, 236, 222, 233, 250, 245, 226, 237, 244, 243, 239, 222, 234, 244, 242, 244,
+    253, 252, 252, 253, 253, 244, 242, 242, 243, 248, 242, 242, 243, 242, 248, 242,
+    254, 254, 254, 254, 254, 254, 253, 253, 254, 255, 253, 253, 253, 253, 255, 254,
+)
+
 _SCROLL_TOP_BAND_FINGERPRINTS: tuple[tuple[int, ...], ...] = (
     _SCROLL_TOP_BAND_FINGERPRINT_COMPATIBLE,
     _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT,
@@ -349,6 +450,11 @@ _SCROLL_TOP_BAND_FINGERPRINTS: tuple[tuple[int, ...], ...] = (
     _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_PURPLE_BANNER,
     _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_0_1,
     _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_CURRENT,
+    _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_1_0,
+    _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_10_1_0,
+    _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_SETTLED_10_1_0,
+    _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_ALT_10_1_0,
+    _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_ALT_10_1_0,
 )
 
 # Maintained for backwards compatibility:

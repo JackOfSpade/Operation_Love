@@ -17,11 +17,13 @@ from .targeting_policy import (
     STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL, STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION,
     StillPhotoAssumptionAcceptance, StillPhotoBoundSummary,
     clear_installed_still_photo_bound, hinge_targeting_unavailable_reason,
-    install_accepted_still_photo_assumption, install_verified_still_photo_bound)
+    install_accepted_still_photo_assumption, install_verified_still_photo_bound,
+    installed_still_photo_licence)
 
 from . import platforms
 from .costing import ModelPricing
 from .bigquery_validation import BIGQUERY_IDENTIFIER_PATTERNS, validate_bigquery_photo_bucket
+from .training_actions import MAX_PROFILE_REVIEW_FRAMES
 
 
 @dataclass
@@ -606,6 +608,27 @@ def _validate_targeting_calibration(cfg: Config) -> None:
                     "Config: apps.hinge.targeting_calibration cannot license numbered "
                     f"targeting because {policy_blocker}. Remove the optional mapping; Hinge "
                     "Observe remains available without targeted suggestions")
+            licence = installed_still_photo_licence()
+            # Both licence channels describe a visual property of one app build on one phone.
+            # Validating each block independently is not enough: a freshly captured calibration
+            # must never combine with a stale still-photo assumption/bound merely because both
+            # blocks are internally well formed.  Device normally agrees through the shared
+            # serial checks, but keep it in this explicit evidence join so future licence
+            # channels cannot accidentally weaken that binding either.
+            if licence is None:
+                raise ValueError(
+                    "Config: apps.hinge.targeting_calibration cannot license numbered targeting "
+                    "because no installed still-photo licence record is available")
+            for key in ("device", "hinge_version_name"):
+                licence_value = getattr(licence.record, key, None)
+                calibration_value = calibration[key]
+                if licence_value != calibration_value:
+                    raise ValueError(
+                        "Config: the installed Hinge still-photo licence and "
+                        f"apps.hinge.targeting_calibration must exactly match on {key} "
+                        f"({licence_value!r} != {calibration_value!r}). Recapture measured "
+                        "still-photo evidence or explicitly re-accept the unmeasured assumption "
+                        "for this exact Hinge build/device; do not relabel old evidence")
 
 
 def _validate_hinge_still_photo_bound_evidence(cfg: Config) -> None:
@@ -1253,6 +1276,20 @@ def _validate_training_checkpoint_requirements(cfg: Config) -> None:
         raise ValueError(
             "Config: Training requires opener.enabled=true because every Hub checkpoint "
             "must contain a typed opener")
+    # Hinge hands its captured profile frames to the Hub review carousel in Training. The bridge
+    # caps that capability-bound payload, so accepting a larger Hinge capture budget here would
+    # defer an inevitable checkpoint refusal until an opener has already been typed on a live
+    # profile. AUTO does not publish Hub review frames and keeps the broader diagnostic ceiling.
+    hinge_cfg = (cfg.apps.get("hinge", {}) or {})
+    hinge_captures = hinge_cfg.get("scroll_captures")
+    if ("hinge" in training_apps and isinstance(hinge_captures, int)
+            and not isinstance(hinge_captures, bool)
+            and hinge_captures > MAX_PROFILE_REVIEW_FRAMES):
+        raise ValueError(
+            "Config: apps.hinge.scroll_captures must not exceed "
+            f"{MAX_PROFILE_REVIEW_FRAMES} in Training because the Hub checkpoint can review "
+            f"at most {MAX_PROFILE_REVIEW_FRAMES} ordered profile frames "
+            f"(got {hinge_captures})")
 
 
 def _validate_budget(cfg: Config) -> None:

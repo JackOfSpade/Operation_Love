@@ -2110,10 +2110,11 @@ class AndroidDriver(DatingAppDriver):
         # PASS requires the same candidate on both settled frames; two unrelated OCR guesses
         # are movement evidence, not proof that one new profile is on screen.
         self._identity_name_candidate = None
-        # Bounded memo cache for _ocr_band: keyed on (rect, psm, sha1(frame)), holding at most
-        # _OCR_BAND_CACHE_MAX entries. See _ocr_band's own comment for the measured cost this
-        # exists to avoid. Reset per profile (in _capture_current) alongside the other identity
-        # state, not just here, so a cached read never survives into a different profile.
+        # Bounded memo cache for _ocr_band: keyed on its crop/preprocessing parameters and
+        # sha1(frame), holding at most _OCR_BAND_CACHE_MAX entries. See _ocr_band's own comment
+        # for the measured cost this exists to avoid. Reset per profile (in _capture_current)
+        # alongside the other identity state, not just here, so a cached read never survives
+        # into a different profile.
         self._ocr_band_cache: dict[tuple, str | None] = {}
         self._adb: Adb | None = None
         self._capture_scrolls = 0     # read-scrolls the last _capture_current did; _scroll_to_top's ceiling
@@ -2175,9 +2176,19 @@ class AndroidDriver(DatingAppDriver):
         self._current_item_anchor = None
         self._current_photo_candidate_hearts: tuple[int, ...] = ()
         self._current_dwell_covered_hearts: tuple[int, ...] = ()
+        # Capture-scoped timing for the still-photo proof.  The legacy
+        # ``still_photo_dwell_s`` fold bucket intentionally remains the whole C2/C3 phase so
+        # existing readers retain their total, but that phase also includes the candidate walk's
+        # navigation, centring and measured returns.  Keep the passive observation spans apart
+        # while a capture is in progress, then emit both parts as a non-bucket breakdown on the
+        # fold row.  ``None`` means no capture is currently collecting this diagnostic, so a
+        # direct/helper call to _still_photo_dwell_burst cannot leak timing into a later capture.
+        self._still_photo_passive_observation_s: float | None = None
+        self._still_photo_dwell_timing_breakdown: dict[str, float] | None = None
         self._current_items_unavailable = (
             "no profile has been read yet, so this driver has enumerated nothing")
         self._current_items_unnumbered = ""
+        self._current_items_unavailable_kind = ""
         self._touch = None            # touch transport: UhidTouch (genuine) or Adb (input fallback)
         self.touch_backend = app_cfg.get("touch_backend", "auto")   # auto | uhid | adb | uhid_persistent
         self._observe_ready = False   # True once open_session validated PIL/numpy + device
@@ -2294,21 +2305,7 @@ class AndroidDriver(DatingAppDriver):
         if self.serial and self.serial not in ready:
             raise DriverClosed(f"{self.spec.app} device {self.serial} not connected (adb devices: {ready})")
         self._adb.screen_size()                       # cache geometry for clamping/coords
-        if self.targeting_calibration is not None:
-            self._targeting_runtime_frame_size = self._adb.screen_size()
-            package_dump = self._adb.shell(
-                f"dumpsys package {quote_android_package_id(self.package)}")
-            match = re.search(r"(?m)^\s*versionName=(\S+)\s*$", package_dump)
-            self._targeting_runtime_version_name = match.group(1) if match else None
-            calibration = self.targeting_calibration
-            if (self._targeting_runtime_version_name != calibration.hinge_version_name
-                    or self._targeting_runtime_frame_size != calibration.frame_size_px):
-                self.targeting_calibration = None
-                self._targeting_calibration_unavailable = (
-                    "the live app build/frame geometry does not exactly match schema-v3 "
-                    f"calibration ({self._targeting_runtime_version_name!r}/"
-                    f"{self._targeting_runtime_frame_size!r} != "
-                    f"{calibration.hinge_version_name!r}/{calibration.frame_size_px!r})")
+        self._refresh_targeting_calibration_binding()
         self._adb.shell(
             f"monkey -p {quote_android_package_id(self.package)} "
             "-c android.intent.category.LAUNCHER 1")
@@ -2578,9 +2575,17 @@ class AndroidDriver(DatingAppDriver):
         if self._dbg is None:
             return
         try:
+            # Training deliberately reuses AUTO's guarded input path, but it is not an
+            # autonomous decision source.  ``_auto_session`` is therefore true in both modes;
+            # use the installed human-decision callback to preserve that distinction in the
+            # audit ledger.
+            session_mode = (
+                "training" if self._training_decision is not None
+                else "auto" if self._auto_session else "observe"
+            )
             self._dbg.action(
                 "device_input", kind=kind,
-                session_mode="auto" if self._auto_session else "observe",
+                session_mode=session_mode,
                 transport=transport or type(self.touch).__name__, **fields)
         except Exception:  # noqa: BLE001 -- diagnostics must never change a live action
             pass
@@ -4095,6 +4100,18 @@ class AndroidDriver(DatingAppDriver):
     # enforced at that decision point, which is where the substitution would otherwise happen,
     # rather than by crashing the read here.
 
+    def _targeting_calibration_blocks_enumeration(self) -> bool:
+        """Whether calibration is the specific reason item enumeration is unavailable.
+
+        This mirrors the preceding policy/capability precedence in
+        `_item_enumeration_blocker`: a disabled opener or an app that cannot attach one is the
+        live reason for declining the read, even if its calibration is also absent.  Only the
+        exact live calibration gate gets the structured status consumed by later layers.
+        """
+        return (getattr(self, "_openers_enabled", True)
+                and self.accepts_opener
+                and self.targeting_calibration is None)
+
     def _item_enumeration_blocker(self) -> str:
         """Why this capture will not attempt an enumeration read, or "" when it will.
 
@@ -4149,9 +4166,14 @@ class AndroidDriver(DatingAppDriver):
         if not self.accepts_opener:
             return (f"{self.spec.app} cannot attach an opener to a like at swipe time, so there "
                     "is no request for numbered items to answer")
-        if self.targeting_calibration is None:
+        # A session can outlive either a Hinge update or a display-mode change.  Rebind before
+        # granting the expensive enumeration read, rather than discovering the mismatch only
+        # when a later dwell/navigation preflight needs the same calibration.  The refresh
+        # latches a mismatch by clearing ``targeting_calibration`` for the rest of the session.
+        binding_problem = self._refresh_targeting_calibration_binding()
+        if self.targeting_calibration is None or binding_problem:
             return (f"apps.{self.spec.app}.targeting_calibration is unavailable "
-                    f"({self._targeting_calibration_unavailable or 'no reason was recorded'}), "
+                    f"({binding_problem or self._targeting_calibration_unavailable or 'no reason was recorded'}), "
                     "so a model-selected item could not be verified or targeted and no "
                     "numbered item list would have a usable consumer")
         if self.identity_band is None:
@@ -4574,7 +4596,17 @@ class AndroidDriver(DatingAppDriver):
         first_at = last_at = 0.0
         for position in range(count):
             if position:
-                if not self._interruptible_sleep(human_delay(gap_s), should_stop):
+                # Schedule each observation against the first completed screencap.  ADB
+                # screencaps take material wall time on a real device (~0.7s in the run that
+                # exposed this), so sleeping a full gap *after* every capture inflated a
+                # nominal six-second window to 10-17 seconds.  The licence constrains the
+                # first-to-last observation span, not idle time between ADB calls.  Absolute
+                # deadlines preserve that minimum while allowing capture latency to satisfy
+                # part of it; a slow capture can only lengthen the window, never shorten it.
+                due_at = first_at + position * gap_s
+                remaining_s = due_at - time.monotonic()
+                if (remaining_s > 0
+                        and not self._interruptible_sleep(remaining_s, should_stop)):
                     return [], 0.0
             if should_stop is not None and should_stop():
                 # Checked again right before the screencap rather than folded into the sleep
@@ -4588,7 +4620,14 @@ class AndroidDriver(DatingAppDriver):
             last_at = time.monotonic()
             if not position:
                 first_at = last_at
-        return frames, last_at - first_at
+        span_s = last_at - first_at
+        # This is the precise passive part of C2/C3: every interval between its first and last
+        # screenshots, with no gesture issued by this method.  A capture-level accumulator is
+        # deliberately opt-in (set only by _index_captured_items) so direct callers and failed
+        # pre-capture paths cannot contaminate a later fold's timing row.
+        if self._still_photo_passive_observation_s is not None:
+            self._still_photo_passive_observation_s += span_s
+        return frames, span_s
 
     def _measured_page_shift(self, before: bytes, after: bytes) -> int | None:
         """How far the page moved between two frames, or None when frameshift could not tell.
@@ -5111,6 +5150,61 @@ class AndroidDriver(DatingAppDriver):
                 # refusals below) can fire AFTER gestures have already been spent, which leaves
                 # the phone somewhere this method cannot account for -- those still abandon.
                 below_entry = exc.code == NAV_ITEM_BELOW_ENTRY
+                recovery = getattr(exc, "recovery", None)
+                if recovery is not None:
+                    # An overshot/stalled navigation is still a refusal for THIS candidate: its
+                    # count cannot establish an ordinal and it must never be dwelt, selected or
+                    # retried.  Unlike an ordinary navigation error, though, item_nav supplies a
+                    # complete measured terminal position for these two post-gesture outcomes.
+                    # Use it only to repay the optional walk's displacement, then stop the walk
+                    # with all earlier evidence intact.  This is the additive walk contract:
+                    # one rejected extra candidate must not erase the original capture.
+                    returned_anchor = self._return_to_entry_from_measured_position(
+                        entry_anchor, frame=recovery.frame,
+                        terminal_shift_px=recovery.page_shift_px)
+                    return_outcome = ("restored" if returned_anchor is not None
+                                      else "return_unverified")
+                    navigation_refusal = {
+                        "schema_version": 1,
+                        "code": exc.code,
+                        "frame_index": recovery.frame_index,
+                        "terminal_shift_px": recovery.page_shift_px,
+                        "return_outcome": return_outcome,
+                        "restored_page_shift_px": (
+                            None if returned_anchor is None
+                            else returned_anchor.page_shift_px),
+                        "planned": {
+                            "step_px": recovery.planned_step_px,
+                            "bound_px": recovery.bound_px,
+                            "frac": recovery.frac,
+                            "window_px": list(recovery.window_px),
+                            "basis": recovery.basis,
+                            "spacing_px": recovery.spacing_px,
+                            "sized_against_px": recovery.sized_against_px,
+                        },
+                        "achieved": {
+                            "climb_px": recovery.achieved_step_px,
+                            "overshoot_px": max(0, recovery.achieved_step_px - recovery.bound_px),
+                            "measurement_delta_px": recovery.measurement_delta_px,
+                            "measurement_status": recovery.measurement_status,
+                            "measurement_confidence": recovery.measurement_confidence,
+                            "measurement_agreeing": recovery.measurement_agreeing,
+                            "measurement_dissenting": recovery.measurement_dissenting,
+                            "measurement_eligible": recovery.measurement_eligible,
+                        },
+                    }
+                    self._dbg_still_photo_walk_candidate(
+                        heart_ordinal,
+                        ("navigation_refused_returned" if returned_anchor is not None
+                         else "navigation_refused_return_unverified"),
+                        frame=recovery.frame, reason=exc.code,
+                        terminal_page_shift_px=recovery.page_shift_px,
+                        planned_step_px=recovery.planned_step_px,
+                        achieved_step_px=recovery.achieved_step_px,
+                        step_bound_px=recovery.bound_px,
+                        violation=recovery.violation,
+                        navigation_refusal=navigation_refusal)
+                    return evidence, returned_anchor
                 self._dbg_still_photo_walk_candidate(
                     heart_ordinal, "unreachable_below_entry" if below_entry
                     else "navigation_refused", frame=exc.frame, reason=exc.code)
@@ -5360,13 +5454,29 @@ class AndroidDriver(DatingAppDriver):
         """
         if correction is None:
             return None
+        frame = correction.frame if probe is None or not probe.frames else probe.frames[-1]
+        total = (-target.climbed_px + correction.total_px
+                + (0 if probe is None else probe.page_shift_px))
+        return self._return_to_entry_from_measured_position(
+            entry_anchor, frame=frame, terminal_shift_px=total)
+
+    def _return_to_entry_from_measured_position(
+            self, entry_anchor: _MeasuredItemAnchor, *, frame: bytes,
+            terminal_shift_px: int) -> _MeasuredItemAnchor | None:
+        """Return an optional walk from a fully measured terminal position.
+
+        ``terminal_shift_px`` is the signed sum from ``entry_anchor.frame`` to ``frame``.  The
+        caller may obtain it from a successful candidate plus its correction/probe, or from
+        ``item_nav.NavigationRecovery`` after an overshot/stalled candidate.  In the latter case
+        the candidate remains rejected; this helper only restores the entry coordinate system.
+        An absent link never reaches this method, so its chained measurements must not be
+        weakened into a direct best-effort comparison.
+        """
         _w, height = self.adb.screen_size()
         if height <= 0:
             return None
         quantum = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
-        frame = correction.frame if probe is None or not probe.frames else probe.frames[-1]
-        total = (-target.climbed_px + correction.total_px
-                + (0 if probe is None else probe.page_shift_px))
+        total = int(terminal_shift_px)
         # EACH STROKE'S OWN TARGET IS CAPPED WELL INSIDE `estimate_shift`'s TRUST WINDOW
         # (~900px on the calibrated band), not merely inside `_READ_SCROLL_FRAC_MAX`'s much
         # larger ~1800px reach -- a single stroke sized at the full remaining distance for a
@@ -5564,12 +5674,35 @@ class AndroidDriver(DatingAppDriver):
                             unnumber=unnumber_unless_confident_photo)
                         self._current_photo_candidate_hearts = tuple(
                             eligible_heart_ordinals)
-                with _time_bucket(stamps, "still_photo_dwell_s"):
-                    still_photo_dwell, dwell_anchor = self._still_photo_dwell(
-                        indexed_photos, index, should_stop,
-                        eligible_heart_ordinals=eligible_heart_ordinals)
-                    self._current_dwell_covered_hearts = tuple(
-                        sorted(still_photo_dwell))
+                # The compatibility bucket below is deliberately the whole C2/C3 phase.  The
+                # candidate walk happens inside that method too, however, so accumulate the
+                # passive first-to-last screenshot spans independently and emit their exact
+                # complement as diagnostic detail on the fold row.  Keep this disabled without
+                # a debug log just like every other timing measurement in this method.
+                self._still_photo_dwell_timing_breakdown = None
+                self._still_photo_passive_observation_s = 0.0 if timing_enabled else None
+                try:
+                    with _time_bucket(stamps, "still_photo_dwell_s"):
+                        still_photo_dwell, dwell_anchor = self._still_photo_dwell(
+                            indexed_photos, index, should_stop,
+                            eligible_heart_ordinals=eligible_heart_ordinals)
+                        self._current_dwell_covered_hearts = tuple(
+                            sorted(still_photo_dwell))
+                finally:
+                    passive_s = self._still_photo_passive_observation_s
+                    self._still_photo_passive_observation_s = None
+                    if timing_enabled and passive_s is not None:
+                        total_s = stamps.get("still_photo_dwell_s", 0.0)
+                        # Both values come from the same enclosing bucket.  Clamp only the
+                        # impossible negative residue caused by clock granularity, preserving
+                        # the exact total as the sum of the emitted parts.
+                        passive_s = min(max(0.0, passive_s), total_s)
+                        self._still_photo_dwell_timing_breakdown = {
+                            "passive_observation_s": passive_s,
+                            # Complement also includes the first screencap of each passive
+                            # burst, whose latency precedes the first-to-last safety span.
+                            "navigation_and_overhead_s": total_s - passive_s,
+                        }
                 with _time_bucket(stamps, "item_payload_build_s"):
                     payload = build_item_payload(
                         indexed_photos, index,
@@ -5654,10 +5787,26 @@ class AndroidDriver(DatingAppDriver):
         fold_wall_s = time.monotonic() - fold_start
         unattributed_s = fold_wall_s - sum(stamps.values())
         try:
+            fields = {
+                key: round(value, 6) for key, value in sorted(stamps.items())}
+            breakdown = getattr(self, "_still_photo_dwell_timing_breakdown", None)
+            if (isinstance(breakdown, dict)
+                    and all(isinstance(breakdown.get(key), (int, float))
+                            for key in ("passive_observation_s", "navigation_and_overhead_s"))
+                    and "still_photo_dwell_s" in fields):
+                # Round the two detail values against the already-rounded compatibility total,
+                # so a JSONL consumer can rely on an exact reconstruction rather than losing a
+                # microsecond to independent rounding.
+                passive_s = round(float(breakdown["passive_observation_s"]), 6)
+                total_s = fields["still_photo_dwell_s"]
+                fields["still_photo_dwell_breakdown"] = {
+                    "passive_observation_s": passive_s,
+                    "navigation_and_overhead_s": round(total_s - passive_s, 6),
+                }
             self._dbg.action(
                 "capture_fold_timing", photos=photo_count, outcome=outcome,
                 fold_wall_s=round(fold_wall_s, 6), unattributed_s=round(unattributed_s, 6),
-                **{key: round(value, 6) for key, value in sorted(stamps.items())})
+                **fields)
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
 
@@ -6334,7 +6483,7 @@ class AndroidDriver(DatingAppDriver):
             except Exception:  # noqa: BLE001 — debug logging must never break a capture
                 pass
 
-    def _invalidate_item_index(self, reason: str) -> None:
+    def _invalidate_item_index(self, reason: str, *, unavailable_kind: str = "") -> None:
         """Drop the driver-owned index, with the reason a later reader would need.
 
         Doc 5.3: the table's "lifetime is exactly one profile, and it must be invalidated
@@ -6358,6 +6507,7 @@ class AndroidDriver(DatingAppDriver):
         self._current_dwell_covered_hearts = ()
         self._current_items_unavailable = reason
         self._current_items_unnumbered = ""
+        self._current_items_unavailable_kind = unavailable_kind
 
     def _emit_gesture_timing(self, direction: str, gesture_start: float,
                              stamps: dict[str, float], *,
@@ -6560,6 +6710,7 @@ class AndroidDriver(DatingAppDriver):
         # and a sentence the moment it is not -- the first sentence wins, so a later step's
         # failure never overwrites the reason the read stopped enumerating in the first place.
         enumeration_reason = self._item_enumeration_blocker()
+        calibration_blocks_enumeration = self._targeting_calibration_blocks_enumeration()
         if not enumeration_reason:
             if should_stop is not None and should_stop():
                 # The loop's own first check returns None one line below, so the gate's answer
@@ -7081,11 +7232,15 @@ class AndroidDriver(DatingAppDriver):
         if enumerating:
             enumeration_reason = self._index_captured_items(photos, should_stop)
         if enumeration_reason:
-            self._invalidate_item_index(enumeration_reason)
+            self._invalidate_item_index(
+                enumeration_reason,
+                unavailable_kind=("targeting_calibration"
+                                  if calibration_blocks_enumeration else ""))
             print(f"{self.spec.app}: no numbered item list for this profile -- "
                   f"{enumeration_reason}")
         else:
             self._current_items_unavailable = ""
+            self._current_items_unavailable_kind = ""
         payload = self._current_item_payload
         # THE RANKER'S COPY (audit fix, "BUG 3", 2026-08-12). `photos` above -- and everything
         # already built from it (`_current_sigs`, the item index, the crops) -- stays the FULL
@@ -7126,6 +7281,8 @@ class AndroidDriver(DatingAppDriver):
                                  if payload is not None and self._current_item_index is not None
                                  else []),
                              items_unavailable=self._current_items_unavailable or None,
+                             items_unavailable_kind=(
+                                 self._current_items_unavailable_kind or None),
                              items_unnumbered=self._current_items_unnumbered or None,
                              # "BUG 3" fix: only present (and only ever < photos) when this read
                              # raised the enumeration ceiling and the ranker's copy was thinned
@@ -7164,6 +7321,7 @@ class AndroidDriver(DatingAppDriver):
             items_truncated=bool(payload.truncated) if payload is not None else False,
             items_unavailable=self._current_items_unavailable,
             items_unnumbered=self._current_items_unnumbered,
+            items_unavailable_kind=self._current_items_unavailable_kind,
         )
 
     def next_profile(self, *, should_stop=None) -> Profile | None:
@@ -7959,48 +8117,62 @@ class AndroidDriver(DatingAppDriver):
 
     def _require_targeting_calibration(self, model_item_index: int) -> TargetingCalibration:
         """Return the evidence-backed bounds or stop before a model-selected item is touched."""
+        binding_problem = self._refresh_targeting_calibration_binding()
         calibration = self.targeting_calibration
-        if calibration is not None:
-            if self._adb is not None:
-                package_dump = self.adb.shell(
-                    f"dumpsys package {quote_android_package_id(self.package)}")
-                match = re.search(r"(?m)^\s*versionName=(\S+)\s*$", package_dump)
-                version = match.group(1) if match else None
-            else:
-                version = self._targeting_runtime_version_name
-            size = (self.adb.screen_size() if self._adb is not None
-                    else self._targeting_runtime_frame_size)
-            if version != calibration.hinge_version_name or size != calibration.frame_size_px:
-                raise HingeTargetingError(
-                    f"{self.spec.app}: model item {model_item_index} cannot be targeted because "
-                    "the live app build/frame geometry does not exactly match targeting "
-                    f"calibration ({version!r}/{size!r} != "
-                    f"{calibration.hinge_version_name!r}/{calibration.frame_size_px!r}). "
-                    "Nothing was tapped and the like is NOT sent; recapture schema-v3 inline "
-                    "calibration for this build.", stage="preflight", intended=model_item_index,
-                    index_space="model_items")
+        if calibration is not None and not binding_problem:
             return calibration
         raise HingeTargetingError(
             f"{self.spec.app}: model item {model_item_index} cannot be targeted because "
             f"apps.{self.spec.app}.targeting_calibration is unavailable "
-            f"({self._targeting_calibration_unavailable or 'no reason was recorded'}). Nothing "
+            f"({binding_problem or self._targeting_calibration_unavailable or 'no reason was recorded'}). Nothing "
             f"was tapped and the like is NOT sent; provide measured identity and sheet-item "
             f"bounds, exact effective crop geometry, device, and calibrated_at evidence before "
             f"enabling targeted likes.",
             stage="preflight", intended=model_item_index, index_space="model_items")
 
-    def targeted_suggestion_blocker(self) -> str:
-        """Why an Observe model-item suggestion is unavailable, or ``""`` when licensed.
+    def _refresh_targeting_calibration_binding(self) -> str:
+        """Re-check and latch the calibration's exact live build/frame binding.
 
-        Observe generates before the human opens a sheet.  This pure capability lets the
-        worker refuse the provider call itself when the calibrated identity and sheet bounds
-        are absent; waiting until ``observe_item_mismatch`` would briefly expose unchecked text.
+        ``open_session`` calls this before the first profile.  Suggestion and action preflights
+        call it again so a package update or display-mode change during a long-running session
+        cannot spend a provider request and only then discover that its target is unlicensed.
+        Once rejected, the calibration stays rejected for the session: changing the phone back
+        does not turn a calibration used across two runtime geometries into coherent evidence.
         """
-        if self.targeting_calibration is not None:
+        calibration = self.targeting_calibration
+        if calibration is None:
+            return self._targeting_calibration_unavailable or "no reason was recorded"
+        if self._adb is not None:
+            package_dump = self.adb.shell(
+                f"dumpsys package {quote_android_package_id(self.package)}")
+            match = re.search(r"(?m)^\s*versionName=(\S+)\s*$", package_dump)
+            self._targeting_runtime_version_name = match.group(1) if match else None
+            self._targeting_runtime_frame_size = self.adb.screen_size()
+        version = self._targeting_runtime_version_name
+        size = self._targeting_runtime_frame_size
+        if self._adb is None and version is None and size is None:
+            return "the live app build/frame geometry has not been established for this session"
+        if version != calibration.hinge_version_name or size != calibration.frame_size_px:
+            self.targeting_calibration = None
+            self._targeting_calibration_unavailable = (
+                "the live app build/frame geometry does not exactly match schema-v3 "
+                f"calibration ({version!r}/{size!r} != "
+                f"{calibration.hinge_version_name!r}/{calibration.frame_size_px!r})")
+        return self._targeting_calibration_unavailable or ""
+
+    def targeted_suggestion_blocker(self) -> str:
+        """Why a model-item suggestion is unavailable, or ``""`` when licensed.
+
+        Training and AUTO generate before a targeted gesture.  Rechecking the live binding here
+        lets the worker refuse the provider call itself; the final action preflight repeats the
+        same check as a last-line guard immediately before any touch.
+        """
+        binding_problem = self._refresh_targeting_calibration_binding()
+        if self.targeting_calibration is not None and not binding_problem:
             return ""
         return (f"targeted suggestion is unavailable because apps.{self.spec.app}."
                 f"targeting_calibration is unavailable "
-                f"({self._targeting_calibration_unavailable or 'no reason was recorded'}); "
+                f"({binding_problem or self._targeting_calibration_unavailable or 'no reason was recorded'}); "
                 "no opener text is offered")
 
     def _verifiable_payload(self, model_item_index: int | None):
@@ -8661,7 +8833,8 @@ class AndroidDriver(DatingAppDriver):
         return composer, pass_point
 
     def _training_dislike_from_composer(self, payload, model_item_index: int | None,
-                                        before: bytes, *, should_stop=None) -> str:
+                                        before: bytes, *, should_stop=None,
+                                        pre_send_evidence: dict[str, object] | None = None) -> str:
         """Pass the same profile from a typed, keyboard-hidden training composer.
 
         ``dislike()`` cannot be reused here: its deck preflight rejects an open composer before
@@ -8685,13 +8858,19 @@ class AndroidDriver(DatingAppDriver):
         time.sleep(human_cooldown(0.6))
         advance_proof = self._verify_training_dislike_landed(
             model_item_index)
-        self._dbg_action(
-            "training_dislike", current, x=list(pass_point), model_item_index=model_item_index,
-            verified=payload is not None, advance_proof=advance_proof)
+        action_fields = {
+            "x": list(pass_point), "model_item_index": model_item_index,
+            "verified": payload is not None, "advance_proof": advance_proof,
+        }
+        evidence_id = (pre_send_evidence or {}).get("evidence_id")
+        if isinstance(evidence_id, str) and evidence_id:
+            action_fields["pre_send_evidence_id"] = evidence_id
+        self._dbg_action("training_dislike", current, **action_fields)
         return "dislike"
 
-    def _training_profile_advance_proof(self, frame: bytes,
-                                        model_item_index: int | None) -> tuple[str, str | None] | None:
+    def _training_profile_advance_proof(
+            self, frame: bytes, model_item_index: int | None, *,
+            diagnostics: dict[str, object] | None = None) -> tuple[str, str | None] | None:
         """Return affirmative evidence that ``frame`` is not this captured profile.
 
         The pass control can first close/reflow Hinge's inline composer rather than advance the
@@ -8706,7 +8885,10 @@ class AndroidDriver(DatingAppDriver):
         of an advance. They fail closed; the human may have already passed on the phone, but it
         is safer to leave that action unlabelled than to train on the wrong person.
         """
-        if self._is_current_profile_frame(frame, require_content=True):
+        current_profile = self._is_current_profile_frame(frame, require_content=True)
+        if diagnostics is not None:
+            diagnostics["current_profile"] = current_profile
+        if current_profile:
             return None
 
         index = self._current_item_index
@@ -8721,6 +8903,12 @@ class AndroidDriver(DatingAppDriver):
                 # unreadable identity crop into an assumed advance.
                 pass
             else:
+                if diagnostics is not None:
+                    diagnostics.update(
+                        identity_verdict=verdict.state,
+                        identity_distance=verdict.distance,
+                        identity_match_max=verdict.match_max,
+                    )
                 if verdict.mismatched:
                     return "identity", None
                 if verdict.matched:
@@ -8729,25 +8917,46 @@ class AndroidDriver(DatingAppDriver):
         # `_identity_of` refreshes the OCR provenance fields for exactly this frame. It emits
         # a ``new`` candidate only for the strict, calibrated name path; arbitrary OCR mismatch
         # never gains the power to manufacture a pass label.
-        self._identity_of(frame)
+        identity_state, identity_distance = self._identity_of(frame)
+        if diagnostics is not None:
+            diagnostics.update(
+                identity_state=identity_state,
+                identity_state_distance=identity_distance,
+                name_verdict=self._identity_top_name_verdict,
+                name_candidate=self._identity_name_candidate,
+                name_read=self._identity_top_name_read,
+            )
         if (self._identity_top_name_verdict == "new"
                 and isinstance(self._identity_name_candidate, str)
                 and self._identity_name_candidate):
             return "name", self._identity_name_candidate.casefold()
         return None
 
-    def _training_dislike_surface_proof(self, frame: bytes,
-                                        model_item_index: int | None) -> tuple[str, str | None] | None:
+    def _training_dislike_surface_proof(
+            self, frame: bytes, model_item_index: int | None, *,
+            diagnostics: dict[str, object] | None = None) -> tuple[str, str | None] | None:
         """Return affirmative advance evidence only for a closed, ready Hinge deck frame."""
         blocked = self._deck_blocked_reason(frame)
+        if diagnostics is not None:
+            diagnostics["blocked_reason"] = blocked
         if blocked is not None:
             self._blocked_reason = blocked
             raise HingeDeckBlockedError(blocked)
-        if self._locate_inline_composer(frame) is not None:
+        composer_open = self._locate_inline_composer(frame) is not None
+        if diagnostics is not None:
+            diagnostics["composer_open"] = composer_open
+        if composer_open:
             return None
-        if not self._observe_deck_ready(frame):
+        deck_ready = self._observe_deck_ready(frame)
+        if diagnostics is not None:
+            diagnostics["deck_ready"] = deck_ready
+        if not deck_ready:
             return None
-        return self._training_profile_advance_proof(frame, model_item_index)
+        proof = self._training_profile_advance_proof(
+            frame, model_item_index, diagnostics=diagnostics)
+        if diagnostics is not None:
+            diagnostics["proof"] = None if proof is None else proof[0]
+        return proof
 
     def _verify_training_deck_advanced(self, model_item_index: int | None, *,
                                         should_stop=None) -> str:
@@ -8758,26 +8967,45 @@ class AndroidDriver(DatingAppDriver):
         action from closing a composer back onto a reflowed view of the same profile. Training
         labels are human ground truth, so an ambiguous physical result is a hard failure.
         """
-        for _attempt in range(3):
+        for attempt in range(3):
             self._raise_if_action_cancelled(should_stop, boundary="training Dislike verification")
             first = self._screencap()
-            first_proof = self._training_dislike_surface_proof(first, model_item_index)
+            first_diagnostics: dict[str, object] = {}
+            first_proof = self._training_dislike_surface_proof(
+                first, model_item_index, diagnostics=first_diagnostics)
+            second_diagnostics: dict[str, object] | None = None
+            stable = None
+            names_agree = None
             if first_proof is not None:
                 if not self._interruptible_sleep(human_delay(0.5), should_stop):
                     self._raise_if_action_cancelled(
                         should_stop, boundary="training Dislike verification")
                 second = self._screencap()
-                second_proof = self._training_dislike_surface_proof(second, model_item_index)
+                second_diagnostics = {}
+                second_proof = self._training_dislike_surface_proof(
+                    second, model_item_index, diagnostics=second_diagnostics)
                 # A name proof is only meaningful if both settled frames read the same new
                 # name. Identity mismatches are independently calibrated per frame, so either
                 # may combine with a repeated name proof.
                 names_agree = not (
                     first_proof[0] == "name" and second_proof is not None
                     and second_proof[0] == "name" and first_proof[1] != second_proof[1])
-                if (second_proof is not None and names_agree
-                        and not self._changed(first, second)):
+                stable = not self._changed(first, second)
+                if second_proof is not None and names_agree and stable:
+                    if self._dbg is not None:
+                        self._dbg.action(
+                            "training_advance_probe", attempt=attempt + 1,
+                            outcome="accepted", first=first_diagnostics,
+                            second=second_diagnostics, stable=stable,
+                            names_agree=names_agree)
                     return ("identity" if "identity" in {first_proof[0], second_proof[0]}
                             else "name")
+            if self._dbg is not None:
+                self._dbg.action(
+                    "training_advance_probe", attempt=attempt + 1,
+                    outcome="retry", first=first_diagnostics,
+                    second=second_diagnostics, stable=stable,
+                    names_agree=names_agree)
             if not self._interruptible_sleep(human_delay(0.4), should_stop):
                 self._raise_if_action_cancelled(
                     should_stop, boundary="training Dislike verification")
@@ -9024,7 +9252,8 @@ class AndroidDriver(DatingAppDriver):
                 self._raise_if_action_cancelled(should_stop, boundary="training decision resume")
                 if decision == "dislike":
                     return self._training_dislike_from_composer(
-                        payload, model_item_index, before, should_stop=should_stop)
+                        payload, model_item_index, before, should_stop=should_stop,
+                        pre_send_evidence=pre_send_evidence)
 
                 # A Like decision authorizes only this exact profile target—not the pre-review
                 # frame or its coordinates.
@@ -9177,7 +9406,8 @@ class AndroidDriver(DatingAppDriver):
     _OCR_BAND_CACHE_MISS = object()
 
     def _ocr_band(self, frame: bytes, rect: tuple[float, float, float, float], *,
-                  psm: str = "7", white_text_threshold: int | None = None) -> str | None:
+                  psm: str = "7", white_text_threshold: int | None = None,
+                  upscale: int = 3) -> str | None:
         """Best-effort OCR of `rect` via the host's `tesseract` binary (MEASURED reliable
         recipe on the Pixel 7a 2026-08-10: crop tightly -- a wider crop that includes photo
         content makes tesseract's page segmentation fail -- upscale 3x LANCZOS, `tesseract
@@ -9205,7 +9435,14 @@ class AndroidDriver(DatingAppDriver):
         timeout) returns None; the caller keeps waiting rather than weakening the false-PASS
         guarantee. This method must never raise.
 
-        MEMOIZED, bounded to `_OCR_BAND_CACHE_MAX` entries, keyed on `(rect, psm, sha1(frame))`.
+        `upscale` is normally the measured 3x recipe.  The scroll-top name caller may retry
+        at native resolution after a garbled 3x read: Hinge 10.1.0's taller first photo can
+        make LANCZOS turn the photo portion of that crop into enough apparent glyph detail to
+        defeat psm 6, while the same native crop still reads the header cleanly.  That retry
+        does not relax the name parser or any of the independent deck/stability gates.
+
+        MEMOIZED, bounded to `_OCR_BAND_CACHE_MAX` entries, keyed on preprocessing parameters
+        plus `(rect, psm, sha1(frame))`.
         MEASURED on this machine 2026-08-10: ~103ms per call at psm 7 (the sticky identity_band)
         and ~110ms at psm 6 (the card-header identity_top_name_band) -- and both bands can be
         OCR'd on the SAME poll (the identity_band corroboration above Layer 1b, plus Layer 1b
@@ -9216,9 +9453,9 @@ class AndroidDriver(DatingAppDriver):
         `_is_current_profile_frame` re-enters `_identity_of` (and so this method) on frames
         already seen earlier in the same poll. A cache hit skips the PIL crop/resize AND the
         tesseract subprocess entirely -- it is a pure memo, never a behavior change: identical
-        `(rect, psm, frame bytes)` always yields whatever the first real OCR of that input
-        produced (including a cached `None` miss), and any input not seen before takes the
-        exact same path as before this cache existed.
+        `(rect, psm, preprocessing, frame bytes)` always yields whatever the first real OCR
+        of that input produced (including a cached `None` miss), and any input not seen before
+        takes the exact same path as before this cache existed.
 
         `white_text_threshold` is OFF by default (None), and both pre-existing call sites leave
         it that way, so their behaviour -- and their cache entries -- are identical to before it
@@ -9241,7 +9478,7 @@ class AndroidDriver(DatingAppDriver):
         if tesseract is None:
             return None
         cache_key = (
-            rect, psm, white_text_threshold,
+            rect, psm, white_text_threshold, upscale,
             hashlib.sha1(frame, usedforsecurity=False).digest())
         cached = self._ocr_band_cache.get(cache_key, self._OCR_BAND_CACHE_MISS)
         if cached is not self._OCR_BAND_CACHE_MISS:
@@ -9261,7 +9498,10 @@ class AndroidDriver(DatingAppDriver):
                 # already-binary image keeps the glyph edges clean, while binarizing after an
                 # interpolating resize would threshold the interpolated halo instead.
                 crop = crop.point(lambda p: 0 if p > white_text_threshold else 255)
-            crop = crop.resize((max(1, crop.width * 3), max(1, crop.height * 3)), Image.LANCZOS)
+            if upscale != 1:
+                crop = crop.resize(
+                    (max(1, crop.width * upscale), max(1, crop.height * upscale)),
+                    Image.LANCZOS)
             buf = BytesIO()
             crop.save(buf, format="PNG")
             result = subprocess.run(
@@ -9374,6 +9614,27 @@ class AndroidDriver(DatingAppDriver):
             dist = _band_dist(band, top_sig)
             state = "top" if dist < self.change_threshold else "unknown"
 
+        # The capture-local top signature is only a fast path. Hinge's filter-chip row is
+        # dynamic: the Signals chip can appear or disappear between profiles. In the reported
+        # Mackinley -> Kate Training Like, that harmless chrome change put the new card's band
+        # far from both the stored name header and the capture's old top row, so the provisional
+        # pixel verdict above was ``new``. The independently calibrated canonical scroll-top
+        # detector nevertheless proved the frame was exactly at top. Preserve that stronger
+        # structural fact before Layer 1b below, where it safely licenses card-header OCR.
+        #
+        # An ordinary pixel mismatch gains no authority here: an unreadable or refuted frame
+        # stays ``new`` and retains the existing veto-only OCR rule. A confirmed frame still
+        # needs a clean header name, and callers still require that name on two stable ready-deck
+        # frames before recording a decision.
+        if state == "new":
+            try:
+                canonical_top = confirm_scroll_top(frame, identity_band=self.identity_band)
+            except ScrollTopError:
+                pass
+            else:
+                if canonical_top.confirmed:
+                    state = "top"
+
         # OCR corroboration: position-tolerant where the pixel band above is not, so it can
         # recognise the SAME profile through a header that shifted a few px (a banner
         # appearing/disappearing) and would therefore fail the pixel compare.
@@ -9484,6 +9745,32 @@ class AndroidDriver(DatingAppDriver):
                 # When the original pixel state was ``new``, a nonmatch might just be OCR of
                 # photo content. It deliberately does nothing: only a matching stored name can
                 # override pixels in that direction.
+            # The 2026-08-26 Kassie -> Christina and Zoey -> Maria Training Likes exposed a
+            # preprocessing-specific miss: the configured header band was still correct, but
+            # its lower portion contained the new card's photo. At 3x LANCZOS, psm 6 segmented
+            # that texture as bogus text lines and missed the plainly rendered name; at native
+            # resolution the same crop read ``Christina`` / ``Maria`` exactly. Retry only while
+            # the first recipe is INCONCLUSIVE. A stored-name read remains an immediate
+            # conservative veto, and a clean new-name read keeps the established two-frame,
+            # deck-ready, and stability requirements in its caller.
+            if self._identity_top_name_verdict is None:
+                native_text = self._ocr_band(
+                    frame, self.identity_top_name_band, psm="6", upscale=1)
+                if native_text:
+                    native_tokens = _TOP_NAME_TOKEN_RE.findall(native_text)
+                    stored = self._identity_name.strip()
+                    if stored and any(
+                            _name_token_matches(tok, stored) for tok in native_tokens):
+                        state = "same"
+                        self._identity_top_name_read = native_text
+                        self._identity_top_name_verdict = "same"
+                    elif state == "top":
+                        native_candidate = _clean_first_line_name_candidate(native_text)
+                        if native_candidate is not None:
+                            state = "new"
+                            self._identity_top_name_read = native_text
+                            self._identity_top_name_verdict = "new"
+                            self._identity_name_candidate = native_candidate
         # RESIDUAL LIMITATION, stated plainly: two consecutive profiles sharing one first name
         # still OCR to the same token here and still read as "same" -- this layer, like the
         # identity-band pixel check above it, only ever holds a FIRST name, so it cannot

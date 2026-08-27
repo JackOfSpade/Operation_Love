@@ -37,7 +37,7 @@ from PIL import Image
 
 from operation_love import targeting_policy as tp
 from operation_love.drivers import (
-    hinge, item_crops, item_identity, item_index, scroll_step, scroll_top, segment)
+    hinge, item_crops, item_identity, item_index, item_nav, scroll_step, scroll_top, segment)
 from operation_love.drivers.hinge import HingeDriver
 from operation_love.drivers.debuglog import HingeDebugLog
 from operation_love.perception.capture import Profile
@@ -427,6 +427,7 @@ def test_profile_items_unnumbered_defaults_to_empty():
     is not the live reason by default."""
     profile = Profile()
     assert profile.items_unnumbered == ""
+    assert profile.items_unavailable_kind == ""
     assert profile.items == ()
 
 
@@ -637,6 +638,37 @@ def test_an_assumption_licence_dwells_on_its_named_default_instead_of_crashing(
     assert hinge._STILL_PHOTO_DWELL_ASSUMED_WINDOW_S >= hinge._STILL_PHOTO_DWELL_MIN_WINDOW_S
     assert hinge._STILL_PHOTO_DWELL_FRAMES[0] <= len(burst) <= hinge._STILL_PHOTO_DWELL_FRAMES[1]
     assert span_s >= 0
+
+
+def test_slow_screencaps_do_not_get_added_to_every_dwell_gap(
+        monkeypatch, accepted_still_photo_assumption):
+    """A nominal six-second burst must not add every ADB screencap to every gap."""
+    clock = {"now": 0.0}
+    capture_s = 0.8
+    count = 10
+    window_s = hinge._STILL_PHOTO_DWELL_ASSUMED_WINDOW_S
+    drv = _drv(WorldAdb())
+
+    monkeypatch.setattr(hinge, "human_cooldown", lambda _seconds: window_s)
+    monkeypatch.setattr(hinge.random, "randint", lambda *_args: count)
+    monkeypatch.setattr(hinge.time, "monotonic", lambda: clock["now"])
+
+    def slow_screencap(*_args, **_kwargs):
+        clock["now"] += capture_s
+        return b"frame"
+
+    def advance(seconds, _should_stop=None):
+        clock["now"] += seconds
+        return True
+
+    monkeypatch.setattr(drv, "_screencap", slow_screencap)
+    monkeypatch.setattr(drv, "_interruptible_sleep", advance)
+
+    burst, span_s = drv._still_photo_dwell_burst()
+
+    assert len(burst) == count
+    assert span_s >= window_s
+    assert span_s < window_s + 3 * capture_s
 
 
 def test_an_assumption_licence_produces_real_dwell_evidence_end_to_end(
@@ -1912,8 +1944,91 @@ def test_missing_targeting_calibration_skips_unusable_enumeration_in_every_mode(
     assert profile.photos
     assert profile.items == () and profile.item_context == ()
     assert "targeting_calibration" in profile.items_unavailable
+    assert profile.items_unavailable_kind == "targeting_calibration"
     assert drv._profile_capture_limit == drv.scroll_captures
     assert {frac for frac, _lane in adb.gestures} == {drv.read_scroll_frac}
+
+
+def test_rejected_live_targeting_calibration_is_typed_before_enumeration(monkeypatch):
+    """The real session probe latches version-only drift before enumeration can start."""
+    class LiveVersionAdb(WorldAdb):
+        def __init__(self, *_args, **_kwargs):
+            super().__init__()
+
+        def shell(self, command="", **kwargs):
+            if command.startswith("dumpsys package "):
+                return "versionName=10.1.0\n"
+            return super().shell(command, **kwargs)
+
+        def scroll_up(self, frac, x_frac=0.5, *, _timing=None):
+            return super().scroll_up(frac, x_frac)
+
+    class C:
+        apps = {"hinge": {
+            "serial": "pixel", "halt_on_error": False,
+            "targeting_calibration": {
+                **_TARGETING_CALIBRATION, "hinge_version_name": "10.0.1",
+            },
+        }}
+
+    monkeypatch.setattr(hinge, "Adb", LiveVersionAdb)
+    monkeypatch.setattr("operation_love.platforms.unavailable_reason",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(HingeDriver, "_require_vision", lambda _self: None)
+    monkeypatch.setattr(HingeDriver, "_make_touch", lambda self: self._adb)
+    drv = HingeDriver(C())
+    drv.set_opener_enabled(True)
+    drv.open_session()
+
+    assert drv.targeting_calibration is None
+    assert "'10.1.0'/(1080, 2400)" in drv._targeting_calibration_unavailable
+    assert "'10.0.1'/(1080, 2400)" in drv._targeting_calibration_unavailable
+
+    def enumeration_must_not_start(*_args, **_kwargs):
+        raise AssertionError("rejected targeting calibration must block before enumeration")
+
+    monkeypatch.setattr(drv, "_confirm_enumeration_top", enumeration_must_not_start)
+    monkeypatch.setattr(drv, "_index_captured_items", enumeration_must_not_start)
+
+    profile = drv._capture_current()
+
+    assert profile is not None and profile.photos
+    assert "10.1.0" in profile.items_unavailable
+    assert profile.items_unavailable_kind == "targeting_calibration"
+    assert drv._profile_capture_limit == drv.scroll_captures
+    drv.close()
+
+
+def test_runtime_targeting_calibration_drift_blocks_the_next_enumeration_before_reading(
+        monkeypatch):
+    """A long-running session rechecks its binding before spending another fine-cadence read."""
+    class RuntimeDriftAdb(WorldAdb):
+        version = "9.134.0"
+
+        def shell(self, command="", **kwargs):
+            if command.startswith("dumpsys package "):
+                return f"versionName={self.version}\n"
+            return super().shell(command, **kwargs)
+
+    adb = RuntimeDriftAdb()
+    drv = _drv(adb)
+    assert drv._item_enumeration_blocker() == ""
+    adb.version = "10.1.0"
+
+    def enumeration_must_not_start(*_args, **_kwargs):
+        raise AssertionError("runtime calibration drift must block before enumeration")
+
+    monkeypatch.setattr(drv, "_confirm_enumeration_top", enumeration_must_not_start)
+    monkeypatch.setattr(drv, "_index_captured_items", enumeration_must_not_start)
+
+    profile = drv._capture_current()
+
+    assert profile is not None and profile.photos
+    assert profile.items == () and profile.item_context == ()
+    assert "10.1.0" in profile.items_unavailable
+    assert profile.items_unavailable_kind == "targeting_calibration"
+    assert drv.targeting_calibration is None
+    assert drv._profile_capture_limit == drv.scroll_captures
 
 
 def test_a_superseded_v1_selection_policy_gets_its_own_parse_refusal():
@@ -1980,6 +2095,7 @@ def test_a_read_that_does_not_start_at_a_confirmed_top_refuses_to_enumerate():
     assert profile.photos, "the read itself must still produce frames for the ranker"
     assert profile.items == ()
     assert "scroll top" in profile.items_unavailable
+    assert profile.items_unavailable_kind == ""
     assert drv._current_item_payload is None
     # And it never planned a single enumeration step: the read ran at the ordinary cadence.
     assert {frac for frac, _lane in adb.gestures} == {drv.read_scroll_frac}
@@ -2003,6 +2119,7 @@ def test_an_index_that_contradicts_itself_is_reported_and_never_degrades_to_raw_
 
     assert profile.items == () and profile.item_context == ()
     assert "frame 3 contradicts itself" in profile.items_unavailable
+    assert profile.items_unavailable_kind == ""
     # `items_unnumbered` is the DIFFERENT field for "enumeration finished and numbered nothing"
     # (found+fixed 2026-08-22); a genuine index failure never reaches that state, so it must stay
     # empty here even though `items` is also empty -- the two reasons are never both live.
@@ -2590,6 +2707,7 @@ def test_a_scroll_that_cannot_be_sized_ends_the_enumeration_without_ending_the_r
 
     assert profile.items == ()
     assert "the local card spacing is 400px" in profile.items_unavailable
+    assert profile.items_unavailable_kind == ""
     assert len(profile.photos) > 1, "the read must have carried on to the bottom"
     assert {frac for frac, _lane in adb.gestures} == {drv.read_scroll_frac}
 
@@ -3184,6 +3302,97 @@ def test_one_candidate_reproduces_the_pre_walk_driver_byte_for_byte(installed_st
     assert (adb.scrolls, adb.reverse_swipes) == (0, 0)
     assert adb.scroll == _FULL_READ_SCROLLS[-1]
     assert adb.taps == []
+
+
+def _overshot_navigation_recovery(frame: bytes, page_shift_px: int):
+    """A live-shaped measured refusal payload for the candidate-walk cleanup tests."""
+    return item_nav.NavigationRecovery(
+        frame=frame, page_shift_px=page_shift_px, step_index=5, frame_index=6,
+        planned_step_px=243, achieved_step_px=514, bound_px=363, frac=0.11,
+        window_px=(219, 363), basis=scroll_step.STEP_MEASURED, spacing_px=1027,
+        sized_against_px=1027, measurement_delta_px=-514,
+        measurement_status="measured", measurement_confidence=1.0,
+        measurement_agreeing=9, measurement_dissenting=0, measurement_eligible=9,
+        violation="moved 514px past its 363px aliasing bound")
+
+
+def test_measured_overshot_candidate_returns_to_a_nonzero_entry_residual_and_keeps_evidence(
+        monkeypatch, tmp_path, installed_still_photo_bound):
+    """An optional candidate may reject an overlarge measured step without poisoning the read.
+
+    This mirrors the Rachel incident: another card was already proved, heart 6 overshot after a
+    real upward walk, and the only permitted response is a measured return followed by stopping
+    the OPTIONAL walk.  It is deliberately not a retry or a substitute for the failed ordinal.
+    """
+    index, frames = _full_read_capture()
+    entry_scroll = _FULL_READ_SCROLLS[-1] + 20
+    terminal_scroll = entry_scroll - 260
+    adb = ProbeWorldAdb(start=terminal_scroll)
+    drv = _drv(adb, still_photo_dwell_candidates=3)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="overshot-walk-return")
+    entry_anchor = hinge._MeasuredItemAnchor(_frame(entry_scroll), 20)
+    earlier_evidence = {4: object()}
+    recovery = _overshot_navigation_recovery(_frame(terminal_scroll), -260)
+    calls = []
+
+    def overshot(_driver, _index, model_index, **_kwargs):
+        calls.append(model_index)
+        raise item_nav.ItemNavigationError(
+            item_nav.NAV_SCROLL_OVERSHOT, "synthetic measured overshoot",
+            frame=recovery.frame, frame_index=recovery.frame_index, recovery=recovery)
+
+    monkeypatch.setattr(hinge, "navigate_to_item", overshot)
+    evidence, restored = drv._still_photo_dwell_candidate_walk(
+        earlier_evidence, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        entry_anchor=entry_anchor)
+
+    assert evidence == earlier_evidence
+    assert calls == [3], "the failed candidate ends the optional walk; heart 2 is never tried"
+    assert restored is not None
+    assert restored.page_shift_px == 20
+    assert restored.frame == _frame(entry_scroll)
+    assert adb.scroll == entry_scroll
+
+    records = [json.loads(line) for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    row = next(r for r in records if r["action"] == "still_photo_dwell_walk_candidate")
+    assert row["outcome"] == "navigation_refused_returned"
+    assert row["navigation_refusal"] == {
+        "schema_version": 1,
+        "code": item_nav.NAV_SCROLL_OVERSHOT,
+        "frame_index": 6,
+        "terminal_shift_px": -260,
+        "return_outcome": "restored",
+        "restored_page_shift_px": 20,
+        "planned": {"step_px": 243, "bound_px": 363, "frac": 0.11,
+                    "window_px": [219, 363], "basis": scroll_step.STEP_MEASURED,
+                    "spacing_px": 1027, "sized_against_px": 1027},
+        "achieved": {"climb_px": 514, "overshoot_px": 151,
+                     "measurement_delta_px": -514, "measurement_status": "measured",
+                     "measurement_confidence": 1.0, "measurement_agreeing": 9,
+                     "measurement_dissenting": 0, "measurement_eligible": 9},
+    }
+
+
+def test_candidate_walk_without_a_measured_recovery_still_refuses_the_capture_anchor(
+        monkeypatch, installed_still_photo_bound):
+    """Legacy/unknown errors cannot be converted into an assumed zero-position cleanup."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=3)
+    calls = []
+
+    def unknown(_driver, _index, model_index, **_kwargs):
+        calls.append(model_index)
+        raise item_nav.ItemNavigationError("legacy_unknown", "no terminal measurement")
+
+    monkeypatch.setattr(hinge, "navigate_to_item", unknown)
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: object()}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    assert set(evidence) == {4}
+    assert anchor is None
+    assert calls == [3]
 
 
 def test_three_candidates_produce_evidence_for_three_distinct_hearts(installed_still_photo_bound):

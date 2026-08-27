@@ -1,9 +1,10 @@
 """One-card manual training decisions for the local Hub.
 
 The Hub is an approval surface, never a second device controller.  A Hinge
-worker publishes only its verified, post-keyboard-hide composer frame, claims a
-human Like/Dislike choice on its own thread, and performs the corresponding
-device action itself.  The bridge owns capabilities and idempotency, not taps.
+worker publishes its verified, post-keyboard-hide composer frame plus the
+already-captured, top-to-bottom profile review frames, claims a human
+Like/Dislike choice on its own thread, and performs the corresponding device
+action itself.  The bridge owns capabilities and idempotency, not taps.
 """
 from __future__ import annotations
 
@@ -18,6 +19,11 @@ from collections import OrderedDict
 _MAX_COMPLETED_RESULTS = 256
 _MAX_PROTOCOL_STRING_LENGTH = 256
 _MAX_PRE_SEND_FRAME_BYTES = 12 * 1024 * 1024
+# Public because config validation must reject a Training capture budget that can never fit in a
+# Hub checkpoint. Keep the protocol's one source of truth here, beside the bridge that enforces
+# it at runtime.
+MAX_PROFILE_REVIEW_FRAMES = 16
+_MAX_PROFILE_REVIEW_BYTES = 64 * 1024 * 1024
 _MAX_RASTER_DIMENSION = 10_000
 _MAX_RASTER_PIXELS = 30_000_000
 _MAX_PNG_CHUNKS = 10_000
@@ -164,13 +170,15 @@ class TrainingActionBridge:
                                       "worker left training decision boundary")
             self._lock.notify_all()
 
-    def publish_checkpoint(self, worker, pre_send_frame: bytes, pick, evidence=None) -> dict:
-        """Publish the immutable, verified training review frame.
+    def publish_checkpoint(self, worker, pre_send_frame: bytes, pick, evidence=None,
+                           profile_frames=()) -> dict:
+        """Publish the immutable verified target and ordered profile review frames.
 
         The driver must have hidden the keyboard and then re-located/re-verified
         the composer, target, and available device controls before this call.
         This bridge deliberately does not infer that condition from a crop or
-        coordinate; it only accepts the resulting complete screenshot.
+        coordinate; it only accepts the resulting complete screenshot. Supplementary profile
+        frames are the worker's existing capture sequence and never authorize either action.
         """
         opener = getattr(pick, "text", None) if pick is not None else None
         if not isinstance(pre_send_frame, bytes) or not pre_send_frame:
@@ -182,6 +190,19 @@ class TrainingActionBridge:
             raise ValueError("training checkpoint requires a complete PNG image frame")
         if not isinstance(opener, str) or not opener.strip():
             raise ValueError("training checkpoint requires a non-empty typed opener")
+        if not isinstance(profile_frames, (list, tuple)):
+            raise ValueError("training checkpoint profile frames must be an ordered sequence")
+        if len(profile_frames) > MAX_PROFILE_REVIEW_FRAMES:
+            raise ValueError("training checkpoint has too many profile review frames")
+        review_frames = tuple(profile_frames)
+        if sum(len(frame) for frame in review_frames if isinstance(frame, bytes)) \
+                > _MAX_PROFILE_REVIEW_BYTES:
+            raise ValueError("training checkpoint profile frames exceed the safe Hub review limit")
+        for frame in review_frames:
+            if (not isinstance(frame, bytes) or not frame
+                    or len(frame) > _MAX_PRE_SEND_FRAME_BYTES or _raster_mime(frame) is None):
+                raise ValueError(
+                    "training checkpoint profile review requires complete PNG frames")
         key = self._key(worker)
         card = {
             "run_id": worker.run_id,
@@ -194,6 +215,11 @@ class TrainingActionBridge:
             "item": getattr(pick, "index", None) if pick is not None else None,
             "item_description": getattr(pick, "item_description", None) if pick is not None else None,
             "image_data_url": image_data_url,
+            # Kept as bytes behind a separate, token-bound image endpoint. Embedding every
+            # capture in the one-second checkpoint JSON poll would resend tens of megabytes
+            # even while the reviewer was looking at only one frame.
+            "profile_image_count": len(review_frames),
+            "_profile_frames": review_frames,
             "evidence_id": ((evidence or {}).get("evidence_id")
                             if isinstance(evidence, dict) else None),
             "action": "ready",
@@ -214,11 +240,28 @@ class TrainingActionBridge:
                                       "a new checkpoint replaced the training decision")
             self._cards[key] = card
             self._lock.notify_all()
-            return dict(card)
+            return {name: value for name, value in card.items()
+                    if not name.startswith("_")}
 
     # A descriptive alias keeps the bridge easy to use from a driver callback without
     # preserving AUTO-testing terminology in the public protocol.
     begin_checkpoint = publish_checkpoint
+
+    def profile_review_image(self, *, run_id: str, app: str,
+                             profile_token: str, index: int) -> bytes | None:
+        """Return one immutable top-to-bottom capture for the exact live checkpoint."""
+        if (not all(isinstance(value, str) and value for value in
+                    (run_id, app, profile_token))
+                or isinstance(index, bool) or not isinstance(index, int)):
+            return None
+        with self._lock:
+            card = self._cards.get((run_id, app))
+            if card is None or card.get("profile_token") != profile_token:
+                return None
+            frames = card.get("_profile_frames", ())
+            if not 0 <= index < len(frames):
+                return None
+            return frames[index]
 
     def wait_for_action(self, worker, profile_token: str,
                         stop_event: threading.Event) -> dict | None:
@@ -288,7 +331,8 @@ class TrainingActionBridge:
                 if ((run_id is not None and card["run_id"] != run_id)
                         or (app is not None and card["app"] != app)):
                     continue
-                payload = {name: value for name, value in card.items() if name != "pending"}
+                payload = {name: value for name, value in card.items()
+                           if name != "pending" and not name.startswith("_")}
                 payload["pending"] = (card["phase"] == "waiting_training_decision"
                                       and card["action"] == "ready")
                 token = card.get("pending")

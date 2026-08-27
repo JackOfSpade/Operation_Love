@@ -514,6 +514,105 @@ def test_hinge_10_0_1_bright_photo_edge_does_not_truncate_the_selected_preview_a
         frame, prompt_only, 1, composer_surface=surface).matched
 
 
+def test_inline_preview_bridges_only_the_measured_three_row_internal_interruption():
+    """Hinge 10.1.0 can paint three page-coloured rows inside one selected photo."""
+    payload = _payload()
+    selected = payload.item(4)
+    frame = _paint_inline_reframe(selected.image)
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    gap_y = _SHEET_PREVIEW_Y0 + 620
+    image[gap_y:gap_y + 3, _SHEET_PREVIEW_X0:_SHEET_PREVIEW_X0 + _SHEET_PREVIEW_W] = _SHEET_BG
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    frame = encoded.tobytes()
+    surface = ComposerSurface("hinge_inline_v1", _V1001_COMMENT, _V1001_SEND, (695, 1390))
+
+    verdict = item_verify.verify_sheet_item(
+        frame, payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+    assert verdict.matched, verdict.reason
+    assert verdict.preview.height == _V1001_PREVIEW_ROWS
+    assert "bridging 3 measured internal background rows" in verdict.preview.reason
+
+    # One row beyond the measured seam remains a real topology boundary and cannot be crossed.
+    image[gap_y:gap_y + 4, _SHEET_PREVIEW_X0:_SHEET_PREVIEW_X0 + _SHEET_PREVIEW_W] = _SHEET_BG
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    with pytest.raises(item_verify.SheetVerificationError, match="not immediately above"):
+        item_verify.verify_sheet_item(
+            encoded.tobytes(), payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+
+
+def test_inline_preview_does_not_combine_separate_short_internal_interruptions():
+    """Only the one observed three-row seam is calibrated for composer-only extension."""
+    payload = _payload()
+    selected = payload.item(4)
+    frame = _paint_inline_reframe(selected.image)
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    first_gap_y = _SHEET_PREVIEW_Y0 + 620
+    second_gap_y = first_gap_y + 80
+    for gap_y in (first_gap_y, second_gap_y):
+        image[gap_y:gap_y + 1,
+              _SHEET_PREVIEW_X0:_SHEET_PREVIEW_X0 + _SHEET_PREVIEW_W] = _SHEET_BG
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    surface = ComposerSurface("hinge_inline_v1", _V1001_COMMENT, _V1001_SEND, (695, 1390))
+
+    with pytest.raises(item_verify.SheetVerificationError, match="not immediately above"):
+        item_verify.verify_sheet_item(
+            encoded.tobytes(), payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+
+
+def test_inline_preview_keeps_a_measured_right_edge_through_left_sky_blending():
+    """Hinge 10.1.0 can make a long pale photo edge indistinguishable from its page.
+
+    Lauren's refused frame kept x=985 on every affected row, but pale sky erased the left 229px
+    at the narrowest point.  The strict locator consequently reported rows 236..628 instead of
+    the real 236..1092 selected photo and manufactured a 496px gap to a correctly detected
+    composer.  This fixture records only those measured pixels, never the private photo.
+    """
+    payload = _payload()
+    selected = payload.item(4)
+    frame = _paint_inline_reframe(selected.image)
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    sky_y0 = _SHEET_PREVIEW_Y0 + 392
+    sky_rows = 73
+    erased_left = 229
+    image[sky_y0:sky_y0 + sky_rows,
+          _SHEET_PREVIEW_X0:_SHEET_PREVIEW_X0 + erased_left] = _SHEET_BG
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    frame = encoded.tobytes()
+    surface = ComposerSurface("hinge_inline_v1", _V1001_COMMENT, _V1001_SEND, (695, 1390))
+
+    # The public detector remains strict; only a separately proven composer can join the runs.
+    assert item_verify.locate_sheet_preview(frame).height == 392
+    verdict = item_verify.verify_sheet_item(
+        frame, payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+    assert verdict.matched, verdict.reason
+    assert verdict.preview.height == _V1001_PREVIEW_ROWS
+    assert "retaining one aligned edge across 73 rows" in verdict.preview.reason
+
+    # Recovering the measured boundary changes only which pixels are compared.  The ordinary
+    # relative/absolute content gates must still reject a different photo and a prompt card.
+    foreign = dataclasses.replace(payload, crops=(dataclasses.replace(payload.item(3), number=1),))
+    assert not item_verify.verify_sheet_item(
+        frame, foreign, 1, composer_surface=surface, absolute_max_dist=10.0).matched
+    prompt = dataclasses.replace(_lookalike_payload().item(2), number=1)
+    prompt_only = dataclasses.replace(_lookalike_payload(), crops=(prompt,))
+    assert not item_verify.verify_sheet_item(
+        frame, prompt_only, 1, composer_surface=surface, absolute_max_dist=10.0).matched
+
+    # One pixel below the calibrated 74% content floor is not continuation evidence.  A later
+    # wide run cannot pull the preview across it merely because the right edge still lines up.
+    image[sky_y0:sky_y0 + sky_rows,
+          _SHEET_PREVIEW_X0:_SHEET_PREVIEW_X0 + erased_left + 3] = _SHEET_BG
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    with pytest.raises(item_verify.SheetVerificationError, match="not immediately above"):
+        item_verify.verify_sheet_item(
+            encoded.tobytes(), payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+
+
 def test_inline_preview_bottom_edge_cannot_walk_to_a_composer_the_photo_does_not_reach():
     """The safety property the topology check exists for, re-proved against the corrected edge.
 

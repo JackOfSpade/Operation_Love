@@ -78,6 +78,10 @@ class AppStatus:
     #             published as "opener" until this kind existed, which made it render under
     #             the hub's "opener capacity exhausted" title -- a confidently wrong label on
     #             the one stop that exists to prove we never comment on the wrong item.
+    # "targeting_calibration" -- numbered targeting was unavailable before an opener request
+    #             because the installed calibration was absent or rejected for the live app
+    #             build/frame. No opener, device action, or label was produced; the operator's
+    #             next step is to capture and validate fresh calibration evidence.
     # "approval" -- the Hub training-decision bridge could not safely publish or complete a
     #             checkpoint, so no physical action or label was issued.
     # None for every stop that isn't one of the above (a manual Stop click,
@@ -98,7 +102,9 @@ _APP_STATES = frozenset({
     "rate_limited", "saving", "stopped", "error", "wedged", "blocked",
 })
 _DECISIONS = frozenset({"like", "pass", "dislike", "defer", "no_face", "no_photos"})
-_STOP_KINDS = frozenset({"approval", "opener", "deck_blocked", "targeting"})
+_STOP_KINDS = frozenset({
+    "approval", "opener", "deck_blocked", "targeting", "targeting_calibration",
+})
 
 
 def _finite_nonnegative_float(name: str, value: object, *, none_ok: bool = False) -> float | None:

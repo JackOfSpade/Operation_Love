@@ -330,9 +330,9 @@ def test_hub_endpoints():
         assert "mode" in cfg                             # config.yaml loads from repo root
         hinge = next(p for kind in cfg["kinds"] for p in kind["platforms"]
                      if p["app"] == "hinge")
-        assert hinge["modes"] == {"training": True, "auto": True}
+        assert hinge["modes"] == {"training": True, "auto": False}
         assert hinge["mode_reasons"]["training"] is None
-        assert hinge["mode_reasons"]["auto"] is None
+        assert "does not bind this calibration" in hinge["mode_reasons"]["auto"]
         assert set(hinge["mode_reasons"]) == {"training", "auto"}
 
         code, raw = _get(base, "/api/status")
@@ -358,6 +358,36 @@ def test_hub_endpoints():
     finally:
         httpd.shutdown()
         httpd.server_close()   # release the listening socket too; shutdown() alone leaves it open
+        _join_hub_watch_threads()
+
+
+def test_training_profile_image_endpoint_serves_one_bound_png():
+    image = b"\x89PNG\r\n\x1a\nreview-frame"
+
+    class _ImageState:
+        def training_profile_review_image(self, **binding):
+            assert binding == {
+                "run_id": "run-1", "app": "hinge",
+                "profile_token": "profile-1", "index": 2,
+            }
+            return image
+
+    _Handler.state = _ImageState()
+    httpd = _bind("127.0.0.1", 8799)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        path = ("/api/training/image?run_id=run-1&app=hinge"
+                "&profile_token=profile-1&index=2")
+        with urllib.request.urlopen(base + path, timeout=5) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "image/png"
+            assert response.headers["Cache-Control"] == "private, max-age=3600, immutable"
+            assert response.read() == image
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
         _join_hub_watch_threads()
 
 
@@ -1858,16 +1888,16 @@ def test_hub_config_combines_registry_and_config_level_mode_readiness():
     pending = {platform["app"]: platform for platform in defaults["pending_platforms"]}
 
     # Training and AUTO are the only modes exposed by the Hub.
-    assert modes == {"hinge": {"training": True, "auto": True}}
+    assert modes == {"hinge": {"training": True, "auto": False}}
     assert reasons["hinge"]["training"] is None
-    assert reasons["hinge"]["auto"] is None
+    assert "does not bind this calibration" in reasons["hinge"]["auto"]
     assert set(reasons["hinge"]) == {"training", "auto"}
     assert set(pending) == {"bumble"}
     assert "not calibrated" in pending["bumble"]["reason"]
 
 
 def test_hub_config_defaults_uses_one_validating_startup_gate_per_mode(monkeypatch):
-    """The picker must not pre-probe Hinge AUTO before config installs its licence."""
+    """A config-level AUTO refusal must not fall through to a redundant registry probe."""
     from operation_love.hub import state as hub_state
 
     original = hub_state.platforms.unavailable_reason
@@ -1884,8 +1914,9 @@ def test_hub_config_defaults_uses_one_validating_startup_gate_per_mode(monkeypat
 
     hinge = next(p for kind in defaults["kinds"] for p in kind["platforms"]
                  if p["app"] == "hinge")
-    assert hinge["modes"]["auto"] is True
-    assert auto_reasons == [None]
+    assert hinge["modes"]["auto"] is False
+    assert "does not bind this calibration" in hinge["mode_reasons"]["auto"]
+    assert auto_reasons == []
 
 
 def test_hub_config_defaults_marks_per_app_mode_override_as_unavailable(monkeypatch):
@@ -1958,6 +1989,9 @@ def test_hubstate_apps_none_validates_the_effective_file_config(tmp_path):
         # section and turn this release-gate test into an unrelated storage-config failure.
         r"(?m)^    observe_release_evidence:\n(?:^      [^\n]*\n)+", "",
         Path("config.yaml").read_text(), count=1)
+    # The shipped file intentionally starts in Training while its 10.1.0 production-observe
+    # release is pending. Exercise this test's AUTO release gate explicitly.
+    cfg_text = cfg_text.replace("mode: training", "mode: auto", 1)
     cfg_path.write_text(cfg_text)
 
     st = HubState(str(cfg_path))
@@ -2180,7 +2214,7 @@ def test_run_status_renders_live_training_once_with_checkpoint_detail_and_swipes
 @pytest.mark.parametrize(("state", "expected"), [
     ("scoring", "preparing the training checkpoint"),
     ("waiting_approval", "waiting for your Hub decision"),
-    ("acting", "recording your hinge decision"),
+    ("acting", "carrying out your hinge decision"),
     ("starting", "starting hinge"),
 ])
 def test_run_status_maps_live_training_producer_states_to_one_clear_cue(state, expected):
@@ -2193,6 +2227,26 @@ def test_run_status_maps_live_training_producer_states_to_one_clear_cue(state, e
     html = _run_node(_runstatus_script(snap))["html"]
     assert expected in html
     assert html.count("hinge") == 1
+
+
+def test_run_status_explains_when_an_in_flight_training_decision_is_counted():
+    """The phone may advance before confirmation/persistence completes.
+
+    Keep the durable count and the in-flight action visibly distinct so the operator does not
+    mistake the current profile for a stale status from the prior one.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {"running": True, "status": {"apps": {
+        "hinge": {"app": "hinge", "mode": "training", "state": "acting",
+                  "swipes_run": 2},
+    }}}
+
+    html = _run_node(_runstatus_script(snap))["html"]
+    assert "carrying out your hinge decision" in html
+    assert "completed-swipe count updates after the action is confirmed and saved" in html
+    assert "2 swipes this run" in html
+    assert "recording your hinge decision" not in html
 
 
 def test_run_status_escapes_live_training_app():
@@ -2345,7 +2399,7 @@ def test_render_run_status_shows_auto_opener_exhaustion_stop_reason():
     #
     # stop_kind="opener" is required here since the 2026-08-11 blocked-deck addition gave
     # stop_reason a SECOND possible cause (worker.py's blocked-deck check) with its own
-    # stop_kind: hub.html now branches the "opener capacity exhausted" wording specifically on
+    # stop_kind: hub.html now branches the safe-opener wording specifically on
     # stop_kind==='opener' rather than on stop_reason's mere presence (see hub.html's comment
     # right above that branch) -- a real run always sets both together (worker.py's four
     # opener-triggered stop sites), so omitting it here would test a shape no live run ever
@@ -2365,7 +2419,7 @@ def test_render_run_status_shows_auto_opener_exhaustion_stop_reason():
     result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
     assert "run budget reached" in result["html"]
-    assert "opener capacity exhausted" in result["html"]
+    assert "could not prepare a safe opener" in result["html"]
     # The reason takes over the box's sub-line instead of the ordinary swipe count.
     assert "4 swipes this run" not in result["html"]
 
@@ -2397,8 +2451,8 @@ def test_render_run_status_reads_an_auto_targeting_stop_as_one_not_as_opener_cap
     assert result["display"] == "block"
     html = result["html"]
 
-    assert "could not like the item the opener was written about" in html
-    assert "opener capacity exhausted" not in html
+    assert "could not attach the generated opener to its selected item" in html
+    assert "could not prepare a safe opener" not in html
     assert "Intended: item 4" in html and "Actual: item 6" in html
     # Not the error box: 'idle' styling (the same neutral box every other non-crash stop uses),
     # never 'err'. Asserted on the styles themselves so a future re-colour has to come through
@@ -2416,8 +2470,28 @@ def test_render_run_status_reads_an_auto_targeting_stop_as_one_not_as_opener_cap
                                       "swipes_run": 2}}},
     }
     other = _run_node(_runstatus_script(capacity))["html"]
-    assert "opener capacity exhausted" in other
-    assert "could not like the item" not in other
+    assert "could not prepare a safe opener" in other
+    assert "could not attach the generated opener" not in other
+
+
+def test_render_run_status_names_pre_opener_targeting_calibration_stop():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    reason = ("Live Hinge 10.1.0 does not match the installed 10.0.1 calibration. "
+              "No opener, action, or label was produced.")
+    snap = {
+        "running": True,
+        "status": {"apps": {"hinge": {
+            "app": "hinge", "mode": "training", "state": "stopped",
+            "stop_reason": reason, "stop_kind": "targeting_calibration", "swipes_run": 0,
+        }}},
+    }
+
+    html = _run_node(_runstatus_script(snap))["html"]
+    assert "targeting calibration must be renewed" in html
+    assert reason in html
+    assert "could not prepare a safe opener" not in html
+    assert "could not attach the generated opener" not in html
 
 
 def test_render_run_status_escapes_auto_stop_reason_before_using_inner_html():
@@ -2555,13 +2629,19 @@ def _training_panel_script(checkpoint):
         "const layout={active:false,classList:{toggle(_name,value){layout.active=!!value;}}};\n"
         "const document={querySelector:(selector)=>selector==='.hub-layout'?layout:null};\n"
         "function $(selector){ return selector==='#trainingpanel' ? panel : buttons[selector]; }\n"
-        "let _trainingCheckpoint=null, _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0; const _trainingIdempotency=new Map();\n"
+        "let _trainingCheckpoint=null, _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0, _trainingImageKey='', _trainingImageIndex=0; const _trainingIdempotency=new Map();\n"
+        # The real state synchronizer closes a modal when the checkpoint changes.  This
+        # renderer-only harness has no persistent modal, so its inert stand-in keeps these
+        # longstanding markup tests deliberately scoped to the panel itself.
+        "function setTrainingImageZoom(){}\n"
         + _extract_js_function(_PAGE, "escHtml") + "\n"
         + _extract_js_function(_PAGE, "safeCheckpointImageDataUrl") + "\n"
         + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
         + _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged") + "\n"
         + _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged") + "\n"
         + _extract_js_function(_PAGE, "trainingActionBusyFor") + "\n"
+        + _extract_js_function(_PAGE, "checkpointReviewImages") + "\n"
+        + _extract_js_function(_PAGE, "syncTrainingImageState") + "\n"
         + _extract_js_function(_PAGE, "renderTrainingCheckpoint") + "\n"
         + "renderTrainingCheckpoint(" + json.dumps(checkpoint) + ");\n"
         + "console.log(JSON.stringify({display:panel.style.display,html:panel.innerHTML,active:layout.active}));\n"
@@ -2619,6 +2699,234 @@ def test_training_panel_shows_full_opener_target_image_and_escapes_text():
     assert "already written on this target" in result["html"]
     assert '>Like</button>' in result["html"]
     assert '>Dislike</button>' in result["html"]
+
+
+def test_training_panel_embeds_vertical_navigation_in_order_and_starts_on_target():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    checkpoint = {
+        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
+        "approval_token": "approval-1", "phase": "waiting_training_decision", "pending": True,
+        "action": "ready", "item": 3, "opener": "Complete opener",
+        "image_data_url": "data:image/png;base64,AA==", "profile_image_count": 3,
+    }
+
+    result = _run_node(_training_panel_script(checkpoint))
+    html = result["html"]
+    assert 'id="trainingimageup"' in html and 'scroll up' in html
+    assert 'id="trainingimagedown"' in html and 'scroll down' in html
+    assert "target view · 4/4" in html
+    assert re.search(r'id="trainingimagedown"[^>]* disabled', html)
+    assert not re.search(r'id="trainingimageup"[^>]* disabled', html)
+
+
+def test_training_image_navigation_uses_top_to_bottom_profile_snapshot_order():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "checkpointReviewImages"),
+        _extract_js_function(_PAGE, "showTrainingImage"),
+        _extract_js_function(_PAGE, "moveTrainingImage"),
+    ))
+    script = (
+        "const elements={}; function $(selector){return elements[selector]||(elements[selector]={setAttribute(){}});}\n"
+        "let _trainingImageIndex=3,_trainingImageZoomed=false; const _trainingCheckpoint={run_id:'run-1',app:'hinge',"
+        "profile_token:'profile-1',approval_token:'approval-1',profile_image_count:3,"
+        "image_data_url:'data:image/png;base64,AA=='};\n"
+        + functions + "\nmoveTrainingImage(-1);\n"
+        "const first={index:_trainingImageIndex,src:elements['#trainingimage'].src,"
+        "label:elements['#trainingimageposition'].textContent};\n"
+        "moveTrainingImage(-1);\n"
+        "console.log(JSON.stringify({first,second:{index:_trainingImageIndex,"
+        "src:elements['#trainingimage'].src,label:elements['#trainingimageposition'].textContent}}));\n"
+    )
+    result = _run_node(script)
+    assert result["first"]["index"] == 2
+    assert "index=2" in result["first"]["src"]
+    assert result["first"]["label"] == "profile snapshot 3 of 3 · 3/4"
+    assert result["second"]["index"] == 1
+    assert "index=1" in result["second"]["src"]
+
+
+def test_training_image_zoom_keeps_the_modal_open_and_in_sync_while_navigating():
+    """The review modal is outside the polling-replaced panel, so navigation must update
+    both copies of the snapshot without closing the modal or changing its profile binding."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "checkpointReviewImages"),
+        _extract_js_function(_PAGE, "setTrainingImageZoom"),
+        _extract_js_function(_PAGE, "toggleTrainingImageZoom"),
+        _extract_js_function(_PAGE, "onTrainingImageZoomKeydown"),
+        _extract_js_function(_PAGE, "showTrainingImage"),
+        _extract_js_function(_PAGE, "moveTrainingImage"),
+    ))
+    script = (
+        "function node(){return {hidden:false,disabled:false,src:'',alt:'',title:'',"
+        "textContent:'',attrs:{},focused:0,setAttribute(k,v){this.attrs[k]=String(v);},"
+        "focus(){this.focused+=1;}}}\n"
+        "const elements={}; for (const id of ['#trainingimagezoomoverlay','#trainingimagezoom',"
+        "'#trainingimagezoomclose','#trainingimage','#trainingimageposition','#trainingimageup',"
+        "'#trainingimagedown','#trainingimagezoomed','#trainingimagezoomposition',"
+        "'#trainingimagezoomup','#trainingimagezoomdown']) elements[id]=node();\n"
+        "const classes=new Set(); const document={activeElement:elements['#trainingimagezoom'],"
+        "body:{classList:{toggle(name,on){if(on)classes.add(name);else classes.delete(name);}}},"
+        "contains(){return true;}}; function $(selector){return elements[selector]||null;}\n"
+        "let _trainingImageIndex=3,_trainingImageKey='',_trainingImageZoomed=false,"
+        "_trainingImageZoomRestoreFocus=null; const _trainingCheckpoint={run_id:'run-1',app:'hinge',"
+        "profile_token:'profile-1',approval_token:'approval-1',profile_image_count:3,"
+        "image_data_url:'data:image/png;base64,AA=='};\n"
+        + functions + "\n"
+        "toggleTrainingImageZoom(); moveTrainingImage(-1);\n"
+        "const afterButtonNav={open:!elements['#trainingimagezoomoverlay'].hidden,"
+        "bodyOpen:classes.has('training-image-zoom-open'),index:_trainingImageIndex,"
+        "preview:elements['#trainingimage'].src,zoomed:elements['#trainingimagezoomed'].src,"
+        "position:elements['#trainingimagezoomposition'].textContent,"
+        "upDisabled:elements['#trainingimagezoomup'].disabled,"
+        "downDisabled:elements['#trainingimagezoomdown'].disabled};\n"
+        "let prevented=0; onTrainingImageZoomKeydown({key:'ArrowUp',preventDefault(){prevented+=1;}});\n"
+        "const afterKeyNav={open:!elements['#trainingimagezoomoverlay'].hidden,index:_trainingImageIndex,"
+        "preview:elements['#trainingimage'].src,zoomed:elements['#trainingimagezoomed'].src};\n"
+        "onTrainingImageZoomKeydown({key:'Escape',preventDefault(){prevented+=1;}});\n"
+        "console.log(JSON.stringify({afterButtonNav,afterKeyNav,closed:elements['#trainingimagezoomoverlay'].hidden,"
+        "bodyOpen:classes.has('training-image-zoom-open'),pressed:elements['#trainingimagezoom'].attrs['aria-pressed'],"
+        "prevented,restoredFocus:elements['#trainingimagezoom'].focused}));\n"
+    )
+    result = _run_node(script)
+
+    assert result["afterButtonNav"]["open"] is True
+    assert result["afterButtonNav"]["bodyOpen"] is True
+    assert result["afterButtonNav"]["index"] == 2
+    assert result["afterButtonNav"]["preview"] == result["afterButtonNav"]["zoomed"]
+    assert result["afterButtonNav"]["position"] == "profile snapshot 3 of 3 · 3/4"
+    assert result["afterButtonNav"]["upDisabled"] is False
+    assert result["afterButtonNav"]["downDisabled"] is False
+    assert "index=2" in result["afterButtonNav"]["preview"]
+    assert result["afterKeyNav"]["open"] is True
+    assert result["afterKeyNav"]["index"] == 1
+    assert result["afterKeyNav"]["preview"] == result["afterKeyNav"]["zoomed"]
+    assert "index=1" in result["afterKeyNav"]["preview"]
+    assert result["closed"] is True and result["bodyOpen"] is False
+    assert result["pressed"] == "false" and result["prevented"] == 2
+    assert result["restoredFocus"] == 1
+
+
+def test_training_zoom_trigger_and_persistent_modal_are_wired_for_click_and_reset():
+    assert re.search(r'<div\s+id="trainingimagezoomoverlay"[^>]*role="dialog"[^>]*aria-modal="true"', _PAGE)
+    assert 'id="trainingimagezoomup"' in _PAGE and 'id="trainingimagezoomdown"' in _PAGE
+    assert re.search(r"imageZoomButton\.onclick\s*=\s*\(\)\s*=>\s*toggleTrainingImageZoom\(\)", _PAGE)
+    # Every path that retires/replaces the card must use the same close routine, so the
+    # background's inert state and focus restoration are never left behind.
+    for name in ("syncTrainingImageState", "renderTrainingCheckpoint",
+                 "renderTrainingFeedback", "submitTrainingAction"):
+        assert "setTrainingImageZoom(false)" in _extract_js_function(_PAGE, name)
+
+
+def test_training_zoom_makes_background_inert_and_traps_tab_until_closed():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "setTrainingImageZoom"),
+        _extract_js_function(_PAGE, "onTrainingImageZoomKeydown"),
+    ))
+    script = (
+        "let document; function node(){return {hidden:false,disabled:false,attrs:{},focused:0,"
+        "setAttribute(k,v){this.attrs[k]=String(v);},getAttribute(k){return this.attrs[k]||'';},"
+        "focus(){this.focused+=1;document.activeElement=this;}}}\n"
+        "const elements={}; for(const id of ['#trainingimagezoomoverlay','#trainingimagezoom',"
+        "'#trainingimagezoomclose','#trainingimagezoomup','#trainingimagezoomdown'])elements[id]=node();\n"
+        "const bodyClasses=new Set(),layout={inert:false}; document={activeElement:elements['#trainingimagezoom'],"
+        "body:{classList:{toggle(name,on){if(on)bodyClasses.add(name);else bodyClasses.delete(name);}}},"
+        "querySelector(selector){return selector==='.hub-layout'?layout:null;},contains(){return true;}};\n"
+        "function $(selector){return elements[selector]||null;} let _trainingImageZoomed=false,"
+        "_trainingImageZoomRestoreFocus=null;\n"
+        + functions + "\nsetTrainingImageZoom(true); const opened={inert:layout.inert,"
+        "visible:!elements['#trainingimagezoomoverlay'].hidden,focused:document.activeElement===elements['#trainingimagezoomclose']};\n"
+        "let prevented=0; onTrainingImageZoomKeydown({key:'Tab',shiftKey:false,preventDefault(){prevented+=1;}});"
+        "const forward=document.activeElement===elements['#trainingimagezoomup'];\n"
+        "onTrainingImageZoomKeydown({key:'Tab',shiftKey:false,preventDefault(){prevented+=1;}});"
+        "const last=document.activeElement===elements['#trainingimagezoomdown'];\n"
+        "onTrainingImageZoomKeydown({key:'Tab',shiftKey:true,preventDefault(){prevented+=1;}});"
+        "const backward=document.activeElement===elements['#trainingimagezoomup'];\n"
+        "onTrainingImageZoomKeydown({key:'Escape',preventDefault(){prevented+=1;}});\n"
+        "console.log(JSON.stringify({opened,forward,last,backward,prevented,closed:elements['#trainingimagezoomoverlay'].hidden,"
+        "inert:layout.inert,bodyOpen:bodyClasses.has('training-image-zoom-open'),"
+        "focusRestored:document.activeElement===elements['#trainingimagezoom']}));\n"
+    )
+    result = _run_node(script)
+
+    assert result["opened"] == {"inert": True, "visible": True, "focused": True}
+    assert result["forward"] is True and result["last"] is True and result["backward"] is True
+    assert result["prevented"] == 4
+    assert result["closed"] is True and result["inert"] is False and result["bodyOpen"] is False
+    assert result["focusRestored"] is True
+
+
+def test_replacing_a_zoomed_checkpoint_moves_focus_to_its_new_preview_trigger():
+    """Polling replaces the review-card markup while the persistent overlay is open.
+
+    Closing the overlay first nominally restores focus to the old trigger, but that node is
+    about to be discarded.  The new card must explicitly take focus after its trigger exists.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    old = {
+        "run_id": "run-1", "app": "hinge", "profile_token": "old-profile",
+        "approval_token": "old-approval", "phase": "waiting_training_decision",
+        "pending": True, "action": "ready", "item": 1, "opener": "Old opener",
+        "image_data_url": "data:image/png;base64,AA==", "profile_image_count": 1,
+    }
+    new = {**old, "profile_token": "new-profile", "approval_token": "new-approval",
+           "item": 2, "opener": "New opener"}
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "escHtml"),
+        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+        _extract_js_function(_PAGE, "trainingActionBusyFor"),
+        _extract_js_function(_PAGE, "checkpointReviewImages"),
+        _extract_js_function(_PAGE, "syncTrainingImageState"),
+        _extract_js_function(_PAGE, "setTrainingImageZoom"),
+        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+    ))
+    script = (
+        "let document; function node(name){return {name,hidden:false,disabled:false,attrs:{},"
+        "focused:0,connected:true,setAttribute(k,v){this.attrs[k]=String(v);},"
+        "getAttribute(k){return this.attrs[k]||'';},focus(){this.focused+=1;document.activeElement=this;}}}\n"
+        "const oldTrigger=node('old'); const elements={'#trainingimagezoom':oldTrigger};\n"
+        "for(const id of ['#trainingimagezoomoverlay','#trainingimagezoomclose','#trainingimagezoomed',"
+        "'#trainingimagezoomposition','#trainingimagezoomup','#trainingimagezoomdown'])elements[id]=node(id);\n"
+        "const layout={inert:false,classList:{toggle(){}}}; const bodyClasses=new Set();\n"
+        "const panel={style:{display:''},_html:'',get innerHTML(){return this._html;},set innerHTML(value){"
+        "this._html=value; if(value.includes('id=\\\"trainingimagezoom\\\"')){oldTrigger.connected=false;"
+        "elements['#trainingimagezoom']=node('new');}}}; elements['#trainingpanel']=panel;\n"
+        "document={activeElement:elements['#trainingimagezoomclose'],body:{classList:{toggle(name,on){"
+        "if(on)bodyClasses.add(name);else bodyClasses.delete(name);}}},querySelector(selector){"
+        "return selector==='.hub-layout'?layout:null;},contains(item){return !!item.connected;}};\n"
+        "function $(selector){return elements[selector]||null;}\n"
+        "let _trainingCheckpoint=" + json.dumps(old) + ",_trainingActionBusy=false,_trainingBusyKey='',"
+        "_trainingBusyRequest=0,_trainingImageKey=" + json.dumps(json.dumps([
+            old["run_id"], old["app"], old["profile_token"], old["approval_token"]])) + ","
+        "_trainingImageIndex=1,_trainingImageZoomed=true,_trainingImageZoomRestoreFocus=oldTrigger;"
+        "const _trainingIdempotency=new Map();\n"
+        + functions + "\nrenderTrainingCheckpoint(" + json.dumps(new) + ");\n"
+        "const replacement=elements['#trainingimagezoom']; console.log(JSON.stringify({"
+        "focusOnReplacement:document.activeElement===replacement,replacementFocused:replacement.focused,"
+        "oldFocused:oldTrigger.focused,oldConnected:oldTrigger.connected,overlayHidden:elements['#trainingimagezoomoverlay'].hidden,"
+        "zoomed:_trainingImageZoomed,inert:layout.inert,bodyLocked:bodyClasses.has('training-image-zoom-open')}));\n"
+    )
+    result = _run_node(script)
+
+    assert result == {
+        "focusOnReplacement": True, "replacementFocused": 1,
+        "oldFocused": 1, "oldConnected": False, "overlayHidden": True,
+        "zoomed": False, "inert": False, "bodyLocked": False,
+    }
 
 
 def test_training_panel_hides_and_restores_the_original_single_column_layout():

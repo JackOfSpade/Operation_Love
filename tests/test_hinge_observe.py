@@ -264,6 +264,18 @@ def test_completed_driver_inputs_are_audited_at_every_gesture_choke_point():
     assert all(row["transport"] == "FakeAdb" for row in rows)
 
 
+def test_training_inputs_are_not_mislabeled_as_autonomous():
+    adb = FakeAdb([b"frame"])
+    drv = _drv(adb)
+    drv._dbg = _FakeDbg()
+    drv.set_training_decision(lambda _frame, _evidence: "dislike")
+
+    drv._tap(500, 1000)
+
+    row = next(fields for name, fields in drv._dbg.calls if name == "device_input")
+    assert row["session_mode"] == "training"
+
+
 def test_failed_text_transport_is_not_audited_as_completed_input():
     class FailingTextAdb(FakeAdb):
         def text(self, s):
@@ -2143,7 +2155,8 @@ def test_identity_top_name_ocr_all_chrome_words_stays_top_inconclusive(monkeypat
     drv = _top_state_drv(monkeypatch)
     monkeypatch.setattr(
         drv, "_ocr_band",
-        lambda frame, rect, psm="7": "Signals Active today" if psm == "6" else None)
+        lambda frame, rect, psm="7", **_kwargs: (
+            "Signals Active today" if psm == "6" else None))
 
     state, _dist = drv._identity_of(b"frame")
 
@@ -2157,7 +2170,7 @@ def test_identity_top_name_ocr_garbage_with_multiple_candidates_stays_inconclusi
     drv = _top_state_drv(monkeypatch, stored_name="Julia")
     monkeypatch.setattr(
         drv, "_ocr_band",
-        lambda frame, rect, psm="7": (
+        lambda frame, rect, psm="7", **_kwargs: (
             "Neh eae Bk hySey spate Batya Marina SENS Cie" if psm == "6" else None
         ),
     )
@@ -2272,12 +2285,44 @@ def test_identity_top_name_ocr_nonmatch_does_not_strengthen_pixel_new(monkeypatc
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: np.full((16, 64), 99, dtype="int16"))
     monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "qelix" if psm == "6" else None)
+                        lambda frame, rect, psm="7", **_kwargs: (
+                            "qelix" if psm == "6" else None))
 
     state, _dist = drv._identity_of(b"frame")
 
     assert state == "new"
     assert drv._identity_top_name_verdict is None
+
+
+def test_canonical_top_with_changed_filter_chips_uses_name_proof(monkeypatch):
+    """Dynamic top chrome must not hide a real next card from the repeated-name gate.
+
+    A Signals chip can make the next card's raw filter row differ from the capture-local top
+    signature. Only the canonical top detector licenses interpreting the broad header OCR as a
+    name; the ordinary non-top pixel-new case remains veto-only in the regression above.
+    """
+    import numpy as np
+
+    drv = _drv(FakeAdb([b"kate-at-top"]))
+    drv._identity_name = "Mackinley MJ"
+    drv._identity_sig = np.zeros((16, 64), dtype="int16")
+    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    # Far from BOTH stored bands, reproducing the incident's provisional pixel-new verdict.
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: np.full((16, 64), 99, dtype="int16"))
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top",
+        lambda frame, **_kw: SimpleNamespace(confirmed=True))
+    monkeypatch.setattr(
+        drv, "_ocr_band",
+        lambda frame, rect, psm="7": (
+            "Kate\nshe her\nLet me introduce you" if psm == "6" else None))
+
+    state, _distance = drv._identity_of(b"kate-at-top")
+
+    assert state == "new"
+    assert drv._identity_top_name_verdict == "new"
+    assert drv._identity_name_candidate == "Kate"
 
 
 def test_identity_top_name_ocr_skipped_when_observe_name_ocr_is_off(monkeypatch):
@@ -2420,7 +2465,8 @@ def test_identity_top_name_ocr_short_candidate_token_never_becomes_new(monkeypat
     the inconclusive 'top', not be promoted to a false 'new'."""
     drv = _top_state_drv(monkeypatch, stored_name="Katherine")
     monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "Xy" if psm == "6" else None)
+                        lambda frame, rect, psm="7", **_kwargs: (
+                            "Xy" if psm == "6" else None))
 
     state, _dist = drv._identity_of(b"frame")
 
@@ -2506,6 +2552,84 @@ def test_ocr_band_caches_a_repeated_identical_band_without_rerunning_tesseract(m
     assert first == "Zorva"
     assert second == "Zorva"
     assert len(calls) == 1, f"expected exactly 1 tesseract invocation, got {len(calls)}"
+
+
+def test_ocr_band_native_retry_has_its_own_cache_entry_and_skips_resize(monkeypatch):
+    """The native card-header retry must not reuse the failed 3x OCR result."""
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    from PIL import Image
+
+    drv = _drv(FakeAdb([b"x"]))
+    sizes = []
+    monkeypatch.setattr(hinge.shutil, "which", lambda name: "/usr/bin/tesseract")
+
+    def run(*_args, **kwargs):
+        sizes.append(Image.open(BytesIO(kwargs["input"])).size)
+        return SimpleNamespace(stdout=b"Christina", returncode=0)
+
+    monkeypatch.setattr(hinge.subprocess, "run", run)
+    frame = _png(value=10)
+    rect = (0.0, 0.0, 1.0, 1.0)
+
+    assert drv._ocr_band(frame, rect, psm="6") == "Christina"
+    assert drv._ocr_band(frame, rect, psm="6", upscale=1) == "Christina"
+    assert sizes[0] == (sizes[1][0] * 3, sizes[1][1] * 3)
+    assert len(sizes) == 2
+
+
+def test_scroll_top_name_retries_native_after_garbled_upscale(monkeypatch):
+    """Replay the report's OCR shape without weakening the repeated-name proof.
+
+    Hinge 10.1.0's photo texture made the 3x psm-6 read look like several bogus lines while
+    native resolution read the plainly visible next-profile name.  The native result may
+    supply the candidate, but the caller still has to reproduce it on a settled frame.
+    """
+    import numpy as np
+
+    drv = _drv(FakeAdb([b"x"]))
+    top_sig = np.full((16, 64), 200, dtype="int16")
+    drv._identity_name = "Kassie"
+    drv._identity_sig = np.zeros((16, 64), dtype="int16")
+    drv._identity_top_sig = top_sig
+    calls = []
+    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect: top_sig)
+
+    def ocr(_frame, _rect, *, psm="7", upscale=3, **_kwargs):
+        calls.append((psm, upscale))
+        if psm == "7":
+            return None
+        return "id\nJ pA\nx\n4h a" if upscale == 3 else "Christina"
+
+    monkeypatch.setattr(drv, "_ocr_band", ocr)
+
+    assert drv._identity_of(b"NEXT_PROFILE")[0] == "new"
+    assert drv._identity_top_name_read == "Christina"
+    assert drv._identity_top_name_verdict == "new"
+    assert drv._identity_name_candidate == "Christina"
+    assert ("6", 3) in calls and ("6", 1) in calls
+
+
+def test_scroll_top_name_native_retry_keeps_noise_inconclusive(monkeypatch):
+    """Two OCR recipes returning photo noise still cannot manufacture a new profile."""
+    import numpy as np
+
+    drv = _drv(FakeAdb([b"x"]))
+    top_sig = np.full((16, 64), 200, dtype="int16")
+    drv._identity_name = "Kassie"
+    drv._identity_sig = np.zeros((16, 64), dtype="int16")
+    drv._identity_top_sig = top_sig
+    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect: top_sig)
+    monkeypatch.setattr(
+        drv, "_ocr_band",
+        lambda _frame, _rect, *, psm="7", upscale=3, **_kwargs: (
+            None if psm == "7" else "photo texture has many words"),
+    )
+
+    assert drv._identity_of(b"AMBIGUOUS_PROFILE")[0] == "top"
+    assert drv._identity_top_name_verdict is None
+    assert drv._identity_name_candidate is None
 
 
 def test_ocr_band_preserves_lines_and_separates_punctuation(monkeypatch):
@@ -4642,7 +4766,8 @@ def test_ocr_cannot_turn_a_scroll_top_frame_into_a_new_profile(monkeypatch):
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: drv._identity_top_sig)
     monkeypatch.setattr(
         drv, "_ocr_band",
-        lambda frame, rect, psm="7": None if psm == "6" else "Signals ( Agev ) Height v")
+        lambda frame, rect, psm="7", **_kwargs: (
+            None if psm == "6" else "Signals ( Agev ) Height v"))
 
     assert drv._identity_of(b"scroll-top-frame")[0] == "top"
 

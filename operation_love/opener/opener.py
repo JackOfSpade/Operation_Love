@@ -113,18 +113,26 @@ _SCHEMA = {
             "type": "integer",
             "description": "The number of the item your opener is about. This is also the item "
                            "that will be liked, so the message and the like always land on the "
-                           "same thing. The list it indexes is the numbered items in THIS "
+                           "same item. It must be the opener's clear primary subject: the "
+                           "message should feel natural directly under it, not as an excuse to "
+                           "talk about a different image. Your opener must justify why this "
+                           "selected item was liked; supporting context may enrich it but cannot "
+                           "replace it as the reason, subject, or payoff. "
+                           "The list it indexes is the numbered items in THIS "
                            "request and nothing else: they are numbered from 1, in the order "
                            "they are given, and you may only choose a number that was actually "
                            "given to you. Some blocks are shown WITHOUT a number, for context "
-                           "only; you may take them into account and refer to what they show, "
-                           "but you can never pick one.",
+                           "only; you may use them to support a connection to the selected item, "
+                           "but you can never pick one or make it the opener's main premise.",
         },
         "referenced": {
             "type": "string",
-            "description": "What you are reacting to, described in full: the exact photo or "
-                           "prompt detail your angle comes from. THIS FIELD IS NEVER SENT TO "
-                           "HER. Record only what is visibly shown or explicitly stated, not "
+            "description": "What you are reacting to, described in full: the selected item's "
+                           "exact photo or prompt detail that is the opener's primary "
+                           "anchor. THIS FIELD IS NEVER SENT TO HER. If unnumbered context "
+                           "supports the connection, distinguish it as supporting context rather "
+                           "than replacing this selected-item anchor. Record only what is visibly "
+                           "shown or explicitly stated, not "
                            "an action or backstory you inferred. Put the whole description "
                            "here, including any header, caption, or prompt printed with a photo "
                            "and how it frames the photo. Describe any other visible people "
@@ -139,6 +147,9 @@ _SCHEMA = {
             "description": "In your own words, what your opener is doing: what you are "
                            "observing, asking, guessing, teasing about, or connecting. State "
                            "the conversational payoff beyond merely identifying what is visible. "
+                           "The selected item must remain the angle's primary anchor and reason "
+                           "for the Like; unnumbered context may support a connection but cannot "
+                           "replace the selected item as the subject or payoff. "
                            "The angle must respect any header, caption, or prompt attached to "
                            "the photo; that text defines the photo's intended context. "
                            "A guess is optional. If you use one, choose the least speculative "
@@ -173,7 +184,10 @@ _SCHEMA = {
         "opener": {
             "type": "string",
             "description": "The message to send, bare text only. She reads it while looking at "
-                           "the item. It may name a visible detail as setup, but its final point "
+                           "the selected item, so it must feel natural directly under it and "
+                           "justify why it was liked. Supporting context may enrich the message "
+                           "but cannot replace the selected item as its reason, subject, or "
+                           "payoff. It may name a visible detail as setup, but its final point "
                            "must do something conversational beyond describing that detail. "
                            "Every named setup detail must be necessary to that move; cut it if "
                            "the later point still works without it. A question asks one coherent "
@@ -305,12 +319,11 @@ _SCHEMA = {
 #     over-description, it is the upstream cause of it, and it is reachable while every wording
 #     rule in Part A is obeyed, which is why naming it here is not redundant with THE ONE RULE.
 #   - What the unnumbered tier IS, not merely that it exists: her vitals (age, job, school,
-#     city), per doc 5.3's live capture. They may be referenced freely and never chosen. Doc 2.3
-#     names combining two things she said in different places as the strongest move precisely
-#     because it cannot be bluffed by anyone who read one card, and the vitals block is prime
-#     material for it -- so "read it, use it, but never pick it" needed the REASON to use it,
-#     not just permission. Deliberately worded without a menu of moves so the model derives its
-#     approach from the profile instead of imitating a prompt-provided form.
+#     city), per doc 5.3's live capture. Their explicitly stated facts may contextualize the
+#     selected item, but their visual details may not be used as an opener for a different
+#     target. The distinction preserves useful profile-wide context without telling her about
+#     "another photo" the comment did not attach to. Deliberately worded without a menu of moves
+#     so the model derives its approach from the profile instead of imitating prompt copy.
 # config.yaml's opener.style carries the long form of all three (doc 3.1's division of labour),
 # and both copies are pinned by their own tests.
 #
@@ -329,6 +342,14 @@ _SYSTEM = (
     "cheeky humor for the occasional profile where it arises naturally. Do not force teasing into "
     "every opener. SHARED CONTEXT RULE: your message is displayed directly under the exact photo "
     "or prompt it attaches to, and she is looking at that item while she reads your words. "
+    "PRIMARY ITEM RULE: after choosing a numbered item, it is the clear main subject of "
+    "referenced, angle, and opener, including its header. The message must feel natural directly "
+    "under that item, never like a reason to discuss another image. Your opener must justify why "
+    "the selected item was liked: it supplies the reason, subject, or payoff. You may use explicit "
+    "profile text or an unnumbered CONTEXT image as supporting context only when it sharpens a "
+    "connection back to the selected item. Do not let another image replace the selected item as "
+    "the reason for the Like, subject, or payoff, point her away from it, or use context without "
+    "an unmistakable selected-item anchor. "
     "PHOTO HEADER RULE: any title, caption, or prompt printed with a photo is part of that same "
     "item and defines how the photo is meant to be read. Interpret the visible scene through "
     "that text before choosing an angle. The angle and opener must respect the combined meaning, "
@@ -359,6 +380,11 @@ _SYSTEM = (
     "explanation, the inference is too remote. PLAYFUL HYPERBOLE: unmistakably nonliteral "
     "exaggeration is allowed when its visible anchor is immediate. It adds playful framing; it "
     "does not license presenting an invented motive, circumstance, or event as literal fact. "
+    "SAFETY AND DIGNITY: never infer, tease, or pose a forced choice about self harm, suicide, "
+    "death, injury, an accident, a dangerous stunt, or courage around danger. A bridge, height, "
+    "water, travel scene, or recognized location is never evidence that she jumped or considered "
+    "jumping. Mention a risky activity only when her profile explicitly states it, and then keep "
+    "it matter of fact rather than sensational. "
     "Make one clear, positive, profile-specific bid, then leave room for her reply. A natural "
     "claim she can correct can be effective, but it is not mandatory. One specific, easy, "
     "positive question may be the whole message when that is the strongest natural angle. "
@@ -421,10 +447,12 @@ _SYSTEM = (
     "another item is the better picture. Set item_index "
     "to that item's number; it is also the item that gets liked, so your message and the like "
     "always land on the same thing. Any image given WITHOUT a number is context, usually her "
-    "vitals: her age, her job, her school, her city. Read it, use it, and refer to what it shows "
-    "whenever it sharpens your angle, because something she states there, set against a numbered "
-    "item, is often the best angle on the page. It simply carries no number, so you can never "
-    "pick it and item_index can never refer to it. "
+    "vitals: her age, her job, her school, her city, or another unnumbered profile image. You may "
+    "use what it shows to support a connection, but the selected numbered item must remain the "
+    "opener's clear main subject and every context connection must lead back to it. Never make an "
+    "unnumbered image the opener's main premise, reason for the Like, subject, or payoff, or "
+    "point her away from the item receiving the Like. It simply carries no number, so you can "
+    "never pick it and item_index can never refer to it. "
     "APPLICATION RULE: TWO sentences is the absolute maximum, and within "
     "that ceiling be as short as the angle allows: spend no word merely repeating what she can "
     "already see and none on padding, but never cut necessary setup or the conversational payoff. "
@@ -498,7 +526,9 @@ _ITEM_PREAMBLE = (
 # which would otherwise be a small lie about the request.
 _ITEM_PREAMBLE_CONTEXT = (
     " A label reading CONTEXT means the image directly after it has no number: read it and "
-    "use what it shows, but you can never pick it."
+    "use what it shows as supporting context for a numbered item. You can never pick it, and "
+    "the numbered item must remain the opener's clear main subject and reason for the Like, "
+    "not a reason to discuss this CONTEXT image."
 )
 
 # Placed immediately BEFORE the image it names: Gemini reads parts as one ordered sequence, and "the
@@ -511,7 +541,8 @@ _ITEM_LABEL = "=== ITEM {number} ==="
 # A context block is the one thing in the request that looks exactly like a selectable item
 # (it is a crop of her profile, sitting in the same list) and differs only by not having a
 # number, so the difference is stated where it cannot be missed. Doc 5.3: context blocks are
-# "sent, read, freely referenced, never selectable".
+# "sent, read as supporting context, never selectable".  A labelled context crop can support
+# a connection, but the selected numbered item must stay the message's primary anchor.
 _CONTEXT_LABEL = "=== CONTEXT, NOT NUMBERED, CANNOT BE PICKED ==="
 
 # What HER NAME renders as when the driver's OCR did not read one. An explicit "we did not read
@@ -667,6 +698,27 @@ _COMMON_ABBREVIATION_RE = re.compile(
     r"\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|etc)\.", re.IGNORECASE)
 _SENTENCE_END_RE = re.compile(r"(?:[!?]+|\.+)(?=(?:[\"'”’)]*)?(?:\s+|$))")
 _COMMA_BEFORE_OR_RE = re.compile(r",(?=\s+or\b)", re.IGNORECASE)
+
+# A narrow, deterministic backstop for the reported harmful-inference shape. Prompt guidance
+# does the general semantic work because only the model sees the image and profile evidence;
+# this guard catches wording that turns an ordinary travel/bridge scene into a question about
+# jumping or courage. It deliberately does not ban every occurrence of "jump" or every risky
+# sport: an explicitly stated skydiving or bungee experience can be a normal profile topic.
+# These patterns instead identify a direct, unsupported implication of jumping from a height or
+# self-harm, which should always be regenerated before it can reach the comment box.
+_SENSITIVE_INFERENCE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("courage to jump", re.compile(
+        r"\b(?:work(?:ed)?\s+up|find|found|had)\s+(?:the\s+)?courage\s+to\s+jump\b",
+        re.IGNORECASE)),
+    ("asking whether she jumped", re.compile(
+        r"\b(?:did|do|would|were|are)\s+you\s+(?:ever\s+)?(?:going\s+to\s+)?jump\b",
+        re.IGNORECASE)),
+    ("jumping from a height", re.compile(
+        r"\bjump(?:ed|ing)?\s+(?:off|from)\s+(?:the\s+)?"
+        r"(?:bridge|cliff|ledge|balcony|roof|height)\b", re.IGNORECASE)),
+    ("self harm or suicide", re.compile(
+        r"\b(?:self[\s-]?harm|suicid(?:e|al))\b", re.IGNORECASE)),
+)
 
 # Cap on how much of a malformed model-output value gets echoed into an error message --
 # long enough to be diagnostic, short enough that a huge/garbage payload can't blow up a
@@ -854,6 +906,18 @@ def _scaffolding_markers(text: str) -> list[str]:
         markers.append('markup artifact: literal "opener" key')
 
     return markers
+
+
+def _sensitive_inference_markers(text: str) -> list[str]:
+    """Return the high-risk inferred-activity shapes found in an otherwise clean opener.
+
+    This is intentionally a small lexical backstop, not an attempt to infer whether a sport is
+    safe from the outgoing text. The multimodal prompt owns that evidence judgment. Here we only
+    reject direct wording that makes a person in a scene answer for jumping from a height,
+    courage around danger, or self harm. An empty list means the text can continue through the
+    ordinary parse path.
+    """
+    return [label for label, pattern in _SENSITIVE_INFERENCE_PATTERNS if pattern.search(text)]
 
 
 # Function words plus the handful of "structural" nouns that name the CONTAINER rather than
@@ -1111,6 +1175,7 @@ REASON_EMPTY_AFTER_SANITIZE = "empty_after_sanitize"
 REASON_UNDELIVERABLE_CHARS = "undeliverable_chars"
 REASON_UNDELIVERABLE_SEQUENCE = "undeliverable_sequence"
 REASON_SCAFFOLDING = "scaffolding"
+REASON_SENSITIVE_INFERENCE = "sensitive_inference"
 REASON_TOO_MANY_SENTENCES = "too_many_sentences"
 
 _BLOCK_FINISH_REASONS = frozenset({
@@ -1732,7 +1797,9 @@ class GeminiOpener:
             if items.context_count:
                 sentences.append(
                     f"The {items.context_count} image(s) labelled CONTEXT carry no number: use "
-                    "what they show if it helps, but never pick one.")
+                    "them only as supporting context for a numbered item. Never pick one or "
+                    "make one the opener's main premise; the selected item must remain its "
+                    "clear main subject and reason for the Like.")
             if items.truncated:
                 # Doc 5.7's truncation flag. Stated as a fact about OUR capture, not as a
                 # deficiency in her profile, and immediately followed by "choose from them
@@ -1746,7 +1813,9 @@ class GeminiOpener:
             # keeping one wording for it means the two shapes cannot drift into telling the
             # model two different things about the same field.
             sentences.append(
-                "Set item_index to the number of the one your opener is about. "
+                "Set item_index to the number of the one your opener is clearly about and "
+                "would feel natural directly under, because it explains why that item was "
+                "liked. "
                 "Write the opener now.")
             closing = " ".join(sentences)
         elif photo_count > 0:
@@ -2388,6 +2457,20 @@ class GeminiOpener:
                 f"opener field, with no preamble, no label, and no surrounding quotes "
                 f"(received {_truncated_repr(opener)})",
                 usage, model, reason_code=REASON_SCAFFOLDING, raw_opener=sanitized)
+        # Safety backstop for a harmful, unsupported inference such as asking someone at a
+        # bridge whether she "worked up the courage to jump". The model prompt already bars
+        # this class of angle; this deterministic check makes a prompt miss retryable instead
+        # of sending a potentially self-harm-adjacent message. It remains deliberately narrow:
+        # a profile that explicitly mentions a normal sport must not be rejected merely for
+        # containing a word that can also describe risk in another context.
+        sensitive_markers = _sensitive_inference_markers(sanitized)
+        if sensitive_markers:
+            raise OpenerParseError(
+                "Gemini's opener inferred or invited discussion of a sensitive dangerous "
+                f"activity ({'; '.join(sensitive_markers)}). Do not speculate about jumping, "
+                "courage around danger, self harm, or suicide from a scene. Use a different, "
+                "grounded angle.",
+                usage, model, reason_code=REASON_SENSITIVE_INFERENCE, raw_opener=sanitized)
         referenced = str(data.get("referenced", "")).strip()
         # REDUNDANCY MONITOR (ops/OPENER-REDESIGN.md 3.7), and note where it sits: AFTER every
         # guard that can reject, and it deliberately rejects nothing itself. An opener that
@@ -2413,7 +2496,7 @@ class GeminiOpener:
             print(f"Gemini opener: redundancy monitor: this opener restates "
                   f"{len(redundancy_markers)} word(s) from its own `referenced` note "
                   f"({'; '.join(redundancy_markers)}). Logged for offline calibration only; "
-                  "the opener is being sent.")
+                  "delivery has not been decided at this parsing stage.")
         return OpenerResult(
             opener=sanitized,
             referenced=referenced,

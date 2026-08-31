@@ -378,27 +378,77 @@ def _max_signature_drift_for(drift_regime: str | None) -> tuple[float, str]:
 #
 # THE EXACT TRIGGER ZONE IS UNMEASURED.  Nobody has instrumented where Hinge starts and stops
 # playback, so this is deliberately CONSERVATIVE rather than fitted: hold the card as close to
-# the centre of the content band as the scroll step can put it, and require the card's centre to
-# be within this fraction of the content band's height of that centre.  Widening it without a
-# measurement would be widening the population that can be accepted on evidence that does not
-# cover it.  One definition, imported by the driver, the offline replay and the campaign tool
-# alike -- a second copy is how the producer and the consumer of this proof drift apart.
+# the centre of the SCREEN as the scroll step can put it, and require the card's centre to be
+# within this fraction of the content band's height of that centre.  The aim point and the
+# tolerance are deliberately different KINDS of quantity, and the two functions below say why:
+# `content_band_center_row` (the aim point is a property of the phone's screen) and
+# `card_center_offset_frac` (the tolerance is denominated in the analysed band's height, which
+# is the unit every offset this project has ever recorded or gated on is written in).  Widening
+# it without a measurement would be widening the population that can be accepted on evidence
+# that does not cover it.  One definition, imported by the driver, the offline replay and the
+# campaign tool alike -- a second copy is how the producer and the consumer of this proof drift
+# apart.
 STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC = 0.15
 
 
 def content_band_center_row(frame_height: int, content_band: Sequence[float]) -> float:
-    """The row the autoplay trigger zone is measured around: the content band's own centre."""
-    y0, y1 = float(content_band[0]) * frame_height, float(content_band[1]) * frame_height
-    return (y0 + y1) / 2.0
+    """The row the autoplay trigger zone is measured around: the centre of the SCREEN.
+
+    THE AIM POINT IS A PROPERTY OF THE PHONE, NOT OF THIS PIPELINE.  The domain fact this whole
+    discriminator rests on is the one stated above and restated verbatim in config.yaml's
+    `still_photo_assumption_acceptance.rationale` -- "Hinge autoplays a card only at screen
+    center and nothing else on a profile changes pixels over time".  Screen centre is where the
+    APP decides to start playback; it does not move because we changed our mind about which rows
+    of the frame our segmenter is allowed to read.  `content_band` is the opposite kind of thing:
+    an ANALYSIS WINDOW we choose (Hinge 10.1.0 drawing a pinned profile header inside the band is
+    exactly the sort of thing that makes us want to narrow it).  So the band is deliberately
+    IGNORED here -- see below for why it is still in the signature.
+
+    WHY THIS IS WRITTEN DOWN AT ALL (found 2026-08-28, band-derived until then).  This function
+    used to return the band's own centre, and that was a no-op purely by coincidence: the
+    calibrated band `(0.125, 0.875)` happens to be symmetric about 0.5, so its centre landed on
+    row `frame_height / 2` exactly and no test, checksum or config key could tell the two
+    readings apart.  The coincidence was load-bearing and nothing named it.  Narrowing the band
+    to (0.2154, 0.875) to clear that pinned header -- a pure calibration decision, with no
+    still-photo intent whatsoever -- would have re-aimed row 1200 to row 1308.5, i.e. dwelt and
+    re-attach-probed every candidate card 108.5px BELOW the only place Hinge is claimed to
+    autoplay, while every `centered` verdict downstream still read True.  That is the failure
+    this shape prevents: silently moving the evidence out from under an assumption the owner
+    accepted UNMEASURED (config.yaml `still_photo_assumption_acceptance`), rather than measuring
+    anything new.  A band that does not even contain screen centre now fails closed on its own --
+    no card inside it can sit in the trigger zone, which is the honest answer, not a bug.
+
+    `content_band` is accepted and DELIBERATELY IGNORED rather than dropped: every caller reaches
+    this centre through `card_center_offset_frac`, which needs the band anyway for its own
+    denominator, and a call spelt `content_band_center_row(height, self.content_band)` at every
+    producer of dwell evidence (driver, offline replay, campaign tool) is one edit each to remove
+    for no behavioural gain.  The name is kept for the same reason.  Nothing reads it; a caller
+    that passes a different band gets the same row, which is the entire point.
+    """
+    return frame_height / 2.0
 
 
 def card_center_offset_frac(rect: tuple[int, int, int, int], *, frame_height: int,
                             content_band: Sequence[float]) -> float:
-    """Signed |card centre - content centre| as a fraction of the content band's height.
+    """Signed (card centre - autoplay centre) as a fraction of the content band's height.
 
     Positive means the card sits BELOW the centre (a forward scroll brings it up).  Reported as a
     fraction so one constant governs every screen size, and signed so a caller can size the
     gesture that would fix it instead of only knowing that it is wrong.
+
+    THE NUMERATOR AND THE DENOMINATOR ARE MEASURED FROM DIFFERENT THINGS ON PURPOSE, and that is
+    not an oversight.  The numerator is distance from where Hinge is claimed to autoplay, which
+    is screen centre and nothing else (`content_band_center_row`).  The denominator is the
+    analysed band's height because that is the unit `STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC` was
+    CHOSEN in -- it is a conservative tolerance, never a measured physical distance -- and it is
+    the unit every offset this project has recorded is written in: the live parked offsets
+    -0.187/-0.232/-0.287 that motivated the centring correction, the `center_offset_frac` fields
+    in every session manifest and calibration ledger, and the `offset * band_px` conversions the
+    driver and tools/hinge_calibrate.py size their corrective scrolls with.  Re-denominating it
+    on the screen instead would keep 0.150 looking identical while widening the accepted zone
+    from 270px to 360px on today's calibration -- a 33% widening of a zone this module calls
+    UNMEASURED and deliberately CONSERVATIVE, done by unit change rather than by measurement,
+    and it would silently rescale every offset already on disk.
     """
     if frame_height <= 0:
         raise ItemCropError(f"frame height must be positive (got {frame_height!r})")
@@ -551,6 +601,25 @@ class ItemCrop:
     `image` is None for everything not sent, which is the structural half of "excluded blocks are
     not sent at all": there are no bytes to send.
 
+    `verify_image` is THE SAME PIXELS AS `image` IN THE FRAME'S OWN GREYSCALE SPACE, and it is a
+    second artefact rather than a second use of the first because the two cannot be the same
+    bytes. THE OPERATIVE DIFFERENCE IS ONE ANCILLARY PNG CHUNK. An Android screencap carries an
+    `sRGB` chunk, and OpenCV's `IMREAD_GRAYSCALE` is sRGB-aware: it converts colour to grey
+    differently depending on whether that chunk is present. `cv2.imencode` does not write one, so
+    a crop re-encoded from the colour decode has lost it, and grey recovered from that crop is
+    NOT the grey the same rows produce when the device's own frame is decoded. Calling the same
+    decoder on both does not rescue it -- the difference is in the bytes being decoded, not in
+    the call. [measured 2026-08-27 on the live Pixel 7a: 4.35 grey levels apart on average and 64
+    at the worst pixel; re-inserting the `sRGB` chunk into the re-encode makes the two decodes
+    bit-identical again, which is what identifies the chunk rather than the alpha channel or the
+    colour conversion itself as the cause. On Tina's heart 9 the gap was 10.158 at the 64x64
+    verification grid, against a 7.00 ceiling, so a correct sheet was refused and the run halted.]
+
+    Doc 5.6 needs to window this reference at arbitrary heights for the inline reframe sweep,
+    which the single fixed `signature` cannot answer, so the rows are carried in a form with no
+    colour conversion left in the path to disagree about: a genuine 8-bit greyscale PNG, colour
+    type 0, which decodes back bit for bit.
+
     `page_y0`/`page_y1` here are THE authoritative rect for doc 5.6, in preference to the
     `IndexedBlock`'s: the block's extent is the median complete sighting's and the crop's is the
     chosen sighting's, and the two may differ by up to `item_index._EXTENT_TOLERANCE_PX`
@@ -578,6 +647,10 @@ class ItemCrop:
     drift_frames: tuple[int, ...]
     nearest_item_distance: float | None
     reason: str
+    # Defaulted so the hand-assembled payloads in the tests stay constructible, NEVER so a real
+    # one may go without: `item_verify._decode_crop` refuses a verification it cannot put in the
+    # right grey space rather than falling back to `image`, which is the bug this field fixes.
+    verify_image: bytes | None = None
 
     @property
     def width(self) -> int:
@@ -897,7 +970,7 @@ def confident_photo_heart_ordinals(
         obs = _choose_sighting(block, index)
         if obs is None:
             continue
-        image, _signature = _crop_image(
+        image, _verify_image, _signature = _crop_image(
             decode(obs.frame_index, colour=False), decode(obs.frame_index, colour=True),
             obs, block, image_format=image_format, signature_grid=_SIGNATURE_GRID,
             cv2=cv2, np=np)
@@ -1545,12 +1618,23 @@ def _choose_sighting(block: IndexedBlock, index: ItemIndex):
 
 def _crop_image(frame_gray, frame_bgr, obs, block: IndexedBlock, *, image_format: str,
                 signature_grid: tuple[int, int], cv2, np) -> tuple[bytes, CropSignature]:
-    """The encoded crop and its signature, from one decoded frame and one sighting.
+    """The encoded crop, its verification reference and its signature, from one frame and one
+    sighting.
 
     The IMAGE is cut from the colour decode — these are photographs and the model reads them as
-    such — while the SIGNATURE is computed from the greyscale one, through the same
-    `_signature_from_gray` a later verification pass reaches via `signature_of`. Both are cut
-    from the same rows, so they describe the same pixels.
+    such — while the SIGNATURE and the VERIFICATION REFERENCE are cut from the greyscale one,
+    through the same `_signature_from_gray` a later verification pass reaches via `signature_of`.
+    All three are cut from the same rows, so they describe the same pixels.
+
+    The SECOND return value is `ItemCrop.verify_image`, and it exists because the other two are
+    not enough for doc 5.6: the signature is one fixed reduction of the WHOLE crop at
+    `_SIGNATURE_GRID`, while the inline-composer reframe sweep has to score many different
+    sub-windows of it, at its own finer `item_verify._VERIFY_GRID`. Re-deriving
+    those windows from the colour `image` is what put the two sides of the comparison in
+    different units (see `ItemCrop.verify_image`), so the greyscale rows are carried out of here
+    directly. Always `.png` regardless of `image_format`: this one has to survive the round trip
+    exactly, so it can never be a lossy format, and an 8-bit greyscale PNG decodes back bit for
+    bit with no colour conversion in the path at all.
     """
     y0, y1, x0, x1 = obs.frame_y0, obs.frame_y1, block.x0, block.x1
     ok, buf = cv2.imencode(image_format, frame_bgr[y0:y1, x0:x1])
@@ -1558,9 +1642,14 @@ def _crop_image(frame_gray, frame_bgr, obs, block: IndexedBlock, *, image_format
         raise ItemCropError(
             f"cv2 could not encode the {x1 - x0}x{y1 - y0} crop of frame {obs.frame_index} as "
             f"'{image_format}'")
+    grey_ok, grey_buf = cv2.imencode(".png", frame_gray[y0:y1, x0:x1])
+    if not grey_ok:
+        raise ItemCropError(
+            f"cv2 could not encode the {x1 - x0}x{y1 - y0} greyscale verification reference for "
+            f"the crop of frame {obs.frame_index} as '.png'")
     signature = _signature_from_gray(
         frame_gray[y0:y1, x0:x1], grid=signature_grid, cv2=cv2, np=np)
-    return buf.tobytes(), signature
+    return buf.tobytes(), grey_buf.tobytes(), signature
 
 
 def _check_frames_are_the_indexed_frames(frames: Sequence[bytes], index: ItemIndex) -> None:
@@ -1750,8 +1839,8 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
         common = dict(heart_ordinal=block.heart_ordinal, page_y0=block.page_y0,
                       page_y1=block.page_y1, x0=block.x0, x1=block.x1,
                       frame_index=None, frame_y0=None, frame_y1=None,
-                      image=None, signature=None, signature_drift=None, drift_frames=(),
-                      nearest_item_distance=None)
+                      image=None, verify_image=None, signature=None, signature_drift=None,
+                      drift_frames=(), nearest_item_distance=None)
 
         # Hinge's scroll-top header, already outside both index spaces (item_index.py classes it
         # only at a caller-confirmed scroll-top). Recorded so the payload accounts for every
@@ -1806,7 +1895,7 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
                 **common))
             continue
 
-        image, signature = _crop_image(
+        image, verify_image, signature = _crop_image(
             decode(obs.frame_index, colour=False), decode(obs.frame_index, colour=True),
             obs, block, image_format=image_format, signature_grid=signature_grid,
             cv2=cv2, np=np)
@@ -1815,8 +1904,8 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
             cv2=cv2, np=np)
         common.update(page_y0=obs.page_y0, page_y1=obs.page_y1, frame_index=obs.frame_index,
                       frame_y0=obs.frame_y0, frame_y1=obs.frame_y1,
-                      image=image, signature=signature, signature_drift=drift,
-                      drift_frames=drift_frames)
+                      image=image, verify_image=verify_image, signature=signature,
+                      signature_drift=drift, drift_frames=drift_frames)
 
         if block.kind == ITEM_SELECTABLE and unnumber is not None:
             reason = unnumber(image)

@@ -73,6 +73,16 @@ def test_keyevent_uses_a_closed_integer_android_input_argv(monkeypatch):
                         "keyevent", "4"]]
 
 
+def test_host_side_adb_launch_error_uses_driver_error_contract(monkeypatch):
+    run = FakeRun(PermissionError("permission denied"))
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    with pytest.raises(AdbError, match="could not start ADB binary") as exc:
+        Adb(adb_path="/blocked/adb").devices()
+
+    assert "/blocked/adb devices" in str(exc.value)
+
+
 @pytest.mark.parametrize("keycode", [None, True, -1, 65536, "4"])
 def test_keyevent_rejects_non_android_keycodes_without_starting_adb(monkeypatch, keycode):
     run = FakeRun()

@@ -136,11 +136,17 @@ frames and each is genuinely unanswerable from ONE frame. Do not "fix" them here
     other, sized 215..1144px). Doc 2.4 wants the endorsement block EXCLUDED rather than sent,
     and no geometry here separates it from the vitals block. Until some deterministic signal
     does, the policy layer must either send every context block or find that signal elsewhere.
-  * That Hinge's scroll-top header chrome is chrome. It becomes a block like anything else. On
-    every scroll-top frame in the corpus it came back PARTIAL — neither of its ends is gutter-
-    or corner-bounded, so it can reach neither tier — but that is an observation about how
-    Hinge draws its header, not a guarantee. A caller that has confirmed scroll-top should
-    ignore blocks above the topmost card corner rather than trust that they self-exclude.
+  * That Hinge's profile header is chrome, or where it belongs on the page. On the corpus it
+    scrolled WITH the content and came back PARTIAL on every scroll-top frame — neither end
+    gutter- or corner-bounded, so it reached neither tier — but that was an observation about
+    how Hinge drew its header then, not a guarantee, and 10.1.0 broke it: the header is now
+    PINNED TO THE SCREEN, present at the same frame rows on every frame of a scroll. Its page
+    position is therefore `frame_row + offset`, a different page row on every frame, and every
+    one of them is fabricated. This module reports such a strip as `BLOCK_UNANCHORED` and
+    deliberately declines to say what it is, because being chrome is a CROSS-FRAME property and
+    nothing in one frame can distinguish pinned chrome from a band-sliced piece of page content.
+    See `_unanchored_leading_island_rows`. A caller holding several frames of one scroll can
+    settle it; a caller holding one frame must not pretend to.
 """
 from __future__ import annotations
 
@@ -344,6 +350,11 @@ BLOCK_SELECTABLE = "selectable"   # fully observed, exactly one heart: a photo o
 BLOCK_CONTEXT = "context"         # fully observed, no heart: the vitals block (5.3)
 BLOCK_PARTIAL = "partial"         # at least one edge not observed; true extent unknown here
 BLOCK_AMBIGUOUS = "ambiguous"     # >1 heart in one block: a segmentation FAILURE, not a choice
+BLOCK_UNANCHORED = "unanchored"   # a leading strip that one frame cannot place: it may be page
+                                  # content sliced by the band, or app chrome pinned to the
+                                  # SCREEN. Only a cross-frame comparison can tell, so this
+                                  # module names the ambiguity instead of resolving it (see
+                                  # `_unanchored_leading_island_rows`)
 
 # --- why a block edge is where it is ------------------------------------------------
 EDGE_GUTTER = "gutter"            # a canonical-length page-background run between two cards
@@ -356,6 +367,10 @@ EDGE_HEART_ANCHORED_MEDIA_GUTTER = "heart_anchored_media_gutter"
                                   # lower edge even though its corner is obscured
 EDGE_HEART_SEPARATED_NEAR_GUTTER = "heart_separated_near_gutter"
                                   # a 59..64px page-coloured gap lies between proven hearts
+EDGE_UNANCHORED_ISLAND = "unanchored_island"
+                                  # page background separating a leading unanchored island from
+                                  # whatever is below it. NOT observed: the run is the reason
+                                  # the two were split, never evidence that either one ended
 EDGE_BAND_EDGE = "band_edge"      # the block runs straight into the analysed band's edge
 EDGE_BACKGROUND_RUN = "background_run"  # page background beyond this edge, but neither
                                   # gutter-length nor corner-confirmed, so what it MEANS is
@@ -364,9 +379,9 @@ EDGE_BACKGROUND_RUN = "background_run"  # page background beyond this edge, but 
 
 # --- why a background run was or was not treated as a block boundary -----------------
 RUN_GUTTER = "gutter"
-RUN_CARD_EDGE = "card_edge"       # not gutter-length, but a card's own top corner starts on the
-                                  # row directly below it — the list-top case, where Hinge's
-                                  # header chrome sits above item 1 instead of a gutter
+RUN_CARD_EDGE = "card_edge"       # not gutter-length, but a card's own rounded corner touches
+                                  # one side of it — enough to cut the page gap without claiming
+                                  # the opposite block's edge was observed
 RUN_SCROLL_TOP_MEDIA = "scroll_top_media"  # distinct provenance for the guarded recovery
 RUN_HEART_ANCHORED_MEDIA_GUTTER = "heart_anchored_media_gutter"
 RUN_HEART_SEPARATED_NEAR_GUTTER = "heart_separated_near_gutter"
@@ -376,6 +391,10 @@ RUN_CLIPPED = "clipped"           # touches the analysed band's edge, so its len
                                   # bound only and cannot be tested against the gutter window
 RUN_CARD_SURFACE = "card_surface"  # canonical length, but its median level differs from the
                                    # page: blank space inside one compound card, not a gutter
+RUN_UNANCHORED_ISLAND = "unanchored_island"
+                                   # an over-long run directly below a leading island that this
+                                   # frame cannot place. The ONLY cut kind that yields UNOBSERVED
+                                   # edges on both sides: it separates without bounding
 
 
 class SegmentationError(RuntimeError):
@@ -451,6 +470,15 @@ class Block:
     Discarding all but the first is precisely the information loss doc 5.4 calls out at every
     existing `_match_glyph` call site, and the whole point of `BLOCK_AMBIGUOUS` is that two
     hearts here means the segmentation is wrong, so the count must survive.
+
+    `content_digest` is set ONLY on a `BLOCK_UNANCHORED` block, and is the sha256 of this
+    block's decoded grey rows at full frame width. It is the evidence a cross-frame caller needs
+    to decide whether the strip is pinned to the screen or is page content, and it lives here
+    because this is where the pixels are — carrying it lets the caller stay pure arithmetic over
+    records. It may only ever be compared against another digest produced by THIS function on
+    this same decode path. Never against a stored constant, and never across a re-encode:
+    `cv2.IMREAD_GRAYSCALE` greys an sRGB-tagged device PNG differently from a `cv2.imencode`
+    round-trip of the same image, which has already cost this project one wrong measurement.
     """
     y0: int
     y1: int
@@ -461,6 +489,9 @@ class Block:
     kind: str
     hearts: tuple[tuple[int, int], ...]
     reason: str
+    # Defaulted so every existing positional construction in the tests and in this module stays
+    # source-compatible, the same precedent `BackgroundRun.median_level_delta` set.
+    content_digest: str | None = None
 
     @property
     def height(self) -> int:
@@ -648,6 +679,90 @@ def _background_runs(is_card, span, level_delta, *, r0: int, r1: int, gutter_lo:
     return runs
 
 
+def _restore_low_contrast_card_surface_at_strict_gutter(
+        runs: list[BackgroundRun], *, is_card, level_delta,
+        hearts: tuple[tuple[int, int], ...], r0: int, r1: int,
+        gutter_lo: int, gutter_hi: int, gutter_level_tolerance: float, np) -> bool:
+    """Restore a card-white surface that the ordinary span test cannot see.
+
+    This is deliberately *not* a wider gutter rule.  On Allison's capture, a 174-row
+    background-like run contained a real 53-row page-background gutter flush with one end,
+    plus 121 rows of the adjacent media card's white surface.  The latter differs from the
+    page by only 3--6 grey levels, below the row classifier's six-level tolerance, so treating
+    the maximal 174 rows as one run either merged two cards or put a heart inside a cut.
+
+    The rescue has four independent gates:
+
+    * only an existing ``RUN_TOO_LONG`` is considered;
+    * its PREFIX or SUFFIX must be a *maximal*, canonical-length run whose every row agrees
+      with the page at the stricter gutter tolerance;
+    * the adjoining residual must be uniformly card-white rather than page-coloured, and must
+      touch normally classified card content on its far side; and
+    * exactly one matched lower-right like heart must sit at Hinge's measured 60..120px bottom
+      inset above the candidate gutter.
+
+    Thus an internal strict-page span, a weakly supported blank card region, or a generic long
+    gap remains a loud ``RUN_TOO_LONG``.  When all four facts agree, marking only the residual
+    as card content before the run table is rebuilt preserves the real block extent: ordinary
+    gutter handling then supplies the boundary rather than a synthetic cut with a trimmed,
+    falsely complete card.
+    """
+    heart_lo, heart_hi = _SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX
+
+    def strict_prefix_end(run: BackgroundRun) -> int:
+        y = run.y0
+        while y < run.y1 and level_delta[y] <= gutter_level_tolerance:
+            y += 1
+        return y
+
+    def strict_suffix_start(run: BackgroundRun) -> int:
+        y = run.y1
+        while y > run.y0 and level_delta[y - 1] <= gutter_level_tolerance:
+            y -= 1
+        return y
+
+    def has_bottom_heart(gutter_y0: int) -> bool:
+        return sum(heart_lo <= gutter_y0 - y <= heart_hi for _, y in hearts) == 1
+
+    restored = False
+    for run in runs:
+        if run.kind != RUN_TOO_LONG:
+            continue
+
+        candidates: list[tuple[int, int]] = []
+
+        # The real gutter is at the run's top; the background-like residual is the next card's
+        # leading surface.  Requiring a classified card immediately after it prevents a blank
+        # panel or a long page gap from being promoted.
+        prefix_end = strict_prefix_end(run)
+        if (gutter_lo <= prefix_end - run.y0 <= gutter_hi
+                and prefix_end < run.y1
+                and np.all(level_delta[prefix_end:run.y1] > gutter_level_tolerance)
+                and run.y1 < r1 and is_card[run.y1]
+                and has_bottom_heart(run.y0)):
+            candidates.append((prefix_end, run.y1))
+
+        # Mirror image: the residual is the preceding card's low-contrast trailing surface and
+        # the real gutter is at the run's bottom.
+        suffix_start = strict_suffix_start(run)
+        if (gutter_lo <= run.y1 - suffix_start <= gutter_hi
+                and run.y0 < suffix_start
+                and np.all(level_delta[run.y0:suffix_start] > gutter_level_tolerance)
+                and run.y0 > r0 and is_card[run.y0 - 1]
+                and has_bottom_heart(suffix_start)):
+            candidates.append((run.y0, suffix_start))
+
+        # A shape with strict page background at BOTH ends is not this measured one-sided
+        # failure.  Declining it avoids inventing a card surface in a compound/unknown layout.
+        if len(candidates) != 1:
+            continue
+        residual_y0, residual_y1 = candidates[0]
+        is_card[residual_y0:residual_y1] = True
+        restored = True
+
+    return restored
+
+
 def _corner_radius(is_card, span, *, y: int, step: int, lo_row: int, hi_row: int,
                    card_width: int, radius_px: tuple[int, int], ramp_slack: int,
                    dip_px: int) -> float | None:
@@ -803,6 +918,97 @@ def _heart_separated_near_gutter(
             and any(run.y1 <= y < following.y0 for _, y in hearts))
 
 
+def _unanchored_leading_island_rows(
+        runs: list[BackgroundRun], *, hearts: tuple[tuple[int, int], ...], span, r0: int,
+        r1: int, is_card, card_width: int, radius_px: tuple[int, int], ramp_slack: int,
+        dip_px: int) -> tuple[int, int] | None:
+    """The rows of a leading strip this frame cannot place, or None.
+
+    THE FRAME THIS EXISTS FOR. Hinge 10.1.0 pins a per-profile header — filter chips, the name,
+    a verified badge, a back arrow, an overflow menu and a pronoun/activity sub-row — to the
+    SCREEN, inside the analysed band. It does not scroll. [measured on the incident capture
+    `data/hinge_debug/8fb11094ef4d`, 2026-08-28: frame rows 300..516 are byte-identical, max
+    absolute difference 0, across all 15 pairs of its six evidence frames, while rows 517+ differ
+    by a mean of 59..143 grey levels.] The band opens on 68 rows of page background, then a 43px
+    strip of header (frame rows 368..410), then 106 more rows of page background, then the
+    scrolling content clipped at row 517.
+
+    That 106px run is not gutter-length, so the ordinary rule absorbs it and the header strip is
+    merged into the clipped card below. The merged block then reports a top 149px above any real
+    content, and in page space that top lands INSIDE the card above — which is what bridged two
+    cards into one fold group and refused the whole index on 2026-08-28.
+
+    WHY THIS MODULE DOES NOT DECIDE WHAT THE STRIP IS. Chrome-ness is not a property of one
+    frame. A strip at fixed frame rows with page background on both sides is EITHER app chrome
+    pinned to the screen OR a slice of page content the band happened to cut that way, and no
+    single frame distinguishes them — the same reason `EDGE_BACKGROUND_RUN` is not observed. So
+    this returns only "here is a strip whose placement is unknowable from here", `segment_frame`
+    labels it `BLOCK_UNANCHORED` with both edges UNOBSERVED, and the cross-frame caller decides.
+    Reporting the ambiguity is the whole contribution; resolving it here would be a guess.
+
+    ALL FIVE CLAUSES MUST HOLD, and each one rejects a different thing:
+
+      (a) the band OPENS in page background (`runs[0]` is clipped at `r0`). This confines the
+          rule to the top of the band and is why it can never reach doc 5.4 amendment one's
+          192-row bright span INSIDE a card: that frame opens on CARD rows. [corpus: 140 of the
+          157 real frames saved in the incident run open on card rows and are never considered.]
+      (b) the strip is non-empty. STRUCTURALLY GUARANTEED once (a) holds, and kept as an
+          assertion rather than presented as an independent gate: `_background_runs` returns
+          maximal, disjoint runs in order, so two of them are always separated by at least one
+          card row. What it is really recording is the property the rest of this function relies
+          on — the strip's height is MEASURED between two background runs, never a lower bound
+          the band edge happened to cut. (An earlier draft also tested `runs[1].y1 > r1`, which
+          could never fire: a run cannot extend past the band it was found in.)
+      (c) no row of the strip spans the full card width. This is the load-bearing per-frame
+          discriminator, and it is the same property `_corner_radius` already rests on: only the
+          card itself reaches x=53..1026, because anything drawn inside a card is inset by the
+          card's own padding. [MEASURED ON 15 FRAMES OF 3 PROFILES, ONE APP VERSION (10.1.0):
+          the pinned header's widest row spans 968px of the 974px card width on the incident
+          profile and 961px on two others; a real card slice reaches exactly 974 on 94.9% of its
+          rows. That is 6px of margin and it is the weakest number in this rule — if Hinge ever
+          pushes the back arrow or the overflow glyph out to the card edge it stops
+          discriminating, the strip merges as it did before, and the 2026-08-28 refusal returns
+          as a loud refusal rather than as a wrong index. `segment_frame` reports the measured
+          span on the block's `reason` so the drift is visible in a bug report before it
+          silently disarms this clause.]
+      (d) neither end of the strip is a card corner. REDUNDANT TODAY, and deliberately kept.
+          It was written as the gate for a shape (c) would admit — a slice that is only a card's
+          corner arc, whose rows are legitimately narrower than the card — and a mutation sweep
+          on 2026-08-28 showed that shape cannot arise: `_corner_radius` reports a corner only
+          once the arc reaches the FULL card width, and the strip's rows are the maximal card-row
+          run between two background runs, so any readable corner brings a full-width row with it
+          and (c) has already refused. Removing (d) alone reddens nothing; removing (c) alone
+          reddens nothing either, because (d) catches the small-card shape; only removing BOTH
+          goes red. It stays because it is the clause that still says no if (c)'s 6px of margin
+          is ever loosened, and because deleting a gate that a mutation test cannot reach is how
+          the remaining one becomes load-bearing without anyone noticing.
+      (e) no heart in the strip OR in the run below it. A heart means a likeable item is
+          involved, and this rule declines rather than risk touching one. It also forecloses a
+          failure mode the split would otherwise create: a heart inside the run would land in a
+          cut and become an `unassigned_hearts` hard refusal. [corpus: genuine card hearts were
+          measured at y 570..1890 over 115 real frames, so this should never fire.]
+
+    Returns the strip's `(y0, y1)` half-open rows. The caller keys the block label on that
+    EXTENT rather than on the cut, so a frame where the corner rescue already split the strip out
+    on its own gets the same label — those frames place a fabricated page position today.
+    """
+    if len(runs) < 2 or runs[0].kind != RUN_CLIPPED or runs[0].y0 != r0:
+        return None                                                     # (a)
+    y0, y1 = runs[0].y1, runs[1].y0
+    if y1 <= y0:
+        return None                                                     # (b)
+    if int(span[y0:y1].max()) >= card_width:
+        return None                                                     # (c)
+    for edge_y, step in ((y0, 1), (y1 - 1, -1)):
+        if _corner_radius(is_card, span, y=edge_y, step=step, lo_row=r0, hi_row=r1,
+                          card_width=card_width, radius_px=radius_px,
+                          ramp_slack=ramp_slack, dip_px=dip_px) is not None:
+            return None                                                 # (d)
+    if any(y0 <= y < runs[1].y1 for _, y in hearts):
+        return None                                                     # (e)
+    return y0, y1
+
+
 def _block_edge(*, y: int, cut: BackgroundRun | None, gap: int,
                 corner: float | None) -> BlockEdge:
     """One end of a block, resolved to a `BlockEdge`.
@@ -839,6 +1045,13 @@ def _block_edge(*, y: int, cut: BackgroundRun | None, gap: int,
     if corner is not None:
         return BlockEdge(y=y, observed=True, kind=EDGE_CARD_CORNER, run_px=run_px,
                          corner_px=round(corner))
+    # AFTER the corner test on purpose: an unanchored island's cut separates two regions without
+    # bounding either, so it must never pre-empt a card that does show its own corner on this
+    # row. `observed` is False and that is not negotiable — marking it True would report a
+    # confident extent for a strip whose very placement is the open question, and would let a
+    # fabricated extent reach the crop and verification passes as if a frame had measured it.
+    if cut is not None and cut.kind == RUN_UNANCHORED_ISLAND:
+        return BlockEdge(y=y, observed=False, kind=EDGE_UNANCHORED_ISLAND, run_px=cut.height)
     if run_px:
         return BlockEdge(y=y, observed=False, kind=EDGE_BACKGROUND_RUN, run_px=run_px)
     return BlockEdge(y=y, observed=False, kind=EDGE_BAND_EDGE, run_px=None)
@@ -1022,16 +1235,33 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
             f"{_MATCH_GLYPH_HIT_CAP}-iteration non-max-suppression cap — the true count is "
             "unknown, so no index may be built from this frame")
 
+    # A strict page-background gutter can be swallowed by the adjacent card's low-contrast
+    # white surface: all of those rows miss the broad span classifier, so `_background_runs`
+    # initially sees one over-long run.  Restore only the tightly evidenced residual and build
+    # the run table again; the ordinary gutter path below then owns the resulting boundary.
+    if _restore_low_contrast_card_surface_at_strict_gutter(
+            runs, is_card=is_card, level_delta=level_delta, hearts=hearts, r0=r0, r1=r1,
+            gutter_lo=gutter_lo, gutter_hi=gutter_hi,
+            gutter_level_tolerance=gutter_background_level_tolerance, np=np):
+        runs = _background_runs(
+            is_card, span, level_delta, r0=r0, r1=r1, gutter_lo=gutter_lo,
+            gutter_hi=gutter_hi,
+            gutter_level_tolerance=gutter_background_level_tolerance, np=np)
+
     # WHICH BACKGROUND RUNS CUT A BLOCK. The ordinary path has exactly two kinds of evidence:
     #
     #   * a canonical-length gutter. This is amendment one of doc 5.4 — a background run that is
     #     not gutter-shaped (the measured 192-row bright span inside a single card) is recorded
     #     in `runs` with its reason and then ignored, so the rows either side of it stay in the
     #     SAME block.
-    #   * a longer run with a card's own top corner on the row directly below it. This is doc
-    #     5.4's list-boundary case: at scroll-top the gap between Hinge's header chrome and item
-    #     1 is not a gutter (measured 143 rows on one profile, 69 on the other) and never can be,
-    #     so the length gate alone leaves item 1 permanently unbounded.
+    #   * a longer run touching a card's own rounded corner on either side. The corner below is
+    #     doc 5.4's list-boundary case: at scroll-top the gap between Hinge's header chrome and
+    #     item 1 is not a gutter (measured 143 rows on one profile, 69 on the other) and never can
+    #     be, so the length gate alone leaves item 1 permanently unbounded. The symmetric corner
+    #     above covers a context-card-to-media gap whose visible page run can be slightly longer
+    #     than the canonical gutter. It proves only that the UPPER card ended: the lower block's
+    #     edge is still resolved independently by `_block_edge`, and stays unobserved when its
+    #     own corner cannot be read.
     #
     # A run SHORTER than the gutter window is never allowed to cut, corner or no corner: the
     # gutter is a fixed layout constant, so a sub-canonical gap between two cards contradicts the
@@ -1046,6 +1276,17 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
     # an unconfirmed or later frame. The fourth is an equally narrow interior media rule: a
     # 90..112px run at the one measured bottom inset of the preceding like heart. It does not
     # widen generic gutter acceptance, so ordinary long card-white spans remain whole.
+    # The fifth label is the leading unanchored island, and it is a new CATEGORY of cut rather
+    # than a fifth flavour of the existing one: every rule above cuts because it has evidence
+    # that a card ENDED, and yields an observed edge. This one cuts because it has evidence that
+    # one frame CANNOT SAY where anything ended, and yields unobserved edges on both sides. It is
+    # computed once, before the loop, because it is a property of the run table as a whole; and
+    # it is applied LAST in the chain below so it can never pre-empt a stronger explanation.
+    island = _unanchored_leading_island_rows(
+        runs, hearts=hearts, span=span, r0=r0, r1=r1, is_card=is_card,
+        card_width=card_x1 - card_x0, radius_px=card_corner_px,
+        ramp_slack=card_corner_ramp_slack_px, dip_px=card_corner_dip_px)
+
     cuts: list[BackgroundRun] = []
     for i, run in enumerate(runs):
         if run.kind == RUN_GUTTER:
@@ -1053,11 +1294,15 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
             continue
         if run.kind != RUN_TOO_LONG:
             continue
-        corner = _corner_radius(
+        corner_below = _corner_radius(
             is_card, span, y=run.y1, step=1, lo_row=r0, hi_row=r1,
             card_width=card_x1 - card_x0, radius_px=card_corner_px,
             ramp_slack=card_corner_ramp_slack_px, dip_px=card_corner_dip_px)
-        if corner is not None:
+        corner_above = _corner_radius(
+            is_card, span, y=run.y0 - 1, step=-1, lo_row=r0, hi_row=r1,
+            card_width=card_x1 - card_x0, radius_px=card_corner_px,
+            ramp_slack=card_corner_ramp_slack_px, dip_px=card_corner_dip_px)
+        if corner_below is not None or corner_above is not None:
             runs[i] = replace(run, kind=RUN_CARD_EDGE)
         elif (recover_leading_low_contrast_media
               and _leading_low_contrast_media_edge(
@@ -1073,6 +1318,12 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
                 runs, i, hearts=hearts,
                 gutter_level_tolerance=gutter_background_level_tolerance):
             runs[i] = replace(run, kind=RUN_HEART_SEPARATED_NEAR_GUTTER)
+        elif island is not None and run.y0 == island[1]:
+            # LAST in the chain, so every rule that can explain this run as a real card boundary
+            # has already declined. On a genuine scroll top the corner rescue above fires first
+            # and keeps RUN_CARD_EDGE, which is what preserves item 1's trusted EDGE_CARD_CORNER
+            # top; the island is still labelled below, by extent, so both shapes agree.
+            runs[i] = replace(run, kind=RUN_UNANCHORED_ISLAND)
         else:
             continue
         cuts.append(runs[i])
@@ -1140,8 +1391,25 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
             ) if y1 == content_y1 else None)
 
         kind, reason = _classify_block(top=top, bottom=bottom, hearts=block_hearts)
+        digest = None
+        if island is not None and (y0, y1) == island:
+            # Keyed on the EXTENT, not on the cut kind, so the frames where a card corner below
+            # the island already split it out get the same label. Those are the frames that
+            # place a fabricated page position for a screen-pinned strip today, and this is what
+            # lets the caller withhold it there too.
+            kind = BLOCK_UNANCHORED
+            widest = int(span[y0:y1].max())
+            reason = (
+                f"a leading strip this frame cannot place: page background on both sides "
+                f"({top.run_px}px above, {bottom.run_px}px below), no row reaching the card's "
+                f"full width ({widest}px of {card_x1 - card_x0}px), neither end a card corner, "
+                "and heartless — which is what screen-pinned app chrome looks like AND what a "
+                "band-sliced piece of page content looks like. One frame cannot tell them "
+                "apart, so its page position is not asserted here")
+            digest = hashlib.sha256(img[y0:y1].tobytes()).hexdigest()
         blocks.append(Block(y0=y0, y1=y1, x0=card_x0, x1=card_x1, top=top, bottom=bottom,
-                            kind=kind, hearts=block_hearts, reason=reason))
+                            kind=kind, hearts=block_hearts, reason=reason,
+                            content_digest=digest))
 
     failures.extend(
         f"block y={block.y0}..{block.y1} is ambiguous: {block.reason}"

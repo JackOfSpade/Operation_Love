@@ -584,6 +584,25 @@ def test_reader_tolerates_malformed_and_unrelated_lines(tmp_path):
     assert attr.wall_s_total == pytest.approx(1.0)
 
 
+def test_reader_ignores_boolean_and_non_finite_timing_values():
+    """Malformed JSON timing data must not turn an otherwise useful report into ``nan``."""
+    records = [
+        {"action": "capture_iteration_timing", "iter_wall_s": 1.0,
+         "screencap_s": 0.4, "unattributed_s": 0.6},
+        {"action": "capture_iteration_timing", "iter_wall_s": float("nan"),
+         "screencap_s": float("inf"), "unattributed_s": True},
+        {"action": "capture_iteration_timing", "iter_wall_s": True,
+         "screencap_s": False},
+    ]
+
+    attr = hct.summarize_iteration_timing(records)
+
+    assert attr.records == 3
+    assert attr.wall_s_total == pytest.approx(1.0)
+    assert attr.buckets["screencap_s"].total_s == pytest.approx(0.4)
+    assert attr.buckets["unattributed_s"].total_s == pytest.approx(0.6)
+
+
 def test_reader_cli_prints_the_table_by_default_and_json_on_flag(tmp_path, capsys):
     path = tmp_path / "actions.jsonl"
     _write_actions_jsonl(path, _SYNTHETIC_RECORDS)

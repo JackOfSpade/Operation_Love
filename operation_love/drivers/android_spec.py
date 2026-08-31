@@ -201,6 +201,13 @@ class AndroidAppSpec:
     # None (the default) means this app declares no such band; a scroll-top identity stays the
     # inconclusive "top" verdict and cannot by itself authorize a PASS label.
 
+    identity_top_name_fallback_band: tuple[float, float, float, float] | None = None
+    # Optional, separately calibrated compact card-header OCR crop.  It is consulted only after
+    # both recipes for identity_top_name_band are inconclusive while the identity layer has
+    # already established a genuine scroll-top.  This preserves the broad band's two-layout
+    # coverage while providing a deliberately smaller retry when the broad crop reaches prompt
+    # text/photo texture and Tesseract drops the plainly visible name line.
+
     paywall_headline_band: tuple[float, float, float, float] | None = None
     # Normalised (x0, y0, x1, y1) crop of Hinge's "You're out of free likes for today" Hinge+
     # upgrade headline (MEASURED live on the Pixel 7a, 1080x2400, 2026-08-11 -- see
@@ -334,6 +341,31 @@ class AndroidAppSpec:
                 f"is None -- the scroll-top name check refines the pixel identity verdict, it "
                 f"is not a standalone source, and that verdict cannot be produced without "
                 f"identity_band declared")
+        if self.identity_top_name_fallback_band is not None:
+            x0, y0, x1, y1 = self.identity_top_name_fallback_band
+            if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+                raise ValueError(
+                    f"AndroidAppSpec({self.app!r}).identity_top_name_fallback_band "
+                    f"{self.identity_top_name_fallback_band} is not a normalised "
+                    "(x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
+        if (self.identity_top_name_fallback_band is not None
+                and (self.identity_band is None or self.identity_top_name_band is None)):
+            raise ValueError(
+                f"AndroidAppSpec({self.app!r}).identity_top_name_fallback_band is set but "
+                "identity_band and identity_top_name_band are required -- this compact OCR "
+                "crop is only a fallback refinement of the canonical card-header name path")
+        if self.identity_top_name_fallback_band is not None:
+            bx0, by0, bx1, by1 = self.identity_top_name_band
+            fx0, fy0, fx1, fy1 = self.identity_top_name_fallback_band
+            # This is not a separately authorised OCR detector: it may only remove the
+            # primary crop's lower portion, where the no-banner layout reaches prompt text.
+            # A contained left/right/top shift would silently inspect a new region and could
+            # manufacture a name candidate from unrelated UI or photo content.
+            if not (fx0 == bx0 and fx1 == bx1 and fy0 == by0 and fy1 <= by1):
+                raise ValueError(
+                f"AndroidAppSpec({self.app!r}).identity_top_name_fallback_band must be "
+                    "the primary band with only y1 allowed to shrink -- a retry with shifted "
+                    "geometry would be a separately unlicensed detector")
         if self.paywall_headline_band is not None:
             # Same normalised-rect shape as identity_top_name_band above -- a malformed rect
             # here would silently defeat the OCR refinement (garbage text, or a crop over the

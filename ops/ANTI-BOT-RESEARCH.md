@@ -3,7 +3,8 @@
 **Purpose.** Durable record of what we learned (deep research, mid-2026) about how Bumble
 and Hinge/Match Group detect automation — so design decisions aren't re-litigated and
 future work inherits the reasoning. **This file is the source of truth.** The assistant's
-memory is mutable and only points here.
+memory is mutable and only points here. It is historical threat modelling, not a guide to
+account creation, account rotation, or evasion of platform policy or enforcement.
 
 **Reality check.** None of this makes automating these apps *compliant* — both prohibit
 automation in their Terms, and every option below is "lower risk," never "safe." The goal
@@ -57,7 +58,9 @@ API-signature forgery.
 ### Risk by mode
 - **Observe** (you swipe, we read): **Low–moderate.** Residual = CDP attachment + any injected page code. With patchright + overlays-off, near-zero added footprint.
 - **Auto** (we click): **Moderate.** Behavioral correlation is the unresolved risk; report 2 advises against auto-matching at all.
-- **Burner for Bumble?** Report 2 argues a burner is **not** protective (one-account/phone linkage, multi-account enforcement) — the lever is "don't auto-match," not "use a burner." (Contrast Hinge, where we *do* use a burner.)
+- **Account changes for Bumble?** Report 2 found that a new account is **not** protective
+  (one-account/phone linkage, multi-account enforcement). Do not treat account changes as an
+  enforcement workaround.
 
 ---
 
@@ -171,9 +174,8 @@ or a face hash. Budget effort accordingly: account/face/number hygiene ≫ devic
   account you care about both effective and *confirmably* safe.** "Just test it and see if it
   gets banned" is near-worthless for shadowban — it gives a *false green* (deck loads, looks
   fine, account silently demoted). Emulator-vs-physical changes the *probability* of getting
-  flagged, never the *confirmability*. This is why Hinge runs on a **disposable burner**, and
-  why seeding (observe) is unaffected by shadowban (the deck still loads) while autonomous
-  *matching* is the gamble.
+  flagged, never the *confirmability*. The historical plan used a separate account, but that
+  does not make automation safe, compliant, or a valid way to avoid enforcement.
 
 ---
 
@@ -182,8 +184,8 @@ or a face hash. Budget effort accordingly: account/face/number hygiene ≫ devic
   of evasion quality.
 - **Observe ≪ Auto.** Observe (human acts, we only read) removes the behavioral evidence that
   Auto generates.
-- **Shadowban is silent + lagging + unconfirmable** — the central reason autonomous use of a
-  *valued* account is a gamble; only sane on a disposable account.
+- **Shadowban is silent + lagging + unconfirmable** — autonomous use remains a gamble and
+  account changes do not make it safe or compliant.
 - **Two reports per app; they disagree on specifics.** Vendor names (Arkose/Incognia/
   ThreatMetrix) and touch-biometrics are the least-supported claims. Don't over-trust the
   confident report.
@@ -194,11 +196,11 @@ or a face hash. Budget effort accordingly: account/face/number hygiene ≫ devic
 - **Bumble:** 6 hardening changes — patchright (no CDP leak), no DOM injection
   (`inpage_overlays:false`), `navigator.webdriver` flags, real Chrome (`channel="chrome"`),
   human-cursor clicks, lowered caps + per-run like budget. See
-  `operation_love/drivers/bumble.py`, `operation_love/limits.py`, `config.yaml`. Run
-  observe-first; no burner.
-- **Hinge:** abandon emulator + uiautomator2; commit to **physical Pixel 7a + scrcpy/ADB +
-  vision driver**; **burner** account; **real photos** (risk accepted); home Wi-Fi
-  (residential IP) + Tello prepaid eSIM (real US number). Driver rewrite pending.
+  `operation_love/drivers/android/bumble.py`, `operation_love/limits.py`, `config.yaml`.
+  Run observe-first; do not use account or identity changes to evade platform enforcement.
+- **Hinge:** physical-device control uses **Pixel 7a + scrcpy/ADB + vision driver**.
+  Use it only where the account and automation are explicitly authorized; this research is not
+  account-creation or enforcement-evasion guidance. Driver rewrite pending.
 - **Platform standard:** Android for all phone automation; iOS is structurally unsuitable
   (no ADB; the only routes — Appium/WebDriverAgent helper or jailbreak — reintroduce the
   footprint/flags we engineered away).
@@ -817,6 +819,51 @@ known, structural tell; a lone occurrence is not one in the same way) rather tha
 bound, and should be revisited if better data on either shape ever exists — see the §5 trigger
 below.
 
+### Addendum 2026-08-28 — initial pinned-header incident report (materially corrected by the live follow-up below)
+
+> **Historical incident report.** The 2026-08-28 (b) follow-up below supersedes this
+> addendum's conclusion that `identity_band` needed recalibration and that one guard
+> remained unrepaired. It preserves the original evidence and the general lesson about
+> silently vacuous guards.
+
+The 2026-08-21 addendum above records app-build drift as a LOUD event: the targeting gate refuses,
+you re-run the calibration campaign. 10.1.0 produced the other kind, and it is the more dangerous
+one. Hinge began drawing the per-profile header pinned to the SCREEN inside `content_band` — frame
+rows 300..516 byte-identical, max abs difference 0, across all 15 pairs of six frames spanning
+2305px of scroll (run `8fb11094ef4d`). One visible symptom appeared: a hard item-index refusal, now
+fixed (the full geometry is in ops/OPENER-REDESIGN.md's 2026-08-28 addendum, which is the canonical
+technical record). But the same change had already emptied three guards that went on passing:
+
+* `item_index._scroll_top_evidence` — asks whether page background sat above the topmost block.
+  A pinned header puts it there on every frame, so the check its own docstring credits with
+  refusing 21 of 21 and 9 of 10 falsely-asserted scroll tops returned True unconditionally.
+  FIXED: it now also requires the first item's own card corner, which mid-scroll frames provably
+  lack.
+* `scroll_top.confirm_scroll_top` — doc 5.5's affirmative filter-chips gate, whose returned reason
+  asserts that past the top "the app's sticky per-profile header covers this strip with the
+  person's name instead". The chips row is itself pinned now, so six frames 6180..8485px deep
+  returned `confirmed_top` at distance **0.000**. Only partly repaired: it can no longer confirm
+  when the caller supplies evidence the band is pinned, and `capture_profile_identity` now says
+  the band is pinned rather than blaming the capture for not scrolling. A true repair needs
+  `identity_band` re-measured against BOTH 10.1.0 header states on the device. Until then this
+  fails closed — no fingerprint, so `item_nav` refuses to navigate — which is why fixing the index
+  does not by itself let a run like anything.
+* `frameshift`'s excluded-chrome premise — its own docstring warns that a strip cut across sticky
+  chrome "would correlate best at a shift of zero no matter what the content underneath did". The
+  pinned header put exactly such a strip back inside the band. Benign today and measured to be
+  (every delta correct, confidence 1.000, and the pinned strips fall out of `eligible` anyway);
+  recorded in the module rather than repaired, because the band cannot be narrowed to fix it.
+
+**ACCEPTED RISK, stated plainly.** The `identity_band` recalibration is NOT done. Scroll-top
+confirmation and profile identity are therefore degraded to fail-closed on the expanded-header
+state, which blocks targeted navigation on those profiles rather than mis-targeting them. That is
+the safe direction and it is the one the owner rule about never substituting the liked item
+demands, but it means expanded-header profiles cannot currently be targeted at all.
+
+**The generalisable lesson, and the reason this is a §5 trigger and not just a fix note:** a guard
+whose PREMISE the app has invalidated does not fail. It passes vacuously, keeps reporting success,
+and there is no banner. Checking that captures still go green cannot detect this class.
+
 ## 5. Re-check triggers
 - **Read-pause shape is reasoned, not measured (added 2026-08-24)** — the per-frame read dwell
   (a metronome: fixed-mean, repeating after every one of ~11–13 frames) was replaced with ONE
@@ -833,6 +880,17 @@ below.
   gate to refuse and re-run the calibration campaign; do not hand-edit the bound. Treat a
   `cannot_tell` scroll-top abort and a composer refusal *after* a heart as the signature of this
   class of drift, not as a code defect.
+- **Hinge app-build drift that is SILENT rather than loud (added 2026-08-28)** — the trigger above
+  describes drift that refuses. 10.1.0 produced drift that does not: pinning the profile header
+  inside `content_band` left three guards passing vacuously with no banner at all (see §4's
+  2026-08-28 addendum). After ANY Hinge update, re-derive each guard's PREMISE against real
+  frames — the sentence its docstring or its reason string asserts about the app — rather than
+  checking that captures still go green. Two cheap, general probes that would have caught this in
+  minutes: (1) diff the analysed band across two frames at different scroll offsets and confirm no
+  top-anchored prefix is byte-identical; (2) run every affirmative-evidence check against frames
+  taken DEEP in a profile and confirm each one refuses. Also: do not fix an app-geometry drift with
+  a constant before checking that it does not vary WITHIN one run — the same run, build and phone
+  showed two header states 281px apart, and what selects them is still unknown.
 - **Video screened as a photo by the mute-control check (safety fixed fail-closed 2026-08-21;
   positive-photo capability OPEN)** — measured
   2026-08-21: a video card was planned as photo item 3 while its mute control matched at 1.0000 at
@@ -850,8 +908,8 @@ below.
 - Chromium/Playwright detection changes (CDP tricks come and go) → re-validate the patchright
   approach.
 - Play Integrity policy changes; and confirm whether Hinge enforces DEVICE vs STRONG.
-- **Device Recall leaving beta / becoming default-on** (§2.1) — would harden the "wipe and
-  start over" dead end into a permanent one. Re-check before any burner-rotation plan.
+- **Device Recall leaving beta / becoming default-on** (§2.1) — would further harden platform
+  enforcement; do not treat device or identity changes as a workaround.
 - Bumble's actual vendor stack (only confirmable via authenticated-app inspection).
 - **Bumble SuperSwipe geometry drifting** (added 2026-08-10) — the measured CTA/overlay/zone
   coordinates in `BUMBLE_SPEC` (§4's 2026-08-10 addendum) are pinned to one app build on one
@@ -859,8 +917,8 @@ below.
   update once it's running live — a layout change could silently move the purchase CTA into
   `upsell_dismiss_zone`, or move `upsell_dismiss_zone` into range of a control it isn't meant
   to touch.
-- Hinge's true enforcement aggressiveness (report 2's open question) — resolvable only
-  empirically, and only via shadowban-aware testing on a disposable account.
+- Hinge's true enforcement aggressiveness (report 2's open question) — do not attempt to
+  resolve it through account, device, or identity changes.
 - **Observe-mode decision quality after the 2026-08-10 scroll fix** — watch `capture_truncated`
   frequency in the debug log (still-frequent truncation at `scroll_captures=12` means the
   ceiling needs another look) and watch for the observe loop silently stalling on a profile
@@ -909,3 +967,58 @@ below.
   the calibration corpus reaches it (smallest measured spacing 737px), so it is a "has Hinge
   started drawing much shorter cards" signal, not a tuning knob — the answer is not to widen the
   ratio window, which would alias the item index instead.
+
+### Addendum 2026-08-28 (b) — LIVE follow-up on the pinned header: the mechanism is a collapsing toolbar, `identity_band` needs NO recalibration, and the fix is verified on the phone
+
+Run live on the connected Pixel 7a (Hinge 10.1.0, the build last updated 2026-08-26 — i.e. the
+same build as the incident, so none of this is an app update). Read-only plus humanized
+read-scrolls; the whole session logged **199 actions with ZERO like, pass, send, dislike,
+advance or tap**, on the affected profile.
+
+**1. THE MECHANISM: it is an ordinary collapsing toolbar, and the previous addendum's "two header
+states" are its two positions.** At a confirmed scroll top Hinge draws the expanded header —
+filter chips, the large name, the verified badge and the pronoun/activity sub-row — which occupies
+the band down to row 516 and clips scrolling content to begin at **517**, leaving the 43px name
+strip at **368..410**. On the first downward scroll it collapses to a compact `Name ✓ ⋯` bar that
+sits entirely ABOVE the analysed band's first row (300), and the content then starts at 300. That
+is why the earlier addendum saw a 517 clip on one capture and 236 on another: not two builds, not
+two surfaces — one toolbar, photographed at two scroll positions.
+
+**2. `identity_band` DOES NOT NEED RECALIBRATING, and the previous addendum's ACCEPTED RISK is
+hereby narrowed.** Measured over a 20-frame read from a confirmed top:
+
+    at the scroll top        confirm_scroll_top -> confirmed_top      distance 0.000
+    every scrolled frame     confirm_scroll_top -> confirmed_not_top  distance 12.547 .. 12.797
+
+Both sit cleanly outside the deliberate 3..9 dead zone, in the right direction, on all 20 frames.
+`capture_profile_identity` returned a **PRESENT fingerprint** on that read. The rect
+`[0.10, 0.048, 0.80, 0.094]` is correctly calibrated for the toolbar's normal behaviour and no
+calibrated value has been changed. What the 2026-08-28 incident needed was never a new rect; it
+was the ability to notice that the chips row had stopped moving, which is what
+`scroll_top.band_pinned_evidence` now provides.
+
+**3. THE FIX IS VERIFIED ON THE PHONE, against the capture that broke.** The production
+`_capture_current()` path was run end to end (debug run `run_20260828_210258`) and produced page
+rows identical to the refused capture — chrome at `[368, 410]`, cards at `7387..8072` and
+`8125..9234`, the very pair whose bridge caused the refusal:
+
+    usable=True  failures=0  blocks=11  selectable=9  translation=(1..9)
+    fingerprint present; items=3 numbered, item_context=7; items_unavailable: none
+
+Both dispositions are now confirmed on real pixels. In the COLLAPSED (normal) state the strip is
+seen at one offset only, cannot be proven screen-fixed, is placed exactly as before, and becomes
+`ITEM_LEADING_CHROME` — which is the `chrome [368,410]` row above. In the STUCK-EXPANDED state
+(the incident's own six saved frames) it is seen at six offsets spanning 2305px with one digest,
+is proven, and is held out — turning 7 failures into 0. One code path, deciding from evidence,
+correct in both.
+
+**4. STILL OPEN, and now stated more precisely.** What makes the toolbar STICK. It did not
+reproduce today across roughly 60 humanized scrolls in five patterns — a plain read down, a
+down/up/down re-attach shape, an up-walk to the top followed by a read, and two full production
+captures — on the same build, same phone and same profile that produced it. On 2026-08-28 it
+stayed expanded across all 19 frames of a read while the page moved 8485px beneath it. So it is
+intermittent and its trigger is unknown; treat a capture whose leading strip is proven screen-fixed
+as evidence that it has recurred. The two successful captures in that run also recorded chrome at
+page rows `368..410` in their manifests, the EXPANDED signature. The whole run was therefore in
+the stuck state, and the earlier addendum's guess that they "enumerated collapsed" is corrected
+here.

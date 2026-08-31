@@ -6,6 +6,7 @@ browser); start/stop wiring is covered by HubState's logic.
 """
 import errno
 import http.client
+import io
 import json
 import os
 import re
@@ -383,12 +384,32 @@ def test_training_profile_image_endpoint_serves_one_bound_png():
         with urllib.request.urlopen(base + path, timeout=5) as response:
             assert response.status == 200
             assert response.headers["Content-Type"] == "image/png"
-            assert response.headers["Cache-Control"] == "private, max-age=3600, immutable"
+            assert response.headers["Cache-Control"] == "no-store"
             assert response.read() == image
     finally:
         httpd.shutdown()
         httpd.server_close()
         _join_hub_watch_threads()
+
+
+def test_training_image_response_never_caches_sensitive_profile_pixels():
+    """Exercise the response writer without a loopback socket (sandbox-safe regression)."""
+    handler = object.__new__(_Handler)
+    headers = {}
+    handler.send_response = lambda code: headers.update(status=code)
+    handler.send_header = lambda name, value: headers.__setitem__(name, value)
+    handler.end_headers = lambda: None
+    handler.wfile = io.BytesIO()
+
+    handler._training_image(b"\x89PNG\r\n\x1a\nreview-frame")
+
+    assert headers == {
+        "status": 200,
+        "Content-Type": "image/png",
+        "Content-Length": "20",
+        "Cache-Control": "no-store",
+    }
+    assert handler.wfile.getvalue().startswith(b"\x89PNG")
 
 
 def test_every_hub_response_has_anti_framing_and_content_hardening_headers():
@@ -626,6 +647,42 @@ def test_hubstate_stop_sets_the_event_and_prints_an_operator_line(capsys):
     assert "will NOT be recorded" in out
 
 
+def test_hubstate_refuses_to_start_while_training_data_is_being_mutated(monkeypatch):
+    import operation_love.ranker as ranker
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _Store:
+        def remove_latest_training_label(self):
+            entered.set()
+            assert release.wait(timeout=_LIVENESS_TIMEOUT_S)
+            return {"profile_name": "Taylor"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ranker, "make_store", lambda cfg: _Store())
+    monkeypatch.setattr("operation_love.hub.state.cfg_mod.load", lambda path: object())
+    st = HubState("config.yaml")
+    result = []
+    mutation = threading.Thread(
+        target=lambda: result.append(st._training_store_mutation("remove_latest_training_label")),
+        daemon=True,
+    )
+    mutation.start()
+    assert entered.wait(timeout=_LIVENESS_TIMEOUT_S)
+
+    ok, message = st.start(mode="training", apps=["hinge"])
+
+    assert ok is False
+    assert "training data is being updated" in message
+    release.set()
+    mutation.join(timeout=_LIVENESS_TIMEOUT_S)
+    assert result == [(True, {"profile_name": "Taylor"})]
+    assert st._training_data_mutating is False
+
+
 def test_hubstate_snapshot_forwards_the_stopping_field_from_run_status():
     # HubState.snapshot() must not need a redundant field of its own -- RunStatus.snapshot()
     # (embedded verbatim as snap["status"]) already carries `stopping`, so nothing extra is
@@ -704,13 +761,20 @@ def test_serve_shutdown_warns_and_exits_when_run_does_not_finish_in_time(monkeyp
     class _FakeHttpd:
         server_address = ("127.0.0.1", 8799)
 
+        def __init__(self):
+            self.closed = False
+
         def serve_forever(self):
             raise KeyboardInterrupt
 
         def shutdown(self):
             pass
 
-    monkeypatch.setattr(hub_server, "_bind", lambda host, port: _FakeHttpd())
+        def server_close(self):
+            self.closed = True
+
+    httpd = _FakeHttpd()
+    monkeypatch.setattr(hub_server, "_bind", lambda host, port: httpd)
 
     printed = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
@@ -721,6 +785,105 @@ def test_serve_shutdown_warns_and_exits_when_run_does_not_finish_in_time(monkeyp
         state._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert any("did not finish saving" in line for line in printed)
+    assert httpd.closed is True
+
+
+def test_eval_refresh_start_failure_clears_its_inflight_guard(monkeypatch):
+    import operation_love.hub.state as hub_state
+
+    class _StartFails:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        def start(self):
+            raise RuntimeError("thread resources exhausted")
+
+    monkeypatch.setattr(hub_state.threading, "Thread", _StartFails)
+    st = HubState("config.yaml")
+
+    st._start_eval_refresh(every=5)
+
+    assert st._eval_refreshing is False
+
+
+def test_serve_browser_timer_is_daemon_and_socket_is_closed(monkeypatch):
+    import operation_love.hub.server as hub_server
+
+    class _FakeHttpd:
+        server_address = ("127.0.0.1", 8799)
+
+        def __init__(self):
+            self.closed = False
+
+        def serve_forever(self):
+            return None
+
+        def shutdown(self):
+            pass
+
+        def server_close(self):
+            self.closed = True
+
+    timers = []
+
+    class _FakeTimer:
+        def __init__(self, delay, target):
+            self.delay = delay
+            self.target = target
+            self.daemon = False
+            self.started = False
+            timers.append(self)
+
+        def start(self):
+            self.started = True
+
+    httpd = _FakeHttpd()
+    monkeypatch.setattr(hub_server, "HubState", lambda config_path: HubState(config_path))
+    monkeypatch.setattr(hub_server, "_bind", lambda host, port: httpd)
+    monkeypatch.setattr(hub_server.threading, "Timer", _FakeTimer)
+
+    hub_server.serve("config.yaml", open_browser=True)
+
+    assert len(timers) == 1
+    assert timers[0].delay == 0.6 and timers[0].daemon and timers[0].started
+    assert httpd.closed is True
+
+
+def test_serve_closes_socket_when_optional_browser_timer_cannot_start(monkeypatch, capsys):
+    import operation_love.hub.server as hub_server
+
+    class _FakeHttpd:
+        server_address = ("127.0.0.1", 8799)
+
+        def __init__(self):
+            self.served = self.closed = False
+
+        def serve_forever(self):
+            self.served = True
+
+        def shutdown(self):
+            pass
+
+        def server_close(self):
+            self.closed = True
+
+    class _StartFails:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+            self.daemon = False
+
+        def start(self):
+            raise RuntimeError("thread resources exhausted")
+
+    httpd = _FakeHttpd()
+    monkeypatch.setattr(hub_server, "HubState", lambda config_path: HubState(config_path))
+    monkeypatch.setattr(hub_server, "_bind", lambda host, port: httpd)
+    monkeypatch.setattr(hub_server.threading, "Timer", _StartFails)
+
+    hub_server.serve("config.yaml", open_browser=True)
+
+    assert httpd.served and httpd.closed
+    assert "could not open browser automatically" in capsys.readouterr().out
 
 
 def test_hubstate_browser_client_lifecycle(monkeypatch):
@@ -754,6 +917,36 @@ def test_hubstate_browser_client_lifecycle(monkeypatch):
     st.browser_client_opened("c")
     assert st.has_browser_clients() is True
     assert st.browser_client_closed("c") is True
+
+
+@pytest.mark.parametrize("client_id", [None, "", "   ", [], {}, 1, "x" * 129])
+def test_hubstate_rejects_invalid_browser_client_ids_without_touching_liveness_state(client_id):
+    st = HubState("config.yaml")
+
+    assert st.browser_client_opened(client_id) is False
+    assert st.browser_client_closed(client_id) is False
+    assert st.has_browser_clients() is False
+
+
+def test_browser_liveness_watch_can_be_retried_after_thread_start_failure():
+    st = HubState("config.yaml")
+    assert st.browser_client_opened("client-a") is True
+    assert st.browser_stale_watch_active() is True
+
+    st.browser_stale_watch_start_failed()
+
+    assert st.browser_stale_watch_active() is False
+    assert st.browser_client_ping("client-a") is True
+
+
+def test_json_parser_rejects_duplicate_control_fields():
+    from operation_love.hub.server import _json_object_without_duplicate_keys
+
+    with pytest.raises(ValueError, match="duplicate JSON field: mode"):
+        json.loads(
+            '{"mode":"training","mode":"auto"}',
+            object_pairs_hook=_json_object_without_duplicate_keys,
+        )
 
 
 def test_hubstate_browser_heartbeat_prevents_stale_expiry(monkeypatch):
@@ -1110,10 +1303,14 @@ def test_api_post_endpoints_reject_non_object_json_without_crashing(path, payloa
         _join_hub_watch_threads()
 
 
-def test_hub_card_shows_single_accuracy_metric():
-    # One metric (ROC-AUC as accuracy %); the old PR-AUC/ROC-AUC/Brier/diminishing lines are gone.
-    assert "e.roc_auc[0]*100" in _PAGE                # accuracy = ROC-AUC x 100
-    assert "ranks a like above a pass" in _PAGE
+def test_hub_card_prioritizes_false_dislike_readiness_instead_of_accuracy():
+    assert "base-model safety check" in _PAGE
+    assert "Accepted profiles kept" in _PAGE
+    assert "false dislikes" in _PAGE
+    assert "TARGET_RECALL = 0.95" in _PAGE
+    assert "TARGET_IDENTITIES = 500" in _PAGE
+    assert "not an AUTO release approval" in _PAGE
+    assert "e.roc_auc[0]*100" not in _PAGE
     assert "Brier score" not in _PAGE
     assert "diminishing returns" not in _PAGE
     assert "PR-AUC" not in _PAGE
@@ -1262,11 +1459,11 @@ def test_launcher_rejects_undeclared_or_shell_syntax_extras(tmp_path, monkeypatc
 
 
 def test_hub_card_shows_label_gated_refresh_progress():
-    # The model-quality card shows training-mode "since/every till next refresh" progress.
-    assert "till next refresh" in _PAGE
+    # The readiness card says when its metrics will next update, without an unexplained ratio.
+    assert "Updates after ${remaining} more training label" in _PAGE
     assert "r.mode !== 'training'" in _PAGE          # only while a live training run feeds labels
     assert "r.since == null" in _PAGE
-    assert "${progress}/${every}" in _PAGE
+    assert "every-progress" in _PAGE
 
 
 def test_attach_refresh_counts_down_to_next_recompute():
@@ -1297,16 +1494,15 @@ def test_hub_ranker_card_simplified_to_budget():
     assert 'id="budget"' in _PAGE
 
 
-def test_hub_renders_accuracy_trajectory_chart():
-    assert "accSvg(e.trajectory)" in _PAGE
-    assert "accuracy over labels" in _PAGE
+def test_hub_removes_accuracy_trajectory_chart():
+    assert "accSvg(e.trajectory)" not in _PAGE
+    assert "accuracy over labels" not in _PAGE
 
 
-def test_hub_model_quality_card_shows_training_record_balance():
-    assert "training record" in _PAGE
-    assert "% like /" in _PAGE and "% dislike" in _PAGE
-    assert "const dislikePct = 100 - likePct" in _PAGE
-    assert "const training = e.training || e" in _PAGE
+def test_hub_readiness_card_collapses_confusion_matrix_details():
+    assert '<details class="readiness-details">' in _PAGE
+    assert "Model likes" in _PAGE and "Model dislikes" in _PAGE
+    assert "true_accepted" in _PAGE and "false_dislikes" in _PAGE
 
 
 def test_cached_eval_uses_live_training_mix_without_waiting_for_next_cv_refresh():
@@ -1376,7 +1572,7 @@ def test_eval_snapshot_holds_full_progress_until_background_refresh_finishes(mon
     monkeypatch.setattr(hub.cfg_mod, "load", lambda path: object())
     monkeypatch.setattr(ranker, "make_store", fake_make_store)
     monkeypatch.setattr(eval_mod, "evaluate",
-                        lambda samples: {"status": "ok", "marker": "new", "labels": len(samples)})
+                        lambda samples, **kwargs: {"status": "ok", "marker": "new", "labels": len(samples)})
 
     st = HubState("config.yaml")
     with st._lock:
@@ -1448,7 +1644,7 @@ def test_eval_snapshot_reads_live_store_while_running(monkeypatch):
 
     monkeypatch.setattr(hub.cfg_mod, "load", lambda p: object())
     monkeypatch.setattr(ranker, "make_store", lambda cfg, ensure=True: Fresh())
-    monkeypatch.setattr(eval_mod, "evaluate", lambda s: {
+    monkeypatch.setattr(eval_mod, "evaluate", lambda s, **kwargs: {
         "status": "ok", "labels": len(s), "identities": len(s), "base_rate": 0.4,
         "pr_auc": [0.7, 0.05], "roc_auc": [0.8, 0.03], "brier": [0.2, 0.0]})
     monkeypatch.setattr(eval_mod, "quality_trajectory", lambda ordered, step=5: [])
@@ -1493,7 +1689,7 @@ def test_eval_snapshot_falls_back_when_live_store_read_fails(monkeypatch):
 
     monkeypatch.setattr(hub.cfg_mod, "load", lambda p: object())
     monkeypatch.setattr(ranker, "make_store", lambda cfg, ensure=True: Fresh())
-    monkeypatch.setattr(eval_mod, "evaluate", lambda s: {
+    monkeypatch.setattr(eval_mod, "evaluate", lambda s, **kwargs: {
         "status": "ok", "labels": len(s), "identities": len(s), "base_rate": 0.4,
         "pr_auc": [0.7, 0.05], "roc_auc": [0.8, 0.03], "brier": [0.2, 0.0]})
     monkeypatch.setattr(eval_mod, "quality_trajectory", lambda ordered, step=5, **k: [])
@@ -1549,10 +1745,12 @@ def test_hub_max_per_run_invalid_input_delegates_to_config():
         ("auto", False, "abc"),     # non-numeric -> delegate to config
         ("auto", False, "0"),       # typing 0 directly delegates; checkbox owns explicit 0
         ("auto", False, "-3"),      # negative -> delegate to config
-        ("auto", False, "3.7"),     # parseInt truncates
+        ("auto", False, "3.7"),     # never silently truncate a requested cap
+        ("auto", False, "8profiles"),
+        ("auto", False, str(2 ** 53)),
         ("auto", False, "8"),       # a genuine positive cap is honored
     ]
-    expected = [8, 0, 0, None, None, None, None, 3, 8]
+    expected = [8, 0, 0, None, None, None, None, None, None, None, 8]
     script = (
         fn + "\n"
         "const cases = " + json.dumps(cases) + ";\n"
@@ -1614,10 +1812,11 @@ def _render_global_script(calls: list) -> str:
            + _extract_js_function(_PAGE, "formatTimedStopRemaining") + "\n"
            + _extract_js_function(_PAGE, "renderGlobal"))
     return (
-        "let _wasRunning = false;\n"
+        "let _wasRunning = false, _trainingDataMutationBusy = false, _configReady = true;\n"
         "let els = {runpill:{textContent:'',className:''}, start:{disabled:false}, "
         "stop:{disabled:false,textContent:''}, hint:{textContent:''}, budget:{textContent:''}, "
-        "err:{textContent:''}, stopafter:{disabled:false}, timerhint:{textContent:''}};\n"
+        "err:{textContent:''}, stopafter:{disabled:false}, timerhint:{textContent:''}, "
+        "removeLatestTraining:{disabled:false}};\n"
         "function $(sel){ return els[sel.slice(1)]; }\n"
         + fns + "\n"
         "const calls = " + json.dumps(calls) + ";\n"
@@ -2610,7 +2809,7 @@ def test_tick_drives_one_real_run_status_banner_and_the_separate_training_checkp
     assert re.search(r'<aside\s+id="trainingpanel"(?:\s|>)', _PAGE)
     tick_fn = _extract_js_function(_PAGE, "tick")
     script = (
-        "const calls = [];\n"
+        "const calls = []; let _statusRequest = 0;\n"
         "async function getJSON(){ return {running:false,status:{apps:{}}}; }\n"
         "function renderGlobal(){ calls.push('global'); }\n"
         "function renderRunStatus(){ calls.push('run-status'); }\n"
@@ -2619,6 +2818,25 @@ def test_tick_drives_one_real_run_status_banner_and_the_separate_training_checkp
         "tick().then(() => console.log(JSON.stringify(calls)));\n"
     )
     assert _run_node(script) == ["global", "run-status", "training"]
+
+
+def test_tick_discards_an_out_of_order_status_response():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    tick_fn = _extract_js_function(_PAGE, "tick")
+    script = (
+        "const renders=[]; const resolvers=[]; let _statusRequest=0;\n"
+        "function getJSON(){return new Promise(resolve=>resolvers.push(resolve));}\n"
+        "function renderGlobal(s){renders.push(['global',s.version]);}\n"
+        "function renderRunStatus(s){renders.push(['run',s.version]);}\n"
+        "function tickTrainingCheckpoint(s){renders.push(['training',s.version]);}\n"
+        + tick_fn + "\n"
+        "(async()=>{const first=tick(), second=tick(); resolvers[1]({version:'new'}); await second; "
+        "resolvers[0]({version:'old'}); await first; console.log(JSON.stringify(renders));})();\n"
+    )
+    assert _run_node(script) == [
+        ["global", "new"], ["run", "new"], ["training", "new"],
+    ]
 
 
 def _training_panel_script(checkpoint):
@@ -3282,7 +3500,7 @@ def test_eval_snapshot_cold_start_single_flights_concurrent_pollers(monkeypatch)
     monkeypatch.setattr(hub.cfg_mod, "load", lambda path: object())
     monkeypatch.setattr(ranker, "make_store", lambda cfg, ensure=True: Store())
     monkeypatch.setattr(eval_mod, "evaluate",
-                        lambda samples: {"status": "ok", "labels": len(samples),
+                        lambda samples, **kwargs: {"status": "ok", "labels": len(samples),
                                           "identities": len(samples)})
 
     st = HubState("config.yaml")

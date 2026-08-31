@@ -1527,6 +1527,25 @@ def _validate_android_fractions(cfg: Config) -> None:
         for key in ("debug_log", "observe_touch_watch", "observe_name_ocr"):
             if key in app_cfg:
                 _require_bool(app_cfg[key], f"apps.{app}.{key}")
+        if "debug_protect_runs" in app_cfg:
+            protected = app_cfg["debug_protect_runs"]
+            if not isinstance(protected, list):
+                raise ValueError(
+                    f"Config: apps.{app}.debug_protect_runs must be a list of run-id directory "
+                    f"names (got {_safe_value_repr(protected)})")
+            for entry in protected:
+                # One plain path component: these are matched against directory NAMES, so a
+                # separator or a dot entry could otherwise reach outside debug_dir.
+                if (not isinstance(entry, str) or not entry or entry in {".", ".."}
+                        or "/" in entry or "\\" in entry):
+                    raise ValueError(
+                        f"Config: apps.{app}.debug_protect_runs entries must each be one "
+                        f"non-dot path component (got {_safe_value_repr(entry)})")
+        if app_cfg.get("debug_keep_runs") is not None:
+            # Bounds the number of RUN DIRECTORIES kept, not screenshots within one run.
+            # Omitting it (or null) keeps every run forever, the pre-2026-08-28 behaviour.
+            _require_positive_int(app_cfg["debug_keep_runs"],
+                                  f"apps.{app}.debug_keep_runs")
         if "touch_backend" in app_cfg:
             backend = app_cfg["touch_backend"]
             if not isinstance(backend, str) or backend not in {

@@ -348,6 +348,9 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert "identify the question's subject" in angle_description
     assert "every pronoun or shorthand noun has one immediately obvious referent" in angle_description
     assert "any change of referent must be explicit and immediately clear" in angle_description
+    assert "selected item must remain the angle's primary anchor and reason for the like" in angle_description
+    assert "unnumbered context may support a connection" in angle_description
+    assert "cannot replace the selected item as the subject or payoff" in angle_description
     assert "every named setup detail must be necessary" in opener_description
     assert "cut it if the later point still works without it" in opener_description
     assert "parallel, contrasting answers to it" in opener_description
@@ -360,8 +363,8 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert schema["properties"]["angle"]["type"] == "string"
     # item_index's description carries the three facts doc 5.7 requires of it, because the
     # schema is the only place the model is told what the number MEANS: which list it indexes,
-    # that only numbered items are choosable, and that unnumbered context blocks may be
-    # referred to but never picked (doc 5.3's two tiers). Substring-matched on substance
+    # that only numbered items are choosable, and that unnumbered context blocks can support
+    # the selected item but never become the main premise (doc 5.3's two tiers). Substring-matched on substance
     # rather than the full literal so wording can be tuned without a test edit.
     item_index_description = schema["properties"]["item_index"]["description"].lower()
     assert schema["properties"]["item_index"]["type"] == "integer"
@@ -370,6 +373,16 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert "you may only choose a number that was actually given" in item_index_description
     assert "without a number" in item_index_description
     assert "never pick one" in item_index_description
+    assert "clear primary subject" in item_index_description
+    assert "support a connection to the selected item" in item_index_description
+    assert "main premise" in item_index_description
+    assert "justify why this selected item was liked" in item_index_description
+    assert "reason, subject, or payoff" in item_index_description
+    assert "selected item's exact photo or prompt detail" in referenced_description
+    assert "supporting context rather than replacing this selected-item anchor" in referenced_description
+    assert "must feel natural directly under it" in opener_description
+    assert "justify why it was liked" in opener_description
+    assert "cannot replace the selected item as its reason, subject, or payoff" in opener_description
     # One answer to two questions (doc 5.1): the item the opener is about IS the item liked.
     assert "also the item that will be liked" in item_index_description
     # item_description is free text describing the ITEM, not the detail -- doc 5.7 keeps it
@@ -958,7 +971,7 @@ def test_redundancy_monitor_logs_but_never_rejects_an_otherwise_valid_opener(cap
                                           'opener restates the referenced word "mug"']
     output = capsys.readouterr().out
     assert "redundancy monitor" in output          # loud, never silent
-    assert "the opener is being sent" in output
+    assert "delivery has not been decided" in output
 
 
 # ---------------------------------------------------------------------------------------
@@ -1295,9 +1308,11 @@ def test_item_crop_request_labels_every_image_and_sends_no_scroll_frames():
          "HER PROFILE TEXT:\nWeekend potter\n\n"
          "The 2 numbered image(s) above are her profile photos, numbered 1 to 2, each shown "
          "immediately after its own ITEM label, so the image after ITEM 1 is item 1. "
-         "The 1 image(s) labelled CONTEXT carry no number: use what they show if it helps, "
-         "but never pick one. "
-         "Set item_index to the number of the one your opener is about. Write the opener now."),
+         "The 1 image(s) labelled CONTEXT carry no number: use them only as supporting context "
+         "for a numbered item. Never pick one or make one the opener's main premise; the "
+         "selected item must remain its clear main subject and reason for the Like. "
+         "Set item_index to the number of the one your opener is clearly about and would feel "
+         "natural directly under, because it explains why that item was liked. Write the opener now."),
     ]
     # The frame is not merely absent from the image list -- it is nowhere on the wire at all.
     assert _SCROLL_FRAME not in [img for kind, img in _part_shape(payload["contents"][0]["parts"])
@@ -1344,7 +1359,8 @@ def test_item_crop_request_without_context_omits_every_mention_of_context():
          "HER PROFILE TEXT:\nWeekend potter\n\n"
          "The 3 numbered image(s) above are her profile photos, numbered 1 to 3, each shown "
          "immediately after its own ITEM label, so the image after ITEM 1 is item 1. "
-         "Set item_index to the number of the one your opener is about. Write the opener now."),
+         "Set item_index to the number of the one your opener is clearly about and would feel "
+         "natural directly under, because it explains why that item was liked. Write the opener now."),
     ]
     assert "CONTEXT" not in parts[0]["text"]
     assert "CONTEXT" not in parts[-1]["text"]
@@ -1369,7 +1385,8 @@ def test_truncated_capture_tells_the_model_it_is_seeing_only_part_of_her_profile
     assert "longer than we could read" not in whole_text
     # The truncation note never displaces the instruction the model acts on.
     assert truncated_text.endswith(
-        "Set item_index to the number of the one your opener is about. Write the opener now.")
+        "Set item_index to the number of the one your opener is clearly about and would feel "
+        "natural directly under, because it explains why that item was liked. Write the opener now.")
 
 
 def test_item_crop_request_passes_her_name_back_as_text():

@@ -99,7 +99,7 @@ sheet at all.
       `BUMBLE_SPEC` for why a screen-agnostic rectangle can't do that job.)
 - [ ] **Non-zero balance: confirm the silent-spend path, live.** With the
       account holding at least one SuperSwipe, deliberately trigger a
-      SuperSwipe on a disposable/burner profile and confirm it is spent with
+      SuperSwipe on an authorized test profile and confirm it is spent with
       **no** confirmation prompt of any kind. If that's what happens (expected,
       per the 2026-08-10 measurement — the owner's account showed a balance of
       5 and no prompt), then the never-super-like guarantee for this path
@@ -110,7 +110,7 @@ sheet at all.
       of those three mechanisms as load-bearing before trusting this path
       unattended.
 - [ ] **Zero balance: confirm the purchase-sheet path, live.** Spend down to a
-      zero SuperSwipe balance on the same disposable/burner profile, trigger
+      zero SuperSwipe balance on the same authorized test profile, trigger
       another SuperSwipe, and confirm the purchase sheet appears (CTA "Get 30
       SuperSwipes for $39.99", measured at x 0.049-0.950, y 0.899-0.951).
       Verify the bot **never taps while that sheet is up** — no decide gesture
@@ -125,7 +125,7 @@ sheet at all.
       declares `upsell_dismiss_zone` (the safe band to tap to dismiss it, with
       the measurement and margin arithmetic behind it); it stays inert until
       this template exists.
-- [ ] **The swipe-direction assumption, verified live, on a disposable
+- [ ] **The swipe-direction assumption, verified live, on an authorized test
       profile:** `AndroidDriver._swipe` (`operation_love/drivers/hinge.py`)
       only zone-checks a drag's touch-DOWN point, on the reasoning that a
       gesture is locked to whatever View captured `ACTION_DOWN` (standard
@@ -137,7 +137,7 @@ sheet at all.
       drag returns the card to the top, i.e. travels downward, ending low on
       the screen — exactly where the SuperSwipe zone lives). Before Bumble is
       ever run unattended: deliberately drag a card so the gesture passes
-      over and ends on the SuperSwipe control on a disposable/burner Bumble
+      over and ends on the SuperSwipe control on an authorized test Bumble
       profile, at BOTH a zero and a non-zero SuperSwipe balance (see the two
       checks above — a non-zero balance won't show a purchase screen even if
       this reproduces the bug, it will just silently consume a SuperSwipe),
@@ -698,7 +698,7 @@ Worker/hub/store or make a real profile request. After installing the measured c
   composer topology and corroborated profile-header identity, not a card ordinal by itself.
   This covers the top state where the original identity strip contains profile-independent filter
   chips.
-- **Gesture transport:** on a supervised disposable profile, manually heart another item and
+- **Gesture transport:** on a supervised, authorized test profile, manually heart another item and
   record the composer afterward, then advance the profile without sending and record the clear
   top. The frame record proves the visible composer/clear states; the traceable operator ledger
   is the evidence that the manual gestures and intended target transition actually occurred.
@@ -791,14 +791,16 @@ refusal, post-action verification, `halt_on_error`, or Stop. A failed/untargetab
 the run; it never degrades to a bare like. The driver retains a private
 `auto_opener_pre_send` screenshot after the opener is typed on the selected item and immediately
 before the Send tap, and successful AUTO evidence is archived to private Cloud Storage with a
-queryable BigQuery row. The per-gesture `uhid` transport has a round-trip-confirmed virtual-touch
-lifecycle for every action. Editing config does not start a run.
+queryable BigQuery row. The shipped `uhid_persistent` transport holds one virtual-touch device
+open for the session. It is measurably faster but lacks the per-gesture round-trip confirmation
+of `uhid`; reverse-scroll measurement and post-tap item verification remain mandatory, and
+`uhid` is the deliberate immediate revert. Editing config does not start a run.
 
 ```yaml
 mode: auto
 apps:
   hinge:
-    touch_backend: uhid
+    touch_backend: uhid_persistent              # shipped default; `uhid` is the deliberate revert
 limits: {}                                      # optional caps may be added deliberately
 budget: { run_budget_usd: 5.00 }                # global opener cap
 ```

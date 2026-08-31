@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 
 from .page import _PAGE
 from .state import (HubState, validate_apps, validate_max_per_run,
-                    validate_stop_after_seconds)
+                    validate_browser_client_id, validate_stop_after_seconds)
 
 _BROWSER_SHUTDOWN_GRACE_S = 1.5
 _BROWSER_STALE_CHECK_S = 5.0
@@ -49,6 +49,20 @@ _SHUTDOWN_SAVE_TIMEOUT_S = 90.0
 
 class _HubHTTPServer(ThreadingHTTPServer):
     csrf_token: str
+
+
+def _json_object_without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+    """Build a JSON object while rejecting ambiguous duplicate keys.
+
+    The control API has a strict one-value schema. Keeping a single interpretation at the
+    parser boundary prevents different layers from acting on different copies of a key.
+    """
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON field: {key}")
+        result[key] = value
+    return result
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -81,11 +95,15 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj), "application/json")
 
     def _training_image(self, data: bytes) -> None:
-        """Serve one immutable, capability-bound review PNG without repeating it in JSON."""
+        """Serve one capability-bound review PNG without repeating it in JSON.
+
+        The pixels are sensitive profile-review material, so never retain them in a browser
+        cache even though the capability token itself is bound to one checkpoint.
+        """
         self.send_response(200)
         self.send_header("Content-Type", "image/png")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "private, max-age=3600, immutable")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
@@ -237,7 +255,15 @@ class _Handler(BaseHTTPRequestHandler):
                     self._schedule_shutdown_if_tab_stayed_closed()
                     return
 
-        threading.Thread(target=_target, name="hub-tab-stale-watch", daemon=True).start()
+        try:
+            threading.Thread(target=_target, name="hub-tab-stale-watch", daemon=True).start()
+        except RuntimeError as exc:
+            # browser_client_opened() claimed the one active watcher before this allocation.
+            # Release that claim so a later heartbeat can retry rather than making stale-tab
+            # shutdown silently unavailable for the rest of this hub process.
+            if state:
+                state.browser_stale_watch_start_failed()
+            print(f"Hub: could not start browser liveness watch ({exc})")
 
     def do_POST(self) -> None:
         authority = self._require_local_host()
@@ -264,7 +290,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         raw = self.rfile.read(length) if length else b""
         try:
-            body = json.loads(raw) if raw else {}
+            body = json.loads(raw, object_pairs_hook=_json_object_without_duplicate_keys) if raw else {}
         except ValueError:
             body = None
         if not isinstance(body, dict):
@@ -288,6 +314,12 @@ class _Handler(BaseHTTPRequestHandler):
                     "msg": f"unknown request field(s): {sorted(unknown_fields)}",
                 }, 400)
                 return
+        if self.path in {"/api/hub/open", "/api/hub/ping", "/api/hub/closed"}:
+            valid_client, client_id, client_error = validate_browser_client_id(body.get("id"))
+            if not valid_client or client_id is None:
+                self._json({"ok": False, "msg": client_error or "invalid browser client id"}, 400)
+                return
+            body["id"] = client_id
         if self.path == "/api/start":
             valid_cap, mpr, cap_error = validate_max_per_run(body.get("max_per_run"))
             if not valid_cap:
@@ -368,9 +400,19 @@ def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
     httpd = _bind(host, port)
     url = f"http://{host}:{httpd.server_address[1]}/"
     print(f"Hub: Operation Love control hub → {url}   (Ctrl-C to quit)")
-    if open_browser:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
+        if open_browser:
+            browser_timer = threading.Timer(0.6, lambda: webbrowser.open(url))
+            # The timer is only a convenience after the server is already live. It must not keep a
+            # process alive after an immediate shutdown or a failed serve_forever startup.
+            browser_timer.daemon = True
+            try:
+                browser_timer.start()
+            except RuntimeError as exc:
+                # A thread-resource failure must not leak the live listener merely because an
+                # optional browser tab could not be scheduled. The hub remains usable at its
+                # printed URL, and the surrounding finally releases the socket if it exits.
+                print(f"Hub: could not open browser automatically ({exc}); use {url}")
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nHub: shutting down…")
@@ -383,4 +425,9 @@ def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
                 print(f"Hub: run did not finish saving within "
                       f"{_SHUTDOWN_SAVE_TIMEOUT_S:.0f}s; exiting anyway "
                       "(data may not be fully flushed).")
-        httpd.shutdown()
+        try:
+            httpd.shutdown()
+        finally:
+            # shutdown() stops serve_forever but deliberately leaves the listening socket open.
+            # Always release it so a stopped in-process hub can rebind its port immediately.
+            httpd.server_close()

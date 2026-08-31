@@ -121,6 +121,10 @@ class Worker(threading.Thread):
             mode == "training" and app == "hinge"
             and getattr(driver, "supports_training_decision", False))
         self._training_claimed_action = None
+        # Set only after open_session() returns.  The normal loop finalizers
+        # clear it via _finish_session(); the outer finally owns the narrow
+        # post-open/pre-loop failure gap.
+        self._session_opened = False
 
     # --- live status (overlay + hub); no-ops when status is unset ---------
     def _stat(self, **fields) -> None:
@@ -194,8 +198,14 @@ class Worker(threading.Thread):
         try:
             self.driver.close()
         finally:
+            self._session_opened = False
             if self.training_action_bridge:
                 self.training_action_bridge.unregister(self)
+
+    def _open_session(self) -> None:
+        """Open the driver and record ownership for the outer teardown guard."""
+        self.driver.open_session()
+        self._session_opened = True
 
     def _opener_stop_reason(self) -> str | None:
         """Human-readable cause of an OpenerService-triggered stop, or None if the service
@@ -328,7 +338,17 @@ class Worker(threading.Thread):
             self._stat(state="error", error=traceback.format_exc().strip().splitlines()[-1])
             self.stop_event.set()
         finally:
-            leave()
+            try:
+                # _training_loop/_auto_loop normally close through
+                # _finish_session().  Their session setup precedes those inner
+                # try/finally blocks, though, so a post-open calibration/status
+                # error otherwise leaked a live transport.  Close exactly once
+                # here for that ownership gap.
+                if self._session_opened:
+                    self.driver.close()
+                    self._session_opened = False
+            finally:
+                leave()
 
     @staticmethod
     def _warn_if_capture_truncated(profile) -> None:
@@ -392,6 +412,11 @@ class Worker(threading.Thread):
             return
 
         self._install_opener_flag()
+        # Classify the whole run before the first read, so the device-input ledger does not
+        # label a supervised run's scrolls as autonomous ones.
+        begin_training = getattr(self.driver, "begin_training_session", None)
+        if callable(begin_training):
+            begin_training()
         # AndroidDriver uses this hook to mark the session as device-driven before it chooses
         # whether to attach its touch watcher.
         # ``None`` deliberately installs no AutoSessionPolicy: training must not consult or
@@ -399,7 +424,7 @@ class Worker(threading.Thread):
         set_policy = getattr(self.driver, "set_auto_session_policy", None)
         if callable(set_policy):
             set_policy(None)
-        self.driver.open_session()
+        self._open_session()
         targeting_blocker = self._live_targeting_calibration_blocker()
         if targeting_blocker:
             stop_reason = self._targeting_calibration_stop_reason(targeting_blocker)
@@ -656,6 +681,12 @@ class Worker(threading.Thread):
                 self._pace(outcome, profile=profile,
                             score=1.0 if outcome == "like" else 0.0)
                 self._maybe_session_break()
+        except ActionCancelled:
+            # Stop can arrive while the driver is waiting for the Hub's Training
+            # decision.  That is an intentional shutdown at an action boundary,
+            # not a device or targeting failure.  In particular, do not retain an
+            # ``unexpected`` failure screenshot for the normal Stop path.
+            raise
         except DeckBlockedError as exc:
             terminal_state, stop_reason, stop_kind = "blocked", str(exc), "deck_blocked"
             self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
@@ -735,7 +766,7 @@ class Worker(threading.Thread):
         today0 = self.store.count_today(self.app) if has_daily_limit else 0
         today_acted = 0            # actions this worker made since today0 was last measured
         today_date = date.today()  # LOCAL day — matches the store's count_today() day boundary
-        self.driver.open_session()
+        self._open_session()
         targeting_blocker = self._live_targeting_calibration_blocker()
         if targeting_blocker:
             stop_reason = self._targeting_calibration_stop_reason(targeting_blocker)
@@ -1023,6 +1054,17 @@ class Worker(threading.Thread):
                     pick = (self.opener_service.maybe_opener(
                                 self.run_id, self.app, profile, **opener_kwargs)
                             if accepts_opener and self.opener_service is not None else None)
+                    # A Stop can land while a single already-started provider request is on the
+                    # wire.  The opener service cannot abort that request synchronously, so it
+                    # may hand back a valid staged draft after the flag has won.  Do not let that
+                    # result flow into item preflight/navigation: no new device action may begin
+                    # after Stop, and the staged envelope remains uncommitted because no Like
+                    # landed.  Training has the equivalent check immediately after its opener
+                    # call; AUTO needs the same boundary before it evaluates `stop_requested`,
+                    # which is a different service-health signal and remains false for an
+                    # operator-initiated stop.
+                    if self.stop_event.is_set():
+                        break
                     # An opener call can discover that every configured provider/model is
                     # exhausted. In AUTO mode, honour its global stop BEFORE calling
                     # like(): a bare like is not an acceptable substitute for the opener
@@ -1218,6 +1260,14 @@ class Worker(threading.Thread):
                         like_kwargs = dict(targeted)
                         if getattr(self.driver, "supports_interruptible_like_navigation", False):
                             like_kwargs["should_stop"] = self.stop_event.is_set
+                        # The stop check above covers a completed provider request; repeat it
+                        # at the physical-action boundary because target preflight may itself
+                        # take enough time for an operator Stop to arrive.  Interruptible
+                        # drivers receive the callback as their final in-driver guard, but this
+                        # also keeps a non-interruptible legacy driver from being entered when
+                        # Stop was already observed before the call.
+                        if self.stop_event.is_set():
+                            break
                         self.driver.like(pick.text if pick else None, **like_kwargs)
                         evidence_hook = getattr(
                             self.driver, "landed_auto_opener_evidence", None)
@@ -1255,7 +1305,16 @@ class Worker(threading.Thread):
                         break
                     liked += 1
                 else:
-                    self.driver.dislike()
+                    dislike = self.driver.dislike
+                    if (not getattr(self.driver, "supports_interruptible_dislike", False)
+                            or not _accepts_keywords(dislike, "should_stop")):
+                        raise RuntimeError(
+                            f"{self.app} driver cannot perform a Stop-safe AUTO pass: it must "
+                            "declare supports_interruptible_dislike and accept should_stop")
+                    # The driver owns the final check immediately before physical
+                    # input.  A second worker-side `is_set()` check cannot close
+                    # the race this capability exists to prevent.
+                    dislike(should_stop=self.stop_event.is_set)
 
                 # AUTO mode is pure INFERENCE: log the decision (for stats + the daily rate
                 # limit) AFTER the action actually landed — do NOT store it as a training label

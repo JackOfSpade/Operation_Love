@@ -1,22 +1,13 @@
 # Historical handoff — Hinge 9.134 inline-composer calibration (superseded)
 
 > **Do not use this file as current release authorization.** It preserves the
-> 2026-08-14 Hinge 9.134 forensic record below. The live configuration now targets
-> Hinge **10.0.1**, runs in `mode: observe`, and deliberately contains **no**
-> targeting calibration or production-Observe release mapping. A 10.0.1 numeric
-> campaign is archived as historical evidence only: the current signals do not
-> positively distinguish a still photo from a paused/static video, so config validation
-> rejects reinstalling the `hinge_photos_only_v1` mapping. Observe remains usable for
-> manual deck decisions, but numbered targeted suggestions are withheld.
-> The 9.134 AI-reviewed artifact is hash-bound to the superseded build/calibration
-> and cannot be reused or edited. Hinge Auto is structurally blocked; a new release
-> mapping alone cannot enable it.
->
-> **Updated 2026-08-22.** The still-photo discriminator is implemented, and numbering is
-> licensed by the owner's accepted (UNMEASURED) centered-autoplay assumption recorded in
-> `apps.hinge.still_photo_assumption_acceptance` — so that prerequisite is no longer what
-> blocks anything. What remains is a fresh build/device-bound calibration and only then a new
-> production-Observe release cycle; an assumption can never license Auto. Follow
+> 2026-08-14 Hinge 9.134 forensic record below. The live configuration targets
+> Hinge **10.1.0** in `mode: training`, with a schema-v3 targeting calibration and
+> accepted still-photo assumption that license numbered targeted suggestions for
+> Training only. The retained 10.0.1 production-Observe mapping, and the 9.134
+> AI-reviewed artifact below, are immutable historical evidence; neither can
+> authorize AUTO on the live build. AUTO remains blocked until the 10.1.0
+> calibration has fresh, build-bound production-Observe release evidence. Follow
 > [ops/RUNBOOK.md](ops/RUNBOOK.md), especially sections 2 and 4, for current instructions.
 
 At the time it was written, this handoff replaced the old paused-PTY, manual-only,
@@ -73,7 +64,8 @@ artifact enabled Auto for that exact historical calibration only.
   (SHA-256 `60952f85f77f5f6ce89a825e08f2b41c7d4818d7ffc1ea7e39620d35b307c303`).
   The 9.134 configuration bound it under `ai_reviewed_observe_release_evidence`,
   removed the Observe-only controller fields, and set global mode to `auto`.
-  The current 10.0.1 configuration intentionally contains none of that mapping.
+  The current 10.1.0 configuration retains the mapping only as an immutable
+  audit record; its exact build binding prevents it from becoming a live AUTO gate.
 - The artifact truthfully records `human_ground_truth: false`; this is an
   explicitly accepted AI-reviewed release, not manual evidence.
 
@@ -157,10 +149,11 @@ binding changes.
 
 ## Reusable recalibration command set
 
-These commands are a forensic workflow template, not a currently runnable authorization:
-the current reviewer/config policy must refuse a campaign that cannot positively prove a
-still-photo target. Once that prerequisite exists, use fresh campaign directories under an
-unchanged `config.yaml`; do not append
+These commands are a forensic workflow template, not a currently runnable authorization.
+The current policy requires either measured still-photo-bound evidence or the
+explicit owner acceptance recorded in `still_photo_assumption_acceptance`; the
+shipped acceptance licenses Training only and cannot authorize AUTO. Use fresh
+campaign directories under an unchanged `config.yaml`; do not append
 to or relabel a prior session. The safe default is one photo heart followed by
 the reviewed Pass-without-send terminal path per profile (`[1,3,1,3]`
 calibration and `[1,3,1]` held-out), with no extra item navigation after the
@@ -206,6 +199,6 @@ diagnosis and start a fresh session from a confirmed profile top.
 - Ruff is clean for `operation_love`, `tools`, and `tests`; `git diff --check`
   is clean.
 - These counts and quality notes describe the superseded 9.134 handoff, not the
-  current 10.0.1 release state. Use the current CI run for present verification.
+  current 10.1.0 Training state. Use the current CI run for present verification.
 - Real profile/debug artifacts under `ops/calibration/` and
   `data/hinge_debug/` are private and gitignored; do not upload or commit them.

@@ -575,11 +575,14 @@ def test_a_licensed_read_dwells_persists_every_frame_and_threads_the_evidence(
         assert entry.dwell_span_s > 0
         assert len(entry.dwell_frame_sha256s) == len(burst) + 1  # the anchor leads the burst
     # A still photo produces N identical frames, which is exactly the shape the debug log's
-    # per-label dedup collapses.  Every dwell frame must survive on disk regardless.
+    # per-label dedup collapses. Every observation survives in JSONL, while the identical bytes
+    # occupy one PNG rather than consuming N slots in the bounded screenshot ring.
     records = [json.loads(line)
                for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
     frame_records = [r for r in records if "dwell_frame_index" in r]
     assert len(frame_records) == len(burst)
+    assert {record["action"] for record in frame_records} == {"still_photo_dwell_frame"}
+    assert len({record["before"] for record in frame_records}) == 1
     for position, record in enumerate(frame_records):
         assert record["dwell_frame_index"] == position
         assert (drv._dbg.dir / record["before"]).read_bytes() == burst[position]
@@ -588,6 +591,28 @@ def test_a_licensed_read_dwells_persists_every_frame_and_threads_the_evidence(
     assert summary["dwell_frames"] == len(burst)
     assert summary["dwell_span_s"] > 0
     assert summary["cards"], "the summary names what the dwell concluded per card"
+
+
+def test_dwell_debug_frames_dedupe_identical_bytes_but_keep_changed_frames(tmp_path):
+    """The driver's stable dwell action label is the wiring DebugLog's content dedupe needs.
+
+    Every observation remains a separate ordered JSONL row. Only byte-identical image payloads
+    share a file; a changed frame still receives its own PNG and path.
+    """
+    drv = _drv(WorldAdb(), still_photo_dwell_candidates=1)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="still-photo-dwell-dedupe")
+
+    drv._record_still_photo_dwell([b"STILL", b"STILL", b"CHANGED"], 1.0, {})
+
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    frames = [record for record in records if record["action"] == "still_photo_dwell_frame"]
+    assert [record["dwell_frame_index"] for record in frames] == [0, 1, 2]
+    assert frames[0]["before"] == frames[1]["before"]
+    assert frames[2]["before"] != frames[0]["before"]
+    assert len(list(drv._dbg.dir.glob("*.png"))) == 2
+    assert (drv._dbg.dir / frames[0]["before"]).read_bytes() == b"STILL"
+    assert (drv._dbg.dir / frames[2]["before"]).read_bytes() == b"CHANGED"
 
 
 @pytest.fixture
@@ -1611,6 +1636,326 @@ def test_capture_coverage_diagnostics_separates_photo_policy_from_dwell_coverage
     }
 
 
+def test_model_context_preserves_every_unnumbered_crop_for_supporting_connections():
+    """The wire view retains unnumbered photos/prompts as well as heartless profile context.
+
+    The opener instruction requires the selected numbered item to stay the clear main subject;
+    it does not need to discard a useful supporting image to achieve that.
+    """
+    payload = SimpleNamespace(context=(
+        SimpleNamespace(heart_ordinal=1, image=b"unmeasured bridge photo"),
+        SimpleNamespace(heart_ordinal=None, image=b"heartless vitals"),
+        SimpleNamespace(heart_ordinal=3, image=b"written prompt supporting context"),
+        SimpleNamespace(heart_ordinal=None, image=None),
+    ))
+
+    assert HingeDriver._model_item_context(payload) == (
+        b"unmeasured bridge photo", b"heartless vitals", b"written prompt supporting context")
+
+# =====================================================================================
+# What sized every enumeration scroll: the `coverage` aggregate on the capture row
+#
+# `plan_coverage_step` labels every step it plans with a `basis`, and until 2026-08-28 not one
+# of those four tokens had ever reached actions.jsonl -- so "how often does the blind fallback
+# fire?" could only be answered by re-segmenting the whole on-disk PNG archive. These tests pin
+# the aggregate that makes it a query, and in particular the REFUSAL bucket: that branch becomes
+# `Profile.items_unavailable`, which in Training and in AUTO-with-openers stops the run.
+# =====================================================================================
+
+_COVERAGE_BASES = (
+    scroll_step.COVERAGE_STEP_OPEN,
+    scroll_step.COVERAGE_STEP_THROTTLED,
+    scroll_step.COVERAGE_STEP_FALLBACK,
+    scroll_step.COVERAGE_STEP_SEGMENTATION_FALLBACK,
+)
+
+
+class _RecordingLog:
+    """The in-memory debug log the capture-row tests above already use, named once here because
+    this section reads several different rows of the same run."""
+
+    def __init__(self):
+        self.calls = []
+
+    def action(self, name, **fields):
+        self.calls.append((name, fields))
+
+    def row(self, name):
+        return next(fields for called, fields in self.calls if called == name)
+
+    def keys_of(self, name):
+        return {key for called, fields in self.calls if called == name for key in fields}
+
+
+def _median_low(values):
+    """The same low median the ledger reports: an actually observed value, never a half pixel."""
+    ordered = sorted(values)
+    return ordered[(len(ordered) - 1) // 2]
+
+
+def test_the_capture_row_says_what_sized_every_enumeration_scroll():
+    """One row per capture, never one per frame: the counter must agree with what the planner
+    really returned, and each span must be that quantity's own min/low-median/max over exactly
+    the steps that were planned."""
+    drv = _drv(WorldAdb())
+    dbg = _RecordingLog()
+    drv._dbg = dbg
+    planned = []
+    real_plan = hinge.plan_coverage_step
+
+    def spy(*a, **k):
+        step = real_plan(*a, **k)
+        planned.append(step)
+        return step
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(hinge, "plan_coverage_step", spy)
+        profile = drv._capture_current()
+
+    assert profile is not None and planned, "the fixture must really enumerate"
+    coverage = dbg.row("capture")["coverage"]
+    assert coverage["steps"] == len(planned)
+    assert coverage["basis"] == {
+        basis: sum(1 for step in planned if step.basis == basis) for basis in _COVERAGE_BASES}
+    assert sum(coverage["basis"].values()) == coverage["steps"]
+    for field in ("cap_px", "step_px", "trust_ceiling_px"):
+        observed = [getattr(step, field) for step in planned]
+        assert coverage[field] == {"n": len(observed), "min": min(observed),
+                                   "median": _median_low(observed), "max": max(observed)}
+    # `depth_px` is None on every step no open trailing card constrained, so this bucket's own
+    # `n` is the answer to "how often does bound 2 have anything to say?" -- the measurement the
+    # archive pass had to re-derive by re-segmenting 3696 PNGs.
+    depths = [step.depth_px for step in planned if step.depth_px is not None]
+    assert coverage["depth_px"] == (
+        None if not depths else {"n": len(depths), "min": min(depths),
+                                 "median": _median_low(depths), "max": max(depths)})
+    lows = [step.window_px[0] for step in planned]
+    highs = [step.window_px[1] for step in planned]
+    assert coverage["window_px"]["low"]["min"] == min(lows)
+    assert coverage["window_px"]["high"]["max"] == max(highs)
+    assert coverage["window_px"]["single_valued"] == sum(
+        1 for step in planned if step.window_px[0] == step.window_px[1])
+    # One viewport sample per segmented frame, i.e. per planning attempt.
+    assert coverage["viewport_offset_px"]["n"] == len(planned)
+    assert coverage["refusals"] == []
+
+
+def test_all_four_coverage_bases_are_counted_even_when_only_one_ever_fires():
+    """A basis that never fired must read as a MEASURED zero, not as an absent key -- the exact
+    ambiguity that made the archive grep unanswerable (zero hits proves nothing when nothing was
+    ever written). All four are reachable in the counter, whether or not this corpus reaches
+    them."""
+    ledger = hinge._EnumerationCoverageLedger()
+    for basis in _COVERAGE_BASES:
+        ledger.note_step(SimpleNamespace(
+            basis=basis, cap_px=540, step_px=300, trust_ceiling_px=540,
+            depth_px=None, window_px=(280, 320)))
+    assert ledger.summary()["basis"] == {basis: 1 for basis in _COVERAGE_BASES}
+
+    only_open = hinge._EnumerationCoverageLedger()
+    only_open.note_step(SimpleNamespace(
+        basis=scroll_step.COVERAGE_STEP_OPEN, cap_px=540, step_px=300,
+        trust_ceiling_px=540, depth_px=None, window_px=(280, 320)))
+    assert only_open.summary()["basis"] == {
+        scroll_step.COVERAGE_STEP_OPEN: 1,
+        scroll_step.COVERAGE_STEP_THROTTLED: 0,
+        scroll_step.COVERAGE_STEP_FALLBACK: 0,
+        scroll_step.COVERAGE_STEP_SEGMENTATION_FALLBACK: 0,
+    }
+
+
+def test_a_step_without_the_geometry_fields_still_counts_its_basis():
+    """Doubles standing in for a `CoverageStep` (tests/test_hinge_observe.py) carry only some of
+    its fields. A missing measurement must simply not be sampled -- never an AttributeError on a
+    live capture's planning path, and never a lost basis count."""
+    ledger = hinge._EnumerationCoverageLedger()
+    ledger.note_step(SimpleNamespace(basis=scroll_step.COVERAGE_STEP_OPEN, frac=0.4, step_px=240))
+    summary = ledger.summary()
+    assert summary["basis"][scroll_step.COVERAGE_STEP_OPEN] == 1
+    assert summary["steps"] == 1
+    assert summary["cap_px"] is None and summary["trust_ceiling_px"] is None
+    assert summary["step_px"] == {"n": 1, "min": 240, "median": 240, "max": 240}
+
+
+@pytest.mark.parametrize("error", [scroll_step.ScrollStepError, segment.SegmentationError],
+                         ids=("scroll_step", "segmentation"))
+def test_the_refusal_that_stops_the_run_records_its_frame_and_exception_type(error):
+    """THE BUCKET THAT MATTERS. This refusal propagates through `_invalidate_item_index` to
+    `Profile.items_unavailable` and then, in Training and in AUTO with openers enabled, to
+    `stop_event.set(); break` -- it stops the run. The frame index and the exception TYPE make
+    that attributable by query instead of by pattern-matching a prose sentence."""
+    drv = _drv(WorldAdb())
+    dbg = _RecordingLog()
+    drv._dbg = dbg
+
+    def _refuse(*a, **k):
+        raise error("the local card spacing is 400px")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(hinge, "plan_coverage_step", _refuse)
+        profile = drv._capture_current()
+
+    assert profile is not None and profile.items == ()
+    coverage = dbg.row("capture")["coverage"]
+    assert coverage["refusals"] == [{"frame_index": 0, "error": error.__name__}]
+    # The same frame the refusal SENTENCE names, so the two can be reconciled.
+    assert "frame 0 of this profile" in profile.items_unavailable
+    assert error.__name__ in profile.items_unavailable
+    assert coverage["steps"] == 0, "nothing was ever planned on this read"
+    # The refused frame was segmented before the plan was attempted, so its geometry survives --
+    # that frame is the interesting one.
+    assert coverage["viewport_offset_px"]["n"] == 1
+
+
+def test_terminal_enumeration_planning_refusal_keeps_the_exact_frame_for_debug(tmp_path):
+    """The operator gets the rejected frame, not merely its prose reason in the capture row."""
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="enumeration-planning-refusal")
+
+    def _refuse(*_a, **_k):
+        raise scroll_step.ScrollStepError("synthetic unbound selectable heart")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(hinge, "plan_coverage_step", _refuse)
+        profile = drv._capture_current()
+
+    records = [json.loads(line) for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    refusal = next(record for record in records
+                   if record["action"] == "enumeration_planning_refused")
+    assert refusal["frame_index"] == 0
+    assert refusal["error"] == "ScrollStepError"
+    assert refusal["reason"] == "synthetic unbound selectable heart"
+    assert (drv._dbg.dir / refusal["before"]).read_bytes() == profile.photos[0]
+
+
+def test_the_coverage_row_survives_a_capture_that_produced_no_item_payload():
+    """`item_coverage` is None whenever the payload is, which is exactly the refusal case this
+    aggregate exists to explain. A top-level key on the capture row survives it."""
+    drv = _drv(WorldAdb())
+    dbg = _RecordingLog()
+    drv._dbg = dbg
+
+    def _refuse(*a, **k):
+        raise scroll_step.ScrollStepError("the local card spacing is 400px")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(hinge, "plan_coverage_step", _refuse)
+        profile = drv._capture_current()
+
+    capture = dbg.row("capture")
+    assert profile.items == () and drv._current_item_payload is None
+    assert capture["item_coverage"] is None and capture["item_manifest"] == []
+    assert capture["items_unavailable"]
+    assert isinstance(capture["coverage"], dict)
+    assert capture["coverage"]["refusals"][0]["error"] == "ScrollStepError"
+
+
+def test_the_coverage_aggregate_is_one_nested_dict_and_never_splatted_into_the_row():
+    """A basis name is a token this driver does not own. Splatting the aggregate would let a
+    future one collide with a key already on the row it is written to; nesting makes that
+    unreachable rather than merely unlikely."""
+    drv = _drv(WorldAdb())
+    dbg = _RecordingLog()
+    drv._dbg = dbg
+
+    assert drv._capture_current() is not None
+    capture = dbg.row("capture")
+    assert isinstance(capture["coverage"], dict)
+    # Nothing the aggregate carries leaked out into the row itself.
+    assert not set(capture) & (set(_COVERAGE_BASES) | set(capture["coverage"]))
+    # The claim the nesting is defensive about, verified against the keys the SAME run really
+    # wrote: today no basis name collides with a timing bucket, so nesting costs nothing now and
+    # is the only thing that keeps a future one from being a silent overwrite.
+    timing_keys = dbg.keys_of("capture_iteration_timing") | dbg.keys_of("capture_timing_summary")
+    assert timing_keys and not timing_keys & set(_COVERAGE_BASES)
+
+
+def test_an_ordinary_read_that_plans_no_coverage_step_carries_no_aggregate():
+    """`openers=False` is an ordinary, non-enumerating read. It sizes no coverage step, so its
+    row must not grow a set of empty buckets -- the log is long-lived and this aggregate is
+    deliberately one row per capture, not one per frame."""
+    drv = _drv(WorldAdb(), openers=False)
+    dbg = _RecordingLog()
+    drv._dbg = dbg
+
+    profile = drv._capture_current()
+
+    assert profile is not None and profile.items == ()
+    assert dbg.row("capture")["coverage"] is None
+
+
+def test_the_honest_viewport_offset_is_measured_from_the_pinned_chrome_not_the_band():
+    """The number that would let a future pass decide the honest-viewport question on evidence.
+    `_scrolling_viewport_top` reports the first band row the PAGE can occupy; on the 2026-08-28
+    incident capture that was 517 against a band starting at 300, i.e. 217px of licence the band
+    row alone would have claimed. It is invisible in every log today, and takes many distinct
+    values across the archive, so a bare "was it ever non-zero" flag would not carry it."""
+    def _pinned(clip_row, run_px):
+        return SimpleNamespace(
+            band=(_BAND0, _BAND1),
+            blocks=(SimpleNamespace(kind=segment.BLOCK_UNANCHORED, y1=clip_row,
+                                    bottom=SimpleNamespace(run_px=run_px)),))
+
+    incident = _pinned(500, 17)                  # content top 517 against band row 300
+    plain = SimpleNamespace(band=(_BAND0, _BAND1), blocks=())
+    assert scroll_step._scrolling_viewport_top(incident) - incident.band[0] == 217
+    assert scroll_step._scrolling_viewport_top(plain) - plain.band[0] == 0
+
+    ledger = hinge._EnumerationCoverageLedger()
+    for segmentation in (incident, plain, _pinned(390, 10), _pinned(600, 20)):
+        ledger.note_frame(segmentation)
+    # Four distinct offsets, so the median is pinned as the LOW one: an offset the frames really
+    # showed (100), never the 158.5 a mean-of-the-middle-two would invent for a pixel count.
+    assert ledger.summary()["viewport_offset_px"] == {
+        "n": 4, "min": 0, "median": 100, "max": 320, "nonzero": 3}
+
+
+def test_a_coverage_ledger_that_cannot_summarise_itself_never_breaks_the_capture():
+    """Best-effort, exactly like the neighbouring debug writes: this aggregate is evaluated as an
+    argument to the capture row's own `action` call, which is not itself guarded -- so a raising
+    summary would abort a live capture that had already read the whole profile."""
+    poisoned = hinge._EnumerationCoverageLedger()
+    poisoned.refusals = object()                 # not iterable: the summary cannot be built
+    assert poisoned.summary() is None
+
+    # End to end, through the ledger the capture builds for itself (it replaces any ledger
+    # planted on the driver beforehand, which is the point of that reset).
+    class _PoisonedLedger(hinge._EnumerationCoverageLedger):
+        def __init__(self):
+            super().__init__()
+            self.refusals = object()
+
+    drv = _drv(WorldAdb())
+    dbg = _RecordingLog()
+    drv._dbg = dbg
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(hinge, "_EnumerationCoverageLedger", _PoisonedLedger)
+        profile = drv._capture_current()
+
+    assert profile is not None and profile.items != (), "the read itself is untouched"
+    assert dbg.row("capture")["coverage"] is None
+
+
+def test_bugreport_still_parses_a_capture_row_carrying_the_coverage_aggregate(tmp_path):
+    """bugreport locates rows by action name and reads only the keys it knows, so no reader
+    change is owed. Pinned against the real writer rather than a hand-built row, because the
+    aggregate has to survive `json.dumps` on the way in."""
+    from operation_love import bugreport      # local: no other test in this file needs it
+
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="coverage-aggregate")
+
+    assert drv._capture_current() is not None
+    lines = (drv._dbg.dir / "actions.jsonl").read_text().splitlines()
+    capture = next(rec for rec in bugreport._action_records(lines)
+                   if rec.get("action") == "capture")
+    assert isinstance(capture["coverage"]["basis"], dict)
+    assert set(capture["coverage"]["basis"]) == set(_COVERAGE_BASES)
+    assert "read " in bugreport._latest_completed_capture_timing_md(lines)
+    assert bugreport._item_manifest_summary_md(lines)
+
+
 def test_capture_debug_manifest_translates_repaired_local_frame_to_original_source_frame():
     """An isolated-frame index repair removes one local frame. Manifest provenance must name
     the original capture frame, not silently report the compacted index position."""
@@ -2244,6 +2589,74 @@ def test_item_index_refusal_saves_at_most_eight_source_mapped_frames_and_bounded
     }
 
 
+def test_item_index_refusal_sidecar_carries_the_unanchored_strip_evidence_bugreport_reads(tmp_path):
+    """The screen-fixed proof must survive into the sidecar, under the key the report reads.
+
+    `_screen_fixed_islands` decides whether a leading strip is chrome pinned to the SCREEN from
+    two things: identical frame rows at spread page offsets, and an identical pixel digest. The
+    first is recoverable from any sidecar; the second exists only if `segment.Block.content_digest`
+    is written out. Without it a replay can see that a strip held one frame position and still not
+    conclude anything, which is precisely the diagnosis the 2026-08-28 incident needed and the
+    report could not produce.
+
+    This is a CROSS-MODULE contract and that is why it is pinned here: `hinge.py` writes the key
+    and `bugreport.py` reads it, they share no import, and a rename on either side would leave both
+    files individually correct and the diagnosis silently blank. The `reason` is carried alongside
+    because it holds the measured widest-span-against-card-width figure that the per-frame rule
+    turns on, which has only 6px of margin and must be visible in a report before it drifts.
+    """
+    from operation_love import bugreport
+
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="item-index-unanchored")
+
+    class _Unobserved:
+        observed = False
+        kind = segment.EDGE_UNANCHORED_ISLAND
+        run_px = 106
+
+    class _Strip:
+        y0, y1, complete = 368, 411, False
+        top, bottom = _Unobserved(), _Unobserved()
+        hearts = ()
+        kind = segment.BLOCK_UNANCHORED
+        content_digest = "d" * 64
+        reason = "a leading strip this frame cannot place: ... 968px of 974px ..."
+
+    class _Seg:
+        blocks = (_Strip(),)
+
+    class _Index:
+        frames = (_Seg(), _Seg())
+        source_frame_indices = (0, 1)
+        offsets = (0, 900)
+        shifts = ()
+        failures = ()
+
+    drv._item_index_refused([b"frame 0", b"frame 1"], "index refused", _Index())
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    refusal = next(rec for rec in records if rec["action"] == "item_index_refused")
+    sidecar = json.loads((drv._dbg.dir / refusal["evidence_sidecar"]).read_text())
+
+    block = sidecar["all_frame_geometry"][0]["blocks"][0]
+    assert block["kind"] == segment.BLOCK_UNANCHORED
+    assert block["content_digest"] == "d" * 64
+    assert "968px of 974px" in block["unanchored_reason"]
+
+    # THE SEAM, closed end to end rather than by comparing key spellings: feed the sidecar this
+    # writer just produced to the reader that consumes it, and require the reader to reach its
+    # PROVEN verdict. Two frames, the same 43px rows, the same digest, 900px of scroll between
+    # them — which is exactly what `_screen_fixed_islands` calls screen-fixed. If either side
+    # renames the key, or stops writing the digest, this drops to an undecidable verdict and goes
+    # red; asserting the strings matched would not have caught the digest going missing.
+    assert block["kind"] == bugreport._SIDECAR_UNANCHORED_BLOCK_KIND
+    rendered = bugreport._item_index_geometry_md(
+        (drv._dbg.dir / "actions.jsonl").read_text().splitlines(), drv._dbg.dir)
+    assert "PROVEN screen-fixed" in rendered, rendered
+    assert "UNDECIDABLE" not in rendered, rendered
+
+
 def test_item_index_refusal_sidecar_keeps_measured_pair_strips_and_lookahead(tmp_path):
     """A downstream measured contradiction remains diagnosable after an earlier refusal."""
     drv = _drv(WorldAdb())
@@ -2609,6 +3022,47 @@ def test_recovered_index_crops_only_the_exact_rebuilt_frame_sequence(monkeypatch
     assert drv._current_item_payload is payload
 
 
+@pytest.mark.parametrize("source_index", [True, False])
+def test_recovered_index_rejects_boolean_source_frame_provenance(monkeypatch, source_index):
+    """Booleans are integers in Python but never valid source-frame ordinals.
+
+    Treating True as one or False as zero would silently crop a different source image than the
+    recovered index claims. Refuse before any payload/crop builder can consume that mapping.
+    """
+    drv = _drv(WorldAdb())
+    photos = [b"zero", b"one"]
+
+    class _Index:
+        usable = True
+        frames = (object(),)
+        source_frame_indices = (source_index,)
+        offsets = (0,)
+        identity = type("Identity", (), {"known": True, "reason": "ok"})()
+        recovered_from_pair = None
+        recovery_bridge = None
+
+    monkeypatch.setattr(hinge, "build_item_index", lambda *_args, **_kwargs: _Index())
+    monkeypatch.setattr(
+        hinge, "build_item_payload",
+        lambda *_args, **_kwargs: pytest.fail("invalid source provenance reached payload building"),
+    )
+
+    refusal = drv._index_captured_items(photos)
+
+    assert "invalid frame provenance" in refusal
+    assert drv._current_item_index is None
+    assert drv._current_item_payload is None
+
+
+@pytest.mark.parametrize("source_index", [True, False])
+def test_refusal_provenance_normalizer_never_maps_boolean_frame_indices(source_index):
+    """The refusal/debug path shares the main crop path's literal-index invariant."""
+    index = SimpleNamespace(
+        frames=(object(),), source_frame_indices=(source_index,))
+
+    assert HingeDriver._item_index_source_indices(index, [b"zero", b"one"]) == (0,)
+
+
 def test_the_index_carries_this_profiles_identity_and_navigation_can_check_it():
     """Doc 5.7's carried-forward requirement 1, at the point the table is built. The index knows
     WHOSE profile it describes, fingerprinted from the frames it was built from through the
@@ -2645,7 +3099,16 @@ def test_a_capture_with_no_identity_is_refused_before_a_billed_opener_call():
 
     The world here keeps drawing the filter-chips row at every scroll offset, so the page really
     is read and really does index -- and the one strip that says who is on it never shows a
-    person. That is a capture in which nothing distinguishes this profile from any other."""
+    person. That is a capture in which nothing distinguishes this profile from any other.
+
+    WHICH REASON IT GIVES CHANGED ON 2026-08-28, and the change is the point. This fixture draws
+    the chips row at EVERY offset, so its identity band is pinned to the screen -- exactly the
+    Hinge 10.1.0 shape. The old message blamed the capture ("never scrolled far enough to reveal
+    the header"), which would send an operator to re-run a capture forever against a check that
+    cannot answer on this build. Now that `build_item_index` hands the measured page offsets to
+    `capture_profile_identity`, the two causes are told apart from evidence and this one is named
+    correctly. The refusal itself -- no items, no crops, no billed opener call, the ranker's
+    frames untouched -- is unchanged, and that is what the rest of this test pins."""
     adb = WorldAdb(at_top=True)
     drv = _drv(adb)
 
@@ -2654,7 +3117,10 @@ def test_a_capture_with_no_identity_is_refused_before_a_billed_opener_call():
     assert profile is not None and profile.photos, "the frames are still the ranker's"
     assert profile.items == () and profile.item_context == ()
     assert "identity" in profile.items_unavailable
-    assert "never appeared" in profile.items_unavailable
+    assert "PINNED to the screen" in profile.items_unavailable
+    assert "never scrolled far enough" not in profile.items_unavailable, (
+        "a pinned band is not a capture that under-scrolled; naming the wrong cause here is the "
+        "defect this assertion exists to keep fixed")
     assert drv._current_item_index is None and drv._current_item_payload is None
 
     # The control: the identical read with the header drawn is enumerated normally, so what
@@ -2710,6 +3176,27 @@ def test_a_scroll_that_cannot_be_sized_ends_the_enumeration_without_ending_the_r
     assert profile.items_unavailable_kind == ""
     assert len(profile.photos) > 1, "the read must have carried on to the bottom"
     assert {frac for frac, _lane in adb.gestures} == {drv.read_scroll_frac}
+
+
+def test_training_stops_the_read_immediately_when_enumeration_becomes_impossible():
+    """Training cannot score or label a profile without a verifiable targeted opener. Once the
+    planner refuses, later ordinary-read gestures have no consumer and must not touch the device;
+    AUTO's ranker-only continuation remains covered by the control immediately above."""
+    adb = WorldAdb()
+    drv = _drv(adb)
+    drv.begin_training_session()
+
+    def _refuse(*a, **k):
+        raise scroll_step.ScrollStepError("the local card spacing is 400px")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(hinge, "plan_coverage_step", _refuse)
+        profile = drv._capture_current()
+
+    assert profile is not None and len(profile.photos) == 1
+    assert profile.items == ()
+    assert "the local card spacing is 400px" in profile.items_unavailable
+    assert adb.gestures == [], "no discarded ordinary-read gesture should follow the refusal"
 
 
 # =====================================================================================
@@ -3304,6 +3791,125 @@ def test_one_candidate_reproduces_the_pre_walk_driver_byte_for_byte(installed_st
     assert adb.taps == []
 
 
+def test_candidate_walk_keeps_a_final_hop_beyond_the_return_envelope(
+        monkeypatch, tmp_path, installed_still_photo_bound):
+    """The final optional hop does not pay a return envelope it does not need.
+
+    Its terminal anchor is the signed composition of the same measured navigation/correction/
+    probe legs the ordinary return would consume.  This recovers the nearest otherwise-skipped
+    candidate without weakening the two-burst video gate or making an intermediate hop start
+    from an unverified page position.
+    """
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=2)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="return-budget-skip")
+    _required, return_cap_px, _leg_cap_px = drv._still_photo_dwell_walk_return_budget(index, 3)
+    far_top = int(index.offsets[-1]) + _BAND0 - return_cap_px - 1
+    far_blocks = tuple(
+        dataclasses.replace(block, page_y0=far_top)
+        if block.heart_ordinal == 3 else block
+        for block in index.blocks)
+    far_index = dataclasses.replace(index, blocks=far_blocks)
+    # The synthetic page fixture begins at row zero, while this deliberately far *logical*
+    # climb extends beyond it.  The terminal frame only stands for an already-measured result;
+    # its bytes are not used by this branch, so keep the fixture in its representable range.
+    target = _stub_target(_frame(0), (700, 1700), climbed_px=return_cap_px + 1)
+    navigation_calls = []
+    monkeypatch.setattr(
+        hinge, "navigate_to_item",
+        lambda *_args, **_kwargs: navigation_calls.append(1) or target)
+    correction = hinge._CenteringCorrection(total_px=0, frame=target.frame)
+    monkeypatch.setattr(
+        HingeDriver, "_still_photo_dwell_over_navigated_target",
+        lambda *_args, **_kwargs: (None, None, correction))
+    returns = []
+    monkeypatch.setattr(
+        HingeDriver, "_still_photo_dwell_walk_return_to_entry",
+        lambda *_args, **_kwargs: returns.append(1))
+
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: object()}, frames=frames, index=far_index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={3},
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    assert evidence.keys() == {4}
+    assert anchor == hinge._MeasuredItemAnchor(
+        target.frame, -(return_cap_px + 1))
+    assert navigation_calls == [1]
+    assert returns == [], "the final hop must not make a redundant return"
+    assert (adb.scrolls, adb.reverse_swipes) == (0, 0)
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    skipped = [record for record in records
+               if record["action"] == "still_photo_dwell_walk_candidate"]
+    assert [row["outcome"] for row in skipped] == ["parked_unproved"]
+
+
+def test_candidate_walk_still_skips_an_intermediate_hop_beyond_the_return_envelope(
+        monkeypatch, installed_still_photo_bound):
+    """Only the final hop can retain its terminal anchor.
+
+    A later hop would need the enumeration entry again, so the fixed, vetted return envelope
+    remains an early refusal here.  This is the guard against accidentally turning the terminal
+    coverage fix into an unbounded multi-hop walk.
+    """
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=3)
+    _required, return_cap_px, _leg_cap_px = drv._still_photo_dwell_walk_return_budget(index, 3)
+    far_top = int(index.offsets[-1]) + _BAND0 - return_cap_px - 1
+    far_blocks = tuple(
+        dataclasses.replace(block, page_y0=far_top)
+        if block.heart_ordinal in {3, 2} else block
+        for block in index.blocks)
+    far_index = dataclasses.replace(index, blocks=far_blocks)
+    navigation_calls = []
+    monkeypatch.setattr(
+        hinge, "navigate_to_item",
+        lambda *_args, **_kwargs: navigation_calls.append(1))
+    stop_checks = {"count": 0}
+
+    def stop_before_second_candidate():
+        stop_checks["count"] += 1
+        return stop_checks["count"] > 1
+
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: object()}, frames=frames, index=far_index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={3, 2}, should_stop=stop_before_second_candidate,
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    assert evidence.keys() == {4}
+    assert anchor == hinge._MeasuredItemAnchor(frames[-1], 0)
+    assert navigation_calls == []
+    assert (adb.scrolls, adb.reverse_swipes) == (0, 0)
+
+
+def test_candidate_walk_still_navigates_a_hop_inside_the_vetted_return_envelope(
+        monkeypatch, installed_still_photo_bound):
+    """The pre-skip constrains only hops that cannot fit the established return protocol."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=2)
+    calls = []
+    real_navigate = hinge.navigate_to_item
+
+    def counted_navigate(*args, **kwargs):
+        calls.append(kwargs.get("entry_reference"))
+        return real_navigate(*args, **kwargs)
+
+    monkeypatch.setattr(hinge, "navigate_to_item", counted_navigate)
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: object()}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={3},
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    assert set(evidence) == {3, 4}
+    assert len(calls) == 1
+    assert anchor is not None
+    assert adb.reverse_swipes > 0
+
+
 def _overshot_navigation_recovery(frame: bytes, page_shift_px: int):
     """A live-shaped measured refusal payload for the candidate-walk cleanup tests."""
     return item_nav.NavigationRecovery(
@@ -3318,11 +3924,23 @@ def _overshot_navigation_recovery(frame: bytes, page_shift_px: int):
 
 def test_measured_overshot_candidate_returns_to_a_nonzero_entry_residual_and_keeps_evidence(
         monkeypatch, tmp_path, installed_still_photo_bound):
-    """An optional candidate may reject an overlarge measured step without poisoning the read.
+    """An overlarge measured step is rejected and returned from, and the walk goes ON.
 
-    This mirrors the Rachel incident: another card was already proved, heart 6 overshot after a
-    real upward walk, and the only permitted response is a measured return followed by stopping
-    the OPTIONAL walk.  It is deliberately not a retry or a substitute for the failed ordinal.
+    This mirrors the Rachel incident: another card was already proved and a candidate overshot
+    after a real upward walk.  The refused ordinal is still refused -- never retried, never
+    substituted -- but once the return to the entry is MEASURED AND VERIFIED the loop's own
+    precondition is back, so the candidates after it are no longer forfeited.
+
+    Abandoning them was a real cost, found on a live run 2026-08-27: a refusal on the FIRST
+    candidate ended a walk with 1 of 6 photo candidates dwelled, and the one-item payload that
+    produced dropped doc 5.6's like-sheet verification from its half-nearest-neighbour separation
+    proof onto the far weaker held-out one-item ceiling (measured on that profile: a 37.506 bound
+    with a second item, against 7.000 with one).
+
+    Here `navigate_to_item` overshoots for EVERY candidate, so the walk is stopped by the
+    `_STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET` rather than by any one refusal -- which is the
+    other half of the contract: continuing is bounded, because each of these has already spent a
+    climb and a measured return leg.
     """
     index, frames = _full_read_capture()
     entry_scroll = _FULL_READ_SCROLLS[-1] + 20
@@ -3346,16 +3964,35 @@ def test_measured_overshot_candidate_returns_to_a_nonzero_entry_residual_and_kee
         earlier_evidence, frames=frames, index=index, mute_screen=lambda _f, _r: True,
         entry_anchor=entry_anchor)
 
-    assert evidence == earlier_evidence
-    assert calls == [3], "the failed candidate ends the optional walk; heart 2 is never tried"
+    assert evidence == earlier_evidence, "a refused candidate never adds evidence"
+    # Two refusals are absorbed and the third spends the budget, so the walk tries three
+    # candidates rather than dying on the first.
+    assert calls == [3, 2, 1]
     assert restored is not None
-    assert restored.page_shift_px == 20
-    assert restored.frame == _frame(entry_scroll)
-    assert adb.scroll == entry_scroll
+    # THE INVARIANT THAT MATTERS UNDER REPETITION: the anchor never lies about where the phone
+    # is. Not asserted equal to the ENTRY's frame/shift, because this test deliberately feeds the
+    # same fixed `recovery` to every refusal -- after the first restore that recovery is claiming
+    # a 260px displacement the phone no longer has, so each further return leg walks a distance
+    # the world does not owe and lands a little short. That is a property of the stub, not of the
+    # driver; what the driver owes is that the anchor it hands back DESCRIBES the resulting
+    # position, and it does. The exact single-refusal residual is pinned in
+    # `test_one_returned_refusal_is_absorbed_and_a_later_candidate_is_still_proved`, where the
+    # recovery is coherent and the number means something.
+    assert restored.frame == _frame(adb.scroll)
+    drift_bound = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
+    assert abs(adb.scroll - entry_scroll) < drift_bound, (
+        "each return still had to land inside the ordinary entry gate to be accepted at all")
 
     records = [json.loads(line) for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
-    row = next(r for r in records if r["action"] == "still_photo_dwell_walk_candidate")
-    assert row["outcome"] == "navigation_refused_returned"
+    rows = [r for r in records if r["action"] == "still_photo_dwell_walk_candidate"]
+    assert [r["outcome"] for r in rows] == ["navigation_refused_returned"] * 3
+    assert [r["navigation_refusal"]["walk"]["outcome"] for r in rows] == [
+        "continued", "continued", "abandoned_budget_spent"]
+    assert [r["navigation_refusal"]["walk"]["returned_refusals_spent"] for r in rows] == [1, 2, 3]
+    row = rows[0]
+    assert row["navigation_refusal"].pop("walk") == {
+        "outcome": "continued", "returned_refusals_spent": 1,
+        "returned_refusal_budget": hinge._STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET}
     assert row["navigation_refusal"] == {
         "schema_version": 1,
         "code": item_nav.NAV_SCROLL_OVERSHOT,
@@ -3371,6 +4008,84 @@ def test_measured_overshot_candidate_returns_to_a_nonzero_entry_residual_and_kee
                      "measurement_confidence": 1.0, "measurement_agreeing": 9,
                      "measurement_dissenting": 0, "measurement_eligible": 9},
     }
+
+
+def test_one_returned_refusal_is_absorbed_and_a_later_candidate_is_still_proved(
+        monkeypatch, installed_still_photo_bound):
+    """THE COVERAGE THIS FIX EXISTS FOR, and the reason it is worth the extra hop.
+
+    One candidate overshoots and is returned from; every later candidate navigates normally. The
+    walk must go on and actually PROVE one, because that second proved card is what gives doc
+    5.6's like-sheet verification a neighbour to derive a separation bound from. On 2026-08-27
+    the abandon cost exactly this: 1 of 6 photo candidates dwelled, a one-item payload, and a
+    verification refused against the weakest ceiling the module has.
+
+    The refused ordinal itself is still never dwelt -- NEVER SUBSTITUTE is unchanged; only the
+    candidates AFTER it are recovered.
+    """
+    index, frames = _full_read_capture()
+    entry_scroll = _FULL_READ_SCROLLS[-1]
+    adb = ProbeWorldAdb(start=entry_scroll)
+    drv = _drv(adb, still_photo_dwell_candidates=3)
+    entry_anchor = hinge._MeasuredItemAnchor(_frame(entry_scroll), 0)
+    real_navigate = item_nav.navigate_to_item
+    calls = []
+
+    def overshoot_once(driver, walk_index, model_index, **kwargs):
+        calls.append(model_index)
+        if len(calls) == 1:
+            # A COHERENT recovery: the phone really is where this says it is, so the return leg
+            # owes exactly this displacement and the residual below means something.
+            frame = driver._screencap()
+            shift = drv._measured_page_shift(entry_anchor.frame, frame)
+            raise item_nav.ItemNavigationError(
+                item_nav.NAV_SCROLL_OVERSHOT, "synthetic measured overshoot", frame=frame,
+                frame_index=6, recovery=_overshot_navigation_recovery(frame, shift or 0))
+        return real_navigate(driver, walk_index, model_index, **kwargs)
+
+    monkeypatch.setattr(hinge, "navigate_to_item", overshoot_once)
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: object()}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        entry_anchor=entry_anchor)
+
+    assert len(calls) > 1, "the walk did not stop at the refused candidate"
+    assert calls[0] == 3
+    assert 3 not in evidence, "the refused ordinal is never dwelt, retried or substituted"
+    assert set(evidence) - {4}, "a later candidate was actually proved after the refusal"
+    assert anchor is not None
+
+
+def test_a_returned_refusal_whose_return_is_unverified_still_abandons_the_walk(
+        monkeypatch, installed_still_photo_bound):
+    """The other half of the contract: continuing is licensed by the RETURN, not by the refusal.
+
+    An unverified return leaves the phone somewhere this method cannot account for, so the walk
+    must stop exactly as it always did -- and hand back no anchor, so the capture's own
+    `refused_dwell_anchor` gate fires rather than a later navigation trusting a stale one.
+    """
+    index, frames = _full_read_capture()
+    entry_scroll = _FULL_READ_SCROLLS[-1]
+    adb = ProbeWorldAdb(start=entry_scroll)
+    drv = _drv(adb, still_photo_dwell_candidates=3)
+    recovery = _overshot_navigation_recovery(_frame(entry_scroll - 260), -260)
+    calls = []
+
+    def overshot(_driver, _index, model_index, **_kwargs):
+        calls.append(model_index)
+        raise item_nav.ItemNavigationError(
+            item_nav.NAV_SCROLL_OVERSHOT, "synthetic measured overshoot",
+            frame=recovery.frame, frame_index=recovery.frame_index, recovery=recovery)
+
+    monkeypatch.setattr(hinge, "navigate_to_item", overshot)
+    monkeypatch.setattr(drv, "_return_to_entry_from_measured_position",
+                        lambda *_a, **_k: None)
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: object()}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        entry_anchor=hinge._MeasuredItemAnchor(_frame(entry_scroll), 0))
+
+    assert set(evidence) == {4}
+    assert anchor is None
+    assert calls == [3], "an unverified return abandons on the first refusal, as it always did"
 
 
 def test_candidate_walk_without_a_measured_recovery_still_refuses_the_capture_anchor(
@@ -3402,17 +4117,17 @@ def test_three_candidates_produce_evidence_for_three_distinct_hearts(installed_s
     adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
     drv = _drv(adb, still_photo_dwell_candidates=3)
 
-    evidence, _anchor = drv._still_photo_dwell(frames, index)
+    evidence, anchor = drv._still_photo_dwell(frames, index)
 
     assert set(evidence) == {4, 3, 2}
     for ordinal, dwell in evidence.items():
         assert dwell.dwell_exact is True, ordinal
-    # Every hop returns to the entry before the next starts, and the walk ends there VERIFIED --
-    # but "verified" is a measured residual under the entry-drift bound, same as the re-attach
-    # probe's own return leg, never a claim of byte-exact restoration (climbing back ~1434px for
-    # heart 2 over several capped, measured strokes accumulates a real few-pixel residual).
-    drift_bound = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
-    assert abs(adb.scroll - _FULL_READ_SCROLLS[-1]) < drift_bound
+    # The first hop returned before the second began.  The final hop retains its measured
+    # terminal frame instead of paying a redundant return, and that anchor must describe the
+    # real screen exactly so `_index_captured_items` can rebase the original item table there.
+    assert anchor is not None
+    assert anchor.frame == _frame(adb.scroll)
+    assert anchor.page_shift_px == adb.scroll - _FULL_READ_SCROLLS[-1]
 
 
 def test_measured_dwell_walk_rebases_the_index_to_its_terminal_frame_for_targeting(
@@ -3791,6 +4506,16 @@ def test_the_walk_records_one_debug_row_per_candidate_it_attempted(
     frame_rows = [r for r in records
                   if "dwell_frame_index" in r]
     assert {tuple(r["heart_ordinals"]) for r in frame_rows} == {(4,), (3,), (2,)}
+    timing_rows = [r for r in records
+                   if r["action"] == "still_photo_dwell_walk_candidate_timing"]
+    assert [r["heart_ordinal"] for r in timing_rows] == [3, 2]
+    assert all(r["outcome"] == "proved" for r in timing_rows)
+    for row in timing_rows:
+        assert all(row[key] >= 0 for key in (
+            "navigation_s", "proof_s", "return_s", "unattributed_s"))
+        assert (row["navigation_s"] + row["proof_s"] + row["return_s"]
+                + row["unattributed_s"]
+                == pytest.approx(row["candidate_wall_s"], abs=3e-6))
 
 
 def test_candidate_walk_can_filter_out_written_cards_without_spending_its_budget(
@@ -4046,6 +4771,151 @@ def test_return_to_entry_accounts_for_a_corrective_scroll(
 
 
 # =====================================================================================
+# Return-chain trace: a 2026-08-30 live candidate climbed 4243px, completed its dwell/probe,
+# then only reported ``return_unverified``.  The return helper is deliberately fail-closed; these
+# tests pin both that decision and its diagnostic-only terminal record without teaching the trace
+# to affect any measurement or retry.
+# =====================================================================================
+
+def _return_chain_records(drv):
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    return [record for record in records
+            if record.get("action") == "still_photo_dwell_return_chain"]
+
+
+def test_long_measured_return_chain_records_a_verified_terminal_anchor(monkeypatch, tmp_path):
+    """A 4243px candidate return needs seven capped, individually measured strokes.
+
+    This is intentionally a direct test of the return helper rather than the compact four-card
+    walk fixture: it proves the attempt budget is derived from the debt and a long clean chain
+    does not regress into the live run's generic refusal.
+    """
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="long-return-chain")
+    scrolls = []
+    frames = iter([f"return-{i}".encode() for i in range(1, 8)])
+    measurements = iter([630] * 6 + [463, 0])  # seven legs, then entry-frame corroboration
+    monkeypatch.setattr(drv, "_sample_read_step", lambda *_a: (0.0, 0.0, 0.5))
+    monkeypatch.setattr(drv, "_scroll_down_one", lambda frac, x: scrolls.append((frac, x)))
+    monkeypatch.setattr(drv, "_screencap", lambda **_kw: next(frames))
+    monkeypatch.setattr(drv, "_measured_page_shift",
+                        lambda _before, _after: next(measurements))
+
+    returned = drv._return_to_entry_from_measured_position(
+        hinge._MeasuredItemAnchor(b"entry", 19), frame=b"target", terminal_shift_px=-4243)
+
+    assert returned == hinge._MeasuredItemAnchor(b"return-7", 19)
+    assert len(scrolls) == 7
+    records = _return_chain_records(drv)
+    assert len(records) == 1
+    record = records[0]
+    assert {key: record[key] for key in (
+        "action", "outcome", "reason", "attempts", "initial_terminal_shift_px",
+        "terminal_shift_px", "direct_shift_px", "drift_bound_px")} == {
+            "action": "still_photo_dwell_return_chain", "outcome": "returned",
+            "reason": "direct_remeasure_matched", "attempts": 7,
+            "initial_terminal_shift_px": -4243, "terminal_shift_px": 0,
+            "direct_shift_px": 0,
+            "drift_bound_px": scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H),
+        }
+
+
+def test_return_chain_blank_frame_refuses_and_records_the_specific_leg(monkeypatch, tmp_path):
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="blank-return-chain")
+    scrolls = []
+    monkeypatch.setattr(drv, "_sample_read_step", lambda *_a: (0.0, 0.0, 0.5))
+    monkeypatch.setattr(drv, "_scroll_down_one", lambda frac, x: scrolls.append((frac, x)))
+    monkeypatch.setattr(drv, "_screencap", lambda **_kw: None)
+    measured = []
+    monkeypatch.setattr(drv, "_measured_page_shift",
+                        lambda *_a: measured.append(1))
+
+    assert drv._return_to_entry_from_measured_position(
+        hinge._MeasuredItemAnchor(b"entry", 0), frame=b"target", terminal_shift_px=-300) is None
+    assert len(scrolls) == 1 and measured == []
+    record = _return_chain_records(drv)
+    assert len(record) == 1
+    assert record[0]["outcome"] == "refused"
+    assert record[0]["reason"] == "blank_return_frame"
+    assert record[0]["attempts"] == 1
+
+
+def test_return_chain_unmeasurable_leg_refuses_without_direct_fallback(monkeypatch, tmp_path):
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="unmeasurable-return-chain")
+    monkeypatch.setattr(drv, "_sample_read_step", lambda *_a: (0.0, 0.0, 0.5))
+    monkeypatch.setattr(drv, "_scroll_down_one", lambda *_a: None)
+    monkeypatch.setattr(drv, "_screencap", lambda **_kw: b"leg-1")
+    calls = []
+
+    def unmeasurable(*_args):
+        calls.append(1)
+        return None
+
+    monkeypatch.setattr(drv, "_measured_page_shift", unmeasurable)
+
+    assert drv._return_to_entry_from_measured_position(
+        hinge._MeasuredItemAnchor(b"entry", 0), frame=b"target", terminal_shift_px=-300) is None
+    assert len(calls) == 1, "no entry-frame comparison may replace a missing chained leg"
+    record = _return_chain_records(drv)
+    assert len(record) == 1
+    assert record[0]["reason"] == "return_leg_unmeasurable"
+    assert record[0]["terminal_shift_px"] == -300
+    assert record[0]["requested_step_px"] == 300
+    assert record[0]["kept_before"] == record[0]["before"]
+    assert record[0]["kept_after"] == record[0]["after"]
+    assert (drv._dbg.dir / record[0]["before"]).exists()
+    assert (drv._dbg.dir / record[0]["after"]).exists()
+
+
+def test_return_chain_exhausted_terminal_drift_refuses_without_direct_fallback(
+        monkeypatch, tmp_path):
+    """A chain that remains one minimum scroll away is not close enough to call returned."""
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="drifting-return-chain")
+    drift_bound = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
+    monkeypatch.setattr(drv, "_sample_read_step", lambda *_a: (0.0, 0.0, 0.5))
+    monkeypatch.setattr(drv, "_scroll_down_one", lambda *_a: None)
+    frames = iter([b"leg-1", b"leg-2", b"leg-3", b"leg-4"])
+    monkeypatch.setattr(drv, "_screencap", lambda **_kw: next(frames))
+    calls = []
+    monkeypatch.setattr(drv, "_measured_page_shift",
+                        lambda *_a: calls.append(1) or 0)
+
+    assert drv._return_to_entry_from_measured_position(
+        hinge._MeasuredItemAnchor(b"entry", 0), frame=b"target",
+        terminal_shift_px=-drift_bound) is None
+    assert len(calls) == 4, "the direct comparison cannot rescue an out-of-gate residual"
+    record = _return_chain_records(drv)
+    assert len(record) == 1
+    assert record[0]["reason"] == "terminal_drift_exceeds_bound"
+    assert record[0]["attempts"] == 4
+    assert record[0]["terminal_shift_px"] == -drift_bound
+
+
+def test_return_chain_direct_remeasure_disagreement_refuses(monkeypatch, tmp_path):
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="mismatched-return-chain")
+    monkeypatch.setattr(drv, "_sample_read_step", lambda *_a: (0.0, 0.0, 0.5))
+    monkeypatch.setattr(drv, "_scroll_down_one", lambda *_a: None)
+    monkeypatch.setattr(drv, "_screencap", lambda **_kw: b"leg-1")
+    # First value closes the local chain.  The next is the independently attempted direct
+    # comparison against entry and contradicts it by more than one minimum legal read step.
+    shifts = iter([300, 300])
+    monkeypatch.setattr(drv, "_measured_page_shift", lambda *_a: next(shifts))
+
+    assert drv._return_to_entry_from_measured_position(
+        hinge._MeasuredItemAnchor(b"entry", 0), frame=b"target", terminal_shift_px=-300) is None
+    record = _return_chain_records(drv)
+    assert len(record) == 1
+    assert record[0]["reason"] == "direct_remeasure_disagrees"
+    assert record[0]["terminal_shift_px"] == 0
+    assert record[0]["direct_shift_px"] == 300
+
+
+# =====================================================================================
 # The capture timing ledger (found+fixed 2026-08-23), wired into a REAL read over this file's
 # synthetic world. tests/test_hinge_capture_timing.py covers the ledger's own arithmetic with a
 # fully controlled fake clock; these three prove it is actually wired into the real read loop
@@ -4189,3 +5059,337 @@ def test_gesture_timing_ledger_is_silent_with_no_debug_log():
 
     assert profile is not None
     assert profile.items_unavailable == ""
+
+
+# =====================================================================================
+# THE GATE'S OWN PREMISE CAN FAIL (Hinge 10.1.0, 2026-08-28). Doc 5.5's scroll-top check reads
+# ONE strip of ONE frame and calls a match to Hinge's filter-chips row "we are at the top". The
+# 10.1.0 "expanded" per-profile header pins that row to the SCREEN, so on the live capture
+# `item_index_refused_3fa8b8db66fd` the gate returned `confirmed_top` at distance 0.000 on six
+# frames at page offsets 6180..8485 -- thousands of px deep. `scroll_top.band_pinned_evidence`
+# is the two-frames-at-different-offsets test that detects it; these tests are about the driver
+# SUPPLYING that evidence, because until it does the gate answers yes unconditionally on a live
+# run no matter what the module can prove.
+#
+# `WorldAdb(at_top=True)` is that app state, reconstructed: the shipped chips constant painted
+# into the identity band at EVERY scroll offset. Every negative control here is the ordinary
+# `WorldAdb()`, whose band becomes a person's sticky header the moment the card scrolls -- the
+# state this gate reads correctly and must go on reading correctly.
+# =====================================================================================
+
+def _pinned_driver(**cfg):
+    """A driver that has READ one profile on a chips-row-pinned build, so its evidence is latched.
+
+    The latch comes from a real `_capture_current()` over the pinned world rather than from a
+    hand-set attribute: the whole question this section exists to answer is whether the driver
+    can OBTAIN the evidence during an ordinary read, and assigning it directly would assume the
+    answer.
+    """
+    adb = WorldAdb(at_top=True)
+    drv = _drv(adb, **cfg)
+    drv._capture_current()
+    return drv, adb
+
+
+def test_an_enumeration_read_latches_this_builds_pinned_chips_row_from_its_own_frames():
+    """The read already holds both halves the proof needs, and neither is measured twice.
+
+    `band_pinned_evidence` requires frames at two or more DIFFERENT, MEASURED page offsets -- a
+    second screencap at the same position proves nothing, because a pinned strip and page content
+    that has not scrolled yet predict identical pixels. The enumeration read is the one place in
+    this driver that already has both: the frames it kept, and the offsets `build_item_index`
+    chained through `frameshift.estimate_shift` for them. So the driver reads what was measured
+    instead of re-measuring it -- no extra screencap, no extra gesture, and no second opinion on
+    a question this repo has answered once.
+    """
+    adb = WorldAdb(at_top=True)
+    drv = _drv(adb)
+
+    # BEFORE the read, on the very screen the incident was measured on: the gate is not merely
+    # weak, it is affirmatively wrong -- an unqualified "" (confirmed) at the BOTTOM of a card.
+    adb.scroll = _MAX_SCROLL
+    assert drv._pinned_band_evidence() is None
+    assert drv._confirm_enumeration_top() == ""
+    adb.scroll = 0
+
+    drv._capture_current()
+
+    evidence = drv._pinned_band_evidence()
+    assert evidence is not None and evidence.pinned
+    # The four conditions the helper actually imposed, asserted as the evidence rather than
+    # taken on trust: more than one distinct offset, a span clearing the band's own height (so
+    # the page rows those sightings would have had to show are disjoint), and one single band.
+    assert len(evidence.offsets) >= 2
+    assert evidence.offset_span >= evidence.band_height_px
+    assert evidence.distinct_bands == 1
+    assert evidence.max_chips_distance <= scroll_top._CONFIRM_MAX_DIST
+
+
+def test_the_latched_evidence_turns_the_gates_affirmative_yes_into_check_unavailable():
+    """The point of the wiring: the same frame, the same module, a different answer."""
+    drv, adb = _pinned_driver()
+    adb.scroll = _MAX_SCROLL
+    frame = adb.screencap()
+
+    # The RAW gate still says `confirmed_top` on this exact frame -- so the downgrade below is
+    # the evidence's doing, not a different frame's or a different threshold's.
+    assert scroll_top.confirm_scroll_top(frame, identity_band=_IDENTITY_BAND).confirmed
+    downgraded = scroll_top.confirm_scroll_top(
+        frame, identity_band=_IDENTITY_BAND, pinned_evidence=drv._pinned_band_evidence())
+
+    assert downgraded.state == scroll_top.SCROLL_TOP_UNAVAILABLE
+    assert drv._confirm_enumeration_top() != ""
+
+
+def test_the_next_read_on_a_pinned_build_refuses_enumeration_and_the_stop_line_carries_why():
+    """END TO END, which is the whole point: the operator-visible outcome of the wiring.
+
+    Capture one is the read that MEASURES the build (its own gate ran before anything was
+    proven, exactly as it must -- the evidence does not exist until the frames do). Capture two
+    is every capture after it: the gate now has the proof, refuses to raise the enumeration
+    ceiling, and `Profile.items_unavailable` -- which worker.py quotes verbatim into the hub's
+    stop line -- carries the recalibration sentence rather than an instruction to scroll.
+    """
+    drv, adb = _pinned_driver()
+    assert drv._pinned_band_evidence().pinned
+    adb.scroll = 0                        # the next card, served from its own top
+
+    profile = drv._capture_current()
+
+    assert profile is not None
+    assert profile.items == () and profile.item_context == ()
+    assert scroll_top.SCROLL_TOP_UNAVAILABLE in profile.items_unavailable
+    assert "recalibrated" in profile.items_unavailable
+    assert "not confirmed to be at its scroll top" not in profile.items_unavailable
+    # The read stays at the ordinary cadence: the expensive enumeration ceiling is not spent on
+    # a profile whose numbering could never be trusted.
+    assert drv._profile_capture_limit == drv.scroll_captures
+    assert profile.photos, "the read itself still produces frames for the ranker"
+
+
+def test_a_dead_signal_stop_line_names_recalibration_where_a_refused_one_names_a_scroll():
+    """GUIDANCE MUST DERIVE FROM ITS PRECONDITION (this repo's standing rule, 2026-08-22).
+
+    "the card is not confirmed to be at its scroll top" is an INSTRUCTION: it sends whoever reads
+    the hub's stop line to scroll the phone back up. On a build that pins the chips row that
+    instruction is not merely unhelpful, it is unfollowable -- they would scroll to a genuine top
+    and be refused again, identically, because the strip carries no scroll information at all.
+    So the two states get two sentences, and this test drives both out of ONE driver whose only
+    difference between them is which strip the screen is showing.
+    """
+    drv, adb = _pinned_driver()
+    adb.scroll = _MAX_SCROLL
+
+    adb._at_top = True                      # the pinned chips row: the check cannot answer
+    unavailable = drv._confirm_enumeration_top()
+    adb._at_top = False                     # this person's sticky header: positively not at top
+    refuted = drv._confirm_enumeration_top()
+
+    assert scroll_top.SCROLL_TOP_UNAVAILABLE in unavailable
+    assert "cannot answer" in unavailable
+    assert "recalibrated" in unavailable
+    assert "Scrolling the card will not change this answer" in unavailable
+    assert "not confirmed to be at its scroll top" not in unavailable
+
+    assert scroll_top.SCROLL_TOP_REFUTED in refuted
+    assert "not confirmed to be at its scroll top" in refuted
+    assert "recalibrat" not in refuted
+
+
+def test_with_nothing_proven_the_enumeration_gate_is_word_for_word_what_it_was():
+    """The status-quo half, and the one that has to hold on every build but the broken one.
+
+    An ordinary read cannot prove pinning -- the band becomes this person's sticky header the
+    moment the card scrolls, which fails `band_pinned_evidence`'s "every sighting reads as the
+    chips row" half -- so nothing latches and every gate keeps its exact previous behaviour. The
+    expected strings here are built from an UNEVIDENCED `confirm_scroll_top` call, so this
+    asserts identity with the module's own answer rather than with a copy of the wording.
+    """
+    adb = WorldAdb()
+    drv = _drv(adb)
+
+    profile = drv._capture_current()
+
+    assert profile.items_unavailable == ""          # the read itself is untouched
+    assert drv._pinned_band_evidence() is None
+    for scroll in (0, 1300, _MAX_SCROLL):
+        adb.scroll = scroll
+        raw = scroll_top.confirm_scroll_top(adb.screencap(), identity_band=_IDENTITY_BAND)
+        expected = "" if raw.confirmed else (
+            f"the card is not confirmed to be at its scroll top ({raw.state}): {raw.reason}")
+        assert drv._confirm_enumeration_top() == expected
+
+
+def test_a_collapsed_header_capture_cannot_prove_itself_pinned_and_never_clears_a_proof():
+    """Both halves of the latch's lifetime rule, against the same frames.
+
+    A sticky per-profile header is pinned TOO -- measured 0.000 across 143 corpus frames of one
+    profile -- so a helper that stopped at "the band held constant" would prove every ordinary
+    capture "pinned" and disable the gate everywhere. It does not (first assertion). And because
+    a collapsed-header capture can never prove pinning, allowing one to CLEAR a proof would let
+    the dead gate come back to life on the very next card and resume affirming a top it has been
+    shown it cannot see (second assertion): absence of proof is not proof of absence.
+    """
+    ordinary_photos = [_frame(s) for s in _FULL_READ_SCROLLS]
+    index = item_index.build_item_index(
+        ordinary_photos, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True,
+        identity_band=_IDENTITY_BAND)
+
+    fresh = _drv(WorldAdb())
+    fresh._latch_scroll_top_pinning(ordinary_photos, index)
+    assert fresh._pinned_band_evidence() is None
+
+    proven, _adb = _pinned_driver()
+    proven._latch_scroll_top_pinning(ordinary_photos, index)
+    assert proven._pinned_band_evidence().pinned
+
+
+def test_pinning_observer_treats_bad_provenance_or_helper_failures_as_no_measurement(
+        monkeypatch):
+    """This is a diagnostic for later reads, never a new way to abort this capture.
+
+    Repaired/legacy index doubles can carry malformed source provenance, and an image-library
+    failure inside the optional band comparison is similarly not evidence that the current
+    index is wrong.  Both must leave the signal unproven rather than escaping the observer.
+    """
+    photos = [_frame(scroll) for scroll in _FULL_READ_SCROLLS[:2]]
+    drv = _drv(WorldAdb())
+    malformed = SimpleNamespace(offsets=(0, 300), source_frame_indices=("0", 1))
+
+    drv._latch_scroll_top_pinning(photos, malformed)
+    assert drv._pinned_band_evidence() is None
+
+    class BrokenOffsets:
+        source_frame_indices = (0, 1)
+
+        @property
+        def offsets(self):
+            raise RuntimeError("repaired index offsets are unavailable")
+
+    drv._latch_scroll_top_pinning(photos, BrokenOffsets())
+    assert drv._pinned_band_evidence() is None
+
+    well_formed = SimpleNamespace(offsets=(0, 300), source_frame_indices=(0, 1))
+    monkeypatch.setattr(
+        hinge, "band_pinned_evidence",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("decoder unavailable")))
+
+    drv._latch_scroll_top_pinning(photos, well_formed)
+    assert drv._pinned_band_evidence() is None
+
+
+def test_a_package_update_drops_a_pinning_finding_measured_on_the_previous_build():
+    """The finding is about an app BUILD, so it must not outlive the build it was taken on.
+
+    Bound to the same version/geometry pair `_refresh_targeting_calibration_binding` already
+    latches from the device (read here, never re-asked of the phone) plus the identity band it
+    was measured through. A mid-session update is a new subject, and this one was never measured.
+    """
+    class VersionAdb(WorldAdb):
+        version = "9.134.0"
+
+        def shell(self, command="", **kwargs):
+            if command.startswith("dumpsys package "):
+                return f"versionName={self.version}\n"
+            return super().shell(command, **kwargs)
+
+    adb = VersionAdb(at_top=True)
+    drv = _drv(adb)
+    drv._capture_current()
+    assert drv._pinned_band_evidence().pinned
+
+    adb.version = "10.2.0"
+    drv._refresh_targeting_calibration_binding()
+
+    assert drv._pinned_band_evidence() is None
+    assert drv._scroll_top_pinned is None            # dropped, not merely hidden from readers
+
+
+def test_the_bounded_rewind_stops_reporting_a_settled_top_it_cannot_see():
+    """Site 2 of the wiring, and the one whose old answer was the most expensive.
+
+    `WorldAdb.swipe` is a no-op, so nothing this loop does can move the card. On a pinned build
+    the rewind nevertheless used to break out on its first look with `settled=True`, hand back
+    "the card is at its filter-chip top", and re-license capture entry. With the evidence it
+    cannot confirm, so it spends its bounded budget, returns False, and its recovery-spent
+    diagnostic records `check_unavailable` -- which is what tells an operator the signal is dead
+    rather than that the screen was stuck.
+    """
+    control = _drv(WorldAdb(at_top=True))
+    assert control._scroll_to_top_unlocked() is True
+    assert control._last_scroll_top_diagnostic["scroll_top_state"] == scroll_top.SCROLL_TOP_CONFIRMED
+
+    drv, _adb = _pinned_driver()
+    assert drv._scroll_to_top_unlocked() is False
+    assert (drv._last_scroll_top_diagnostic["scroll_top_state"]
+            == scroll_top.SCROLL_TOP_UNAVAILABLE)
+    assert drv._capture_entry_recovery_spent
+    assert scroll_top.SCROLL_TOP_UNAVAILABLE in drv._last_scroll_top_detector_summary()
+
+
+def test_the_capture_entry_evidence_and_the_recovery_latch_stop_affirming_a_pinned_row():
+    """Site 3: the two `.confirmed`-only readers. Both already fail SAFE under the fourth state
+    (it is not `.confirmed`), but both were still vacuous until the evidence reached them -- one
+    licenses a rewind gesture on an unproven surface, the other resets `_capture_scrolls` and
+    re-licenses autonomous recovery on an unproven top."""
+    chips = _frame(_MAX_SCROLL, at_top=True)
+
+    control = _drv(WorldAdb(at_top=True))
+    control._capture_scrolls = 4
+    assert control._capture_entry_profile_evidence(chips) is not None
+    assert control._recovery_spent_top_confirmed(chips) is True
+    assert control._capture_scrolls == 0
+
+    drv, _adb = _pinned_driver()
+    drv._capture_scrolls = 4
+    drv._current_sigs = []                       # no captured-profile corroboration either
+    assert drv._capture_entry_profile_evidence(chips) is None
+    assert drv._recovery_spent_top_confirmed(chips) is False
+    assert drv._capture_scrolls == 4             # the counter was NOT reset by a dead signal
+
+
+def test_a_pinned_row_no_longer_upgrades_a_new_identity_verdict_into_a_proven_top():
+    """Site 2b: the canonical detector that licenses Layer 1b's CARD-HEADER OCR.
+
+    ``top`` is not a free verdict -- it is what lets `_identity_of` OCR the card header, a crop
+    whose geometry is measured FROM the scroll top. At a mid-profile offset the same rect holds
+    photo texture, and turning photo texture into a name is the 2026-08-16 Julia failure. So on
+    a build proven unable to tell top from mid-profile, the upgrade is withheld and the pixel
+    verdict stands, exactly as it already does for an unreadable or refuted frame.
+
+    Both drivers get the same two capture-local signatures (each far from the chips row, so the
+    pixel verdict is ``new`` and the canonical detector is the only thing that could change it)
+    and the same frame; the ONLY difference is the latch.
+    """
+    chips = _frame(1300, at_top=True)
+    control = _drv(WorldAdb(at_top=True))
+    drv, _adb = _pinned_driver()
+    for d in (control, drv):
+        d._identity_sig = hinge._band(_frame(600), _IDENTITY_BAND)
+        d._identity_top_sig = hinge._band(
+            _frame(600, header=_OTHER_HEADER_VALUE), _IDENTITY_BAND)
+        d._identity_name = None                  # isolate the pixel + canonical layers from OCR
+
+    assert control._identity_of(chips)[0] == "top"
+    assert drv._identity_of(chips)[0] == "new"
+
+
+def test_the_pinning_measurement_is_stamped_on_the_folds_own_timing_ledger():
+    """It reads every kept frame's identity band, so it is a NAMED cost rather than a hidden one
+    -- the same rule every other bucket in `_index_captured_items` follows, and the reason
+    `unattributed_s` stays meaningful instead of quietly absorbing a new per-frame scan."""
+    class Debug:
+        def __init__(self):
+            self.calls = []
+
+        def action(self, name, **fields):
+            self.calls.append((name, fields))
+
+    drv = _drv(WorldAdb())
+    drv._dbg = Debug()
+
+    drv._capture_current()
+
+    _name, fold = next(c for c in drv._dbg.calls if c[0] == "capture_fold_timing")
+    assert "scroll_top_pinning_s" in fold

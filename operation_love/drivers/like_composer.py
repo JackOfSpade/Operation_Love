@@ -292,13 +292,20 @@ def locate_inline_composer(frame: bytes, confirm_template, threshold: float = 0.
     margin, because cv2 switches between spatial and DFT correlation by input size) that this
     change does not go anywhere near.
     """
-    if not isinstance(threshold, (int, float)) or not 0.0 < float(threshold) <= 1.0:
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) \
+            or not 0.0 < float(threshold) <= 1.0:
         raise ValueError("threshold must be a finite correlation value in (0, 1]")
     cv2, np = _require_vision()
     gray = image if image is not None else cv2.imdecode(
         np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
     if gray is None:
         raise ComposerDetectionError(f"inline-composer frame did not decode as an image ({len(frame)} bytes)")
+    if getattr(gray, "ndim", None) != 2 or not all(gray.shape):
+        # ``image`` is an optional decoded grayscale reuse path. Do not let an accidental
+        # colour/empty buffer escape as a ValueError while unpacking ``shape`` below: this
+        # detector's public failure contract is ComposerDetectionError and, more importantly,
+        # an invalid reuse buffer must never turn into guessed click geometry.
+        raise ComposerDetectionError("inline-composer image must be a non-empty grayscale array")
     height, width = gray.shape
     if width < _MIN_FRAME_WIDTH or height < _MIN_FRAME_HEIGHT:
         raise ComposerDetectionError(

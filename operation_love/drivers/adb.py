@@ -367,6 +367,13 @@ class Adb:
             ) from exc
         except FileNotFoundError as exc:
             raise AdbError(argv, "ADB binary not found") from exc
+        except OSError as exc:
+            # ``subprocess.run`` can also fail before a child starts when an explicit
+            # adb_path is not executable (PermissionError), is a directory, or the host
+            # otherwise rejects execve. Keep those host-side launch failures on the same
+            # public AdbError surface as a missing binary instead of leaking an unrelated
+            # OSError from beneath the driver API.
+            raise AdbError(argv, f"could not start ADB binary: {exc}") from exc
 
         if result.returncode != 0:
             # Only decode on the error path — never decode a successful payload

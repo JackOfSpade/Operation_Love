@@ -5,7 +5,7 @@ import time
 import types
 
 from operation_love.costing import CostTracker, ModelPricing, Usage
-from operation_love.drivers.base import DatingAppDriver
+from operation_love.drivers.base import ActionCancelled, DatingAppDriver
 from operation_love.opener.opener import OpenerResult
 from operation_love.opener.service import OpenerService
 from operation_love.perception.capture import Profile
@@ -25,6 +25,8 @@ _LIVENESS_TIMEOUT_S = 15.0
 
 
 class _Driver(DatingAppDriver):
+    supports_interruptible_dislike = True
+
     def __init__(self, n):
         self.n = n
         self.i = 0
@@ -37,7 +39,9 @@ class _Driver(DatingAppDriver):
         return Profile(photos=[b"x"])
     def out_of_profiles(self): return self.i >= self.n
     def like(self, opener=None, item_index=None, *, model_item_index=None): pass
-    def dislike(self): pass
+    def dislike(self, *, should_stop=None):
+        if should_stop is not None and should_stop():
+            raise ActionCancelled("test pass cancelled before input")
     def close(self): self.closed = True
 
 
@@ -265,6 +269,8 @@ def test_second_workers_own_stop_reason_is_published_even_though_it_never_calls_
         blocks until A has definitely already exhausted the shared service, pinning B
         "mid-profile" (past every earlier stop_event check) at the moment the exhaustion
         becomes visible -- exactly the window the deleted check exists to catch."""
+        supports_interruptible_dislike = True
+
         def __init__(self):
             self.i = 0
             self.closed = False
@@ -276,7 +282,9 @@ def test_second_workers_own_stop_reason_is_published_even_though_it_never_calls_
             return Profile(photos=[b"x"])
         def out_of_profiles(self): return False
         def like(self, opener=None, item_index=None, *, model_item_index=None): pass
-        def dislike(self):
+        def dislike(self, *, should_stop=None):
+            if should_stop is not None and should_stop():
+                raise ActionCancelled("test pass cancelled before input")
             b_in_dislike.set()             # past every earlier stop_event check for this profile
             assert a_exhausted.wait(timeout=_LIVENESS_TIMEOUT_S), \
                 "A never signalled exhaustion -- test is broken"

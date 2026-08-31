@@ -1,17 +1,17 @@
-# Hinge Pixel 7a Setup Runbook
+# Hinge Pixel 7a Host Setup Runbook
 
-Turnkey setup for bringing a brand-new physical Pixel 7a online for Hinge
-automation with the lowest-risk architecture selected in
-[ANTI-BOT-RESEARCH.md](./ANTI-BOT-RESEARCH.md). This is not "safe" or compliant:
-the research record says Match/Hinge automation remains bannable by policy and
-shadowbans can be silent and lagging.
+Host-side setup for authorized diagnostic use of a physical Pixel 7a. It covers
+ADB, screen mirroring, and private capture handling; it does **not** authorize
+dating-app automation, account provisioning, or evasion of platform policy or
+enforcement. Stop if the account owner and the service's current terms do not
+expressly permit the intended use.
 
 Fixed setup decisions:
 - Hardware: physical Pixel 7a, 100% stock. No root. No bootloader unlock.
 - Control path: host-side `scrcpy` + ADB only. No on-device automation helper.
-- SIM: Tello prepaid eSIM on T-Mobile MVNO, real US number, about $5/mo no-data.
-- Network: home Wi-Fi residential IP for all account creation and usage. No VPN.
-- Account: dedicated burner Google account plus burner Hinge account.
+- Account and SIM provisioning: deliberately out of scope for this runbook.
+- Network: a secure, account-owner-controlled connection that complies with the
+  service and network policies.
 - Host: macOS on Apple Silicon.
 
 ---
@@ -24,12 +24,10 @@ physical, stock, unrooted, Play-certified phone can pass
 [ANTI-BOT-RESEARCH.md, "The two hard gates"](./ANTI-BOT-RESEARCH.md#the-two-hard-gates).
 
 - [ ] Unbox and boot the Pixel 7a.
-- [ ] Complete factory-fresh Android setup as a new device.
-- [ ] When Android asks for network during setup, join home Wi-Fi. Do not use a
-      VPN. Section 3 makes this network rule explicit for Hinge usage.
-- [ ] Decline restore-from-backup / device-copy prompts. Use a clean device
-      fingerprint for this burner setup.
-- [ ] Sign in only with the dedicated burner Google account.
+- [ ] Complete Android setup using the account owner's approved device and
+      account policy.
+- [ ] Connect through a secure network authorized by its owner.
+- [ ] Sign in only when the Android account holder has authorized it.
 - [ ] Finish setup to the stock Pixel home screen.
 - [ ] Leave the phone stock:
       - no root
@@ -41,57 +39,30 @@ physical, stock, unrooted, Play-certified phone can pass
       within the last 12 months and decays once the phone leaves its update
       window; whether Hinge requires STRONG vs DEVICE is currently unconfirmed
       (verify per the research's re-check triggers).
-- [ ] Verify on device: Play Store opens under the burner Google account.
+- [ ] Verify on device: Play Store opens under the authorized Android account.
 
 Why this matters: `MEETS_DEVICE_INTEGRITY` depends on a genuine certified device
 with a locked bootloader. Root or bootloader unlock crosses the integrity line
 this setup is built around.
 
-## 2. Tello eSIM activation
+## 2. Account and SIM provisioning
 
-Research basis: Hinge/Match account identity includes phone checks; VoIP numbers
-are called out as rejected/carrier-checked, and the project decision is Tello
-prepaid eSIM as the real US number. See
-[ANTI-BOT-RESEARCH.md, "Other vectors"](./ANTI-BOT-RESEARCH.md#other-vectors)
-and
-[ANTI-BOT-RESEARCH.md, "Decisions this research drove"](./ANTI-BOT-RESEARCH.md#4-decisions-this-research-drove).
-
-- [ ] Activate the Tello prepaid eSIM on the Pixel 7a using Tello's current
-      activation flow. Pixel/Tello labels can change; verify the exact path on
-      device.
-- [ ] If using Android Settings directly, start from:
-      `Settings -> Network & internet -> SIMs -> Add SIM`
-      and verify the remaining prompts on device.
-- [ ] Confirm the activated Tello line shows a US phone number.
-- [ ] Open the stock Messages app.
-- [ ] From another phone, send a test SMS to the Tello number.
-- [ ] Confirm the Pixel receives the SMS.
-- [ ] Reply from the Pixel and confirm the other phone receives it.
-- [ ] Record the Tello number in the project secrets/notes location you already
-      use. Do not put it in git.
-
-This SMS receive check is required before Hinge signup/login because the burner
-Hinge account will verify through this Tello number.
+This runbook intentionally provides no account-creation, phone-number, or
+identity-separation procedure. Do not use a new account, number, device, or
+network to bypass a restriction, suspension, or other enforcement action. Where
+the intended work is authorized, follow the service's current account and
+verification process directly and keep credentials out of the repository.
 
 ## 3. Network
 
-Research basis: the Hinge/Match network vector flags datacenter/VPN IPs as
-penalized and residential/mobile as better. Vendor-specific claims are disputed,
-so the durable rule here is residential home Wi-Fi and no VPN. See
-[ANTI-BOT-RESEARCH.md, "Other vectors"](./ANTI-BOT-RESEARCH.md#other-vectors)
-and
-[ANTI-BOT-RESEARCH.md, "Vendor / biometric claims - DISPUTED"](./ANTI-BOT-RESEARCH.md#vendor--biometric-claims--disputed).
+Use a secure network that the account owner is authorized to use. This runbook
+does not prescribe network characteristics as a way to influence a service's
+fraud, safety, or enforcement systems.
 
-- [ ] Connect the Pixel to home Wi-Fi.
-- [ ] Confirm the Pixel is not using a VPN app or Android VPN profile.
-      Verify on device.
-- [ ] Use home Wi-Fi for every Hinge-related step:
-      - Play Store install
-      - burner Hinge account creation/login
-      - SMS verification
-      - automation sessions
-- [ ] Do not use VPN, proxy, cloud/datacenter network, or remote browser/device
-      infrastructure for Hinge account creation or usage.
+- [ ] Connect the Pixel through a stable, authorized network.
+- [ ] Follow the service's and network owner's security requirements.
+- [ ] Do not use a network, proxy, remote device, or identity change to bypass
+      a restriction or enforcement action.
 
 ## 4. Enable ADB
 
@@ -196,24 +167,17 @@ no helper app installed on the Pixel.
 
 ## 7. Install Hinge from Play Store
 
-Research basis: Hinge runs on the disposable burner because shadowban status can
-look normal while likes are silently dropped, and Match can federate safety
-signals across account/device/phone/payment/photo/face identifiers. See
-[ANTI-BOT-RESEARCH.md, "Consequences (Hinge) - the strategic crux"](./ANTI-BOT-RESEARCH.md#consequences-hinge--the-strategic-crux)
-and
-[ANTI-BOT-RESEARCH.md, "Other vectors"](./ANTI-BOT-RESEARCH.md#other-vectors).
+Install Hinge only when the service's current terms and the account owner
+expressly permit the intended use. This repository is not a guide to creating,
+recovering, or separating dating-app accounts.
 
-- [ ] Confirm the Pixel is on home Wi-Fi and no VPN is active.
-- [ ] Open Play Store under the burner Google account.
+- [ ] Confirm the intended use is authorized before proceeding.
+- [ ] Open Play Store under the authorized Android account.
 - [ ] Install Hinge from the Play Store.
 - [ ] Open Hinge on the Pixel.
-- [ ] Create or log into only the burner Hinge account.
-- [ ] Use the Tello number for Hinge SMS verification.
-- [ ] Complete the SMS verification on the Pixel.
-- [ ] Verify on device any Hinge prompts that may vary by app version.
-- [ ] Do not log into the user's real Apple-keyed Hinge account.
-- [ ] Do not link the burner account to the user's Apple ID, real Google account,
-      real phone number, or personal payment method.
+- [ ] Log in only with an account the owner is authorized to use for this work.
+- [ ] Follow the service's normal verification process; never use account,
+      payment, phone, device, network, or identity changes to evade enforcement.
 
 ## 8. Verification checklist
 
@@ -264,43 +228,25 @@ ls -lh /tmp/hinge-pixel-screencap.png
 
 Expected: `file` reports PNG image data and `ls` shows a non-empty file.
 
-## 9. What could burn the account
-
-Research basis: the durable risks are Play Integrity failure, on-device
-automation footprint, bad network/IP, identity linkage, behavior, and silent
-shadowban. See
-[ANTI-BOT-RESEARCH.md, "Hinge / Match Group"](./ANTI-BOT-RESEARCH.md#2-hinge--match-group-android-app-planned-automation)
-and
-[ANTI-BOT-RESEARCH.md, "Cross-cutting principles"](./ANTI-BOT-RESEARCH.md#3-cross-cutting-principles).
+## 9. Authorization and account safety
 
 Do:
+- [ ] Confirm current service terms and account-owner approval before each use.
+- [ ] Stop when the service signals a restriction, suspension, paywall, or other
+      state that the approved workflow does not cover.
 - [ ] Keep the Pixel 7a stock, locked, unrooted, and Play-certified.
-- [ ] Keep all Hinge activity on home Wi-Fi with no VPN.
-- [ ] Keep the burner Google account, Tello number, and burner Hinge account
-      separate from the user's real account stack.
 - [ ] Use host-side ADB + `scrcpy` only.
-- [ ] Prefer observe/human-in-the-loop behavior where possible; autonomous
-      behavior is the unresolved risk.
-- [ ] Treat a normal-looking Hinge deck as inconclusive. Shadowban can be silent
-      and lagging.
 
 Do not:
+- [ ] Do not automate a service or account without explicit authorization.
+- [ ] Do not create, modify, or combine accounts, identities, phone numbers,
+      payment methods, networks, devices, or photos to evade enforcement.
 - [ ] Do not use an emulator or AVD for Hinge.
 - [ ] Do not root, unlock the bootloader, or flash a custom OS.
 - [ ] Do not install `uiautomator2`, `atx-agent`, Appium helper APKs,
       accessibility automation, or any on-device automation server.
-- [ ] Do not use VPN, proxy, datacenter IP, or cloud-hosted device/browser paths.
-- [ ] Do not log into the user's real Apple-keyed Hinge account.
-- [ ] Do not reuse a banned Match Group phone/email/payment/device identity.
-- [ ] Do not use photos of a face that has ever appeared on a banned (or prior)
-      Match Group account. Match federates a face-hash across its brands
-      (Tinder/Hinge/OkCupid/Match), so a previously-banned face is recognized on
-      this burner even with a new number, device, and IP; the "real photos, risk
-      accepted" decision assumes the face has no Match-brand ban history.
 - [ ] Do not assume Incognia, ThreatMetrix, or touch-biometric claims are proven;
-      the research marks those vendor/biometric specifics as disputed. The robust
-      guardrails are stock physical hardware, residential network, burner
-      account, and no on-device helper.
+      the research marks those vendor/biometric specifics as disputed.
 
 ## 10. Known blocking screen — Hinge's "out of free likes" paywall
 

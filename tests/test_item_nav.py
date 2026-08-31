@@ -256,7 +256,8 @@ class FakeDriver:
                  extra_heart_after=None, extra_heart_card=1,
                  identity_rect=_IDENTITY_BAND, scroll_captures=8,
                  start_scroll=_ENTRY_SCROLL, header=_HEADER_VALUE, world_kw=None,
-                 allow_entry_scroll=False, entry_scroll_unmeasurable=False):
+                 allow_entry_scroll=False, entry_scroll_unmeasurable=False,
+                 pinned_evidence=None):
         self.content_band = tuple(content_band)
         self.identity_band = None if identity_band is None else tuple(identity_band)
         self.scroll_captures = scroll_captures
@@ -277,6 +278,12 @@ class FakeDriver:
                                                                # kept apart from `gestures` (the
                                                                # ascending walk's own) on purpose
         self._scramble_next_capture = False
+        if pinned_evidence is not None:
+            # ONLY defined when a test asks for it. Every other test in this file therefore
+            # drives a driver with NO `_pinned_band_evidence` at all, which is both the legacy
+            # driver and the `getattr` fallback in one -- so "no evidence available means
+            # exactly today's behaviour" is asserted by the whole file rather than by one test.
+            self._pinned_band_evidence = lambda: pinned_evidence
 
     # --- the surface item_nav uses -------------------------------------------------
     def _template(self, role):
@@ -1331,6 +1338,78 @@ def test_entering_at_a_scroll_top_still_refuses_a_different_profile_after_the_st
     assert "already" in str(exc.value)                 # the appended recovery note
     assert len(driver.entry_scrolls) == 1               # exactly one attempt, never a second
     assert driver.gestures == []                        # the ascending walk was never entered
+
+
+def _pinned_evidence(offsets=(0, 900)):
+    """The REAL `band_pinned_evidence` answer for a build that pins the chips row to the screen.
+
+    Never hand-constructed: `_frame(s, at_top=True)` paints the shipped filter-chips constant at
+    every scroll offset, which is exactly what Hinge 10.1.0's expanded per-profile header does
+    (measured `confirmed_top` at distance 0.000 on six frames spanning 2305px of proven scroll),
+    and the helper is left to decide for itself whether that proves anything. Building a
+    `PinnedBandEvidence(pinned=True, ...)` by hand here would assert the conclusion instead of
+    measuring it, and would keep passing if the helper's own conditions were deleted.
+    """
+    evidence = scroll_top.band_pinned_evidence(
+        [_frame(s, at_top=True) for s in offsets],
+        identity_band=_IDENTITY_BAND, page_offsets=offsets)
+    assert evidence.pinned, evidence.reason        # the fixture must really be a pinned build
+    return evidence
+
+
+def test_the_scroll_top_entry_recovery_declines_to_fire_on_a_build_that_pins_the_chips_row():
+    """Blocker 12's rescue step needs a PREMISE, and a pinned build never establishes it.
+
+    The branch reads "the entry frame affirmatively confirms as the chips row, so we are at this
+    card's scroll top and one bounded step will reveal the sticky header". On Hinge 10.1.0's
+    expanded per-profile header state that row is pinned to the SCREEN, so the raw gate confirms
+    on every frame of every offset -- the branch would fire on every entry, spend a real gesture
+    on a card that was never at its top, and reveal nothing, because there is no header below to
+    reveal. `check_unavailable` is not `.confirmed`, so it declines; the original refusal stands
+    with its own wording intact and NO recovery note, because no recovery was attempted.
+
+    `allow_entry_scroll=True` is deliberate: the double would happily permit the one gesture, so
+    a gesture not happening is the code declining rather than the fixture forbidding it. The
+    identity here is the same `_OTHER_HEADER_VALUE` mismatch the test above uses, so the two
+    differ in exactly one thing -- whether the build was proven to pin the row."""
+    index = _short_profile_index()
+    driver = FakeDriver(start_scroll=0, allow_entry_scroll=True, header=_OTHER_HEADER_VALUE,
+                        pinned_evidence=_pinned_evidence())
+    # The RAW gate still confirms this very frame: the downgrade is the evidence's doing, not a
+    # different frame's. Without that control the test could pass for the wrong reason.
+    assert scroll_top.confirm_scroll_top(driver._screencap(),
+                                         identity_band=_IDENTITY_BAND).confirmed
+
+    with pytest.raises(item_nav.ItemNavigationError) as exc:
+        _navigate(driver, 1, index=index, reference=_frame(0))
+
+    assert exc.value.code == item_nav.NAV_IDENTITY_UNCONFIRMED
+    assert driver.entry_scrolls == []                   # the rescue gesture was never spent
+    assert driver.gestures == []                        # nor was the ascending walk entered
+    assert "already" not in str(exc.value)              # no recovery note: none was attempted
+
+
+def test_an_unproven_pinning_leaves_the_entry_recovery_exactly_as_it_was():
+    """The negative control for the test above, and the one that keeps it honest.
+
+    `band_pinned_evidence` over frames at ONE offset cannot prove pinning -- a screen-pinned
+    strip and page content that simply had not scrolled yet predict identical pixels there -- so
+    this drives the SAME code path with a `pinned=False` object and must recover normally. That
+    separates "the recovery declined because the evidence proved something" from "the recovery
+    declined because a `pinned_evidence` argument was present at all", which is the mistake that
+    would silently disable blocker 12 on every build."""
+    unproven = scroll_top.band_pinned_evidence(
+        [_frame(0, at_top=True)], identity_band=_IDENTITY_BAND, page_offsets=(0,))
+    assert unproven.pinned is False
+
+    index = _short_profile_index()
+    driver = FakeDriver(start_scroll=0, allow_entry_scroll=True, pinned_evidence=unproven)
+
+    target = _navigate(driver, 1, index=index, reference=_frame(0))
+
+    assert len(driver.entry_scrolls) == 1
+    assert target.heart_ordinal == 1
+    assert target.identity.matched
 
 
 def test_a_scroll_top_entry_step_that_cannot_be_measured_is_a_named_refusal():

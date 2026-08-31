@@ -952,7 +952,13 @@ def test_the_second_burst_follows_the_measured_page_shift_rather_than_the_card()
     assert rects[ordinal] not in seen
 
 
-def test_the_centering_geometry_is_defined_once_and_measured_from_the_content_band():
+def test_the_centering_geometry_is_defined_once_and_measured_from_the_screen_centre():
+    """The zone, on the CALIBRATED band, where the aim point and the band centre coincide.
+
+    Renamed 2026-08-28 with `content_band_center_row`: the offsets below are still
+    denominated in the band's height, but the row they are measured FROM is the screen's
+    centre. The test below this one is the one that can tell those two apart.
+    """
     band = (0.125, 0.875)
     height = 2400
     centre_row = item_crops.content_band_center_row(height, band)
@@ -970,6 +976,55 @@ def test_the_centering_geometry_is_defined_once_and_measured_from_the_content_ba
     high = (53, 300, 1027, 500)
     assert item_crops.card_center_offset_frac(
         high, frame_height=height, content_band=band) < 0
+
+
+def test_the_autoplay_aim_point_is_the_screen_centre_and_never_moves_with_the_content_band():
+    """The aim point is a property of the PHONE; `content_band` is our own analysis window.
+
+    Hinge autoplays a card only at SCREEN centre (config.yaml
+    `still_photo_assumption_acceptance.rationale`, the owner-accepted UNMEASURED assumption the
+    whole still-photo ladder rests on). `content_band` is which rows we let the segmenter read,
+    and Hinge 10.1.0 drawing a pinned profile header inside it is exactly the sort of thing that
+    makes someone narrow it.
+
+    `content_band_center_row` derived its row from the BAND until 2026-08-28, which was a no-op
+    only because the calibrated `(0.125, 0.875)` is symmetric about 0.5. This test exists so that
+    coincidence can never be load-bearing again: narrowing the band to (0.2154, 0.875) to clear
+    that header would have re-aimed the row to 1308.5 and dwelt every candidate 108.5px below the
+    only place playback is claimed to start, while `centered` still read True everywhere
+    downstream. Mutation-checked against exactly that reversion.
+    """
+    height = _H
+    assert item_crops.content_band_center_row(height, _CONTENT_BAND) == pytest.approx(height / 2)
+
+    # Move the band anywhere, symmetric or not: the aim point does not follow it.
+    for moved in ((0.2154, 0.875), (0.125, 0.875), (0.0, 1.0), (0.30, 0.70), (0.10, 0.60)):
+        assert item_crops.content_band_center_row(height, moved) == pytest.approx(
+            height / 2), f"band {moved} moved the autoplay aim point off screen centre"
+
+    # The worked example, spelled out: the band-derived reading really is a DIFFERENT row, so the
+    # assertions above are not agreeing with the old formula by luck.
+    pinned_header_band = (0.2154, 0.875)
+    band_derived = (pinned_header_band[0] + pinned_header_band[1]) / 2 * height
+    assert band_derived == pytest.approx(1308.48)
+    assert abs(band_derived - height / 2) == pytest.approx(108.48)
+
+    # ...and the whole offset chain follows the screen, not the band: a card sitting exactly on
+    # screen centre reads ZERO offset under a band whose own centre is 108px away from it.
+    dead_centre = (_CARD_X0, height // 2 - 400, _CARD_X1, height // 2 + 400)
+    assert item_crops.card_center_offset_frac(
+        dead_centre, frame_height=height, content_band=pinned_header_band) == pytest.approx(0.0)
+    assert item_crops.card_is_centered(
+        dead_centre, frame_height=height, content_band=pinned_header_band)
+
+    # The DENOMINATOR, by contrast, stays the band's height on purpose (see
+    # `card_center_offset_frac`): `STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC` is a tolerance chosen in
+    # band units, and it is the unit every recorded `center_offset_frac` and every `offset *
+    # band_px` corrective scroll is written in. 180px below centre on the calibrated 1800px band
+    # is 0.100, never 180/2400 = 0.075.
+    below = (_CARD_X0, height // 2 + 180 - 400, _CARD_X1, height // 2 + 180 + 400)
+    assert item_crops.card_center_offset_frac(
+        below, frame_height=height, content_band=_CONTENT_BAND) == pytest.approx(0.100)
 
 
 @pytest.mark.parametrize("drift", [True, -0.01, float("nan"), float("inf")])
@@ -1707,3 +1762,36 @@ def _fake_index(blocks):
         blocks=tuple(blocks), frames=(segmentation,), shifts=(), offsets=(0,),
         page_span=segmentation.band, at_scroll_top=False, reached_end=False, tail_gap_px=None,
         failures=(), identity=item_identity.capture_profile_identity((), identity_band=None))
+
+
+def test_a_crop_carries_a_greyscale_reference_that_reproduces_its_signature_exactly():
+    """The verification reference is a THIRD artefact, cut from the same rows as the other two.
+
+    `image` is a colour re-encode for the model and cannot double as doc 5.6's reference: greying
+    it means `IMREAD_GRAYSCALE` on a PNG this codebase wrote, while the sheet it will be compared
+    against is `IMREAD_GRAYSCALE` on the PNG the DEVICE wrote. Those are the two paths this
+    module's docstring calls a measured trap, and on 2026-08-27 they put a live comparison in
+    different units and refused a correct card at 10.283 against a 7.00 ceiling.
+
+    So the reference is carried out of `_crop_image` directly, as a lossless 8-bit greyscale PNG:
+    it must decode back with no colour conversion anywhere in the path, which makes reproducing
+    the stored signature exact rather than merely close.
+    """
+    payload = _payload()
+    for crop in payload.items + payload.context:
+        assert crop.verify_image, crop.reason
+        decoded = cv2.imdecode(np.frombuffer(crop.verify_image, np.uint8), cv2.IMREAD_GRAYSCALE)
+        assert decoded.ndim == 2
+        colour = cv2.imdecode(np.frombuffer(crop.image, np.uint8), cv2.IMREAD_COLOR)
+        assert decoded.shape == colour.shape[:2]
+        if crop.signature is not None:
+            reproduced = item_crops._signature_from_gray(
+                decoded, grid=payload.signature_grid, cv2=cv2, np=np)
+            assert crop.signature.distance(reproduced) == 0.0, crop.reason
+
+
+def test_a_block_with_no_image_carries_no_verification_reference_either():
+    """`verify_image` follows `image` exactly: withheld blocks have neither."""
+    payload = _payload()
+    for crop in payload.excluded + payload.uncroppable:
+        assert crop.image is None and crop.verify_image is None, crop.reason

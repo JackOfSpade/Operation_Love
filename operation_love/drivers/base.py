@@ -143,7 +143,8 @@ class ObserveItemCheck:
         raise TypeError("ObserveItemCheck has no truth value -- inspect .state")
 
 
-def open_debug_log(debug_dir: str, *, run_id: str | None = None):
+def open_debug_log(debug_dir: str, *, run_id: str | None = None,
+                   keep_runs: int | None = None, protect_runs=()):
     """Best-effort DebugLog bootstrap shared by every driver's open_session().
 
     Returns a DebugLog instance, or None if construction fails. Debug logging must
@@ -152,7 +153,8 @@ def open_debug_log(debug_dir: str, *, run_id: str | None = None):
     """
     try:
         from .debuglog import DebugLog
-        return DebugLog(debug_dir, run_id=run_id)
+        return DebugLog(debug_dir, run_id=run_id, keep_runs=keep_runs,
+                        protect_runs=protect_runs)
     except Exception as exc:  # noqa: BLE001 — logging must never break a run
         print(f"Debug log unavailable ({type(exc).__name__}: {exc}); continuing without it.")
         return None
@@ -215,6 +217,14 @@ class DatingAppDriver(ABC):
     # pre-tap navigation. Kept opt-in so existing drivers and lightweight fakes retain
     # their public like() signature.
     supports_interruptible_like_navigation: bool = False
+
+    # Whether dislike() accepts a should_stop callable and honours it at the final
+    # pre-input boundary.  Unlike a capture, a pass must not be allowed to begin
+    # after an operator has pressed Stop: a worker-side check alone has a race
+    # between that check and the device gesture.  This is deliberately opt-in so
+    # an older driver cannot claim a guarantee it does not implement; AUTO fails
+    # closed instead of issuing an uninterruptible pass through such a driver.
+    supports_interruptible_dislike: bool = False
 
     # Whether human_motion.think_time_s()'s per-decision "think time" (measured
     # like-vs-pass dwell asymmetry) is calibrated for THIS app's real behavior.
@@ -329,8 +339,15 @@ class DatingAppDriver(ABC):
         afterwards is the `hearts[0]` substitution with an extra step."""
 
     @abstractmethod
-    def dislike(self) -> None:
-        """Pass on the current profile."""
+    def dislike(self, *, should_stop=None) -> None:
+        """Pass on the current profile.
+
+        Drivers advertising ``supports_interruptible_dislike`` must poll
+        ``should_stop`` immediately before their first pass input.  If it fires,
+        they raise ActionCancelled without touching the device.  Once the input
+        has been issued, the pass is a landed action and must return normally so
+        the worker records it rather than creating a phantom unrecorded swipe.
+        """
 
     @abstractmethod
     def out_of_profiles(self) -> bool:

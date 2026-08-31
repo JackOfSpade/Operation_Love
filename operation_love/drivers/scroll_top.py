@@ -13,6 +13,7 @@ This module is that confirmation, and nothing else.
 
     confirm_scroll_top(frame, identity_band=...) -> ScrollTopVerdict
     require_scroll_top(frame, identity_band=...) -> ScrollTopVerdict   # or raises
+    band_pinned_evidence(frames, identity_band=..., page_offsets=...) -> PinnedBandEvidence
 
 Deliberately a leaf module on the same terms as `segment.py`, `frameshift.py`, `item_index.py`
 and `item_crops.py`: pure functions over frame BYTES plus explicit calibration parameters, no
@@ -73,16 +74,65 @@ when it is only "the same chrome, moved".
   not matter for noise). So the coarse grid tolerates roughly 3x the layout drift for the same
   confirm bound, while the nearest non-chips band stays 11.2 away.]
 
-THE THREE OUTCOMES, AND WHY "CANNOT TELL" IS A STATE AND NOT A FALSY BOOL
+WHEN THE PREMISE ITSELF FAILS: A SCREEN-PINNED CHIPS ROW (Hinge 10.1.0, 2026-08-28)
+------------------------------------------------------------------------------------
+Everything above rests on one premise, and it is a property of the APP rather than of this code:
+the filter-chips row is drawn at this rect ONLY at a scroll top, and every other offset covers it
+with the sticky per-profile header. Hinge 10.1.0 has a per-profile header state -- the "expanded"
+one, which carries the filter-chips row along with it -- that FALSIFIES that premise.
+
+  [device, run 8fb11094ef4d, the six `item_index_refused_3fa8b8db66fd` evidence frames, captured
+  mid-profile at page offsets 6180, 6615, 7110, 7637, 8152 and 8485 (2305px of proven scroll):
+  frame rows 0..516 are byte-identical across all 15 pairs (max abs diff 0), and this gate
+  returned `confirmed_top` at distance 0.000 on every one of them. An affirmative "we are at the
+  top" was therefore being issued thousands of pixels down a profile, into a HARD GATE the rest
+  of doc 5.5 leans on. On two OTHER profiles in the same run the same band correctly refuted
+  (13.219 and 12.359), so this is a per-screen-state defect, not a blanket one.]
+
+No single frame can detect this: one frame showing the chips row is exactly what a genuine top
+looks like. It takes TWO frames known to sit at DIFFERENT scroll offsets, which is
+`item_index._screen_fixed_islands`'s reasoning applied to this strip -- a screen-fixed element
+keeps a constant FRAME position while the page moves, and page content cannot do that.
+`band_pinned_evidence` is that test, and `confirm_scroll_top` takes its result as an OPTIONAL
+parameter: given evidence that the chips row is pinned, a match to it is no longer allowed to
+mean "at top".
+
+WHAT "PINNED" MUST MEAN HERE, BECAUSE THE OBVIOUS READING BREAKS THE WORKING CASE
+----------------------------------------------------------------------------------
+The sticky per-profile header is pinned TOO, and always was: "stays pixel-identical for the whole
+profile" is the device measurement `item_identity` is built on, and 143 corpus frames of one
+profile read 0.000 against each other. So "the band holds constant pixels across a scroll" is
+true in the state this gate still works in, and a helper that stopped there would disable the gate
+on the collapsed-header profiles it reads correctly today.
+
+The distinction is WHICH thing is pinned. This gate reads the chips row as evidence FOR the top,
+so it is only dead when the CHIPS ROW is what survives the scroll. `band_pinned_evidence`
+therefore requires both halves: the band holds identical pixels across proven scrolling AND every
+one of those frames confirms as the chips row. Two frames at offsets more than the band's own
+height apart cannot both be at the top, so a chips row on both is a direct counterexample to the
+premise. The collapsed-header state fails the second half -- its band is a person, not chrome --
+and is untouched.
+
+THE FOUR OUTCOMES, AND WHY "CANNOT TELL" IS A STATE AND NOT A FALSY BOOL
 --------------------------------------------------------------------------
 `ScrollTopVerdict.state` is exactly one of:
 
-  * `SCROLL_TOP_CONFIRMED`  -- the band IS the filter-chips row. Counting may start.
-  * `SCROLL_TOP_REFUTED`    -- the band is something else, on a screen already established to be
-                               a Hinge profile, which means the sticky per-profile header is
-                               showing and we are scrolled. Scroll up and ask again.
-  * `SCROLL_TOP_UNKNOWN`    -- neither. No `identity_band` declared, or the distance landed in
-                               the dead zone between the two bounds. NEVER "at top".
+  * `SCROLL_TOP_CONFIRMED`   -- the band IS the filter-chips row. Counting may start.
+  * `SCROLL_TOP_REFUTED`     -- the band is something else, on a screen already established to be
+                                a Hinge profile, which means the sticky per-profile header is
+                                showing and we are scrolled. Scroll up and ask again.
+  * `SCROLL_TOP_UNKNOWN`     -- neither. No `identity_band` declared, or the distance landed in
+                                the dead zone between the two bounds. NEVER "at top".
+  * `SCROLL_TOP_UNAVAILABLE` -- the caller supplied `band_pinned_evidence` proving this app
+                                version pins the chips row to the screen, so the signal carries
+                                no information about scroll position and this CHECK cannot answer
+                                on this app version at all. Deliberately NOT folded into REFUTED:
+                                "not at top" tells a scroll-up loop to scroll again, and no amount
+                                of scrolling fixes a pinned band. It is a recalibration stop and
+                                its reason says so. Deliberately not folded into UNKNOWN either:
+                                UNKNOWN is "this frame's band is between the bounds", a per-frame
+                                measurement that another frame may resolve; this is "the signal
+                                itself is dead", which no frame will.
 
 A two-valued answer would collapse the third case into one of the other two, and both collapses
 are bugs: fold it into CONFIRMED and a systematic off-by-N ships silently; fold it into REFUTED
@@ -506,10 +556,16 @@ _CONFIRM_MAX_DIST = 3.0
 _REFUTE_MIN_DIST = 9.0
 
 
-# --- the three outcomes ---------------------------------------------------------------
+# --- the four outcomes ----------------------------------------------------------------
 SCROLL_TOP_CONFIRMED = "confirmed_top"       # the band IS the filter-chips row
 SCROLL_TOP_REFUTED = "confirmed_not_top"     # the band is positively something else
 SCROLL_TOP_UNKNOWN = "cannot_tell"           # neither — and never to be read as "at top"
+# The chips row is pinned to the SCREEN on this app version, so it appears at every scroll offset
+# and this check has nothing left to read. Reachable ONLY when a caller supplies
+# `band_pinned_evidence` that proves it — see the module docstring's "WHEN THE PREMISE ITSELF
+# FAILS" section. It is not "not at top" (scrolling cannot fix it) and not "cannot tell" (no other
+# frame can resolve it); it is a recalibration stop.
+SCROLL_TOP_UNAVAILABLE = "check_unavailable"
 
 
 class ScrollTopError(RuntimeError):
@@ -580,6 +636,13 @@ class ScrollTopVerdict:
     def unknown(self) -> bool:
         return self.state == SCROLL_TOP_UNKNOWN
 
+    @property
+    def unavailable(self) -> bool:
+        """True ONLY for `SCROLL_TOP_UNAVAILABLE`: the chips-row signal is pinned to the screen on
+        this app version, so this gate cannot answer at all. A caller that branches on
+        `.refuted` to scroll again must not treat this as one — see the module docstring."""
+        return self.state == SCROLL_TOP_UNAVAILABLE
+
     def __bool__(self) -> bool:
         # A frozen dataclass is truthy by default, so `if confirm_scroll_top(...):` would read
         # "cannot tell" and "confirmed not at top" as a confirmed top — the exact off-by-N this
@@ -589,6 +652,47 @@ class ScrollTopVerdict:
             "ScrollTopVerdict has no truth value: 'cannot tell' is not 'at top'. Test "
             "`.confirmed` explicitly, or call require_scroll_top() to make anything but a "
             f"confirmed top a hard stop. This verdict was {self.state!r}: {self.reason}")
+
+
+@dataclass(frozen=True)
+class PinnedBandEvidence:
+    """Does a capture PROVE that the chips-row signal this gate reads is pinned to the SCREEN?
+
+    `pinned` is the only actionable field and it is the conjunction of two things, both required
+    (see the module docstring's "WHAT \"PINNED\" MUST MEAN HERE"): the identity band held IDENTICAL
+    pixels across frames at proven-different scroll offsets, and every one of those frames read as
+    the filter-chips row. The second half is what keeps the collapsed-header state — where the
+    band is a person's pinned sticky header and the gate still works — out of this.
+
+    Everything else is the evidence behind it, kept because this licenses a HARD GATE to stop:
+    `offsets` the distinct page offsets used, `offset_span` how far apart the furthest two were,
+    `band_height_px` the height the span had to clear for the sightings' page rows to be disjoint,
+    `frames_compared` how many frames contributed, `distinct_bands` how many different band
+    contents were seen among them (1 is the only value that can prove pinning), and
+    `max_chips_distance` the worst distance any of them sat from the chips row.
+
+    `reason` is always populated, on a negative answer as much as a positive one, because "the
+    proof was unavailable" and "the band moves like page content" are different facts and an
+    operator reading a refusal needs to know which one they have.
+    """
+    pinned: bool
+    reason: str
+    band: tuple[float, float, float, float] | None
+    grid: tuple[int, int]
+    offsets: tuple[int, ...] = ()
+    offset_span: int | None = None
+    band_height_px: int | None = None
+    frames_compared: int = 0
+    distinct_bands: int = 0
+    max_chips_distance: float | None = None
+
+    def __bool__(self) -> bool:
+        # A frozen dataclass is truthy by default, so `if band_pinned_evidence(...):` would read
+        # "nothing here proves anything" as "the band is pinned" — the exact inversion that would
+        # disable a working gate on every capture. `ScrollTopVerdict.__bool__`'s precedent.
+        raise TypeError(
+            "PinnedBandEvidence has no truth value: an unproven pinning is not a proven one. "
+            f"Test `.pinned` explicitly. This evidence was pinned={self.pinned!r}: {self.reason}")
 
 
 def fingerprint_distance(a: Sequence[int], b: Sequence[int]) -> float:
@@ -714,7 +818,8 @@ def confirm_scroll_top(frame: bytes, *,
                        fingerprint: Sequence[int] | Sequence[Sequence[int]] = _SCROLL_TOP_BAND_FINGERPRINTS,
                        grid: tuple[int, int] = _FINGERPRINT_GRID,
                        confirm_max: float = _CONFIRM_MAX_DIST,
-                       refute_min: float = _REFUTE_MIN_DIST) -> ScrollTopVerdict:
+                       refute_min: float = _REFUTE_MIN_DIST,
+                       pinned_evidence: PinnedBandEvidence | None = None) -> ScrollTopVerdict:
     """Affirmatively confirm — or refuse to — that `frame` shows a Hinge profile at scroll top.
 
     `identity_band` is the normalised `(x0, y0, x1, y1)` rect of the filter-chips / sticky-header
@@ -737,6 +842,18 @@ def confirm_scroll_top(frame: bytes, *,
     alignment is searched, never the bounds. The winning offset is recorded on
     `ScrollTopVerdict.alignment_offset_px` and, when nonzero, named in `reason`.
 
+    `pinned_evidence` is `band_pinned_evidence`'s answer for the capture this frame came from,
+    and it is OPTIONAL with a default of None so every existing call site keeps its exact previous
+    behaviour: no evidence supplied is not evidence of absence, and this gate has no way of its own
+    to obtain it from one frame. When it is supplied AND proves the chips row is pinned to the
+    screen, a match to that row can no longer mean "at top" and the verdict becomes
+    `SCROLL_TOP_UNAVAILABLE` instead of `SCROLL_TOP_CONFIRMED` — see the module docstring's "WHEN
+    THE PREMISE ITSELF FAILS". It downgrades ONLY that outcome: REFUTED and UNKNOWN are unchanged,
+    because a band that is NOT the chips row is the collapsed-header state this gate still reads
+    correctly, and turning its refusals into recalibration stops would break a working case to fix
+    a broken one. Evidence taken at a different rect or grid than this call is a `ScrollTopError`
+    rather than a silent downgrade: two different crops of a screen say nothing about each other.
+
     PRECONDITION, and it is not a formality: this must be a screen already established to be a
     Hinge profile. `SCROLL_TOP_REFUTED` says "this strip is not the filter-chips row", which only
     means "we are scrolled" once something else has ruled out a paywall, a dialog or a blank
@@ -745,6 +862,17 @@ def confirm_scroll_top(frame: bytes, *,
     Returns a verdict. Raises `ScrollTopError` only when it could not look (see
     `band_fingerprint`) or when the parameters contradict each other.
     """
+    if pinned_evidence is not None and pinned_evidence.pinned:
+        if identity_band is not None and pinned_evidence.band != tuple(identity_band):
+            raise ScrollTopError(
+                f"the pinning evidence was measured on band {pinned_evidence.band} but this call "
+                f"reads {tuple(identity_band)} — these are different crops of the screen, and one "
+                "crop being pinned says nothing about another")
+        if pinned_evidence.grid != tuple(grid):
+            raise ScrollTopError(
+                f"the pinning evidence was measured at grid {pinned_evidence.grid} but this call "
+                f"compares at {tuple(grid)} — these describe different geometries, and the "
+                "evidence's 'identical pixels' finding does not carry across them")
     if confirm_max >= refute_min:
         raise ScrollTopError(
             f"confirm_max {confirm_max} is not below refute_min {refute_min}: that collapses the "
@@ -814,6 +942,24 @@ def confirm_scroll_top(frame: bytes, *,
     offset_note = (f", after searching a {offset:+d}px vertical alignment offset within "
                    f"+/-{_ALIGNMENT_SEARCH_PX}px of layout jitter" if offset else "")
 
+    if dist <= confirm_max and pinned_evidence is not None and pinned_evidence.pinned:
+        # The distance is still reported: it is the measurement, and it is exactly the number an
+        # operator needs to see that a 0.000 match to the chips row has stopped meaning anything.
+        return ScrollTopVerdict(
+            state=SCROLL_TOP_UNAVAILABLE, distance=dist, band=tuple(identity_band), grid=grid,
+            confirm_max=confirm_max, refute_min=refute_min, alignment_offset_px=offset,
+            reason=(f"the identity band matches Hinge's profile-independent filter-chips row at "
+                    f"{dist:.3f} <= {confirm_max}{offset_note}, but this capture PROVES that row "
+                    f"is pinned to the SCREEN rather than drawn only at the top: "
+                    f"{pinned_evidence.reason}. A strip that shows the chips at every scroll "
+                    "offset cannot mean 'at top', so doc 5.5's affirmative confirmation is "
+                    "structurally UNAVAILABLE on this app version — not refuted, and not a frame "
+                    "another scroll or another look could resolve. What needs recalibrating is "
+                    "the scroll-top signal itself: apps.hinge.identity_band and this module's "
+                    "chips-row fingerprints, re-measured against the app's current per-profile "
+                    "header states with the owner and a device. Widening or narrowing a threshold "
+                    "cannot help; the strip carries no scroll information at all"))
+
     if dist <= confirm_max:
         return ScrollTopVerdict(
             state=SCROLL_TOP_CONFIRMED, distance=dist, band=tuple(identity_band), grid=grid,
@@ -839,12 +985,199 @@ def confirm_scroll_top(frame: bytes, *,
                 "corpus has ever landed here; this is 'cannot tell', never 'at top'"))
 
 
+def _not_pinned(reason: str, *, band, grid, **evidence) -> PinnedBandEvidence:
+    return PinnedBandEvidence(pinned=False, reason=reason, band=band, grid=grid, **evidence)
+
+
+def band_pinned_evidence(frames: Sequence[bytes], *,
+                         identity_band: tuple[float, float, float, float] | None,
+                         page_offsets: Sequence[int | None],
+                         fingerprint: Sequence[int] | Sequence[Sequence[int]] = _SCROLL_TOP_BAND_FINGERPRINTS,
+                         grid: tuple[int, int] = _FINGERPRINT_GRID,
+                         confirm_max: float = _CONFIRM_MAX_DIST,
+                         refute_min: float = _REFUTE_MIN_DIST) -> PinnedBandEvidence:
+    """Do these frames PROVE that the filter-chips row is pinned to the screen on this app build?
+
+    `frames` are one capture's frames and `page_offsets` the page offset each was taken at, in the
+    same order and the same length, `None` for a frame whose offset is not known (the shape
+    `item_index` already carries for frames past a broken correspondence chain — those are skipped
+    here exactly as `item_index._islands` skips them).
+
+    WHAT "KNOWN TO HAVE SCROLLED" MEANS HERE, AND WHY IT IS OFFSETS RATHER THAN A FLAG OR A
+    MEASUREMENT OF OUR OWN
+    ---------------------------------------------------------------------------------------
+    Three designs were available and only one of them is honest at a leaf module's altitude:
+
+      * the caller asserting "these scrolled" as a bool. Rejected: the conclusion is the whole
+        question, and a gate that accepts the answer it was built to compute is not a gate. It
+        would also make a caller's mistake invisible, because there would be no measurement on the
+        record to contradict.
+      * this function measuring the scroll itself, from the pixels. Rejected: the repo has exactly
+        ONE calibrated answer to "how far did the page move" (`frameshift.estimate_shift`, whose
+        docstring records the two estimators that were tried and failed on these same captures),
+        and its callers have already run it — `item_index` hands its result around as the offset
+        chain. A second estimator inside the confirmation gate would be a second opinion on a
+        question this repo has measured once, and it would give a PIL/numpy-only leaf module a
+        hard cv2 dependency, so the gate's strictness would start depending on the host install.
+      * the caller supplying the MEASUREMENTS it already has, and this function doing the
+        deciding. Chosen, and it is `item_index._screen_fixed_islands`'s contract exactly: that
+        function is handed offsets and decides screen-fixedness itself. A caller cannot obtain
+        `pinned=True` by asserting anything; it has to hand over offsets that actually spread far
+        enough, on frames whose bands are actually identical and actually read as the chips row.
+
+    The error direction is what makes this safe rather than merely tidy. A wrong `pinned=True` can
+    only turn a CONFIRMED into `SCROLL_TOP_UNAVAILABLE`, which is a loud stop at a hard gate — a
+    false stop, never a false top. A wrong `pinned=False`, or a caller that supplies no offsets at
+    all, degrades to exactly the behaviour that shipped before this function existed, which is the
+    same "unavailable proof degrades to the status quo, never to a new outcome" rule
+    `item_index._observations` states for its own screen-fixed strips.
+
+    ALL FOUR CONDITIONS, AND WHY NONE IS NEGOTIABLE
+    -----------------------------------------------
+      * at least TWO DISTINCT page offsets. At one offset the page did not move, so a pinned strip
+        and a piece of page content predict identical pixels and neither hypothesis is tested.
+      * `max(offset) - min(offset) >= the band's own height in px`. Below that the two sightings'
+        page extents still overlap, so one tall piece of page content could produce both. At or
+        above it the page rows are disjoint and only a screen-fixed element can show the same
+        pixels twice. (`item_index._screen_fixed_islands` imposes the same bound for the same
+        reason. It also means two frames far enough apart cannot BOTH be at the scroll top, which
+        is what makes a chips row on both a direct counterexample to this gate's premise.)
+      * every sighting shows the SAME band. Unanimity, no tolerance, no quorum: this is an
+        identity test on pixels, and "mostly the same" is what a scrolling page looks like. An
+        animating or live-updating header reads as "not proven" and is left alone.
+      * every sighting CONFIRMS as the filter-chips row, judged by `confirm_scroll_top` itself
+        rather than by a second comparison written here. This is the half that keeps the working
+        case working: the sticky per-profile header is pinned too (measured 0.000 across 143
+        frames of one profile), so without it a collapsed-header capture — the state where this
+        gate reads correctly — would prove itself "pinned" and disable the gate everywhere.
+
+    Never raises for a frame it cannot read: an undecodable frame is skipped and named in the
+    reason, on `capture_profile_identity`'s contract, because the caller for this is a capture
+    description rather than a per-frame gate and a broken decode must degrade to "not proven"
+    (the status quo) rather than to an exception. It DOES raise `ScrollTopError` when `frames` and
+    `page_offsets` are different lengths, which is not a frame problem but a caller pairing one
+    frame's band with another frame's scroll position.
+    """
+    if len(frames) != len(page_offsets):
+        raise ScrollTopError(
+            f"{len(frames)} frame(s) against {len(page_offsets)} page offset(s): these describe "
+            "different captures, and pairing them would attribute one frame's band to another "
+            "frame's scroll position")
+    band = tuple(identity_band) if identity_band is not None else None
+    grid = tuple(grid)
+    if identity_band is None:
+        return _not_pinned(
+            "no identity_band is declared for this app, so there is no strip to test for pinning "
+            "and nothing for the scroll-top gate to have been reading in the first place",
+            band=None, grid=grid)
+
+    usable: list[tuple[int, int, tuple[int, ...], ScrollTopVerdict]] = []
+    unreadable: list[int] = []
+    frame_size: tuple[int, int] | None = None
+    geometry_mismatches: list[tuple[int, tuple[int, int]]] = []
+    for i, (frame, offset) in enumerate(zip(frames, page_offsets, strict=True)):
+        if offset is None:
+            continue
+        image = _decode_for_alignment_sweep(frame)
+        if image is None:
+            unreadable.append(i)
+            continue
+        seen = _band_fingerprint_at_offset(frame, identity_band=identity_band, grid=grid, dy_px=0,
+                                           image=image)
+        if seen is None:
+            unreadable.append(i)
+            continue
+        if frame_size is None:
+            frame_size = image.size
+        elif image.size != frame_size:
+            # Page offsets are pixels in the capture's shared coordinate space.  A resized or
+            # rotated frame has no such shared space with the first frame, even if both happen
+            # to reduce to the same small fingerprint grid.  Treating that coincidence as proof
+            # would let a mixed-device capture disable the scroll-top gate.
+            geometry_mismatches.append((i, image.size))
+            continue
+        usable.append((i, int(offset), seen,
+                       confirm_scroll_top(frame, identity_band=identity_band,
+                                          fingerprint=fingerprint, grid=grid,
+                                          confirm_max=confirm_max, refute_min=refute_min)))
+
+    trailer = (f" ({len(unreadable)} frame(s) could not be read at all: {unreadable})"
+               if unreadable else "")
+    if geometry_mismatches:
+        assert frame_size is not None  # the mismatch is defined relative to the first readable frame
+        mismatched = ", ".join(
+            f"{i} ({width}x{height})" for i, (width, height) in geometry_mismatches)
+        return _not_pinned(
+            f"this capture's identity-band frames do not share one pixel coordinate space: the "
+            f"first readable frame is {frame_size[0]}x{frame_size[1]}, but frame(s) {mismatched} "
+            "have different geometry. Page offsets cannot compare those frames, so identical "
+            "reduced fingerprints are not proof that the band is pinned to the screen"
+            f"{trailer}",
+            band=band, grid=grid, frames_compared=len(usable))
+    if len(usable) < 2:
+        return _not_pinned(
+            f"only {len(usable)} of this capture's {len(frames)} frame(s) carry both a page offset "
+            f"and a readable identity band, and one sighting proves nothing: at a single offset a "
+            f"screen-pinned strip and a piece of page content predict identical pixels{trailer}",
+            band=band, grid=grid, frames_compared=len(usable))
+
+    offsets = tuple(sorted({o for _i, o, _b, _v in usable}))
+    span = offsets[-1] - offsets[0]
+    x0, y0, x1, y1 = identity_band
+    band_height_px = round(y1 * frame_size[1]) - round(y0 * frame_size[1])   # `_band_of_image`'s crop
+    distinct = {b for _i, _o, b, _v in usable}
+    worst = max(v.distance for _i, _o, _b, v in usable if v.distance is not None)
+    common = dict(band=band, grid=grid, offsets=offsets, offset_span=span,
+                  band_height_px=band_height_px, frames_compared=len(usable),
+                  distinct_bands=len(distinct), max_chips_distance=worst)
+
+    if len(offsets) < 2:
+        return _not_pinned(
+            f"all {len(usable)} frames sit at the same page offset ({offsets[0]}), so the page did "
+            f"not move between them and nothing distinguishes a screen-pinned strip from page "
+            f"content that simply had not scrolled yet{trailer}", **common)
+    if span < band_height_px:
+        return _not_pinned(
+            f"these {len(usable)} frames span only {span}px of scroll, less than the band's own "
+            f"{band_height_px}px height, so the page rows it would have had to display still "
+            f"overlap and one tall piece of page content could explain every sighting{trailer}",
+            **common)
+    not_chips = [i for i, _o, _b, v in usable if not v.confirmed]
+    if not_chips:
+        return _not_pinned(
+            f"the identity band does not read as the filter-chips row on {len(not_chips)} of these "
+            f"{len(usable)} frames (frame(s) {not_chips}), so the signal this gate reads as "
+            f"evidence FOR the top is not what is on screen at these offsets. A band that is "
+            f"constant because it holds the sticky per-profile header is the state this gate was "
+            f"calibrated for and still reads correctly; only a pinned CHIPS ROW makes it "
+            f"unanswerable{trailer}", **common)
+    if len(distinct) != 1:
+        return _not_pinned(
+            f"the identity band shows {len(distinct)} different contents across these "
+            f"{len(usable)} frames, so it is not a static element — an animating or live-updating "
+            f"strip reads exactly like this. Unanimity, no tolerance: 'mostly the same' is what a "
+            f"scrolling page looks like{trailer}", **common)
+
+    return PinnedBandEvidence(
+        pinned=True,
+        reason=(f"the identity band {band} holds IDENTICAL pixels, all of them within "
+                f"{confirm_max} of the filter-chips row (worst {worst:.3f}), on {len(usable)} "
+                f"frames spanning {span}px of page scroll ({offsets[0]}..{offsets[-1]}) — more "
+                f"than its own {band_height_px}px height, so the page rows those sightings would "
+                f"otherwise have had to display are disjoint. Page content cannot do that and "
+                f"chrome cannot do anything else, and two frames that far apart cannot both be at "
+                f"the scroll top: this app version draws the chips row at every scroll offset, "
+                f"pinned to the screen{trailer}"),
+        **common)
+
+
 def require_scroll_top(frame: bytes, *,
                        identity_band: tuple[float, float, float, float] | None,
                        fingerprint: Sequence[int] | Sequence[Sequence[int]] = _SCROLL_TOP_BAND_FINGERPRINTS,
                        grid: tuple[int, int] = _FINGERPRINT_GRID,
                        confirm_max: float = _CONFIRM_MAX_DIST,
-                       refute_min: float = _REFUTE_MIN_DIST) -> ScrollTopVerdict:
+                       refute_min: float = _REFUTE_MIN_DIST,
+                       pinned_evidence: PinnedBandEvidence | None = None) -> ScrollTopVerdict:
     """`confirm_scroll_top`, but anything short of a confirmed top is `ScrollTopUnconfirmed`.
 
     This is the entry point for every caller that is about to COUNT — building an item index with
@@ -854,13 +1187,14 @@ def require_scroll_top(frame: bytes, *,
     an exception makes proceeding-by-accident impossible instead of merely discouraged.
 
     A caller that genuinely wants to branch — a scroll-up loop deciding whether to swipe again —
-    should call `confirm_scroll_top` and read `.confirmed` / `.refuted` / `.unknown`, where
-    REFUTED means "scroll further" and UNKNOWN means "stop and show the frame", which are not the
-    same action.
+    should call `confirm_scroll_top` and read `.confirmed` / `.refuted` / `.unknown` /
+    `.unavailable`, where REFUTED means "scroll further", UNKNOWN means "stop and show the frame"
+    and UNAVAILABLE means "stop and recalibrate — no further gesture on this app version can make
+    this signal answer", which are three different actions.
     """
     verdict = confirm_scroll_top(
         frame, identity_band=identity_band, fingerprint=fingerprint, grid=grid,
-        confirm_max=confirm_max, refute_min=refute_min)
+        confirm_max=confirm_max, refute_min=refute_min, pinned_evidence=pinned_evidence)
     if not verdict.confirmed:
         raise ScrollTopUnconfirmed(
             f"scroll top not confirmed ({verdict.state}): {verdict.reason}. Counting items from "

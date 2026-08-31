@@ -120,19 +120,52 @@ _WORLDS = {0: _build_world()}
 # device's status bar, sticky header, floating buttons and bottom nav, none of which translate.
 _CHROME_TOP = np.random.default_rng(3).integers(0, 60, size=(_BAND0, _W), dtype=np.uint8)
 _CHROME_BOTTOM = np.random.default_rng(4).integers(0, 60, size=(_H - _BAND1, _W), dtype=np.uint8)
-_FRAMES: dict[tuple[int, int], bytes] = {}
+_FRAMES: dict[tuple[int, int, bool], bytes] = {}
+
+# HINGE 10.1.0'S PINNED PER-PROFILE HEADER, to scale, INSIDE the analysed band.
+#
+# `_CHROME_TOP`/`_CHROME_BOTTOM` above are static chrome OUTSIDE the band, which no rule here has
+# ever had to think about. This is the defect the 2026-08-28 incident is about, and the difference
+# is the whole point: a strip that does not scroll but IS inside the analysed rows has a page
+# position of `frame_row + offset` — a different, fabricated page row on every frame.
+#
+# Geometry from the incident capture `data/hinge_debug/8fb11094ef4d` (segment.py's
+# `_unanchored_leading_island_rows` docstring): the band opens on 68 rows of page background, then
+# a 43px header strip at frame rows 368..411, then 106 more rows of page background, then the
+# scrolling content clipped at row 517. The strip is painted narrower than the card (801px of the
+# 974px card width, against the measured 961..968) so segment.py's clause (c) can see it is not a
+# card slice, and it is heartless (clause (e)). It is painted from one fixed buffer at full frame
+# width, so every frame's rows 368..411 are BYTE-identical — which is what makes its
+# `content_digest` the same on all of them, exactly as measured on the real capture.
+_PINNED_BG = 250                                   # one flat page level, identical on every frame
+_PINNED_Y0, _PINNED_Y1 = 368, 411                  # the incident capture's own frame rows
+_PINNED_CLEARANCE_PX = 106                         # its measured gap above the clipped card
+_PINNED_CONTENT_Y0 = _PINNED_Y1 + _PINNED_CLEARANCE_PX      # 517: where real content resumes
+_PINNED_X0, _PINNED_X1 = 100, 900                  # 801px of 974: never the card's full width
+_PINNED_STRIP = np.full((_PINNED_Y1 - _PINNED_Y0, _W), _PINNED_BG, dtype=np.uint8)
+_PINNED_STRIP[:, _PINNED_X0:_PINNED_X1] = np.random.default_rng(7).integers(
+    60, 200, size=(_PINNED_Y1 - _PINNED_Y0, _PINNED_X1 - _PINNED_X0), dtype=np.uint8)
 
 
-def _frame(scroll: int, *, short_card2: int = 0) -> bytes:
+def _frame(scroll: int, *, short_card2: int = 0, pinned_prefix: bool = False) -> bytes:
     """The 1080x2400 window of the world at `scroll`, as PNG. Content at world row `w` lands on
-    frame row `w - scroll`, so `_frame(s)` then `_frame(s + d)` is a forward scroll of `d`."""
-    key = (scroll, short_card2)
+    frame row `w - scroll`, so `_frame(s)` then `_frame(s + d)` is a forward scroll of `d`.
+
+    `pinned_prefix` paints Hinge 10.1.0's screen-pinned profile header over the top of the
+    analysed band — see `_PINNED_STRIP` — which does NOT translate with `scroll`. The world's own
+    content is unchanged below row `_PINNED_CONTENT_Y0`, so the same page is still there to be
+    indexed; what changes is that every frame now opens with a strip whose page position cannot be
+    derived from that frame alone."""
+    key = (scroll, short_card2, pinned_prefix)
     if key not in _FRAMES:
         if short_card2 not in _WORLDS:
             _WORLDS[short_card2] = _build_world(short_card2=short_card2)
         gray = _WORLDS[short_card2][scroll:scroll + _H].copy()
         gray[:_BAND0] = _CHROME_TOP
         gray[_BAND1:] = _CHROME_BOTTOM
+        if pinned_prefix:
+            gray[_BAND0:_PINNED_CONTENT_Y0] = _PINNED_BG
+            gray[_PINNED_Y0:_PINNED_Y1] = _PINNED_STRIP
         ok, buf = cv2.imencode(".png", gray)
         assert ok
         _FRAMES[key] = buf.tobytes()
@@ -254,6 +287,90 @@ def test_one_isolated_bad_intermediate_frame_is_rebuilt_over_a_measured_bridge(m
     assert "without assuming an offset" in index.recovery_reason
     # Both candidate omissions were actually measured before the deterministic choice.
     assert (frames[2], frames[4]) in calls and (frames[3], frames[5]) in calls
+
+
+def test_one_failed_pair_recovery_widens_a_two_read_bridge_past_normal_trust_window(monkeypatch):
+    """A normal enumeration step may be 540px, so omitting one frame can require a 1080px
+    bridge even though *each* real gesture stayed inside frameshift's 900px ordinary window.
+
+    Mallory's refusal had this shape: frames 11/12 had two good strip witnesses at an ordinary
+    roughly-493px movement, while the surrounding planned gestures were 456px and 469px.  The
+    old 363px fixture above never exposed the resulting 900px boundary: its two-read bridge is
+    only 726px.  The bridge is a fresh measurement, not a presumed sum, so its trust window must
+    be widened to the known two-gesture enumeration ceiling before deciding whether either
+    implicated intermediate frame can be omitted.
+    """
+    step = 480
+    scrolls = tuple(step * i for i in range(6))
+    frames = [_frame(scroll) for scroll in scrolls]
+    failed_pair = (2, 3)
+    real_shift = item_index.estimate_shift
+    bridge_windows = []
+
+    def one_two_witness_pair(frame_a, frame_b, **kwargs):
+        if (frame_a, frame_b) in ((frames[1], frames[3]), (frames[2], frames[4])):
+            bridge_windows.append(kwargs.get("trust_window_px"))
+        result = real_shift(frame_a, frame_b, **kwargs)
+        if (frame_a, frame_b) == (frames[failed_pair[0]], frames[failed_pair[1]]):
+            return dataclasses.replace(
+                result, delta_px=None, status=frameshift.SHIFT_NO_CONSENSUS,
+                consensus_px=None, reason="synthetic two-witness refusal")
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", one_two_witness_pair)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.recovered_from_pair == failed_pair
+    assert index.recovery_bridge is not None
+    bridge = index.shifts[index.recovery_bridge[0]]
+    assert bridge.status == frameshift.SHIFT_MEASURED
+    assert bridge.delta_px == step * 2
+    assert bridge_windows and all(window >= step * 2 for window in bridge_windows)
+
+
+def test_failed_pair_recovery_rejects_bridge_above_its_multi_read_ceiling(monkeypatch):
+    """A caller's wider window may expose a bridge, never authorize an impossible one."""
+    frames = [_frame(_STEP * i) for i in range(6)]
+    failed_pair = (2, 3)
+    oversized_bridge = 2 * item_index._enum_step_ceiling((
+        item_index.segment_frame(
+            frames[0], content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+            like_threshold=hinge._LIKE_MATCH_THRESHOLD),)) + 1
+    real_shift = item_index.estimate_shift
+
+    def refusal_with_oversized_bridges(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next((i for i in range(5)
+                     if frame_a == frames[i] and frame_b == frames[i + 1]), None)
+        if pair == failed_pair[0]:
+            return dataclasses.replace(
+                result, delta_px=None, status=frameshift.SHIFT_NO_CONSENSUS,
+                consensus_px=None, reason="synthetic initial refusal")
+        # These are precisely the two fresh bridge measurements attempted after omitting either
+        # implicated frame. A deliberately permissive fold below isolates the bridge-cap gate:
+        # without it, a caller's 2000px window would let this otherwise rebuildable candidate in.
+        if ((frame_a, frame_b) in ((frames[1], frames[3]), (frames[2], frames[4]))):
+            return dataclasses.replace(
+                result, delta_px=oversized_bridge, status=frameshift.SHIFT_MEASURED,
+                consensus_px=oversized_bridge, reason="synthetic oversized bridge")
+        return result
+
+    def permissive_assemble(*_args, include_notes=False, **_kwargs):
+        return ((), (), ()) if include_notes else ((), ())
+
+    monkeypatch.setattr(item_index, "estimate_shift", refusal_with_oversized_bridges)
+    monkeypatch.setattr(item_index, "_assemble", permissive_assemble)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        trust_window_px=2000)
+
+    assert not index.usable
+    assert index.recovered_from_pair is None
+    assert index.source_frame_indices == tuple(range(len(frames)))
 
 
 def test_one_contradictory_segmentation_frame_is_rebuilt_over_a_measured_bridge(monkeypatch):
@@ -2062,6 +2179,66 @@ def test_layout_assisted_repair_rejects_isolated_runs_and_small_or_large_overrid
     assert shifted.delta_px == _STEP and shifted.status == frameshift.SHIFT_MEASURED
 
 
+def test_isolated_two_strip_full_layout_repair_needs_full_measured_brackets(monkeypatch):
+    """One repaint-damaged pair is safe only when complete geometry brackets it.
+
+    This is the Mallory frames 11/12 shape: only two eligible NCC strips survive, but both
+    independently land on the exact top/bottom/heart shift and the immediately adjacent raw
+    measurements carry that same complete structural proof.  A missing kind on either bracket
+    must leave the original no-consensus result untouched.
+    """
+    frames = [_frame(_STEP * i) for i in range(5)]
+    real_shift = item_index.estimate_shift
+
+    def one_repaint_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next((i for i in range(4)
+                     if frame_a == frames[i] and frame_b == frames[i + 1]), None)
+        return (dataclasses.replace(
+                    _shift_with_votes(result, [_STEP, _STEP],
+                                      status=frameshift.SHIFT_NO_CONSENSUS),
+                    agreeing=2, dissenting=0, eligible=2, confidence=1.0)
+                if pair == 2 else result)
+
+    monkeypatch.setattr(item_index, "estimate_shift", one_repaint_pair)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        scroll_top_signal_confirmed=True, _allow_frame_omission_recovery=False)
+
+    assert index.usable, index.failures
+    assert [shift.delta_px for shift in index.shifts] == [_STEP] * 4
+    assert [pair for pair, _raw in index.layout_repaired_shifts] == [2]
+    assert index.layout_repaired_shifts[0][1].eligible == 2
+
+    monkeypatch.setattr(item_index, "_scroll_top_evidence",
+                        lambda *_args, **_kwargs: "synthetic missing scroll-top corner")
+    unconfirmed = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        _allow_frame_omission_recovery=False)
+    assert not unconfirmed.usable
+    assert unconfirmed.layout_repaired_shifts == ()
+
+    real_landmarks = item_index._structural_landmarks
+    right_bracket_digest = hashlib.sha256(frames[3]).hexdigest()
+
+    def incomplete_right_bracket(before, after, **kwargs):
+        landmarks = real_landmarks(before, after, **kwargs)
+        return (tuple((kind, delta) for kind, delta in landmarks if kind != "heart")
+                if before.frame_digest == right_bracket_digest else landmarks)
+
+    monkeypatch.setattr(item_index, "_structural_landmarks", incomplete_right_bracket)
+    refused = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        scroll_top_signal_confirmed=True, _allow_frame_omission_recovery=False)
+
+    assert not refused.usable
+    assert refused.layout_repaired_shifts == ()
+    assert refused.shifts[2].status == frameshift.SHIFT_NO_CONSENSUS
+
+
 def test_the_majority_override_floor_follows_the_folds_own_tolerance(monkeypatch):
     """The floor is "one past what the fold absorbs", so it must move when the fold does.
 
@@ -2153,17 +2330,27 @@ def _kinds(index):
 # Observation-level helpers, for driving `_assemble` directly
 # =====================================================================================
 
-def _obs(frame_index, page_y0, page_y1, *, complete=True, hearts=(), kind=None):
+def _obs(frame_index, page_y0, page_y1, *, complete=True, hearts=(), kind=None, top_kind=None):
     """One hand-written sighting. `hearts` are page rows; x is fixed because a list scroll has
-    no horizontal component."""
+    no horizontal component.
+
+    `top_kind` follows `top_observed` by default, because segment.py cannot report an observed
+    top edge without saying which evidence produced it: an observed one is a gutter or the card's
+    own corner, an unobserved one is background or a band edge. `EDGE_CARD_CORNER` is the default
+    for an observed top since that is the only kind that can bound the FIRST item of a profile —
+    `_scroll_top_evidence` reads it, and a fixture that left it blank would be modelling a
+    sighting segment.py cannot emit. Pass it explicitly to model an interior card (a gutter top)
+    or a card the analysed band sliced (background)."""
     if kind is None:
         kind = (segment.BLOCK_SELECTABLE if hearts else segment.BLOCK_CONTEXT) if complete \
             else segment.BLOCK_PARTIAL
+    if top_kind is None:
+        top_kind = segment.EDGE_CARD_CORNER if complete else segment.EDGE_BACKGROUND_RUN
     return item_index.BlockObservation(
         frame_index=frame_index, page_y0=page_y0, page_y1=page_y1,
         frame_y0=page_y0, frame_y1=page_y1, kind=kind, complete=complete,
         top_observed=complete, bottom_observed=complete,
-        hearts=tuple((_HEART_CX, y) for y in hearts))
+        hearts=tuple((_HEART_CX, y) for y in hearts), top_kind=top_kind)
 
 
 def _assemble(observations, *, at_scroll_top=True, **kw):
@@ -2719,16 +2906,22 @@ def test_two_fragments_of_one_card_that_never_overlapped_are_reported_not_counte
     """The one way folding by overlap could still invent an item: a card whose sightings never
     share a row. Two blocks closer than the smallest gutter the layout draws contradict the
     layout, and counting them as two is exactly doc 5.10's phantom."""
+    # `at_scroll_top=False` because this fixture does not model a scroll top and never did: both
+    # sightings are unbounded fragments, so no frame ever saw the first item's own top edge, and
+    # `_scroll_top_evidence` rightly refuses to corroborate a top claim from that. Asserting one
+    # here would be testing the min-gap guard through an unrelated failure.
     gap = 20
     blocks, failures = _assemble([_obs(0, 700, 1200, complete=False, hearts=(1150,)),
-                                  _obs(1, 1200 + gap, 1700, complete=False, hearts=(1650,))])
+                                  _obs(1, 1200 + gap, 1700, complete=False, hearts=(1650,))],
+                                 at_scroll_top=False)
 
     assert any(f"only {gap}px apart" in f for f in failures), failures
     assert any("would fabricate an item" in f for f in failures)
 
     # The control: push them a canonical gutter apart and they ARE two items, silently.
     _, ok = _assemble([_obs(0, 700, 1200, complete=False, hearts=(1150,)),
-                       _obs(1, 1200 + _GUTTER, 1700, complete=False, hearts=(1650,))])
+                       _obs(1, 1200 + _GUTTER, 1700, complete=False, hearts=(1650,))],
+                      at_scroll_top=False)
     assert ok == ()
     assert item_index._MIN_ITEM_GAP_PX == 47       # min(52,53) - 5, from segment.py's own window
     assert gap + item_index._EXTENT_TOLERANCE_PX < item_index._MIN_ITEM_GAP_PX <= _GUTTER
@@ -2767,6 +2960,67 @@ def test_an_unbounded_heartless_block_above_a_heart_is_a_failure():
     assert ok == ()
     assert harmless[1].kind == item_index.ITEM_PARTIAL
     assert dangerous[0].kind == item_index.ITEM_PARTIAL
+
+
+def test_a_fully_scanned_partial_between_complete_cards_cannot_hide_an_ordinal():
+    """The 2026-08-30 live refusal, in its measured page geometry.
+
+    Hinge inserted the 37px ``From people close to Katie`` heading between a complete photo and
+    a complete endorsement card. Its text pixels were stable at page rows 1800..1837 across four
+    scroll positions, but neither edge was a canonical gutter/card corner, so the block correctly
+    remained PARTIAL. Frame 0 nevertheless analysed page rows 300..2100 in one piece: that covers
+    the entire 1671..1914 interval between the independently bounded neighbours, and heart
+    matching searched that whole band before block assignment. There are therefore no unseen rows
+    in which this partial can hide an extra heart ordinal.
+
+    Coverage resolves only that counting question. The heading stays partial, uncroppable and out
+    of both model/context lists; the endorsement card below keeps heart/model ordinal 2.
+    """
+    observations = [
+        _obs(0, 697, 1671, hearts=(1582,)),
+        *[_obs(frame, 1800, 1837, complete=False) for frame in range(4)],
+        _obs(2, 1914, 2888, hearts=(2799,)),
+    ]
+
+    blocks, failures, notes = _assemble(
+        observations, page_coverage=((300, 2100),), full=True)
+
+    assert failures == ()
+    heading = blocks[1]
+    assert heading.kind == item_index.ITEM_PARTIAL
+    assert not heading.complete and heading.croppable == ()
+    assert heading.heart_ordinal is None and heading.model_index is None
+    assert heading not in tuple(block for block in blocks if block.kind == item_index.ITEM_CONTEXT)
+    assert [block.heart_ordinal for block in blocks] == [1, None, 2]
+    assert [block.model_index for block in blocks] == [1, None, 2]
+    assert any("retained as uncroppable but is ordinal-safe" in note for note in notes)
+
+
+def test_partial_ordinal_safety_needs_one_complete_clean_coverage_interval():
+    """Do not assemble a proof from two frames or from a partial neighbouring card.
+
+    A single failure-free frame must have searched every possible row between both complete
+    physical bounds. Otherwise the original hidden-heart refusal remains byte-for-byte active.
+    """
+    heading = [_obs(0, 1800, 1837, complete=False)]
+    complete_neighbours = [
+        _obs(0, 697, 1671, hearts=(1582,)), *heading,
+        _obs(2, 1914, 2888, hearts=(2799,)),
+    ]
+
+    _blocks, split_coverage_failures = _assemble(
+        complete_neighbours, page_coverage=((300, 1850), (1850, 2100)))
+    assert any("a heart may sit in the rows that were never inside" in failure
+               for failure in split_coverage_failures)
+
+    incomplete_above = [
+        _obs(0, 697, 1671, complete=False, hearts=(1582,)), *heading,
+        _obs(2, 1914, 2888, hearts=(2799,)),
+    ]
+    _blocks, neighbour_failures = _assemble(
+        incomplete_above, at_scroll_top=False, page_coverage=((300, 2100),))
+    assert any("a heart may sit in the rows that were never inside" in failure
+               for failure in neighbour_failures)
 
 
 def test_a_confirmed_scroll_top_excuses_hinges_header_and_only_that():
@@ -2823,6 +3077,16 @@ def test_a_topmost_block_flush_against_the_band_edge_refuses_the_scroll_top_clai
     assert any("at_scroll_top was asserted" in f for f in failures), failures
     assert any("begins on the analysed band's own first row" in f for f in failures)
     assert blocks[0].kind == item_index.ITEM_PARTIAL, "the evidence must not be relabelled chrome"
+
+    # Extended 2026-08-28, when a SECOND test was added alongside this one (the first item's own
+    # card corner — see `test_background_above_without_the_first_items_corner_is_no_longer_accepted`
+    # for why the background test had gone vacuous). Two tests mean two possible messages, and
+    # each has to name the thing an operator should go and look at. This capture's topmost block
+    # really is flush on the band's first row, so it must get the band-edge wording and NOT the
+    # corner one — a message naming the wrong test sends the operator to the wrong row.
+    contradiction = next(f for f in failures if "at_scroll_top was asserted" in f)
+    assert "no frame ever saw the first item's OWN top edge" not in contradiction
+    assert sum("at_scroll_top was asserted" in f for f in failures) == 1
 
     # The control that proves WHICH mechanism refused: one row of background above the same
     # fragment is all the evidence the check asks for, and the claim stands again.
@@ -3088,3 +3352,738 @@ def test_a_card_never_observed_complete_at_a_coarse_cadence_is_partial_not_misnu
     # this whole architecture exists to protect does not depend on every item being selectable.
     assert sorted(block.heart_ordinal for block in index.blocks if block.heart_ordinal) == [
         1, 2, 3, 4]
+
+
+# =====================================================================================
+# HINGE 10.1.0'S SCREEN-PINNED PROFILE HEADER (the 2026-08-28 incident)
+#
+# WHAT HAPPENED. 10.1.0 pins a per-profile header — filter chips, the name, a verified badge, a
+# back arrow, an overflow menu, a pronoun row — to the SCREEN, inside the analysed content band.
+# It does not scroll, so its page position is `frame_row + offset`: a different, FABRICATED page
+# row on every frame of the capture. segment.py merged that 43px strip into the clipped top of the
+# card below (the 106px gap between them is not gutter-length, so the ordinary rule absorbed it),
+# producing a block top 149px too high, which in page space landed inside the card ABOVE and
+# bridged two cards into one fold group. `_split_on_bounded_cards` could not rescue it — only ONE
+# of the two cards had a complete sighting — and `_resolve_group` hard-refused the whole index.
+#
+# THE FIX, in two halves. segment.py now reports such a strip as `BLOCK_UNANCHORED` with both
+# edges UNOBSERVED and a `content_digest`, saying only "one frame cannot place this". This module
+# decides, from the capture's own frames, whether it is pinned to the screen or is page content —
+# and holds a PROVEN one out of page space entirely rather than asserting a row for it.
+#
+# Everything below is measured on run dir `data/hinge_debug/8fb11094ef4d/`, frames 13..18 at page
+# offsets 6180, 6615, 7110, 7637, 8152, 8485, whose strip is frame rows 368..411 with one
+# identical digest on all six.
+# =====================================================================================
+
+def _island(frame_index, offset, *, rows=(_PINNED_Y0, _PINNED_Y1), digest="d0"):
+    """One hand-built `UnanchoredIsland`: where on the SCREEN, how far down the PAGE, what pixels.
+    Those three fields are the entire input to `_screen_fixed_islands`, by design."""
+    return item_index.UnanchoredIsland(
+        frame_index=frame_index, frame_y0=rows[0], frame_y1=rows[1], offset=offset, digest=digest)
+
+
+def _note_for(notes, rows=(_PINNED_Y0, _PINNED_Y1)):
+    """The single note about the strip at `rows`. Asserting there is exactly one is part of the
+    contract: `_screen_fixed_islands` reports one verdict per distinct frame extent."""
+    hits = [n for n in notes if f"frame rows {rows[0]}..{rows[1]}" in n]
+    assert len(hits) == 1, notes
+    return hits[0]
+
+
+def test_identical_pixels_at_four_far_apart_offsets_prove_a_strip_is_screen_fixed():
+    """THE PROOF, in the shape the incident capture actually supplied it.
+
+    A screen-fixed element keeps a constant FRAME position while its page position moves with
+    every scroll; page content does the exact opposite. So identical pixels at the same frame rows
+    across a scroll span WIDER than the strip's own height cannot be page content — the page rows
+    it would have had to display at the two ends are disjoint.
+
+    [measured: rows 368..411 (43px), byte-identical across the six evidence frames, at offsets
+    6180..8485 = 2305px of scroll.] Four of those offsets are used here; the span is 53x the
+    strip's own height, so this is nowhere near the bound and is meant not to be.
+
+    If this stopped returning the strip as proven, `_observations` would place it at
+    `frame_row + offset` on every frame and the 2026-08-28 refusal returns."""
+    proven, notes = item_index._screen_fixed_islands([
+        _island(13, 6180), _island(14, 6615), _island(16, 7637), _island(18, 8485)])
+
+    assert proven == frozenset({(_PINNED_Y0, _PINNED_Y1)})
+    note = _note_for(notes)
+    assert "showed identical pixels at 4 page offsets spanning 2305px" in note
+    assert "more than its own 43px height" in note
+    assert "fixed to the SCREEN, not to the page" in note
+    assert "held out of the index entirely" in note
+
+
+def test_one_page_offset_can_never_prove_anything_about_a_strip():
+    """A repeat at ONE offset proves nothing: the page did not move between the two frames, so
+    "screen-pinned chrome" and "page content" predict identical pixels. Two frames of a capture
+    that did not scroll are two frames, not two measurements.
+
+    The note has to say THAT specific reason. This repo's standing rule is that guidance derives
+    from its precondition (a hardcoded "next step" once named an already-satisfied prerequisite and
+    hid the real fix across five surfaces for a day), and an operator reading a refusal needs to
+    know whether to scroll further or to stop trusting the strip."""
+    proven, notes = item_index._screen_fixed_islands([_island(13, 6180), _island(14, 6180)])
+
+    assert proven == frozenset()
+    note = _note_for(notes)
+    assert "was only ever seen at one page offset (6180)" in note
+    assert "nothing distinguishes screen-pinned chrome from page content here" in note
+    assert "placed on the page exactly as it would have been before this check existed" in note
+    # ...and specifically NOT either of the other two reasons.
+    assert "less than its own" not in note and "different pixel contents" not in note
+
+
+def test_a_scroll_shorter_than_the_strips_own_height_is_not_a_proof():
+    """The bound is `span >= height`, and it is geometric rather than chosen. Below it the two
+    sightings' PAGE extents still overlap, so one tall band of page content sitting still-ish
+    behind a 10px scroll could produce both. At or above it the page rows are disjoint and only a
+    screen-fixed element can show the same pixels twice.
+
+    43px strip, 10px of scroll: `_island` at offsets 7110 and 7120. Not proven, and the note names
+    the height reason rather than the offset-count one."""
+    proven, notes = item_index._screen_fixed_islands([_island(13, 7110), _island(14, 7120)])
+
+    assert proven == frozenset()
+    note = _note_for(notes)
+    assert "was seen across only 10px of scroll, less than its own 43px height" in note
+    assert "one piece of page content could explain both sightings" in note
+    assert "only ever seen at one page offset" not in note
+
+
+def test_a_strip_whose_pixels_changed_is_not_a_static_element():
+    """Unanimity on the digest, no tolerance and no quorum: this is an identity test on pixels, and
+    "mostly the same" is what a scrolling page looks like. A header that animates or live-updates
+    (a countdown, a carousel dot) reads exactly like this and must not be held out — holding out
+    something that is really page content would drop whatever it holds."""
+    proven, notes = item_index._screen_fixed_islands([
+        _island(13, 6180, digest="d0"), _island(14, 6615, digest="d0"),
+        _island(16, 7637, digest="CHANGED")])
+
+    assert proven == frozenset()
+    note = _note_for(notes)
+    assert "showed 2 different pixel contents across 3 offsets" in note
+    assert "an animating or live-updating header reads exactly like this" in note
+    assert "only ever seen at one page offset" not in note and "less than its own" not in note
+
+
+def test_strips_at_different_frame_rows_are_different_strips():
+    """Grouping is by EXACT frame extent. A strip that changes height between frames is a different
+    strip, and saying so is more honest than clustering two shapes together and calling them one —
+    a taller sighting could be the header plus a slice of the card behind it.
+
+    Here neither extent ever reaches two offsets, so neither is proven and each gets its own
+    one-offset note. The two notes must be about the two different extents, not one about both."""
+    proven, notes = item_index._screen_fixed_islands([
+        _island(13, 6180, rows=(368, 411)), _island(14, 6615, rows=(368, 430))])
+
+    assert proven == frozenset()
+    assert len(notes) == 2
+    assert "one page offset (6180)" in _note_for(notes, (368, 411))
+    assert "one page offset (6615)" in _note_for(notes, (368, 430))
+
+
+def test_a_missing_digest_is_never_proof():
+    """`content_digest` is None on every block segment.py did NOT label `BLOCK_UNANCHORED`, so a
+    None here means the evidence this test rests on was not collected. Absence of pixels is not
+    sameness of pixels: with no digest there is nothing to compare, and the strip is placed on the
+    page exactly as it was before the check existed."""
+    proven, notes = item_index._screen_fixed_islands([
+        _island(13, 6180, digest=None), _island(14, 8485, digest=None)])
+
+    assert proven == frozenset()
+    note = _note_for(notes)
+    assert "at least one sighting carries no pixel digest, so there is nothing to compare" in note
+    # It fails CLOSED on its own reason rather than borrowing the changed-pixels one: two
+    # un-hashed sightings are not a match, and they are not a mismatch either.
+    assert "different pixel contents" not in note
+    assert "only ever seen at one page offset" not in note and "less than its own" not in note
+
+
+# =====================================================================================
+# "Unproven means status quo" — checkable rather than claimed
+# =====================================================================================
+
+def _edge(y, kind, *, observed, run_px=None):
+    return segment.BlockEdge(y=y, observed=observed, kind=kind, run_px=run_px)
+
+
+def _seg_block(y0, y1, *, kind, top, bottom, hearts=(), digest=None):
+    return segment.Block(y0=y0, y1=y1, x0=_CARD_X0, x1=_CARD_X1, top=top, bottom=bottom,
+                         kind=kind, hearts=hearts, reason="synthetic", content_digest=digest)
+
+
+def _segmentation(blocks, *, digest="a" * 64):
+    return segment.FrameSegmentation(
+        frame_size=(_W, _H), frame_digest=digest, band=(_BAND0, _BAND1),
+        card_x=(_CARD_X0, _CARD_X1), blocks=tuple(blocks), runs=(), hearts=(),
+        unassigned_hearts=(), failures=())
+
+
+def _pinned_strip_block(digest="d0"):
+    """segment.py's own output shape for the pinned header: `BLOCK_UNANCHORED`, page background
+    above it (`EDGE_BACKGROUND_RUN`, UNOBSERVED — one frame cannot say the strip ended, only that
+    something stopped) and the island cut below it."""
+    return _seg_block(
+        _PINNED_Y0, _PINNED_Y1, kind=segment.BLOCK_UNANCHORED,
+        top=_edge(_PINNED_Y0, segment.EDGE_BACKGROUND_RUN, observed=False, run_px=68),
+        bottom=_edge(_PINNED_Y1, segment.EDGE_UNANCHORED_ISLAND, observed=False,
+                     run_px=_PINNED_CLEARANCE_PX),
+        digest=digest)
+
+
+def test_an_unproven_strip_merged_below_reproduces_the_pre_fix_record_field_for_field():
+    """THE BIT-EXACT FALLBACK. `_observations`' disposition 2 is the promise that an unavailable
+    proof — a one-frame capture, a header that animates, a per-frame predicate that fired on
+    something that was really page content — degrades to the behaviour that SHIPPED, never to a
+    third new outcome. A promise like that is worth nothing unless it is compared against the old
+    record field by field, so that is what this does.
+
+    Before the strip had a name, segment.py never split it out at all: it returned ONE block from
+    the strip's first row to the card's last, whose top edge was whatever sat above the strip
+    (`EDGE_BACKGROUND_RUN`, unobserved) and whose bottom, kind and hearts were the card's own. The
+    expected record here is written out literally rather than derived, because deriving it from
+    the code under test is how a fallback quietly stops being bit-exact.
+
+    A false positive in the screen-fixed proof costs nothing; a false negative costs the old bug,
+    loudly — and that asymmetry only holds while this is true."""
+    card = _seg_block(
+        _PINNED_CONTENT_Y0, 1300, kind=segment.BLOCK_PARTIAL,
+        top=_edge(_PINNED_CONTENT_Y0, segment.EDGE_UNANCHORED_ISLAND, observed=False),
+        bottom=_edge(1300, segment.EDGE_CARD_CORNER, observed=True),
+        hearts=((_HEART_CX, 1210),))
+    seg = _segmentation([_pinned_strip_block(), card])
+
+    observations = item_index._observations([seg], [6870], frozenset())
+
+    assert observations == [item_index.BlockObservation(
+        frame_index=0,
+        page_y0=_PINNED_Y0 + 6870, page_y1=1300 + 6870,
+        frame_y0=_PINNED_Y0, frame_y1=1300,
+        kind=segment.BLOCK_PARTIAL, complete=False,
+        top_observed=False, bottom_observed=True,
+        hearts=((_HEART_CX, 1210 + 6870),),
+        top_kind=segment.EDGE_BACKGROUND_RUN)]
+
+
+def test_an_unproven_strip_split_off_by_a_card_corner_is_emitted_on_its_own():
+    """DISPOSITION 3, the other bit-exact half. On the frames where the card below the strip is
+    bounded by its OWN corner, segment.py's corner rescue already split the strip out before this
+    incident existed — and those frames are precisely the ones that place a fabricated page
+    position for it today. Unproven, the strip therefore stays an ordinary observation at
+    `frame_row + offset`, exactly as it used to be, and the card keeps its own complete extent.
+
+    The contrast with the merged case above is the point: which disposition applies is read off the
+    NEXT block's own top edge kind, never guessed."""
+    card = _seg_block(
+        _PINNED_CONTENT_Y0, 1300, kind=segment.BLOCK_SELECTABLE,
+        top=_edge(_PINNED_CONTENT_Y0, segment.EDGE_CARD_CORNER, observed=True),
+        bottom=_edge(1300, segment.EDGE_CARD_CORNER, observed=True),
+        hearts=((_HEART_CX, 1210),))
+    seg = _segmentation([_pinned_strip_block(), card])
+
+    strip, item = item_index._observations([seg], [6870], frozenset())
+
+    assert strip == item_index.BlockObservation(
+        frame_index=0,
+        page_y0=_PINNED_Y0 + 6870, page_y1=_PINNED_Y1 + 6870,
+        frame_y0=_PINNED_Y0, frame_y1=_PINNED_Y1,
+        kind=segment.BLOCK_UNANCHORED, complete=False,
+        top_observed=False, bottom_observed=False, hearts=(),
+        top_kind=segment.EDGE_BACKGROUND_RUN)
+    assert (item.page_y0, item.page_y1, item.complete) == (
+        _PINNED_CONTENT_Y0 + 6870, 1300 + 6870, True)
+
+
+def test_a_proven_screen_fixed_strip_becomes_no_observation_at_all():
+    """DISPOSITION 1, and the whole fix in one line: a proven strip is not placed anywhere. It has
+    no page position, so the only safe thing to do is never assert one. Because it never becomes an
+    observation it cannot chain into a card's fold group, cannot reach past a bounded card, and
+    cannot be a neighbour in the fabricated-item guard — see the objection test below, which drives
+    all three of those failures out of the very same strip when the proof is withheld."""
+    card = _seg_block(
+        _PINNED_CONTENT_Y0, 1300, kind=segment.BLOCK_PARTIAL,
+        top=_edge(_PINNED_CONTENT_Y0, segment.EDGE_UNANCHORED_ISLAND, observed=False),
+        bottom=_edge(1300, segment.EDGE_CARD_CORNER, observed=True),
+        hearts=((_HEART_CX, 1210),))
+    seg = _segmentation([_pinned_strip_block(), card])
+
+    observations = item_index._observations(
+        [seg], [6870], frozenset({(_PINNED_Y0, _PINNED_Y1)}))
+
+    assert len(observations) == 1
+    only = observations[0]
+    assert (only.page_y0, only.page_y1) == (_PINNED_CONTENT_Y0 + 6870, 1300 + 6870)
+    assert only.frame_y0 == _PINNED_CONTENT_Y0, "the card must not inherit the strip's rows"
+
+
+# =====================================================================================
+# THE OBJECTION: what a placed strip actually does to the fold
+# =====================================================================================
+
+def test_a_placed_strip_straddling_a_proven_cards_edge_is_the_incidents_own_refusal():
+    """WHY the hold-out exists, not merely that it works. This is the incident's exact arithmetic.
+
+    Card at page rows 7387..8072, bounded end to end. A LATER frame's strip, placed at
+    `frame_row + offset` = 8052..8095, straddles that card's bottom edge — a page row it never
+    occupied, since it is pinned to the screen and the page moved 8000+px underneath it. The fold
+    reads it as a fragment of the card that reaches 23px past the card's own measured bottom, which
+    is the invariant `_resolve_group` refuses on: a fragment cannot be bigger than the thing it is a
+    fragment of.
+
+    On the real capture that refusal took the WHOLE index with it (`usable` False, no items), and
+    `_split_on_bounded_cards` could not rescue it because only one of the two bridged cards had a
+    complete sighting."""
+    blocks, failures = _assemble([
+        _obs(13, 7387, 8072, hearts=(7983,)),
+        _obs(16, 8052, 8095, complete=False, kind=segment.BLOCK_UNANCHORED,
+             top_kind=segment.EDGE_BACKGROUND_RUN),
+    ], at_scroll_top=False)
+
+    assert len(blocks) == 1
+    assert any("a fragment cannot reach past the card that contains it" in f for f in failures), \
+        failures
+    assert any("frame 16 sees page rows 8052..8095" in f for f in failures)
+
+
+def test_a_placed_strip_landing_in_the_gutter_fires_the_fabricated_item_guard_instead():
+    """The SAME strip, five pixels further down the page, breaks a different invariant — which is
+    the honest summary of what a fabricated page row does: it is not one failure mode, it is
+    whatever the arithmetic happens to hit.
+
+    Placed at 8077..8120 it clears the card at 7387..8072 entirely, so `_overlap_groups` makes it
+    its own block 5px below a real one. Two resolved blocks that close contradict the layout (every
+    one of the 206 real card-to-card gutters in the corpus measured exactly 53px), and the reading
+    that matters is the dangerous one: one card whose sightings fragmented in two, i.e. doc 5.10's
+    phantom item. So the guard fires and the index refuses."""
+    blocks, failures = _assemble([
+        _obs(13, 7387, 8072, hearts=(7983,)),
+        _obs(16, 8077, 8120, complete=False, kind=segment.BLOCK_UNANCHORED,
+             top_kind=segment.EDGE_BACKGROUND_RUN),
+    ], at_scroll_top=False)
+
+    assert len(blocks) == 2
+    assert any("are only 5px apart, closer than the 47px minimum gutter" in f
+               for f in failures), failures
+    assert any("counting them as two would fabricate an item" in f for f in failures)
+
+
+def test_a_proven_strip_produces_neither_refusal_because_it_never_becomes_an_observation():
+    """The two refusals above are what the fix PREVENTS, and it prevents them at the earliest
+    possible point rather than by widening a tolerance downstream. Same two frames, same strip,
+    same digest — the only difference is whether the capture's own offsets proved it screen-fixed.
+
+    Proven, the fold sees two cards and nothing else. Withheld, the strip from frame 1 lands at
+    8052..8095 and reproduces the straddle refusal above exactly. Widening `_EXTENT_TOLERANCE_PX`
+    to absorb the straddle would have been the tempting fix and is the wrong one: the strip's
+    fabricated row moves with the scroll, so the next capture's overrun is a different size."""
+    def frame_at(offset):
+        return _segmentation([
+            _pinned_strip_block(),
+            _seg_block(_PINNED_CONTENT_Y0, _PINNED_CONTENT_Y0 + 685,
+                       kind=segment.BLOCK_SELECTABLE,
+                       top=_edge(_PINNED_CONTENT_Y0, segment.EDGE_CARD_CORNER, observed=True),
+                       bottom=_edge(_PINNED_CONTENT_Y0 + 685, segment.EDGE_CARD_CORNER,
+                                    observed=True),
+                       hearts=((_HEART_CX, _PINNED_CONTENT_Y0 + 595),)),
+        ], digest=f"{offset:064d}")
+
+    segmentations = [frame_at(6870), frame_at(7684)]
+    offsets = [6870, 7684]
+    proven, _notes = item_index._screen_fixed_islands(
+        item_index._islands(segmentations, offsets))
+    assert proven == frozenset({(_PINNED_Y0, _PINNED_Y1)}), "the capture must prove it first"
+
+    held_out, failures = _assemble(
+        item_index._observations(segmentations, offsets, proven), at_scroll_top=False)
+    assert failures == ()
+    assert [(b.page_y0, b.page_y1) for b in held_out] == [(7387, 8072), (8201, 8886)]
+
+    # The control that proves WHICH mechanism kept those failures away: withhold the proof and the
+    # second frame's strip lands at 8052..8095, straddling the first frame's bounded card.
+    placed = item_index._observations(segmentations, offsets, frozenset())
+    assert (8052, 8095) in {(o.page_y0, o.page_y1) for o in placed}
+    _blocks, placed_failures = _assemble(placed, at_scroll_top=False)
+    assert any("a fragment cannot reach past the card that contains it" in f
+               for f in placed_failures), placed_failures
+
+
+# =====================================================================================
+# End to end, with pixels
+# =====================================================================================
+
+_PINNED_SCROLLS = (0, 300, 900, 1500)
+# Frame 2 (scroll 900) is THE BRIDGE, and its arithmetic is the incident's. Its band opens on the
+# pinned strip at frame rows 368..411; its real content resumes at frame row 517, which is world
+# row 1417 — 64 rows INSIDE card 2. Merge the strip into that clipped card, as segment.py did
+# before this fix, and the block's top becomes page row 900 + 368 = 1268, which is 32 rows inside
+# card 1 (400..1300). That single sighting then chains card 1's fragments and card 2's complete
+# sightings into one fold group, and card 1 — never bounded at this cadence, since the strip covers
+# its own top corner in every frame — gives `_split_on_bounded_cards` nothing to split on.
+assert _PINNED_SCROLLS[2] + _PINNED_CONTENT_Y0 > _CARD2[1], "the bridge frame must clip card 2"
+assert _PINNED_SCROLLS[2] + _PINNED_Y0 < _CARD1[2], "and its merged top must land inside card 1"
+
+
+def test_a_screen_pinned_header_capture_indexes_cleanly_and_places_the_strip_nowhere():
+    """THE TEST THAT PINS THE WHOLE FIX, on real pixels rather than hand-written records.
+
+    Four frames of the synthetic world with Hinge 10.1.0's pinned header painted over the top of
+    the analysed band — the same strip at the same frame rows with the same pixels on all four,
+    while the page scrolls 1500px underneath it. segment.py reports it as `BLOCK_UNANCHORED` on
+    every frame; the capture's own offsets prove it screen-fixed; and the index that comes out is
+    the page that was really painted, with the strip at no page position at all.
+
+    Card 1 is `ITEM_PARTIAL` here and that is correct rather than a compromise: the strip covers
+    its own top corner in every frame, so no frame ever bounded it. It still consumes heart ordinal
+    1 while the model indices stay dense over the two selectable cards — translation (2, 3) — which
+    is doc 5.3's asymmetry doing exactly its job under a defect that would otherwise have renumbered
+    the profile.
+
+    The control at the bottom is the load-bearing half: the SAME segmentations and the SAME offsets,
+    re-folded with the proof withheld, reproduce the incident's own refusal."""
+    frames = [_frame(s, pinned_prefix=True) for s in _PINNED_SCROLLS]
+
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=False, identity_band=None)
+
+    assert index.usable, index.failures
+    assert index.offsets == _PINNED_SCROLLS
+    assert index.source_frame_indices == tuple(range(len(frames))), \
+        "a clean capture must not need a frame-omission recovery"
+    assert index.recovered_from_fold_contradiction_frames == ()
+
+    assert [(b.page_y0, b.page_y1, b.kind) for b in index.blocks] == [
+        (_CARD1[1] + _PINNED_CONTENT_Y0 - _CARD1[1], _CARD1[2], item_index.ITEM_PARTIAL),
+        (_CARD2[1], _CARD2[2], item_index.ITEM_SELECTABLE),
+        (_VITALS[1], _VITALS[2], item_index.ITEM_CONTEXT),
+        (_CARD3[1], _CARD3[2], item_index.ITEM_SELECTABLE),
+        (_CARD4[1], _CARD4[1] + 113, item_index.ITEM_PARTIAL),   # the capture's truncated tail
+    ]
+    assert len(index.selectable) == 2
+    assert index.translation == (2, 3)
+
+    # NO block, and no SIGHTING inside one, may carry the strip's rows. Page rows would be the
+    # fabricated `frame_row + offset`; frame rows are how the fabrication gets in.
+    strip_page_rows = {_PINNED_Y0 + off for off in index.offsets}
+    assert not any(b.page_y0 in strip_page_rows for b in index.blocks)
+    assert all(o.frame_y0 >= _PINNED_CONTENT_Y0
+               for b in index.blocks for o in b.observations), \
+        "no sighting may begin above the row where real content resumes"
+
+    assert any("fixed to the SCREEN, not to the page" in n for n in index.notes), index.notes
+
+    # THE CONTROL. Same segmentations, same offsets, proof withheld: this is byte for byte what
+    # this module did before 2026-08-28, and it is the incident.
+    pre_fix = item_index._observations(index.frames, index.offsets, frozenset())
+    _blocks, pre_fix_failures = _assemble(pre_fix, at_scroll_top=False)
+    assert any("a fragment cannot reach past the card that contains it" in f
+               for f in pre_fix_failures), pre_fix_failures
+    assert any("frame 2 sees page rows 1268..2113" in f for f in pre_fix_failures), \
+        "the bridging sighting is the merged strip, 149px above any real content"
+    assert item_index._fragment_overrun_frame_indices(pre_fix_failures) == (2,), \
+        "and only the BRIDGING frame is nominated, never the three it dragged in"
+
+
+def test_a_heart_inside_a_proven_screen_fixed_strip_is_a_hard_failure(monkeypatch):
+    """DEFENCE IN DEPTH, deliberately unreachable today.
+
+    segment.py's clause (e) refuses to label any strip that holds a heart, or whose adjacent run
+    does, so nothing can currently reach this check. It exists because the consequence of a future
+    loosening is the single error class this whole module is built to make impossible: a dropped
+    heart renumbers every ordinal below it, silently, and the model's item 3 then taps item 4.
+
+    Holding a strip out of the page is a DISCARD, and a discard has to be able to fail loudly. The
+    message names the frame rows so an operator can go and look at the pixels, which is the only
+    way to tell a loosened predicate from a real heart drawn on real chrome."""
+    frames = [_frame(s, pinned_prefix=True) for s in _PINNED_SCROLLS[:2]]
+    real_segment = item_index.segment_frame
+    labelled = []
+
+    def heart_on_the_island(*args, **kwargs):
+        seg = real_segment(*args, **kwargs)
+        islands = [b for b in seg.blocks if b.kind == segment.BLOCK_UNANCHORED]
+        labelled.extend(islands)
+        return dataclasses.replace(seg, blocks=tuple(
+            dataclasses.replace(b, hearts=((_HEART_CX, b.y0 + 20),))
+            if b.kind == segment.BLOCK_UNANCHORED else b for b in seg.blocks))
+
+    monkeypatch.setattr(item_index, "segment_frame", heart_on_the_island)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=False, identity_band=None)
+
+    assert labelled, "the fixture must actually have produced an unanchored strip to poison"
+    assert not index.usable
+    assert any(f"the strip at frame rows {_PINNED_Y0}..{_PINNED_Y1} was proven fixed to the "
+               "screen and held out of the page" in f for f in index.failures), index.failures
+    assert any("would drop a likeable item and renumber every heart ordinal below it" in f
+               for f in index.failures)
+
+
+# =====================================================================================
+# `_scroll_top_evidence`: the background test alone had gone VACUOUS
+# =====================================================================================
+
+_SCROLL_TOP_ITEMS = [_obs(0, 700, 1674, hearts=(1584,)), _obs(1, 1727, 2500, hearts=(2410,))]
+_SCROLL_TOP_CHROME = _obs(0, _BAND0 + 34, 480, complete=False)
+
+
+def _top_evidence(observations):
+    """`_scroll_top_evidence` over the blocks these sightings fold into, asked in the state
+    `_assemble` itself asks it in: BEFORE the leading-chrome relabelling, which only happens once
+    this check has already declined to contradict the claim. Folding at `at_scroll_top=False`
+    is how that state is reached, since the relabelling is gated on the assertion."""
+    blocks, _failures = _assemble(observations, at_scroll_top=False)
+    return item_index._scroll_top_evidence(blocks, _BAND0)
+
+
+def test_background_above_plus_the_first_items_own_corner_corroborates_a_scroll_top():
+    """The POSITIVE control for the two tests below, stated as the conjunction the check now is.
+
+    Both halves are present: page background above the topmost block (34 rows, the smaller of the
+    two clearances the corpus measured), and the first real item bounded by its OWN rounded corner
+    — which at a genuine list top is visible, and is how item 1 gets bounded at all. Nothing is
+    contradicted, so nothing is reported, and Hinge's header is relabelled chrome."""
+    sightings = [_SCROLL_TOP_CHROME] + _SCROLL_TOP_ITEMS
+    blocks, failures = _assemble(sightings, at_scroll_top=True)
+
+    assert _top_evidence(sightings) is None
+    assert failures == ()
+    assert blocks[0].kind == item_index.ITEM_LEADING_CHROME
+
+
+def test_background_above_without_the_first_items_corner_is_no_longer_accepted():
+    """THE REGRESSION THE PINNED HEADER CREATED, and the reason a second test was needed at all.
+
+    The background test is purely NEGATIVE: it asks whether anything sat above the topmost content
+    and treats "yes" as consistent with a scroll top. Hinge 10.1.0's pinned header sits below the
+    band's first row on EVERY frame of a capture, top or not — so the test the corpus credits with
+    refusing 21 of 21 and 9 of 10 falsely-asserted tops began returning True unconditionally.
+    [measured on the incident capture: the topmost block starts at frame row 368 against a band
+    opening at 300, at page offsets from 0 to 8485. It was catching nothing, and nothing said so.]
+
+    So the first item must ALSO have been seen with its own top edge. Here it has a gutter above it
+    instead — which is what every card except item 1 has, and therefore what a window that started
+    below the top looks like. The failure must NOT claim the block was flush against the band edge:
+    it is not, that is precisely the trap, and sending an operator to look at the band edge is the
+    wrong place. [guidance derives from its precondition; a fixed sentence here would have named
+    the wrong one of two tests.]"""
+    interior = [dataclasses.replace(o, top_kind=segment.EDGE_GUTTER) for o in _SCROLL_TOP_ITEMS]
+    sightings = [_SCROLL_TOP_CHROME] + interior
+    blocks, failures = _assemble(sightings, at_scroll_top=True)
+
+    contradiction = _top_evidence(sightings)
+    assert contradiction is not None
+    assert "no frame ever saw the first item's OWN top edge" in contradiction
+    assert "its top read as ['gutter'] every time, never a card corner" in contradiction
+    assert "a pinned header puts it there on every frame of a capture" in contradiction
+    assert "begins on the analysed band's own first row" not in contradiction, \
+        "the band-edge wording sends an operator to a row that is not the problem"
+    assert contradiction in failures
+    assert blocks[0].kind == item_index.ITEM_PARTIAL, "the evidence must not be relabelled chrome"
+
+    # ...and it is scoped to the claim, exactly as the band-edge test is.
+    _relative, relative_failures = _assemble(sightings, at_scroll_top=False)
+    assert not any("at_scroll_top was asserted" in f for f in relative_failures)
+
+
+def test_reconfirmed_unpinned_scroll_top_can_resolve_a_missing_photo_corner():
+    """The driver may supply a second, independent top proof after the ordinary fold refuses.
+
+    Hinge's name panel can border the first photo closely enough that segmentation sees the
+    photo's upper gutter but not its rounded corner. The default remains a refusal (the test
+    above protects that guard for every generic/offline caller); only a live recheck of the
+    filter-chip detector on frame zero, after a whole-capture pinning check, may authorize this
+    retry. The leading heartless name panel then becomes chrome and cannot consume a heart
+    ordinal.
+    """
+    interior = [dataclasses.replace(o, top_kind=segment.EDGE_GUTTER)
+                for o in _SCROLL_TOP_ITEMS]
+    sightings = [_SCROLL_TOP_CHROME] + interior
+
+    blocks, failures = _assemble(
+        sightings, at_scroll_top=True, scroll_top_signal_confirmed=True)
+
+    assert failures == ()
+    assert blocks[0].kind == item_index.ITEM_LEADING_CHROME
+
+
+def test_the_corner_is_looked_for_below_a_heartless_never_bounded_leading_block():
+    """THE 10.0.x SHAPE, which must keep working. A page-anchored header — Hinge's filter chips and
+    name row, which SCROLL — comes back as a heartless, never-bounded leading block, and the corner
+    that proves a list top belongs to the card BELOW it. So that block is skipped when looking for
+    the first item, deliberately the same shape the `ITEM_LEADING_CHROME` relabelling looks for.
+
+    The skip is narrow, and the second half here is what makes that checkable: give the leading
+    block a heart and it is an ITEM, not chrome, so it is no longer skipped — and having no corner
+    of its own it now refuses. A skip that fired on anything at the top of a capture would hand the
+    corner test to whichever block happened to be second, which past a scroll top is any card at
+    all."""
+    _skipped, failures = _assemble(
+        [_SCROLL_TOP_CHROME] + _SCROLL_TOP_ITEMS, at_scroll_top=True)
+    assert _top_evidence([_SCROLL_TOP_CHROME] + _SCROLL_TOP_ITEMS) is None
+    assert failures == ()
+
+    contradiction = _top_evidence(
+        [_obs(0, _BAND0 + 34, 480, complete=False, hearts=(400,))] + _SCROLL_TOP_ITEMS)
+    assert contradiction is not None
+    assert f"the block at page rows {_BAND0 + 34}..480" in contradiction
+    assert "never a card corner" in contradiction
+
+
+def test_the_guarded_scroll_top_media_edge_counts_as_the_first_items_own_top():
+    """`EDGE_SCROLL_TOP_MEDIA` is segment.py's separately gated frame-0 conjunction for a pale
+    square photo whose corner arc is too low-contrast to measure directly — a partial corner plus
+    square-card, heart and lower-gutter geometry. It is a corner proved by other means, not a
+    weaker signal, and it is the ONLY other way item 1 can be bounded at a real scroll top.
+
+    Rejecting it here would refuse exactly the captures segment.py went out of its way to rescue,
+    which is why `_LIST_TOP_EDGE_KINDS` is a set of two and is imported from segment.py rather than
+    re-listed."""
+    media = [dataclasses.replace(_SCROLL_TOP_ITEMS[0], top_kind=segment.EDGE_SCROLL_TOP_MEDIA),
+             _SCROLL_TOP_ITEMS[1]]
+    sightings = [_SCROLL_TOP_CHROME] + media
+    blocks, failures = _assemble(sightings, at_scroll_top=True)
+
+    assert _top_evidence(sightings) is None
+    assert failures == ()
+    assert blocks[0].kind == item_index.ITEM_LEADING_CHROME
+
+
+# =====================================================================================
+# `_fragment_overrun_frame_indices`: which frames a bridge actually implicates
+# =====================================================================================
+
+def _bridged_group_failures():
+    """The incident's own fold, in records rather than pixels: one card proven at 7387..8072 by two
+    frames, a second card at 8125..9234 that no frame ever bounded (it is 1109px and needs an
+    offset in 7134..7608; the capture's offsets straddle that at 7110 and 7637), one BRIDGING
+    sighting whose extent spans both, and three ordinary sightings of the lower card that the
+    bridge dragged into the same group.
+
+    `_split_on_bounded_cards` cannot split this — only ONE of the two cards has a complete sighting
+    — so `_resolve_group` emits four overrun failures plus the co-emitted ambiguity, which is
+    exactly the shape the live capture produced."""
+    return _assemble([
+        _obs(13, 7387, 8072, hearts=(7983,)),
+        _obs(14, 7387, 8072, hearts=(7983,)),
+        _obs(15, 8125, 8600, complete=False),
+        _obs(16, 8020, 9234, complete=False, hearts=(9145,)),        # the bridge
+        _obs(17, 8125, 9234, complete=False, hearts=(9145,)),
+        _obs(18, 8125, 9000, complete=False),
+    ], at_scroll_top=False)[1]
+
+
+def test_only_the_bridging_frame_is_nominated_never_the_ones_it_dragged_in():
+    """CORRECTION TWO, made on a live capture. A bridge drags its neighbours' ordinary sightings
+    into its group, and those get an overrun failure too — six frames were nominated when exactly
+    one had crossed anything. Dropping all six would have removed the only two complete sightings
+    of the card below AND the last frame of the capture; dropping the one bridge yields a correct
+    index.
+
+    A fragment that OVERLAPS the bounded card and runs past it is the one that crossed the
+    boundary. A fragment DISJOINT from it crossed nothing. Both extents are printed in the failure
+    itself, so the distinction is read off the numbers an operator can see — the same four numbers
+    `_resolve_group` used to word the message, never a second guess at the geometry.
+
+    Here frames 15, 17 and 18 are ordinary sightings of the card below (all starting at 8125,
+    clear of the card bounded at 7387..8072) and frame 16 is the only extent that spans the
+    boundary. Nominating all four would drop the whole run; nominating frame 16 leaves a capture
+    that rebuilds."""
+    failures = _bridged_group_failures()
+
+    overruns = [f for f in failures
+                if "a fragment cannot reach past the card that contains it" in f]
+    assert len(overruns) == 4
+    assert sum("it is a sighting of the neighbouring card, dragged into this group" in f
+               for f in overruns) == 3
+    assert item_index._fragment_overrun_frame_indices(failures) == (16,)
+
+
+def test_the_co_emitted_ambiguity_only_vetoes_when_it_names_a_different_block():
+    """CORRECTION ONE. The group-ambiguity failure reads as an independent second fault, and the
+    original rule refused anything it did not recognise for exactly that reason. But it is not
+    independent — it is a DETERMINISTIC CONSEQUENCE of the same merge: two cards folded into one
+    group put two hearts in one group, so `_resolve_group` co-emits it on every bridge whose lower
+    card carries a heart, which is most of them. The recovery was therefore unreachable in the
+    common case while appearing to be available.
+
+    [measured on the incident: `block at page rows 7387..8072 is ambiguous: 2 distinct like hearts
+    at page rows [7983, 9145]` — naming the very block the overrun failures name.] An ambiguous
+    block ANYWHERE ELSE is a second fault and still refuses; the difference between the two is
+    whether the extent it names is one the overruns already bound."""
+    failures = _bridged_group_failures()
+    ambiguity = next(f for f in failures if "is ambiguous:" in f)
+    assert "block at page rows 7387..8072 is ambiguous: 2 distinct like hearts at page rows " \
+        "[7983, 9145]" in ambiguity
+
+    assert item_index._fragment_overrun_frame_indices(failures) == (16,)
+
+    elsewhere = [ambiguity.replace("7387..8072", "9287..10396") if f is ambiguity else f
+                 for f in failures]
+    assert item_index._fragment_overrun_frame_indices(elsewhere) == ()
+
+
+def test_any_unrelated_failure_still_refuses_the_omission_recovery():
+    """The recovery drops real frames, so it is only ever justified when EVERY fold failure is the
+    same merge. A bad shift, two competing complete extents, an uncertain heart or any other
+    assembly fault means something else is also wrong, and dropping frames would be guessing."""
+    failures = _bridged_group_failures()
+    uncertain_heart = ("the block at page rows 6697..7334 " + item_index._UNCERTAIN_HEART_NOTE)
+
+    assert item_index._fragment_overrun_frame_indices((*failures, uncertain_heart)) == ()
+    assert item_index._fragment_overrun_frame_indices(()) == ()
+
+
+# =====================================================================================
+# `_resolve_group`: whose fault a fold contradiction is
+# =====================================================================================
+
+def test_two_disjoint_sightings_from_one_frame_are_not_a_self_contradictory_frame():
+    """THE WRONG-FRAME REFUSAL, fixed 2026-08-28. On the incident capture the fold told frame 14 it
+    "contradicted itself" when frame 14 had done nothing wrong: it had bounded one card AND owned a
+    perfectly ordinary DISJOINT fragment of the next one, and some OTHER frame's missed boundary had
+    folded the two cards into a single group. An operator following that message goes and stares at
+    the one frame in the capture that is correct.
+
+    segment.py's blocks are disjoint within a frame, so "same frame" alone says nothing; whether the
+    two extents OVERLAP is what separates a genuinely self-contradictory frame from a victim of
+    someone else's bridge. The mirror of this test already existed in the complete-vs-complete loop
+    and simply had no counterpart in the fragment loop."""
+    _blocks, failures = _assemble([
+        _obs(14, 7387, 8072, hearts=(7983,)),          # frame 14 bounds one card...
+        _obs(14, 8125, 8500, complete=False),          # ...and sees a disjoint fragment of the next
+        _obs(16, 7975, 8600, complete=False),          # ...while frame 16 is the one that bridges
+    ], at_scroll_top=False)
+
+    victim = next(f for f in failures if "frame 14 sees page rows 8125..8500" in f)
+    assert "self-contradictory" not in victim
+    assert "frame 14 is not disagreeing with itself" in victim
+    assert "look for the frame whose own block spans this boundary" in victim
+
+    culprit = next(f for f in failures if "frame 16 sees page rows 7975..8600" in f)
+    assert "either a gutter was missed" in culprit
+
+    # The wording and the nomination have to agree: the frame the message exonerates is the frame
+    # a recovery must not drop. Frame 14 owns the only two complete sightings in this group.
+    assert item_index._fragment_overrun_frame_indices(failures) == (16,)
+
+
+def test_two_overlapping_sightings_from_one_frame_still_say_self_contradictory():
+    """The other side of the same gate, and the reason it is a gate rather than a deletion. A frame
+    that contributes BOTH the bounding sighting and an OVERLAPPING fragment to one group should not
+    happen at all — segment.py's blocks are disjoint within one frame — so it is a different and
+    more surprising fault than an ordinary missed gutter, and it keeps its own wording."""
+    _blocks, failures = _assemble([
+        _obs(14, 7387, 8072, hearts=(7983,)),
+        _obs(14, 8000, 8600, complete=False),
+    ], at_scroll_top=False)
+
+    contradiction = next(f for f in failures if "frame 14 sees page rows 8000..8600" in f)
+    assert "their extents OVERLAP, which should never happen" in contradiction
+    assert "self-contradictory frame" in contradiction
+    # A sighting that really does span the boundary is a bridge, whoever's frame it came from.
+    assert item_index._fragment_overrun_frame_indices(failures) == (14,)

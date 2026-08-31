@@ -170,6 +170,21 @@ def test_ctrl_c_before_any_frame_still_writes_an_empty_but_valid_manifest(tmp_pa
     assert (out_dir / "manifest.json").exists()
 
 
+def test_capture_error_is_marked_in_the_manifest_not_reported_as_a_completed_scroll(tmp_path, capsys):
+    """A device/capture failure preserves prior frames but must not look like normal completion."""
+    adb = FakeAdb([b"first"])
+    out_dir = tmp_path / "out"
+
+    manifest = hsc.capture(adb=adb, seconds=1000.0, interval=0.0, out_dir=out_dir,
+                           serial="SER1", progress=False)
+
+    assert manifest["interrupted"] is False
+    assert manifest["capture_error"] == "_StopCapture"
+    assert manifest["frame_count"] == 1
+    assert "Stopped after screencap error" in capsys.readouterr().out
+    assert json.loads((out_dir / "manifest.json").read_text()) == manifest
+
+
 # --- --serial / device resolution ----------------------------------------------------------
 
 def _devices_output(*serials_and_states):
@@ -253,6 +268,18 @@ def test_list_ready_devices_exits_nonzero_when_adb_binary_missing(monkeypatch, c
         hsc._list_ready_devices("adb")
     assert exc.value.code != 0
     assert "not found" in capsys.readouterr().err.lower()
+
+
+def test_list_ready_devices_exits_cleanly_when_adb_cannot_be_executed(monkeypatch, capsys):
+    def _raise(*a, **k):
+        raise PermissionError("operation not permitted")
+    monkeypatch.setattr(hsc.subprocess, "run", _raise)
+
+    with pytest.raises(SystemExit) as exc:
+        hsc._list_ready_devices("/restricted/adb")
+
+    assert exc.value.code != 0
+    assert "could not run" in capsys.readouterr().err.lower()
 
 
 def test_list_ready_devices_exits_nonzero_when_adb_command_fails(monkeypatch, capsys):

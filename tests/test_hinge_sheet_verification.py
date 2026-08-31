@@ -99,6 +99,19 @@ _CARDS = [_card(1), _card(2)]
 _SHEETS = [_sheet(c) for c in _CARDS]
 
 
+def _reference(card: bytes) -> bytes:
+    """The greyscale verification reference for a painted card, cut the way `_crop_image` cuts it.
+
+    `item_verify` windows THIS, not `image`: the two are the same pixels but not the same bytes,
+    and decoding a colour PNG to grey is not the same grey the sheet is measured in. A payload
+    assembled here has to carry both for the same reason a real one does.
+    """
+    grey = cv2.imdecode(np.frombuffer(card, np.uint8), cv2.IMREAD_GRAYSCALE)
+    ok, encoded = cv2.imencode(".png", grey)
+    assert ok
+    return encoded.tobytes()
+
+
 def _payload(drift: float = 0.0) -> item_crops.ItemPayload:
     """A two-item payload built from the painted cards, with real signatures.
 
@@ -110,7 +123,7 @@ def _payload(drift: float = 0.0) -> item_crops.ItemPayload:
         item_crops.ItemCrop(
             kind=item_crops.CROP_ITEM, number=i + 1, heart_ordinal=i + 1, page_y0=0,
             page_y1=_CARD_H, x0=53, x1=53 + _CARD_W, frame_index=i, frame_y0=0,
-            frame_y1=_CARD_H, image=card,
+            frame_y1=_CARD_H, image=card, verify_image=_reference(card),
             signature=item_crops.signature_of(card, y0=0, y1=_CARD_H, x0=0, x1=_CARD_W),
             signature_drift=drift, drift_frames=(i,), nearest_item_distance=None,
             reason="painted")
@@ -357,6 +370,25 @@ def test_stop_after_navigation_prevents_the_heart_tap():
     assert adb.taps == [] and adb.texts == []
 
 
+def test_stop_during_pass_button_lookup_prevents_the_transport_tap():
+    """The pass gate must run after lookup, immediately beside transport input."""
+    adb = SheetAdb(_SHEETS[0])
+    stopped = {"now": False}
+    with pytest.MonkeyPatch.context() as mp:
+        driver = _driver(adb, mp)
+        mp.setattr(HingeDriver, "_require_deck_confirmed", lambda _self: None)
+
+        def await_pass(_self, which, tries=5, *, should_stop=None):
+            assert which == "pass" and should_stop is not None
+            stopped["now"] = True
+            return (540, 1200)
+
+        mp.setattr(HingeDriver, "_await_button", await_pass)
+        with pytest.raises(ActionCancelled):
+            driver.dislike(should_stop=lambda: stopped["now"])
+    assert adb.taps == []
+
+
 def test_stop_after_the_sheet_opens_prevents_text_and_send():
     """Once a sheet is open Stop leaves it for inspection; it cannot type or send."""
     adb = SheetAdb(_SHEETS[0])
@@ -418,7 +450,8 @@ def test_shannon_style_photo_and_video_policy_translation_targets_heart_seven():
             kind=kind, number=number, heart_ordinal=heart,
             page_y0=heart * 1000, page_y1=heart * 1000 + _CARD_H,
             x0=53, x1=53 + _CARD_W, frame_index=heart, frame_y0=0, frame_y1=_CARD_H,
-            image=image, signature=signature, signature_drift=None, drift_frames=(),
+            image=image, verify_image=_reference(image) if image is not None else None,
+            signature=signature, signature_drift=None, drift_frames=(),
             nearest_item_distance=None, reason=reason)
 
     photo_1, photo_7, photo_9 = _card(21), _card(22), _card(23)

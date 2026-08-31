@@ -399,6 +399,34 @@ def test_close_failure_after_flush_failure_does_not_mask_the_flush_error(monkeyp
     assert "connection already gone" in capsys.readouterr().out   # reported, not silently dropped
 
 
+def test_close_only_failure_is_a_save_failure_not_a_green_shutdown(monkeypatch, tmp_path):
+    """The final close can flush rows that raced the supervisor's earlier flush.
+
+    A close-only error must therefore set the same terminal failure state and propagate. The
+    companion test above still proves an earlier flush error remains the more useful cause.
+    """
+    store = _CloseAlsoFailsStore(
+        flush_error=None,
+        close_error=RuntimeError("final archive flush rejected"),
+    )
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: store)
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+    captured = {}
+
+    with pytest.raises(RuntimeError, match="final archive flush rejected"):
+        sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
+                stop_event=threading.Event())
+
+    snap = captured["status"].snapshot()
+    assert store.closed is True
+    assert snap["phase"] == "save_failed"
+    assert all(app["state"] == "error" for app in snap["apps"].values())
+
+
 def test_worker_error_state_survives_shutdown_not_overwritten_to_stopped(monkeypatch, tmp_path):
     """Regression test for the bug this change fixes: worker.py's HALT-on-unexpected path
     (run()'s `except Exception:` branch, auto mode or halt_on_error) publishes
@@ -975,7 +1003,8 @@ def test_wedged_worker_is_not_reported_as_unqualified_success(monkeypatch, tmp_p
     assert any(a["state"] == "wedged" for a in snap["apps"].values())
     out = capsys.readouterr().out
     assert "✅ all data saved" not in out
-    assert "provider_calls=" in out
+    assert "accounted_provider_results=" in out
+    assert "HTTP fallback failures logged separately and excluded" in out
     assert "provider_spend=$" in out
     assert "openers=" not in out
     assert "Python stack at wedge" in out

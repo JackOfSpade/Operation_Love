@@ -569,7 +569,7 @@ class OpenerService:
         # Ring buffer of the most recent COMMITTED opener records (AUTO/Training generations,
         # plus Observe suggestions only after a confirmed Like; see recent_openers_snapshot),
         # mirroring self.store.record_opener's permanent per-run record. WHY THIS EXISTS: a
-        # bug report that says only "provider_calls=1" cannot
+        # bug report that says only "accounted_provider_results=1" cannot
         # tell you whether that opener was about the right photo. Recording the model's own
         # `referenced` string alongside whether the call was anchored (see maybe_opener's
         # anchor parameter) is exactly the evidence needed to diagnose an out-of-place opener
@@ -1478,15 +1478,24 @@ class OpenerService:
                 raw_markers = getattr(result, "redundancy_markers", None)
                 redundancy_markers = ([str(m) for m in raw_markers]
                                       if isinstance(raw_markers, (list, tuple)) else [])
-                if redundancy_markers:
-                    # opener.py prints its own line when it computes these, but that fires for
-                    # every PARSED draft, including one the entropy guard then throws away.
-                    # This line fires only for the opener that is actually about to be sent,
-                    # which is the population the offline calibration in doc 3.7 needs to count.
-                    print(f"Opener: the opener being sent restates "
-                          f"{len(redundancy_markers)} word(s) from its own `referenced` note "
-                          f"({'; '.join(redundancy_markers)}). Logged only, never a rejection.")
                 staged_for_action = advisory or stage
+                if redundancy_markers:
+                    # opener.py prints when it computes these, including parsed drafts the
+                    # entropy guard later rejects.  Staged Training/advisory/AUTO drafts must
+                    # not get a second service-level message here: the draft monitor is already
+                    # enough diagnostic evidence, and a staged draft can become a Dislike, Stop,
+                    # or pre-send refusal.  Service-level redundancy output is reserved for the
+                    # successful commit below, so each landed Like contributes exactly one such
+                    # lifecycle record.
+                    if not staged_for_action:
+                        # Legacy/immediate callers retain their durable record at generation,
+                        # but this method still cannot know whether their later device action
+                        # will send the text. Keep the redundancy signal while making that
+                        # boundary explicit instead of overstating delivery.
+                        print(f"Opener: immediate-flow opener restates "
+                              f"{len(redundancy_markers)} word(s) from its own `referenced` note "
+                              f"({'; '.join(redundancy_markers)}). Delivery is not verified "
+                              "here; logged only for offline calibration, never a rejection.")
                 try:
                     self.store.record_spend(run_id, result.model, result.usage, cost)
                     # angle and item_description ride along as the 6th and 7th POSITIONAL
@@ -1510,9 +1519,10 @@ class OpenerService:
                           f"({_display_cost(cost)}): {e}")
                 if self.tracker.budget_reached():
                     self._exhaust("run budget reached", request_stop=not advisory)
-                # A diagnostic opener entry is committed only for AUTO, or later for a confirmed
-                # Observe Like.  An advisory suggestion is a draft and must not make an
-                # abandoned profile look acted-on in a bug report.
+                # An un-staged legacy/immediate caller records its diagnostic opener here.
+                # Staged AUTO, Training, and Observe flows instead commit only after the
+                # worker has a confirmed Like boundary.  A draft must not make an abandoned
+                # profile look acted-on in a bug report.
                 #
                 # The three newer fields all exist to make a redesign VISIBLE in a bug report
                 # rather than only in a console line nobody kept: `angle` is the model's own
@@ -1621,6 +1631,15 @@ class OpenerService:
             else:
                 recent_entry["session_mode"] = "auto"
             self.recent_openers.append(recent_entry)
+            markers = recent_entry.get("redundancy_markers")
+            if isinstance(markers, list) and markers:
+                # This is the first point at which a staged draft has both crossed durable
+                # storage and been supplied with the worker's verified Like lineage.  It is
+                # therefore the only staged-flow message allowed to describe the opener as
+                # committed/landed rather than merely proposed for review.
+                print(f"Opener: committed Like opener restates {len(markers)} word(s) from its "
+                      f"own `referenced` note ({'; '.join(str(marker) for marker in markers)}). "
+                      "Logged only for offline calibration, never a rejection.")
             pick._staged_record = None
             return True
 

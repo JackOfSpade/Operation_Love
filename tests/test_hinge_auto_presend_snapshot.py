@@ -228,7 +228,7 @@ def test_training_relocates_and_rechecks_the_scrolled_composer_after_decision(
     def training_checkpoint(frame, *_args, **_kwargs):
         composer = locate(frame)
         verify(frame, composer_surface=composer)
-        return composer, (80, 80)
+        return frame, composer, (80, 80)
     monkeypatch.setattr(driver, "_verify_training_checkpoint", training_checkpoint)
     monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_args, **_kw: True)
     monkeypatch.setattr(driver, "_handle_rose_upsell", lambda: False)
@@ -352,6 +352,59 @@ def test_training_hides_keyboard_and_freshly_revalidates_like_after_hub_choice(m
     assert ("tap", checkpoint.confirm_point) not in events
     assert seen[-1] == b"FRESH_AFTER_CHOICE"
     assert events.index(("keyevent", 4)) < events.index(("tap", resumed.confirm_point))
+
+
+@pytest.mark.parametrize(("decision", "set_stop", "reason"), [
+    ("stop", True, "stop_requested"),
+    (None, False, "invalid_decision"),
+])
+def test_training_cancellation_records_checkpoint_local_unsent_outcome(
+        tmp_path, monkeypatch, decision, set_stop, reason):
+    """Stop and an invalid review result both end the typed checkpoint before Send Like."""
+    events = []
+    driver, _adb = _driver(events)
+    driver.set_auto_session_policy(object())
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-stop", keep_shots=50)
+    initial = SimpleNamespace(comment_rect=SimpleNamespace(center=(20, 20)),
+                              confirm_point=(30, 30))
+    checkpoint = SimpleNamespace(comment_rect=SimpleNamespace(center=(21, 21)),
+                                 confirm_point=(40, 40))
+    stopped = {"value": False}
+
+    monkeypatch.setattr(driver, "_verifiable_payload", lambda _item: object())
+    monkeypatch.setattr(driver, "_confirm_payload_profile", lambda _item: None)
+    monkeypatch.setattr(driver, "_navigate_to_model_item", lambda _item, **_kw: (10, 10))
+    monkeypatch.setattr(driver, "_snap", lambda: b"PRE_HEART")
+    monkeypatch.setattr(driver, "_await_sheet_open", lambda **_kw: initial)
+    monkeypatch.setattr(driver, "_screencap", lambda: b"FOCUSED")
+    monkeypatch.setattr(hinge, "locate_inline_composer", lambda *_a, **_kw: initial)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: checkpoint)
+    monkeypatch.setattr(driver, "_verify_sheet_shows", lambda *_a, **_kw: None)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(driver, "_hide_keyboard_for_training", lambda **_kw: b"CHECKPOINT")
+    monkeypatch.setattr(
+        driver, "_verify_training_checkpoint",
+        lambda frame, *_a, **_kw: (frame, checkpoint, (80, 80)))
+
+    def decide(_frame, _evidence):
+        stopped["value"] = set_stop
+        return decision
+
+    driver.set_training_decision(decide)
+    with pytest.raises(hinge.ActionCancelled):
+        driver.like("A targeted opener", model_item_index=1,
+                    should_stop=lambda: stopped["value"])
+
+    records = [json.loads(line) for line
+               in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    pre_send = next(record for record in records if record["action"] == "auto_opener_pre_send")
+    cancelled = next(record for record in records if record["action"] == "training_cancelled")
+    assert cancelled["pre_send_evidence_id"] == pre_send["evidence_id"]
+    assert cancelled["model_item_index"] == 1
+    assert cancelled["reason"] == reason
+    assert not any(record["action"] in {"auto_opener_resumed_send", "like_attempt", "like"}
+                   for record in records)
+    assert ("tap", checkpoint.confirm_point) not in events
 
 
 def test_training_like_rejects_reflowed_same_profile_after_send(monkeypatch):
@@ -530,7 +583,9 @@ def test_training_like_accepts_two_stable_confirmed_top_new_name_frames(tmp_path
         hinge, "_band", lambda frame, rect: np.full((16, 64), 99, dtype="int16"))
     monkeypatch.setattr(
         hinge, "confirm_scroll_top",
-        lambda frame, **_kw: SimpleNamespace(confirmed=True))
+        lambda frame, **_kw: SimpleNamespace(
+            state="confirmed_top", confirmed=True, distance=0.0,
+            reason="canonical scroll top confirmed"))
     monkeypatch.setattr(
         driver, "_ocr_band",
         lambda frame, rect, psm="7": "Kate\nshe her" if psm == "6" else None)
@@ -546,6 +601,210 @@ def test_training_like_accepts_two_stable_confirmed_top_new_name_frames(tmp_path
     assert probe["second"]["proof"] == "name"
     assert probe["stable"] is True
     assert probe["names_agree"] is True
+    serialized = json.dumps(probe)
+    assert "name_read" not in serialized
+    assert "Kate\\nshe her" not in serialized
+
+
+def test_training_like_accepts_repeated_structured_single_letter_name(tmp_path, monkeypatch):
+    """Regression: a completed Aisha -> S Send Like must not halt after the deck advanced.
+
+    ``S`` alone remains OCR noise; Hinge's exact ``S shows thoughtful signals`` banner binds it
+    to the profile-name slot, after which the ordinary canonical-top, repeat, source-agreement,
+    and stable-frame gates still license the label.
+    """
+    import numpy as np
+
+    driver, _adb = _driver([])
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-single-letter-advance")
+    driver._identity_name = "Aisha"
+    driver._identity_sig = np.zeros((16, 64), dtype="int16")
+    driver._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    frames = iter((b"S_TOP_FIRST", b"S_TOP_SECOND"))
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_deck_blocked_reason", lambda _frame: None)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: None)
+    monkeypatch.setattr(driver, "_observe_deck_ready", lambda _frame: True)
+    monkeypatch.setattr(driver, "_changed", lambda _before, _after: False)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: np.full((16, 64), 99, dtype="int16"))
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top",
+        lambda frame, **_kw: SimpleNamespace(
+            state="confirmed_top", confirmed=True, distance=0.0,
+            reason="canonical scroll top confirmed"))
+    monkeypatch.setattr(
+        driver, "_ocr_band",
+        lambda frame, rect, psm="7", **_kw: (
+            "S shows thoughtful signals" if psm == "6" else None))
+
+    assert driver._verify_training_like_landed(2) == "name"
+    records = [
+        json.loads(line)
+        for line in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()
+    ]
+    probe = next(record for record in records if record["action"] == "training_advance_probe")
+    assert probe["outcome"] == "accepted"
+    assert probe["first"]["name_candidate"] == "S"
+    assert probe["second"]["name_candidate"] == "S"
+    assert probe["names_agree"] is True
+
+
+def test_training_advance_accepts_repeated_new_name_despite_photo_collision(
+        tmp_path, monkeypatch):
+    """The Ery -> Roisin incident: a new first photo matched Ery's coarse content signature.
+
+    `_is_current_profile_frame` is intentionally conservative and therefore still answered
+    current, but its `_identity_of` call had independently read the clean new scroll-top name.
+    That name must reach the existing two-frame/name-repeat/stability proof instead of being
+    discarded by the coarse content answer.
+    """
+    driver, _adb = _driver([])
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-photo-collision")
+    frames = iter((b"ROISIN_TOP_FIRST", b"ROISIN_TOP_SECOND"))
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_deck_blocked_reason", lambda _frame: None)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: None)
+    monkeypatch.setattr(driver, "_observe_deck_ready", lambda _frame: True)
+    monkeypatch.setattr(driver, "_changed", lambda _before, _after: False)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+
+    def colliding_current_profile(_frame, *, require_content=False, diagnostics=None):
+        assert require_content is True
+        driver._identity_top_name_verdict = "new"
+        driver._identity_name_candidate = "Roisin"
+        driver._identity_top_name_read = "Roisin\nshe her"
+        driver._identity_name_candidate_source = "top_card_header"
+        return True
+
+    monkeypatch.setattr(driver, "_is_current_profile_frame", colliding_current_profile)
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top",
+        lambda *_a, **_kw: SimpleNamespace(
+            state="confirmed_top", confirmed=True, distance=0.0,
+            reason="canonical scroll top confirmed"))
+
+    assert driver._verify_training_dislike_landed(2) == "name"
+
+    records = [
+        json.loads(line)
+        for line in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()
+    ]
+    probe = next(record for record in records if record["action"] == "training_advance_probe")
+    assert probe["outcome"] == "accepted"
+    assert probe["first"]["current_profile"] is True
+    assert probe["first"]["name_candidate"] == "Roisin"
+    assert probe["second"]["name_candidate"] == "Roisin"
+    assert probe["names_agree"] is True
+
+
+def test_training_advance_rejects_non_top_name_candidate_on_current_profile(monkeypatch):
+    """A sticky-header OCR hallucination cannot override positive same-profile content proof."""
+    driver, _adb = _driver([])
+
+    def current_profile_with_tight_candidate(_frame, *, require_content=False, diagnostics=None):
+        assert require_content is True
+        driver._identity_top_name_verdict = "new"
+        driver._identity_name_candidate = "NotTheProfile"
+        driver._identity_top_name_read = "NotTheProfile"
+        driver._identity_name_candidate_source = "identity_band"
+        return True
+
+    monkeypatch.setattr(
+        driver, "_is_current_profile_frame", current_profile_with_tight_candidate)
+
+    diagnostics = {}
+    assert driver._training_profile_advance_proof(
+        b"SAME_PROFILE_REFLOW", 2, diagnostics=diagnostics) is None
+    assert diagnostics["current_profile"] is True
+    assert diagnostics["name_source"] == "identity_band"
+
+
+def test_training_advance_rejects_local_top_name_when_canonical_top_is_unavailable(
+        monkeypatch):
+    """A pinned chips row can look like local top mid-profile; it cannot license a label."""
+    driver, _adb = _driver([])
+
+    def current_profile_with_local_top_candidate(_frame, *, require_content=False, diagnostics=None):
+        assert require_content is True
+        driver._identity_top_name_verdict = "new"
+        driver._identity_name_candidate = "FalseHeaderRead"
+        driver._identity_top_name_read = "FalseHeaderRead"
+        driver._identity_name_candidate_source = "top_card_header"
+        return True
+
+    monkeypatch.setattr(
+        driver, "_is_current_profile_frame", current_profile_with_local_top_candidate)
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top",
+        lambda *_a, **_kw: SimpleNamespace(
+            state="check_unavailable", confirmed=False, distance=0.0,
+            reason="the chips row is pinned while the page scrolls"))
+
+    diagnostics = {}
+    assert driver._training_profile_advance_proof(
+        b"SAME_PROFILE_PINNED_CHIPS", 2, diagnostics=diagnostics) is None
+    assert diagnostics["current_profile"] is True
+    assert diagnostics["name_source"] == "top_card_header"
+    assert diagnostics["name_top_state"] == "check_unavailable"
+    assert diagnostics["name_top_confirmed"] is False
+
+
+@pytest.mark.parametrize("proofs", [
+    (("name", "roisin"), ("identity", None)),
+    (("identity", None), ("name", "roisin")),
+])
+def test_training_advance_rejects_mixed_single_name_and_identity_proofs(
+        proofs, monkeypatch):
+    """A single name read is never logged as an agreeing repeated-name observation."""
+    driver, _adb = _driver([])
+    frames = iter(f"FRAME_{index}".encode() for index in range(6))
+    proof_stream = iter(proofs * 3)
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_training_dislike_surface_proof",
+                        lambda *_a, **_kw: next(proof_stream))
+    monkeypatch.setattr(driver, "_changed", lambda _before, _after: False)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+
+    with pytest.raises(HingeActionError, match="semantically different ready deck"):
+        driver._verify_training_deck_advanced(2)
+
+
+def test_training_advance_rejects_primary_fallback_hybrid_and_retains_final_pair(
+        tmp_path, monkeypatch):
+    """Two equally spelled names from different OCR geometries are not one repeated reading.
+    The last rejected pair, but not every retry, is retained for incident replay."""
+    driver, _adb = _driver([])
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-final-rejection")
+    frames = iter(f"REJECT_{index}".encode() for index in range(6))
+    sources = iter(("top_card_header", "top_card_header_fallback") * 3)
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(driver, "_changed", lambda *_a, **_kw: False)
+
+    def proof(_frame, _item, *, diagnostics):
+        diagnostics.update(name_source=next(sources), name_candidate="Lara")
+        return "name", "lara"
+
+    monkeypatch.setattr(driver, "_training_dislike_surface_proof", proof)
+
+    with pytest.raises(HingeActionError, match="semantically different ready deck"):
+        driver._verify_training_deck_advanced(2)
+
+    records = [json.loads(line) for line
+               in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    retries = [row for row in records if row["action"] == "training_advance_probe"]
+    assert len(retries) == 3
+    assert retries[-1]["names_agree"] is False
+    assert "kept_before" in retries[-1] and "kept_after" in retries[-1]
+    assert (driver._dbg.dir / retries[-1]["kept_before"]).exists()
+    assert (driver._dbg.dir / retries[-1]["kept_after"]).exists()
+    assert all("kept_before" not in row for row in retries[:-1])
 
 
 def test_durable_presend_evidence_does_not_depend_on_local_debug_logging():
@@ -559,3 +818,459 @@ def test_durable_presend_evidence_does_not_depend_on_local_debug_logging():
     assert evidence is not None
     assert evidence["frame"] == b"TYPED_OPENER_ON_SELECTED_ITEM"
     assert evidence["model_item_index"] == 1
+
+
+def _checkpoint_driver(events, monkeypatch, *, composer_for, glyph_for, hides):
+    """Driver with the training checkpoint's collaborators stubbed at their boundaries."""
+    driver, _adb = _driver(events)
+    monkeypatch.setattr(driver, "_locate_inline_composer", composer_for)
+    monkeypatch.setattr(
+        driver, "_hide_keyboard_for_training",
+        lambda **_kw: (hides.append(True), b"KEYBOARD_DISMISSED_AGAIN")[1])
+    monkeypatch.setattr(hinge, "_match_glyph", glyph_for)
+    return driver
+
+
+def test_training_checkpoint_recovers_a_reviewer_raised_keyboard(tmp_path, monkeypatch):
+    """A reviewer re-focusing Hinge's comment field must not cost the run a read profile.
+
+    The floating pass X is covered on the frame handed to the checkpoint and becomes visible only
+    after the keyboard is dismissed again.  The checkpoint must re-dismiss exactly once and then
+    hand back the RECOVERED frame, so the retained evidence and the coordinates that get tapped
+    describe the same screen.
+    """
+    events: list = []
+    hides: list = []
+    verified: list = []
+    composer = SimpleNamespace(comment_rect=SimpleNamespace(center=(21, 21)),
+                               confirm_point=(40, 40))
+    driver = _checkpoint_driver(
+        events, monkeypatch,
+        composer_for=lambda _frame: composer,
+        # Only the re-dismissed frame shows Hinge's floating pass control.
+        glyph_for=lambda frame, *_a, **_kw: (
+            [(80, 80)] if frame == b"KEYBOARD_DISMISSED_AGAIN" else []),
+        hides=hides)
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-keyboard-recovery")
+    monkeypatch.setattr(driver, "_verify_sheet_shows",
+                        lambda frame, *_a, **_kw: verified.append(frame))
+
+    frame, located, pass_point = driver._verify_training_checkpoint(
+        b"KEYBOARD_COVERS_PASS", object(), 1, b"BEFORE", keyboard_recovery=True)
+
+    assert frame == b"KEYBOARD_DISMISSED_AGAIN"
+    assert located is composer
+    assert pass_point == (80, 80)
+    assert len(hides) == 1
+    # The selected item is re-proved on the frame that will actually be acted on, never carried
+    # over from the covered one.
+    assert verified == [b"KEYBOARD_COVERS_PASS", b"KEYBOARD_DISMISSED_AGAIN"]
+    records = [json.loads(line) for line
+               in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    recovery = next(record for record in records
+                    if record["action"] == "training_checkpoint_keyboard_recovery")
+    assert recovery["model_item_index"] == 1
+
+
+def test_training_checkpoint_refuses_after_one_keyboard_dismissal(monkeypatch):
+    """Recovery is a single attempt: a still-covered pass control is an unknown screen."""
+    events: list = []
+    hides: list = []
+    composer = SimpleNamespace(comment_rect=SimpleNamespace(center=(21, 21)),
+                               confirm_point=(40, 40))
+    driver = _checkpoint_driver(
+        events, monkeypatch,
+        composer_for=lambda _frame: composer,
+        glyph_for=lambda *_a, **_kw: [],
+        hides=hides)
+    monkeypatch.setattr(driver, "_verify_sheet_shows", lambda *_a, **_kw: None)
+
+    with pytest.raises(UnlocatedControlError, match="even after re-dismissing"):
+        driver._verify_training_checkpoint(
+            b"COVERED", object(), 1, b"BEFORE", keyboard_recovery=True)
+
+    assert len(hides) == 1                    # exactly one attempt, never a retry loop
+    assert not any(kind == "tap" for kind, _payload in events)
+
+
+def test_training_checkpoint_does_not_send_back_into_an_unknown_screen(monkeypatch):
+    """Back is only safe once THIS frame proved an open composer; otherwise just refuse.
+
+    Without the composer proof a stray Back could dismiss a modal or navigate Hinge, so the
+    missing-composer refusal must happen before any recovery is considered.
+    """
+    events: list = []
+    hides: list = []
+    driver = _checkpoint_driver(
+        events, monkeypatch,
+        composer_for=lambda _frame: None,
+        glyph_for=lambda *_a, **_kw: [],
+        hides=hides)
+
+    with pytest.raises(UnlocatedControlError, match="no strictly located inline Send"):
+        driver._verify_training_checkpoint(b"UNKNOWN_SCREEN", object(), 1, b"BEFORE")
+
+    assert hides == []
+    assert not any(kind == "tap" for kind, _payload in events)
+
+
+def test_training_checkpoint_refuses_when_recovery_closes_the_composer(monkeypatch):
+    """If the recovery Back dismissed the sheet rather than the IME, nothing may be sent."""
+    events: list = []
+    hides: list = []
+    composer = SimpleNamespace(comment_rect=SimpleNamespace(center=(21, 21)),
+                               confirm_point=(40, 40))
+    driver = _checkpoint_driver(
+        events, monkeypatch,
+        # Back closed the composer: the recovered frame no longer has one.
+        composer_for=lambda frame: None if frame == b"KEYBOARD_DISMISSED_AGAIN" else composer,
+        glyph_for=lambda *_a, **_kw: [],
+        hides=hides)
+    monkeypatch.setattr(driver, "_verify_sheet_shows", lambda *_a, **_kw: None)
+
+    with pytest.raises(UnlocatedControlError, match="no strictly located inline Send"):
+        driver._verify_training_checkpoint(
+            b"COVERED", object(), 1, b"BEFORE", keyboard_recovery=True)
+
+    assert len(hides) == 1
+    assert not any(kind == "tap" for kind, _payload in events)
+
+
+def _draft_frame(draft_text: str, rect=(95, 1124, 985, 1302)) -> bytes:
+    """A frame-sized PNG whose only varying content is the comment field's rendered text."""
+    import cv2
+    import numpy as np
+
+    image = np.full((2400, 1080), 255, dtype=np.uint8)
+    image[300:1090, 95:985] = 128                      # item preview, identical either way
+    cv2.putText(image, draft_text, (rect[0] + 8, rect[1] + 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, 0, 2)
+    return cv2.imencode(".png", image)[1].tobytes()
+
+
+def _draft_composer(rect=(95, 1124, 985, 1302)):
+    x0, y0, x1, y1 = rect
+    return SimpleNamespace(
+        comment_rect=SimpleNamespace(x0=x0, y0=y0, x1=x1, y1=y1,
+                                     center=((x0 + x1) // 2, (y0 + y1) // 2)),
+        confirm_point=(690, 1390))
+
+
+def _training_like_run(tmp_path, monkeypatch, *, recovered_draft: str, run_id: str):
+    """Drive a Training Like whose resume finds the IME up, then recovers to `recovered_draft`."""
+    events: list = []
+    driver, _adb = _driver(events)
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id=run_id)
+    driver.set_auto_session_policy(object())
+    approved = _draft_frame("comfort reread or does Neal Stephenson")
+    covered = _draft_frame("KEYBOARD UP")
+    recovered = _draft_frame(recovered_draft)
+    initial = SimpleNamespace(comment_rect=SimpleNamespace(center=(20, 20)),
+                              confirm_point=(30, 30))
+    composer = _draft_composer()
+    frames = iter((b"SHEET", b"FOCUSED", approved, covered, recovered))
+
+    monkeypatch.setattr(driver, "_verifiable_payload", lambda _item: object())
+    monkeypatch.setattr(driver, "_confirm_payload_profile", lambda _item: None)
+    monkeypatch.setattr(driver, "_navigate_to_model_item", lambda _item, **_kw: (10, 10))
+    monkeypatch.setattr(driver, "_snap", lambda: b"PRE_HEART")
+    monkeypatch.setattr(driver, "_await_sheet_open", lambda **_kw: initial)
+    monkeypatch.setattr(driver, "_screencap", lambda **_kw: next(frames))
+    monkeypatch.setattr(hinge, "locate_inline_composer", lambda *_a, **_kw: initial)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: composer)
+    monkeypatch.setattr(driver, "_verify_sheet_shows", lambda *_a, **_kw: None)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(driver, "_handle_rose_upsell", lambda: False)
+    monkeypatch.setattr(driver, "_verify_like_landed", lambda _before: None)
+    monkeypatch.setattr(driver, "_verify_training_like_landed", lambda _item: "identity")
+    # The IME hides the pass X on the resumed frame only.
+    monkeypatch.setattr(
+        hinge, "_match_glyph",
+        lambda frame, *_a, **_kw: [] if frame == covered else [(80, 80)])
+    driver.set_training_decision(lambda _frame, _evidence: "like")
+    return driver, events, composer
+
+
+def test_training_like_refuses_when_the_draft_changed_during_review(tmp_path, monkeypatch):
+    """The 2026-08-28 incident: the reviewer raised the IME AND edited the opener.
+
+    Recovery dismisses the keyboard, but the draft no longer matches what was approved, so the
+    send is refused rather than transmitting text nothing can vouch for.
+    """
+    driver, events, composer = _training_like_run(
+        tmp_path, monkeypatch, recovered_draft="comfort reread?", run_id="like-draft-edited")
+
+    with pytest.raises(UnlocatedControlError, match="no longer matches the opener"):
+        driver.like("A targeted opener", model_item_index=1)
+
+    assert ("tap", composer.confirm_point) not in events
+    records = [json.loads(line) for line
+               in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    assert not any(r["action"] in {"like_attempt", "like", "auto_opener_resumed_send"}
+                   for r in records)
+    # The recovery DID run — the refusal is the draft proof, not a missing pass control.
+    assert any(r["action"] == "training_checkpoint_keyboard_recovery" for r in records)
+
+
+def test_training_like_recovers_when_the_draft_is_provably_unchanged(tmp_path, monkeypatch):
+    """The reviewer only TAPPED the field. The draft is byte-identical, so the Like still lands.
+
+    This is the case the blanket refusal used to throw away: a fully-read profile lost because
+    someone touched the screen without changing anything.
+    """
+    driver, events, composer = _training_like_run(
+        tmp_path, monkeypatch, recovered_draft="comfort reread or does Neal Stephenson",
+        run_id="like-draft-intact")
+
+    assert driver.like("A targeted opener", model_item_index=1) == "like"
+
+    assert ("tap", composer.confirm_point) in events
+    records = [json.loads(line) for line
+               in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    assert any(r["action"] == "training_checkpoint_keyboard_recovery" for r in records)
+    assert any(r["action"] == "auto_opener_resumed_send" for r in records)
+
+
+def test_training_dislike_recovers_a_reviewer_raised_keyboard(tmp_path, monkeypatch):
+    """The Dislike resume DOES recover: no text is sent, so a raised IME costs nothing."""
+    events: list = []
+    driver, _adb = _driver(events)
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-dislike-recovery")
+    driver.set_auto_session_policy(object())
+    initial = SimpleNamespace(comment_rect=SimpleNamespace(center=(20, 20)),
+                              confirm_point=(30, 30))
+    composer = SimpleNamespace(comment_rect=SimpleNamespace(center=(21, 21)),
+                               confirm_point=(40, 40))
+    frames = iter((b"SHEET", b"FOCUSED", b"KEYBOARD_HIDDEN",
+                   b"RESUMED_KEYBOARD_UP", b"KEYBOARD_HIDDEN_AGAIN"))
+
+    monkeypatch.setattr(driver, "_verifiable_payload", lambda _item: object())
+    monkeypatch.setattr(driver, "_confirm_payload_profile", lambda _item: None)
+    monkeypatch.setattr(driver, "_navigate_to_model_item", lambda _item, **_kw: (10, 10))
+    monkeypatch.setattr(driver, "_snap", lambda: b"PRE_HEART")
+    monkeypatch.setattr(driver, "_await_sheet_open", lambda **_kw: initial)
+    monkeypatch.setattr(driver, "_screencap", lambda **_kw: next(frames))
+    monkeypatch.setattr(hinge, "locate_inline_composer", lambda *_a, **_kw: initial)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: composer)
+    monkeypatch.setattr(driver, "_verify_sheet_shows", lambda *_a, **_kw: None)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(driver, "_verify_training_dislike_landed", lambda _item: "identity")
+    monkeypatch.setattr(
+        hinge, "_match_glyph",
+        lambda frame, *_a, **_kw: [] if frame == b"RESUMED_KEYBOARD_UP" else [(80, 80)])
+    driver.set_training_decision(lambda _frame, _evidence: "dislike")
+
+    assert driver.like("A targeted opener", model_item_index=1) == "dislike"
+
+    # Two Backs: the post-type dismissal, then the recovery at the resume.
+    assert [payload for kind, payload in events if kind == "keyevent"] == [4, 4]
+    assert ("tap", (80, 80)) in events           # the X located on the RECOVERED frame
+    records = [json.loads(line) for line
+               in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    assert any(record["action"] == "training_checkpoint_keyboard_recovery"
+               for record in records)
+
+
+# --- the pass control is proved to the Like path's standard --------------------------------
+
+def test_training_pass_locator_rejects_a_weak_chrome_match(monkeypatch):
+    """0.6 was only 0.016 clear of the strongest false peak measured over a whole real run.
+
+    The genuine X correlates at exactly 1.0; anything in the 0.6-0.9 band is UI chrome and must
+    not become an irreversible Dislike tap.
+    """
+    driver, _adb = _driver([])
+    seen = {}
+
+    def fake_match(frame, _template, *, side, threshold=0.6, **_kw):
+        seen["threshold"] = threshold
+        # A 0.62 chrome peak: accepted by the old default, rejected by the measured one.
+        return [(70, 300)] if threshold <= 0.62 else []
+
+    monkeypatch.setattr(hinge, "_match_glyph", fake_match)
+    monkeypatch.setattr(driver, "_template", lambda _name: object())
+
+    assert driver._locate_training_pass(b"FRAME") is None
+    assert seen["threshold"] == hinge._PASS_MATCH_THRESHOLD >= 0.9
+
+
+def test_training_pass_locator_accepts_the_genuine_glyph(monkeypatch):
+    driver, _adb = _driver([])
+    monkeypatch.setattr(hinge, "_match_glyph", lambda *_a, **_kw: [(125, 2035)])
+    monkeypatch.setattr(driver, "_template", lambda _name: object())
+    assert driver._locate_training_pass(b"FRAME") == (125, 2035)
+
+
+def test_training_pass_locator_refuses_two_plausible_controls(monkeypatch):
+    """Ambiguity is an unrecognized screen, never a position tie-break."""
+    driver, _adb = _driver([])
+    monkeypatch.setattr(hinge, "_match_glyph", lambda *_a, **_kw: [(125, 900), (125, 2035)])
+    monkeypatch.setattr(driver, "_template", lambda _name: object())
+    with pytest.raises(UnlocatedControlError, match="equally plausible Hinge pass controls"):
+        driver._locate_training_pass(b"FRAME")
+
+
+def test_training_reads_are_audited_as_training_not_auto(tmp_path):
+    """The 2026-08-28 ledger stamped 250 of 307 inputs "auto" in a supervised run.
+
+    The per-card decision callback is installed only around the Like/Dislike checkpoint, so the
+    profile read that precedes it carried no callback and was classified as autonomous — the
+    exact opposite of what this ledger exists to prove.
+    """
+    driver, _adb = _driver([])
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-session-mode")
+
+    driver.begin_training_session()
+    driver._audit_device_input("swipe", source="_scroll", transport="UhidTouch")
+    # A card checkpoint installs and then clears its callback; the run is still supervised.
+    driver.set_training_decision(lambda _frame, _evidence: "like")
+    driver._audit_device_input("tap", source="_like_comment_sheet", transport="UhidTouch")
+    driver.set_training_decision(None)
+    driver._audit_device_input("swipe", source="_scroll_down_one", transport="UhidTouch")
+
+    modes = [json.loads(line)["session_mode"] for line
+             in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()
+             if json.loads(line)["action"] == "device_input"]
+    assert modes == ["training", "training", "training"]
+
+
+def test_comment_draft_digest_reads_only_the_comment_rect(monkeypatch):
+    """The digest is retained evidence, so it must describe the FIELD, not the whole frame.
+
+    A digest computed over the entire screenshot would change for any reason at all and be
+    useless as a record of the draft. Two frames that differ ONLY outside the comment rect must
+    therefore produce the SAME digest, and two that differ only inside it must not.
+    """
+    import cv2
+    import numpy as np
+
+    rect = (95, 1124, 985, 1302)
+
+    def frame(draft_text: str, *, elsewhere: int) -> bytes:
+        image = np.full((2400, 1080), 255, dtype=np.uint8)
+        image[300:1090, 95:985] = elsewhere        # the item preview, OUTSIDE the comment rect
+        cv2.putText(image, draft_text, (rect[0] + 8, rect[1] + 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, 0, 2)
+        return cv2.imencode(".png", image)[1].tobytes()
+
+    driver, _adb = _driver([])
+    x0, y0, x1, y1 = rect
+    composer = SimpleNamespace(comment_rect=SimpleNamespace(x0=x0, y0=y0, x1=x1, y1=y1))
+
+    same_draft_a = driver._comment_draft_digest(frame("an opener", elsewhere=128), composer)
+    same_draft_b = driver._comment_draft_digest(frame("an opener", elsewhere=64), composer)
+    other_draft = driver._comment_draft_digest(frame("a different opener", elsewhere=128), composer)
+
+    assert same_draft_a["rect"] == [x0, y0, x1, y1]
+    # Blind to everything outside the rect...
+    assert same_draft_a["sha256"] == same_draft_b["sha256"]
+    # ...and sensitive to what is inside it.
+    assert same_draft_a["sha256"] != other_draft["sha256"]
+
+
+def test_pre_send_checkpoint_never_presses_back_a_second_time(monkeypatch):
+    """The pre-send checkpoint runs moments after this code hid the keyboard itself.
+
+    No human review window has opened yet, so a covered pass control there is an unknown screen,
+    not a reviewer's tap — and pressing Back into it would be blind. Recovery is opt-in and this
+    call site does not opt in.
+    """
+    events: list = []
+    hides: list = []
+    composer = SimpleNamespace(comment_rect=SimpleNamespace(center=(21, 21)),
+                               confirm_point=(40, 40))
+    driver = _checkpoint_driver(
+        events, monkeypatch,
+        composer_for=lambda _frame: composer,
+        glyph_for=lambda *_a, **_kw: [],          # pass control never located
+        hides=hides)
+    monkeypatch.setattr(driver, "_verify_sheet_shows", lambda *_a, **_kw: None)
+
+    with pytest.raises(UnlocatedControlError, match="no longer be proved unedited"):
+        driver._verify_training_checkpoint(b"COVERED", object(), 1, b"BEFORE")
+
+    assert hides == []                            # no Back was pressed
+    assert not any(kind == "tap" for kind, _payload in events)
+
+
+def test_ordinary_dislike_button_is_proved_to_the_same_standard(monkeypatch):
+    """The deck Dislike guards the same irreversible touch as the training checkpoint.
+
+    Before 2026-08-28 `_locate_button("pass")` kept _match_glyph's generic 0.6 default while the
+    training locator used a measured 0.90, so the two consumers of the SAME template were proved
+    to different standards. Over the 346 frames of run 75e832ec6ad7 the genuine X scored exactly
+    1.0000 and the strongest non-target left peak was 0.5841 — 0.6 left only 0.016 of margin.
+    """
+    driver, _adb = _driver([])
+    seen = {}
+
+    def fake_match(_frame, _template, *, side, threshold=0.6, **_kw):
+        seen["threshold"] = threshold
+        return [(70, 300)] if threshold <= 0.62 else []      # a 0.62 chrome peak
+
+    monkeypatch.setattr(hinge, "_match_glyph", fake_match)
+    monkeypatch.setattr(driver, "_template", lambda _name: object())
+    monkeypatch.setattr(driver, "_screencap", lambda **_kw: b"DECK")
+
+    assert driver._locate_button("pass") is None
+    assert seen["threshold"] == hinge._PASS_MATCH_THRESHOLD >= 0.9
+
+
+def test_ordinary_dislike_button_refuses_two_plausible_controls(monkeypatch):
+    """Ambiguity on the deck is an unrecognized screen, not a position tie-break."""
+    driver, _adb = _driver([])
+    monkeypatch.setattr(hinge, "_match_glyph", lambda *_a, **_kw: [(125, 900), (125, 2035)])
+    monkeypatch.setattr(driver, "_template", lambda _name: object())
+    monkeypatch.setattr(driver, "_screencap", lambda **_kw: b"DECK")
+
+    with pytest.raises(UnlocatedControlError, match="equally plausible Hinge pass controls"):
+        driver._locate_button("pass")
+
+
+def test_opener_evidence_rows_use_the_run_scoped_session_mode(tmp_path):
+    """Evidence rows once had their OWN callback-only copy of the mode rule.
+
+    The worker installs the decision callback only around each checkpoint, so any row written
+    outside one was stamped "auto" in a supervised run — two conventions in a single ledger.
+    """
+    driver, _adb = _driver([])
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="evidence-session-mode")
+    driver.begin_training_session()
+    assert driver._training_decision is None      # no checkpoint callback installed right now
+
+    driver._record_auto_opener_pre_send(
+        b"FRAME", opener="An opener", item_index=None, model_item_index=1)
+
+    records = [json.loads(line) for line
+               in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    row = next(r for r in records if r["action"] == "auto_opener_pre_send")
+    assert row["session_mode"] == "training"
+
+
+def test_training_advance_probe_retains_the_frames_that_license_the_label(tmp_path, monkeypatch):
+    """The accepted probe is the SOLE proof that a training label describes a real advance.
+
+    Until 2026-08-28 that row carried no image at all, so a disputed label could never be
+    re-checked against what was actually on screen. `keep_before` puts the first settled frame in
+    the bounded retained-evidence pool, where ordinary screenshot rotation cannot erase it.
+    """
+    driver, _adb = _driver([])
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="advance-probe-evidence")
+    frames = iter((b"FIRST_SETTLED", b"SECOND_SETTLED"))
+
+    monkeypatch.setattr(driver, "_screencap", lambda **_kw: next(frames))
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(driver, "_training_dislike_surface_proof",
+                        lambda _frame, _item, diagnostics=None: ("identity", None))
+    monkeypatch.setattr(driver, "_changed", lambda _a, _b: False)   # both frames settled
+
+    assert driver._verify_training_deck_advanced(1) == "identity"
+
+    records = [json.loads(line) for line
+               in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    probe = next(r for r in records if r["action"] == "training_advance_probe")
+    assert probe["outcome"] == "accepted"
+    assert probe["before"] and probe["after"]          # both settled frames are on disk
+    assert probe["kept_before"] == probe["before"]     # and the first is rotation-proof
+    for name in (probe["before"], probe["after"]):
+        assert (driver._dbg.dir / name).exists()

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import threading
 from collections import deque
 from datetime import datetime
@@ -32,11 +33,14 @@ _MAX_RETAINED_SHOTS = 100
 
 
 class DebugLog:
-    def __init__(self, base_dir: str, *, keep_shots: int = 400, run_id: str | None = None):
+    def __init__(self, base_dir: str, *, keep_shots: int = 400, run_id: str | None = None,
+                 keep_runs: int | None = None, protect_runs=()):
         if type(keep_shots) is not int or not 1 <= keep_shots <= _MAX_KEEP_SHOTS:
             raise ValueError(
                 f"keep_shots must be an integer from 1 to {_MAX_KEEP_SHOTS} "
                 f"(got {keep_shots!r})")
+        if keep_runs is not None and (type(keep_runs) is not int or keep_runs < 1):
+            raise ValueError(f"keep_runs must be a positive integer or None (got {keep_runs!r})")
         if run_id is not None and (
                 not isinstance(run_id, str) or not run_id or run_id in {".", ".."}
                 or "/" in run_id or "\\" in run_id or Path(run_id).name != run_id):
@@ -56,6 +60,8 @@ class DebugLog:
         # already appends in that case, so continue the screenshot sequence too:
         # restarting at zero would overwrite the first run's evidence while old
         # records still referenced those names.
+        if keep_runs is not None:
+            self._trim_old_runs(base, keep_runs, frozenset(protect_runs or ()))
         self._n = _highest_shot_sequence(self.dir)
         self._shots: deque[tuple[tuple[str, str], Path]] = deque()
         # (label, sha256(frame bytes)) -> filename, for shots currently alive in `_shots`
@@ -171,6 +177,72 @@ class DebugLog:
             self._shots.append((key, path))
         self._trim_normal_shots()
 
+    def _trim_old_runs(self, base: Path, keep_runs: int,
+                       protect_runs: frozenset[str] = frozenset()) -> None:
+        """Delete whole run directories beyond the newest ``keep_runs``.
+
+        The per-run caps above bound ONE run's screenshots; nothing bounded the number of runs,
+        so ``data/hinge_debug`` reached 12GB across 274 runs by 2026-08-28. This is the missing
+        half of that policy.
+
+        Deletion is irreversible, so the candidate rule is deliberately narrow. A directory is
+        only ever a candidate when ALL of these hold:
+
+          * it is an immediate subdirectory of this logger's own base directory;
+          * it is a real directory, not a symlink (never follow one out of the tree);
+          * it contains an ``actions.jsonl``, i.e. it is demonstrably a run THIS logger wrote --
+            an unrelated folder someone parked in here is never touched;
+          * it is not the run currently being written;
+          * it is not NAMED IN ``protect_runs``.
+
+        That last rule is not decoration.  Run directories are cited from outside themselves --
+        ``config.yaml``'s ``observe_release_evidence.production_run_reference`` is a literal
+        ``data/hinge_debug/<id>`` path, ``ops/release/<id>/`` holds the signed artifacts for the
+        run that gated a release, and tests cite run ids as the provenance of their fixtures.
+        Age is a terrible proxy for value there: the release-evidence run is by definition an old
+        one.  Deleting it would break the evidence chain behind a shipped gate, so the ids are
+        listed explicitly in config rather than inferred.
+
+        ``keep_runs`` counts *all* normal run directories, including the active one.  Survivors
+        are therefore the active run plus the newest ``keep_runs - 1`` prior runs by modification
+        time, with every protected run retained in addition.  Everything here is best-effort: a
+        failure to prune must never break a run that is otherwise fine.
+        """
+        try:
+            current = self.dir.resolve()
+            candidates = []
+            for entry in base.iterdir():
+                if entry.is_symlink() or not entry.is_dir():
+                    continue
+                if not (entry / "actions.jsonl").exists():
+                    continue          # not one of ours; leave it alone
+                if entry.resolve() == current:
+                    continue          # never the run being written right now
+                if entry.name in protect_runs:
+                    continue          # cited as evidence somewhere outside this directory
+                candidates.append(entry)
+            # ``self.dir`` is an unconditionally retained normal run, so it consumes one of the
+            # configured run-directory slots even when it has not logged its first action yet.
+            prior_runs_to_keep = keep_runs - 1
+            if len(candidates) <= prior_runs_to_keep:
+                return
+            candidates.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+            doomed = candidates[prior_runs_to_keep:]
+        except Exception:  # noqa: BLE001 — retention must never break logging
+            return
+        removed = 0
+        for entry in doomed:
+            try:
+                shutil.rmtree(entry)
+                removed += 1
+            except Exception:  # noqa: BLE001 — best-effort, per directory
+                continue
+        if removed:
+            # Say it out loud: silent deletion of an operator's diagnostics is exactly the
+            # thing they would not think to look for when evidence turns out to be missing.
+            print(f"Debug log: pruned {removed} run directory(ies) from {base}, "
+                  f"keeping {keep_runs} run directory(ies), including the active run.")
+
     def _trim_retained_shots(self) -> None:
         """Keep only the newest bounded error/recovery screenshots across restarts."""
         while len(self._retained_shots) > _MAX_RETAINED_SHOTS:
@@ -204,7 +276,7 @@ class DebugLog:
 
     def action(self, name: str, *, before: bytes | None = None,
                after: bytes | None = None, anchor: bytes | None = None,
-               keep_before: bool = False, **fields) -> None:
+               keep_before: bool = False, keep_after: bool = False, **fields) -> None:
         """Record an action and its optional frames.
 
         ``keep_before`` is for a rare recoverable refusal whose raw frame is the evidence needed
@@ -214,7 +286,7 @@ class DebugLog:
             # Reserved audit identity wins even if a direct caller passes colliding **fields.
             rec = {**fields, "ts": datetime.now().isoformat(timespec="seconds"), "action": name}
             b = self._save_shot(f"{name}_before", before, rotate=not keep_before)
-            a = self._save_shot(f"{name}_after", after)
+            a = self._save_shot(f"{name}_after", after, rotate=not keep_after)
             anchor_name = self._save_shot(f"{name}_anchor", anchor)
             if b:
                 rec["before"] = b
@@ -226,6 +298,8 @@ class DebugLog:
                 # The only exceptional action-shot policy. Normal before/after/anchor files are
                 # the recovery default, so recording each one would bloat a long-lived JSONL.
                 rec["kept_before"] = b
+            if a and keep_after:
+                rec["kept_after"] = a
             self._write(rec)
 
     def error(self, name: str, frame: bytes | None, exc: BaseException) -> None:
@@ -291,6 +365,9 @@ def _retained_shot_names(log_path: Path) -> list[str]:
                 kept_before = record.get("kept_before")
                 if isinstance(kept_before, str):
                     retained.append(kept_before)
+                kept_after = record.get("kept_after")
+                if isinstance(kept_after, str):
+                    retained.append(kept_after)
                 # Error records use this established shape.
                 screenshot = record.get("screenshot")
                 if isinstance(screenshot, str) and "error" in record:

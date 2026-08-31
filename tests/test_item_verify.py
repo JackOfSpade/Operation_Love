@@ -20,6 +20,8 @@ crop cannot serve as a reference is refused BEFORE anything is tapped.
 """
 import dataclasses
 import math
+from unittest import mock
+import zlib
 
 import cv2
 import numpy as np
@@ -148,6 +150,35 @@ def _payload():
         assert index.usable, index.failures
         _CACHE["payload"] = item_crops.build_item_payload(frames, index)
     return _CACHE["payload"]
+
+
+def _recut(crop, card):
+    """A crop re-cut from a modified `card` array, all three artefacts together.
+
+    `dataclasses.replace(crop, image=...)` alone is not enough and has not been since the
+    verification reference stopped being derived from `image`: a crop carries the model's colour
+    image, the greyscale reference doc 5.6 windows, and the stored signature, and the real
+    `item_crops._crop_image` cuts all three from the same rows of the same frame. A fixture that
+    repaints one of them and leaves the other two describing the previous pixels is not a
+    modified card, it is an inconsistent one -- which `item_verify._check_reference_provenance`
+    now refuses outright, as it should.
+
+    The greyscale side is decoded FROM the encoded colour card rather than converted from the
+    array in memory, because that is what the real path does: the reference is
+    `cv2.IMREAD_GRAYSCALE` of the frame, never `cvtColor` of a colour decode of it.
+    """
+    ok, colour = cv2.imencode(".png", card)
+    assert ok
+    image = colour.tobytes()
+    grey = cv2.imdecode(np.frombuffer(image, np.uint8), cv2.IMREAD_GRAYSCALE)
+    ok, encoded_grey = cv2.imencode(".png", grey)
+    assert ok
+    verify_image = encoded_grey.tobytes()
+    return dataclasses.replace(
+        crop, image=image, verify_image=verify_image,
+        signature=item_crops.signature_of(
+            verify_image, y0=0, y1=grey.shape[0], x0=0, x1=grey.shape[1],
+            grid=_payload().signature_grid))
 
 
 def paint_sheet(crop_image: bytes, *, preview_w=_SHEET_PREVIEW_W, x0=_SHEET_PREVIEW_X0,
@@ -297,6 +328,38 @@ def _spend_the_wide_run_headroom(frame: bytes, *, first_row: int, step: int = 14
     ok, buf = cv2.imencode(".png", image)
     assert ok
     return buf.tobytes()
+
+
+def _leading_pale_inline_reframe(*, erased_display_px: int = 229):
+    """Build the 2026-08-27 failure shape without retaining its private photograph.
+
+    The live selected photo's first 477 displayed rows blended into the page on the left while
+    retaining its right edge.  Only the final 412px high-contrast run satisfied the compact
+    locator, which made a complete 890px preview look 53.7% cropped.  Modify the synthetic source
+    crop itself before rendering so the located frame and its stored reference still describe
+    exactly the same pixels; this tests boundary recovery rather than tolerance to altered
+    content.
+    """
+    payload = _payload()
+    selected = payload.item(4)
+    card = cv2.imdecode(np.frombuffer(selected.image, np.uint8), cv2.IMREAD_COLOR)
+    start = 37
+    source_rows = 933
+    pale_display_rows = 477
+    source_x1 = card.shape[1] - round(
+        card.shape[1] * item_verify._INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
+    display_x1 = _SHEET_PREVIEW_W - round(
+        _SHEET_PREVIEW_W * item_verify._INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
+    erased_source_px = math.ceil(erased_display_px * source_x1 / display_x1)
+    pale_source_rows = math.ceil(
+        pale_display_rows * source_rows / _SHEET_PREVIEW_MAX_H)
+    card[start:start + pale_source_rows, :erased_source_px] = _SHEET_BG
+    selected = _recut(selected, card)
+    payload = dataclasses.replace(
+        payload,
+        crops=tuple(selected if crop.number == selected.number else crop
+                    for crop in payload.crops))
+    return payload, _paint_inline_reframe(selected.image)
 
 
 def test_inline_item_verification_requires_selected_card_above_the_detected_controls():
@@ -514,6 +577,397 @@ def test_hinge_10_0_1_bright_photo_edge_does_not_truncate_the_selected_preview_a
         frame, prompt_only, 1, composer_surface=surface).matched
 
 
+# The 2026-08-28 pillarbox halt, as numbers. Live Pixel 7a, Hinge 10.1.0, profile `Yvonne`
+# page heart 7, run `data/hinge_debug/f6a15d162e68` (gitignored; only geometry here).
+_PILLARBOX_CARD_PAD = 209          # card background either side of a 556px photo in a 974px card
+_PILLARBOX_INK_W = 508             # ...which the sheet renders as 508px at the 0.9137 scale
+_PILLARBOX_INK_X0 = 286            # 95 + round(209 * 890/974)
+_PILLARBOX_INK_X1 = 794            # 985 - 191, symmetric to the pixel
+_PILLARBOX_SHEET_PAD = 191
+
+
+def _pillarboxed_sheet(number: int = 4, *, pad: int = _PILLARBOX_CARD_PAD):
+    """A PROMPT-PHOTO card whose photograph is portrait, rendered the way the sheet renders it.
+
+    Every other fixture here is a full-bleed card, where the photograph runs edge to edge, so the
+    preview's ink and the sheet's content column coincide and "the preview spans the column" looks
+    like a layout invariant. It is a property of the CARD's content, and this is the card that
+    says so: Hinge fits a portrait photo to the card's height and centres it, leaving `pad` px of
+    card background on each side. Painting that background to the page's own grey is not a cheat,
+    it is the measured condition -- card white and sheet white are the same colour, so the row
+    probe can only ever see the photograph, never the card it sits on.
+
+    Returns the payload whose item `number` really is this card, the rendered sheet, and the
+    composer surface. The geometry that comes out is the live one to the pixel: a 1109px card at
+    the corpus 890/974 scale, bottom-anchored into the 856px content region, ink at columns
+    286..794 with 191px of card either side, and a 32px gap to the comment field.
+    """
+    payload = _payload()
+    crop = payload.item(number)
+    card = cv2.imdecode(np.frombuffer(crop.image, np.uint8), cv2.IMREAD_COLOR)
+    card[:, :pad] = _SHEET_BG
+    card[:, card.shape[1] - pad:] = _SHEET_BG
+    recut = _recut(crop, card)
+    payload = dataclasses.replace(payload, crops=tuple(
+        recut if c.number == number and c.kind == item_crops.CROP_ITEM else c
+        for c in payload.crops))
+    frame = paint_sheet(recut.image)
+    surface = ComposerSurface("hinge_inline_v1", _V1001_COMMENT, _V1001_SEND, (695, 1390))
+    return payload, frame, surface
+
+
+def test_a_portrait_photo_centred_in_its_card_is_still_the_selected_preview():
+    """Blocker: an ordinary, correct composer refused post-tap because the photo was portrait.
+
+    The 2026-08-28 live halt, measured on the refusing frame:
+
+        composer   comment_rect (95,1124)-(985,1302) -- content column 890px wide
+        card       974px wide, 1109 tall, its photograph 556x932 centred with 209px of card
+                   background either side
+        rendered   the whole card into the column at 890/974 = 0.9137, so the photo's INK is
+                   508px at columns 286..794 -- 191px of card left, 191px right
+        the check  508 >= round(890*0.78) = 694 ? no. |286-95| <= 27 ? no. |794-985| <= 27 ? no.
+                   -> "no candidate at least 694px wide and 300px tall is aligned with it"
+
+    All three tests were right about the ink and none of them was about the card. The rect the
+    comparison needs is the CARD's, because the stored crop is the whole card; the ink box is a
+    fact about the photograph inside it.
+    """
+    payload, frame, surface = _pillarboxed_sheet()
+    cv2_mod, np_mod = item_verify._require_vision()
+
+    # The flush regime genuinely cannot see this preview -- without which this test would pass
+    # through the old path and prove nothing about the new one.
+    assert _PILLARBOX_INK_W < round(
+        _V1001_COMMENT.width * item_verify._INLINE_COMPACT_MIN_WIDTH_FRACTION)
+    with pytest.raises(item_verify.SheetVerificationError):
+        item_verify.locate_sheet_preview(frame)
+
+    preview = item_verify._locate_inline_composer_preview(
+        frame, surface, cv2=cv2_mod, np=np_mod)
+    assert preview.pillarboxed
+    assert preview.ink_bounds == (_PILLARBOX_INK_X0, _PILLARBOX_INK_X1)
+    assert preview.ink_width == _PILLARBOX_INK_W
+    # THE RECT IS THE CARD'S COLUMNS, NOT THE INK'S. This is the assertion the fix exists for:
+    # `_compare_item` scales the stored 974px crop against `preview.width`, so an ink-box rect
+    # would ask a 1109px card for round(837 * 974/508) = 1604 rows and refuse one stage later.
+    assert (preview.x0, preview.x1) == (_V1001_COMMENT.x0, _V1001_COMMENT.x1)
+    assert preview.y0 == _SHEET_PREVIEW_Y0
+    assert preview.height == _SHEET_PREVIEW_MAX_H
+    assert _V1001_COMMENT.y0 - preview.y1 == _V1001_PHOTO_TO_FIELD_GAP
+    assert (preview.ink_x0 - preview.x0) == (preview.x1 - preview.ink_x1) == _PILLARBOX_SHEET_PAD
+
+    verdict = item_verify.verify_sheet_item(
+        frame, payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+    assert verdict.matched, verdict.reason
+    assert verdict.nearest_index == 4
+
+    # ...and it is a better measurement, not a wider door: the other stored items, a card from a
+    # different profile, and the same card rendered top-anchored all still fail.
+    for other in (1, 2, 3):
+        assert not item_verify.verify_sheet_item(
+            frame, payload, other, composer_surface=surface,
+            absolute_max_dist=10.0).matched, f"item {other} verified against item 4's sheet"
+    foreign = dataclasses.replace(
+        _lookalike_payload(), crops=(dataclasses.replace(
+            _lookalike_payload().item(2), number=1),))
+    assert not item_verify.verify_sheet_item(
+        frame, foreign, 1, composer_surface=surface).matched
+
+
+def test_a_pillarboxed_comparison_applies_its_ceilings_in_the_units_they_were_fitted_in():
+    """A pillarboxed rect is blank on both sides, so every distance through it contracts.
+
+    Roughly 30% of the compared rect is card-white in the sheet AND card-white in every candidate
+    crop, so those cells contribute nothing and the whole scale shrinks. The RELATIVE bound does
+    not care -- `0.5 x nearest_other` is a ratio of two quantities that contract together, which
+    is exactly why a multi-item run looks safe and hides this. The two ABSOLUTE ceilings do care:
+    they are frozen numbers fitted on full-bleed renders, and `inline_item_max_dist` is clamped to
+    0.0001 below the known 14.91 foreign-card collision on purpose. Left uncorrected, making this
+    regime reachable would have widened both of them by the contraction factor -- the one guard
+    that catches content the payload does not contain at all, quietly loosened.
+
+    Scaling by the fraction of the compared rect that carries ink puts them back in their own
+    units. It can only ever LOWER a ceiling, so it cannot create a false accept.
+    """
+    payload, frame, surface = _pillarboxed_sheet()
+    one_item = dataclasses.replace(
+        payload, crops=(dataclasses.replace(payload.item(4), number=1),))
+    verdict = item_verify.verify_sheet_item(
+        frame, one_item, 1, composer_surface=surface, absolute_max_dist=10.0)
+    assert verdict.matched, verdict.reason
+
+    # the ink fraction of the compared rect: the content column less the excluded heart lane
+    lane = round(_V1001_COMMENT.width * item_verify._INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
+    compared = _V1001_COMMENT.width - lane
+    expected = item_verify._INLINE_COMPOSER_ONE_ITEM_MAX_DIST * (_PILLARBOX_INK_W / compared)
+    assert verdict.bound == pytest.approx(expected, rel=1e-9)
+    assert verdict.bound < item_verify._INLINE_COMPOSER_ONE_ITEM_MAX_DIST
+
+    # ...and a FULL-BLEED sheet keeps the constant exactly, so nothing that predates the
+    # pillarbox regime moves.
+    full = _payload()
+    flush_frame = _paint_inline_reframe(full.item(4).image)
+    flush_surface = ComposerSurface("hinge_inline_v1", _V1001_COMMENT, _V1001_SEND, (695, 1390))
+    flush = item_verify.verify_sheet_item(
+        flush_frame, dataclasses.replace(
+            full, crops=(dataclasses.replace(full.item(4), number=1),)),
+        1, composer_surface=flush_surface, absolute_max_dist=10.0)
+    assert flush.matched, flush.reason
+    assert flush.bound == item_verify._INLINE_COMPOSER_ONE_ITEM_MAX_DIST
+
+
+def test_a_pillarboxed_card_scrolled_above_the_composer_does_not_displace_the_preview():
+    """The one shape that is contained AND centred without being the selected preview.
+
+    An ordinary full-bleed profile card is refused by containment -- it spans x=53..1027 against a
+    field at 95..985 and overhangs both ends. A PILLARBOXED card does not: measured against the
+    content column, the very card this regime was written for sits at 262..818, which is 167px
+    inside on the left and 167px inside on the right, i.e. contained and centred to the pixel. So
+    for this one shape containment and centring decide nothing, and what is left holding the line
+    is adjacency to the comment field -- exactly the situation a Training reviewer creates by
+    scrolling while deciding.
+
+    [swept 2026-08-28: no frame in the corpus has both a pillarboxed preview and a second
+    pillarboxed block above it, so nothing measured exercises this. It is realizable and it is
+    the fix's thinnest margin, so it is constructed here rather than left to a live run.]
+    """
+    payload = _payload()
+    crop = payload.item(4)
+    card = cv2.imdecode(np.frombuffer(crop.image, np.uint8), cv2.IMREAD_COLOR)
+    card[:, :_PILLARBOX_CARD_PAD] = _SHEET_BG
+    card[:, card.shape[1] - _PILLARBOX_CARD_PAD:] = _SHEET_BG
+    recut = _recut(crop, card)
+    payload = dataclasses.replace(payload, crops=tuple(
+        recut if c.number == 4 and c.kind == item_crops.CROP_ITEM else c for c in payload.crops))
+
+    # The sheet's real content height, not a smaller one: at 700 this 1109px card would
+    # hide 343px = 30.9% of itself and be refused by the reframe limit rather than by
+    # anything this test is about.
+    selected_y0, selected_h = 800, _SHEET_PREVIEW_MAX_H
+    frame = paint_sheet(recut.image, y0=selected_y0, max_h=selected_h)
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    # A second pillarboxed card, scrolled into view above the still-open composer. Its ink is the
+    # same photo geometry at the card's own scale: 262..818 of the 53..1027 card.
+    upper_y0, upper_y1 = 236, 640
+    image[upper_y0:upper_y1, _CARD_X0 + _PILLARBOX_CARD_PAD:_CARD_X1 - _PILLARBOX_CARD_PAD] = 40
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    frame = encoded.tobytes()
+    comment = Rect(95, selected_y0 + selected_h + 20, 985, selected_y0 + selected_h + 198)
+    surface = ComposerSurface(
+        "hinge_inline_v1", comment, Rect(390, comment.y1 + 15, 985, comment.y1 + 124),
+        (695, comment.y1 + 65))
+
+    # The upper card really is contained and really is centred -- this test is worthless if it
+    # is refused by the tests that catch an ordinary card, so pin that it is not.
+    upper_left = (_CARD_X0 + _PILLARBOX_CARD_PAD) - comment.x0
+    upper_right = comment.x1 - (_CARD_X1 - _PILLARBOX_CARD_PAD)
+    assert upper_left == upper_right > 0
+    assert upper_y1 - upper_y0 >= item_verify._PREVIEW_MIN_HEIGHT_PX
+
+    cv2_mod, np_mod = item_verify._require_vision()
+    preview = item_verify._locate_inline_composer_preview(
+        frame, surface, cv2=cv2_mod, np=np_mod)
+    assert preview.pillarboxed
+    assert preview.y0 == selected_y0, (
+        f"the locator took the scrolled card at {preview.y0} instead of the selected preview "
+        f"at {selected_y0}")
+    assert preview.y1 > upper_y1
+    verdict = item_verify.verify_sheet_item(
+        frame, payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+    assert verdict.matched, verdict.reason
+
+    # ISOLATING THE GAP BOUND FROM THE TIEBREAK. Two independent things protect this frame -- the
+    # bound refuses a distant candidate outright, and `min(candidates, key=gap)` prefers the
+    # nearest one -- and with both present the tiebreak alone is enough, so the assertions above
+    # pass even with the bound removed. [confirmed by mutation 2026-08-28: deleting the bound
+    # left this test green.] The bound is therefore pinned on its own: the scrolled card with
+    # NOTHING adjacent to the field must be refused rather than promoted to the preview.
+    alone = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    alone[selected_y0:selected_y0 + selected_h, :] = _SHEET_BG
+    ok, encoded_alone = cv2.imencode(".png", alone)
+    assert ok
+    with pytest.raises(item_verify.SheetVerificationError) as refusal:
+        item_verify._locate_inline_composer_preview(
+            encoded_alone.tobytes(), surface, cv2=cv2_mod, np=np_mod)
+    assert "field gap" in str(refusal.value)
+
+
+def test_a_pillarboxed_run_that_spills_past_the_content_column_is_still_refused():
+    """Containment does the work the two edge-alignment tests used to do, and does it as hard.
+
+    The pillarbox regime drops "both edges sit ON the comment field's" for "the ink sits INSIDE
+    them, centred". An ordinary profile card is the thing that must not survive the swap: it
+    spans x=53..1027 against a field at 95..985, so it spills 42px past BOTH ends -- the same
+    42px the module docstring's margin test has always turned on, now measured as containment
+    rather than as alignment.
+    """
+    payload, frame, surface = _pillarboxed_sheet()
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    # Replace the pillarboxed preview with a full-width x=53 card at the same rows: the only tall
+    # run on the frame now spills past the column on both sides.
+    image[_SHEET_PREVIEW_Y0:_SHEET_PREVIEW_Y0 + _SHEET_PREVIEW_MAX_H, :] = _SHEET_BG
+    image[_SHEET_PREVIEW_Y0:_SHEET_PREVIEW_Y0 + _SHEET_PREVIEW_MAX_H, _CARD_X0:_CARD_X1] = 40
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    cv2_mod, np_mod = item_verify._require_vision()
+    assert _CARD_X0 < _V1001_COMMENT.x0 and _CARD_X1 > _V1001_COMMENT.x1
+    with pytest.raises(item_verify.SheetVerificationError) as refusal:
+        item_verify._locate_inline_composer_preview(
+            encoded.tobytes(), surface, cv2=cv2_mod, np=np_mod)
+    message = str(refusal.value)
+    # over the field's columns on BOTH sides, by the same 42px the margin test has always used
+    assert f"left edge {_CARD_X0 - _V1001_COMMENT.x0:+d}px" in message
+    assert f"right edge {_CARD_X1 - _V1001_COMMENT.x1:+d}px" in message
+    assert "pillarboxed inside it" not in message, (
+        "a card that overhangs the column is the opposite of a pillarboxed one")
+
+
+def test_an_off_centre_contained_run_is_refused_by_the_centring_test():
+    """Contained is not sufficient on its own; the card centres its photo and so must we.
+
+    A tall block that sits inside the content column but hard against one side of it is not a
+    pillarboxed card render -- the card fills the column, so its photo's two margins are equal by
+    construction. Accepting an off-centre block would be accepting a rect whose ink says the
+    scale is one thing and whose columns say it is another.
+    """
+    payload, frame, surface = _pillarboxed_sheet()
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    image[_SHEET_PREVIEW_Y0:_SHEET_PREVIEW_Y0 + _SHEET_PREVIEW_MAX_H, :] = _SHEET_BG
+    shifted_x1 = _V1001_COMMENT.x0 + _PILLARBOX_INK_W
+    image[_SHEET_PREVIEW_Y0:_SHEET_PREVIEW_Y0 + _SHEET_PREVIEW_MAX_H,
+          _V1001_COMMENT.x0:shifted_x1] = 40
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    cv2_mod, np_mod = item_verify._require_vision()
+    with pytest.raises(item_verify.SheetVerificationError) as refusal:
+        item_verify._locate_inline_composer_preview(
+            encoded.tobytes(), surface, cv2=cv2_mod, np=np_mod)
+    message = str(refusal.value)
+    # contained, tall enough, adjacent enough -- and refused purely on the asymmetry
+    assert f"left edge {0:+d}px" in message
+    assert f"right edge {shifted_x1 - _V1001_COMMENT.x1:+d}px" in message
+    assert "pillarboxed inside it" not in message, (
+        "an off-centre block must not be described as a pillarboxed card render")
+
+
+def test_the_refusal_names_the_runs_it_measured_and_the_test_each_one_failed():
+    """A refusal that says only "nothing was aligned" cannot be told from "nothing was there".
+
+    The 2026-08-28 report carried exactly one sentence -- "no candidate at least 694px wide and
+    300px tall is aligned with it" -- and diagnosing it needed the frame re-measured by hand. The
+    near-miss IS the diagnosis, so the runs that were rejected, their geometry, and which test
+    each failed are part of the refusal rather than of a later investigation.
+    """
+    payload, frame, surface = _pillarboxed_sheet()
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    image[_SHEET_PREVIEW_Y0:_SHEET_PREVIEW_Y0 + _SHEET_PREVIEW_MAX_H, :] = _SHEET_BG
+    image[_SHEET_PREVIEW_Y0:_SHEET_PREVIEW_Y0 + _SHEET_PREVIEW_MAX_H, _CARD_X0:_CARD_X1] = 40
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    cv2_mod, np_mod = item_verify._require_vision()
+    with pytest.raises(item_verify.SheetVerificationError) as refusal:
+        item_verify._locate_inline_composer_preview(
+            encoded.tobytes(), surface, cv2=cv2_mod, np=np_mod)
+    message = str(refusal.value)
+    # the field it measured against, and the block it actually saw, with its real geometry
+    assert f"columns {_V1001_COMMENT.x0}..{_V1001_COMMENT.x1}" in message
+    assert f"rows {_SHEET_PREVIEW_Y0}..{_SHEET_PREVIEW_Y0 + _SHEET_PREVIEW_MAX_H}" in message
+    assert f"columns {_CARD_X0}..{_CARD_X1}" in message
+    # signed against the field's own edges, so "over on both sides" reads at a glance
+    assert f"left edge {_CARD_X0 - _V1001_COMMENT.x0:+d}px" in message
+    assert f"right edge {_CARD_X1 - _V1001_COMMENT.x1:+d}px" in message
+    # and what it PASSED, without which a pillarbox reads as an ordinary mislocated block
+    assert "passes:" in message and f"height {_SHEET_PREVIEW_MAX_H} rows" in message
+
+
+def _pale_edge_card_above(*, pale: str, gap_rows: int = 3):
+    """A foreign profile card above the preview whose LEADING COLUMNS read as page background.
+
+    The existing `_review_scrolled_inline_frame` paints its upper card opaque across the full
+    x=53..1027 card width, whose span fails both alignment tests by 42px against 27px of slack --
+    so it never reaches the upward walk at all and proves nothing about it. This is the case that
+    does: with one edge pale enough to be background, the reported span STARTS (or ends) exactly
+    on the preview's own column, passes the alignment test, and runs 42px past the opposite edge.
+    """
+    payload = _payload()
+    frame = _paint_inline_reframe(payload.item(4).image)
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    top, bottom = 110, _SHEET_PREVIEW_Y0 - gap_rows
+    image[top:bottom, _CARD_X0:_CARD_X1] = 40                     # an unrelated dark card
+    if pale == "left":
+        image[top:bottom, _CARD_X0:_SHEET_PREVIEW_X0] = _SHEET_BG
+    else:
+        image[top:bottom, _SHEET_PREVIEW_X0 + _SHEET_PREVIEW_W:_CARD_X1] = _SHEET_BG
+    image[bottom:_SHEET_PREVIEW_Y0, :] = _SHEET_BG
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    return payload, encoded.tobytes()
+
+
+@pytest.mark.parametrize("pale", ["left", "right"])
+def test_a_foreign_card_with_one_pale_edge_cannot_weld_onto_the_preview(pale):
+    """The upward walk must not annex a DIFFERENT block, in either polarity.
+
+    Alignment alone does not say a row belongs to this photo -- it says one of its edges does. A
+    card whose leading columns blend into the page reports a span that starts on the preview's own
+    x0 and still runs 42px past its x1, and before the containment check every test above passed
+    it. [measured 2026-08-27 on the real 00097 composer frame: a pale-left card at rows 110..232
+    welded a 236..1092 preview into 110..1092 and turned a `verify_match` into a
+    `verify_mismatch`.] A welded preview is a taller window than the sheet is really showing,
+    which mis-scales every distance measured through it.
+    """
+    payload, frame = _pale_edge_card_above(pale=pale)
+    surface = ComposerSurface("hinge_inline_v1", _V1001_COMMENT, _V1001_SEND, (695, 1390))
+    seed = item_verify.locate_sheet_preview(frame)
+    cv2_mod, np_mod = item_verify._require_vision()
+    extended = item_verify._extend_inline_preview_to_block_edges(
+        frame, seed, surface, cv2=cv2_mod, np=np_mod)
+
+    assert extended.y0 >= seed.y0, (
+        f"the walk annexed the foreign card above: {seed.y0} -> {extended.y0}")
+    verdict = item_verify.verify_sheet_item(
+        frame, payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+    assert verdict.matched, verdict.reason
+
+
+def test_a_seam_in_each_direction_does_not_discard_either_direction_s_carry():
+    """The seam budget is judged PER EDGE; summing the two directions was a regression.
+
+    Only one direction existed before the walk became bidirectional, so testing the SUM against a
+    single-direction budget meant a legal seam below plus a bridged row above pushed
+    `bridged_runs` to 2, threw the whole extension away, and produced the same false-refusal class
+    the walk exists to prevent. Each direction is now held to exactly the budget the one direction
+    was held to -- no direction gets a wider seam than before.
+
+    The frame carries ONE bridged run in each direction (1 row up, the measured 3 down): four
+    bridged rows over two runs in total, which the old summed test rejected outright. What still
+    stops the walk reaching a different block is unchanged and is checked next door -- the cap on
+    CONSECUTIVE unsupported rows, and the column containment in `row_support`.
+    """
+    payload, frame = _leading_pale_inline_reframe()
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    x0, x1 = _SHEET_PREVIEW_X0, _SHEET_PREVIEW_X0 + _SHEET_PREVIEW_W
+    seed = item_verify.locate_sheet_preview(frame)
+    image[seed.y0 - 40:seed.y0 - 39, x0:x1] = _SHEET_BG     # one bridged row, ABOVE the seed
+    image[seed.y1 - 5:seed.y1 - 2, x0:x1] = _SHEET_BG       # the measured 3-row seam, BELOW it
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    frame = encoded.tobytes()
+    surface = ComposerSurface("hinge_inline_v1", _V1001_COMMENT, _V1001_SEND, (695, 1390))
+
+    cv2_mod, np_mod = item_verify._require_vision()
+    reseed = item_verify.locate_sheet_preview(frame)
+    extended = item_verify._extend_inline_preview_to_block_edges(
+        frame, reseed, surface, cv2=cv2_mod, np=np_mod)
+
+    assert extended.y0 < reseed.y0, "the upward carry was discarded by the other edge's seam"
+    assert extended.y1 > reseed.y1, "the downward carry was discarded by the other edge's seam"
+    assert (extended.y0, extended.y1) == (_SHEET_PREVIEW_Y0, _SHEET_PREVIEW_Y0 + _V1001_PREVIEW_ROWS)
+    assert "bridging 4 measured internal background rows" in extended.reason
+
+
 def test_inline_preview_bridges_only_the_measured_three_row_internal_interruption():
     """Hinge 10.1.0 can paint three page-coloured rows inside one selected photo."""
     payload = _payload()
@@ -611,6 +1065,69 @@ def test_inline_preview_keeps_a_measured_right_edge_through_left_sky_blending():
     with pytest.raises(item_verify.SheetVerificationError, match="not immediately above"):
         item_verify.verify_sheet_item(
             encoded.tobytes(), payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+
+
+def test_inline_preview_recovers_pale_rows_above_the_only_compact_seed():
+    """Regression for Lauren's post-keyboard false 53.7% reframe refusal.
+
+    The full photo remains on screen, but its pale leading region is below the compact 78% row
+    floor.  The composer-bound locator therefore seeds on the lower 379 rows and extent recovery
+    must carry the top edge upward under the narrower, one-edge-attached 74% rule.  The calibrated
+    30% source-reframe limit remains untouched and still judges the recovered full preview.
+    """
+    payload, frame = _leading_pale_inline_reframe()
+    surface = ComposerSurface("hinge_inline_v1", _V1001_COMMENT, _V1001_SEND, (695, 1390))
+
+    seed = item_verify.locate_sheet_preview(frame)
+    assert seed.y0 == _SHEET_PREVIEW_Y0 + 477
+    assert seed.y1 == _SHEET_PREVIEW_Y0 + _V1001_PREVIEW_ROWS
+    verdict = item_verify.verify_sheet_item(
+        frame, payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+    assert verdict.matched, verdict.reason
+    assert verdict.nearest_index == 4
+    assert verdict.preview.y0 == _SHEET_PREVIEW_Y0
+    assert verdict.preview.height == _V1001_PREVIEW_ROWS
+    assert "top edge carried" in verdict.preview.reason
+    assert "retaining one aligned edge across 477 rows" in verdict.preview.reason
+
+    # Edge recovery changes geometry only. The unique-nearest and absolute content gates still
+    # refuse both a different photograph and the independent prompt-card family.
+    foreign = dataclasses.replace(
+        payload, crops=(dataclasses.replace(_payload().item(3), number=1),))
+    assert not item_verify.verify_sheet_item(
+        frame, foreign, 1, composer_surface=surface, absolute_max_dist=10.0).matched
+    prompt = dataclasses.replace(_lookalike_payload().item(2), number=1)
+    prompt_only = dataclasses.replace(_lookalike_payload(), crops=(prompt,))
+    assert not item_verify.verify_sheet_item(
+        frame, prompt_only, 1, composer_surface=surface, absolute_max_dist=10.0).matched
+
+
+def test_inline_preview_top_edge_recovery_keeps_its_measured_boundaries():
+    """A weaker edge or four page-coloured rows cannot join an upper block to the seed."""
+    surface = ComposerSurface("hinge_inline_v1", _V1001_COMMENT, _V1001_SEND, (695, 1390))
+
+    # 232 erased pixels leave 658/890 visible, one pixel below the rounded 74% floor. The lower
+    # seed remains real and adjacent to the composer, but it truthfully cannot confirm the item.
+    too_narrow_payload, too_narrow = _leading_pale_inline_reframe(erased_display_px=232)
+    refusal = item_verify.verify_sheet_item(
+        too_narrow, too_narrow_payload, 4, composer_surface=surface)
+    intended = next(c for c in refusal.comparisons if c.number == 4)
+    assert not refusal.matched and intended.distance is None
+    assert "above the 30% reframe limit" in intended.reason
+
+    # Even otherwise-supported upper rows cannot be reached through four blank rows. This is a
+    # real topology boundary, not the measured at-most-three-row interruption inside one photo.
+    payload, frame = _leading_pale_inline_reframe()
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    seed_y0 = _SHEET_PREVIEW_Y0 + 477
+    image[seed_y0 - 4:seed_y0, _SHEET_PREVIEW_X0:_SHEET_PREVIEW_X0 + _SHEET_PREVIEW_W] = _SHEET_BG
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    refusal = item_verify.verify_sheet_item(
+        encoded.tobytes(), payload, 4, composer_surface=surface)
+    intended = next(c for c in refusal.comparisons if c.number == 4)
+    assert not refusal.matched and intended.distance is None
+    assert "above the 30% reframe limit" in intended.reason
 
 
 def test_inline_preview_bottom_edge_cannot_walk_to_a_composer_the_photo_does_not_reach():
@@ -1130,3 +1647,165 @@ def test_an_invalid_absolute_sheet_ceiling_is_a_verification_error_not_a_disable
     with pytest.raises(item_verify.SheetVerificationError, match="absolute_max_dist"):
         item_verify.verify_sheet_item(_sheet_for(2), _payload(), 2,
                                       absolute_max_dist=ceiling)
+
+
+# --- the verification reference's grey space (2026-08-27 live false refusal) --------------
+
+
+def test_the_verification_reference_is_windowed_not_the_colour_image():
+    """Regression for the live halt: a correct sheet refused at 10.283 against a 7.00 ceiling.
+
+    `_decode_crop` used to grey-decode `crop.image` and argue that was safe because
+    `item_crops.signature_of` makes the same `cv2.IMREAD_GRAYSCALE` call. Calling one decoder on
+    two differently encoded PNGs is not one grey space: the sheet is the RGBA/sRGB frame the
+    device wrote, while `image` is a plain RGB PNG this codebase re-encoded, and libpng's
+    rgb-to-gray does not reproduce it. The distances that came out were in neither side's units.
+
+    Painting the colour image and the greyscale reference with DIFFERENT content is how the test
+    proves which one is being measured — the real pair always describes the same pixels, so a
+    version that read `image` would score the sheet against content the reference does not have.
+    """
+    crop = _payload().item(1)
+    reference = cv2.imdecode(np.frombuffer(crop.verify_image, np.uint8), cv2.IMREAD_GRAYSCALE)
+    decoy = np.zeros_like(cv2.imdecode(np.frombuffer(crop.image, np.uint8), cv2.IMREAD_COLOR))
+    ok, encoded_decoy = cv2.imencode(".png", decoy)
+    assert ok
+    # Signature stays with the reference, which is what `_check_reference_provenance` asserts;
+    # only the model's colour image is replaced.
+    swapped = dataclasses.replace(crop, image=encoded_decoy.tobytes())
+    payload = dataclasses.replace(
+        _payload(),
+        crops=tuple(swapped if c.number == 1 else c for c in _payload().crops))
+
+    verdict = item_verify.verify_sheet_item(paint_sheet(crop.image), payload, 1)
+    assert verdict.matched, verdict.reason
+    assert reference.ndim == 2
+
+
+def test_a_crop_without_a_greyscale_reference_is_refused_rather_than_measured():
+    """Fail closed, never fall back to `image`: that fallback IS the bug, and it looks like a
+    number rather than like a failure."""
+    payload = _payload()
+    stripped = dataclasses.replace(payload.item(1), verify_image=None)
+    payload = dataclasses.replace(
+        payload, crops=tuple(stripped if c.number == 1 else c for c in payload.crops))
+    with pytest.raises(item_verify.SheetVerificationError,
+                       match="no greyscale verification reference"):
+        item_verify.verify_sheet_item(_sheet_for(1), payload, 1)
+
+
+def _with_srgb_chunk(png: bytes) -> bytes:
+    """The same PNG with an `sRGB` chunk, which is the whole of what the live fault turned on.
+
+    An Android screencap carries one; `cv2.imencode` writes none. `cv2.IMREAD_GRAYSCALE` is
+    sRGB-aware, so the presence of this 1-byte chunk changes the grey it produces from identical
+    RGB samples. No painted fixture in this repo can reproduce that on its own -- every synthetic
+    frame here is written by `cv2.imencode` and therefore has no chunk on either side of the
+    comparison, which is precisely why the whole corpus passed while a live run refused a correct
+    card. So the regression test writes the chunk itself.
+    """
+    length = int.from_bytes(png[8:12], "big")
+    end_of_ihdr = 8 + 12 + length
+    payload = b"sRGB" + bytes([0])                       # rendering intent 0: perceptual
+    chunk = (len(payload[4:])).to_bytes(4, "big") + payload + (
+        zlib.crc32(payload) & 0xFFFFFFFF).to_bytes(4, "big")
+    return png[:end_of_ihdr] + chunk + png[end_of_ihdr:]
+
+
+def test_a_reference_in_the_wrong_grey_space_is_refused_before_any_distance_is_believed():
+    """The guard for the fault class itself, reproduced in the shape it actually shipped in.
+
+    The stored signature is made from the frame the device wrote, which carries an `sRGB` chunk;
+    the reference here is the same rows without it, which is exactly what re-encoding the crop in
+    colour produced. The two then describe the same pixels in two different greys, every distance
+    below is in the wrong units, and a wrongly-scaled distance is indistinguishable from an
+    honest one by inspection. So it must be refused, not measured.
+    """
+    payload = _payload()
+    crop = payload.item(1)
+    grey = cv2.imdecode(np.frombuffer(crop.verify_image, np.uint8), cv2.IMREAD_GRAYSCALE)
+    colour = cv2.cvtColor(grey, cv2.COLOR_GRAY2BGR)
+    # Saturate the colour channels apart: an sRGB-aware and an sRGB-blind conversion agree
+    # exactly on neutral pixels, and the live fault was on a dark, heavily saturated photo.
+    colour[:, :, 0] = np.clip(colour[:, :, 0].astype(int) + 60, 0, 255).astype(np.uint8)
+    colour[:, :, 2] = np.clip(colour[:, :, 2].astype(int) - 60, 0, 255).astype(np.uint8)
+    ok, encoded = cv2.imencode(".png", colour)
+    assert ok
+    tagged, untagged = _with_srgb_chunk(encoded.tobytes()), encoded.tobytes()
+    signed = item_crops.signature_of(
+        tagged, y0=0, y1=grey.shape[0], x0=0, x1=grey.shape[1], grid=payload.signature_grid)
+    # The premise: one ancillary chunk, and only that, moves the decode.
+    assert not np.array_equal(
+        cv2.imdecode(np.frombuffer(tagged, np.uint8), cv2.IMREAD_GRAYSCALE),
+        cv2.imdecode(np.frombuffer(untagged, np.uint8), cv2.IMREAD_GRAYSCALE))
+
+    mismatched = dataclasses.replace(crop, verify_image=untagged, signature=signed)
+    payload = dataclasses.replace(
+        payload, crops=tuple(mismatched if c.number == 1 else c for c in payload.crops))
+    with pytest.raises(item_verify.SheetVerificationError,
+                       match="does not reproduce the signature stored for the same rows"):
+        item_verify.verify_sheet_item(_sheet_for(1), payload, 1)
+
+
+def test_every_real_crop_reproduces_its_stored_signature_from_its_reference():
+    """The invariant the guard exists to protect, asserted on the whole real payload.
+
+    `build_item_payload` cuts image, reference and signature from the same rows of the same
+    frame, so the reference must reduce back to the signature EXACTLY — the reference is a
+    lossless 8-bit greyscale PNG, so this is 0.0 rather than merely small.
+    """
+    payload = _payload()
+    for crop in payload.items:
+        gray = cv2.imdecode(np.frombuffer(crop.verify_image, np.uint8), cv2.IMREAD_GRAYSCALE)
+        reproduced = item_crops._signature_from_gray(
+            gray, grid=payload.signature_grid, cv2=cv2, np=np)
+        assert crop.signature.distance(reproduced) == 0.0, crop.number
+
+
+def test_the_one_item_ceiling_stays_between_the_measured_correct_and_foreign_populations():
+    """Pin the 2026-08-28 re-fit against the corpus it was measured on.
+
+    The previous 7.00 was fitted on two renders whose numbers were decode bias rather than render
+    penalty (see `_INLINE_COMPOSER_ONE_ITEM_MAX_DIST`'s own comment and `_decode_crop`). The
+    replacement is measured over 148 real like-sheet verifications and 218 cross-profile pairs,
+    and this test exists so a later edit cannot drift it back into either population without the
+    failure being obvious.
+
+    Numbers are the measured extremes, not re-derived here: re-deriving them would need the
+    gitignored device corpus, and the whole point is that they came from real frames.
+    """
+    worst_correct_observed = 1.380          # max over 148 correct sheets, corrected grey space
+    nearest_foreign_observed = 40.823       # min over 218 cross-profile pairs
+    ceiling = item_verify._INLINE_COMPOSER_ONE_ITEM_MAX_DIST
+
+    assert ceiling > worst_correct_observed, (
+        "the ceiling would refuse a correct sheet the corpus actually produced")
+    assert ceiling >= 2.0 * worst_correct_observed, (
+        "less than 2x over the worst measured correct reading leaves no room for locator error")
+    assert ceiling < nearest_foreign_observed, "the ceiling would accept a real foreign card"
+    # It must also stay under the absolute foreign-acceptance clamp, which is a different guard.
+    assert ceiling < item_verify._SHEET_FALSE_MATCH_DISTANCE
+
+
+def test_lowering_the_one_item_ceiling_can_only_turn_accepts_into_refusals():
+    """The safety argument for re-fitting it at all, checked rather than asserted in prose.
+
+    The constant feeds exactly one comparison, so a smaller value is monotone: it can never
+    convert a refusal into an acceptance. Verified by running the same sheet at a ceiling above
+    and below its own distance.
+    """
+    payload = _payload()
+    frame = _sheet_for(1)
+    surface = _inline_surface()
+    one_item = dataclasses.replace(
+        payload, crops=tuple(c for c in payload.crops if c.number == 1))
+
+    verdict = item_verify.verify_sheet_item(frame, one_item, 1, composer_surface=surface)
+    assert verdict.matched, verdict.reason
+    assert verdict.bound == item_verify._INLINE_COMPOSER_ONE_ITEM_MAX_DIST
+
+    tightened = verdict.distance / 2 if verdict.distance else 0.001
+    with mock.patch.object(item_verify, "_INLINE_COMPOSER_ONE_ITEM_MAX_DIST", tightened):
+        refused = item_verify.verify_sheet_item(frame, one_item, 1, composer_surface=surface)
+    assert not refused.matched, "a tighter ceiling must refuse what it used to accept"
+    assert refused.state == item_verify.VERIFY_MISMATCH

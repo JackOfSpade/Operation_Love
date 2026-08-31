@@ -1107,6 +1107,26 @@ def test_touch_backend_accepts_uhid_persistent():
     c.validate(_load(d))
 
 
+@pytest.mark.parametrize("value", [True, 0, -1, 1.5, "50", []])
+def test_debug_keep_runs_requires_a_positive_integer_or_null(value):
+    d = {**BASE, "apps": {"hinge": {"debug_keep_runs": value}}}
+    _expect_error(d, "apps.hinge.debug_keep_runs")
+
+
+@pytest.mark.parametrize("value", ["run", [""], ["."], [".."], ["a/b"], ["a\\b"], [1]])
+def test_debug_protect_runs_accepts_only_safe_directory_names(value):
+    d = {**BASE, "apps": {"hinge": {"debug_protect_runs": value}}}
+    _expect_error(d, "apps.hinge.debug_protect_runs")
+
+
+def test_debug_retention_configuration_accepts_null_or_safe_run_names():
+    d = {**BASE, "apps": {"hinge": {
+        "debug_keep_runs": None,
+        "debug_protect_runs": ["run_20260830_101010", "a1b2c3d4"],
+    }}}
+    c.validate(_load(d))
+
+
 def test_still_photo_dwell_candidates_huge_integer_reported_as_config_error():
     # Mirrors test_bounded_android_numbers_report_huge_integers_as_config_errors: a bignum must
     # fail the SAME clean way scroll_captures already does, not overflow or hang isinstance/int

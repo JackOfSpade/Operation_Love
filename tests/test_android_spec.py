@@ -225,6 +225,34 @@ def test_identity_top_name_band_without_identity_band_is_rejected():
                        identity_top_name_band=(0.03, 0.130, 0.75, 0.250))
 
 
+def test_identity_top_name_fallback_band_requires_and_only_shrinks_primary_band_bottom():
+    primary = (0.03, 0.130, 0.75, 0.250)
+    fallback = (0.03, 0.130, 0.75, 0.235)
+    spec = AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                          identity_band=(0.10, 0.048, 0.80, 0.094),
+                          identity_top_name_band=primary,
+                          identity_top_name_fallback_band=fallback)
+    assert spec.identity_top_name_fallback_band == fallback
+    with pytest.raises(ValueError, match="identity_band and identity_top_name_band"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       identity_top_name_fallback_band=fallback)
+    with pytest.raises(ValueError, match="only y1 allowed to shrink"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                       identity_band=(0.10, 0.048, 0.80, 0.094),
+                       identity_top_name_band=primary,
+                       identity_top_name_fallback_band=(0.02, 0.130, 0.75, 0.235))
+    # These are geometrically contained, but still inspect pixels outside the one calibrated
+    # compact retry.  Only the primary band's bottom edge may move upward.
+    for shifted in ((0.04, 0.130, 0.75, 0.235),
+                    (0.03, 0.131, 0.75, 0.235),
+                    (0.03, 0.130, 0.74, 0.235)):
+        with pytest.raises(ValueError, match="only y1 allowed to shrink"):
+            AndroidAppSpec(app="x", package="x.y", calibrated=False,
+                           identity_band=(0.10, 0.048, 0.80, 0.094),
+                           identity_top_name_band=primary,
+                           identity_top_name_fallback_band=shifted)
+
+
 # --- paywall_headline_band: OCR-only REFINEMENT of the "paywall" template's verdict --------
 # See android_spec.py's paywall_headline_band docstring for the mechanism: the screen itself is
 # detected by the "paywall" TEMPLATE (hinge.py's _paywall_visible), never by this band's OCR --

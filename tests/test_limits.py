@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from operation_love.costing import CostTracker, ModelPricing
-from operation_love.drivers.base import DatingAppDriver
+from operation_love.drivers.base import ActionCancelled, DatingAppDriver
 from operation_love.limits import RateLimiter
 from operation_love.opener.service import OpenerService
 from operation_love.perception.capture import Profile
@@ -111,6 +111,8 @@ def test_allow_like_ratio_reproduces_the_audited_score_blind_bug_scenario_fixed(
 
 # --- worker integration --------------------------------------------------
 class _Driver(DatingAppDriver):
+    supports_interruptible_dislike = True
+
     def __init__(self, n):
         self.n = n
         self.i = 0
@@ -124,7 +126,10 @@ class _Driver(DatingAppDriver):
         return Profile(photos=[b"x"])
     def out_of_profiles(self): return self.i >= self.n
     def like(self, opener=None, item_index=None, *, model_item_index=None): pass
-    def dislike(self): self.dislikes += 1
+    def dislike(self, *, should_stop=None):
+        if should_stop is not None and should_stop():
+            raise ActionCancelled("test pass cancelled before input")
+        self.dislikes += 1
     def close(self): self.closed = True
 
 

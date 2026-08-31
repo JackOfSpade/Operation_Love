@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import sys
 from dataclasses import dataclass, field
@@ -128,19 +129,33 @@ def _resolve_actions_path(target: Path) -> Path:
     return target
 
 
+def _finite_timing_value(value: object) -> float | None:
+    """Return a JSON numeric timing value, excluding booleans and non-finite values.
+
+    Python considers ``bool`` an ``int``, and ``json.loads`` accepts ``NaN``/``Infinity`` by
+    default. Neither belongs in elapsed-time arithmetic: including either makes a malformed
+    best-effort debug row distort every aggregate (or turn it into ``nan``).
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) else None
+
+
 def _summarize(records: list[dict], *, wall_key: str, meta_keys: frozenset[str],
               action: str) -> TimingAttribution:
     rows = [r for r in records if r.get("action") == action]
     wall_s_total = 0.0
     bucket_values: dict[str, list[float]] = {}
     for row in rows:
-        wall = row.get(wall_key)
-        if isinstance(wall, (int, float)):
-            wall_s_total += float(wall)
+        wall = _finite_timing_value(row.get(wall_key))
+        if wall is not None:
+            wall_s_total += wall
         for key, value in row.items():
-            if key in meta_keys or not isinstance(value, (int, float)):
+            numeric = _finite_timing_value(value)
+            if key in meta_keys or numeric is None:
                 continue
-            bucket_values.setdefault(key, []).append(float(value))
+            bucket_values.setdefault(key, []).append(numeric)
     buckets = {
         key: BucketStats(
             total_s=sum(values), mean_s=statistics.fmean(values),

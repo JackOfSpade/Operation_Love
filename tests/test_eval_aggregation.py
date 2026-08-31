@@ -28,6 +28,24 @@ def test_identity_groups_singletons_get_own_group():
     assert len(set(identity_groups(faces, eps=0.5))) == 3
 
 
+def test_identity_groups_validates_eps_even_without_faces():
+    with pytest.raises(ValueError, match="eps must be"):
+        identity_groups([], eps=0.0)
+
+
+@pytest.mark.parametrize(("faces", "eps"), [
+    ([[0.0, 0.0]], 0.5),
+    ([[1.0, math.nan]], 0.5),
+    ([[1.0, 0.0]], -0.1),
+    ([[1.0, 0.0]], 0.0),
+    ([[1.0, 0.0]], 2.1),
+    ([[1.0, 0.0]], math.inf),
+])
+def test_identity_groups_rejects_inputs_that_make_cosine_grouping_undefined(faces, eps):
+    with pytest.raises(ValueError):
+        identity_groups(faces, eps=eps)
+
+
 def test_evaluate_too_few_labels_returns_status_not_metrics():
     r = evaluate([(True, [0.0] * 1280), (False, [1.0] * 1280)])   # 2 labels
     assert r["status"] == "insufficient_data"
@@ -47,6 +65,19 @@ def test_evaluate_never_raises_on_malformed_top_level_rows_or_labels(samples):
     r = evaluate(samples)
     assert r["status"] == "error"
     assert "malformed" in r["message"]
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"n_splits": True}, {"n_splits": 1}, {"n_splits": "5"},
+    {"eps": True}, {"eps": -0.1}, {"eps": 0.0}, {"eps": 2.1},
+    {"eps": math.inf}, {"eps": math.nan},
+    {"like_threshold": True}, {"like_threshold": -0.1}, {"like_threshold": 1.1},
+    {"like_threshold": None}, {"like_threshold": math.nan},
+])
+def test_evaluate_reports_invalid_controls_without_misdiagnosing_stored_labels(kwargs):
+    r = evaluate(_identity_samples(12), **kwargs)
+    assert r["status"] == "error"
+    assert "evaluation controls are invalid" in r["message"]
 
 
 def test_evaluate_reports_no_sklearn_when_sklearn_is_unavailable(monkeypatch):
@@ -167,6 +198,39 @@ def test_evaluate_real_grouped_cv_ok_path():
     for key in ("roc_auc", "pr_auc", "brier"):
         mean, std = r[key]                            # each metric is a [mean, std] 2-list
         assert 0.0 <= mean <= 1.0 and 0.0 <= std <= 1.0
+    assert 0.0 <= r["accepted_recall"] <= 1.0
+    assert r["false_dislike_rate"] == pytest.approx(1.0 - r["accepted_recall"])
+    assert sum(r["confusion"].values()) == len(samples)  # every out-of-fold decision counted
+    assert r["like_threshold"] == 0.5
+
+
+def test_lower_like_threshold_cannot_create_more_false_dislikes():
+    samples = _grouped_cv_samples(n_identities=10, per_identity=4)
+    conservative = evaluate(samples, like_threshold=0.1)
+    strict = evaluate(samples, like_threshold=0.9)
+    assert conservative["status"] == strict["status"] == "ok"
+    assert conservative["confusion"]["false_dislikes"] <= strict["confusion"]["false_dislikes"]
+    assert conservative["accepted_recall"] >= strict["accepted_recall"]
+
+
+@pytest.mark.parametrize(("like_threshold", "expected"), [
+    pytest.param(0.0, {
+        "true_accepted": 20, "false_dislikes": 0,
+        "false_likes": 20, "true_dislikes": 0,
+    }, id="always-like"),
+    pytest.param(1.0, {
+        "true_accepted": 0, "false_dislikes": 20,
+        "false_likes": 0, "true_dislikes": 20,
+    }, id="always-pass"),
+])
+def test_evaluate_honors_config_valid_threshold_endpoints(like_threshold, expected):
+    """Config permits both endpoints, so Hub evaluation must report their true decisions."""
+    result = evaluate(_grouped_cv_samples(n_identities=10, per_identity=4),
+                      like_threshold=like_threshold)
+
+    assert result["status"] == "ok"
+    assert result["like_threshold"] == like_threshold
+    assert result["confusion"] == expected
 
 
 def test_evaluate_real_grouped_cv_too_few_identities():

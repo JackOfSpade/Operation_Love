@@ -70,6 +70,31 @@
          background:#22222b; border:1px solid rgba(255,255,255,.14); border-radius:9px; cursor:pointer; }
   .err { color:#ff8585; font-size:12px; margin-top:8px; }
   .meta { font-size:12px; opacity:.7; }
+  .readiness-badge { font-size:10px; font-weight:700; letter-spacing:.06em; padding:3px 8px;
+                     border-radius:999px; white-space:nowrap; }
+  .readiness-badge.ready { color:#39d98a; background:rgba(57,217,138,.16); }
+  .readiness-badge.not-ready { color:#ffb4b4; background:rgba(255,107,107,.14); }
+  .readiness-badge.learning { color:#f0c45c; background:rgba(240,180,41,.14); }
+  .readiness-title { margin-top:10px; font-size:18px; font-weight:700; }
+  .readiness-copy { color:#aaaab2; margin-top:2px; }
+  .readiness-check { margin-top:13px; padding:11px 12px; border-radius:10px;
+                     background:#111116; border:1px solid rgba(255,255,255,.08); }
+  .readiness-check-head { display:flex; justify-content:space-between; gap:12px; align-items:baseline; }
+  .readiness-value { font-size:17px; font-weight:700; white-space:nowrap; }
+  .readiness-target { margin-top:3px; color:#92929b; font-size:12px; }
+  .readiness-track { height:5px; margin-top:8px; overflow:hidden; border-radius:999px;
+                     background:rgba(255,255,255,.1); }
+  .readiness-track > span { display:block; height:100%; border-radius:inherit; background:#ff6b6b; }
+  .readiness-track > span.ready { background:#39d98a; }
+  .decision-rule { margin-top:12px; padding:9px 11px; border-left:3px solid #5ab0ff;
+                   border-radius:0 8px 8px 0; background:rgba(90,176,255,.07); color:#c7dff5; }
+  .readiness-details { margin-top:12px; color:#aaaab2; }
+  .readiness-details summary { cursor:pointer; user-select:none; }
+  .confusion { width:100%; margin-top:9px; border-collapse:collapse; font-size:12px; }
+  .confusion th, .confusion td { padding:7px 8px; text-align:center;
+                                border:1px solid rgba(255,255,255,.08); }
+  .confusion th:first-child { text-align:left; }
+  .confusion .risk { color:#ff9b9b; font-weight:700; }
   /* Platform picker: kinds contain only apps that can actually run. */
   .seg { display:inline-flex; border:1px solid rgba(255,255,255,.14); border-radius:9px; overflow:hidden; }
   .seg button { border:0; border-radius:0; background:#22222b; padding:8px 14px; }
@@ -91,8 +116,8 @@
   </div>
 
   <div class="card">
-    <div class="row"><span class="muted">model quality · leakage-free CV</span><span class="meta" id="evalhint"></span></div>
-    <div class="meta" id="evalbody" style="margin-top:6px">evaluating…</div>
+    <div class="row"><span class="muted">base-model safety check</span><span class="readiness-badge learning" id="evalhint">CHECKING</span></div>
+    <div id="evalbody" style="margin-top:6px" role="status" aria-live="polite"><span class="meta">evaluating…</span></div>
   </div>
 
   <div class="card">
@@ -143,7 +168,7 @@
       <span class="meta">(leave blank to use config)</span>
     </div>
     <div class="controls" style="margin-top:12px">
-      <button id="start" class="primary">▶ Start</button>
+      <button id="start" class="primary" disabled>▶ Start</button>
       <button id="stop" class="danger" disabled>■ Stop</button>
       <span class="meta" id="hint"></span>
     </div>
@@ -190,6 +215,11 @@ function initialHubMode(){ return 'training'; }
 // polls so #hint clears only on the TRANSITION into !running, never merely because the
 // page happens to load, or re-render, while no run is active.
 let _wasRunning = false;
+let _statusRequest = 0;
+let _evalRequest = 0;
+let _logsRequest = 0;
+let _trainingDataMutationBusy = false;
+let _configReady = false;
 const hubClientId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '-' + Math.random());
 function hubLifecycle(path){
   const body = JSON.stringify({id: hubClientId, _csrf_token: hubCsrfToken});
@@ -254,7 +284,9 @@ function renderGlobal(snap){
   const stopping = !!(s && s.stopping);
   $('#runpill').textContent = running ? ((phase && phase!=='live') ? phase : 'running') : 'stopped';
   $('#runpill').className = 'pill ' + (running ? 'run' : 'stop');
-  $('#start').disabled = running;
+  $('#start').disabled = !!running || !_configReady;
+  const removeLatest = $('#removeLatestTraining');
+  if (removeLatest) removeLatest.disabled = !!running || _trainingDataMutationBusy;
   $('#stopafter').disabled = !!running;
   const timedStop = (snap && snap.timed_stop) || (s && s.timed_stop);
   $('#timerhint').textContent = running && timedStop
@@ -810,91 +842,93 @@ function renderRunStatus(snap){
   el.style.display = 'block';
 }
 
-async function tick(){ try { const snap = await getJSON('/api/status'); renderGlobal(snap); renderRunStatus(snap); tickTrainingCheckpoint(snap); } catch(e){} }
+async function tick(){
+  const request = ++_statusRequest;
+  try {
+    const snap = await getJSON('/api/status');
+    if (request !== _statusRequest) return;
+    renderGlobal(snap); renderRunStatus(snap); tickTrainingCheckpoint(snap);
+  } catch(_error){}
+}
 
 function renderEval(e){
   if(!e) return;
   const esc = s => String(s).replace(/[&<>"]/g, ch => (
     {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]
   ));
-  // Single metric "accuracy" = ROC-AUC as a % = P(model ranks a profile you'd LIKE above one
-  // you'd PASS). 50% = coin-flip, 100% = perfect; base-rate-independent, so it tracks the model
-  // not your pickiness. The chart is the same metric over labels with a dashed 50% chance line.
-  const accSvg = traj => {
-    if(!Array.isArray(traj)) return '';
-    const pts = traj.filter(p => p && p.roc_auc != null && isFinite(p.roc_auc));
-    if(pts.length < 2) return '';
-    const W=600, H=150, L=8, Rr=8, T=16, B=22;
-    const xs = pts.map(p => p.labels);
-    const xmin = Math.min(...xs), xmax = Math.max(...xs);
-    const vv = pts.map(p => p.roc_auc).concat([0.5]);   // keep the chance line inside the y-range
-    let lo = Math.min(...vv), hi = Math.max(...vv);
-    const padv = (hi-lo)*0.18 || 0.05; lo = Math.max(0, lo-padv); hi = Math.min(1, hi+padv);
-    const X = v => L + (xmax===xmin ? 0.5 : (v-xmin)/(xmax-xmin)) * (W-L-Rr);
-    const Y = v => T + (1-(v-lo)/((hi-lo)||1)) * (H-T-B);
-    const line = pts.map(p => `${X(p.labels).toFixed(1)},${Y(p.roc_auc).toFixed(1)}`).join(' ');
-    const chanceY = Y(0.5).toFixed(1);
-    const txt = (x,y,t,anchor,col) => `<text x="${x}" y="${y}" fill="${col||'#6a6a72'}" font-size="10"${anchor?` text-anchor="${anchor}"`:''}>${t}</text>`;
-    const svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;background:#0c0c10;border:1px solid rgba(255,255,255,.09);border-radius:9px">`
-      + `<line x1="${L}" y1="${chanceY}" x2="${W-Rr}" y2="${chanceY}" stroke="#6a6a72" stroke-dasharray="3 3" opacity="0.5"/>`
-      + `<polyline fill="none" stroke="#5ab0ff" stroke-width="1.8" points="${line}"/>`
-      + txt(L, T-5, (hi*100).toFixed(3)+'%') + txt(L, H-7, (lo*100).toFixed(3)+'%')
-      + txt(L+22, Number(chanceY)-3, 'random')
-      + txt(L+22, H-7, xmin+' labels') + txt(W-Rr, H-7, xmax+'', 'end')
-      + `</svg>`;
-    return `<div style="margin-top:8px"><div class="meta" style="margin-bottom:3px">accuracy over labels</div>`
-      + svg + `</div>`;
+  const TARGET_RECALL = 0.95;
+  const TARGET_IDENTITIES = 500;
+  const clamp = value => Math.max(0, Math.min(1, Number(value) || 0));
+  const percent = value => `${(clamp(value)*100).toFixed(1)}%`;
+  const setBadge = (label, state) => {
+    $('#evalhint').textContent = label;
+    $('#evalhint').className = `readiness-badge ${state}`;
   };
-  // Mini-goal: refresh is gated on new labels (every N), not the clock — so show progress
-  // toward the next recompute. Only while a live training run is feeding labels (auto mode
-  // never adds training labels).
   const refreshHtml = () => {
     const r = e.refresh;
     if(!r || !r.live || r.mode !== 'training' || r.since == null) return '';
     const every = Math.max(1, Math.floor(Number(r.every) || 1));
     const progress = Math.min(every, Math.max(0, Math.floor(Number(r.since) || 0)));
-    return `<div class="muted" style="margin-top:4px">↻ ${progress}/${every} till next refresh</div>`;
-  };
-  // The model-quality gate may not have enough examples to score CV yet, but its
-  // dataset size and preference balance are always useful. Compute dislike as the
-  // complement so the displayed split sums to exactly 100.0% after rounding.
-  const training = e.training || e;
-  const trainingMixHtml = () => {
-    const records = Math.max(0, Math.floor(Number(training.labels) || 0));
-    const likes = Math.max(0, Math.floor(Number(training.likes) || 0));
-    if(!records) return `<div class="muted" style="margin-top:4px">0 training records — no like/dislike split yet</div>`;
-    const likePct = Math.max(0, Math.min(100, (likes / records) * 100));
-    const dislikePct = 100 - likePct;
-    return `<div class="muted" style="margin-top:4px">${records} training record${records===1?'':'s'} · ${likePct.toFixed(1)}% like / ${dislikePct.toFixed(1)}% dislike</div>`;
+    const remaining = Math.max(1, every-progress);
+    return `<div class="muted" style="margin-top:10px">Updates after ${remaining} more training label${remaining===1?'':'s'}.</div>`;
   };
   if(e.status !== 'ok'){
-    $('#evalhint').textContent = (e.identities!=null) ? `${e.identities} identities` : '';
+    setBadge('KEEP TRAINING', 'learning');
     $('#evalbody').style.color = '#9a9aa2';
+    const training = e.training || e;
     const labels = Math.max(0, Math.floor(Number(training.labels) || 0));
     const likes = Math.max(0, Math.floor(Number(training.likes) || 0));
     const passes = Math.max(0, labels - likes);
     const gate = `Need ≥10 labels with both like & pass (have ${labels}: ${likes} like / ${passes} pass).`;
-    $('#evalbody').innerHTML = `<div>${esc(e.status === 'insufficient_data' ? gate : (e.message || 'evaluating…'))}</div>` + trainingMixHtml() + refreshHtml();
+    const message = e.status === 'insufficient_data' ? gate : (e.message || 'Evaluating…');
+    $('#evalbody').innerHTML = `<div class="readiness-title">Not enough evidence yet</div>`
+      + `<div class="readiness-copy">${esc(message)}</div>` + refreshHtml();
     return;
   }
-  // Accuracy % = ROC-AUC × 100 = P(ranks a profile you'd LIKE above one you'd PASS).
-  // Grade the PESSIMISTIC band edge (mean-std) so a wide band can't read green.
-  const G='#39d98a', A='#f0b429', R='#ff6b6b';
-  const acc = e.roc_auc[0]*100, band = e.roc_auc[1]*100, lo = acc - band;
-  const col = lo>=80 ? G : (lo>=70 ? A : R);
-  $('#evalhint').textContent = `${e.folds}-fold · ${e.identities} identities`;
+
+  const recall = clamp(e.accepted_recall);
+  const falseDislike = clamp(e.false_dislike_rate);
+  const identities = Math.max(0, Math.floor(Number(e.identities) || 0));
+  const recallReady = recall >= TARGET_RECALL;
+  const evidenceReady = identities >= TARGET_IDENTITIES;
+  const ready = recallReady && evidenceReady;
+  const threshold = clamp(e.like_threshold);
+  const cm = e.confusion || {};
+  const count = key => Math.max(0, Math.floor(Number(cm[key]) || 0));
+  setBadge(ready ? 'BASELINE PASS' : 'NOT READY', ready ? 'ready' : 'not-ready');
   $('#evalbody').style.color = '#e8e8ea';
   $('#evalbody').innerHTML =
-    `<div>accuracy <b style="color:${col};font-size:18px">${acc.toFixed(3)}%</b>`
-    + ` <span class="muted">±${band.toFixed(3)}% · ranks a like above a pass (50% = random)</span></div>`
-    + trainingMixHtml() + refreshHtml() + accSvg(e.trajectory);
+    `<div class="readiness-title">${ready ? 'Baseline check passes' : 'More baseline evidence needed'}</div>`
+    + `<div class="readiness-copy">This leakage-free test measures the base ranker. AUTO can apply additional conservative passes, so this is not an AUTO release approval.</div>`
+    + `<div class="readiness-check"><div class="readiness-check-head"><span>Accepted profiles kept</span>`
+    + `<span class="readiness-value" style="color:${recallReady?'#39d98a':'#ff8585'}">${percent(recall)}</span></div>`
+    + `<div class="readiness-target">Target ≥95% · false dislikes ${percent(falseDislike)} (must be ≤5%)</div>`
+    + `<div class="readiness-track"><span class="${recallReady?'ready':''}" style="width:${Math.min(100, recall/TARGET_RECALL*100).toFixed(1)}%"></span></div></div>`
+    + `<div class="readiness-check"><div class="readiness-check-head"><span>Independent profiles tested</span>`
+    + `<span class="readiness-value" style="color:${evidenceReady?'#39d98a':'#ff8585'}">${identities} / ${TARGET_IDENTITIES}</span></div>`
+    + `<div class="readiness-target">Minimum baseline evidence required before the PASS badge appears</div>`
+    + `<div class="readiness-track"><span class="${evidenceReady?'ready':''}" style="width:${Math.min(100, identities/TARGET_IDENTITIES*100).toFixed(1)}%"></span></div></div>`
+    + `<div class="decision-rule"><b>Base model rule:</b> likes at or above ${percent(threshold)} predicted chance. AUTO may conservatively pass additional marginal likes.</div>`
+    + `<details class="readiness-details"><summary>Technical details · ${e.folds}-fold leakage-free test</summary>`
+    + `<table class="confusion"><tr><th></th><th>Model likes</th><th>Model dislikes</th></tr>`
+    + `<tr><th>You accept</th><td>${count('true_accepted')}</td><td class="risk">${count('false_dislikes')}</td></tr>`
+    + `<tr><th>You dislike</th><td>${count('false_likes')}</td><td>${count('true_dislikes')}</td></tr></table></details>`
+    + refreshHtml();
 }
-async function tickEval(){ try { renderEval(await getJSON('/api/eval')); } catch(e){} }
+async function tickEval(){
+  const request = ++_evalRequest;
+  try {
+    const evaluation = await getJSON('/api/eval');
+    if (request === _evalRequest) renderEval(evaluation);
+  } catch(_error){}
+}
 
 function _nearBottom(el){ return el.scrollHeight - el.scrollTop - el.clientHeight < 40; }
 async function tickLogs(){
+  const request = ++_logsRequest;
   try {
     const r = await getJSON('/api/logs'); const el = $('#logs');
+    if (request !== _logsRequest) return;
     const stick = _nearBottom(el);                 // only auto-scroll if user is already at the bottom
     el.textContent = (r.lines||[]).join('\n');
     $('#loghint').textContent = (r.lines||[]).length + ' lines';
@@ -1042,8 +1076,10 @@ $('#unlimited').onchange = syncModeUI;
 function computeMaxPerRun(mode, unlimitedChecked, rawValue){
   if (mode !== 'auto' && mode !== 'training') return null;
   if (unlimitedChecked) return 0;
-  const n = parseInt(rawValue, 10);
-  return (Number.isFinite(n) && n > 0) ? n : null;
+  const raw = String(rawValue == null ? '' : rawValue).trim();
+  if (!/^[1-9]\d*$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) ? n : null;
 }
 function stopAfterSeconds(rawValue){
   const n = Number(rawValue);
@@ -1051,18 +1087,26 @@ function stopAfterSeconds(rawValue){
 }
 async function startRunFromControls(){
   $('#hint').textContent='starting…';
+  const startButton = $('#start');
+  if (startButton) startButton.disabled = true;
   const mode = $('#mode').value;
   const max_per_run = computeMaxPerRun(mode, $('#unlimited').checked, $('#maxrun').value);
   const stop_after_seconds = stopAfterSeconds($('#stopafter').value);
-  const r = await postJSON('/api/start', {mode, apps: chosenApps(), max_per_run, stop_after_seconds});
-  // The server is the only authority on what can run, so a refusal is shown verbatim
-  // and in full -- these reasons are a sentence or two ("Additional work needed to get
-  // this to run..."), which would be unreadable squeezed into the one-line hint.
-  // Re-selecting a platform re-renders this area, clearing a stale message.
-  $('#hint').textContent = r.ok ? '' : 'not started';
-  $('#platnote').innerHTML = r.ok ? ''
-    : `<span class="dot" style="background:#f0b429"></span>${escHtml(r.msg || 'could not start')}`;
-  tick();
+  try {
+    const r = await postJSON('/api/start', {mode, apps: chosenApps(), max_per_run, stop_after_seconds});
+    // The server is the only authority on what can run, so a refusal is shown verbatim
+    // and in full -- these reasons are a sentence or two ("Additional work needed to get
+    // this to run..."), which would be unreadable squeezed into the one-line hint.
+    // Re-selecting a platform re-renders this area, clearing a stale message.
+    $('#hint').textContent = r.ok ? '' : 'not started';
+    $('#platnote').innerHTML = r.ok ? ''
+      : `<span class="dot" style="background:#f0b429"></span>${escHtml(r.msg || 'could not start')}`;
+  } catch(_error) {
+    $('#hint').textContent = 'not started';
+    $('#platnote').innerHTML = '<span class="dot" style="background:#f0b429"></span>Could not contact the local hub. Retry Start.';
+  } finally {
+    tick();
+  }
 }
 $('#start').onclick = startRunFromControls;
 $('#stop').onclick = async () => {
@@ -1072,15 +1116,32 @@ $('#stop').onclick = async () => {
   $('#stop').disabled = true;
   $('#stop').textContent = '■ Stopping…';
   $('#hint').textContent = 'stopping…';
-  await postJSON('/api/stop', {});
-  tick();
+  try {
+    const r = await postJSON('/api/stop', {});
+    if (!r.ok) $('#hint').textContent = r.msg || 'could not stop';
+  } catch(_error) {
+    $('#hint').textContent = 'could not contact the local hub to stop';
+  } finally {
+    tick();
+  }
 };
 
 async function removeLatestTrainingLabel(){
+  if (_trainingDataMutationBusy) return;
+  _trainingDataMutationBusy = true;
+  const button = $('#removeLatestTraining');
+  if (button) button.disabled = true;
   const hint = $('#traininghint'); hint.textContent = 'removing…';
-  const r = await postJSON('/api/training/remove-latest', {});
-  hint.textContent = r.ok ? `removed ${r.result.profile_name}` : (r.result || 'could not remove label');
-  tickEval();
+  try {
+    const r = await postJSON('/api/training/remove-latest', {});
+    hint.textContent = r.ok ? `removed ${r.result.profile_name}` : (r.result || 'could not remove label');
+  } catch(_error) {
+    hint.textContent = 'could not contact the local hub';
+  } finally {
+    _trainingDataMutationBusy = false;
+    if (button) button.disabled = false;
+    tickEval(); tick();
+  }
 }
 $('#removeLatestTraining').onclick = removeLatestTrainingLabel;
 
@@ -1106,8 +1167,21 @@ $('#bugdl').onclick = async () => {
 };
 
 (async () => {
-  const c = await getJSON('/api/config');
-  if(!c.error){ cfg = Object.assign(cfg, c); $('#mode').value = initialHubMode(); $('#sub').textContent = `control hub · storage: ${cfg.backend}`; }
+  try {
+    const c = await getJSON('/api/config');
+    if(c.error) {
+      $('#err').textContent = `error: ${c.error}`;
+      $('#platnote').textContent = 'Could not load the hub configuration. Start will remain unavailable until it is fixed.';
+    } else {
+      cfg = Object.assign(cfg, c);
+      _configReady = true;
+      $('#mode').value = initialHubMode();
+      $('#sub').textContent = `control hub · storage: ${cfg.backend}`;
+    }
+  } catch(_error) {
+    $('#err').textContent = 'error: could not load hub configuration';
+    $('#platnote').textContent = 'Could not contact the local hub configuration endpoint.';
+  }
   syncModeUI();
   sel = initialSelection(cfg);
   renderPlatforms();

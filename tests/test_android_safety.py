@@ -40,7 +40,7 @@ from operation_love.drivers.android.bumble import (
     BUMBLE_SPEC,
 )
 from operation_love.drivers.android_spec import AndroidAppSpec
-from operation_love.drivers.base import DriverClosed
+from operation_love.drivers.base import ActionCancelled, DriverClosed
 from operation_love.drivers.hinge import (
     HINGE_SPEC,
     AndroidDriver,
@@ -147,6 +147,23 @@ def test_bumble_pass_is_a_card_drag_and_issues_no_tap_at_all():
     assert len(adb.swipes) == 1
     x1, _y1, x2, _y2 = adb.swipes[0]
     assert x2 < x1, "pass drags leftward"
+
+
+def test_stop_at_card_swipe_transport_boundary_prevents_the_pass_gesture(monkeypatch):
+    """AUTO pass cancellation is checked after geometry/foreground work, before swipe."""
+    adb = FakeAdb()
+    drv = _drv(BUMBLE_SPEC, adb)
+    stopped = {"now": False}
+    original = drv._require_foreground_owned_for_input
+
+    def foreground_then_stop():
+        original()
+        stopped["now"] = True
+
+    monkeypatch.setattr(drv, "_require_foreground_owned_for_input", foreground_then_stop)
+    with pytest.raises(ActionCancelled):
+        drv.dislike(should_stop=lambda: stopped["now"])
+    assert adb.swipes == [] and adb.taps == []
 
 
 def test_bumble_drag_starts_clear_of_its_own_paid_zone():

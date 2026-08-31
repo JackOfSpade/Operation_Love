@@ -4,10 +4,11 @@ from __future__ import annotations
 import struct
 import threading
 import zlib
+from unittest.mock import patch
 
 import pytest
 
-from operation_love.training_actions import TrainingActionBridge
+from operation_love.training_actions import TrainingActionBridge, _valid_png_idat
 
 
 def _chunk(kind: bytes, data: bytes) -> bytes:
@@ -130,6 +131,105 @@ def test_training_checkpoint_rejects_crc_valid_png_with_undecodable_pixel_data()
         bridge.publish_checkpoint(worker, malformed, _Pick())
 
     assert bridge.snapshot()["checkpoints"] == []
+
+
+def test_training_checkpoint_rejects_a_decompressed_png_with_an_invalid_row_filter():
+    """A valid CRC and zlib stream are not enough: filter byte 5 is outside PNG's 0..4 range.
+
+    The compact 1x1 payload reaches the prior size-only validator but every browser rejects it
+    while reconstructing scanlines. It must never publish a checkpoint whose Hub review image
+    cannot actually render.
+    """
+    bridge, worker = TrainingActionBridge(), _Worker()
+    bridge.register(worker)
+    malformed = (b"\x89PNG\r\n\x1a\n"
+                 + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+                 + _chunk(b"IDAT", zlib.compress(b"\x05\x00")) + _chunk(b"IEND", b""))
+
+    with pytest.raises(ValueError, match="complete PNG"):
+        bridge.publish_checkpoint(worker, malformed, _Pick())
+
+    assert bridge.snapshot()["checkpoints"] == []
+
+
+def test_png_validator_rejects_large_inflated_rasters_before_decompression():
+    """A compact zlib bomb must not allocate the 240 MB permitted by pixel dimensions alone."""
+    with patch("operation_love.training_actions.zlib.decompressobj",
+               side_effect=AssertionError("large raster must not be decompressed")):
+        assert not _valid_png_idat(
+            width=3_000, height=3_000, bit_depth=16, color_type=6,
+            compression=0, filter_method=0, interlace=0, data=b"tiny")
+
+
+def test_training_checkpoint_requires_a_palette_for_indexed_png_frames():
+    """Colour type 3 needs PLTE before IDAT; zlib rows alone cannot render it."""
+    bridge, worker = TrainingActionBridge(), _Worker()
+    bridge.register(worker)
+    header = _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 3, 0, 0, 0))
+    data = _chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+    malformed = b"\x89PNG\r\n\x1a\n" + header + data + _chunk(b"IEND", b"")
+
+    with pytest.raises(ValueError, match="complete PNG"):
+        bridge.publish_checkpoint(worker, malformed, _Pick())
+
+    complete = (b"\x89PNG\r\n\x1a\n" + header + _chunk(b"PLTE", b"\x00\x00\x00")
+                + data + _chunk(b"IEND", b""))
+    checkpoint = bridge.publish_checkpoint(worker, complete, _Pick())
+    assert checkpoint["image_data_url"].startswith("data:image/png;base64,")
+
+
+def test_training_checkpoint_rejects_palette_on_grayscale_png_frames():
+    """PLTE is forbidden for grayscale types 0/4 even when its bytes and IDAT are valid."""
+    bridge, worker = TrainingActionBridge(), _Worker()
+    bridge.register(worker)
+    malformed = (b"\x89PNG\r\n\x1a\n"
+                 + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+                 + _chunk(b"PLTE", b"\x00\x00\x00")
+                 + _chunk(b"IDAT", zlib.compress(b"\x00\x00")) + _chunk(b"IEND", b""))
+
+    with pytest.raises(ValueError, match="complete PNG"):
+        bridge.publish_checkpoint(worker, malformed, _Pick())
+
+
+def test_training_checkpoint_rejects_unknown_critical_png_chunks():
+    """Uppercase chunk names are critical: a browser cannot ignore an unknown one."""
+    bridge, worker = TrainingActionBridge(), _Worker()
+    bridge.register(worker)
+    malformed = (b"\x89PNG\r\n\x1a\n"
+                 + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+                 + _chunk(b"ABCD", b"")
+                 + _chunk(b"IDAT", zlib.compress(b"\x00\x00")) + _chunk(b"IEND", b""))
+
+    with pytest.raises(ValueError, match="complete PNG"):
+        bridge.publish_checkpoint(worker, malformed, _Pick())
+
+
+@pytest.mark.parametrize("chunk_type", [b"a1cd", b"abcd"])
+def test_training_checkpoint_rejects_malformed_png_chunk_types(chunk_type):
+    """Chunk type bytes must be ASCII letters and retain PNG's uppercase reserved bit."""
+    bridge, worker = TrainingActionBridge(), _Worker()
+    bridge.register(worker)
+    malformed = (b"\x89PNG\r\n\x1a\n"
+                 + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+                 + _chunk(chunk_type, b"")
+                 + _chunk(b"IDAT", zlib.compress(b"\x00\x00")) + _chunk(b"IEND", b""))
+
+    with pytest.raises(ValueError, match="complete PNG"):
+        bridge.publish_checkpoint(worker, malformed, _Pick())
+
+
+def test_training_checkpoint_rejects_a_truecolor_palette_with_over_256_entries():
+    """Truecolour's 16-bit depth does not expand PNG PLTE beyond its fixed 256 entries."""
+    bridge, worker = TrainingActionBridge(), _Worker()
+    bridge.register(worker)
+    malformed = (b"\x89PNG\r\n\x1a\n"
+                 + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 16, 2, 0, 0, 0))
+                 + _chunk(b"PLTE", b"\x00\x00\x00" * 257)
+                 + _chunk(b"IDAT", zlib.compress(b"\x00" + b"\x00" * 6))
+                 + _chunk(b"IEND", b""))
+
+    with pytest.raises(ValueError, match="complete PNG"):
+        bridge.publish_checkpoint(worker, malformed, _Pick())
 
 
 def test_training_checkpoint_refuses_unregistered_worker_instead_of_stranding_card():

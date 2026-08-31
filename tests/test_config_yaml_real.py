@@ -63,7 +63,12 @@ def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
 def test_shipped_config_uses_training_until_live_auto_release_is_renewed(cfg):
     assert cfg.enabled_apps == ["hinge"] and cfg.mode == "training"
     assert cfg.limits == {}
-    assert cfg.apps["hinge"]["touch_backend"] == "uhid"
+    # 2026-08-28: shipped on the persistent transport after a live A/B through the real
+    # driver (284s -> 200s on one profile, 143 gestures, zero non-delivery). Both genuine
+    # UHID transports are acceptable here; the degraded constant-pressure `adb` one is not,
+    # and that is the property this line exists to defend.
+    assert cfg.apps["hinge"]["touch_backend"] == "uhid_persistent"
+    assert cfg.apps["hinge"]["touch_backend"] in {"uhid", "uhid_persistent"}
     assert "auto_trial" not in cfg.apps["hinge"]
     evidence = cfg.apps["hinge"]["observe_release_evidence"]
     assert evidence["production_run_id"] == "d8547ff144b4"
@@ -127,6 +132,13 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "shared context rule" in style
     assert "displayed directly under the exact photo or prompt it attaches to" in style
     assert "write like two people looking at the same thing" in style
+    assert "primary item rule" in style
+    assert "clear main subject of the referenced note, angle, and opener" in style
+    assert "unnumbered context image as supporting context" in style
+    assert "connection back to the selected item" in style
+    assert "justify why the selected item was liked" in style
+    assert "reason, subject, or payoff" in style
+    assert "not let another image replace the selected item" in style
     assert "photo header rule" in style
     assert "title, caption, or prompt printed with a photo is part of that same item" in style
     assert "defines how the photo is meant to be read" in style
@@ -151,6 +163,10 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "what effort it took, or whether she pursued a goal" in style
     assert "a hedge does not rescue a far fetched premise" in style
     assert "ownership, employment, a routine, a responsibility, or a relationship" in style
+    assert "safety and dignity" in style
+    assert "never infer, tease, or pose a forced choice about self harm, suicide" in style
+    assert "a bridge, height, water, travel scene, or recognized location is never evidence" in style
+    assert "that she jumped or considered jumping" in style
     assert "traceability test" in style
     assert "for any inference, she should instantly see which visible or stated clue" in style
     assert "if the path from clue to inference needs an explanation" in style
@@ -324,6 +340,9 @@ def test_hinge_identity_top_name_band_matches_the_measured_ocr_band(cfg):
     band = cfg.apps["hinge"].get("identity_top_name_band")
     assert band is not None, "apps.hinge.identity_top_name_band is missing from config.yaml"
     assert tuple(band) == (0.03, 0.130, 0.75, 0.250)
+    fallback = cfg.apps["hinge"].get("identity_top_name_fallback_band")
+    assert fallback is not None, "apps.hinge.identity_top_name_fallback_band is missing"
+    assert tuple(fallback) == (0.03, 0.130, 0.75, 0.235)
 
 
 def test_normal_auto_is_uncapped_by_default(cfg):

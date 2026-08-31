@@ -28,6 +28,7 @@ from operation_love.opener.opener import (
     OpenerParseError,
     OpenerResult,
     REASON_SCAFFOLDING,
+    REASON_SENSITIVE_INFERENCE,
     REASON_TOO_MANY_SENTENCES,
     REASON_UNDELIVERABLE_CHARS,
     REASON_UNDELIVERABLE_SEQUENCE,
@@ -39,6 +40,7 @@ from operation_love.opener.opener import (
     _sanitize,
     _scaffolding_markers,
     _sentence_count,
+    _sensitive_inference_markers,
     _strip_wrapping_quotes,
 )
 from operation_love.costing import Usage
@@ -454,6 +456,22 @@ def test_sentence_count_basic_cases():
     assert _sentence_count("One. Two? Three!") == 3
 
 
+def test_sensitive_inference_guard_catches_the_reported_bridge_jump_angle_only():
+    """A bridge photo is not evidence of a jump or a willingness to take one.
+
+    The production prompt makes that evidence rule explicit. This tiny deterministic guard is
+    the final pre send backstop for the reported wording, and intentionally stays narrower than
+    a ban on all sport vocabulary so explicit, benign profile activities remain possible.
+    """
+    reported = ("Did you work up the courage to jump or were you happy just taking in "
+                "the scenery?")
+    assert _sensitive_inference_markers(reported) == ["courage to jump"]
+    assert _sensitive_inference_markers("Did you jump from the bridge?") == [
+        "asking whether she jumped", "jumping from a height"]
+    assert _sensitive_inference_markers("Your paragliding story sounds unforgettable.") == []
+    assert _sensitive_inference_markers("That bridge is beautiful.") == []
+
+
 def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap():
     """_SYSTEM is sent verbatim by GeminiOpener (see test_gemini_opener.py's request-shape
     assertions); its actual wording is checked here directly, once, independent of any
@@ -518,9 +536,20 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "playful hyperbole" in lowered
     assert "unmistakably nonliteral exaggeration is allowed" in lowered
     assert "does not license presenting an invented motive, circumstance, or event as literal fact" in lowered
+    assert "safety and dignity" in lowered
+    assert "never infer, tease, or pose a forced choice about self harm, suicide" in lowered
+    assert "a bridge, height, water, travel scene, or recognized location is never evidence" in lowered
+    assert "that she jumped or considered jumping" in lowered
     assert ("shared context rule: your message is displayed directly under the exact photo "
             "or prompt it attaches to") in lowered
     assert "she is looking at that item while she reads your words" in lowered
+    assert "primary item rule" in lowered
+    assert "clear main subject of referenced, angle, and opener" in lowered
+    assert "unnumbered context image as supporting context" in lowered
+    assert "connection back to the selected item" in lowered
+    assert "justify why the selected item was liked" in lowered
+    assert "it supplies the reason, subject, or payoff" in lowered
+    assert "do not let another image replace the selected item" in lowered
     assert "photo header rule" in lowered
     assert "title, caption, or prompt printed with a photo is part of that same item" in lowered
     assert "defines how the photo is meant to be read" in lowered
@@ -662,13 +691,14 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "all that is left to write is what it looks like" in lowered
     assert "never enough as the final point" in lowered
 
-    # --- THE CONTEXT TIER, described rather than merely permitted (doc 5.3). The unnumbered
-    # block is her vitals, confirmed from a live capture to carry no like heart, so it is
-    # referenceable and unpickable. Saying only "you may not pick it" would leave the strongest
-    # use of the strongest move (doc 2.3: combining two things she said in different places,
-    # which nobody who read one card could have written) unstated.
+    # --- THE CONTEXT TIER. An unnumbered image can support a connection, but the selected
+    # numbered item must remain the clear main subject rather than a route to another target.
     assert "usually her vitals: her age, her job, her school, her city" in lowered
-    assert "set against a numbered item, is often the best angle on the page" in lowered
+    assert "or another unnumbered profile image" in lowered
+    assert "use what it shows to support a connection" in lowered
+    assert "selected numbered item must remain the opener's clear main subject" in lowered
+    assert "every context connection must lead back to it" in lowered
+    assert "never make an unnumbered image the opener's main premise, reason for the like, subject, or payoff" in lowered
     assert "item_index can never refer to it" in lowered
     # The replaced field is gone from the copy entirely, along with the index space it named:
     # doc 5.7 calls out that both the field and "every line of prompt copy saying scroll order"
@@ -1046,6 +1076,37 @@ def test_generate_raises_parse_error_on_scaffolded_opener():
     assert exc.value.raw_opener == "Here's the response: Great ocean, where was this taken?"
 
 
+def test_generate_rejects_the_reported_courage_to_jump_inference_before_send():
+    payload = _gemini_response({
+        "opener": ("Did you work up the courage to jump or were you happy just taking in "
+                   "the scenery?"),
+        "referenced": "a bridge in a travel photo", "item_index": 1,
+    })
+    with pytest.raises(OpenerParseError, match="sensitive dangerous activity") as exc:
+        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    assert exc.value.reason_code == REASON_SENSITIVE_INFERENCE
+    assert exc.value.raw_opener == (
+        "Did you work up the courage to jump or were you happy just taking in the scenery?")
+
+
+def test_sensitive_inference_is_retried_and_a_grounded_second_attempt_succeeds():
+    bad = _gemini_response({
+        "opener": "Did you work up the courage to jump from the bridge?",
+        "referenced": "a bridge in a travel photo", "item_index": 1,
+    })
+    clean = _gemini_response({
+        "opener": "That view looks like it was worth the trip.",
+        "referenced": "a bridge in a travel photo", "item_index": 1,
+    })
+    client = _opener(_Transport([(200, bad), (200, clean)]))
+    service = OpenerService(client, _NeverBudgetTracker(), _DiscardingStore(), "casual")
+
+    pick = service.maybe_opener("r", "hinge", Profile(photos=[b"a"]))
+
+    assert pick is not None
+    assert pick.text == "That view looks like it was worth the trip."
+
+
 def test_scaffolded_opener_is_retried_by_the_service_and_a_clean_second_attempt_succeeds():
     """Same end-to-end shape as test_emoji_opener_is_retried_by_the_service... above, for the
     scaffolding-text guard: a first attempt whose opener field contains a leaked preamble
@@ -1107,7 +1168,7 @@ def test_generate_returns_a_redundant_opener_unchanged_and_records_the_markers(c
     out = capsys.readouterr().out
     assert "redundancy monitor" in out
     assert 'opener restates the referenced word "sauna"' in out
-    assert "the opener is being sent" in out
+    assert "delivery has not been decided at this parsing stage" in out
 
 
 def test_a_clean_opener_carries_no_redundancy_markers(capsys):

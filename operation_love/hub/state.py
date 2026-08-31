@@ -22,6 +22,26 @@ from ..training_actions import TrainingActionBridge
 _BROWSER_CLIENT_STALE_S = 120.0
 _CLOSED_BROWSER_CLIENT_TTL_S = 30.0
 _EVAL_COLD_WAIT_S = 60.0  # bound on a cold-eval waiter so a dead computer thread can't hang it
+
+
+_MAX_BROWSER_CLIENT_ID_LENGTH = 128
+
+
+def validate_browser_client_id(value: object) -> tuple[bool, str | None, str | None]:
+    """Validate the opaque per-tab identifier accepted by the liveness API.
+
+    Browser IDs are dictionary keys for the lifetime of the page. Rejecting malformed and
+    needlessly large values prevents unhashable JSON values from becoming handler errors and
+    bounds the memory retained by a local client that never closes its tab.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return False, None, "browser client id must be a non-empty string"
+    if len(value) > _MAX_BROWSER_CLIENT_ID_LENGTH:
+        return False, None, (
+            f"browser client id must not exceed {_MAX_BROWSER_CLIENT_ID_LENGTH} characters")
+    return True, value, None
+
+
 def validate_max_per_run(value: object) -> tuple[bool, int | None, str | None]:
     """Normalize the optional Hub run-cap override without coercing malformed JSON.
 
@@ -115,6 +135,10 @@ class HubState:
         self._closed_browser_clients: dict[str, float] = {}
         self._browser_shutdown_requested = False
         self._browser_stale_watch_active = False
+        # Storage mutations run outside this lock because they may involve BigQuery. This flag
+        # serializes them with start(), so persisted labels cannot change underneath a newly
+        # created in-memory model.
+        self._training_data_mutating = False
         self._training_actions = TrainingActionBridge()
 
     def is_running(self) -> bool:
@@ -136,6 +160,8 @@ class HubState:
         with self._lock:
             if self.is_running():
                 return False, "a run is already active"
+            if self._training_data_mutating:
+                return False, "training data is being updated — wait for it to finish before starting"
             if apps is not None and len(apps) == 0:
                 # chosenApps() sends [] when every app checkbox is unchecked. The shared
                 # supervisor gate also rejects this, but the Hub can give the owner a clearer
@@ -351,7 +377,8 @@ class HubState:
 
     def browser_client_opened(self, client_id: str | None) -> bool:
         """Mark a hub page as alive. Return True when a stale-client watch should start."""
-        if not client_id:
+        valid, client_id, _error = validate_browser_client_id(client_id)
+        if not valid or client_id is None:
             return False
         now = time.monotonic()
         with self._lock:
@@ -371,7 +398,8 @@ class HubState:
 
     def browser_client_closed(self, client_id: str | None) -> bool:
         """Return True once, when the last known hub page has gone away."""
-        if not client_id:
+        valid, client_id, _error = validate_browser_client_id(client_id)
+        if not valid or client_id is None:
             return False
         now = time.monotonic()
         with self._lock:
@@ -383,6 +411,15 @@ class HubState:
             self._browser_stale_watch_active = False
             self._browser_shutdown_requested = True
             return True
+
+    def browser_stale_watch_start_failed(self) -> None:
+        """Release the stale-watch claim after its watcher thread could not start.
+
+        The next heartbeat can then retry. Otherwise the live page would be permanently marked
+        as watched, while a dropped close beacon could leave the local hub running forever.
+        """
+        with self._lock:
+            self._browser_stale_watch_active = False
 
     def has_browser_clients(self) -> bool:
         with self._lock:
@@ -474,6 +511,9 @@ class HubState:
         with self._lock:
             if self.is_running():
                 return False, "stop the active run before changing training data"
+            if self._training_data_mutating:
+                return False, "a training-data change is already in progress"
+            self._training_data_mutating = True
         try:
             from ..ranker import make_store
             cfg = cfg_mod.load(self.config_path)
@@ -489,6 +529,9 @@ class HubState:
             return True, result
         except Exception as exc:  # noqa: BLE001 - surface storage errors to the local operator
             return False, f"{type(exc).__name__}: {exc}"
+        finally:
+            with self._lock:
+                self._training_data_mutating = False
 
     def remove_latest_training_label(self) -> tuple[bool, dict | str]:
         ok, result = self._training_store_mutation("remove_latest_training_label")
@@ -692,7 +735,9 @@ class HubState:
                 # _attach_refresh, which would break eval_snapshot's "never raises" contract.
                 cached = {"status": "error", "message": "eval computation did not complete",
                           "labels": None, "identities": None, "folds": 0,
-                          "roc_auc": None, "pr_auc": None, "brier": None, "base_rate": 0.0}
+                          "roc_auc": None, "pr_auc": None, "brier": None, "base_rate": 0.0,
+                          "like_threshold": None, "accepted_recall": None,
+                          "false_dislike_rate": None, "confusion": None}
             return self._attach_refresh(cached, every, live, computed_at, status,
                                         training=self._live_training_mix(status))
         try:
@@ -715,7 +760,14 @@ class HubState:
                 with self._lock:
                     self._eval_refreshing = False
 
-        threading.Thread(target=_target, name="hub-eval-refresh", daemon=True).start()
+        try:
+            threading.Thread(target=_target, name="hub-eval-refresh", daemon=True).start()
+        except Exception:  # noqa: BLE001 — preserve eval_snapshot's never-raise contract
+            # A failed Thread.start() runs none of _target's finally block.  Clear this guard
+            # ourselves so a transient resource failure does not make every later eval request
+            # believe a refresh is still running forever.
+            with self._lock:
+                self._eval_refreshing = False
 
     def _compute_eval_snapshot(self, every: int) -> dict:
         with self._lock:
@@ -743,9 +795,13 @@ class HubState:
                 finally:
                     store.close()
                 live_store = None                        # don't reuse a dead store for the chart
-            result = evaluate(samples)
-            result["trajectory"] = self._eval_trajectory(cfg, samples, result, every,
-                                                         live_store if running else None)
+            # This evaluates the ranker's configured base threshold. The stored dataset has
+            # labels and embeddings, but not the live profile/session state required to replay
+            # AutoSessionPolicy's additional conservative demotions, so this result is useful
+            # baseline evidence rather than an AUTO release decision.
+            ranker_cfg = getattr(cfg, "ranker", None)
+            like_threshold = getattr(ranker_cfg, "like_threshold", 0.5)
+            result = evaluate(samples, like_threshold=like_threshold)
             training = self._training_mix(samples)
             # Gate baseline must use the SAME counter the gate compares against: the live
             # swipe counter (status.labels), not len(samples). Using len(samples) would lag
@@ -754,7 +810,9 @@ class HubState:
         except Exception as exc:  # noqa: BLE001
             result = {"status": "error", "message": f"{type(exc).__name__}: {exc}",
                       "labels": None, "identities": None, "folds": 0,
-                      "roc_auc": None, "pr_auc": None, "brier": None, "base_rate": 0.0}
+                      "roc_auc": None, "pr_auc": None, "brier": None, "base_rate": 0.0,
+                      "like_threshold": None, "accepted_recall": None,
+                      "false_dislike_rate": None, "confusion": None}
             computed_at = live if live is not None else base
             training = None
         with self._lock:

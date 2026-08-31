@@ -350,6 +350,26 @@ def test_select_touch_device_skips_renamed_persistent_uhid_by_device_identity():
     assert (dev_path, name, x_max, y_max) == ("/dev/input/event3", "goodix_ts0", 1079, 2399)
 
 
+def test_select_touch_device_rejects_indirect_multitouch_hardware():
+    # An indirect touchpad can expose the same X/Y axes as the display. It cannot corroborate
+    # a physical tap on the phone, so selection must require Android's direct-touch property.
+    indirect = """\
+add device 0: /dev/input/event0
+  name:     "usb-touchpad"
+  events:
+    KEY (0001): 014a
+    ABS (0003): 0035  : value 0, min 0, max 1079, fuzz 0, flat 0, resolution 0
+                0036  : value 0, min 0, max 2399, fuzz 0, flat 0, resolution 0
+  input props:
+    <none>
+"""
+
+    dev_path, name, x_max, y_max = touchwatch.select_touch_device(
+        indirect + _GETEVENT_P_TRANSCRIPT[_GETEVENT_P_TRANSCRIPT.index("add device 3:"):])
+
+    assert (dev_path, name, x_max, y_max) == ("/dev/input/event3", "goodix_ts0", 1079, 2399)
+
+
 def test_select_touch_device_skips_renamed_legacy_uhid_by_capability_profile():
     """The older four-axis project descriptor is equally synthetic under an arbitrary name."""
     dev_path, name, _, _ = touchwatch.select_touch_device(

@@ -972,6 +972,75 @@ evidence without calling `_record_still_photo_dwell`, so only the base candidate
 preserved. Every base and walked burst/probe action now carries its page-heart ordinal(s), and
 each walked candidate writes the same per-frame digests and summary as the base path.
 
+## 5j. Addendum 2026-08-27: the walk died on its FIRST hop over a 1px overshoot, and that is what left doc 5.6 on its weakest bound
+
+§5d called numbering breadth "the whole remaining problem" and §5f built the K-candidate walk to
+fix it. On 2026-08-27 a live run showed the walk giving that breadth straight back, and the cost
+landed somewhere §5d did not anticipate: not on the model's choice, but on the SAFETY MARGIN of
+the post-tap verification that gates the like.
+
+**What happened.** The affected profile had 9 heart-bearing cards, 6 confidently photographic,
+and a budget of 3.
+The walk's first candidate (page heart 8) refused with `scroll_overshot`, the walk abandoned, and
+exactly ONE card — the free one the read had parked on — ended up numbered. Five photographic
+cards went unnumbered under `EXCLUSION_NEVER_DWELLED`, which is honest ("a coverage gap, not a
+judgement") but expensive, because a one-item payload has no neighbour: `verify_sheet_item` loses
+the half-nearest-neighbour separation proof and falls back to the held-out one-item ceiling.
+Measured on that exact profile and its live sheet: **bound 37.506 with a second numbered item,
+against 7.000 with one.** The run then halted on a verification refusal (see OPENER-REDESIGN.md's
+2026-08-27 addendum for that separate, and genuinely different, root cause).
+
+**Two independent defects, both now fixed.**
+
+**(1) The refusal should never have ended the walk.** `item_nav` handed back a measured
+`NavigationRecovery`, the driver walked the phone back, and
+`_return_to_entry_from_measured_position` VERIFIED the restore at +0px — the chained legs landed
+inside the entry gate *and* a direct re-measurement against the entry frame agreed with them.
+That is not "probably fine"; it is bit-for-bit the same acceptance test a SUCCESSFUL hop's own
+return leg has to pass before the loop continues past it. Stopping there was over-conservative,
+not safe. The walk now continues after a verified restore, bounded by
+`_STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET = 2` — a budget kept separate from
+`_STILL_PHOTO_WALK_SKIP_SLACK` because a below-entry skip spends no gestures while one of these
+has already paid for a climb and a return leg. An UNVERIFIED return still abandons immediately,
+unchanged. The refused ordinal itself stays refused: never dwelt, never retried, never
+substituted.
+
+**(2) The planner was drawing steps that sat exactly on the refusal line.**
+`cap_px = min(bound_px, _MAX_STEP_PX)`, so whenever the ceiling does not bind the top of the draw
+window IS `bound_px`, and `randint` is inclusive — the planner could legally command precisely the
+distance `step_overshoot` refuses one pixel above. Measured: simulating the real planner 20,000
+times at the live geometry (spacing 1027px tightened to 646px, bound 232px, window 219..232px),
+**7.27% of draws land exactly on the bound** and 14.39% within a pixel of it. Across all 33
+recorded on-device runs — 147 walk hops, 135 proved — **both** structured `scroll_overshot`
+refusals had `planned_step_px == bound_px == 232`, over-delivering by +1px and +3px. Not once did
+one occur at a step drawn below the bound. `plan_scroll_step` now reserves
+`_STEP_DELIVERY_JITTER_PX = 3` of headroom under the ceiling (at most half the window, so a narrow
+window keeps its jitter rather than collapsing to a constant distance the owner's randomization
+rule forbids, and says so in its reason string when it has to clip).
+
+One subtlety that is easy to undo by accident, so it is written down here as well as in the code:
+the post-draw walk-down loop clamps at the DRAW cap, not at the hard cap. The frac round-trip
+(`step_px_for_frac(frac_for_step_px(target))`) can come back +1px — measured, for 3 of the 230
+targets in 150..379px on the calibrated 2400px screen — so clamping at `cap_px` would hand a whole
+pixel of the reservation straight back and leave 2px of real headroom, which is UNDER the +3px
+over-delivery actually observed. `tests/test_scroll_step.py` pins this over every drawable target
+rather than over a sample, because the round-up affects only a handful of specific targets and a
+seeded sample can miss all of them.
+
+**What was NOT done, deliberately.** The aliasing bound itself is untouched, and `step_overshoot`
+still judges the DELIVERED step against it at the same strict `>`. This does not widen a safety
+margin; it stops the planner asking for a distance that left no room for delivery variance the
+module already documents ("a fling that carries"), and which `frameshift`'s own
+`_AGREEMENT_TOLERANCE_PX = 3` and its ±1.5px capture-to-capture corpus jitter both independently
+put at about this size. Under-delivery remains the safe direction, so the few pixels cost
+coverage-per-stroke and nothing else. Planning stays open-loop: this is a fixed property of the
+transport, never a reading of what the last stroke delivered.
+
+**Still true, and still the honest limit:** budget 3 against 6 photographic cards still numbers at
+most 3. Fixing the walk restores the breadth §5f intended, not more of it. What it reliably buys
+is the SECOND numbered item, and the second item is what turns doc 5.6's bound back into a
+separation proof instead of a two-sample ceiling.
+
 ## 6. Plan B (documented, not chosen)
 
 If held-out video accepts never reach zero, the honest fallback is to change the

@@ -359,3 +359,152 @@ def test_run_id_must_be_a_single_leaf_and_cannot_escape_base_dir(tmp_path):
 
     assert not base.exists()
     assert stat.S_IMODE(outside.stat().st_mode) == 0o755
+
+
+# --- cross-run retention (2026-08-28) ---------------------------------------------------
+# Per-run screenshot caps were always bounded; the NUMBER of runs never was, and
+# data/hinge_debug reached 274 runs / 12GB. These pin the narrow candidate rule, because the
+# operation is an irreversible rmtree of an operator's diagnostics.
+
+def _run_dir(base, name, *, mtime, actions=True):
+    d = base / name
+    d.mkdir(parents=True, exist_ok=True)
+    if actions:
+        (d / "actions.jsonl").write_text('{"action":"x"}\n')
+    (d / "00001_shot_before.png").write_bytes(b"png")
+    import os
+    os.utime(d, (mtime, mtime))
+    return d
+
+
+def test_debug_log_keeps_only_the_newest_runs(tmp_path):
+    base = tmp_path / "hinge_debug"
+    old = [_run_dir(base, f"run_{i:03d}", mtime=1_000 + i) for i in range(5)]
+
+    HingeDebugLog(str(base), run_id="run_current", keep_runs=2)
+
+    survivors = sorted(d.name for d in base.iterdir() if d.is_dir())
+    # ``keep_runs`` counts all normal run directories, including the active run.
+    assert survivors == ["run_004", "run_current"]
+    assert not old[0].exists() and not old[1].exists() and not old[2].exists() and not old[3].exists()
+
+
+def test_debug_log_never_prunes_the_run_it_is_writing(tmp_path):
+    """A RESTART re-enters an existing run id, so the current dir already has actions.jsonl.
+
+    That is the case where the "not one of ours" filter cannot help and the explicit
+    current-run check is the only thing standing between a restart and deleting its own
+    evidence. Every prior run here is deliberately NEWER, so a naive "keep the newest N"
+    would choose the current run for deletion.
+    """
+    base = tmp_path / "hinge_debug"
+    resumed = _run_dir(base, "run_current", mtime=1_000)     # older, and already has a log
+    (resumed / "actions.jsonl").write_text('{"action":"from_the_first_attempt"}\n')
+    for i in range(4):
+        _run_dir(base, f"run_{i:03d}", mtime=9_000_000 + i)
+
+    log = HingeDebugLog(str(base), run_id="run_current", keep_runs=1)
+    log.action("probe")
+
+    assert log.dir.exists()
+    text = (log.dir / "actions.jsonl").read_text()
+    assert "from_the_first_attempt" in text      # the restarted run's history survived
+    assert "probe" in text
+
+
+def test_debug_log_only_prunes_directories_it_wrote(tmp_path):
+    """A folder without actions.jsonl is not this logger's; an rmtree must never reach it."""
+    base = tmp_path / "hinge_debug"
+    _run_dir(base, "run_old", mtime=1_000)
+    foreign = base / "operator_notes"          # no actions.jsonl
+    foreign.mkdir(parents=True)
+    (foreign / "keepme.txt").write_text("do not delete")
+
+    HingeDebugLog(str(base), run_id="run_current", keep_runs=0 + 1)
+
+    assert foreign.exists() and (foreign / "keepme.txt").read_text() == "do not delete"
+
+
+def test_debug_log_keeps_every_run_when_unset(tmp_path):
+    base = tmp_path / "hinge_debug"
+    for i in range(6):
+        _run_dir(base, f"run_{i:03d}", mtime=1_000 + i)
+
+    HingeDebugLog(str(base), run_id="run_current")      # keep_runs omitted
+
+    assert len([d for d in base.iterdir() if d.is_dir()]) == 7
+
+
+def test_debug_log_rejects_a_nonsense_keep_runs(tmp_path):
+    with pytest.raises(ValueError, match="keep_runs"):
+        HingeDebugLog(str(tmp_path / "d"), run_id="r", keep_runs=0)
+    with pytest.raises(ValueError, match="keep_runs"):
+        HingeDebugLog(str(tmp_path / "d"), run_id="r", keep_runs="5")
+
+
+def test_debug_log_never_prunes_a_protected_run(tmp_path):
+    """Run dirs are cited from OUTSIDE themselves, and the cited one is by definition old.
+
+    config.yaml's observe_release_evidence.production_run_reference is a literal
+    data/hinge_debug/<id> path, and ops/release/<id>/ holds that run's signed artifacts.
+    Age-based retention would delete exactly that run first.
+    """
+    base = tmp_path / "hinge_debug"
+    _run_dir(base, "release_evidence", mtime=1)          # the OLDEST run on disk
+    for i in range(6):
+        _run_dir(base, f"run_{i:03d}", mtime=9_000 + i)
+
+    HingeDebugLog(str(base), run_id="run_current", keep_runs=2,
+                  protect_runs={"release_evidence"})
+
+    assert (base / "release_evidence").exists()
+    assert (base / "release_evidence" / "actions.jsonl").exists()
+    # ...and protection does not consume a retention slot: the newest prior ordinary run survives.
+    assert (base / "run_005").exists()
+    assert not (base / "run_004").exists()
+    assert not (base / "run_000").exists()
+
+
+def test_every_run_directory_a_test_depends_on_is_protected_from_retention():
+    """A test fixture must never be prunable by age. This guard is written in hindsight.
+
+    On 2026-08-28 the first cross-run retention pass deleted `run_20260811_011416` and
+    `run_20260821_163736`, both referenced by tests as local replay corpora. The tests skip
+    gracefully when the data is absent, so the suite stayed green while two real-pixel replays
+    were silently destroyed -- including the one its own docstring calls "the only test that
+    would have caught the live failure".
+
+    Age is the wrong signal for these: a historical corpus is old BY DEFINITION. This asserts the
+    static invariant instead -- anything tests/ or config.yaml names under hinge_debug must be
+    listed in debug_protect_runs (or be the derived release-evidence run) -- and it holds whether
+    or not the data currently exists, so it would have failed BEFORE that prune.
+    """
+    import re
+    from pathlib import Path
+
+    import yaml
+
+    repo = Path(__file__).resolve().parent.parent
+    cfg = yaml.safe_load((repo / "config.yaml").read_text())
+    hinge = cfg["apps"]["hinge"]
+    protected = set(hinge.get("debug_protect_runs") or ())
+    release_run = (hinge.get("observe_release_evidence") or {}).get("production_run_id")
+    if release_run:
+        protected.add(release_run)
+
+    pattern = re.compile(r'hinge_debug["\']?\s*(?:/|,)\s*["\']?([A-Za-z0-9_-]{8,})')
+    referenced: dict[str, set[str]] = {}
+    sources = list((repo / "tests").rglob("*.py")) + [repo / "config.yaml"]
+    for path in sources:
+        for match in pattern.finditer(path.read_text(errors="replace")):
+            referenced.setdefault(match.group(1), set()).add(path.name)
+
+    # Only runs that ACTUALLY EXIST can be destroyed, and that is precisely the state the
+    # 2026-08-28 prune found: present on disk, named by a test, protected by nothing. Synthetic
+    # fixture strings that never name a real directory are not a hazard and are skipped.
+    debug_dir = repo / hinge.get("debug_dir", "./data/hinge_debug")
+    unprotected = {run: sorted(where) for run, where in referenced.items()
+                   if run not in protected and (debug_dir / run).is_dir()}
+    assert not unprotected, (
+        "these run directories exist on disk and are named by tests/config, but are not in "
+        f"apps.hinge.debug_protect_runs, so retention will eventually delete them: {unprotected}")

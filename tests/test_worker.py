@@ -40,6 +40,8 @@ _LIVENESS_TIMEOUT_S = 15.0
 
 # --- fakes ---------------------------------------------------------------
 class FakeDriver(DatingAppDriver):
+    supports_interruptible_dislike = True
+
     def __init__(self, n):
         self.cards = [Profile(photos=[b"x"], bio=f"bio{i}") for i in range(n)]
         self.i = 0
@@ -72,7 +74,11 @@ class FakeDriver(DatingAppDriver):
         # and a test that cannot see which of the two arguments was used cannot tell a navigated
         # like from a capture-order one.
         self.like_model_item_indexes.append(model_item_index)
-    def dislike(self): self.dislikes += 1
+    def dislike(self, *, should_stop=None):
+        if should_stop is not None and should_stop():
+            from operation_love.drivers.base import ActionCancelled
+            raise ActionCancelled("test pass cancelled")
+        self.dislikes += 1
     def out_of_profiles(self): return self.i >= len(self.cards)
     def close(self): self.closed = True
 
@@ -834,6 +840,35 @@ def test_auto_commits_staged_opener_when_stop_arrives_after_like_lands():
     assert len(store.openers) == 1 and len(svc.recent_openers_snapshot()) == 1
 
 
+def test_auto_stop_during_opener_generation_never_starts_like_or_commits_draft():
+    """A provider result that returns after Stop is billed but cannot start a device action.
+
+    The service deliberately lets an already-on-the-wire request finish.  This pins the Worker
+    boundary that distinguishes that unavoidable provider completion from a Like: the staged
+    draft must remain absent from both the durable opener table and the diagnostics buffer.
+    """
+    stop = threading.Event()
+
+    class _StopsAfterGenerating(FakeOpenerClient):
+        def generate(self, *args, **kwargs):
+            result = super().generate(*args, **kwargs)
+            stop.set()
+            return result
+
+    driver = FakeDriver(1)
+    store = FakeStore()
+    service = OpenerService(_StopsAfterGenerating(), CostTracker(PRICING, None), store, "s")
+    Worker("bumble", driver, FakeDecider("like"), service, store, "run1", _Pacing(), stop,
+           mode="auto").run()
+
+    assert driver.likes == []
+    assert store.decisions == []
+    assert store.openers == []
+    assert service.recent_openers_snapshot() == []
+    # The request had already reached the provider, so its spend remains accountable.
+    assert len(store.spend) == 1
+
+
 def test_worker_passes_stop_callback_only_to_interruptible_like_navigation():
     driver = InterruptibleLikeDriver(1)
     store = FakeStore()
@@ -1397,7 +1432,7 @@ def test_auto_mode_handles_concrete_hinge_blocked_error_from_dislike_boundary():
         def blocked_reason(self):
             return None
 
-        def dislike(self):
+        def dislike(self, *, should_stop=None):
             raise HingeDeckBlockedError(_PAYWALL_REASON)
 
         def snapshot_failure(self, exc):
@@ -1752,6 +1787,87 @@ def test_worker_stops_before_writing_auto_decision_after_stop():
     assert store.labels == [] and store.profiles == []
     assert driver.dislikes == 0 and driver.likes == []
     assert driver.closed
+
+
+def test_auto_pass_stop_at_driver_input_boundary_is_not_landed_or_recorded():
+    """A Stop after Worker has chosen Pass still wins until the driver issues input.
+
+    This is the precise scheduling gap a worker-side `is_set()` check cannot close:
+    the driver flips Stop only after its caller entered dislike(), then observes the
+    callback before it increments the fake physical-action counter.
+    """
+    from operation_love.status import RunStatus
+
+    stop_event = threading.Event()
+
+    class _StopAtPassBoundary(FakeDriver):
+        def dislike(self, *, should_stop=None):
+            stop_event.set()
+            return super().dislike(should_stop=should_stop)
+
+    driver = _StopAtPassBoundary(1)
+    store = FakeStore()
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    service = OpenerService(None, CostTracker(PRICING, None), store, "style")
+    Worker("bumble", driver, FakeDecider("dislike"), service, store, "run1", _Pacing(),
+           stop_event, mode="auto", status=status).run()
+
+    assert driver.dislikes == 0
+    assert store.decisions == []
+    assert status.snapshot()["apps"]["bumble"]["swipes_run"] == 0
+    assert driver.closed
+
+
+def test_auto_refuses_to_pass_with_a_driver_that_cannot_honour_stop():
+    """Legacy no-argument dislike() implementations cannot silently reopen the race."""
+    from operation_love.status import RunStatus
+
+    class _LegacyPassDriver(FakeDriver):
+        supports_interruptible_dislike = False
+
+        def dislike(self):
+            self.dislikes += 1
+
+    driver = _LegacyPassDriver(1)
+    store = FakeStore()
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    service = OpenerService(None, CostTracker(PRICING, None), store, "style")
+    Worker("bumble", driver, FakeDecider("dislike"), service, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    assert driver.dislikes == 0
+    assert store.decisions == []
+    assert "Stop-safe AUTO pass" in str(status.snapshot()["apps"]["bumble"]["error"])
+
+
+def test_worker_closes_open_session_when_post_open_setup_raises():
+    """The outer worker finalizer owns a driver after open_session() returns."""
+    class _PostOpenFailure(FakeDriver):
+        accepts_opener = True
+
+        def __init__(self):
+            super().__init__(1)
+            self.close_calls = 0
+
+        def targeted_suggestion_blocker(self):
+            raise RuntimeError("live calibration probe failed")
+
+        def close(self):
+            self.close_calls += 1
+            super().close()
+
+    driver = _PostOpenFailure()
+    store = FakeStore()
+    from operation_love.status import RunStatus
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    service = OpenerService(None, CostTracker(PRICING, None), store, "style")
+    Worker("bumble", driver, FakeDecider("dislike"), service, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    assert driver.opened and driver.closed
+    assert driver.close_calls == 1
+    assert store.decisions == []
+    assert status.snapshot()["apps"]["bumble"]["state"] == "error"
 
 
 def test_auto_mode_halts_on_unexpected_even_when_a_driver_opts_out_of_halting():
@@ -2495,3 +2611,68 @@ def test_training_worker_without_hub_fails_before_opening_the_device_session():
     assert stop.is_set()
     assert driver.opened is False
     assert driver.likes == [] and driver.dislikes == 0
+
+
+def test_training_closes_the_driver_when_the_device_action_raises_unexpectedly():
+    """An unexpected error out of driver.like() in TRAINING must still tear the driver down.
+
+    Regression cover for the 2026-08-28 halt, which raised UnlocatedControlError from
+    `driver.like()`. AUTO's equivalent is already pinned
+    (test_auto_mode_halts_on_unexpected_even_when_a_driver_opts_out_of_halting); training's was
+    not, and it matters more now: since 2026-08-28 the shipped touch_backend is
+    `uhid_persistent`, whose virtual touchscreen lives for the WHOLE session and is unregistered
+    by `HingeDriver.close()`. A crash that skipped teardown would leave a real `og_touch_*`
+    input device registered on the phone, once per crashed run.
+
+    The opener pick below carries index + INDEX_SPACE_MODEL_ITEMS deliberately: without a target
+    the loop breaks at worker.py:532 BEFORE like() is ever called, and every assertion here would
+    still pass with nothing raised at all. `raised` and the error state are what make this test
+    discriminate the crash path from the clean stop.
+    """
+    from operation_love.status import RunStatus
+    from operation_love.training_actions import TrainingActionBridge
+
+    raised = []
+
+    class _BoomDriver(FakeDriver):
+        # All three are required to clear _training_loop's preflight; without them the loop
+        # returns BEFORE open_session() and this test proves nothing.
+        accepts_opener = True
+        supports_training_decision = True
+        halt_on_error = False           # even an explicit opt-out must still be closed
+
+        def set_training_decision(self, approval):
+            self._approval = approval
+
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
+            raised.append((opener, model_item_index))
+            raise RuntimeError("the training checkpoint does not show Hinge's pass control")
+
+    class _Service:                      # must name a target, or the loop stops before like()
+        disabled = False
+        stop_requested = False
+        last_skip_reason = None
+        last_skip_allows_commentless_like = False
+
+        def maybe_opener(self, *_args, **_kwargs):
+            return SimpleNamespace(text="A complete opener", index=1,
+                                   index_space=INDEX_SPACE_MODEL_ITEMS)
+
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="training")
+    driver, store, stop = _BoomDriver(1), FakeStore(), threading.Event()
+    Worker("hinge", driver, FakeDecider("like"), _Service(), store, "run1", _Pacing(), stop,
+           mode="training", status=status,
+           training_action_bridge=TrainingActionBridge()).run()
+
+    app = status.snapshot()["apps"]["hinge"]
+    assert driver.opened                        # the session really opened, so a transport exists
+    assert raised == [("A complete opener", 1)]  # like() WAS reached
+    # THE discriminating assertion. state == "error" alone is NOT enough: a driver that returns
+    # None instead of raising also halts, via worker.py:574's "training driver returned no
+    # verified Like/Dislike outcome". Only the propagated message proves the DEVICE action's own
+    # exception is what tore the session down.
+    assert app["state"] == "error"
+    assert "does not show Hinge's pass control" in str(app["error"])
+    assert stop.is_set()                        # supervisor flushes buffered data
+    assert driver.likes == []                   # nothing was recorded as sent
+    assert driver.closed                        # <-- the persistent virtual touchscreen is released

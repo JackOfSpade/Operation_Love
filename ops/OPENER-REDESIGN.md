@@ -3778,3 +3778,457 @@ release evidence for the renewed calibration. This is not the `targeting` state:
 reserved for the later case where an opener already exists but cannot be attached to its selected
 item. The generic `opener` state now means **"could not prepare a safe opener"** rather than
 incorrectly implying capacity exhaustion.
+
+#### Addendum — 2026-08-27: "the signature has one entry point" was not enough, and a correct like sheet was refused
+
+The claim in 5.6 above — that a verification pass is safe once it calls `signature_of` — is
+**wrong, and it cost a live training run**. One entry point guarantees one *decoder*. It does not
+guarantee one *grey space*, because the two sides of the comparison were never decoding the same
+bytes.
+
+`item_crops._crop_image` stores the model's image as a colour re-encode of the frame. Verification
+then had to window that image at many heights for the inline reframe sweep, which the single fixed
+stored signature cannot answer, so `item_verify._decode_crop` grey-decoded `crop.image` — and
+argued in its own docstring that this was safe because it was byte for byte the call
+`signature_of` makes. It was the same call on a different PNG.
+
+**The operative difference is one ancillary chunk.** An Android screencap carries an `sRGB` chunk;
+`cv2.imencode` writes none. OpenCV's `IMREAD_GRAYSCALE` is sRGB-aware, so identical RGB samples
+grey differently depending on whether the chunk is there. Re-inserting it into the re-encode makes
+the two decodes **bit-identical** again, which is what identifies the chunk rather than the alpha
+channel or the choice of conversion formula as the cause.
+
+Measured on the live Pixel 7a (Hinge 10.1.0, profile "Tina", heart 9): the two paths differ by
+4.35 grey levels on average and 64 at the worst pixel. On that card — a dark, heavily saturated
+neon photo, which is where the two greys diverge most — the gap was 10.158 at the 64x64
+verification grid. The correct sheet therefore measured **10.283 against the 7.00 one-item
+ceiling** and the run halted with the sheet open and the opener untyped. Against the same live
+frame after the fix, the correct card measures **0.167** and the reciprocal wrong card still
+measures **73.965**, so nothing about wrong-card rejection was traded away.
+
+Note what this does NOT say: no calibrated bound moved. `_INLINE_COMPOSER_ONE_ITEM_MAX_DIST`,
+`_SHEET_RENDER_DRIFT` and the configured `inline_item_max_dist` are all unchanged. The distances
+they were fitted against were inflated by this bias, so removing it makes every existing ceiling
+more conservative, never looser. They are now loose rather than tight, and re-fitting them is a
+separate measurement on a corpus of real device frames — not something to do while fixing this.
+
+What ships:
+
+* `ItemCrop.verify_image` — the same rows as `image`, as a lossless 8-bit greyscale PNG cut from
+  the frame's own `IMREAD_GRAYSCALE` decode. Colour type 0, so it decodes back bit for bit with no
+  colour conversion left in the path to disagree about. `image` is untouched and still what the
+  model is sent.
+* `item_verify._check_reference_provenance` — the reference must reduce back to the signature
+  `item_crops` stored for the same rows at the same grid. Expected value 0.000. **Fails closed**,
+  because a wrongly-scaled distance is indistinguishable from an honest one by inspection, which
+  is exactly why it has to be asserted rather than trusted.
+* A verification refusal now records `reason` (which bound regime fired), the per-item comparison
+  table, the preview's derivation and the composer rects, and the bug report renders them. The
+  original report printed "10.283 against 7.000" and nothing else, which is indistinguishable from
+  a genuine wrong-item tap.
+
+**The lesson for future fixtures, and it is the uncomfortable one: no synthetic frame in this repo
+can reproduce this fault.** Every painted PNG here is written by `cv2.imencode`, so neither side
+carries an `sRGB` chunk and both paths agree. The full suite was green throughout — 4147 tests —
+while a live run refused a correct card. The regression test injects the chunk by hand. When a
+live run disagrees with a green corpus, suspect the device's own encoding before the geometry.
+
+#### Addendum — 2026-08-28: three defects in the bidirectional preview walk, found by auditing the fix above
+
+The 2026-08-27 grey-space fix shipped alongside an in-progress change that made
+`_extend_inline_preview_to_block_edges` walk the preview's edges in BOTH directions rather than
+only downward. Auditing that change found three defects. All three are fixed; two are
+mutation-tested, and the third is a docstring that was actively misleading.
+
+**1. A foreign card with one pale edge could be welded onto the preview.** `row_support` required
+a row to be at least `minimum_width` wide and aligned on ONE edge, and never bounded the opposite
+edge. An ordinary profile card at x=53..1027 is correctly rejected — both alignment tests miss by
+42px against 27px of slack — but a card whose leading columns are pale enough to read as page
+background reports a span that STARTS on the preview's own x0 and still runs 42px past its x1, and
+that row passed every test. Measured on the real 00097 composer frame with a pale-left card
+painted at rows 110..232: a 236..1092 preview welded to **110..1092**, turning `verify_match` into
+`verify_mismatch`. Both polarities reproduce. Fixed by requiring column containment
+(`span[0] >= preview.x0 - slack and span[1] <= preview.x1 + slack`) in both support branches;
+`slack` already existed, no new constant. A genuine row of THIS photo cannot extend past the
+photo's own columns, so containment costs nothing legitimate.
+
+This one is worth dwelling on because the obvious test does not catch it: the repo's existing
+"reviewer scrolled a card above" fixture paints its upper card OPAQUE across the full card width,
+which the alignment tests reject — so it never reached the upward walk at all and proved nothing
+about it. The regression test paints the pale-edge variant, in both polarities.
+
+**2. The bridged-seam budget was summed across both directions and tested against the
+single-direction bound.** One legal 3-row seam below plus a single bridged row above pushed
+`bridged_runs` to 2, discarded the WHOLE extension, and produced exactly the false-refusal class
+this walk exists to prevent. Fixed by judging each edge against the budget independently and
+discarding only the offending edge, which restores HEAD's downward behaviour byte for byte and
+holds the new upward direction to the identical rule. **This is not a widening of the seam**, and
+the distinction matters: what stops the walk reaching a different block is
+`_INLINE_PREVIEW_MAX_INTERNAL_GAP_PX` as a cap on CONSECUTIVE unsupported rows (unchanged, so a
+four-row gap is still a hard boundary in both directions) plus the containment from (1). Two
+three-row seams do not add up to permission to cross a four-row one.
+
+**3. A false sentence in the docstring, deleted rather than reworded.** "A no-op after
+`_locate_inline_composer_preview`, which already scans at this same width floor and therefore
+already ends at a background row." Both halves are false: that locator scans at 0.78 while the
+walk continues at the lower one-edge 0.74 floor, so on this module's own Lauren fixture the
+locator returns 713..1092 and the walk carries the top edge 477 rows up to 236, terminating on a
+row that still holds a 661px span. At HEAD the sentence named `_locate_inline_compact_preview` — a
+function that does not exist — which at least made it obviously stale; the rename swapped in the
+real name and left the false substance, laundering a dead sentence into a believable one. These
+docstrings are the calibration record, so a claim that cannot be reproduced is removed.
+
+**Also fixed, and it is the reason this took as long as it did:** the driver's own stop message
+printed "intended model item 1, actual 1", which reads as nonsense. Two different faults wear that
+exception — `nearest != intended` is a real targeting miss, `nearest == intended` is the right
+card refused by its bound, i.e. a measurement/calibration problem and a candidate FALSE REFUSAL.
+They now print as different sentences.
+
+#### Addendum — 2026-08-28: the one-item ceiling is re-fitted 7.00 → 3.00, and this one IS a threshold change
+
+Stated plainly, because the previous two addenda were careful to say that no calibrated bound
+moved: **this one moves a bound.** It is not disguised as a bug fix.
+
+The reason it has to move is that `_INLINE_COMPOSER_ONE_ITEM_MAX_DIST = 7.00` was fitted in units
+that no longer exist. Its justification was two held-out inline renders at 3.729 (Shai) and 6.703
+(Malaika) — and **both of those figures were decode bias, not render penalty.** They were measured
+while the crop reference was recovered from a colour re-encode that had lost the device PNG's
+`sRGB` chunk, i.e. through the exact defect the 2026-08-27 addendum above describes. The frames
+behind them are not preserved, so that is inference rather than re-measurement; the replacement is
+not.
+
+**Measured 2026-08-28**, over every recoverable like-sheet verification in `data/hinge_debug` —
+148 sheets across 17 runs, each re-verified through the real
+`verify_sheet_item` / `_compare_item` / `locate_inline_composer` path, and validated by
+reproducing production's own logged 10.283:
+
+| population | n | min | median | p90 | max |
+|---|---|---|---|---|---|
+| correct card, corrected space | 148 | 0.068 | 0.249 | 0.963 | **1.380** |
+| correct card, defective space | 148 | 0.733 | 1.969 | — | 10.283 |
+| foreign card, cross-profile | 218 | **40.823** | 70.535 | — | 111.698 |
+
+Two things fall out of that table beyond the ceiling itself. First, **9 of 148 correct sheets
+(6.1%) measured at or above 7.00 in the defective space** — the 2026-08-27 halt was one of nine,
+not a one-off, and the grey-space fix retires all nine. Second, a 219th cross pair scored 0.174;
+it was hand-checked against the images and is the **same profile captured in two different runs**,
+so it is a correct match and is excluded from the foreign set rather than kept as a flattering
+minimum. It is also independent evidence that the check works across sessions.
+
+**3.00** sits 2.17× above the worst of 148 real correct readings and 13.6× below the nearest real
+foreign card, and refuses none of the 148. The point of moving it is NOT reject power against a
+different card — 7.00 already had 5.8× of that against a population whose minimum is 40.8. It is
+that in the one-item regime this ceiling is also the **only test of whether the reading is
+trustworthy at all**, there being no separation proof to fall back on. At roughly 0.7–0.9 grey
+levels per pixel of preview-rect error, 7.00 accepts a preview mislocated by about 8px; 3.00
+accepts about 2px, against the ±1px actually observed.
+
+**Why this cannot create a false accept:** the constant feeds exactly one expression,
+`if mine.distance >= mine.bound`, so a smaller value can only convert accepts into refusals.
+
+**The risk the owner is accepting, and it is a real one:** availability. A sheet that would have
+squeaked through at 7.00 now halts with the composer open and nothing typed. That is the fail-loud
+direction the owner rules prefer, and every measured reading clears 3.00 with room — but it is a
+live-behaviour change and one constant reverts it.
+
+**Deliberately NOT changed.** `_SHEET_FALSE_MATCH_DISTANCE = 14.91` stays: it is a *measured
+wrong-card acceptance* used only as an upper validity clamp on a configured ceiling, and the
+corrected foreign population (min 40.8) makes it conservative rather than wrong. The config's own
+`apps.hinge.targeting_calibration.inline_item_max_dist` (14.9099 = `nextafter(14.91, 0)`) is that
+same clamp and stays too. The module docstring's older corpus separations (4.670 / 8.024 / 8.727)
+were also measured through the defect; the direction is safe — correct distances collapsed and
+foreign distances grew — so nothing there is now looser than advertised, but the figures are stale
+and should be re-derived the next time that section is touched.
+
+#### Addendum — 2026-08-28: a portrait photo is PILLARBOXED in its card, and the locator was measuring the photograph where it needed the card
+
+Two production halts, 2026-08-27 and 2026-08-28, both `verify_sheet_item` → `unreadable`, both the
+same sentence: `no candidate at least 694px wide and 300px tall is aligned with it`. Both taps were
+CORRECT. The frames show an ordinary open composer with the right photo in it.
+
+`apps.hinge.debug_protect_runs` now protects `f6a15d162e68` and `d605b0837ac2`; they are the only
+frames in the corpus that carry this shape and they cannot be regenerated.
+
+**What is actually on the screen.** The card is a PROMPT-PHOTO card whose photograph is portrait, so
+Hinge fits it to the card's height and centres it: a 556x932 photo inside a 974px card, 209px of
+card background on each side. The sheet renders that whole card into the 890px content column at
+the corpus's own 890/974 = 0.9137 scale, so the photograph's INK spans 508px at columns 286..794 —
+191px of white card either side, symmetric to the pixel. Against a 694px width floor and 27px of
+edge slack, all three of the locator's tests fail, and every one of them is right about the ink and
+none of them is about the card.
+
+**The invariant that was never true.** The six-sheet corpus behind this module is six FULL-BLEED
+photo cards, where the photograph happens to run the card edge to edge, so preview-ink and content
+column coincide. "The preview spans the content column" was read off that and is a property of the
+CARD'S CONTENT, not of the composer. The card is always rendered into the whole column; only its
+ink may be inset. Swept 2026-08-28 over 98 runs / 297 verify sheets: 287 full-bleed with ink width
+EXACTLY 890 and pads of exactly 0, 4 pillarboxed (one photograph, met twice), nothing in between —
+a 0.43-wide empty gap in the width fraction. The underlying card shape is 1 of ~1033 distinct cards
+seen, 0.10%.
+
+**Widening the width test alone would NOT have fixed it, and this is the part worth remembering.**
+`_compare_item` derives `scale = crop_width / preview.width` and the stored crop is the WHOLE card,
+so handing it the 508px ink box asks a 1109px card for a window of round(837 * 974/508) = 1604 rows
+and it refuses with "this item cannot be what is on screen" — the same halt one stage later, with a
+message that blames the card instead of the locator. Measured: ink box → distance None, window_px
+1604; content column → **0.579** with the reframe search landing on source rows 185..1088 of 1109,
+against production's 14.9099 ceiling, while the same card mirrored scores 21.563.
+
+So `SheetPreview` now carries the RECT and the INK BOX as separate things. The rect is the card's
+columns (the comment field's, which is what the crop is scaled against); the ink box is where the
+photograph painted, and only the block walk uses it.
+
+**What replaces the two edge-alignment tests, and what is honestly carrying the load.** A pillarbox
+candidate must be contained inside the content column and centred in it. Containment refuses an
+ordinary full-bleed profile card exactly as decisively as alignment did (53..1027 spills 42px past
+both ends). Centring does NOT refuse it — a card and the column share the centre 540 — and neither
+test refuses the one impostor that matters: a PILLARBOXED card scrolled above the composer is
+contained and centred to the pixel. **The gap bound is what excludes it**, and structurally: a
+candidate needs `comment.y0 - y1 <= 0.25 * (y1 - y0)`, i.e. `y1 >= 921`, which an impostor can only
+reach if the selected preview renders under ~188px tall — at which point the preview fails the
+300-row floor and nothing is located at all. Applying these tests to all 298 composer frames in the
+corpus yields exactly one accepted candidate per frame, always the selected preview. No frame has
+both a pillarboxed preview and a pillarboxed block above it, so the case is constructed in
+`test_a_pillarboxed_card_scrolled_above_the_composer_does_not_displace_the_preview` rather than
+left to a live run.
+
+**A safety consequence that had to be corrected, not merely noted.** A pillarboxed comparison rect
+is ~30% blank on BOTH sides — card-white in the sheet and card-white in every candidate crop — so
+those cells contribute nothing and every distance through it contracts. The relative bound does not
+care (`0.5 x nearest_other` is a ratio of two quantities that contract together, which is exactly
+why a multi-item run looks safe and hides this). The two ABSOLUTE ceilings do care: they are frozen
+numbers fitted on full-bleed renders, and `inline_item_max_dist` is clamped to 0.0001 below the
+known 14.91 foreign-card collision ON PURPOSE. Making this regime reachable without correction
+would have widened both by the contraction factor — quietly loosening the one guard that catches
+content the payload does not contain at all. Both are now scaled by the fraction of the compared
+rect that carries ink, which can only ever LOWER a ceiling and therefore cannot create a false
+accept.
+
+The contraction is content-dependent and is not one number: comparing over the photograph's columns
+alone rather than the content column gives 0.749 for the correct card, 0.867 for a mirrored foreign
+one, and 0.681 for a separately composited foreign card. The geometric 0.696 sits at or below all
+three, which is the direction that matters. This is a correction to a margin that was already
+adequate rather than a rescue: 40 foreign photographs composited into this exact card template
+score min 31.32 / median 58.98 through the pillarbox path, none under the uncorrected 14.9099, so
+the correction moves 2.1x of headroom to 3.0x. The exact alternative — comparing over the photo's
+columns on both sides, which needs no estimate — is the better fix and is deliberately NOT taken:
+it re-cuts every item's reference and so changes what `nearest_other` means, and there is exactly
+ONE pillarboxed render in the corpus to validate that against.
+
+**Three residuals, recorded rather than glossed.**
+
+1. `_INLINE_PILLARBOX_MIN_WIDTH_FRACTION = 0.40` IS NOT A MEASURED FLOOR. n = 1 render at 0.5708,
+   and it sits near the SHALLOW end of the regime: full-bleed previews run 0.83..1.15 in displayed
+   aspect and this one is 1.65, so Hinge starts pillarboxing around 1.15 and then caps the rendered
+   height, under which the fraction falls without limit (9:16 lands near 0.54, 1:2 near 0.48). A
+   taller upload than 0.40 admits will still REFUSE, which is fail-loud and one constant to revisit
+   with a frame in hand.
+2. THE SHEET IS NOT A RIGID RESCALE FOR A CHROMED CARD. Measured at full resolution: the
+   width-derived `window_px` is 916 rows and the true best-fitting window is 905 at start 183 —
+   1.23% of vertical anisotropy, 11 rows of error. The full-bleed control fits in 804 rows with
+   0.059% and ZERO rows of error. `_SCALE_TOLERANCE`'s ±2% absorbs it, but that constant was fitted
+   as "1.0% observed, 2% is that with a factor of two on it", and the factor of two is now 1.65 on
+   n = 1. If the anisotropy grows past 2% the symptom is a false VERIFY_MISMATCH on a correct tap:
+   fail-loud, but it reads as a targeting fault rather than as a scale one.
+3. The centring test MUST use the median span and never the hull. Hinge draws a dark alt-text chip
+   on the card's white margin at the top left, so 54 of the block's 837 rows report ink starting at
+   x=133..156 while 783 report exactly 286; the hull gives a 153px asymmetry and would refuse the
+   very frame this regime was written for.
+
+**Reporting.** The refusal now surveys every non-background block above the field at NO width floor
+and prints each one's geometry with the tests it passed AND failed — because on this halt no run
+reached the 694px floor at all, so a message written in terms of rejected CANDIDATES would have
+described nothing, and the diagnosis was entirely in ink that never became one. The passes matter
+as much as the failures: "fails width and both edges, PASSES height and field gap, inset by the
+same 191px on both sides" IS the diagnosis. `bugreport.py` also no longer renders an `unreadable`
+as a comparison that returned nothing — it used to print `nearest stored item None; distance —
+against bound —`, three dashes standing where three numbers stand on every other verdict, when in
+fact no card had been compared at all.
+
+#### Addendum 2026-08-28: Hinge 10.1.0 PINS the profile header inside the analysed band, which is amendment four to 5.4 and quietly killed three separate guards
+
+A training capture refused its whole item index with seven fold failures, the first of which read
+"frame 16 sees page rows 8005..9234 ... where the block was bounded at 7387..8072 by frame 14 — a
+fragment cannot reach past the card that contains it". The scroll chain was never in doubt: frame
+15's heart at frame row 2035 maps to frame 16 row 1508 at exactly the measured pair delta of 527.
+The fault was in what one frame reported, not in how the frames were joined.
+
+**The measurement.** On the six saved evidence frames of run `8fb11094ef4d`, frame rows 300..516
+are byte-identical — maximum absolute difference **0**, across all 15 pairs — while rows 517 and
+below differ by a mean of 59..143 grey levels. Those frames sit at page offsets 6180..8485, i.e.
+thousands of pixels apart. Hinge 10.1.0 draws the profile header (filter chips, name, verified
+badge, back arrow, overflow menu, and a `she | Active today` sub-row) **pinned to the screen**,
+inside `content_band`'s rows 300..2100, and clips the scrolling content to begin at row 517.
+
+**Amendment four to 5.4: a page-background run can be neither a gutter nor a card edge, and the
+existing tests are structurally blind to it.** The run between the pinned header and the content
+below it measures 106px — twice the canonical gutter — so the length gate correctly declines it,
+and no card corner sits below it mid-scroll, so amendment one's corner escape declines too. The
+run is therefore absorbed, and the 43px header strip merges into the clipped top of the next card.
+Note that the run passes every *affirmative* test amendment three added: its median grey level
+matches the page reference by exactly 0 on all 106 rows. Level agreement was never the missing
+signal here. The missing signal is that the strip above it does not move.
+
+**Why the merge is not merely untidy.** The merged block's top is reported at frame row 368 on
+every frame, so its PAGE row is `368 + offset` — a different row on every frame, and every one of
+them fabricated, because a screen-pinned element has no page position at all. Whenever the card
+above happens to have scrolled into the header's dead zone, that fabricated top lands inside it,
+`_overlap_groups` chains two cards into one fold group, and `_resolve_group` refuses. With a 43px
+strip against a 53px gutter on a ~1027px card pitch, a swept simulation over this profile's own
+layout puts the per-frame hazard at ~9% — about an 84% chance of at least one bad frame per
+19-frame profile. This capture was not unlucky; it was typical of the expanded-header state.
+
+**The fix is to name the ambiguity, not to resolve it in the wrong place.** `segment.py` now
+reports such a strip as `BLOCK_UNANCHORED` with both edges UNOBSERVED and declines to say what it
+is, because chrome-ness is a CROSS-FRAME property: a strip with page background on both sides is
+either app chrome pinned to the screen or a slice of page content the band happened to cut that
+way, and no single frame distinguishes them. `item_index` then decides from the capture's own
+evidence — a strip at the same frame rows, with the same pixel digest, at two or more page offsets
+spanning more than its own height, is fixed to the SCREEN and is held out of page space entirely.
+Both unproven branches are bit-exact the pre-fix behaviour, verified field-for-field against the
+recorded geometry of this very incident, so an unavailable proof degrades to the old loud refusal
+and never to a new outcome. Held out, the incident capture folds with **zero** failures.
+
+Rejected alternatives, both on measurement rather than taste. Narrowing `content_band` below the
+header fails three ways: `plan_coverage_step`'s blind fallback becomes a hard refusal at any band
+top above row **414**; a band top of exactly 517 makes `_scroll_top_evidence` return False on every
+genuine scroll top, refusing every capture; and the prefix is **not a constant** — the same run,
+same build, same phone shows a *collapsed* header state clipping at 236, so a static 517 would
+discard 281 rows of real content on those frames. Splitting on any full-width page-background run
+was measured too: it avoids this refusal but fabricates 18 page-space fragments of a fixed screen
+element, and lands one in a real gutter about 1% of the time, where it trips the fabricated-item
+guard.
+
+**THE THREE GUARDS THIS SILENTLY KILLED, all of which had been reporting success.**
+
+1. `item_index._scroll_top_evidence` — the check credited in its own docstring with refusing 21 of
+   21 and 9 of 10 falsely-asserted scroll tops in the corpus. It asks whether page background sat
+   above the topmost block. The pinned header puts background there on EVERY frame, so it returned
+   True unconditionally, top or not. It now additionally requires a POSITIVE discriminator: the
+   first real item must have been seen with its own `EDGE_CARD_CORNER` top. Frames 0 and 6 of the
+   incident carry that corner; the six deep mid-scroll frames provably do not.
+2. `scroll_top.confirm_scroll_top` — doc 5.5's affirmative filter-chips gate. Its returned reason
+   asserts "at any scroll offset past the top the app's sticky per-profile header covers this strip
+   with the person's name instead". In the expanded state the chips row is itself pinned at rows
+   115..340, so all six deep mid-scroll frames return `confirmed_top` at distance **0.000**. In the
+   collapsed state the same band still reads correctly (13.219 and 12.359 on two other profiles in
+   the same run), so this is per-screen-state, not blanket.
+3. `frameshift`'s own stated hazard, re-introduced. `estimate_shift`'s docstring warns that a strip
+   cut across the status bar or a sticky header "would correlate best at a shift of zero no matter
+   what the content underneath did, and would vote against every real scroll" — which is why the
+   band excludes chrome. The pinned header put exactly such a strip back inside it: strip [300,396]
+   reports `pinned`, delta 0, score 1.0 on all 18 pairs, and [442,538] frequently votes a
+   structurally meaningless 0 into the median.
+
+Guard 1 was fixed here. Guard 2 is per-screen-state and needs `identity_band` recalibrated against
+BOTH header states on the device; until then it fails closed through `capture_profile_identity`,
+which already returns no fingerprint and blocks navigation. Guard 3 is currently benign — the
+deltas are unaffected and dissent actually falls — but it is the same class of fault and should be
+re-checked if the header ever grows.
+
+**Open, and not answerable from this run.** What SELECTS the expanded (clip 517) versus collapsed
+(clip 236) header. Both appear in run `8fb11094ef4d`, on the same build and phone. The enumeration
+frames of the two profiles that succeeded that day are not saved, so it cannot be settled here.
+The gutter-phase arithmetic above says an expanded-header profile should hit a merge overrun on
+roughly 10% of frames, which argues the two that succeeded enumerated collapsed rather than got
+lucky. Worth finding, because it decides how often this was ever going to fire.
+
+#### Addendum 2026-08-28 (b): the pinned header measured LIVE — one collapsing toolbar, and the fix verified against the capture that broke
+
+Follow-up to the addendum above, run on the connected Pixel 7a on the same Hinge 10.1.0 build,
+read-only plus humanized read-scrolls, 199 logged actions and zero like/pass/send/advance/tap.
+
+**The two "header states" are one collapsing toolbar.** Expanded only at a confirmed scroll top:
+chips + large name + pronoun row, content clipped at row **517**, the 43px strip at **368..410**.
+It collapses on the first downward scroll to a compact bar sitting entirely above the band's first
+row, after which content starts at 300. The 517-vs-236 clip lines the previous addendum recorded
+are the same toolbar at two scroll positions, not two builds or two surfaces.
+
+**The previous addendum's guess about the two successful captures is WRONG and is corrected here.**
+It reasoned that Charlotte and Alana must have "enumerated collapsed" because an expanded read
+should hit a merge overrun on ~10% of frames. Their manifests in fact record chrome at page rows
+`368..410` — the EXPANDED signature. The whole 2026-08-28 run was in the stuck-expanded state; the
+two that succeeded got lucky on card phase, exactly as the ~9%/frame hazard predicts for some
+profiles and not others.
+
+**Verified end to end.** `_capture_current()` on the incident's own profile (debug run
+`run_20260828_210258`) reproduced its page rows exactly — chrome `[368,410]`, cards at
+`7387..8072` and `8125..9234`, the pair that bridged — and returned `usable=True, failures=0,
+blocks=11, selectable=9, translation=(1..9)`, fingerprint present, 3 numbered items. Both
+dispositions are now confirmed on real pixels: unproven-at-one-offset (collapsed) places the strip
+and relabels it `ITEM_LEADING_CHROME` exactly as before; proven-at-six-offsets (the incident's
+saved frames) holds it out and turns 7 failures into 0.
+
+**`identity_band` needs no recalibration** — measured 0.000 at the top and 12.547..12.797 on every
+scrolled frame, both well outside the 3..9 dead zone, with a present fingerprint. No calibrated
+value was changed. See ops/ANTI-BOT-RESEARCH.md's 2026-08-28 (b) addendum for the numbers.
+
+**Still open:** what makes the toolbar STICK. Not reproduced today in ~60 scrolls across five
+patterns on the same build, phone and profile. Treat a capture whose leading strip is *proven*
+screen-fixed as the signal that it has recurred — that verdict is now printed in the bug report.
+
+#### Addendum 2026-08-28 (c): the coverage margin was defending the blind branch against the one card that cannot be in front of it
+
+Closing the residual the 2026-08-28 (b) addendum left open. Two numbers were supposed to be
+re-measured together on the phone; measuring them changed the question.
+
+**`_MAX_CARD_HEIGHT_PX = 1467` was wrong, and in the unsafe direction.** Its own comment admitted
+it was "not independently reproduced". Re-measured over every `item_manifest` in the on-disk
+archive — 522 blocks that were CROPPED FROM ONE FRAME, so both edges were observed inside a single
+band, across 50 captures in 19 runs: min 215, median 974, p95 1109, **max 1609**. So the constant
+understated the tallest observed block by 142px. The 1609 is genuine: `kind=context` (heartless),
+run `948352f2d4d0`, frame 4 rows 391..2000, 91px of top clearance; its manifest neighbours are
+separated by exact 53px gutters throughout, no pair of archived block heights plus a gutter sums
+to it, and the run's independently logged gesture ledger puts frame 4 at page offset 1784 against
+the manifest's implied 1785. Its raw frame is NOT on disk — enumeration frames survive only when
+an index is refused — so it can never be re-segmented.
+
+**Read 1609 as a FLOOR, never a bound.** A block taller than the band can never be observed
+complete at all, so it falls outside this population by construction and the sample is
+survivorship-biased. That is exactly why the adaptive throttle's proof rests on the BAND HEIGHT
+instead, and why it needed no card-height figure to be sound.
+
+**The real defect was the formula, not the number.** `coverage_margin_px = band_height -
+max_card_height_px` is reached only when a frame yields NO blocks. For a card to occupy the
+analysed band and contribute zero card rows, BOTH its edges must lie outside the band — its height
+must exceed the band — for which `band_height - H` is negative and the derivation's own premise
+has already failed. A card genuinely 1467px tall in an 1800px band produces rows, gets a block,
+and routes to the adaptive branch. The margin was guarding this branch against the one card that
+cannot be in front of it: the guarantee was anti-correlated with its own trigger. [Measured over
+all 3696 archived frames re-segmented with the production segmenter: exactly 3 yield zero blocks,
+0.08%, all three hub `observe_*` screens that never reach this function, with band mean grey 254.0
+and per-row standard deviation 0.0 — a blank undrawn screen, not a tall card. Zero enumeration
+frames yield zero blocks; zero frames anywhere report a segmentation failure.]
+
+**Shipped:** `_MAX_CARD_HEIGHT_PX` and the card-height margin are deleted. The blind branches are
+now capped by the DIRECT-BRIDGE BUDGET — what frameshift's trust window has left once the
+enumeration ceiling is spent, `(0.5 - 0.30) * band_height` = 360px on the calibrated device
+against the old 333 — because the branch's only real job is to keep `build_item_index`'s
+frame-omission recovery able to drop the unusable frame and bridge i-1 to i+1 across it. The
+frameshift fraction is imported, not restated. The cap must not become the bare trust ceiling:
+540 + 540 = 1080 exceeds the 900px window and would make that recovery unreachable, which is now
+pinned by a test.
+
+**REJECTED, on measurement:** computing the margin against the honest scrolling viewport, which
+the (b) addendum floated. `_scrolling_viewport_top` returns the band top on exactly the zero-block
+state the blind branch triggers on, so it is a no-op there; any threaded-in value is a guess
+across at least 15 distinct header states observed in 275 archived frames; and the
+`coverage_margin_px < 1` raise runs BEFORE branch selection, so on read-path pinned-header frames
+it would have raised on 19 of 43 at 1467 and 43 of 43 at 1609 — killing ordinary throttled steps,
+not just blind ones.
+
+**AND A CORRECTION TO WHAT A REFUSAL COSTS.** The (b) work assumed a `ScrollStepError` here merely
+ends enumeration and lets the read finish. It does not: it sets `enumeration_reason`, which
+reaches `_invalidate_item_index` and then `Profile.items_unavailable`, and in Training
+(`worker.py:486-493`) and in AUTO with openers enabled (`worker.py:970-987`) the worker does
+`stop_event.set(); break` unconditionally. **The run stops.** Every proposal that adds a refusal
+to this path is adding a run stop, and must be priced that way.
+
+**Still open, now with numbers:** on read-path pinned-header frames the honest scrolling viewport
+measured 1420 / 1518 / 1583, and 1609 > 1420, so the throttle's completeness proof does not cover
+the tallest observed block in the pinned state. Its failure mode there is fail-closed and loud (an
+unbounded heartless block above a heart appends `_UNCERTAIN_HEART_NOTE`, `usable` goes False, the
+capture refuses), so it costs one profile and can never produce a wrong like. Separately,
+`item_crops._over_tall_failures` compares block height to the BAND, not to the viewport, so a
+1609px block under a 1420px viewport passes it silently and simply never completes. Both belong in
+the same re-check, not in a step gate.

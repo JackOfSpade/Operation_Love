@@ -577,6 +577,18 @@ def estimate_shift(frame_a: bytes, frame_b: bytes, *,
     a strip cut across them would correlate best at a shift of zero no matter what the content
     underneath did, and would vote against every real scroll.
 
+    THAT EXCLUSION IS CURRENTLY INCOMPLETE, AND KNOWINGLY SO. Hinge 10.1.0 draws a profile header
+    pinned to the SCREEN *inside* the shipped band, so the very shape this paragraph excludes is
+    back within it: on the 2026-08-28 incident capture the top strip [300,396] reports `pinned`,
+    delta 0, score 1.0 on all 18 pairs, and [442,538] frequently votes a structurally meaningless
+    0 into the median. It is benign TODAY and was measured to be — every delta on that capture is
+    correct and its confidence is 1.000 — because the quorum is over eligible strips and the
+    pinned ones are excluded from `eligible` by the pin-margin test rather than by the band. It is
+    recorded here because it is the same fault class, one strip away from mattering, and because
+    the band cannot simply be narrowed to fix it: the header's height is not a constant (a second,
+    281px-shorter header state was measured on the same build and phone). See
+    `segment._unanchored_leading_island_rows` and ops/OPENER-REDESIGN.md addendum 2026-08-28.
+
     `trust_window_px` overrides the derived window (`trust_window_band_frac` of the band's
     height, 900px on the calibrated 1080x2400 device). The search always runs wider than this
     — the window decides what is RETURNED, not what is looked at, which is what lets an

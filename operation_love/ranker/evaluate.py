@@ -12,6 +12,7 @@ as-is over HTTP; `format_report()` renders it for the terminal.
 from __future__ import annotations
 
 import math
+from numbers import Integral, Real
 
 from .model import SKLEARN_LOGREG_KWARGS, new_classifier   # shared ranker hyperparameters (no drift)
 
@@ -20,28 +21,69 @@ _IDENTITY_EPS = 0.5   # DBSCAN cosine-distance threshold -> cosine similarity >=
                       # the buffalo_l same-identity threshold (see identity_groups below)
 
 
+def _validated_controls(n_splits: object, eps: object) -> tuple[int, float]:
+    """Validate the two numerical controls before handing them to scikit-learn.
+
+    Letting DBSCAN or StratifiedGroupKFold validate these made bad API input look like
+    malformed stored data, and ``n_splits=True`` could quietly become a one-fold request.
+    Cosine distance is bounded by two, so larger values add no useful behavior either.
+    """
+    if isinstance(n_splits, bool) or not isinstance(n_splits, Integral) or n_splits < 2:
+        raise ValueError("n_splits must be an integer of at least 2")
+    if isinstance(eps, bool) or not isinstance(eps, Real):
+        raise ValueError("eps must be a finite number in (0, 2]")
+    try:
+        normalized_eps = float(eps)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("eps must be a finite number in (0, 2]") from exc
+    if not math.isfinite(normalized_eps) or not 0.0 < normalized_eps <= 2.0:
+        raise ValueError("eps must be a finite number in (0, 2]")
+    return int(n_splits), normalized_eps
+
+
 def identity_groups(face_vectors: list[list[float]], eps: float = _IDENTITY_EPS) -> list[int]:
     """Cluster rows by face identity via DBSCAN on cosine distance (eps=0.5 -> cosine
     similarity >= 0.5, the buffalo_l same-identity threshold). min_samples=1 so a face
     with no near neighbor becomes its own singleton group. One int id per input row."""
+    # Keep the public control contract independent of data cardinality. Without this before
+    # the empty fast path, ``identity_groups([], eps=0)`` silently accepted a configuration
+    # that the same function correctly rejected once it received its first face vector.
+    _, normalized_eps = _validated_controls(2, eps)
     if not face_vectors:
         return []
     import numpy as np
     from sklearn.cluster import DBSCAN
-    return DBSCAN(eps=eps, min_samples=1, metric="cosine").fit_predict(
-        np.asarray(face_vectors, dtype=float)).tolist()
+    vectors = np.asarray(face_vectors, dtype=float)
+    if vectors.ndim != 2 or vectors.shape[1] == 0 or not np.isfinite(vectors).all():
+        raise ValueError("face vectors must be a nonempty rectangular matrix of finite numbers")
+    # sklearn's cosine metric produces NaN for a zero vector. Reject it explicitly instead of
+    # returning a backend-version-specific error (or, worse, an arbitrary identity grouping).
+    if np.any(np.linalg.norm(vectors, axis=1) == 0.0):
+        raise ValueError("face vectors must not contain zero-norm rows")
+    return DBSCAN(eps=normalized_eps, min_samples=1, metric="cosine").fit_predict(vectors).tolist()
 
 
 def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5,
-             eps: float = _IDENTITY_EPS) -> dict:
+             eps: float = _IDENTITY_EPS, like_threshold: float = 0.5) -> dict:
     """Identity-grouped, stratified K-fold CV. Returns a JSON-able dict: status,
-    label counts, distinct identities, and (when ok) ROC-AUC / PR-AUC / Brier as
-    [mean, std]. Never raises — failure modes come back as a status + message."""
+    label counts, distinct identities, ranking metrics, and out-of-fold decisions at
+    ``like_threshold``. Never raises — failure modes come back as a status + message."""
     empty_base = {
         "labels": 0, "likes": 0, "passes": 0, "identities": None,
         "folds": 0, "roc_auc": None, "pr_auc": None, "brier": None,
-        "base_rate": 0.0,
+        "base_rate": 0.0, "like_threshold": None, "accepted_recall": None,
+        "false_dislike_rate": None, "confusion": None,
     }
+    try:
+        n_splits, eps = _validated_controls(n_splits, eps)
+        if isinstance(like_threshold, bool) or not isinstance(like_threshold, Real):
+            raise ValueError("like_threshold must be a finite number in [0, 1]")
+        threshold = float(like_threshold)
+        if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+            raise ValueError("like_threshold must be a finite number in [0, 1]")
+    except (ValueError, TypeError, OverflowError) as exc:
+        return {**empty_base, "status": "error",
+                "message": f"evaluation controls are invalid: {exc}"}
     try:
         rows = list(samples)
         y: list[int] = []
@@ -61,7 +103,8 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5,
     base = {
         "labels": n, "likes": likes, "passes": passes, "identities": None,
         "folds": 0, "roc_auc": None, "pr_auc": None, "brier": None,
-        "base_rate": (likes / n) if n else 0.0,
+        "base_rate": (likes / n) if n else 0.0, "like_threshold": threshold,
+        "accepted_recall": None, "false_dislike_rate": None, "confusion": None,
     }
     if n < 10 or len(set(y)) < 2:
         return {**base, "status": "insufficient_data",
@@ -94,6 +137,7 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5,
 
         folds = list(StratifiedGroupKFold(n_splits=splits).split(X, yv, groups=groups))
         roc, pr, brier = [], [], []
+        true_accepted = false_dislikes = false_likes = true_dislikes = 0
         for tr, va in folds:
             if len(set(yv[tr].tolist())) < 2 or len(set(yv[va].tolist())) < 2:
                 continue                    # a fold without both classes can't be scored
@@ -104,14 +148,29 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5,
             prec, rec, _ = precision_recall_curve(yv[va], p)
             pr.append(float(auc(rec, prec)))
             brier.append(float(brier_score_loss(yv[va], p)))
+            predicted_like = p >= threshold
+            true_accepted += int(np.sum((yv[va] == 1) & predicted_like))
+            false_dislikes += int(np.sum((yv[va] == 1) & ~predicted_like))
+            false_likes += int(np.sum((yv[va] == 0) & predicted_like))
+            true_dislikes += int(np.sum((yv[va] == 0) & ~predicted_like))
         if not roc:
             return {**base, "status": "no_folds",
                     "message": "No scorable folds (each lacked both classes). Collect more labels."}
 
         def ms(v):
             return [float(np.mean(v)), float(np.std(v))]
+        accepted_total = true_accepted + false_dislikes
+        accepted_recall = true_accepted / accepted_total if accepted_total else None
         return {**base, "status": "ok", "folds": len(roc),
                 "roc_auc": ms(roc), "pr_auc": ms(pr), "brier": ms(brier),
+                "accepted_recall": accepted_recall,
+                "false_dislike_rate": (1.0 - accepted_recall) if accepted_recall is not None else None,
+                "confusion": {
+                    "true_accepted": true_accepted,
+                    "false_dislikes": false_dislikes,
+                    "false_likes": false_likes,
+                    "true_dislikes": true_dislikes,
+                },
                 "message": f"identity-grouped {len(roc)}-fold CV"}
     except Exception as exc:  # noqa: BLE001
         return {**base, "status": "error", "message": f"evaluation failed: {type(exc).__name__}: {exc}"}

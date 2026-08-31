@@ -112,16 +112,22 @@ tolerated when nothing heart-bearing sits below it (the truncated tail of a capt
 only coverage), and is a `failures` entry when something does (the middle of a page, where it
 would corrupt the count). See `_UNCERTAIN_HEART_NOTE` at its use site.
 
-That rule has one systematic exception, and it is why `at_scroll_top` is a required argument:
-Hinge draws a filter-chips header and a name row ABOVE item 1, and on every scroll-top frame in
-the calibration corpus that chrome came back as a PARTIAL block — "neither of its ends is gutter-
-or corner-bounded", segment.py's own docstring notes, adding that "a caller that has confirmed
-scroll-top should ignore blocks above the topmost card corner rather than trust that they
-self-exclude". This module is that caller. `at_scroll_top=True` is the caller stating it has
-made doc 5.5's affirmative top confirmation (the filter-chips signal in `identity_band`, which
-5.5 requires before counting anyway), and it is what licenses classing a leading heartless,
-never-complete block as `ITEM_LEADING_CHROME` instead of treating it as an item that might be
-hiding heart #1.
+The rule has two proof-based exceptions. First, a heartless partial strictly between two complete
+neighbours is ordinal-safe when one failure-free frame's analysed band covered that WHOLE
+intervening interval: heart matching searched every possible row, so the block stays partial and
+uncroppable but has no unseen place to hide an ordinal. This is the Hinge 10.1.0 "From people
+close to Katie" heading measured on 2026-08-30. Piecing coverage together across frames is not
+enough.
+
+Second, and the reason `at_scroll_top` is a required argument: Hinge draws a filter-chips header
+and a name row ABOVE item 1, and on every scroll-top frame in the calibration corpus that chrome
+came back as a PARTIAL block — "neither of its ends is gutter- or corner-bounded", segment.py's
+own docstring notes, adding that "a caller that has confirmed scroll-top should ignore blocks
+above the topmost card corner rather than trust that they self-exclude". This module is that
+caller. `at_scroll_top=True` is the caller stating it has made doc 5.5's affirmative top
+confirmation (the filter-chips signal in `identity_band`, which 5.5 requires before counting
+anyway), and it is what licenses classing a leading heartless, never-complete block as
+`ITEM_LEADING_CHROME` instead of treating it as an item that might be hiding heart #1.
 
 A false assertion there is the most dangerous input this module takes, because a capture that
 began mid-profile indexes perfectly well — it just numbers from the wrong place. `at_scroll_top`
@@ -190,7 +196,8 @@ from .item_identity import ProfileIdentity, capture_profile_identity
 # this module folds, and a second copy would be free to drift away from it.
 from .segment import (
     _GUTTER_PX, _GUTTER_TOLERANCE_PX, _HEART_SEPARATED_NEAR_GUTTER_PX,
-    EDGE_CARD_CORNER, RUN_TOO_LONG, FrameSegmentation, segment_frame)
+    BLOCK_UNANCHORED, EDGE_CARD_CORNER, EDGE_SCROLL_TOP_MEDIA, EDGE_UNANCHORED_ISLAND,
+    RUN_TOO_LONG, FrameSegmentation, segment_frame)
 # `_MAX_STEP_PX` is kept as the DEFAULT for every function below that takes a `max_step_px`
 # parameter -- almost every direct unit test in tests/test_item_index.py calls these functions
 # without threading one, and 363 remains a safe (if no longer profile-tuned) bound for a bare
@@ -413,7 +420,7 @@ _END_TAIL_GAP_PX = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
 # indexer decision path and splitter.  Those values distinguish "the current source replays
 # cleanly" from "the long-lived
 # worker was still executing an older indexer" without trusting the working tree alone.
-ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v13"
+ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v14"
 
 
 # =====================================================================================
@@ -475,10 +482,32 @@ class BlockObservation:
     top_observed: bool
     bottom_observed: bool
     hearts: tuple[tuple[int, int], ...]
+    # segment.py's `EDGE_*` for this sighting's TOP edge. `top_observed` says only whether the
+    # edge was trusted; this says WHY, and the difference is what `_scroll_top_evidence` needs —
+    # a card's own visible corner is positive evidence of a list boundary, while every other
+    # unobserved kind is merely absence of evidence. Defaulted so hand-built records in the
+    # tests stay source-compatible, on `BackgroundRun.median_level_delta`'s precedent.
+    top_kind: str = ""
 
     @property
     def height(self) -> int:
         return self.page_y1 - self.page_y0
+
+
+@dataclass(frozen=True)
+class UnanchoredIsland:
+    """One frame's sighting of a leading strip segment.py could not place (`BLOCK_UNANCHORED`).
+
+    Deliberately NOT a `BlockObservation`: it carries no page extent, because whether it has one
+    is the open question. `frame_y0`/`frame_y1` are where it sat on the screen, `offset` is that
+    frame's accumulated page offset, and `digest` is segment.py's hash of its pixels. Those three
+    are exactly what `_screen_fixed_islands` needs and nothing more.
+    """
+    frame_index: int
+    frame_y0: int
+    frame_y1: int
+    offset: int
+    digest: str | None
 
 
 @dataclass(frozen=True)
@@ -1626,6 +1655,15 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
     candidate may accompany that run but cannot bootstrap it: at least one candidate must carry
     the ordinary two-strip layout corroboration.
 
+    There is one deliberately stronger isolated form: exactly two and only two eligible NCC
+    strips agree to the pixel, the same exact delta moves top, bottom, and heart landmarks, and
+    raw measured/full-layout pairs immediately bracket it.  This is the still-photo transition
+    where most of one card repaints between captures, leaving the raw bank below frameshift's
+    quorum even though the page geometry is independently complete on both sides.  The narrow
+    grammar does not admit a lone layout proposal at a capture edge, any dissent, a two-kind
+    layout match, or a merely measured (rather than full-layout) bracket; the complete-page
+    assembly probe remains mandatory.
+
     One exact four-pair continuation is narrower still: two ordinary two-strip repairs, one exact
     one-strip repair, then a measured structural-only tail beyond the normal override ceiling.
     The tail cannot occur anywhere else or validate a shorter/otherwise shaped run.
@@ -1776,6 +1814,52 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
             window_notes[i] = notes[i]
         runs = [(start, end)]
     start, end = runs[0]
+    # The ordinary run grammars below deliberately begin at two candidates.  A still-photo
+    # repaint can instead leave one *fully bounded* pair with exactly two surviving NCC strips,
+    # while the raw measured/full-layout pairs on both sides prove that this is a local evidence
+    # loss rather than a new coordinate space.  Keep every component exact and independently
+    # auditable: no disagreement may be hidden in an ineligible strip cluster, and no partial
+    # landmark set may be promoted just because its neighbours measured normally.
+    if end - start == 1:
+        i = start
+        raw = shifts[i]
+        proposed = repaired[i]
+        matched = tuple(
+            strip.delta_px for strip in raw.strips
+            if strip.state == STRIP_MATCHED and strip.delta_px is not None)
+        exact_kinds = {
+            kind for kind, delta in _structural_landmarks(
+                segmentations[i], segmentations[i + 1], max_step_px=max_step_px)
+            if proposed.delta_px is not None and delta == proposed.delta_px
+        }
+        bracket_notes: list[str] = []
+        if (not edge_only_indices and not structural_tail_indices and not exact_multi_indices
+                and 0 < i < len(shifts) - 1
+                and raw.status == SHIFT_NO_CONSENSUS
+                and raw.eligible == raw.agreeing == 2 and raw.dissenting == 0
+                and proposed.delta_px is not None
+                and matched == (proposed.delta_px, proposed.delta_px)
+                and exact_kinds == {"top", "bottom", "heart"}):
+            for bracket in (i - 1, i + 1):
+                bridge, bridge_note = _measured_layout_bridge(
+                    bracket, segmentations[bracket], segmentations[bracket + 1], shifts[bracket],
+                    extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px)
+                bridge_kinds = {
+                    kind for kind, delta in _structural_landmarks(
+                        segmentations[bracket], segmentations[bracket + 1],
+                        max_step_px=max_step_px)
+                    if bridge.delta_px is not None and delta == bridge.delta_px
+                }
+                if bridge_note is None or bridge_kinds != {"top", "bottom", "heart"}:
+                    break
+                bracket_notes.append(bridge_note)
+            if len(bracket_notes) == 2:
+                return (
+                    tuple(repaired),
+                    (notes[i], *bracket_notes),
+                    ((i, raw),),
+                )
+        return tuple(shifts), (), ()
     max_run = 5 if (exact_multi_indices or measured_bridge_indices) \
         else (4 if structural_tail_indices else 3)
     if not 2 <= end - start <= max_run:
@@ -1931,25 +2015,201 @@ def _frame_offsets(shifts: Sequence[ShiftEstimate]) -> tuple[list[int | None], l
     return offsets, failures
 
 
+def _islands(segmentations: Sequence[FrameSegmentation],
+             offsets: Sequence[int | None]) -> tuple[UnanchoredIsland, ...]:
+    """Every placed frame's `BLOCK_UNANCHORED` sightings, in frame order."""
+    return tuple(
+        UnanchoredIsland(frame_index=i, frame_y0=block.y0, frame_y1=block.y1, offset=offset,
+                         digest=block.content_digest)
+        for i, (seg, offset) in enumerate(zip(segmentations, offsets, strict=True))
+        if offset is not None
+        for block in seg.blocks
+        if block.kind == BLOCK_UNANCHORED)
+
+
+def _failure_free_page_coverage(
+        segmentations: Sequence[FrameSegmentation], offsets: Sequence[int | None],
+        ) -> tuple[tuple[int, int], ...]:
+    """Page intervals whose whole analysed band completed without a segmentation failure.
+
+    Heart matching runs over the entire band before hearts are assigned to blocks. A clean
+    interval can therefore prove that a heartless partial between two bounded neighbours has no
+    *unseen* rows; a frame with an unassigned heart or any other segmentation contradiction
+    cannot provide that proof and is deliberately omitted.
+    """
+    return tuple(
+        (seg.band[0] + offset, seg.band[1] + offset)
+        for seg, offset in zip(segmentations, offsets, strict=True)
+        if offset is not None and not seg.failures)
+
+
+def _screen_fixed_islands(islands: Sequence[UnanchoredIsland],
+                          ) -> tuple[frozenset[tuple[int, int]], tuple[str, ...]]:
+    """Which unanchored strips this capture PROVES are pinned to the screen rather than the page.
+
+    segment.py reports a leading strip it cannot place (see `_unanchored_leading_island_rows`).
+    Deciding what it is takes two frames at different scroll offsets, and the test is simply the
+    definition of the thing: a screen-fixed element keeps a constant FRAME position while its
+    page position moves with every scroll; page content does the exact opposite. So a strip is
+    proven screen-fixed only when it appears at the SAME frame rows, showing the SAME pixels, at
+    scroll offsets far enough apart that the page rows it would otherwise have had to display are
+    disjoint. Page content cannot do that. Chrome cannot do anything else.
+
+    All three conditions, and why each is not negotiable:
+
+      * at least TWO DISTINCT page offsets. A repeat at one offset proves nothing at all — the
+        page did not move between them, so both hypotheses predict identical pixels.
+      * `max(offset) - min(offset) >= height`. Below that the two sightings' page extents still
+        overlap, so a single tall band of page content could produce both. At or above it the
+        page rows are disjoint, and only a screen-fixed element can show the same pixels twice.
+      * every sighting carries the SAME digest. Unanimity, no tolerance, no quorum: this is an
+        identity test on pixels, and "mostly the same" is what a scrolling page looks like.
+
+    [measured on the 2026-08-28 incident capture: rows 368..411 are byte-identical across all 15
+    pairs of its six evidence frames, at offsets spanning 6180..8485 = 2305px against a 43px
+    strip; and the only frame extent that recurs at two different offsets anywhere in that
+    capture's 19-frame geometry is (368, 411) itself.]
+
+    Returns the proven `(frame_y0, frame_y1)` positions and one note per position — including
+    for the ones NOT proven, with the reason, because an operator reading a refusal needs to know
+    that the proof was unavailable rather than that the geometry was wrong. Grouping is by exact
+    frame extent: a strip that changes height between frames is a different strip, and saying so
+    is more honest than clustering two shapes together and calling them one.
+    """
+    if not islands:
+        return frozenset(), ()
+    groups: dict[tuple[int, int], list[UnanchoredIsland]] = {}
+    for island in islands:
+        groups.setdefault((island.frame_y0, island.frame_y1), []).append(island)
+
+    proven: set[tuple[int, int]] = set()
+    notes: list[str] = []
+    for rows, sightings in sorted(groups.items()):
+        height = rows[1] - rows[0]
+        offsets = sorted({s.offset for s in sightings})
+        digests = {s.digest for s in sightings}
+        frames = sorted({s.frame_index for s in sightings})
+        where = (f"the leading strip at frame rows {rows[0]}..{rows[1]}, seen in frame(s) "
+                 f"{frames}")
+        if len(offsets) < 2:
+            # NAME THE NEAR MISS. Grouping is by exact frame extent, so a strip that reports one
+            # row differently on one frame splits into two groups, neither reaches two offsets,
+            # and the capture silently reverts to the pre-2026-08-28 merge and its refusal. The
+            # grouping stays exact — a strip that changes height IS a different strip and
+            # clustering them would be the guess this module exists to avoid — but an operator
+            # reading the refusal must be able to see that it was one row away from proving it.
+            near = sorted(
+                other for other in groups
+                if other != rows and abs(other[0] - rows[0]) <= _EXTENT_TOLERANCE_PX
+                and abs(other[1] - rows[1]) <= _EXTENT_TOLERANCE_PX)
+            notes.append(
+                f"{where}, was only ever seen at one page offset ({offsets[0]}), so nothing "
+                "distinguishes screen-pinned chrome from page content here; it is placed on the "
+                "page exactly as it would have been before this check existed"
+                + (f" — note that a strip at {near} was reported on other frames of this same "
+                   "capture, within measurement slack of this one: if those are the same strip "
+                   "reported a row or two differently, that difference alone is what prevented "
+                   "the proof" if near else ""))
+        elif offsets[-1] - offsets[0] < height:
+            notes.append(
+                f"{where}, was seen across only {offsets[-1] - offsets[0]}px of scroll, less "
+                f"than its own {height}px height, so the page rows it would have shown still "
+                "overlap and one piece of page content could explain both sightings; it is "
+                "placed on the page rather than assumed to be chrome")
+        elif None in digests:
+            # Fail closed rather than treating "no evidence" as "same evidence": a sighting with
+            # no digest is one segment.py did not hash, and two of those are not a match.
+            notes.append(
+                f"{where}, was seen {len(sightings)} time(s) but at least one sighting carries "
+                "no pixel digest, so there is nothing to compare; it is placed on the page")
+        elif len(digests) != 1:
+            notes.append(
+                f"{where}, showed {len(digests)} different pixel contents across "
+                f"{len(offsets)} offsets, so it is not a static element — an animating or "
+                "live-updating header reads exactly like this; it is placed on the page")
+        else:
+            proven.add(rows)
+            notes.append(
+                f"{where}, showed identical pixels at {len(offsets)} page offsets spanning "
+                f"{offsets[-1] - offsets[0]}px, more than its own {height}px height — it is "
+                "fixed to the SCREEN, not to the page, so it has no page position and is held "
+                "out of the index entirely")
+    return frozenset(proven), tuple(notes)
+
+
 def _observations(segmentations: Sequence[FrameSegmentation],
-                  offsets: Sequence[int | None]) -> list[BlockObservation]:
+                  offsets: Sequence[int | None],
+                  screen_fixed: frozenset[tuple[int, int]] = frozenset(),
+                  ) -> list[BlockObservation]:
     """Every frame's blocks, lifted into the shared page space. Frames with no offset contribute
-    nothing — they are the frames past a broken chain, whose page position is unknown."""
+    nothing — they are the frames past a broken chain, whose page position is unknown.
+
+    A `BLOCK_UNANCHORED` strip gets one of three dispositions, and TWO OF THE THREE ARE EXACTLY
+    WHAT THIS FUNCTION DID BEFORE THE STRIP HAD A NAME:
+
+      1. proven screen-fixed -> emit NOTHING for it. This is the whole fix. Its page position is
+         `frame_row + offset`, a different row on every frame and every one of them fabricated,
+         so the only safe thing to do with it is never assert one. Because it never becomes an
+         observation it cannot chain into a card's fold group, cannot reach past a bounded card,
+         and cannot be a neighbour in the fabricated-item guard.
+      2. not proven, and the block below it was split off BY this strip (its top edge kind is
+         `EDGE_UNANCHORED_ISLAND`) -> emit the two as ONE merged observation, which is the block
+         segment.py would have returned had it never split them. Bit-exact status quo.
+      3. not proven, and the block below was split by something stronger (a card corner) ->
+         emit the strip as an ordinary observation. Also bit-exact status quo.
+
+    So an unavailable proof, or a per-frame predicate that fired on something that was really
+    page content after all, both degrade to the behaviour that shipped before — never to a new
+    outcome. A false positive here costs nothing; a false negative costs the old bug, loudly.
+    """
     out: list[BlockObservation] = []
     for i, (seg, offset) in enumerate(zip(segmentations, offsets, strict=True)):
         if offset is None:
             continue
-        out.extend(
-            BlockObservation(
-                frame_index=i,
-                page_y0=block.y0 + offset, page_y1=block.y1 + offset,
-                frame_y0=block.y0, frame_y1=block.y1,
-                kind=block.kind, complete=block.complete,
-                top_observed=block.top.observed, bottom_observed=block.bottom.observed,
-                hearts=tuple((x, y + offset) for x, y in block.hearts))
-            for block in seg.blocks
-        )
+        held = None
+        for block in seg.blocks:
+            if block.kind == BLOCK_UNANCHORED:
+                if held is not None:                    # never seen: the rule is leading-only
+                    out.append(_observation(i, held, offset))
+                if (block.y0, block.y1) in screen_fixed:
+                    held = None                                         # disposition 1
+                    continue
+                held = block                                # 2 or 3, decided by the next block
+                continue
+            if held is not None and block.top.kind == EDGE_UNANCHORED_ISLAND:
+                # Disposition 2: report the span the unsplit block covered, keeping the LOWER
+                # block's bottom evidence and its hearts (the strip is heartless by segment.py's
+                # clause (e)). The top stays unobserved, which it already was.
+                out.append(BlockObservation(
+                    frame_index=i,
+                    page_y0=held.y0 + offset, page_y1=block.y1 + offset,
+                    frame_y0=held.y0, frame_y1=block.y1,
+                    kind=block.kind, complete=False,
+                    top_observed=False, bottom_observed=block.bottom.observed,
+                    hearts=tuple((x, y + offset) for x, y in block.hearts),
+                    top_kind=held.top.kind))
+                held = None
+                continue
+            if held is not None:
+                # Disposition 3: the strip stands on its own, exactly as it used to.
+                out.append(_observation(i, held, offset))
+                held = None
+            out.append(_observation(i, block, offset))
+        if held is not None:
+            out.append(_observation(i, held, offset))
     return out
+
+
+def _observation(frame_index: int, block, offset: int) -> BlockObservation:
+    """One frame's block, lifted into page space verbatim."""
+    return BlockObservation(
+        frame_index=frame_index,
+        page_y0=block.y0 + offset, page_y1=block.y1 + offset,
+        frame_y0=block.y0, frame_y1=block.y1,
+        kind=block.kind, complete=block.complete,
+        top_observed=block.top.observed, bottom_observed=block.bottom.observed,
+        hearts=tuple((x, y + offset) for x, y in block.hearts),
+        top_kind=block.top.kind)
 
 
 def _split_repeated_near_gutter_merges(
@@ -2155,17 +2415,47 @@ def _resolve_group(group: Sequence[BlockObservation], *, tolerance: int,
             if other.complete:
                 continue
             if other.page_y0 < page_y0 - tolerance or other.page_y1 > page_y1 + tolerance:
-                if other.frame_index == rep.frame_index:
+                # WHICH FRAME IS AT FAULT. A fragment that OVERLAPS the bounded card and runs
+                # past it is the one that crossed the boundary: it is the sighting whose own
+                # extent spans two cards, and it is what chained them into a single fold group.
+                # A fragment DISJOINT from the bounded card crossed nothing — it is an ordinary
+                # sighting of the neighbouring card that the bridge dragged in with it. The two
+                # are the culprit and its victims, they are told apart here rather than left for
+                # a reader to work out, and only the culprit is offered to the omission recovery.
+                bridges = other.page_y0 < page_y1 and page_y0 < other.page_y1
+                if other.frame_index != rep.frame_index:
+                    origin = (
+                        ("either a gutter was missed or these two sightings are not the same "
+                         "block") if bridges else
+                        ("these two sightings are disjoint, so this fragment did not cross the "
+                         "boundary itself — it is a sighting of the neighbouring card, dragged "
+                         "into this group by whichever frame's block does span the boundary"))
+                elif bridges:
                     # Segment.py's blocks are disjoint within one frame, so a frame contributing
-                    # both the bounding sighting and an overrunning fragment to one group should
+                    # both the bounding sighting and an OVERLAPPING fragment to one group should
                     # not happen — spelled out rather than left to read as an ordinary cross-frame
                     # gutter miss, because it is a different and more surprising kind of fault.
                     origin = (
-                        f"both are frame {rep.frame_index}'s own sightings, which should never "
-                        "happen — segment.py's blocks are disjoint within one frame, so this is "
-                        "not an ordinary missed gutter but a self-contradictory frame")
+                        f"both are frame {rep.frame_index}'s own sightings and their extents "
+                        "OVERLAP, which should never happen — segment.py's blocks are disjoint "
+                        "within one frame, so this is not an ordinary missed gutter but a "
+                        "self-contradictory frame")
                 else:
-                    origin = "either a gutter was missed or these two sightings are not the same block"
+                    # The overlap test above is what this branch was missing until 2026-08-28,
+                    # and its absence sent an operator to the wrong frame on a live refusal: the
+                    # 8fb11094ef4d capture told frame 14 it "contradicted itself" when frame 14
+                    # had done nothing wrong. It had bounded one card AND owned a perfectly
+                    # ordinary DISJOINT fragment of the next one; some OTHER frame's missed
+                    # boundary had folded the two cards into a single group, which is what put
+                    # both of frame 14's sightings in front of this loop. The mirror of this
+                    # branch already existed in the complete-vs-complete loop above; it simply
+                    # had no counterpart here.
+                    origin = (
+                        f"both are frame {rep.frame_index}'s own sightings but their extents "
+                        "are DISJOINT: that frame bounded one card and separately saw a fragment "
+                        "of the next, and some OTHER frame's missed boundary folded the two into "
+                        f"one group — frame {rep.frame_index} is not disagreeing with itself, so "
+                        "look for the frame whose own block spans this boundary")
                 failures.append(
                     f"frame {other.frame_index} sees page rows {other.page_y0}..{other.page_y1} "
                     f"(its own frame rows {other.frame_y0}..{other.frame_y1}) where the block was "
@@ -2216,8 +2506,15 @@ _UNCERTAIN_HEART_NOTE = (
     "were never inside the analysed band; every heart ordinal below it would then be wrong")
 
 
-def _scroll_top_evidence(topmost: IndexedBlock, band_y0: int) -> bool:
-    """Whether anything actually SAW page background above this capture's topmost content.
+# The edge kinds that mean "this card's OWN top edge was visible on this row", as opposed to
+# "something stopped here and we cannot say why". Imported rather than re-listed so segment.py
+# stays the one place an edge kind is defined; `EDGE_SCROLL_TOP_MEDIA` belongs here because it
+# is a corner the guarded frame-0 conjunction proved by other means, not a weaker signal.
+_LIST_TOP_EDGE_KINDS = frozenset({EDGE_CARD_CORNER, EDGE_SCROLL_TOP_MEDIA})
+
+
+def _scroll_top_evidence(blocks: Sequence[IndexedBlock], band_y0: int) -> str | None:
+    """Whether this capture's own geometry corroborates the caller's `at_scroll_top` assertion.
 
     `at_scroll_top` is an assertion the caller makes and this module cannot verify — segment.py's
     docstring is explicit that nothing in a single frame's geometry distinguishes "the header is
@@ -2255,8 +2552,68 @@ def _scroll_top_evidence(topmost: IndexedBlock, band_y0: int) -> bool:
     row — and the gutter is 53px of a ~1027px card pitch, so roughly 1 scroll position in 20
     looks innocent by construction. This turns "undetectable" into "usually detected", and
     nothing more.
+
+    THE SECOND TEST, AND WHY THE FIRST ONE STOPPED WORKING ON ITS OWN (added 2026-08-28).
+    The background test above is purely NEGATIVE: it asks whether anything sat above the topmost
+    content, and treats "yes" as consistent with a scroll top. Hinge 10.1.0 pins a profile header
+    inside the analysed band, and that header sits below the band's first row on EVERY frame of a
+    capture, top or not. So the test that the corpus credits with refusing 21 of 21 and 9 of 10
+    falsely-asserted tops began returning True unconditionally — measured on the 2026-08-28
+    incident capture, where the topmost block starts at frame row 368 against a band opening at
+    300, at page offsets from 0 to 8485. It was catching nothing, and nothing said so.
+
+    So a POSITIVE test is required alongside it: the first real item must have been seen with its
+    OWN top edge — its rounded corner, or the separately guarded scroll-top media conjunction.
+    At a genuine list top that edge is visible and segment.py's corner test finds it (which is
+    exactly how item 1 gets bounded at all, `segment_frame`'s docstring). Past the top, the band
+    edge or a pinned header slices whatever card is there and its real top is off-band, so no
+    corner exists to find. [measured on the incident capture: frames 0 and 6 carry
+    `EDGE_CARD_CORNER` at the clip line; the six deep mid-scroll frames 13-18 carry
+    `EDGE_BACKGROUND_RUN` or `EDGE_UNANCHORED_ISLAND` and none carries a corner.]
+
+    A leading heartless, never-bounded block is skipped when looking for that first item, because
+    on a page-anchored header (10.0.x, and any future one that scrolls) that block IS the chrome
+    and the corner belongs to the card below it. That is the same shape the `ITEM_LEADING_CHROME`
+    relabelling below looks for, deliberately.
+
+    This test has the SAME residual as the first, for the same reason: a false top whose band
+    edge happens to land in a gutter exposes the next card's genuine corner. The two residuals
+    coincide rather than compound, so this remains "usually detected" — but it is now usually,
+    rather than never.
+
+    Returns None when the geometry corroborates the assertion, and otherwise the contradiction,
+    worded for the failure list. The reason is derived from whichever test actually failed rather
+    than being one fixed sentence: the two say different things about what to look at next, and a
+    message naming the wrong one sends an operator to the wrong place.
     """
-    return any(o.frame_y0 > band_y0 for o in topmost.observations)
+    if not blocks:
+        return None
+    if not any(o.frame_y0 > band_y0 for o in blocks[0].observations):
+        return (
+            f"at_scroll_top was asserted, but the topmost block at page rows "
+            f"{blocks[0].page_y0}..{blocks[0].page_y1} begins on the analysed band's own first "
+            f"row ({band_y0}) in every frame that saw it, which is what a card sliced by the "
+            "band edge looks like rather than the top of a profile — at a genuine scroll top "
+            "Hinge's header sits BELOW that row with page background above it (measured 34px "
+            "and 68px on the two calibration profiles). Heart ordinal 1 would not be the "
+            "profile's first heart, and nothing else in this result would say so")
+    candidates = blocks
+    if len(blocks) > 1 and blocks[0].kind == ITEM_PARTIAL and not blocks[0].hearts:
+        candidates = blocks[1:]
+    first_item = candidates[0]
+    if not any(o.top_kind in _LIST_TOP_EDGE_KINDS for o in first_item.observations):
+        seen = sorted({o.top_kind for o in first_item.observations if o.top_kind})
+        return (
+            f"at_scroll_top was asserted, and page background does sit above the topmost block, "
+            f"but no frame ever saw the first item's OWN top edge: the block at page rows "
+            f"{first_item.page_y0}..{first_item.page_y1} was seen "
+            f"{len(first_item.observations)} time(s) and its top read as {seen or ['nothing']} "
+            "every time, never a card corner. At a genuine scroll top item 1's rounded corner is "
+            "visible and is what bounds it; past the top, the band edge or a screen-pinned "
+            "header slices whatever card is there and its real top is off-band. Background above "
+            "the topmost block is not by itself evidence of a scroll top — a pinned header puts "
+            "it there on every frame of a capture")
+    return None
 
 
 def _split_on_bounded_cards(group: Sequence[BlockObservation], *, tolerance: int,
@@ -2377,6 +2734,8 @@ def _split_on_bounded_cards(group: Sequence[BlockObservation], *, tolerance: int
 def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
               card_x: tuple[int, int], extent_tolerance_px: int, min_item_gap_px: int,
               band_y0: int, include_notes: bool = False,
+              scroll_top_signal_confirmed: bool = False,
+              page_coverage: Sequence[tuple[int, int]] = (),
               ) -> (tuple[tuple[IndexedBlock, ...], tuple[str, ...]]
                     | tuple[tuple[IndexedBlock, ...], tuple[str, ...], tuple[str, ...]]):
     """Sightings in page space -> the ordered block list, the two index spaces, the failures, and
@@ -2391,6 +2750,11 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
     `band_y0` is the analysed band's first row, which every frame of one capture shares (the
     shift estimator refuses two frames of different sizes, so they cannot differ). It is used
     only by `_scroll_top_evidence`, and only when `at_scroll_top` is asserted.
+
+    `page_coverage` contains the page-space intervals scanned by failure-free segmentations.
+    It does not make a partial block croppable or resolve either of its edges. It answers only
+    the narrower ordinal-safety question below: whether every possible row between two already
+    bounded neighbouring blocks was inside the heart matcher's analysed band at least once.
     """
     failures: list[str] = []
     notes: list[str] = []
@@ -2412,16 +2776,18 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
     # be CONTRADICTED, and an unchallenged false assertion is the one error that produces a
     # confidently wrong index with every completeness property agreeing with it. See
     # `_scroll_top_evidence` for the geometry, the measurement and the residual it leaves.
-    top_confirmed = bool(blocks) and _scroll_top_evidence(blocks[0], band_y0)
-    if at_scroll_top and blocks and not top_confirmed:
-        failures.append(
-            f"at_scroll_top was asserted, but the topmost block at page rows "
-            f"{blocks[0].page_y0}..{blocks[0].page_y1} begins on the analysed band's own first "
-            f"row ({band_y0}) in every frame that saw it, which is what a card sliced by the "
-            "band edge looks like rather than the top of a profile — at a genuine scroll top "
-            "Hinge's header sits BELOW that row with page background above it (measured 34px "
-            "and 68px on the two calibration profiles). Heart ordinal 1 would not be the "
-            "profile's first heart, and nothing else in this result would say so")
+    # The geometry check is normally the last defence against a caller that merely *asserted*
+    # it started at the top. A live driver may, after this first fold, independently re-check
+    # the filter-chip signal on frame zero after this capture produced no pinned-signal evidence.
+    # That is stronger evidence than a rounded corner which the segmenter can miss
+    # where Hinge's name panel meets its first photo. It is deliberately an explicit second
+    # input rather than a looser edge predicate: direct/offline callers keep the ordinary
+    # geometry guard, and no other page contradiction is waived.
+    top_contradiction = (None if scroll_top_signal_confirmed
+                         else _scroll_top_evidence(blocks, band_y0))
+    top_confirmed = bool(blocks) and top_contradiction is None
+    if at_scroll_top and blocks and top_contradiction is not None:
+        failures.append(top_contradiction)
 
     # Hinge's scroll-top header chrome, and ONLY it: the topmost block, heartless, never bounded,
     # with real items below it, at a scroll-top the caller has affirmatively confirmed AND the
@@ -2458,6 +2824,39 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
         if block.kind == ITEM_LEADING_CHROME or block.hearts or block.complete:
             continue
         if any(later.hearts for later in blocks[i + 1:]):
+            # A partial block normally hard-stops here because an unseen extension may contain
+            # a heart and shift every ordinal below it. The live 2026-08-30 capture exposed the
+            # exact converse: Hinge's 37px "From people close to Katie" page heading was seen
+            # whole as pixels but neither edge was a gutter/corner, so it remained PARTIAL even
+            # though a failure-free frame had scanned the ENTIRE interval between the complete
+            # photo above and complete endorsement card below. In that shape there are no rows
+            # left outside the analysed band in which a heart could hide.
+            #
+            # Keep the block PARTIAL and uncroppable -- page coverage does not turn background
+            # edges into measured card edges. It only discharges `_UNCERTAIN_HEART_NOTE` when
+            # both physical bounds come from independent complete neighbours and one real frame
+            # searched every row between them. A band-edge card, missing neighbour, failed
+            # segmentation, or merely pieced-together coverage still takes the old hard stop.
+            bracketed_and_scanned = False
+            if 0 < i < len(blocks) - 1:
+                above, below = blocks[i - 1], blocks[i + 1]
+                bracketed_and_scanned = (
+                    above.complete and below.complete
+                    and above.page_y1 <= block.page_y0
+                    and block.page_y1 <= below.page_y0
+                    and any(covered_y0 <= above.page_y1
+                            and below.page_y0 <= covered_y1
+                            for covered_y0, covered_y1 in page_coverage)
+                )
+            if bracketed_and_scanned:
+                above, below = blocks[i - 1], blocks[i + 1]
+                notes.append(
+                    f"the heartless partial block at page rows {block.page_y0}..{block.page_y1} "
+                    f"is retained as uncroppable but is ordinal-safe: one failure-free frame "
+                    f"heart-scanned every page row {above.page_y1}..{below.page_y0} between "
+                    "its complete neighbouring blocks, so it has no unseen rows in which a "
+                    "heart could hide")
+                continue
             failures.append(
                 f"the block at page rows {block.page_y0}..{block.page_y1} "
                 + _UNCERTAIN_HEART_NOTE)
@@ -2482,32 +2881,70 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
 
 
 _FRAGMENT_OVERRUN_FAILURE = re.compile(
-    r"^frame (\d+) sees page rows .* — a fragment cannot reach past the card that contains it, so ")
+    r"^frame (?P<frame>\d+) sees page rows (?P<y0>\d+)\.\.(?P<y1>\d+) .*? where the block was "
+    r"bounded at (?P<by0>\d+)\.\.(?P<by1>\d+) by frame \d+ .* — a fragment cannot reach past "
+    r"the card that contains it, so ")
+_GROUP_AMBIGUOUS_FAILURE = re.compile(r"^block at page rows (\d+)\.\.(\d+) is ambiguous: ")
 
 
 def _fragment_overrun_frame_indices(failures: Sequence[str]) -> tuple[int, ...]:
     """Return the exact frames a fold proved crossed a bounded card, or ``()``.
 
-    This deliberately accepts no nearby failure wording.  An omission recovery is only justified
-    when *every* preliminary fold failure is the explicit partial-sighting-overruns-its-bounded-
-    card invariant from `_resolve_group`; a bad shift, two competing complete extents, uncertain
-    heart, or any unrelated assembly fault remains a refusal.  The numbers are output by this
-    module, not inferred from screenshot order or a heuristic score.
+    An omission recovery is only justified when every preliminary fold failure is the explicit
+    partial-sighting-overruns-its-bounded-card invariant from `_resolve_group`, or a consequence
+    of that same merge; a bad shift, two competing complete extents, an uncertain heart, or any
+    unrelated assembly fault remains a refusal.  The numbers are output by this module, not
+    inferred from screenshot order or a heuristic score.
+
+    TWO CORRECTIONS MADE 2026-08-28, both found on a live capture this returned ``()`` for.
+
+    ONE: the group-ambiguity failure no longer vetoes. It reads as an independent second fault,
+    and the original rule refused anything it did not recognise for exactly that reason. But it is
+    not independent — it is a DETERMINISTIC CONSEQUENCE of the same merge: two cards folded into
+    one group put two hearts in one group, so `_resolve_group` co-emits it on every bridge whose
+    lower card carries a heart, which is most of them. The recovery was therefore unreachable in
+    the common case while appearing to be available. It is admitted only when it names a block
+    the overrun failures ALSO name, which is what makes it the same merge rather than a second
+    one; an ambiguous block anywhere else still refuses.
+
+    TWO: the frames returned are the BRIDGING ones, not every frame the fold complained about.
+    A bridge drags its neighbours' ordinary sightings into the group, and those get an overrun
+    failure too — on the live capture that meant six frames were nominated when exactly one had
+    crossed anything. Dropping all six would have removed the only two complete sightings of the
+    card below and the last frame of the capture; dropping the one bridge yields a correct index.
+    A fragment BRIDGES when its own extent overlaps the bounded card and runs past it; one that
+    is disjoint from the bounded card crossed nothing. Both extents are already printed in the
+    failure, so the test is read off the numbers the operator can see rather than from a hidden
+    marker in the text. If the wording ever drifts out from under this regex the match simply
+    fails, no frames are nominated, and the recovery declines — the safe direction.
     """
     if not failures:
         return ()
-    indices: list[int] = []
+    bounded: set[tuple[int, int]] = set()
+    ambiguous: list[tuple[int, int]] = []
+    bridging: list[int] = []
     for failure in failures:
         match = _FRAGMENT_OVERRUN_FAILURE.match(failure)
-        if match is None:
+        if match is not None:
+            y0, y1 = int(match["y0"]), int(match["y1"])
+            by0, by1 = int(match["by0"]), int(match["by1"])
+            bounded.add((by0, by1))
+            if y0 < by1 and by0 < y1:                       # overlaps the card AND runs past it
+                bridging.append(int(match["frame"]))
+            continue
+        ambiguity = _GROUP_AMBIGUOUS_FAILURE.match(failure)
+        if ambiguity is None:
             return ()
-        indices.append(int(match.group(1)))
-    return tuple(sorted(set(indices)))
+        ambiguous.append((int(ambiguity.group(1)), int(ambiguity.group(2))))
+    if not bounded or any(extent not in bounded for extent in ambiguous):
+        return ()
+    return tuple(sorted(set(bridging)))
 
 
 def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, float],
                      like_template, like_threshold: float, at_scroll_top: bool,
                      identity_band: tuple[float, float, float, float] | None,
+                     scroll_top_signal_confirmed: bool = False,
                      animation_markers: Sequence[bool] | None = None,
                      video_mute_markers: Sequence[VideoMuteMarker] | None = None,
                      trust_window_px: int | None = None,
@@ -2558,6 +2995,13 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
     produces. Read that function for what it catches, what it cannot (roughly 1 scroll position
     in 20, where the band edge lands in a gutter instead of on a card), and why doc 5.5's
     filter-chips confirmation therefore remains a hard gate and not a formality.
+
+    ``scroll_top_signal_confirmed`` is normally False. It is reserved for the live Hinge driver
+    after an initial failed fold has reconfirmed the filter-chip signal on frame zero and found no
+    pinned-signal evidence in the same capture. In that narrow retry it suppresses only the
+    supplementary ``_scroll_top_evidence`` corner requirement; a missing rounded photo corner
+    must not undo independent positive proof that the profile is at its top. It does not waive
+    any other folding, heart, segmentation, identity, or correspondence failure.
 
     With `at_scroll_top=False` the ordinals are RELATIVE to whatever was in view — a validation
     pass measured a mid-profile window returning translation (2, 3, 4, 5, 6) for what were really
@@ -2710,11 +3154,32 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         probe_offsets, probe_chain_failures = _frame_offsets(candidate_shifts)
         probe_failures: tuple[str, ...] = ()
         if not probe_chain_failures and not any(seg.failures for seg in segmentations):
+            # Probe the same page the final fold would see. In particular, do not let a
+            # screen-pinned Hinge header or a repeatedly proven near-gutter merge reject a
+            # repair before the final assembly gets to apply those existing fail-closed rules.
+            probe_screen_fixed, _probe_island_notes = _screen_fixed_islands(
+                _islands(segmentations, probe_offsets))
+            probe_observations = _observations(
+                segmentations, probe_offsets, probe_screen_fixed)
+            probe_near_gutters = tuple(
+                (frame_index, run.y0 + offset, run.y1 + offset)
+                for frame_index, (segmentation, offset) in enumerate(
+                    zip(segmentations, probe_offsets, strict=True))
+                if offset is not None
+                for run in segmentation.runs
+                if (run.kind == RUN_TOO_LONG
+                    and min(_HEART_SEPARATED_NEAR_GUTTER_PX) <= run.height
+                    <= max(_HEART_SEPARATED_NEAR_GUTTER_PX)))
+            probe_observations, _probe_near_gutter_notes = _split_repeated_near_gutter_merges(
+                probe_observations, probe_near_gutters, tolerance=extent_tolerance_px)
             _probe_blocks, probe_failures, _probe_notes = _assemble(
-                _observations(segmentations, probe_offsets), at_scroll_top=at_scroll_top,
+                probe_observations, at_scroll_top=at_scroll_top,
                 card_x=segmentations[0].card_x, extent_tolerance_px=extent_tolerance_px,
                 min_item_gap_px=min_item_gap_px, band_y0=segmentations[0].band[0],
-                include_notes=True)
+                include_notes=True,
+                scroll_top_signal_confirmed=scroll_top_signal_confirmed,
+                page_coverage=_failure_free_page_coverage(
+                    segmentations, probe_offsets))
         return bool(probe_chain_failures or probe_failures or any(seg.failures for seg in segmentations))
 
     if repair_notes and repair_probe_failed(shifts):
@@ -2777,7 +3242,10 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             and not failed_segmentation_frames):
         probe_offsets, probe_chain_failures = _frame_offsets(shifts)
         if not probe_chain_failures:
-            probe_observations = _observations(segmentations, probe_offsets)
+            probe_screen_fixed, _probe_island_notes = _screen_fixed_islands(
+                _islands(segmentations, probe_offsets))
+            probe_observations = _observations(
+                segmentations, probe_offsets, probe_screen_fixed)
             probe_near_gutters = tuple(
                 (frame_index, run.y0 + offset, run.y1 + offset)
                 for frame_index, (segmentation, offset) in enumerate(
@@ -2794,7 +3262,10 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
                 card_x=segmentations[0].card_x,
                 extent_tolerance_px=extent_tolerance_px,
                 min_item_gap_px=min_item_gap_px, band_y0=segmentations[0].band[0],
-                include_notes=True)
+                include_notes=True,
+                scroll_top_signal_confirmed=scroll_top_signal_confirmed,
+                page_coverage=_failure_free_page_coverage(
+                    segmentations, probe_offsets))
             fold_contradiction_frames = _fragment_overrun_frame_indices(probe_failures)
     # One short, contiguous contradictory run is also eligible for the same conservative
     # recovery.  A white-on-white Hinge card boundary can remain invisible for four adjacent
@@ -2868,20 +3339,20 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         for omitted_frames in candidate_runs:
             omitted_set = set(omitted_frames)
             reduced_frames = tuple(frame for i, frame in enumerate(frames) if i not in omitted_set)
-            # The direct bridge spans the omitted frames plus the next real read.  Its maximum
-            # is therefore a known multiple of the driver's own one-gesture ceiling, not an
-            # inferred page offset.  Widen the estimator only enough to see that bridge; every
-            # other reduced-chain pair is checked back against the normal one-step ceiling below.
-            recovery_trust_window_px = trust_window_px
-            if failed_segmentation_frames or fold_contradiction_frames:
-                default_window = (segmentations[0].band[1] - segmentations[0].band[0]) // 2
-                recovery_trust_window_px = max(
-                    default_window if trust_window_px is None else trust_window_px,
-                    (len(omitted_frames) + 1) * enum_step_ceiling_px)
+            # The direct bridge spans the omitted frames plus the next real read, regardless of
+            # WHY a frame was omitted. Its maximum is therefore a known multiple of the driver's
+            # own one-gesture ceiling, not an inferred page offset. Widen only that fresh bridge
+            # enough to be measured; `ordinary_pairs_stay_one_step` below still rejects every
+            # non-bridge reduced-chain pair above the normal one-step ceiling.
+            default_window = (segmentations[0].band[1] - segmentations[0].band[0]) // 2
+            recovery_trust_window_px = max(
+                default_window if trust_window_px is None else trust_window_px,
+                (len(omitted_frames) + 1) * enum_step_ceiling_px)
             recovered = build_item_index(
                 reduced_frames, content_band=content_band, like_template=like_template,
                 like_threshold=like_threshold, at_scroll_top=at_scroll_top,
                 identity_band=identity_band,
+                scroll_top_signal_confirmed=scroll_top_signal_confirmed,
                 animation_markers=tuple(value for i, value in enumerate(marker_evidence)
                                         if i not in omitted_set),
                 video_mute_markers=tuple(
@@ -2898,11 +3369,14 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             # The source index shifts by one after the omission, but the bridge always starts at
             # the original left neighbour.  ``usable`` also rules out any other broken pair.
             bridge_shift = recovered.shifts[bridge[0]] if recovered.usable else None
+            bridge_step_ceiling_px = (len(omitted_frames) + 1) * enum_step_ceiling_px
             ordinary_pairs_stay_one_step = all(
                 pair_index == bridge[0] or shift.delta_px is not None
                 and 0 <= shift.delta_px <= enum_step_ceiling_px
                 for pair_index, shift in enumerate(recovered.shifts))
             if (bridge_shift is not None and bridge_shift.status == SHIFT_MEASURED
+                    and bridge_shift.delta_px is not None
+                    and 0 <= bridge_shift.delta_px <= bridge_step_ceiling_px
                     and ordinary_pairs_stay_one_step):
                 candidates.append((
                     (bridge_shift.agreeing, bridge_shift.confidence,
@@ -2990,7 +3464,12 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         blocks: tuple[IndexedBlock, ...] = ()
         notes: tuple[str, ...] = repair_notes
     else:
-        observations = _observations(segmentations, offsets)
+        # Hinge 10.1.0 pins a profile header to the SCREEN inside the analysed band. segment.py
+        # reports such a strip as `BLOCK_UNANCHORED` without deciding what it is (one frame
+        # cannot); this capture's own frames decide it, and a proven one is held out of page
+        # space entirely rather than placed at a fabricated `frame_row + offset`.
+        screen_fixed, island_notes = _screen_fixed_islands(_islands(segmentations, offsets))
+        observations = _observations(segmentations, offsets, screen_fixed)
         # A 59..64px page-background run stays `RUN_TOO_LONG` in one frame unless that frame's
         # own hearts prove a boundary.  Preserve that conservative segmenter rule, but let the
         # page fold use the stronger cross-frame proof when it is present (see helper).
@@ -3008,9 +3487,27 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         blocks, assembly_failures, assembly_notes = _assemble(
             observations, at_scroll_top=at_scroll_top, card_x=card_x,
             extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
-            band_y0=segmentations[0].band[0], include_notes=True)
-        notes = repair_notes + near_gutter_notes + assembly_notes
+            band_y0=segmentations[0].band[0], include_notes=True,
+            scroll_top_signal_confirmed=scroll_top_signal_confirmed,
+            page_coverage=_failure_free_page_coverage(segmentations, offsets))
+        notes = repair_notes + island_notes + near_gutter_notes + assembly_notes
         failures.extend(assembly_failures)
+        # DEFENCE IN DEPTH. segment.py refuses to label any strip that holds a heart, so this is
+        # unreachable today. It exists so that a future loosening of that clause cannot silently
+        # drop a likeable item: a dropped heart renumbers every ordinal below it, which is the
+        # one error class this whole module is built to make impossible.
+        # Scoped to `BLOCK_UNANCHORED`, not to the extent alone: another frame could in principle
+        # hold a real card at the same frame rows, and calling that a dropped heart would be a
+        # false alarm about a block that was never held out.
+        failures.extend(
+            f"the strip at frame rows {block.y0}..{block.y1} was proven fixed to the screen and "
+            f"held out of the page, but it carries {len(block.hearts)} like heart(s) at "
+            f"y={[y for _, y in block.hearts]} in frame {seg.frame_digest[:12]} — holding it out "
+            "would drop a likeable item and renumber every heart ordinal below it"
+            for seg, offset in zip(segmentations, offsets, strict=True) if offset is not None
+            for block in seg.blocks
+            if (block.kind == BLOCK_UNANCHORED
+                and (block.y0, block.y1) in screen_fixed and block.hearts))
 
     placed = [
         (seg, off) for seg, off in zip(segmentations, offsets, strict=True)
@@ -3026,7 +3523,16 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
     # against it), and it is `item_nav`'s entry gate that refuses to NAVIGATE with one. Folding
     # it into `usable` would conflate "this capture contradicts itself" with "this capture cannot
     # prove whose it is", which are different facts with different fixes.
-    identity = capture_profile_identity(frames, identity_band=identity_band)
+    # `offsets` are handed over so a NO-IDENTITY result can say WHICH of the two causes it has.
+    # Every frame reading as the filter-chips row means either the capture never scrolled far
+    # enough to reveal the sticky header, or the band is PINNED and the check is structurally
+    # dead on this app version — opposite fixes, and telling them apart needs proof that the page
+    # actually moved between the frames, which only these offsets carry. Without them the reason
+    # falls back to blaming the capture, which on Hinge 10.1.0 sends an operator to re-run a
+    # capture forever against a check that cannot answer. Identity itself is unchanged: it fails
+    # closed either way, and `item_nav` refuses to navigate without a fingerprint.
+    identity = capture_profile_identity(
+        frames, identity_band=identity_band, page_offsets=offsets)
     return ItemIndex(
         blocks=blocks, frames=segmentations, shifts=shifts, offsets=tuple(offsets),
         page_span=page_span, at_scroll_top=at_scroll_top, reached_end=reached_end,

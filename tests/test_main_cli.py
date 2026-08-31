@@ -57,6 +57,32 @@ def test_hub_make_launchers_flag_skips_serve(monkeypatch):
     assert made == ["w.yaml"] and served == []
 
 
+def test_make_launchers_does_not_require_runtime_dotenv_dependency(monkeypatch):
+    """A launcher is the setup path for a fresh checkout, before extras are installed."""
+    made = []
+    monkeypatch.setitem(sys.modules, "dotenv", None)
+    monkeypatch.setattr("operation_love.hub.make_launchers", lambda config: made.append(config))
+
+    _run(monkeypatch, ["hub", "--make-launchers", "--config", "fresh.yaml"])
+
+    assert made == ["fresh.yaml"]
+
+
+@pytest.mark.parametrize("argv, message", [
+    (["stats", "--port", "9000"], "--port is only valid"),
+    (["run", "--no-browser"], "--no-browser is only valid"),
+    (["bugreport", "--make-launchers"], "--make-launchers is only valid"),
+    (["hub", "--port", "0"], "--port must be an integer"),
+    (["hub", "--make-launchers", "--no-browser"], "cannot be used"),
+])
+def test_hub_only_cli_flags_are_never_silently_ignored(monkeypatch, capsys, argv, message):
+    with pytest.raises(SystemExit) as exc_info:
+        _run(monkeypatch, argv)
+
+    assert exc_info.value.code == 2
+    assert message in capsys.readouterr().err
+
+
 def test_no_command_defaults_to_run(monkeypatch):
     calls = []
     monkeypatch.setattr("operation_love.supervisor.run", lambda config: calls.append(config))

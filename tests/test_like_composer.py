@@ -198,6 +198,21 @@ def test_rejects_undecodable_frame_bytes():
         locate_inline_composer(b"not a PNG", _TEMPLATE)
 
 
+@pytest.mark.parametrize("image", [
+    np.empty((0, _W), dtype=np.uint8),
+    np.empty((_H, 0), dtype=np.uint8),
+    np.empty((_H, _W, 3), dtype=np.uint8),
+])
+def test_reused_image_must_be_a_nonempty_grayscale_buffer(image):
+    with pytest.raises(ComposerDetectionError, match="non-empty grayscale"):
+        locate_inline_composer(_inline_composer(), _TEMPLATE, image=image)
+
+
+def test_boolean_composer_threshold_is_not_accepted_as_a_number():
+    with pytest.raises(ValueError, match="finite correlation"):
+        locate_inline_composer(_inline_composer(), _TEMPLATE, threshold=True)
+
+
 def test_rejects_missing_confirmation_even_when_input_and_cta_geometry_are_present():
     canvas = np.full((_H, _W), _BG, dtype=np.uint8)
     canvas[_COMMENT.y0:_COMMENT.y0 + 2, _COMMENT.x0:_COMMENT.x1] = 222

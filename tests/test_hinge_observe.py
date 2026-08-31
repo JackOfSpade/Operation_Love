@@ -8,6 +8,7 @@ which is enough for pass/none/stop/timeout; the region-based LIKE path is driven
 monkeypatching _split_diff with scripted (top, bottom) deltas. Real coordinates and
 diff thresholds are confirmed live on a finished profile (see hinge.py header).
 """
+import hashlib
 import math
 import random
 from types import SimpleNamespace
@@ -367,7 +368,9 @@ def test_capture_carries_one_contradictory_frame_to_index_rebuild(monkeypatch):
     profile = drv._capture_current()
 
     assert profile is not None
-    assert calls == [True, True]        # the second permit stays available until a second fault
+    # The clean frame itself is planned while the fallback is still permitted; its measured
+    # result closes the window for every later frame (pinned by the disjoint-run test below).
+    assert calls == [True, True]
     assert indexed == [[b"a", b"b"]]
 
 
@@ -448,6 +451,41 @@ def test_capture_refuses_a_fifth_contradictory_frame(monkeypatch):
     assert drv._capture_current() is not None
     assert calls == [True, True, True, True, False]
     assert indexed == []
+
+
+def test_capture_refuses_a_second_disjoint_contradictory_run(monkeypatch):
+    """The indexer can omit one contiguous window, never two separated bad-frame runs."""
+    adb = FakeAdb([b"a", b"b", b"c", b"c"])
+    drv = _drv(adb, scroll_captures=4)
+    calls = []
+    indexed = []
+
+    monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
+    monkeypatch.setattr(drv, "_confirm_enumeration_top", lambda: "")
+
+    def plan(_frame, _lane, *, allow_segmentation_failure_fallback=False):
+        calls.append(allow_segmentation_failure_fallback)
+        if len(calls) == 3:
+            assert not allow_segmentation_failure_fallback
+            raise hinge.ScrollStepError("synthetic disjoint contradiction")
+        return SimpleNamespace(
+            frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
+            basis=(hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK if len(calls) == 1
+                   else "measured"),
+            spacing=SimpleNamespace(measured=False, px=None),
+            reason="synthetic contradiction")
+
+    monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
+    monkeypatch.setattr(drv, "_index_captured_items",
+                        lambda photos, should_stop=None: indexed.append(list(photos)) or "")
+
+    profile = drv._capture_current()
+
+    assert profile is not None
+    assert calls == [True, True, False]
+    assert indexed == []
+    assert "frame 2 of this profile" in profile.items_unavailable
+    assert "synthetic disjoint contradiction" in profile.items_unavailable
 
 
 def test_auto_policy_varies_read_geometry_dwell_and_only_raises_capture_ceiling(monkeypatch):
@@ -1723,7 +1761,7 @@ def test_wait_for_decision_records_pass_diagnostics_in_the_debug_log(monkeypatch
     assert decisions[0]["gesture"] == "pass"
 
 
-def test_observe_scroll_shift_match_record_carries_sig_index_shift_overlap_rows_and_name_read(
+def test_observe_scroll_shift_match_record_carries_sig_index_shift_overlap_rows_and_safe_ocr_metadata(
         monkeypatch):
     """Observability fix motivated directly by the reported incident: the exact record type
     that was written while wait_for_decision was actually looking at a DIFFERENT woman's
@@ -1772,7 +1810,8 @@ def test_observe_scroll_shift_match_record_carries_sig_index_shift_overlap_rows_
     assert rec["shift"] == shift
     assert rec["overlap_rows"] == band_h - shift
     assert rec["band_rows"] == band_h
-    assert rec["name_read"] is None    # identity never reached "top" here (raw bytes -> "unknown")
+    assert "name_read" not in rec     # raw OCR transcript must not enter action records
+    assert rec["ocr_attempts"] == []  # identity never reached "top" here (raw bytes -> "unknown")
 
 
 # --- observe: identity-anchor + gesture-corroboration redesign ------------------------
@@ -1907,13 +1946,9 @@ def test_identity_new_profile_plus_deck_ready_and_settle_confirms_a_pass(monkeyp
     assert drv.wait_for_decision(timeout=5.0) is False
 
 
-def test_repeated_tight_name_overrides_weak_pixel_same_and_records_the_real_pass(monkeypatch):
-    """The complete no-touch-data path for the Allison -> Brittany missed X incident.
-
-    One OCR read may only make a candidate. The same clean next-profile name on the settled
-    confirm frame, with the existing deck-ready proof, is sufficient to recover the real pass
-    even though both background-dominated pixel comparisons incorrectly say ``same``.
-    """
+def test_repeated_tight_name_cannot_override_weak_pixel_same_without_canonical_header_proof(
+        monkeypatch):
+    """A tight/local candidate is diagnostic only, not canonical-header advance proof."""
     import numpy as np
 
     adb = FakeAdb([b"allison", b"brittany"], advance_on_screencap=True)
@@ -1929,13 +1964,9 @@ def test_repeated_tight_name_overrides_weak_pixel_same_and_records_the_real_pass
     monkeypatch.setattr(drv, "_ocr_band",
                         lambda frame, rect, psm="7": "Brittany" if psm == "7" else None)
 
-    assert drv.wait_for_decision(timeout=5.0) is False
+    assert drv.wait_for_decision(timeout=5.0) is None
     decisions = [fields for name, fields in drv._dbg.calls if name == "observe_decision"]
-    assert len(decisions) == 1
-    assert decisions[0]["decision"] == "pass"
-    assert decisions[0]["gesture"] == "no_data"
-    assert decisions[0]["identity_name_candidate"] == "Brittany"
-    assert decisions[0]["confirm_identity_name_candidate"] == "Brittany"
+    assert not decisions
 
 
 def test_two_different_tight_ocr_candidates_do_not_create_a_no_touch_pass(monkeypatch):
@@ -2201,6 +2232,26 @@ def test_identity_top_name_ocr_uses_the_name_line_not_pronouns_or_activity(monke
     assert drv._identity_top_name_verdict == "new"
 
 
+def test_identity_top_name_pronoun_cannot_fuzzy_match_a_short_stored_name(monkeypatch):
+    """The Ery -> Roisin incident: ``her`` scored as a fuzzy match for stored ``Ery``.
+
+    Pronouns are Hinge header metadata, not alternate spellings of the profile name. The clean
+    first-line Roisin read must remain a new-name candidate for the caller's repeated-frame gate.
+    """
+    drv = _top_state_drv(monkeypatch, stored_name="Ery")
+    monkeypatch.setattr(
+        drv, "_ocr_band",
+        lambda frame, rect, psm="7": (
+            "Roisin\nshe her\nMe in the wild" if psm == "6" else None),
+    )
+
+    state, _dist = drv._identity_of(b"roisin-after-x")
+
+    assert state == "new"
+    assert drv._identity_top_name_verdict == "new"
+    assert drv._identity_name_candidate == "Roisin"
+
+
 def test_tight_name_ocr_overrules_a_weak_pixel_same_for_a_different_profile(monkeypatch):
     """Regression for the Allison -> Brittany missed X incident.
 
@@ -2388,6 +2439,8 @@ def test_scroll_top_pass_swallowed_by_content_match_is_now_correctly_a_pass_via_
     drv._current_sigs = [seen_ds]
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: chrome_sig)
     monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: cur_ds)
+    monkeypatch.setattr(hinge, "confirm_scroll_top",
+                        lambda *_a, **_kw: SimpleNamespace(confirmed=True))
     monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     monkeypatch.setattr(drv, "_ocr_band",
@@ -2473,6 +2526,42 @@ def test_identity_top_name_ocr_short_candidate_token_never_becomes_new(monkeypat
     assert state == "top"
 
 
+@pytest.mark.parametrize(
+    "stored_name, expected_state, expected_candidate",
+    [("Aisha", "new", "S"), ("S", "same", None), ("Samantha", "same", None)],
+)
+def test_identity_top_name_ocr_accepts_only_structured_single_letter_signals_name(
+        monkeypatch, stored_name, expected_state, expected_candidate):
+    """The Aisha -> S incident: Hinge itself binds the initial to the profile-name slot.
+
+    The exact Signals banner may recover the displayed one-letter name, while the same read for
+    a captured S (or a conservatively prefix-matching Samantha) must veto an advance.
+    """
+    drv = _top_state_drv(monkeypatch, stored_name=stored_name)
+    monkeypatch.setattr(
+        drv, "_ocr_band",
+        lambda frame, rect, psm="7", **_kwargs: (
+            "S shows thoughtful signals" if psm == "6" else None))
+
+    state, _dist = drv._identity_of(b"frame")
+
+    assert state == expected_state
+    assert drv._identity_name_candidate == expected_candidate
+
+
+@pytest.mark.parametrize("ocr_text", ["S", "S Active today", "X shows signals"])
+def test_identity_top_name_ocr_unstructured_single_letter_stays_inconclusive(
+        monkeypatch, ocr_text):
+    """A lone initial has no authority unless Hinge's complete fixed banner binds it."""
+    drv = _top_state_drv(monkeypatch, stored_name="Aisha")
+    monkeypatch.setattr(
+        drv, "_ocr_band",
+        lambda frame, rect, psm="7", **_kwargs: ocr_text if psm == "6" else None)
+
+    assert drv._identity_of(b"frame")[0] == "top"
+    assert drv._identity_name_candidate is None
+
+
 # --- observe: PASS needs stable positive identity-new evidence on BOTH frames ----------------
 def test_transient_pixel_new_followed_by_scroll_top_never_produces_a_pass(monkeypatch):
     """Exact regression for f192396916e8.
@@ -2513,13 +2602,91 @@ def test_name_derived_new_reproduced_on_confirm_frame_produces_a_pass(monkeypatc
     drv._identity_name = "Zorva"
     drv._identity_sig = None
     drv._identity_top_sig = chrome_sig
+    drv._dbg = _FakeDbg()
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: chrome_sig)
+    monkeypatch.setattr(hinge, "confirm_scroll_top",
+                        lambda *_a, **_kw: SimpleNamespace(confirmed=True))
     monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "qelix" if psm == "6" else None)
+                        lambda frame, rect, psm="7", **_kwargs: (
+                            "qelix\nprivate OCR transcript" if psm == "6" else None))
 
     assert drv.wait_for_decision(timeout=5.0) is False
+    decision = next(fields for name, fields in drv._dbg.calls if name == "observe_decision")
+    serialized = repr(decision)
+    assert "identity_name_read" not in decision
+    assert "confirm_identity_name_read" not in decision
+    assert "private OCR transcript" not in serialized
+    assert "qelix" not in serialized.casefold()
+    assert decision["identity_name_candidate_sha256"] == hashlib.sha256(
+        b"qelix").hexdigest()
+    assert decision["identity_ocr_attempts"][0]["token_count"] == 0
+    assert all(set(attempt) == {
+        "recipe", "digest", "verdict", "candidate_sha256", "token_count",
+    }
+               for attempt in decision["identity_ocr_attempts"])
+
+
+def test_observe_name_proof_refuses_hybrid_primary_and_fallback_reads(monkeypatch):
+    """Matching text from different OCR geometries is not a repeated proof."""
+    import numpy as np
+
+    chrome_sig = np.full((16, 64), 200, dtype="int16")
+    adb = FakeAdb([b"base", b"primary", b"fallback"], advance_on_screencap=True)
+    drv = _drv(adb)
+    drv._identity_name = "Zorva"
+    drv._identity_top_sig = chrome_sig
+    drv._dbg = _FakeDbg()
+    monkeypatch.setattr(hinge, "_band", lambda *_a: chrome_sig)
+    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda _frame: True)
+    monkeypatch.setattr(drv, "_changed", lambda _a, _b: False)
+    monkeypatch.setattr(hinge, "confirm_scroll_top",
+                        lambda *_a, **_kw: SimpleNamespace(confirmed=True))
+    monkeypatch.setattr(drv, "_note_observe_waiting",
+                        lambda reason, *_a, **_kw: reason == "not_settled")
+
+    def ocr(frame, rect, *, psm="7", **_kwargs):
+        if psm != "6":
+            return None
+        if frame == b"primary":
+            return "Qelix" if tuple(rect) == drv.identity_top_name_band else None
+        if frame == b"fallback":
+            return ("pronouns Active now" if tuple(rect) == drv.identity_top_name_band
+                    else "Qelix")
+        return None
+
+    monkeypatch.setattr(drv, "_ocr_band", ocr)
+
+    assert drv.wait_for_decision(timeout=5.0) is None
+    assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
+
+
+def test_observe_name_proof_refuses_local_top_when_canonical_top_is_pinned(monkeypatch):
+    """A capture-local top signature cannot authorize either frame of an Observe PASS."""
+    import numpy as np
+
+    chrome_sig = np.full((16, 64), 200, dtype="int16")
+    adb = FakeAdb([b"base", b"new", b"new"], advance_on_screencap=True)
+    drv = _drv(adb)
+    drv._identity_name = "Zorva"
+    drv._identity_top_sig = chrome_sig
+    drv._dbg = _FakeDbg()
+    monkeypatch.setattr(hinge, "_band", lambda *_a: chrome_sig)
+    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+    monkeypatch.setattr(drv, "_observe_deck_ready", lambda _frame: True)
+    monkeypatch.setattr(drv, "_changed", lambda _a, _b: False)
+    monkeypatch.setattr(drv, "_ocr_band",
+                        lambda _frame, _rect, *, psm="7", **_kw: "Qelix" if psm == "6" else None)
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top",
+        lambda *_a, **_kw: SimpleNamespace(confirmed=False, state="pinned", reason="pinned row"))
+    monkeypatch.setattr(drv, "_note_observe_waiting",
+                        lambda reason, *_a, **_kw: reason == "not_settled")
+
+    assert drv.wait_for_decision(timeout=5.0) is None
+    assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
 
 
 # --- observe: Layer 1b hole 3 (informational) -- bound _ocr_band's tesseract cost with a cache
@@ -2630,6 +2797,56 @@ def test_scroll_top_name_native_retry_keeps_noise_inconclusive(monkeypatch):
     assert drv._identity_of(b"AMBIGUOUS_PROFILE")[0] == "top"
     assert drv._identity_top_name_verdict is None
     assert drv._identity_name_candidate is None
+
+
+def test_scroll_top_name_compact_fallback_recovers_lara_after_broad_prompt_read(monkeypatch):
+    """The Lara incident: both broad recipes read only metadata/prompt, while the contained
+    compact fallback returns the actual first name.  Its provenance must remain distinct."""
+    drv = _top_state_drv(monkeypatch, stored_name="Emily")
+    calls = []
+
+    def ocr(_frame, rect, *, psm="7", upscale=3, **_kwargs):
+        calls.append((tuple(rect), psm, upscale))
+        if psm == "7":
+            return None
+        if tuple(rect) == drv.identity_top_name_band:
+            return "she her hers Active now\nAs seen on my Mom's fridge"
+        return "Lara\nshe her hers Active now"
+
+    monkeypatch.setattr(drv, "_ocr_band", ocr)
+
+    assert drv._identity_of(b"LARA_TOP")[0] == "new"
+    assert drv._identity_name_candidate == "Lara"
+    assert drv._identity_name_candidate_source == "top_card_header_fallback"
+    assert calls[-1] == (drv.identity_top_name_fallback_band, "6", 3)
+    attempts = drv._identity_ocr_attempts
+    assert [a["recipe"] for a in attempts] == [
+        "identity_band_psm7_3x", "top_card_header_psm6_3x",
+        "top_card_header_psm6_native", "top_card_header_fallback_psm6_3x",
+    ]
+    assert all("text" not in attempt and "text_sha256" in attempt for attempt in attempts)
+
+
+@pytest.mark.parametrize("fallback_text, expected_state", [
+    ("Emily", "same"),
+    ("Lara Michelle", "top"),
+    ("she her hers Active now", "top"),
+])
+def test_scroll_top_name_compact_fallback_keeps_stored_multiple_and_prompt_reads_closed(
+        monkeypatch, fallback_text, expected_state):
+    """The compact retry preserves the existing stored-name veto and exact-one parser."""
+    drv = _top_state_drv(monkeypatch, stored_name="Emily")
+
+    def ocr(_frame, rect, *, psm="7", upscale=3, **_kwargs):
+        if psm == "7":
+            return None
+        if tuple(rect) == drv.identity_top_name_band:
+            return "she her hers Active now"
+        return fallback_text
+
+    monkeypatch.setattr(drv, "_ocr_band", ocr)
+    assert drv._identity_of(b"TOP")[0] == expected_state
+    assert (drv._identity_name_candidate is None) == (expected_state != "new")
 
 
 def test_ocr_band_preserves_lines_and_separates_punctuation(monkeypatch):
@@ -4845,6 +5062,21 @@ def test_like_vs_scroll_still_falls_back_to_photos_when_the_header_is_not_visibl
     monkeypatch.setattr(hinge, "_band", lambda f, rect: top)     # -> 'top', header not visible
 
     assert drv._is_current_profile_frame(b"scrolled-back-to-top") is True
+
+
+def test_current_profile_diagnostics_keep_original_signature_index_after_none_slots(monkeypatch):
+    """A diagnostic index must point at the capture deque, not its filtered position."""
+    import numpy as np
+
+    drv = _drv(FakeAdb([b"a"]), observe_name_ocr=False)
+    target = np.full((24, 24), 50, dtype="int16")
+    drv._current_sigs = [None, np.zeros((24, 24), dtype="int16"), target]
+    monkeypatch.setattr(drv, "_identity_of", lambda _frame: ("top", None))
+    monkeypatch.setattr(hinge, "_downsample", lambda _frame: target)
+
+    diagnostics = {}
+    assert drv._is_current_profile_frame(b"matching-third-capture", diagnostics=diagnostics)
+    assert diagnostics["current_content_exact_min_index"] == 2
 
 
 # --- review findings: identity precedence, like-flow corroboration, capture split ---------

@@ -138,6 +138,7 @@ class _TrainingDriver:
         self.opener_enabled = []
         self.like_calls = []
         self.stop_callbacks = []
+        self.failure_snapshots = []
 
     def set_auto_session_policy(self, policy):
         self.policies.append(policy)
@@ -178,6 +179,9 @@ class _TrainingDriver:
 
     def landed_auto_opener_evidence(self):
         return {"evidence_id": "verified-landed-composer"}
+
+    def snapshot_failure(self, exc):
+        self.failure_snapshots.append(exc)
 
     def close(self):
         self.closed = True
@@ -301,6 +305,35 @@ def test_cancelled_or_failed_driver_action_never_creates_training_label(after_ch
     assert result["status"] == expected
     assert events[-1] == ("hub_complete", expected)
     assert decider.decide_calls == 0
+
+
+def test_stop_before_training_decision_is_not_captured_as_an_unexpected_failure():
+    """A Hub Stop while the typed draft awaits review is an expected cancellation.
+
+    The concrete Hinge driver raises ActionCancelled after its review callback returns the
+    stop sentinel.  Keep that distinction at the worker loop boundary: it must close cleanly
+    without asking the debug logger to create an ``unexpected`` error screenshot.
+    """
+    worker, driver, decider, opener, store, bridge, events = _new_worker()
+
+    def stop_at_review(opener_text, item_index=None, *, model_item_index=None, should_stop=None):
+        driver.like_calls.append((opener_text, item_index, model_item_index))
+        assert driver._decision is not None
+        assert driver._decision(_FRAME, {"evidence_id": "verified-composer"}) == "stop"
+        raise ActionCancelled("action cancelled because the run is stopping before training decision")
+
+    driver.like = stop_at_review
+    worker.start()
+    _wait_until(lambda: _checkpoint(bridge))
+    worker.stop_event.set()
+    worker.join(_TIMEOUT_S)
+
+    assert not worker.is_alive()
+    assert driver.failure_snapshots == []
+    assert store.decisions == store.profiles == store.labels == []
+    assert opener.commits == []
+    assert decider.decide_calls == 0
+    assert driver.closed
 
 
 def test_stale_or_absent_training_action_never_creates_label():

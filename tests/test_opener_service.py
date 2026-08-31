@@ -2373,7 +2373,7 @@ def test_redundancy_markers_reach_the_ring_buffer_and_never_reject_the_opener(ca
 
     out = s.maybe_opener("r", "hinge", object())
 
-    assert out.text.startswith("That view by the sauna")   # sent, despite two markers
+    assert out.text.startswith("That view by the sauna")   # returned despite two markers
     assert s.disabled is False and s.stop_requested is False
     assert s.exhausted_reason is None and s.last_skip_reason is None
     assert st.rejections == []                              # never a rejection, by design
@@ -2382,7 +2382,53 @@ def test_redundancy_markers_reach_the_ring_buffer_and_never_reject_the_opener(ca
     assert entry["redundancy_markers"] == _RedundantClient.markers
     output = capsys.readouterr().out
     assert "restates 2 word(s) from its own `referenced` note" in output
-    assert "Logged only, never a rejection." in output
+    assert "immediate-flow opener" in output
+    assert "Delivery is not verified here" in output
+    assert "never a rejection." in output
+
+
+@pytest.mark.parametrize("generation_kwargs", [
+    pytest.param({"stage": True}, id="training_or_auto_stage"),
+    pytest.param({"advisory": True}, id="advisory_stage"),
+])
+def test_staged_redundancy_log_leaves_draft_lifecycle_to_the_lower_level_monitor(
+        capsys, generation_kwargs):
+    """Training/Observe drafts can become a Dislike, Stop, or pre-send refusal.
+
+    The lower-level parser monitor retains the draft diagnostic.  The service must add no
+    lifecycle claim until a Like actually lands, so an uncommitted pick exercises the exact
+    Training Dislike/abandoned-draft boundary from the reported run.
+    """
+    store = _Store()
+    service = OpenerService(_RedundantClient(), _Tracker(), store, "casual")
+
+    pick = service.maybe_opener("run", "hinge", object(), **generation_kwargs)
+
+    assert pick is not None
+    assert store.openers == []
+    assert service.recent_openers_snapshot() == []
+    output = capsys.readouterr().out
+    assert "being sent" not in output
+    assert "staged draft" not in output
+    assert "immediate-flow opener" not in output
+    assert "committed Like opener" not in output
+
+
+def test_staged_redundancy_log_reports_a_landed_like_only_after_commit(capsys):
+    store = _Store()
+    service = OpenerService(_RedundantClient(), _Tracker(), store, "casual")
+
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
+    generated = capsys.readouterr().out
+    assert "staged draft" not in generated
+    assert "immediate-flow opener" not in generated
+    assert "committed Like opener" not in generated
+
+    assert service.commit_opener(pick, decision_source="manual") is True
+
+    committed = capsys.readouterr().out
+    assert committed.count("committed Like opener restates 2 word(s)") == 1
+    assert "never a rejection." in committed
 
 
 def test_a_non_list_redundancy_markers_value_degrades_to_an_empty_list():

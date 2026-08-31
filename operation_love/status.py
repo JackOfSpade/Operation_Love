@@ -180,6 +180,9 @@ class RunStatus:
         self.labels = labels
         self.ranker_ready = ranker_ready
         self.budget_spent = 0.0
+        # Compatibility field: accounted model results whose usage reached CostTracker, not
+        # HTTP request attempts and not necessarily committed/sent openers. Gemini fallback
+        # failures are logged separately and do not increment this value.
         self.openers = 0
         self.running = True
         # True from the moment run()'s shutdown `finally` sets stop_event until the run

@@ -73,6 +73,12 @@ def _list_ready_devices(adb_path: str = "adb") -> list[str]:
     except FileNotFoundError:
         print(f"ERROR: adb binary not found ({adb_path!r} not on PATH).", file=sys.stderr)
         sys.exit(1)
+    except OSError as exc:
+        # A path can exist but still be non-executable (or be denied by host policy).  This is
+        # an operator-facing preflight, so turn every launch failure into the same clean refusal
+        # rather than exposing a traceback before any capture begins.
+        print(f"ERROR: could not run `adb devices`: {exc}", file=sys.stderr)
+        sys.exit(1)
     except subprocess.TimeoutExpired:
         print("ERROR: `adb devices` timed out.", file=sys.stderr)
         sys.exit(1)
@@ -141,6 +147,7 @@ def capture(*, adb, seconds: float, interval: float, out_dir: Path,
     start_wall = time.monotonic()
     start_utc = datetime.now(timezone.utc)
     interrupted = False
+    capture_error: str | None = None
 
     try:
         while (time.monotonic() - start_wall) < seconds:
@@ -149,6 +156,14 @@ def capture(*, adb, seconds: float, interval: float, out_dir: Path,
                 png = adb.screencap()
             except Exception as exc:  # noqa: BLE001 — report and stop; manifest still written
                 print(f"\nERROR: screencap failed: {exc}", file=sys.stderr)
+                # A partial capture is still useful evidence, but it is not a successful one.
+                # The prior manifest marked this identical to a time-complete run and printed
+                # "Done", inviting a later measurement to treat a device-loss truncation as an
+                # intentional manual scroll. Keep the typed failure in the local manifest so an
+                # offline reviewer can distinguish it from Ctrl-C and normal completion.
+                detail = str(exc)
+                capture_error = (f"{type(exc).__name__}: {detail}" if detail
+                                 else type(exc).__name__)
                 break
             digest = hashlib.sha256(png).hexdigest()
             if digest != last_digest:
@@ -180,12 +195,14 @@ def capture(*, adb, seconds: float, interval: float, out_dir: Path,
         "start_utc": start_utc.isoformat(),
         "end_utc": end_utc.isoformat(),
         "interrupted": interrupted,
+        "capture_error": capture_error,
         "frame_count": len(frames),
         "frames": frames,
     }
     atomic_write_private_text(
         out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n", parent=out_dir)
-    verb = "Stopped early (Ctrl-C)" if interrupted else "Done"
+    verb = ("Stopped early (Ctrl-C)" if interrupted else
+            "Stopped after screencap error" if capture_error is not None else "Done")
     print(f"{verb}. Wrote {len(frames)} frame(s) + manifest to {out_dir}")
     return manifest
 

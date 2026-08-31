@@ -3,6 +3,8 @@ import hashlib
 import inspect
 import math
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -1048,6 +1050,139 @@ def test_flush_on_close():
     assert len(client.inserted["proj.ds.spend"]) == 1
     row = client.inserted["proj.ds.spend"][0]
     assert row["input_tokens"] == 10 and row["cost_usd"] == 0.0001
+
+
+def test_close_and_late_worker_write_are_one_atomic_persistence_boundary():
+    """A wedged worker must never append after the supervisor's final flush.
+
+    Pause close *inside* flush while it owns the store lock, then start the exact late
+    record_decision call that used to wait for close, append to the freshly drained buffer, and
+    disappear at process exit.  The fixed ordering closes the gate before releasing that lock,
+    so the worker receives a loud failure and the post-close buffer remains empty.
+    """
+    client = _FakeBQ()
+    store = _store(client, flush_every=100)
+    close_in_flush = threading.Event()
+    allow_close = threading.Event()
+    real_flush_table = store._flush_table
+
+    def paused_flush_table(table):
+        if table == "profiles":
+            close_in_flush.set()
+            assert allow_close.wait(timeout=2)
+        return real_flush_table(table)
+
+    store._flush_table = paused_flush_table
+    close_thread = threading.Thread(target=store.close)
+    close_thread.start()
+    assert close_in_flush.wait(timeout=2)
+
+    late_error = []
+
+    def late_worker_write():
+        try:
+            store.record_decision("run", "hinge", "dislike", 0.1)
+        except Exception as exc:  # noqa: BLE001 — asserted below as the lifecycle signal
+            late_error.append(exc)
+
+    writer_thread = threading.Thread(target=late_worker_write)
+    writer_thread.start()
+    allow_close.set()
+    close_thread.join(timeout=2)
+    writer_thread.join(timeout=2)
+
+    assert not close_thread.is_alive() and not writer_thread.is_alive()
+    assert len(late_error) == 1
+    assert "closed" in str(late_error[0]) and "late write" in str(late_error[0])
+    assert store._buf["decisions"] == []
+    assert "proj.ds.decisions" not in client.inserted
+
+
+def _wait_for_store_closing(store, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with store._lock:
+            if store._closing:
+                return
+        time.sleep(0.001)
+    raise AssertionError("BigQueryStore.close() did not fence new writes")
+
+
+def test_close_waits_for_started_profile_archive_before_its_final_flush():
+    """A profile archive that started before close must not leave orphaned GCS objects.
+
+    The upload deliberately parks outside the store lock. ``close`` must fence a later
+    decision write immediately, wait for this registered upload to finish, then flush both
+    manifest tables before returning.
+    """
+    client = _FakeBQ()
+    storage = _FakeStorage()
+    store = BigQueryStore(
+        "proj", "ds", photo_bucket="photos", flush_every=100,
+        client=client, storage_client=storage, ensure=True)
+    uploading, release_upload = threading.Event(), threading.Event()
+    real_upload = store._upload_blob
+
+    def paused_upload(blob, data, content_type):
+        uploading.set()
+        assert release_upload.wait(timeout=2)
+        return real_upload(blob, data, content_type)
+
+    store._upload_blob = paused_upload
+    writer = threading.Thread(target=lambda: store.record_profile(
+        "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"]))
+    writer.start()
+    assert uploading.wait(timeout=2)
+    closer = threading.Thread(target=store.close)
+    closer.start()
+    _wait_for_store_closing(store)
+
+    with pytest.raises(RuntimeError, match="late write"):
+        store.record_decision("run", "hinge", "dislike", 0.1)
+    assert closer.is_alive()
+
+    release_upload.set()
+    writer.join(timeout=2)
+    closer.join(timeout=2)
+
+    assert not writer.is_alive() and not closer.is_alive()
+    assert len(client.inserted["proj.ds.profiles"]) == 1
+    assert len(client.inserted["proj.ds.profile_photos"]) == 1
+
+
+def test_close_waits_for_started_opener_evidence_before_its_final_flush():
+    client = _FakeBQ()
+    storage = _FakeStorage()
+    store = BigQueryStore(
+        "proj", "ds", photo_bucket="photos", flush_every=100,
+        client=client, storage_client=storage, ensure=True)
+    uploading, release_upload = threading.Event(), threading.Event()
+    real_upload = store._upload_blob
+
+    def paused_upload(blob, data, content_type):
+        uploading.set()
+        assert release_upload.wait(timeout=2)
+        return real_upload(blob, data, content_type)
+
+    store._upload_blob = paused_upload
+    writer = threading.Thread(target=lambda: store.record_opener_send_evidence(
+        "run", "hinge", "A grounded opener", profile_id="profile",
+        evidence={"frame": b"\x89PNG\r\n\x1a\nevidence"}))
+    writer.start()
+    assert uploading.wait(timeout=2)
+    closer = threading.Thread(target=store.close)
+    closer.start()
+    _wait_for_store_closing(store)
+
+    with pytest.raises(RuntimeError, match="late write"):
+        store.record_spend("run", "model", Usage(input_tokens=1), 0.0)
+
+    release_upload.set()
+    writer.join(timeout=2)
+    closer.join(timeout=2)
+
+    assert not writer.is_alive() and not closer.is_alive()
+    assert len(client.inserted["proj.ds.opener_send_evidence"]) == 1
 
 
 def test_record_spend_stores_none_cost_as_null_not_zero():

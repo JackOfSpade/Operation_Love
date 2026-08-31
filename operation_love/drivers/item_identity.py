@@ -145,7 +145,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .scroll_top import (
-    ScrollTopError, band_fingerprint, confirm_scroll_top, fingerprint_distance)
+    ScrollTopError, band_fingerprint, band_pinned_evidence, confirm_scroll_top,
+    fingerprint_distance)
 
 
 # =====================================================================================
@@ -352,6 +353,7 @@ def _unknown(reason: str, *, band=None, grid=_IDENTITY_GRID) -> ProfileIdentity:
 
 def capture_profile_identity(frames: Sequence[bytes], *,
                              identity_band: tuple[float, float, float, float] | None,
+                             page_offsets: Sequence[int | None] | None = None,
                              grid: tuple[int, int] = _IDENTITY_GRID,
                              match_max_dist: float = _IDENTITY_MATCH_MAX_DIST) -> ProfileIdentity:
     """The sticky-header fingerprint of the profile `frames` were captured from.
@@ -398,11 +400,32 @@ def capture_profile_identity(frames: Sequence[bytes], *,
     `hinge._capture_current`'s own split check and the index's correspondence chain both refuse
     such a capture first; this is the belt to those braces, and it is cheap.)
 
+    `page_offsets` is OPTIONAL and changes no outcome — only a DIAGNOSIS, and it is the whole
+    reason it exists. When every frame of a capture reads as the filter-chips row there are two
+    completely different causes with opposite fixes, and this function used to name only one of
+    them: either the capture genuinely never scrolled far enough to reveal the header (re-run it),
+    or the app pins the chips row to the screen so that NO capture on this build will ever reveal
+    one (Hinge 10.1.0's expanded header state, measured 2026-08-28 — see
+    `scroll_top.band_pinned_evidence`, which is what these offsets are handed to). Blaming the
+    capture in the second case sends an operator to re-run it forever, and this repo's standing
+    rule is that guidance derives from its precondition. Pass the same per-frame offsets the index
+    build already measured (`None` for a frame past a broken correspondence chain); omit it and
+    the diagnosis stays the pre-existing one, which is correct whenever the pinning cannot be
+    proven anyway. The fail-closed behaviour is IDENTICAL either way: no fingerprint, `.known`
+    False, navigation refuses.
+
     Never raises for a frame it cannot read: an undecodable frame is skipped with the reason kept,
     because this runs inside an index build whose own answer is a RESULT, and a capture with one
-    bad frame must not turn into an exception out of a function whose job is to describe it.
+    bad frame must not turn into an exception out of a function whose job is to describe it. It
+    DOES raise for a `page_offsets` of the wrong length, which is not a frame problem but a caller
+    pairing one frame's band with another frame's scroll position.
     Returns a `ProfileIdentity` whose `.known` is False in every case it could not establish one.
     """
+    if page_offsets is not None and len(page_offsets) != len(frames):
+        raise IdentityError(
+            f"{len(frames)} frame(s) against {len(page_offsets)} page offset(s): these describe "
+            "different captures, and pairing them would attribute one frame's band to another "
+            "frame's scroll position")
     if identity_band is None:
         return _unknown(
             "no identity_band is declared for this app, so there is no strip that carries the "
@@ -443,6 +466,26 @@ def capture_profile_identity(frames: Sequence[bytes], *,
             f"over. A fingerprint taken off some other rect could be identical on every profile, "
             f"which would pass an identity check for everybody{trailer}", band=band, grid=grid)
     if not seen:
+        # TWO causes, opposite fixes, and the reason must derive from which one this capture has.
+        # `band_pinned_evidence` is only consulted here, where the alternative is to blame a
+        # capture that may be blameless; everywhere else in this function the chips row reading as
+        # the chips row is ordinary and expected.
+        pinned = (band_pinned_evidence(frames, identity_band=identity_band,
+                                       page_offsets=page_offsets)
+                  if page_offsets is not None else None)
+        if pinned is not None and pinned.pinned:
+            return _unknown(
+                f"the identity band {band} is PINNED to the screen on this app version, so the "
+                f"identity check is structurally unavailable here rather than merely unlucky: "
+                f"{pinned.reason}. Every frame therefore reads as the filter-chips row no matter "
+                f"how far it scrolled, the sticky per-profile header never occupies this rect, "
+                f"and NO capture on this build can be fingerprinted from it — re-running the "
+                f"capture cannot fix that and scrolling further cannot either. What needs "
+                f"recalibrating is the rect and the signals over it: apps.hinge.identity_band, "
+                f"scroll_top's chips-row fingerprints (which now confirm 'top' on scrolled "
+                f"frames) and apps.hinge.identity_top_name_band, re-measured against the app's "
+                f"current per-profile header states with the owner and a device{trailer}",
+                band=band, grid=grid)
         return _unknown(
             f"every frame of this capture reads as the filter-chips row in {band}, so the sticky "
             f"per-profile header never appeared and there is nothing that distinguishes this "

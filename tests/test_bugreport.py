@@ -26,10 +26,117 @@ def test_report_has_core_sections():
               "## Reporter follow-up", "## Build", "## System", "## Dependencies", "## Capabilities", "## Config",
               "## Hinge targeting readiness",
               "## Secrets", "## Diagnostic improvement", "## Run status", "## Recent openers",
+              "## Run completion assessment",
               "## Recent opener rejections",
               "## Debug log (on-disk actions + screenshots)", "## Recent logs"]:
         assert h in md, f"missing section: {h}"
     assert "improve `operation_love/bugreport.py`" in md
+
+
+# ── Run completion assessment ───────────────────────────────────────────────
+class _CompletionHub:
+    def __init__(self, *, phase="stopped", running=False, hub_error=None, app_state="stopped",
+                 app_error=None, stop_kind=None):
+        self._snapshot = {
+            "running": running,
+            "error": hub_error,
+            "status": {
+                "run_id": "completion-test-run",
+                "phase": phase,
+                "running": running,
+                "stopping": False,
+                "apps": {"hinge": {
+                    "app": "hinge", "state": app_state, "error": app_error,
+                    "stop_kind": stop_kind,
+                }},
+            },
+        }
+
+    def snapshot(self):
+        return self._snapshot
+
+
+def test_completion_assessment_calls_stopped_a_durable_clean_completion(monkeypatch):
+    monkeypatch.setattr(bugreport, "_completion_capture_facts", lambda *_: {})
+    bugreport._LOG_RING.clear()
+
+    md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+
+    assert "Outcome: COMPLETED CLEANLY" in md
+    assert "all workers exited" in md
+    assert "store flush succeeded" in md
+
+
+@pytest.mark.parametrize(
+    ("hub", "expected"),
+    [
+        (_CompletionHub(phase="save_failed"), "Outcome: SAVE FAILED"),
+        (_CompletionHub(phase="wedged", app_state="wedged"), "Outcome: DEGRADED SHUTDOWN"),
+        (_CompletionHub(app_state="error", app_error="driver failed"),
+         "Outcome: COMPLETED WITH ERRORS"),
+        (_CompletionHub(phase="live", running=True, app_state="acting"),
+         "Outcome: IN PROGRESS / INDETERMINATE"),
+    ],
+)
+def test_completion_assessment_does_not_mislabel_failure_or_live_run(monkeypatch, hub, expected):
+    monkeypatch.setattr(bugreport, "_completion_capture_facts", lambda *_: {})
+
+    assert expected in bugreport._run_completion_assessment_md(hub, "unused.yaml")
+
+
+def test_completion_assessment_requires_at_least_one_app_status(monkeypatch):
+    hub = _CompletionHub()
+    hub._snapshot["status"]["apps"] = {}
+    monkeypatch.setattr(bugreport, "_completion_capture_facts", lambda *_: {})
+
+    assert "Outcome: INDETERMINATE" in bugreport._run_completion_assessment_md(
+        hub, "unused.yaml")
+    assert "no app status" in bugreport._run_completion_assessment_md(hub, "unused.yaml")
+
+
+def test_completion_assessment_names_recovered_provider_faults_and_coverage(monkeypatch):
+    monkeypatch.setattr(
+        bugreport, "_completion_capture_facts",
+        lambda *_: {"coverage_gaps": 3, "coverage_candidates": 5, "capture_truncated": False},
+    )
+    bugreport._LOG_RING.clear()
+    bugreport._LOG_RING.extend([
+        "12:00:00 Gemini opener: gemini-test failed at the transport level (TimeoutError)",
+        "12:00:01 ordinary diagnostic",
+    ])
+    try:
+        md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+    finally:
+        bugreport._LOG_RING.clear()
+
+    assert "Outcome: COMPLETED SAFELY, WITH LIMITATIONS" in md
+    assert "1 recovered provider transport failure" in md
+    assert "still-photo coverage skipped 3 of 5 photo candidate(s)" in md
+
+
+def test_completion_facts_will_not_follow_a_status_named_run_symlink(tmp_path, monkeypatch):
+    """Run IDs are diagnostic input, so their path must not escape the configured debug root."""
+    debug_root = tmp_path / "debug"
+    debug_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "actions.jsonl").write_text(json.dumps({
+        "action": "capture",
+        "item_coverage": {"no_dwell_coverage_page_hearts": [1],
+                          "photo_candidate_page_hearts": [1]},
+        "capture_truncated": True,
+    }) + "\n")
+    (debug_root / "completion-test-run").symlink_to(outside, target_is_directory=True)
+    cfg = types.SimpleNamespace(
+        enabled_apps=["hinge"],
+        apps={"hinge": {"debug_log": True, "debug_dir": str(debug_root)}},
+    )
+    monkeypatch.setattr(oplove_config, "load", lambda _path: cfg)
+
+    assert bugreport._completion_capture_facts(
+        {"run_id": "completion-test-run"}, "unused.yaml") == {
+            "coverage_gaps": 0, "coverage_candidates": 0, "capture_truncated": False,
+        }
 
 
 def test_reporter_follow_up_makes_a_one_word_description_actionable():
@@ -640,6 +747,79 @@ def test_debug_log_links_training_dislike_without_calling_it_a_missing_send(tmp_
     assert "no linked send outcome was logged" not in evidence
 
 
+def test_debug_log_classifies_stop_cancelled_training_draft_as_unsent_and_uncommitted(tmp_path):
+    """The 2026-08-31 Stop happened after typing, but before any Send Like tap.
+
+    Legacy runs retained that expected ActionCancelled as ``unexpected``.  The report must use
+    that existing checkpoint-local evidence instead of making the operator infer an ambiguous
+    missing outcome from the absence of a like row.
+    """
+    run = tmp_path / "run_training_stop_before_send"
+    run.mkdir(parents=True)
+    frame = b"typed opener awaiting the Hub training decision"
+    opener = "A bridge question that remained a draft."
+    evidence_id = hashlib.sha256(frame + b"\0" + opener.encode()).hexdigest()
+    shot = "00430_auto_opener_pre_send_before.png"
+    (run / shot).write_bytes(frame)
+    records = [
+        {
+            "ts": "2026-08-31T02:44:05", "action": "auto_opener_pre_send",
+            "before": shot, "opener": opener,
+            "opener_sha256": hashlib.sha256(opener.encode()).hexdigest(),
+            "frame_sha256": hashlib.sha256(frame).hexdigest(),
+            "evidence_id": evidence_id, "model_item_index": 1,
+            "session_mode": "training",
+        },
+        {
+            "ts": "2026-08-31T03:00:08", "action": "unexpected",
+            "error": ("ActionCancelled: action cancelled because the run is stopping before "
+                      "training decision; no further device input was issued"),
+        },
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    evidence = bugreport._latest_auto_opener_evidence_md(
+        (run / "actions.jsonl").read_text().splitlines(), run)
+
+    assert ("linked outcome: Training decision cancelled by Stop; typed opener was not sent or "
+            "committed at `2026-08-31T03:00:08`") in evidence
+    assert "no linked send outcome was logged" not in evidence
+
+
+def test_debug_log_links_current_training_cancellation_action_to_its_presend_evidence(tmp_path):
+    """New runs have an explicit checkpoint-local cancellation action, not `unexpected`."""
+    run = tmp_path / "run_training_cancellation_evidence"
+    run.mkdir(parents=True)
+    frame = b"typed opener awaiting a stopped review"
+    opener = "A draft that Stop prevented from sending."
+    evidence_id = hashlib.sha256(frame + b"\0" + opener.encode()).hexdigest()
+    shot = "00430_auto_opener_pre_send_before.png"
+    (run / shot).write_bytes(frame)
+    records = [
+        {
+            "ts": "2026-08-31T02:44:05", "action": "auto_opener_pre_send",
+            "before": shot, "opener": opener,
+            "opener_sha256": hashlib.sha256(opener.encode()).hexdigest(),
+            "frame_sha256": hashlib.sha256(frame).hexdigest(),
+            "evidence_id": evidence_id, "model_item_index": 1,
+            "session_mode": "training",
+        },
+        {
+            "ts": "2026-08-31T03:00:08", "action": "training_cancelled",
+            "pre_send_evidence_id": evidence_id, "model_item_index": 1,
+            "reason": "stop_requested",
+        },
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    evidence = bugreport._latest_auto_opener_evidence_md(
+        (run / "actions.jsonl").read_text().splitlines(), run)
+
+    assert ("linked outcome: Training decision cancelled by Stop; typed opener was not sent or "
+            "committed at `2026-08-31T03:00:08`") in evidence
+    assert "no linked send outcome was logged" not in evidence
+
+
 def test_debug_log_flags_tampered_auto_opener_evidence(tmp_path):
     run = tmp_path / "run_tampered_auto_opener_evidence"
     run.mkdir(parents=True)
@@ -800,6 +980,35 @@ def test_capture_timing_summary_splits_passive_observation_from_navigation_overh
     assert "still-photo safety checks 186.6s (94.8% of fold" in summary
     assert "passive observation 51.9s" in summary
     assert "navigation/overhead 134.8s" in summary
+
+
+def test_capture_timing_summary_reports_only_arithmetic_complete_candidate_rows():
+    lines = [
+        json.dumps({"action": "capture_timing_summary", "iter_wall_s_total": 45.0}),
+        json.dumps({"action": "still_photo_dwell_walk_candidate_timing",
+                    "heart_ordinal": 8, "candidate_wall_s": 40.0,
+                    "navigation_s": 10.0, "proof_s": 20.0, "return_s": 8.0,
+                    "unattributed_s": 2.0}),
+        json.dumps({"action": "still_photo_dwell_walk_candidate_timing",
+                    "heart_ordinal": 6, "candidate_wall_s": 61.0,
+                    "navigation_s": 20.0, "proof_s": 25.0, "return_s": 15.0,
+                    "unattributed_s": 1.0}),
+        # A torn row must not be partly added to otherwise valid candidate telemetry.
+        json.dumps({"action": "still_photo_dwell_walk_candidate_timing",
+                    "candidate_wall_s": 99.0, "navigation_s": 1.0, "proof_s": 1.0,
+                    "return_s": 1.0, "unattributed_s": 1.0}),
+        json.dumps({"action": "capture_fold_timing", "photos": 19,
+                    "fold_wall_s": 146.0, "still_photo_dwell_s": 134.0,
+                    "still_photo_dwell_breakdown": {
+                        "passive_observation_s": 51.0,
+                        "navigation_and_overhead_s": 83.0}}),
+        json.dumps({"action": "capture", "photos": 19, "profile_name": "Jordan"}),
+    ]
+
+    summary = bugreport._latest_completed_capture_timing_md(lines)
+
+    assert ("2 candidate hop(s): navigation 30.0s; proof 45.0s; return 23.0s; "
+            "other 3.0s") in summary
 
 
 def test_capture_timing_summary_fails_closed_for_unpaired_or_optional_bad_fields():
@@ -1247,6 +1456,152 @@ def test_dwell_navigation_refusal_summary_tolerates_legacy_and_malformed_rows(tm
     assert "legacy/incomplete trace has no structured plan" in md
     assert "unknown page heart: dwell-navigation refusal `bad' # fake heading`" in md
     assert "planned step telemetry unavailable" in md
+    assert not any(line.strip().startswith("# fake heading") for line in md.splitlines())
+
+
+def test_dwell_navigation_refusal_summary_shows_walk_continue_and_abandon_outcomes(tmp_path):
+    """2026-08-27: a verified return can let the still-photo candidate walk continue past a
+    refusal instead of abandoning it, bounded by a small returned-refusal budget.  The report
+    must say which of the three walk outcomes happened and, for the two abandoned ones -- lost
+    still-photo coverage -- must flag it with the warning glyph the continued case does not
+    get."""
+    run = tmp_path / "run_dwell_navigation_walk_outcomes"
+    run.mkdir(parents=True)
+
+    def refusal_record(heart_ordinal, walk):
+        return {
+            "action": "still_photo_dwell_walk_candidate", "heart_ordinal": heart_ordinal,
+            "outcome": "navigation_refused_returned", "reason": "scroll_overshot",
+            "navigation_refusal": {
+                "schema_version": 1, "code": "scroll_overshot", "frame_index": 2,
+                "return_outcome": "verified", "restored_page_shift_px": 0,
+                "planned": {"step_px": 292, "bound_px": 292, "spacing_px": 812,
+                            "sized_against_px": 812, "frac": 0.13, "window_px": [219, 292],
+                            "basis": "card_extent"},
+                "achieved": {"measurement_status": "measured", "measurement_delta_px": -500,
+                             "climb_px": 500, "overshoot_px": 208,
+                             "measurement_confidence": 0.98, "measurement_agreeing": 6,
+                             "measurement_dissenting": 0, "measurement_eligible": 6},
+                "walk": walk,
+            },
+        }
+
+    records = [
+        refusal_record(1, {"outcome": "continued", "returned_refusals_spent": 1,
+                            "returned_refusal_budget": 2}),
+        refusal_record(2, {"outcome": "abandoned_budget_spent", "returned_refusals_spent": 3,
+                            "returned_refusal_budget": 2}),
+        refusal_record(3, {"outcome": "abandoned_return_unverified", "returned_refusals_spent": 0,
+                            "returned_refusal_budget": 2}),
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    continued_line = next(line for line in md.splitlines() if "page heart 1" in line)
+    budget_line = next(line for line in md.splitlines() if "page heart 2" in line)
+    unverified_line = next(line for line in md.splitlines() if "page heart 3" in line)
+
+    assert ("walk continued to the next candidate (returned-refusal budget 1/2)"
+            in continued_line)
+    assert "⚠️" not in continued_line
+
+    assert ("⚠️ walk abandoned: returned-refusal budget spent "
+            "(returned-refusal budget 3/2)" in budget_line)
+
+    assert ("⚠️ walk abandoned: return unverified "
+            "(returned-refusal budget 0/2)" in unverified_line)
+
+
+def test_dwell_navigation_refusal_summary_omits_walk_clause_without_walk_key(tmp_path):
+    """Every historic run -- and the legacy/incomplete branch above it -- predates the `walk`
+    telemetry entirely.  Those rows must render byte-identical to before the budget existed: no
+    crash, no invented walk clause, no warning glyph."""
+    run = tmp_path / "run_dwell_navigation_no_walk_key"
+    run.mkdir(parents=True)
+    records = [
+        {"action": "still_photo_dwell_walk_candidate", "heart_ordinal": 6,
+         "outcome": "navigation_refused_return_unverified", "reason": "scroll_overshot",
+         "navigation_refusal": {
+             "schema_version": 1, "code": "scroll_overshot", "frame_index": 1,
+             "return_outcome": "unverified", "restored_page_shift_px": None,
+             "planned": {"step_px": 292, "bound_px": 292, "spacing_px": 812,
+                         "sized_against_px": 812, "frac": 0.13, "window_px": [219, 292],
+                         "basis": "card_extent"},
+             "achieved": {"measurement_status": "measured", "measurement_delta_px": -500,
+                          "climb_px": 500, "overshoot_px": 208,
+                          "measurement_confidence": 0.98, "measurement_agreeing": 6,
+                          "measurement_dissenting": 0, "measurement_eligible": 6},
+         }},
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    row = next(line for line in md.splitlines() if "page heart 6" in line)
+    assert row.endswith("anchor return `unverified`")
+    assert "walk" not in row
+    assert "⚠️" not in row
+
+
+def test_debug_log_summarises_structured_dwell_return_chain_refusal(tmp_path):
+    """The return helper's row explains a proved candidate's failed cleanup without blaming
+    the already-complete enumeration index or promoting the planned stroke to a measurement.
+    """
+    run = tmp_path / "run_dwell_return_chain"
+    run.mkdir(parents=True)
+    records = [
+        # Successful cleanup rows are routine and deliberately stay out of a failure report.
+        {"action": "still_photo_dwell_return_chain", "outcome": "returned",
+         "reason": "direct_remeasure_matched", "attempts": 1,
+         "initial_terminal_shift_px": -450, "terminal_shift_px": 0,
+         "direct_shift_px": 0, "drift_bound_px": 219},
+        {"action": "still_photo_dwell_return_chain", "outcome": "refused",
+         "reason": "return_leg_unmeasurable", "attempts": 4,
+         "initial_terminal_shift_px": -4243, "terminal_shift_px": -2353,
+         "drift_bound_px": 219,
+         "before": "00011_still_photo_dwell_return_chain_before.png",
+         "after": "00012_still_photo_dwell_return_chain_after.png"},
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "still-photo return-chain refusals (measured cleanup after dwell):" in md
+    row = next(line for line in md.splitlines() if "return chain refused" in line)
+    assert "`return_leg_unmeasurable`" in row
+    assert "after 4 return attempt(s)" in row
+    assert "initial entry-relative shift -4243px" in row
+    assert "last known entry-relative shift -2353px" in row
+    assert "return gate <219px" in row
+    assert "evidence before `00011_still_photo_dwell_return_chain_before.png`" in row
+    assert "after `00012_still_photo_dwell_return_chain_after.png`" in row
+    assert "final entry-relative shift" not in row
+    assert "direct_remeasure_matched" not in bugreport._dwell_return_chain_refusal_summary_md(
+        [json.dumps(record) for record in records])
+
+
+def test_dwell_return_chain_summary_tolerates_missing_and_malformed_fields(tmp_path):
+    """Old runs omit the action entirely; partly written future rows remain a safe, useful hint."""
+    run = tmp_path / "run_dwell_return_chain_legacy"
+    run.mkdir(parents=True)
+    records = [
+        {"action": "still_photo_dwell_return_chain", "outcome": "refused",
+         "reason": "bad`\n# fake heading", "attempts": True,
+         "initial_terminal_shift_px": "unknown", "terminal_shift_px": True,
+         "drift_bound_px": None, "direct_shift_px": False},
+        {"action": "still_photo_dwell_return_chain", "outcome": "not_a_failure",
+         "reason": "must_not_render"},
+    ]
+    (run / "actions.jsonl").write_text("{partial\n" +
+                                         "\n".join(map(json.dumps, records)) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "return chain refused (`bad' # fake heading`)" in md
+    assert "numeric return telemetry unavailable" in md
+    assert "must_not_render" not in bugreport._dwell_return_chain_refusal_summary_md(
+        [json.dumps(record) for record in records])
     assert not any(line.strip().startswith("# fake heading") for line in md.splitlines())
 
 
@@ -2198,6 +2553,19 @@ def test_debug_log_section_shows_action_counts_histogram_above_the_tail(tmp_path
     assert counts_pos < tail_pos                               # directly above the inlined tail
 
 
+def test_action_counts_merge_legacy_position_labels_with_deduped_dwell_labels():
+    lines = [
+        json.dumps({"action": "still_photo_dwell_00", "dwell_frame_index": 0}),
+        json.dumps({"action": "still_photo_dwell_01", "dwell_frame_index": 1}),
+        json.dumps({"action": "still_photo_dwell_frame", "dwell_frame_index": 2}),
+        json.dumps({"action": "still_photo_reattach_00", "reattach_frame_index": 0}),
+        json.dumps({"action": "still_photo_reattach_frame", "reattach_frame_index": 1}),
+    ]
+
+    assert bugreport._action_counts_line(lines) == (
+        "action counts: still_photo_dwell_frame 3 · still_photo_reattach_frame 2")
+
+
 # ── Stall summary ─────────────────────────────────────────────────────────────────────────
 # An unrecognised Hinge+ paywall can leave _await_like_resolved polling like_sheet until the
 # operator stops the run. actions.jsonl records every poll, but diagnosing the hang from the
@@ -2535,6 +2903,36 @@ def test_recent_opener_text_is_truncated_at_the_configured_character_cap():
     assert ("x" * bugreport._RECENT_OPENER_TEXT_CHARS) + "…" in md
 
 
+def test_recent_openers_render_compact_monitor_only_metadata_without_implying_rejection():
+    entry = _opener_entry(opener="That lake backdrop is unreal. Where was this?")
+    entry.update({
+        "redundancy_markers": [
+            'opener restates the referenced word "lake"',
+            'opener restates the referenced word "backdrop"',
+            "third", "fourth", "fifth",
+        ],
+        "entropy_collision": "that lake backdrop",
+        "entropy_regenerated": True,
+    })
+
+    md = bugreport._recent_openers_md(_FakeHubOpeners([entry]))
+
+    assert "Monitor only; never a rejection" in md
+    assert 'opener restates the referenced word "lake"' in md
+    assert "+1 more" in md
+    assert 'opening collision "that lake backdrop" (regenerated once)' in md
+
+
+def test_recent_openers_omit_monitor_line_when_no_monitor_fired():
+    entry = _opener_entry()
+    entry.update({"redundancy_markers": [], "entropy_collision": "",
+                  "entropy_regenerated": False})
+
+    md = bugreport._recent_openers_md(_FakeHubOpeners([entry]))
+
+    assert "Monitor only" not in md
+
+
 def test_recent_openers_section_sanitizes_model_and_referenced_free_text():
     """model/referenced/opener are free text the model itself produced -- none of it is
     trusted. It must not be able to inject a fake heading, break out of the blockquote it's
@@ -2603,10 +3001,11 @@ def test_recent_opener_rejections_section_handles_empty_list_gracefully():
 
 
 def test_status_separates_zero_preference_decisions_from_provider_billing_telemetry():
-    """An unacted staged opener can cost a provider call without being a swipe/label.
+    """An unacted staged opener can produce billed usage without being a swipe/label.
 
     This is deliberately a report-level test: the desired fix is not to hide a real provider
-    charge, but to prevent a returning operator from reading it as an unwanted profile decision.
+    charge, mistake the accounted-result ledger for all HTTP attempts, or let a returning
+    operator read it as an unwanted profile decision.
     """
     class _NoDecisionChargedHub:
         def snapshot(self):
@@ -2622,7 +3021,8 @@ def test_status_separates_zero_preference_decisions_from_provider_billing_teleme
     md = bugreport._status_md(_NoDecisionChargedHub())
     assert "labels: 351 / 40 (ready) (ranker dataset total, not this run)" in md
     assert "preference decisions recorded this run: 0" in md
-    assert "provider / billing telemetry: 1 model response(s)" in md
+    assert "provider / billing telemetry: 1 accounted model result(s) with usage" in md
+    assert "HTTP fallback failures are logged separately and excluded" in md
     assert "No pass/like preference decision was recorded" in md
 
 
@@ -2871,3 +3271,620 @@ def test_the_targeting_section_never_installs_a_licence_as_a_side_effect(tmp_pat
 
     assert tp.still_photo_licence_provenance() is None
     assert tp.hinge_targeting_unavailable_reason() is not None
+
+
+# --- post-tap sheet verification (filed against the 2026-08-27 report) --------------------
+
+
+def _verify_lines(**overrides):
+    record = {"action": "verify_sheet_item", "item": 1, "outcome": "verify_mismatch",
+              "nearest": 1, "distance": 10.283447265625, "bound": 7.0,
+              "preview": [236, 1092, 95, 985]}
+    record.update(overrides)
+    identity = {"action": "verify_sheet_identity", "item": 1, "outcome": "identity_match",
+                "distance": 0.0, "bound": 0.8852}
+    return [json.dumps(identity), json.dumps(record)]
+
+
+def test_sheet_verification_section_names_the_bound_regime_and_the_item_table(tmp_path):
+    """The three things the 2026-08-27 report should have carried and did not.
+
+    Without them "10.283 against 7.000" cannot be told from a genuine wrong-item tap: the reader
+    cannot see WHICH bound regime fired, what the per-item comparison actually measured, or what
+    geometry the whole check was bound to.
+    """
+    md = bugreport._sheet_verification_md(_verify_lines(
+        reason=("the like sheet does not show model item 1: item 1 is the nearest stored crop "
+                "but at 10.283 grey levels, against a 7.000 bound (the inline composer's "
+                "independently held-out 7.00 one-item render ceiling, there being no other item "
+                "to bound against)"),
+        preview_reason="topmost run of rows at least 870px wide; bottom edge carried",
+        grid=[64, 64],
+        composer={"layout_id": "hinge_inline_v1", "comment": [95, 1124, 985, 1302],
+                  "send": [390, 1334, 985, 1443]},
+        comparisons=[{"item": 1, "distance": 10.283447265625, "window_px": 937, "crop_px": 974,
+                      "nearest_other": None, "bound": 7.0,
+                      "why": "inline reframe rows 37..974 of a 974px crop"}]), tmp_path)
+    assert "one-item render ceiling" in md
+    assert "inline reframe rows 37..974" in md
+    assert "window 937px of a 974px crop" in md
+    assert "hinge_inline_v1" in md
+    assert "comparison grid: 64x64" in md
+    assert "profile identity on the same sheet: `identity_match`" in md
+    # The one-item regime is the weakest bound available and must be called out as such.
+    assert "ONE numbered item" in md
+
+
+def test_an_unreadable_sheet_is_not_rendered_as_a_comparison_that_returned_nothing(tmp_path):
+    """A refusal to LOOK and a comparison that FAILED are different events, and read alike.
+
+    Filed against the 2026-08-28 pillarbox report. The locator refused before any card was
+    compared, and the outcome line still printed the verdict shape -- `nearest stored item None;
+    distance — against bound —`, three dashes standing exactly where three numbers stand on every
+    other verdict this section renders. Nothing had been measured, but the report looked like
+    something had been measured and had come back empty, which points a reader at the comparison
+    when the whole story is in the geometry.
+    """
+    md = bugreport._sheet_verification_md(_verify_lines(
+        outcome="unreadable", nearest=None, distance=None, bound=None,
+        reason=("the selected-card preview is not immediately above the independently detected "
+                "inline comment field: no candidate at least 694px wide (78% of the field's own "
+                "890px), or at least 356px and centred inside it, runs for 300 rows above it")),
+        tmp_path)
+
+    assert "could not be LOOKED AT" in md
+    assert "no card was compared" in md
+    # the three quantities that do not exist are not printed as though they might
+    assert "nearest stored item" not in md
+    assert "against bound" not in md
+    # ...and the refusal is labelled as one rather than as a verdict
+    assert "why the sheet could not be read" in md
+    assert "verdict, including which bound regime" not in md
+    assert "no candidate at least 694px wide" in md
+
+
+def test_a_real_verdict_still_carries_its_three_numbers(tmp_path):
+    """The negative of the test above: nothing about a genuine comparison may be suppressed."""
+    md = bugreport._sheet_verification_md(_verify_lines(), tmp_path)
+    assert "nearest stored item 1" in md
+    assert "against bound" in md
+    assert "verdict" in md or "shape:" in md
+    assert "could not be LOOKED AT" not in md
+
+
+def test_sheet_verification_section_reads_a_log_written_before_the_new_fields_existed(tmp_path):
+    """Old runs stay readable: the extra evidence is additive, never required to render."""
+    md = bugreport._sheet_verification_md(_verify_lines(), tmp_path)
+    assert "verify_mismatch" in md
+    assert "10.283" in md and "7.000" in md
+    assert "rows 236..1092, columns 95..985 (890x856px)" in md
+    assert "bound regime" not in md
+
+
+def test_a_verified_sheet_prints_no_verification_section(tmp_path):
+    """This section explains a stop. A run that verified has nothing to explain."""
+    assert bugreport._sheet_verification_md(
+        _verify_lines(outcome="verify_match", distance=0.167), tmp_path) == ""
+
+
+# --- the three shapes of verify_mismatch (2026-08-28 addendum) -----------------------------
+# "intended model item 1, actual 1" -- the sentence the 2026-08-27 halt actually printed -- is
+# ambiguous on its own: it could mean the sheet had the right card and the bound was simply too
+# tight, or it could mean the sheet had a different card entirely. `nearest`/`item` settle it.
+
+
+def test_verify_mismatch_shape_is_a_possible_false_refusal_when_nearest_is_the_intended_item():
+    """nearest == item: the correct card was on the sheet; only the bound refused it."""
+    shape = bugreport._verify_mismatch_shape({"item": 1, "nearest": 1})
+    assert "FALSE REFUSAL" in shape
+    assert "not a targeting miss" in shape
+    assert "DIFFERENT item" not in shape
+
+
+def test_verify_mismatch_shape_is_a_real_targeting_miss_when_nearest_differs():
+    """nearest != item: a different card was actually on the sheet."""
+    shape = bugreport._verify_mismatch_shape({"item": 1, "nearest": 2})
+    assert "DIFFERENT item is on the sheet" in shape
+    assert "targeting miss" in shape
+    assert "FALSE REFUSAL" not in shape
+
+
+def test_verify_mismatch_shape_says_nothing_was_measurable_when_nearest_is_none():
+    """nearest absent/None: nothing in the payload could be compared to this sheet at all --
+    not "the nearest item is None", which reads as a real item number (see item_verify.py's own
+    2026-08-15 note about exactly this confusion)."""
+    assert "nothing in this payload could be measured" in bugreport._verify_mismatch_shape(
+        {"item": 1, "nearest": None})
+    # Absent is the same fact as explicit None -- a record from before the field existed must
+    # classify identically, never raise, and never be mistaken for the "different item" shape.
+    assert "nothing in this payload could be measured" in bugreport._verify_mismatch_shape(
+        {"item": 1})
+
+
+def test_verify_mismatch_shape_tolerates_malformed_item_and_nearest_without_raising():
+    """A malformed logged value must degrade gracefully, never raise, while generating a report
+    about a stop -- raising here would destroy the evidence it exists to explain."""
+    shape = bugreport._verify_mismatch_shape({"item": "not-a-number", "nearest": []})
+    assert isinstance(shape, str) and shape
+    # None of the three helpers may ever throw for `_sheet_verification_md` either.
+    bugreport._sheet_verification_md(_verify_lines(item="not-a-number", nearest=[]), Path("."))
+
+
+def test_sheet_verification_section_states_the_shape_right_after_the_outcome_line(tmp_path):
+    """Wired into the real section, in the position the task asked for: its own line, right
+    after the existing outcome line, with the existing numbers still intact."""
+    md = bugreport._sheet_verification_md(_verify_lines(nearest=1, item=1), tmp_path)
+    lines = md.splitlines()
+    outcome_i = next(i for i, ln in enumerate(lines) if ln.startswith("- outcome:"))
+    assert lines[outcome_i + 1].startswith("- shape:")
+    assert "FALSE REFUSAL" in lines[outcome_i + 1]
+    # The existing numbers are untouched.
+    assert "10.283" in md and "7.000" in md
+
+
+# --- naming before/after by role (2026-08-28 addendum) --------------------------------------
+
+
+def test_screenshot_roles_are_named_when_both_before_and_after_are_recorded(tmp_path):
+    (tmp_path / "before.png").write_bytes(b"before-bytes")
+    (tmp_path / "after.png").write_bytes(b"after-bytes")
+    md = bugreport._sheet_verification_md(
+        _verify_lines(before="before.png", after="after.png"), tmp_path)
+    assert ("pre-tap card under the heart: `before.png`; sheet the verdict was taken on: "
+            "`after.png` — open both before reading a number.") in md
+
+
+def test_screenshot_roles_line_is_omitted_when_neither_filename_is_recorded(tmp_path):
+    md = bugreport._sheet_verification_md(_verify_lines(), tmp_path)
+    assert "pre-tap card under the heart" not in md
+
+
+def test_screenshot_roles_use_the_shot_digest_guard_and_never_print_an_unsafe_path(tmp_path):
+    """Same acceptance as `_shot_digest`: a name that resolves outside the run directory, or a
+    file that isn't actually there, must never be printed verbatim -- it degrades to a plain
+    "not available" note instead."""
+    (tmp_path / "outside.png").write_bytes(b"secret")
+    md = bugreport._sheet_verification_md(
+        _verify_lines(before="../outside.png", after="never_written.png"), tmp_path)
+    assert "pre-tap card under the heart: `not available" in md
+    assert "../outside.png" not in md
+    assert "sheet the verdict was taken on: `not available" in md
+    assert "never_written.png" not in md
+
+
+def test_screenshot_roles_line_shows_whichever_side_is_actually_safe(tmp_path):
+    """Only one side missing/unsafe must not swallow the side that IS good evidence."""
+    (tmp_path / "before.png").write_bytes(b"before-bytes")
+    md = bugreport._sheet_verification_md(
+        _verify_lines(before="before.png", after=None), tmp_path)
+    assert "pre-tap card under the heart: `before.png`" in md
+    assert "sheet the verdict was taken on: `not available" in md
+
+
+# --- verify rows never collapse, even once they carry a `reason` (2026-08-28, TASK 3) -------
+# `before`/`after` are the whole diagnosis for a targeting stop. `_render_run` drops every field
+# but ts/action/reason/repeated, so a `verify_sheet_item`/`verify_sheet_identity` row that
+# collapses into a repeat run loses the exact screenshots this section just learned to name.
+
+
+def test_action_reason_key_never_matches_verify_sheet_item_even_with_a_shared_reason():
+    raw = json.dumps({"action": "verify_sheet_item", "reason": "same text",
+                       "before": "b.png", "after": "a.png"})
+    assert bugreport._action_reason_key(raw) is None
+
+
+def test_action_reason_key_never_matches_verify_sheet_identity_even_with_a_shared_reason():
+    raw = json.dumps({"action": "verify_sheet_identity", "reason": "same text",
+                       "before": "b.png", "after": "a.png"})
+    assert bugreport._action_reason_key(raw) is None
+
+
+def test_two_verify_sheet_item_rows_with_the_same_reason_do_not_collapse():
+    """Without the exclusion these would merge into one `{"repeated": 2, ...}` summary and both
+    sets of before/after filenames would vanish."""
+    lines = [
+        json.dumps({"ts": "t0", "action": "verify_sheet_item", "reason": "same text",
+                    "before": "b0.png", "after": "a0.png"}),
+        json.dumps({"ts": "t1", "action": "verify_sheet_item", "reason": "same text",
+                    "before": "b1.png", "after": "a1.png"}),
+    ]
+    out = bugreport._collapse_action_tail(lines, 30)
+    assert out == lines
+    assert "b0.png" in out[0] and "a0.png" in out[0]
+    assert "b1.png" in out[1] and "a1.png" in out[1]
+
+
+def test_two_verify_sheet_identity_rows_with_the_same_reason_do_not_collapse():
+    lines = [
+        json.dumps({"ts": "t0", "action": "verify_sheet_identity", "reason": "unreadable: x",
+                    "before": "b0.png", "after": "a0.png"}),
+        json.dumps({"ts": "t1", "action": "verify_sheet_identity", "reason": "unreadable: x",
+                    "before": "b1.png", "after": "a1.png"}),
+    ]
+    out = bugreport._collapse_action_tail(lines, 30)
+    assert out == lines
+
+
+def test_item_coverage_warns_when_a_dwell_shortfall_leaves_one_numbered_item():
+    """The upstream half of the same stop: a one-item payload is what selects the weak bound."""
+    lines = bugreport._item_coverage_lines({"item_coverage": {
+        "still_photo_dwell_candidate_limit": 3,
+        "photo_candidate_page_hearts": [1, 3, 4, 6, 8, 9],
+        "dwell_covered_page_hearts": [9],
+        "no_dwell_coverage_page_hearts": [1, 3, 4, 6, 8],
+        "numbered_page_hearts": [9]}})
+    md = "\n".join(lines)
+    assert "1 of 6 photo candidate(s) were dwelled" in md
+    assert "candidate limit 3" in md
+    assert "[1, 3, 4, 6, 8]" in md
+    assert "coverage gap, not a judgement" in md
+    assert "exactly ONE numbered item" in md
+
+
+def test_item_coverage_is_quiet_when_every_photo_candidate_was_observed():
+    lines = bugreport._item_coverage_lines({"item_coverage": {
+        "photo_candidate_page_hearts": [1, 2],
+        "dwell_covered_page_hearts": [1, 2],
+        "no_dwell_coverage_page_hearts": [],
+        "numbered_page_hearts": [1, 2]}})
+    md = "\n".join(lines)
+    assert "2 of 2 photo candidate(s) were dwelled" in md
+    assert "⚠️" not in md
+
+
+def test_a_validated_calibration_prints_its_numbers_not_just_its_verdict(tmp_path):
+    """The 2026-08-27 report said "present and validated" and showed no value.
+
+    That mattered because the halt was refused at 7.000 while this config's own
+    `inline_item_max_dist` was 14.9099 — a reader with only the verdict could not see that the
+    operator's calibrated ceiling was NOT the bound that fired (it is a second, stricter cap
+    applied after a bound derived inside `item_verify`). These are geometry and thresholds, so
+    printing them costs no secret.
+    """
+    from operation_love import targeting_policy as tp
+    import yaml
+
+    tp.install_accepted_still_photo_assumption(tp.StillPhotoAssumptionAcceptance(
+        acceptance=tp.STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION, device="synthetic-pixel",
+        hinge_version_name="10.0.1", accepted_at="2026-08-21", rationale="accepted"))
+    try:
+        path = _targeting_config(tmp_path, licence_key="still_photo_assumption_acceptance")
+        raw = yaml.safe_load(Path(path).read_text())
+        calibration = _valid_targeting_calibration()
+        raw["apps"]["hinge"]["targeting_calibration"] = calibration
+        Path(path).write_text(yaml.safe_dump(raw))
+        md = bugreport._targeting_readiness_md(path)
+    finally:
+        tp._reset_installed_still_photo_bound_for_tests()
+
+    assert "present and validated (static config check)" in md
+    for key in ("hinge_version_name", "inline_item_max_dist", "identity_match_max_dist"):
+        assert key in md, key
+    assert str(calibration["inline_item_max_dist"]) in md
+
+
+# ── refused-capture leading-edge geometry (sidecar) ─────────────────────────
+def _geometry_frame(index, offset, blocks, runs):
+    """One `all_frame_geometry` record in the shape `hinge.geometry_record` writes."""
+    return {
+        "local_frame_index": index, "source_frame_index": index, "offset_px": offset,
+        "animation_marker": False, "video_mute_markers": [],
+        "blocks": [dict(b) for b in blocks],
+        "background_runs": [{"frame_rows": list(rows), "kind": kind,
+                             "widest_intruder_px": 0, "median_level_delta": 0.0}
+                            for rows, kind in runs],
+    }
+
+
+def _block(y0, y1, *, kind="partial", top_kind="background_run", top_observed=False,
+           bottom_kind="gutter", bottom_observed=True, digest=None):
+    record = {"frame_rows": [y0, y1], "page_rows": None, "kind": kind, "complete": False,
+              "top_observed": top_observed, "bottom_observed": bottom_observed,
+              "top_kind": top_kind, "bottom_kind": bottom_kind,
+              "hearts": {"frame_rows": [], "page_rows": []}}
+    if digest is not None:
+        record["content_digest"] = digest
+    return record
+
+
+def _pinned_header_geometry(frames=6, *, unanchored=False, digest=None):
+    """The 2026-08-28 shape: a 43px strip at frame rows 368..411 that never moves, an over-long
+    106px background run beneath it that is not gutter-length, and scrolling content below."""
+    records = []
+    for i in range(frames):
+        offset = i * 500
+        if unanchored:
+            blocks = [_block(368, 411, kind="unanchored", top_kind="background_run",
+                             bottom_kind="unanchored_island", bottom_observed=False,
+                             digest=digest),
+                      _block(517, 1400 + i, kind="selectable", top_kind="unanchored_island")]
+            runs = [((300, 368), "clipped"), ((411, 517), "unanchored_island")]
+        else:
+            # Pre-check shape: the strip was MERGED into the clipped card below it, which is
+            # exactly the bug — one block claiming a top 149px above any real content.
+            blocks = [_block(368, 1000 + i, kind="partial")]
+            runs = [((300, 368), "clipped"), ((411, 517), "too_long")]
+        records.append(_geometry_frame(i, offset, blocks, runs))
+    return records
+
+
+def _refused_run(tmp_path, geometry, *, sidecar="item_index_refused_ab12_evidence.json",
+                 named=None, name="run_geometry_sidecar"):
+    run = tmp_path / name
+    run.mkdir(parents=True)
+    if geometry is not None:
+        (run / sidecar).write_text(json.dumps(
+            {"schema_version": 7, "reason": "index contradicts itself", "runtime": {},
+             "frames": [], "all_frame_geometry": geometry, "pair_evidence": []}))
+    (run / "actions.jsonl").write_text(json.dumps(
+        {"action": "item_index_refused", "reason": "index contradicts itself",
+         "steps_px": [500, 500], "evidence_sidecar": sidecar if named is None else named}) + "\n")
+    return run
+
+
+def _geometry_md(run):
+    return bugreport._item_index_geometry_md(
+        (run / "actions.jsonl").read_text().splitlines(), run)
+
+
+def test_geometry_section_names_the_pinned_top_edge_the_refusal_only_hinted_at(tmp_path):
+    """BUG REPORT 2026-08-28: an item-index refusal printed its own prose and the frame geometry
+    summary, and an operator could not have found the cause from either. The cause -- Hinge
+    10.1.0 pinning a profile header INSIDE the analysed band, whose non-gutter background run
+    got absorbed so 43 rows of non-scrolling chrome merged into the card below -- was fully
+    determined by the sidecar the report NAMED and never opened."""
+    run = _refused_run(tmp_path, _pinned_header_geometry(frames=6))
+
+    md = _geometry_md(run)
+
+    assert "`item_index_refused_ab12_evidence.json` (6 frames of geometry)" in md
+    assert ("leading block began at frame row 368 with an UNOBSERVED top edge "
+            "(background_run) on 6 of 6 frames") in md
+    assert "the page offset moved across 0..2500px" in md
+    assert ("the first background run below that top edge began at frame row 411 on 6 of 6 "
+            "frames, classified `too_long` on 6") in md
+    assert "the run lay INSIDE the leading block instead of bounding it" in md
+    assert "on 6 of those 6 frames" in md
+
+
+def test_geometry_section_says_an_old_sidecar_predates_the_screen_fixed_check(tmp_path):
+    """No `unanchored` record at all is NOT proof that the strip is page content. Say the check
+    was unavailable, never print a false negative."""
+    run = _refused_run(tmp_path, _pinned_header_geometry(frames=4))
+
+    md = _geometry_md(run)
+
+    assert "screen-fixed verdict: unavailable" in md
+    assert "records no `unanchored` block at all" in md
+    assert "predates segment.py's screen-fixed island check" in md
+    assert "PROVEN screen-fixed" not in md
+    assert "NOT proven" not in md
+
+
+def test_geometry_section_proves_a_screen_fixed_strip_when_the_sidecar_carries_digests(tmp_path):
+    """The three conditions `item_index._screen_fixed_islands` applies, re-derived here: two
+    distinct offsets, a span at least the strip's own height, and one unanimous digest."""
+    run = _refused_run(tmp_path, _pinned_header_geometry(
+        frames=6, unanchored=True, digest="d" * 64))
+
+    md = _geometry_md(run)
+
+    assert ("screen-fixed verdict for the unanchored strip at frame rows 368..411 "
+            "(frames 0, 1, 2, 3, 4, 5): PROVEN screen-fixed") in md
+    assert "identical pixels at 6 page offsets spanning 2500px, more than its own 43px height" in md
+    assert "held out of the index entirely" in md
+
+
+def test_geometry_section_names_which_screen_fixed_condition_failed(tmp_path):
+    """Each refusal reason must derive from ITS OWN precondition, not a fixed sentence."""
+    one_offset = [f for f in _pinned_header_geometry(frames=3, unanchored=True, digest="a" * 64)]
+    for frame in one_offset:
+        frame["offset_px"] = 900
+    assert "was seen at one page offset (900)" in _geometry_md(
+        _refused_run(tmp_path, one_offset, name="one_offset"))
+
+    narrow = _pinned_header_geometry(frames=2, unanchored=True, digest="a" * 64)
+    narrow[1]["offset_px"] = 20                       # 20px of scroll against a 43px strip
+    assert ("was seen across only 20px of scroll, less than its own 43px height"
+            in _geometry_md(_refused_run(tmp_path, narrow, name="narrow")))
+
+    animating = _pinned_header_geometry(frames=3, unanchored=True, digest="a" * 64)
+    animating[1]["blocks"][0]["content_digest"] = "b" * 64
+    assert ("showed 2 different pixel contents across 3 offsets"
+            in _geometry_md(_refused_run(tmp_path, animating, name="animating")))
+
+    undecidable = _pinned_header_geometry(frames=3, unanchored=True)   # no digest recorded
+    assert ("UNDECIDABLE FROM THIS FILE" in _geometry_md(
+        _refused_run(tmp_path, undecidable, name="undecidable")))
+
+
+def test_geometry_section_never_claims_a_pinned_strip_a_capture_does_not_have(tmp_path):
+    """The second real refusal on disk (`data/hinge_debug/78d364c5527d`) has a leading block
+    that MOVES: 21 of its 26 frames start at the band edge and 5 start at 5 different rows. A
+    section that reported its modal row as a fixed position would invent the incident's cause
+    on a capture that never had it."""
+    geometry = [
+        _geometry_frame(i, i * 400,
+                        [_block(300 + i * 137, 1500 + i * 20, top_kind="band_edge")],
+                        [((300 + i * 137 - 30, 300 + i * 137), "clipped"),
+                         ((1500 + i * 20, 1553 + i * 20), "gutter")])
+        for i in range(5)]
+    run = _refused_run(tmp_path, geometry, name="unpinned")
+
+    md = _geometry_md(run)
+
+    assert "NO leading strip holds a fixed frame position in this capture" in md
+    assert "the remaining 4 began at 4 other row(s)" in md
+    assert "what screen-pinned chrome looks like" not in md
+    assert "sat at 5 different frame rows" in md
+    assert "so it moves with the page rather than holding one position" in md
+    assert "PROVEN screen-fixed" not in md
+
+
+def test_geometry_section_is_silent_when_the_sidecar_is_absent(tmp_path):
+    run = _refused_run(tmp_path, None, name="absent")           # record names it; file is gone
+
+    assert _geometry_md(run) == ""
+    assert "refused-capture leading-edge geometry" not in bugreport._one_debug_dir_md(
+        "hinge", {"debug_dir": str(tmp_path)})
+
+
+@pytest.mark.parametrize("body", [
+    "{not json at all",
+    '{"schema_version": 7, "all_frame_geometry": [{"local_frame_index": 0, "blocks":',  # truncated
+    '{"all_frame_geometry": "not a list"}',
+    '{"all_frame_geometry": 12345}',
+    '["a", "top-level list"]',
+    '{"all_frame_geometry": [null, 7, {"blocks": []}, {"blocks": [{"frame_rows": ["x", 4]}]}]}',
+    # Rows that are not integers, and rows that are inverted, on a frame that IS indexed --
+    # so the row parser is genuinely reached rather than skipped for want of a frame index.
+    '{"all_frame_geometry": [{"local_frame_index": 0, "offset_px": 0,'
+    ' "blocks": [{"frame_rows": ["x", 4], "top_kind": "background_run"}]}]}',
+    '{"all_frame_geometry": [{"local_frame_index": 0, "offset_px": 0,'
+    ' "blocks": [{"frame_rows": [900, 4], "top_kind": "background_run"}]}]}',
+    '{"all_frame_geometry": [{"local_frame_index": true, "offset_px": 0,'
+    ' "blocks": [{"frame_rows": [368, 411], "top_kind": "background_run"}]}]}',
+])
+def test_geometry_section_degrades_to_silence_on_a_malformed_sidecar(tmp_path, body):
+    """A bug report must never raise while describing a bug, and a half-written sidecar is the
+    normal shape of one: the refusal writes it while the run is still failing."""
+    run = _refused_run(tmp_path, _pinned_header_geometry(frames=2), name=f"bad{abs(hash(body))}")
+    (run / "item_index_refused_ab12_evidence.json").write_text(body)
+
+    assert _geometry_md(run) == ""
+
+
+def test_geometry_section_refuses_a_sidecar_path_outside_the_run_directory(tmp_path):
+    """A sidecar filename comes out of a JSONL log, which is diagnostic input and never
+    authority to read an arbitrary path -- the same rule `_shot_digest` applies to screenshots."""
+    outside = tmp_path / "outside_evidence.json"
+    outside.write_text(json.dumps({"all_frame_geometry": _pinned_header_geometry(frames=3)}))
+    reads = []
+    real_read = Path.read_text
+
+    def spy(self, *a, **kw):
+        reads.append(str(self))
+        return real_read(self, *a, **kw)
+
+    for traversal in ("../outside_evidence.json", str(outside), "/etc/passwd",
+                      "evidence.json.png", "evidence", "sub/dir/evidence.json"):
+        run = _refused_run(tmp_path, _pinned_header_geometry(frames=3),
+                           named=traversal, name=f"traversal_{abs(hash(traversal))}")
+        reads.clear()
+        original = Path.read_text
+        Path.read_text = spy
+        try:
+            md = _geometry_md(run)
+        finally:
+            Path.read_text = original
+        assert md == "", traversal
+        assert "leading block began at frame row 368" not in md
+        # actions.jsonl is read by the test itself; nothing else may be opened.
+        assert [r for r in reads if r.endswith(".json")] == [], (traversal, reads)
+
+
+def test_geometry_section_refuses_a_sidecar_symlink_outside_the_run_directory(tmp_path):
+    """A bare filename is still unsafe when it is a symlink to an arbitrary JSON file."""
+    outside = tmp_path / "outside_evidence.json"
+    outside.write_text(json.dumps({"all_frame_geometry": _pinned_header_geometry(frames=3)}))
+    run = _refused_run(tmp_path, None, name="symlink")
+    (run / "item_index_refused_ab12_evidence.json").symlink_to(outside)
+
+    assert _geometry_md(run) == ""
+
+
+def test_geometry_section_reads_only_the_most_recent_refusals(tmp_path):
+    """Capped like every other repeated-row section in this file."""
+    run = tmp_path / "many"
+    run.mkdir(parents=True)
+    records = []
+    for i in range(5):
+        sidecar = f"item_index_refused_{i:04d}_evidence.json"
+        (run / sidecar).write_text(json.dumps(
+            {"all_frame_geometry": _pinned_header_geometry(frames=3)}))
+        records.append({"action": "item_index_refused", "reason": "r",
+                        "evidence_sidecar": sidecar})
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    md = _geometry_md(run)
+
+    assert md.count("frames of geometry") == bugreport._ITEM_INDEX_GEOMETRY_SIDECARS_SHOWN
+    assert "item_index_refused_0004_evidence.json" in md      # newest kept
+    assert "item_index_refused_0000_evidence.json" not in md  # oldest dropped
+
+
+def test_geometry_section_is_wired_into_the_debug_log_block(tmp_path):
+    _refused_run(tmp_path, _pinned_header_geometry(frames=6))
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert ("refused-capture leading-edge geometry (read from the sidecar the refusal names):"
+            in md)
+    assert "leading block began at frame row 368" in md
+    # It sits with the refusal it explains, not after the tail.
+    assert md.index("leading block began at frame row 368") < md.index("actions.jsonl (tail)")
+
+
+def test_geometry_section_will_not_read_an_oversized_sidecar(tmp_path, monkeypatch):
+    """The cap must be what stops the read, so this file is one the section WOULD render:
+    same bytes, cap raised, and the pinned top edge comes straight back."""
+    run = _refused_run(tmp_path, _pinned_header_geometry(frames=6), name="huge")
+    sidecar = run / "item_index_refused_ab12_evidence.json"
+    sidecar.write_text(sidecar.read_text() + " " * 4096)     # trailing space: still valid JSON
+    size = sidecar.stat().st_size
+
+    monkeypatch.setattr(bugreport, "_ITEM_INDEX_GEOMETRY_SIDECAR_BYTES", size - 1)
+    assert _geometry_md(run) == ""
+
+    monkeypatch.setattr(bugreport, "_ITEM_INDEX_GEOMETRY_SIDECAR_BYTES", size)
+    assert "leading block began at frame row 368" in _geometry_md(run)
+
+
+def test_targeting_readiness_renders_the_content_band_in_pixel_rows(tmp_path):
+    """`content_band: [0.125, 0.875]` is load-bearing context for every geometry row this report
+    prints, and nobody checks two fractions against "frame row 368" in their head."""
+    from operation_love import targeting_policy as tp
+    import yaml
+
+    tp.install_accepted_still_photo_assumption(tp.StillPhotoAssumptionAcceptance(
+        acceptance=tp.STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION, device="synthetic-pixel",
+        hinge_version_name="10.0.1", accepted_at="2026-08-21", rationale="accepted"))
+    try:
+        path = _targeting_config(tmp_path, licence_key="still_photo_assumption_acceptance")
+        raw = yaml.safe_load(Path(path).read_text())
+        raw["apps"]["hinge"]["targeting_calibration"] = _valid_targeting_calibration()
+        Path(path).write_text(yaml.safe_dump(raw))
+        md = bugreport._targeting_readiness_md(path)
+    finally:
+        tp._reset_installed_still_photo_bound_for_tests()
+
+    assert "content_band=[0.125, 0.875]" in md
+    assert "that content_band analyses frame rows 300..2100 of 2400" in md
+
+
+@pytest.mark.parametrize("band,size,expected", [
+    ([0.125, 0.875], [1080, 2400], (300, 2100, 2400)),
+    ([0.0, 1.0], [1080, 2400], (0, 2400, 2400)),
+    ([0.9, 0.1], [1080, 2400], (2160, 2161, 2400)),   # clamped, never inverted or empty
+    (None, [1080, 2400], None),
+    ([0.1], [1080, 2400], None),
+    (["a", "b"], [1080, 2400], None),
+    ([0.1, 0.9], None, None),
+    ([0.1, 0.9], [1080, 1], None),
+    ([float("nan"), 0.9], [1080, 2400], None),
+    ([True, 0.9], [1080, 2400], None),
+    ([0.1, 0.9], [1080, True], None),
+])
+def test_content_band_rows_matches_the_driver_and_never_raises(band, size, expected):
+    """Same arithmetic as `hinge._content_rows`; a second drifting copy would be worse than
+    printing nothing."""
+    assert bugreport._content_band_rows(band, size) == expected
+
+
+def test_content_band_rows_agrees_with_the_driver_it_mirrors():
+    from operation_love.drivers import hinge
+
+    for band in ([0.125, 0.875], [0.0, 1.0], [0.3, 0.31], [0.9, 0.1]):
+        for size in (2400, 1920, 2):
+            assert (bugreport._content_band_rows(band, [1080, size])[:2]
+                    == hinge._content_rows(tuple(band), size))

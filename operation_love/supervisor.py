@@ -872,6 +872,12 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         except Exception as close_exc:  # noqa: BLE001 — logged, never replaces save_err
             print(f"Run {run_id}: warning closing store during shutdown: "
                   f"{type(close_exc).__name__}: {close_exc}")
+            # Preserve the earlier flush failure when present, but a close-only failure is also
+            # a failed final persistence boundary (for example, an image archive that completed
+            # after the first flush and failed during close's drain). Reporting success in that
+            # case would falsely claim every buffered row made it to the system of record.
+            if save_err is None:
+                save_err = close_exc
         if save_err is not None:
             phase = "save_failed"
         elif wedged:
@@ -892,10 +898,12 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                     "error", "out_of_profiles", "rate_limited", "stopped", "blocked"
                 } else "stopped"
             status.set_app(app, state=app_state)
-        # ``tracker.calls`` counts provider/API calls, including a Training draft that may be
-        # passed or abandoned. Do not present it as a sent or persisted opener in shutdown
-        # output; RunStatus retains its existing compatibility field separately.
-        tail = (f"provider_calls={tracker.calls} "
+        # ``tracker.calls`` is a compatibility name for model results whose usage reached the
+        # billing tracker, including a Training draft that may be passed or abandoned. It is NOT
+        # an HTTP-attempt count: Gemini's internal 503/429/404/transport fallbacks do not carry
+        # usage into CostTracker and are logged separately at the point of failure.
+        tail = (f"accounted_provider_results={tracker.calls} "
+                f"(HTTP fallback failures logged separately and excluded) "
                 f"provider_spend=${tracker.run_spend_usd:.4f}")
         if save_err is not None:
             print(f"Run {run_id}: ❌ SAVE FAILED to {cfg.storage.backend} "

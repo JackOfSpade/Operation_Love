@@ -113,6 +113,7 @@ _LT_LINE_RE = re.compile(
 _ADD_DEVICE_RE = re.compile(r"^add device \d+:\s*(/dev/input/event\d+)\s*$", re.MULTILINE)
 _NAME_RE = re.compile(r'^\s*name:\s*"([^"]*)"', re.MULTILINE)
 _KEY_CODES_RE = re.compile(r"^\s*KEY\s+\(0001\):\s*((?:[0-9a-fA-F]{4}\*?\s*)+)$", re.MULTILINE)
+_INPUT_PROP_DIRECT_RE = re.compile(r"^\s*INPUT_PROP_DIRECT\s*$", re.MULTILINE)
 # Matches every "<4-hex-code>  : value V, min N, max M, ..." axis line inside an ABS
 # block, regardless of exactly how the surrounding "ABS (0003):" header wraps around the
 # first axis -- that header never itself matches this pattern (its own trailing "):" is
@@ -166,11 +167,15 @@ def select_touch_device(
     """Pick the real touchscreen out of `adb shell getevent -p` output.
 
     Returns the first device (in getevent's own print order) that declares BOTH
-    ABS_MT_POSITION_X (0035) and ABS_MT_POSITION_Y (0036) among its ABS axes, skipping
-    any whose `name:` starts with one of `exclude_name_prefixes`, or whose key+axis capability
-    profile is this project's UHID digitizer. The latter is essential: UhidTouch's name is
-    configurable, and this Pixel's `getevent -p` omits bus/vendor/product metadata, while an
-    old `persist-scroll-test` virtual device has the same x/y axes as glass. Returns
+    ABS_MT_POSITION_X (0035) and ABS_MT_POSITION_Y (0036) among its ABS axes *and*
+    INPUT_PROP_DIRECT, skipping any whose `name:` starts with one of
+    `exclude_name_prefixes`, or whose key+axis capability profile is this project's UHID
+    digitizer. ``INPUT_PROP_DIRECT`` distinguishes a touchscreen from indirect pointing
+    hardware that can expose the same multitouch axes; attaching to the latter would make an
+    unrelated input look like evidence of a hand on the phone. The UHID exclusion is also
+    essential: UhidTouch's name is configurable, and this Pixel's `getevent -p` omits
+    bus/vendor/product metadata, while an old `persist-scroll-test` virtual device has the
+    same x/y axes as glass. Returns
     (dev_path, name, x_max, y_max), the axis maxima TouchWatcher.start() uses to scale raw
     device coordinates onto the live screen. Raises TouchWatchUnavailable if nothing qualifies.
     """
@@ -181,7 +186,8 @@ def select_touch_device(
         if (any(name.startswith(prefix) for prefix in exclude_name_prefixes)
                 or _is_our_virtual_touch_profile(block, axes)):
             continue
-        if ABS_MT_POSITION_X in axes and ABS_MT_POSITION_Y in axes:
+        if (_INPUT_PROP_DIRECT_RE.search(block) is not None
+                and ABS_MT_POSITION_X in axes and ABS_MT_POSITION_Y in axes):
             x_max, y_max = int(axes[ABS_MT_POSITION_X]), int(axes[ABS_MT_POSITION_Y])
             # A non-positive axis range cannot represent a screen position.  In particular,
             # ``-1`` would make start() divide by zero while calculating its scale and leak an
@@ -189,7 +195,7 @@ def select_touch_device(
             if x_max > 0 and y_max > 0:
                 return dev_path, name, x_max, y_max
     raise TouchWatchUnavailable(
-        "no ABS_MT_POSITION_X/Y physical touch device found in `adb shell getevent -p` output "
+        "no direct ABS_MT_POSITION_X/Y physical touch device found in `adb shell getevent -p` output "
         f"(excluded name prefixes: {exclude_name_prefixes!r} and this project's UHID profile)"
     )
 

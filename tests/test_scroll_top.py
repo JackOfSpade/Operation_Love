@@ -21,8 +21,20 @@ nothing empty may ever be mistaken for Hinge's filter-chips row.
 
 Following the house pattern, every positive is paired with a negative plus a control that proves
 WHICH mechanism did the excluding.
+
+ONE EXCEPTION, added 2026-08-28 and deliberately last in the file:
+`test_the_real_hinge_10_1_0_frames_that_broke_the_premise` replays the six real frames of the
+incident that falsified this module's premise (a screen-pinned filter-chips row). Synthetic
+fixtures cannot establish that a shipping app version behaves this way -- that is a fact about
+Hinge, not about geometry -- and this repo has been burned by tests that were green about a shape
+the real pixels never had. It reads a gitignored local corpus under data/, asserts only verdict
+states, page geometry and counts (never a pixel, a name, or a fingerprint), and SKIPS when the
+frames are absent, which is the same convention tests/test_hinge_observe_release.py and
+tests/test_hinge_video_bound_auto.py already use for real-pixel replays.
 """
+import json
 from io import BytesIO
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -952,3 +964,305 @@ def test_band_fingerprint_at_offset_dy_zero_agrees_with_band_fingerprint():
 
     assert (scroll_top._band_fingerprint_at_offset(frame, identity_band=_IB, grid=_GRID, dy_px=0)
             == scroll_top.band_fingerprint(frame, identity_band=_IB, grid=_GRID))
+
+
+# =====================================================================================
+# A SCREEN-PINNED CHIPS ROW: the module's premise failing, and the gate refusing anyway.
+#
+# Live failure, 2026-08-28 (Hinge 10.1.0): the app's EXPANDED per-profile header state is pinned
+# to the screen AND carries the filter-chips row with it, so `identity_band` shows those chips at
+# every scroll offset. Six real evidence frames captured 6180..8485px down ONE profile all
+# returned `confirmed_top` at distance 0.000 -- an affirmative top, thousands of pixels down a
+# profile, into the hard gate doc 5.5's counting navigation is built on. Two OTHER profiles in
+# the same run refuted correctly (13.219 and 12.359), so the collapsed-header state still works
+# and the fix must not touch it.
+#
+# The fixtures below are synthetic like every other one in this file: a band painted identically
+# on frames the caller declares to be at different page offsets is the same shape as the failure,
+# and (unlike the real frames) its distances are exact by construction.
+# =====================================================================================
+
+_BAND_HEIGHT_PX = round(_IB[3] * _H) - round(_IB[1] * _H)      # 111px, `_band_of_image`'s crop
+
+
+def _pinned_capture(band_value=_BASE, *, offsets=(0, 600, 1200)):
+    """Frames whose identity band is the SAME strip while the rest of the screen moves, plus the
+    reference that band matches exactly. The moving background is not read by anything under test
+    -- it is there so the fixture cannot be mistaken for a capture that simply never scrolled."""
+    frames = [_frame(_flat(band_value), background=40 + 9 * i) for i in range(len(offsets))]
+    return frames, _fingerprint_of(frames[0]), list(offsets)
+
+
+def test_a_chips_row_that_survives_a_proven_scroll_is_screen_pinned():
+    """The positive. Identical band pixels at page offsets 1200px apart -- more than ten times the
+    band's own 111px height -- means the page rows those sightings would otherwise have had to
+    display are disjoint, and page content cannot do that. `item_index._screen_fixed_islands`'s
+    reasoning, applied to this strip."""
+    frames, reference, offsets = _pinned_capture()
+
+    evidence = scroll_top.band_pinned_evidence(
+        frames, identity_band=_IB, page_offsets=offsets, fingerprint=reference)
+
+    assert evidence.pinned is True
+    assert evidence.offsets == (0, 600, 1200) and evidence.offset_span == 1200
+    assert evidence.band_height_px == _BAND_HEIGHT_PX == 111
+    assert evidence.frames_compared == 3 and evidence.distinct_bands == 1
+    assert evidence.max_chips_distance == 0.0
+    assert "pinned to the screen" in evidence.reason
+    assert "cannot both be at the scroll top" in evidence.reason
+
+
+def test_frames_that_did_not_scroll_prove_nothing_about_pinning():
+    """The negative, in both of its forms, driven to the boundary rather than near it. At ONE
+    offset the page did not move, so a pinned strip and page content predict identical pixels;
+    below the band's own height the sightings' page rows still overlap, so one tall piece of page
+    content could produce both. The control is the same frames one pixel further apart."""
+    frames, reference, _offsets = _pinned_capture(offsets=(0, 0, 0))
+
+    standing_still = scroll_top.band_pinned_evidence(
+        frames, identity_band=_IB, page_offsets=[500, 500, 500], fingerprint=reference)
+    assert standing_still.pinned is False
+    assert "same page offset (500)" in standing_still.reason
+    assert standing_still.distinct_bands == 1        # the band IS constant; that is not the point
+
+    too_close = scroll_top.band_pinned_evidence(
+        frames[:2], identity_band=_IB, page_offsets=[0, _BAND_HEIGHT_PX - 1], fingerprint=reference)
+    assert too_close.pinned is False
+    assert f"span only {_BAND_HEIGHT_PX - 1}px of scroll" in too_close.reason
+
+    # THE CONTROL, one pixel further: at exactly the band height the page rows are disjoint.
+    at_the_bound = scroll_top.band_pinned_evidence(
+        frames[:2], identity_band=_IB, page_offsets=[0, _BAND_HEIGHT_PX], fingerprint=reference)
+    assert at_the_bound.pinned is True
+
+
+def test_the_collapsed_header_state_is_not_pinned_even_though_its_band_never_changes():
+    """THE CASE THE FIX MUST NOT BREAK, and the reason `band_pinned_evidence` is not simply "the
+    band held still". The sticky per-profile header is pinned TOO and always was -- "stays
+    pixel-identical for the whole profile", 0.000 across 143 corpus frames of one profile -- so a
+    helper that stopped at constancy would prove itself "pinned" on the state this gate reads
+    CORRECTLY and would disable it everywhere. What kills the gate is the CHIPS ROW surviving the
+    scroll, because that is the signal being read as evidence FOR the top."""
+    reference = _fingerprint_of(_frame(_flat(_BASE)))
+    # DARKER than the reference, not lighter, and that is not cosmetic: the alignment sweep mixes
+    # the frame's background (40) into a shifted crop, which would pull a band ABOVE 128 back
+    # toward it and quietly shrink the distance the test asked for. Below it, every shift only
+    # moves further away, so 20.000 is the real minimum over the whole sweep.
+    header = _frame(_flat(_BASE - 20))                     # a person, 20.000 from the chips row
+    frames = [header, header, header]
+
+    evidence = scroll_top.band_pinned_evidence(
+        frames, identity_band=_IB, page_offsets=[0, 600, 1200], fingerprint=reference)
+
+    assert evidence.pinned is False
+    assert evidence.distinct_bands == 1                    # constant, and beside the point
+    assert evidence.max_chips_distance == 20.0
+    assert "does not read as the filter-chips row on 3 of these 3 frames" in evidence.reason
+    assert "still reads correctly" in evidence.reason
+
+    # And the gate itself is untouched on that state: it refutes, which tells a scroll-up loop to
+    # scroll -- the right action there, and the wrong one for a pinned chips row.
+    verdict = scroll_top.confirm_scroll_top(
+        header, identity_band=_IB, fingerprint=reference, pinned_evidence=evidence)
+    assert verdict.state == scroll_top.SCROLL_TOP_REFUTED
+
+
+def test_a_band_that_moves_with_the_page_is_not_pinned():
+    """The third negative: a strip whose contents differ across the scroll is page content (or an
+    animating header), and unanimity is the test -- no tolerance, no quorum, because "mostly the
+    same" is exactly what a scrolling page looks like."""
+    reference = _fingerprint_of(_frame(_flat(_BASE)))
+    frames = [_frame(_flat(_BASE)), _frame(_flat(_BASE - 1)), _frame(_flat(_BASE))]
+
+    evidence = scroll_top.band_pinned_evidence(
+        frames, identity_band=_IB, page_offsets=[0, 600, 1200], fingerprint=reference)
+
+    assert evidence.pinned is False
+    assert evidence.distinct_bands == 2
+    assert "2 different contents" in evidence.reason
+    # ...and note the frames all still CONFIRM (1.000 <= 3.0): constancy is a separate condition
+    # from matching, and this proves which one did the excluding.
+    assert evidence.max_chips_distance == 1.0
+
+
+def test_the_gate_confirms_with_no_evidence_and_refuses_to_confirm_with_pinned_evidence():
+    """THE DEFECT AND THE FIX, in one test. The parameter is optional and defaults to None, so
+    every existing call site keeps the first behaviour exactly; a caller that has the evidence
+    gets the second. The verdict is deliberately NOT "not at top": scrolling cannot fix a pinned
+    band, so the reason names recalibration instead of another gesture."""
+    frames, reference, offsets = _pinned_capture()
+    evidence = scroll_top.band_pinned_evidence(
+        frames, identity_band=_IB, page_offsets=offsets, fingerprint=reference)
+
+    blind = scroll_top.confirm_scroll_top(frames[2], identity_band=_IB, fingerprint=reference)
+    assert blind.state == scroll_top.SCROLL_TOP_CONFIRMED and blind.confirmed is True
+
+    informed = scroll_top.confirm_scroll_top(
+        frames[2], identity_band=_IB, fingerprint=reference, pinned_evidence=evidence)
+    assert informed.state == scroll_top.SCROLL_TOP_UNAVAILABLE
+    assert informed.unavailable is True
+    assert (informed.confirmed, informed.refuted, informed.unknown) == (False, False, False)
+    assert informed.distance == 0.0                # the measurement is still reported...
+    assert "structurally UNAVAILABLE" in informed.reason      # ...and no longer believed
+    assert "identity_band" in informed.reason and "recalibrat" in informed.reason
+
+    with pytest.raises(scroll_top.ScrollTopUnconfirmed, match="check_unavailable"):
+        scroll_top.require_scroll_top(
+            frames[2], identity_band=_IB, fingerprint=reference, pinned_evidence=evidence)
+
+
+def test_pinned_evidence_downgrades_the_confirmed_outcome_and_only_that_one():
+    """A refuted band is the collapsed-header state, where refusing is right and recalibration is
+    not; a dead-zone band is still "cannot tell", which another frame may resolve. Folding either
+    into UNAVAILABLE would report a signal as dead on the very screens where it works."""
+    frames, reference, offsets = _pinned_capture()
+    evidence = scroll_top.band_pinned_evidence(
+        frames, identity_band=_IB, page_offsets=offsets, fingerprint=reference)
+    assert evidence.pinned is True
+
+    # Darker than the reference for the alignment sweep's sake — see the collapsed-header test.
+    refuted = scroll_top.confirm_scroll_top(
+        _frame(_flat(_BASE - int(_REFUTE))), identity_band=_IB, fingerprint=reference,
+        pinned_evidence=evidence)
+    dead_zone = scroll_top.confirm_scroll_top(
+        _frame(_flat(_BASE - int(_CONFIRM) - 1)), identity_band=_IB, fingerprint=reference,
+        pinned_evidence=evidence)
+
+    assert refuted.state == scroll_top.SCROLL_TOP_REFUTED
+    assert dead_zone.state == scroll_top.SCROLL_TOP_UNKNOWN
+
+
+def test_evidence_measured_on_a_different_crop_is_an_error_not_a_downgrade():
+    """Two different crops of a screen say nothing about each other, so an operator editing
+    `apps.hinge.identity_band` between the capture and the gate gets "could not look" rather than
+    a gate quietly disabled by evidence about some other strip. `item_identity`'s precedent for
+    the same mistake on the same band."""
+    frames, reference, offsets = _pinned_capture()
+    evidence = scroll_top.band_pinned_evidence(
+        frames, identity_band=_IB, page_offsets=offsets, fingerprint=reference)
+    elsewhere = (0.10, 0.020, 0.80, 0.066)
+
+    with pytest.raises(scroll_top.ScrollTopError, match="different crops"):
+        scroll_top.confirm_scroll_top(frames[0], identity_band=elsewhere, fingerprint=reference,
+                                      pinned_evidence=evidence)
+    with pytest.raises(scroll_top.ScrollTopError, match="different geometries"):
+        scroll_top.confirm_scroll_top(frames[0], identity_band=_IB, fingerprint=reference,
+                                      grid=(8, 8), pinned_evidence=evidence)
+
+
+def test_frames_and_offsets_of_different_lengths_raise_rather_than_pairing_them_up():
+    """Not a frame problem: a caller pairing one frame's band with another frame's scroll
+    position. Silently zipping to the shorter of the two would attribute a real scroll to frames
+    that never made it."""
+    frames, reference, _offsets = _pinned_capture()
+    with pytest.raises(scroll_top.ScrollTopError, match="different captures"):
+        scroll_top.band_pinned_evidence(frames, identity_band=_IB, page_offsets=[0, 600],
+                                        fingerprint=reference)
+
+
+def test_frames_without_an_offset_or_without_a_readable_band_are_skipped_not_fatal():
+    """`item_index` carries `None` for frames past a broken correspondence chain, and this runs
+    inside a capture DESCRIPTION rather than a per-frame gate, so both an absent offset and an
+    undecodable frame degrade to "not proven" -- the behaviour that shipped before this function
+    existed -- with the unreadable ones named."""
+    frames, reference, offsets = _pinned_capture()
+
+    skipped = scroll_top.band_pinned_evidence(
+        frames, identity_band=_IB, page_offsets=[0, None, 1200], fingerprint=reference)
+    assert skipped.pinned is True and skipped.frames_compared == 2
+
+    junk = scroll_top.band_pinned_evidence(
+        [frames[0], b"not an image at all"], identity_band=_IB, page_offsets=[0, 1200],
+        fingerprint=reference)
+    assert junk.pinned is False
+    assert "could not be read at all: [1]" in junk.reason
+
+    no_band = scroll_top.band_pinned_evidence(
+        frames, identity_band=None, page_offsets=offsets, fingerprint=reference)
+    assert no_band.pinned is False and "no identity_band is declared" in no_band.reason
+
+
+def test_mixed_screen_geometries_cannot_prove_a_band_is_pinned():
+    """Page offsets are pixels in one capture space, not abstract scroll positions.
+
+    A flat chips-row fixture stays flat after resizing, so without an explicit geometry check its
+    reduced fingerprint would be identical and the two alleged sightings would incorrectly prove
+    a screen pin. The test drives that exact coincidence: their raw coordinates cannot be compared
+    and must therefore fail closed before an UNAVAILABLE verdict can suppress the top gate.
+    """
+    frames, reference, _offsets = _pinned_capture(offsets=(0, 1200))
+    resized = Image.open(BytesIO(frames[1])).resize((540, 1200))
+    encoded = BytesIO()
+    resized.save(encoded, format="PNG")
+
+    evidence = scroll_top.band_pinned_evidence(
+        [frames[0], encoded.getvalue()], identity_band=_IB, page_offsets=[0, 1200],
+        fingerprint=reference)
+
+    assert evidence.pinned is False
+    assert evidence.frames_compared == 1
+    assert "do not share one pixel coordinate space" in evidence.reason
+    assert "540x1200" in evidence.reason
+
+
+def test_pinned_evidence_has_no_truth_value():
+    """A frozen dataclass is truthy by default, so `if band_pinned_evidence(...):` would read "the
+    proof was unavailable" as "the band is pinned" -- the inversion that would disable a working
+    gate on every capture. `ScrollTopVerdict.__bool__`'s precedent."""
+    frames, reference, _offsets = _pinned_capture()
+    evidence = scroll_top.band_pinned_evidence(
+        frames, identity_band=_IB, page_offsets=[0, 0, 0], fingerprint=reference)
+
+    with pytest.raises(TypeError, match="no truth value"):
+        bool(evidence)
+
+
+@pytest.fixture
+def evidence_frames():
+    """The six real Hinge 10.1.0 frames of the 2026-08-28 incident and their page offsets, or a
+    skip when this machine does not have them.
+
+    data/ is gitignored (.gitignore:26) and these are a real person's profile, so they are a LOCAL
+    replay corpus and never a CI fixture. The offsets are not retyped here: they are read from the
+    capture's OWN recorded correspondence chain in the sidecar beside the frames, so this test
+    cannot assert a scroll the indexer did not actually measure. The run is listed in
+    apps.hinge.debug_protect_runs, without which age-based retention would eventually delete
+    exactly this fixture (tests/test_hinge_debuglog.py enforces that link). The path is absolute
+    and resolved from this file: a relative one would silently skip under any test that chdirs.
+    """
+    run = Path(__file__).resolve().parent.parent / "data" / "hinge_debug" / "8fb11094ef4d"
+    sidecar = run / "item_index_refused_3fa8b8db66fd_evidence.json"
+    paths = [run / f"item_index_refused_3fa8b8db66fd_frame_{i}.png" for i in range(13, 19)]
+    if not sidecar.is_file() or not all(p.is_file() for p in paths):
+        pytest.skip("private local debug capture 8fb11094ef4d is unavailable")
+    recorded = {f["local_frame_index"]: f["offset_px"]
+                for f in json.loads(sidecar.read_text())["frames"]}
+    return [p.read_bytes() for p in paths], [recorded[i] for i in range(13, 19)]
+
+
+def test_the_real_hinge_10_1_0_frames_that_broke_the_premise(evidence_frames):
+    """THE INCIDENT ITSELF, replayed over the frames it happened on. Everything above is
+    synthetic; this is the one test that reads the app's own pixels, and it is what stops the fix
+    from being correct only about a fixture.
+
+    Six frames of ONE profile at page offsets 6180..8485 (2305px of proven scroll, from the
+    capture's own recorded correspondence chain). Nothing derived from them is asserted or stored
+    beyond state, geometry and counts -- the frames are a real person's profile, gitignored under
+    data/, and this skips when they are absent."""
+    frames, offsets = evidence_frames
+    band = HINGE_SPEC.identity_band
+
+    # The defect, still reproducible with the shipped fingerprints and no evidence supplied.
+    blind = [scroll_top.confirm_scroll_top(f, identity_band=band) for f in frames]
+    assert [v.state for v in blind] == [scroll_top.SCROLL_TOP_CONFIRMED] * 6
+    assert [v.distance for v in blind] == [0.0] * 6
+
+    evidence = scroll_top.band_pinned_evidence(frames, identity_band=band, page_offsets=offsets)
+    assert evidence.pinned is True
+    assert evidence.offset_span == 2305 and evidence.band_height_px == 111
+    assert evidence.distinct_bands == 1 and evidence.frames_compared == 6
+
+    informed = [scroll_top.confirm_scroll_top(f, identity_band=band, pinned_evidence=evidence)
+                for f in frames]
+    assert [v.state for v in informed] == [scroll_top.SCROLL_TOP_UNAVAILABLE] * 6
+    assert not any(v.confirmed for v in informed)

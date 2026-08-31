@@ -223,6 +223,55 @@ def test_a_capture_that_never_scrolled_far_enough_yields_no_fingerprint():
     assert "never appeared" in identity.reason
 
 
+def test_a_pinned_band_is_diagnosed_as_pinned_rather_than_blamed_on_the_capture():
+    """THE TWO CAUSES OF ONE SYMPTOM, and the reason the offsets exist. "Every frame reads as the
+    filter-chips row" happens for two completely different reasons with opposite fixes: the
+    capture never scrolled far enough (re-run it), or the app PINS the chips row to the screen so
+    that no capture on this build will ever reveal a header (Hinge 10.1.0's expanded header,
+    measured 2026-08-28 -- the gate above returned `confirmed_top` at 0.000 on six frames taken
+    6180..8485px down one profile). Blaming the capture in the second case sends an operator to
+    re-run it forever, which is this repo's standing "guidance must derive from its precondition"
+    rule being violated in production.
+
+    The OUTCOME is identical and deliberately untouched: no fingerprint, `.known` False,
+    navigation refuses. Only the diagnosis changes."""
+    frames = [_frame(None), _frame(None), _frame(None)]     # the chips row on every frame
+
+    pinned = item_identity.capture_profile_identity(
+        frames, identity_band=_IB, page_offsets=[0, 600, 1200])
+
+    assert not pinned.known and pinned.fingerprint is None   # fail-closed, exactly as before
+    assert "is PINNED to the screen on this app version" in pinned.reason
+    assert "structurally unavailable" in pinned.reason
+    assert "1200px of page scroll" in pinned.reason          # the evidence, not an assertion
+    assert "apps.hinge.identity_band" in pinned.reason       # what actually needs recalibrating
+    assert "never scrolled far enough" not in pinned.reason
+
+    # THE CONTROL, and it is the whole point of pairing them: the SAME frames, on a capture that
+    # provably did not scroll, keep the original message. Nothing here proves anything about the
+    # app -- at one offset a pinned strip and page content predict identical pixels.
+    still = item_identity.capture_profile_identity(
+        frames, identity_band=_IB, page_offsets=[900, 900, 900])
+    assert not still.known
+    assert "never scrolled far enough" in still.reason
+    assert "PINNED" not in still.reason
+
+    # ...as does a caller that supplies no offsets at all, which is every call site that has not
+    # been taught to pass them: an absent proof degrades to the pre-existing diagnosis.
+    silent = item_identity.capture_profile_identity(frames, identity_band=_IB)
+    assert not silent.known and "never scrolled far enough" in silent.reason
+
+
+def test_offsets_that_do_not_line_up_with_the_frames_raise_rather_than_being_zipped():
+    """Not a frame problem -- a caller pairing one frame's band with another frame's scroll
+    position -- so it is an error rather than the skipped-and-noted treatment an unreadable frame
+    gets. Zipping to the shorter of the two would attribute a real scroll to frames that never
+    made it."""
+    with pytest.raises(item_identity.IdentityError, match="different captures"):
+        item_identity.capture_profile_identity(
+            [_frame(None), _frame(_HER)], identity_band=_IB, page_offsets=[0])
+
+
 def test_no_band_and_no_frames_are_both_unknown_rather_than_errors():
     """`identity_band` is optional on `AndroidAppSpec` by design, so an app without one is a thing
     this gate cannot judge rather than a bug. Both answers are UNKNOWN, which navigation

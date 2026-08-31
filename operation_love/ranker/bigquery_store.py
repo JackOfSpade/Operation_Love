@@ -269,6 +269,16 @@ class BigQueryStore:
             self._retraction_ids: set[str] = set()
             self._opener_retraction_ids: set[tuple[str, str]] = set()
             self._lock = threading.RLock()  # shared across worker threads
+            self._writes_drained = threading.Condition(self._lock)
+            # ``close`` is the supervisor's final persistence boundary.  A worker which missed
+            # its bounded join may still return from a device/API call afterwards; without an
+            # explicit gate, its next record_* call would append to an in-memory buffer after the
+            # final flush and the row would disappear when the process exits.  Image-backed writes
+            # have a network phase outside the buffer lock, so close waits for operations that
+            # already began before flushing while rejecting newly-started ones.
+            self._closing = False
+            self._closed = False
+            self._active_async_writes = 0
             self._photo_bucket_private_verified = False
             self._photo_bucket = (
                 self._get_or_create_photo_bucket()
@@ -645,6 +655,7 @@ class BigQueryStore:
             bigquery.ScalarQueryParameter("decision_created_at", "TIMESTAMP", decision_time),
         ])
         with self._lock:
+            self._require_open_for_write()
             if correction_id in self._retraction_ids:
                 return False
             if any(item.get("correction_id") == correction_id for item in self._buf["label_retractions"]):
@@ -758,6 +769,7 @@ class BigQueryStore:
         opener_stamp = opener_at.isoformat()
         key = (correction_id, opener_stamp)
         with self._lock:
+            self._require_open_for_write()
             if key in self._opener_retraction_ids:
                 return False
             if any(item.get("correction_id") == correction_id and
@@ -822,6 +834,35 @@ class BigQueryStore:
         return 0.0
 
     # --- writes (buffered, thread-safe) --------------------------------
+    def _require_open_for_write(self, *, allow_closing: bool = False) -> None:
+        """Reject a late worker write after the supervisor's final flush.
+
+        Caller must hold ``self._lock``. ``allow_closing`` is reserved for an image-backed write
+        that registered before close began; close waits for it, so its completed row belongs in
+        the final flush. This remains a RuntimeError rather than a silent no-op: a physical
+        action may already have landed, and losing its audit row must be visible in the wedged
+        worker's error log.
+        """
+        if self._closed or (self._closing and not allow_closing):
+            raise RuntimeError(
+                "BigQueryStore is closed; refusing a late write after the final flush")
+
+    def _begin_async_write(self) -> None:
+        """Register an image-backed write before its upload starts."""
+        with self._lock:
+            self._require_open_for_write()
+            self._active_async_writes += 1
+
+    def _finish_async_write(self) -> None:
+        """Release one registered image-backed write and wake a waiting close."""
+        with self._lock:
+            self._active_async_writes -= 1
+            if self._active_async_writes < 0:  # internal invariant; never hide a lifecycle bug
+                self._active_async_writes = 0
+                raise RuntimeError("BigQueryStore async-write accounting underflow")
+            if self._active_async_writes == 0:
+                self._writes_drained.notify_all()
+
     def record_profile(self, run_id, app, profile_id, liked, source="manual",
                        photos=None, photo_count=0, capture_truncated: bool = False) -> bool:
         """Archive the profile's images + manifest row. Returns True if recorded.
@@ -850,24 +891,32 @@ class BigQueryStore:
             raise RuntimeError(
                 "Refusing profile-photo upload: this BigQueryStore was created with "
                 "ensure=False and its bucket privacy policy was not verified")
-        created_at = _now()
-        photo_rows = self._upload_profile_photos(run_id, app, profile_id, created_at, photos)
-        if len(photo_rows) != len(photos):
-            if photo_rows:
-                self._delete_profile_photo_rows(photo_rows)
-            print(f"BigQuery store warning: archived {len(photo_rows)}/{len(photos)} photos for "
-                  f"profile {profile_id}; skipping its label to keep image data complete.")
-            return False
-        with self._lock:
-            self._buf["profiles"].append({
-                "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": created_at,
-                "liked": bool(liked), "source": source, "photo_count": len(photo_rows),
-                "capture_truncated": bool(capture_truncated),
-            })
-            self._buf["profile_photos"].extend(photo_rows)
-            self._maybe_flush("profiles")
-            self._maybe_flush("profile_photos")
-        return True
+        self._begin_async_write()
+        try:
+            created_at = _now()
+            photo_rows = self._upload_profile_photos(
+                run_id, app, profile_id, created_at, photos)
+            if len(photo_rows) != len(photos):
+                if photo_rows:
+                    self._delete_profile_photo_rows(photo_rows)
+                print(f"BigQuery store warning: archived {len(photo_rows)}/{len(photos)} photos for "
+                      f"profile {profile_id}; skipping its label to keep image data complete.")
+                return False
+            with self._lock:
+                # close waits for this registered write, so its finished manifest must be
+                # buffered before close performs its final flush.
+                self._require_open_for_write(allow_closing=True)
+                self._buf["profiles"].append({
+                    "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": created_at,
+                    "liked": bool(liked), "source": source, "photo_count": len(photo_rows),
+                    "capture_truncated": bool(capture_truncated),
+                })
+                self._buf["profile_photos"].extend(photo_rows)
+                self._maybe_flush("profiles")
+                self._maybe_flush("profile_photos")
+            return True
+        finally:
+            self._finish_async_write()
 
     def _upload_blob(self, blob, data: bytes, content_type: str) -> bool:
         delay = _UPLOAD_BACKOFF_S
@@ -917,6 +966,7 @@ class BigQueryStore:
         liked = bool(liked)
         embedding_vec = [float(x) for x in embedding]
         with self._lock:
+            self._require_open_for_write()
             self._buf["labels"].append({
                 "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": _now(), "liked": liked,
                 "source": source, "embedding": embedding_vec, "photo_count": int(photo_count),
@@ -934,6 +984,7 @@ class BigQueryStore:
         remain an audit of real app actions, while the next run starts the ranker cold.
         """
         with self._lock:
+            self._require_open_for_write()
             self.flush()
             rows = self.client.query(f"SELECT COUNT(*) AS c FROM `{self._tid('labels')}`").result()
             count = next((int(row["c"]) for row in rows), 0)
@@ -946,6 +997,7 @@ class BigQueryStore:
         """Remove the latest visible label and return its operator-readable identity."""
         from google.cloud import bigquery
         with self._lock:
+            self._require_open_for_write()
             self.flush()
             rows = self.client.query(
                 f"SELECT l.profile_id, l.profile_name, l.created_at FROM `{self._tid('labels')}` l "
@@ -969,6 +1021,7 @@ class BigQueryStore:
     def record_decision(self, run_id, app, decision, score, source="auto", profile_id="",
                         created_at=None):
         with self._lock:
+            self._require_open_for_write()
             self._buf["decisions"].append({
                 "run_id": run_id, "app": app, "created_at": _timestamp(created_at),
                 "decision": decision, "score": float(score), "source": source, "profile_id": profile_id,
@@ -983,6 +1036,7 @@ class BigQueryStore:
         # than omitting the field. The live table already holds real rows, so each column got
         # to production via _MIGRATIONS, not via CREATE TABLE IF NOT EXISTS.
         with self._lock:
+            self._require_open_for_write()
             self._buf["openers"].append({
                 "run_id": run_id, "app": app, "created_at": _now(),
                 "model": model, "opener": opener, "referenced": referenced, "angle": angle,
@@ -1014,49 +1068,54 @@ class BigQueryStore:
             print("BigQuery store warning: refusing AUTO opener evidence upload because this "
                   "store has not verified the bucket privacy policy.")
             return False
+        self._begin_async_write()
+        try:
+            opener_bytes = str(opener).encode("utf-8")
+            opener_sha256 = hashlib.sha256(opener_bytes).hexdigest()
+            frame_sha256 = hashlib.sha256(frame).hexdigest()
+            evidence_id = hashlib.sha256(frame + b"\0" + opener_bytes).hexdigest()
+            content_type, ext = _image_type(frame)
+            object_name = (
+                f"opener-evidence/{app}/{run_id}/{profile_id or 'unknown-profile'}/"
+                f"{evidence_id}.{ext}"
+            )
+            blob = self._photo_bucket.blob(object_name)
+            if not self._upload_blob(blob, frame, content_type):
+                print("BigQuery store warning: pre-send AUTO opener screenshot was not archived; "
+                      "skipping its evidence row.")
+                return False
 
-        opener_bytes = str(opener).encode("utf-8")
-        opener_sha256 = hashlib.sha256(opener_bytes).hexdigest()
-        frame_sha256 = hashlib.sha256(frame).hexdigest()
-        evidence_id = hashlib.sha256(frame + b"\0" + opener_bytes).hexdigest()
-        content_type, ext = _image_type(frame)
-        object_name = (
-            f"opener-evidence/{app}/{run_id}/{profile_id or 'unknown-profile'}/"
-            f"{evidence_id}.{ext}"
-        )
-        blob = self._photo_bucket.blob(object_name)
-        if not self._upload_blob(blob, frame, content_type):
-            print("BigQuery store warning: pre-send AUTO opener screenshot was not archived; "
-                  "skipping its evidence row.")
-            return False
+            expected_id = evidence.get("evidence_id")
+            expected_frame_hash = evidence.get("frame_sha256")
+            expected_opener_hash = evidence.get("opener_sha256")
+            if any((expected_id is not None and expected_id != evidence_id,
+                    expected_frame_hash is not None and expected_frame_hash != frame_sha256,
+                    expected_opener_hash is not None and expected_opener_hash != opener_sha256)):
+                print("BigQuery store warning: driver-supplied AUTO opener evidence hashes did not "
+                      "match the content; persisted authoritative hashes computed at storage.")
 
-        expected_id = evidence.get("evidence_id")
-        expected_frame_hash = evidence.get("frame_sha256")
-        expected_opener_hash = evidence.get("opener_sha256")
-        if any((expected_id is not None and expected_id != evidence_id,
-                expected_frame_hash is not None and expected_frame_hash != frame_sha256,
-                expected_opener_hash is not None and expected_opener_hash != opener_sha256)):
-            print("BigQuery store warning: driver-supplied AUTO opener evidence hashes did not "
-                  "match the content; persisted authoritative hashes computed at storage.")
-
-        row = {
-            "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": _now(),
-            "decision_source": decision_source,
-            "decision_created_at": (None if decision_created_at is None
-                                    else _timestamp(decision_created_at)),
-            "outcome": "like_landed", "model_item_index": model_item_index,
-            "opener": str(opener), "evidence_id": evidence_id,
-            "opener_sha256": opener_sha256, "frame_sha256": frame_sha256,
-            "gcs_uri": f"gs://{self.photo_bucket_name}/{object_name}",
-            "byte_size": len(frame), "content_type": content_type,
-        }
-        with self._lock:
-            self._buf["opener_send_evidence"].append(row)
-            self._maybe_flush("opener_send_evidence")
-        return True
+            row = {
+                "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": _now(),
+                "decision_source": decision_source,
+                "decision_created_at": (None if decision_created_at is None
+                                        else _timestamp(decision_created_at)),
+                "outcome": "like_landed", "model_item_index": model_item_index,
+                "opener": str(opener), "evidence_id": evidence_id,
+                "opener_sha256": opener_sha256, "frame_sha256": frame_sha256,
+                "gcs_uri": f"gs://{self.photo_bucket_name}/{object_name}",
+                "byte_size": len(frame), "content_type": content_type,
+            }
+            with self._lock:
+                self._require_open_for_write(allow_closing=True)
+                self._buf["opener_send_evidence"].append(row)
+                self._maybe_flush("opener_send_evidence")
+            return True
+        finally:
+            self._finish_async_write()
 
     def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener):
         with self._lock:
+            self._require_open_for_write()
             self._buf["opener_rejections"].append({
                 "run_id": run_id, "app": app, "created_at": _now(), "model": model,
                 "attempt": int(attempt), "reason_code": reason_code, "reason": reason,
@@ -1069,6 +1128,7 @@ class BigQueryStore:
         # budget.pricing entry for the model) — stored as NULL, distinct from a
         # genuinely free $0.00 call.
         with self._lock:
+            self._require_open_for_write()
             self._buf["spend"].append({
                 "run_id": run_id, "created_at": _now(), "model": model,
                 "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
@@ -1149,7 +1209,26 @@ class BigQueryStore:
             )
 
     def close(self) -> None:
-        self.flush()
+        # First fence new writes, then drain uploads that registered before the fence. Their rows
+        # become part of the final flush; uploads that have not started yet are rejected before
+        # touching Cloud Storage. Mark closed even when flushing raises: the supervisor has ended
+        # ownership of this store, and accepting more rows into an already-failed shutdown buffer
+        # would only make the loss larger.
+        with self._lock:
+            if self._closed:
+                return
+            if self._closing:
+                while not self._closed:
+                    self._writes_drained.wait()
+                return
+            self._closing = True
+            while self._active_async_writes:
+                self._writes_drained.wait()
+            try:
+                self.flush()
+            finally:
+                self._closed = True
+                self._writes_drained.notify_all()
 
     def saved_summary(self) -> str:
         """Human-readable tally of rows confirmed inserted to BigQuery this run, for the

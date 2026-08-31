@@ -220,6 +220,15 @@ screen that was already scrolled on entry — the ordinary case — takes no ext
 all, because the recovery branch is only entered when `confirm_scroll_top` affirmatively confirms
 the chips row, not merely whenever identity fails to match.
 
+That last sentence is load-bearing on a build where the chips row is pinned to the SCREEN (Hinge
+10.1.0's expanded per-profile header), because there the raw gate confirms on EVERY frame and
+this branch would spend its one read-scroll on every entry regardless of where the card sits. So
+the check here passes the driver's `_pinned_band_evidence()` like every other scroll-top call in
+this stack: a proven-pinned build answers `check_unavailable`, which is not `.confirmed`, so the
+branch declines to fire and the original refusal stands with its own wording intact. Declining is
+the right action rather than a lost opportunity — the branch's whole premise is "we are at the
+top and one step will reveal the header", and on a pinned build nothing establishes the premise.
+
 WHAT IS NOT DONE HERE, AND WHICH LAYER OWNS IT
 ------------------------------------------------
   * The TAP. `ItemTarget.point` is a screen coordinate in `ItemTarget.frame`, and this module
@@ -334,6 +343,25 @@ from .scroll_step import (
     step_px_for_frac)
 from .scroll_top import ScrollTopError, confirm_scroll_top
 from .segment import Block, FrameSegmentation, segment_frame
+
+
+def _driver_pinned_evidence(driver):
+    """The driver's proof that the filter-chips row is pinned to the SCREEN, or None.
+
+    `hinge.HingeDriver._pinned_band_evidence` measures this off the enumeration read's own frames
+    and offsets; this module asks for it rather than deriving it, for the same reason it asks the
+    driver for `content_band` and the like template -- one calibrated answer, one home.
+
+    Reached through `getattr` because the driver here is a duck-typed collaborator (see the
+    module docstring): a driver that predates the method, or a test double that only implements
+    the handful of methods this function actually calls, must get the behaviour that shipped
+    before the parameter existed rather than an AttributeError. None is precisely that: "nothing
+    has been proven", never "proven not pinned".
+    """
+    getter = getattr(driver, "_pinned_band_evidence", None)
+    if not callable(getter):
+        return None
+    return getter()
 
 
 # =====================================================================================
@@ -1077,7 +1105,9 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
         recovery_note = ""
         if identity.unknown:
             try:
-                still_at_top = confirm_scroll_top(entry_frame, identity_band=driver.identity_band)
+                still_at_top = confirm_scroll_top(
+                    entry_frame, identity_band=driver.identity_band,
+                    pinned_evidence=_driver_pinned_evidence(driver))
             except ScrollTopError:
                 still_at_top = None
             if still_at_top is not None and still_at_top.confirmed:

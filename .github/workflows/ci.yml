@@ -91,12 +91,13 @@ jobs:
           fi
 
       - name: Run tests
-        # No `-n` here on purpose: pyproject's [tool.pytest.ini_options] addopts already carries
-        # `-n auto --dist loadgroup`, so this picks the runner's own core count up automatically
-        # and a second `-n` on this line would just fight it. pytest-xdist arrives via the `dev`
-        # extra installed above; without it pytest aborts with "unrecognized arguments: -n"
-        # rather than quietly falling back to a 19-minute serial run.
-        run: python -m pytest -q
+        # Bound CI memory without reducing coverage. Parallel workers were OOM-killed, and one
+        # monolithic serial process accumulated enough native-library memory to exit 137 at 91%.
+        # The runner validates pytest discovery, then runs every recursively discovered test module
+        # in its own serial process so OpenCV/torch memory is returned to the OS between modules. A
+        # SIGKILLed module alone falls back to one fresh process per collected node ID; assertion or
+        # collection failures still fail immediately, and the final collected/executed counts match.
+        run: python scripts/run_ci_test_files.py
 
   lint:
     name: ruff
@@ -126,4 +127,4 @@ jobs:
       # Install the repository's declared development tools so local and CI lint
       # use the same constrained Ruff release and pyproject configuration.
       - run: pip install --quiet -e '.[dev]'
-      - run: ruff check operation_love tests tools
+      - run: ruff check operation_love tests tools scripts
